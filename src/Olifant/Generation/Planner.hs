@@ -1,0 +1,57 @@
+module Olifant.Generation.Planner
+  ( RenderedEdit (..)
+  , renderedPath
+  , renderEdits
+  , decideEdits
+  ) where
+
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as M
+import Data.Text (Text)
+import Data.Text qualified as T
+import Olifant.Generation.Plan
+import Olifant.Generator (Anchor (..), EditWith (..), OnExists (..))
+import Olifant.Template (Env, Template, TemplateError, render)
+import Olifant.Workspace (isSafeRelative, normalisePath)
+
+data RenderedEdit
+  = RenderedCreate FilePath Text OnExists
+  | -- | path, marker, snippet
+    RenderedInsert FilePath Text Text
+
+renderedPath :: RenderedEdit -> FilePath
+renderedPath = \case
+  RenderedCreate p _ _ -> p
+  RenderedInsert p _ _ -> p
+
+renderEdits :: Env -> [EditWith Template] -> Either TemplateError [RenderedEdit]
+renderEdits env = traverse $ \case
+  Create target src onExists -> RenderedCreate <$> path target <*> render env src <*> pure onExists
+  Insert target (Marker m) src -> RenderedInsert <$> path target <*> pure m <*> render env src
+  where
+    path t = normalisePath . T.unpack <$> render env t
+
+-- | Decide what every edit does, threading file contents so later edits see
+-- earlier ones. Returns edits, conflicts, and the final contents to write.
+decideEdits :: [RenderedEdit] -> Map FilePath (Maybe Text) -> ([PlannedEdit], [Conflict], Map FilePath Text)
+decideEdits rendered original = finish (foldl step (original, [], []) (zip [1 ..] rendered))
+  where
+    finish (current, edits, conflicts) =
+      ( reverse edits
+      , reverse conflicts
+      , M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p original /= Just (Just c)]
+      )
+    step (current, edits, conflicts) (n, edit)
+      | not (isSafeRelative (renderedPath edit)) = (current, edits, UnsafePath n (renderedPath edit) : conflicts)
+      | otherwise = case edit of
+          RenderedCreate p content onExists -> case existing p of
+            Nothing -> (M.insert p (Just content) current, PlannedEdit n p (WillCreate content) : edits, conflicts)
+            Just old
+              | old == content -> (current, PlannedEdit n p (Skipped UnchangedContent) : edits, conflicts)
+              | otherwise -> case onExists of
+                  ErrorIfExists -> (current, edits, TargetExists n p : conflicts)
+                  SkipIfExists -> (current, PlannedEdit n p (Skipped AlreadyExists) : edits, conflicts)
+                  OverwriteIfExists -> (M.insert p (Just content) current, PlannedEdit n p (WillOverwrite content) : edits, conflicts)
+          RenderedInsert p _ _ -> (current, edits, InsertTargetMissing n p : conflicts)
+      where
+        existing p = M.findWithDefault Nothing p current
