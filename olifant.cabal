@@ -28,6 +28,12 @@ library
   import:          shared
   hs-source-dirs:  src
   exposed-modules:
+    Olifant.Template.Render
+    Olifant.Template.Parse
+    Olifant.Template.Error
+    Olifant.Template.Value
+    Olifant.Template.Syntax
+    Olifant.Template
     Olifant.Naming
 
 test-suite spec
@@ -42,5 +48,12 @@ test-suite spec
     , hspec-hedgehog  >=0.1
     , temporary       >=1.3
   other-modules:
+    Olifant.Template.Render
+    Olifant.Template.Parse
+    Olifant.Template.Error
+    Olifant.Template.Value
+    Olifant.Template.Syntax
+    Olifant.Template
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.TemplateSpec
