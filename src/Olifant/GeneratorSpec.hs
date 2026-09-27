@@ -1,10 +1,15 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Olifant.GeneratorSpec (spec) where
 
 import Data.Either (isLeft)
+import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Generator
-import Olifant.Template (templateSource)
+import Olifant.Naming (parseName)
+import Olifant.Template (Value (..), templateSource)
 import Test.Hspec
 
 modelToml :: Text
@@ -37,7 +42,12 @@ load :: Text -> Either Text GeneratorDef
 load = parseGenerator (GeneratorId "rails/model")
 
 spec :: Spec
-spec = describe "parseGenerator" $ do
+spec = do
+  parseSpec
+  envSpec
+
+parseSpec :: Spec
+parseSpec = describe "parseGenerator" $ do
   it "reads metadata, defaulting version to 1" $
     fmap (\g -> (genDescription g, genLanguage g, genVersion g)) (load modelToml) `shouldBe` Right ("Model", "ruby", 1)
   it "reads inputs, including ordered record fields" $
@@ -70,3 +80,43 @@ spec = describe "parseGenerator" $ do
       Create p (TemplateFile f) _ -> "create " <> templateSource p <> " from " <> T.pack f
       Insert p (Marker m) _ -> "insert " <> templateSource p <> " at " <> m
       _ -> "unexpected"
+
+envSpec :: Spec
+envSpec = do
+  describe "buildEnv" $ do
+    let now = UTCTime (fromGregorian 2026 9 27) 0
+        gen = either (error . T.unpack) id (load modelToml)
+        nameV = VName . either (error . T.unpack) id . parseName
+        env sets = buildEnv gen (M.fromList sets) now
+        problemKey = \case
+          MissingInput s -> "missing:" <> inputName s
+          InvalidInput n _ -> "invalid:" <> n
+          UnknownInput n -> "unknown:" <> n
+    it "resolves idents, record lists with defaults, derived values and now" $ do
+      let Right e = env [("name", "blog_post"), ("fields", "title, body:text")]
+          field n t = VRecord (M.fromList [("name", nameV n), ("type", VText t)])
+      M.lookup "table" e `shouldBe` Just (VText "blog_posts")
+      M.lookup "Model" e `shouldBe` Just (VText "BlogPost")
+      M.lookup "fields" e `shouldBe` Just (VList [field "title" "string", field "body" "text"])
+      M.lookup "now" e `shouldBe` Just (VTime now)
+    it "gives optional lists an empty default" $
+      fmap (M.lookup "fields") (env [("name", "post")]) `shouldBe` Right (Just (VList []))
+    it "reports missing, invalid and unknown inputs all at once" $
+      case env [("fields", "title:bogus"), ("colour", "red")] of
+        Left (InputProblems ps) -> map problemKey ps `shouldMatchList` ["missing:name", "invalid:fields", "unknown:colour"]
+        other -> expectationFailure ("expected input problems, got " <> show other)
+    it "lets --set override a derived value (irregular plurals)" $
+      fmap (M.lookup "table") (env [("name", "octopus"), ("table", "octopodes")]) `shouldBe` Right (Just (VText "octopodes"))
+    it "evaluates derived values in dependency order, keeping single-expression types" $ do
+      let toml = "description = \"d\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[derive]\na_second = \"{{ z_first }}!\"\nz_first = \"{{ name != name|singular }}\"\n"
+          g = either (error . T.unpack) id (load toml)
+      fmap (\e -> (M.lookup "z_first" e, M.lookup "a_second" e)) (buildEnv g (M.fromList [("name", "posts")]) now)
+        `shouldBe` Right (Just (VBool True), Just (VText "true!"))
+    it "detects cycles between derived values" $ do
+      let toml = "description = \"d\"\nlanguage = \"x\"\n[derive]\na = \"{{ b }}\"\nb = \"{{ a }}\"\n"
+          g = either (error . T.unpack) id (load toml)
+      buildEnv g M.empty now `shouldBe` Left (DeriveCycle ["a", "b"])
+  describe "describeInputType" $
+    it "shows the CLI shape of each type" $
+      map describeInputType [ScalarInput IdentS, ScalarInput (EnumS ["a", "b"]), ListInput (ScalarItems IdentS), ListInput (RecordItems [FieldSpec "name" IdentS Nothing, FieldSpec "type" TextS Nothing])]
+        `shouldBe` ["ident", "enum(a|b)", "list<ident>", "list<name:type>"]
