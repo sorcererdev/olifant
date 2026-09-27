@@ -1,8 +1,10 @@
 module Olifant.TemplateSpec (spec) where
 
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Hedgehog (forAll, (===))
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
@@ -54,3 +56,42 @@ spec = do
   describe "holes" $
     it "are refused until step 3, with the line number" $
       parseTemplate "a\nb <$ body: block | x $>" `shouldBe` Left (HolesNotYetSupported 2)
+
+  describe "{% if %} and {% for %}" $ do
+    it "picks the first true branch" $ do
+      let src = "{% if kind == \"a\" %}A{% elif kind == \"b\" %}B{% else %}C{% endif %}"
+      map (\k -> renderWith [("kind", VText k)] src) ["a", "b", "z"] `shouldBe` map Right ["A", "B", "C"]
+    it "compares names with text spelled in snake case" $
+      renderWith [("t", nameV "references")] "{% if t == \"references\" %}yes{% endif %}" `shouldBe` Right "yes"
+    it "loops with loop.last" $
+      renderWith [("xs", VList (map nameV ["a_a", "b_b", "c_c"]))] "{% for x in xs %}{{ x }}{% if not loop.last %}, {% endif %}{% endfor %}"
+        `shouldBe` Right "a_a, b_b, c_c"
+    it "treats a missing optional list as empty" $
+      renderWith [("xs", VNull)] "[{% for x in xs %}{{ x }}{% endfor %}]" `shouldBe` Right "[]"
+    it "trims whitespace around {%- and -%} (a Rails migration body)" $ do
+      let src = "create_table :posts do |t|\n{%- for f in fields %}\n  t.{{ f.type }} :{{ f.name }}\n{%- endfor %}\n\n  t.timestamps\n"
+          field n t = VRecord (M.fromList [("name", nameV n), ("type", VText t)])
+      renderWith [("fields", VList [field "title" "string", field "body" "text"])] src
+        `shouldBe` Right "create_table :posts do |t|\n  t.string :title\n  t.text :body\n\n  t.timestamps\n"
+    it "trims leading whitespace after -%}" $
+      renderWith [] "{% if true -%}\n   x{% endif %}" `shouldBe` Right "x"
+    it "reports unbalanced tags" $ do
+      parseTemplate "{% if true %}x" `shouldSatisfy` isSyntaxError
+      parseTemplate "x{% endfor %}" `shouldSatisfy` isSyntaxError
+
+  describe "evaluate" $ do
+    it "keeps the type of a single expression" $
+      (parseTemplate "{{ name != name|singular }}" >>= evaluate (M.fromList [("name", nameV "blog_posts")]))
+        `shouldBe` Right (VBool True)
+    it "renders anything else to text" $
+      (parseTemplate "x{{ name }}" >>= evaluate (M.fromList [("name", nameV "a_b")])) `shouldBe` Right (VText "xa_b")
+
+  describe "timestamp" $
+    it "formats times for migration file names" $ do
+      let now = UTCTime (fromGregorian 2026 9 27) (secondsToDiffTime (15 * 3600 + 30 * 60))
+      renderWith [("now", VTime now)] "{{ now|timestamp }}" `shouldBe` Right "20260927153000"
+
+  describe "freeVariables" $
+    it "lists variables read from outside, not loop-bound ones" $
+      fmap freeVariables (parseTemplate "{{ a }}{% for x in xs %}{{ x.b }}{{ loop.last }}{{ c }}{% endfor %}")
+        `shouldBe` Right (S.fromList ["a", "xs", "c"])

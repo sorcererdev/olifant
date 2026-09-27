@@ -1,0 +1,9 @@
+# Tell haskell-language-server which cabal component owns each file.
+# Specs live next to the code in src/, so the test suite (which compiles
+# both the library modules and the specs) is the component for all of src/.
+cradle:
+  cabal:
+    - path: "src"
+      component: "test:spec"
+    - path: "app"
+      component: "exe:olifant"

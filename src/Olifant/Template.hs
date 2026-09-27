@@ -10,10 +10,11 @@ module Olifant.Template
   , parseTemplate
   , render
   , evaluate
+  , freeVariables
   ) where
 
 import Olifant.Template.Error
 import Olifant.Template.Parse
 import Olifant.Template.Render
-import Olifant.Template.Syntax (Template, templateSource)
+import Olifant.Template.Syntax (Template, freeVariables, templateSource)
 import Olifant.Template.Value
