@@ -6,11 +6,15 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
+import Hedgehog (evalIO, forAll, (===))
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
 import Olifant.Generation
 import Olifant.Generator
 import Olifant.Template (Template)
 import Olifant.Workspace (memoryWorkspace)
 import Test.Hspec
+import Test.Hspec.Hedgehog (hedgehog)
 
 now :: UTCTime
 now = UTCTime (fromGregorian 2026 9 27) 0
@@ -44,7 +48,12 @@ run files gen sets mode = do
   (result,) <$> snapshot
 
 spec :: Spec
-spec = describe "generate (create edits)" $ do
+spec = do
+  createSpec
+  insertSpec
+
+createSpec :: Spec
+createSpec = describe "generate (create edits)" $ do
   it "creates rendered files when applied" $ do
     (Right plan, files) <- run [] createGen [("name", "blog_post")] Apply
     files `shouldBe` M.fromList [("app/blog_post.rb", "class BlogPost\nend\n"), ("test/blog_post_test.rb", "test BlogPost\n")]
@@ -85,3 +94,56 @@ spec = describe "generate (create edits)" $ do
     result `shouldSatisfy` \case
       Left (InvalidInputs (InputProblems [MissingInput _])) -> True
       _ -> False
+
+insertSpec :: Spec
+insertSpec = describe "generate (marker inserts)" $ do
+  let insertGen =
+        generatorFrom . T.unlines $
+          [ "description = \"d\""
+          , "language = \"rust\""
+          , "[inputs.cmd]"
+          , "type = \"ident\""
+          , "[[edits]]"
+          , "insert = \"svc/lib.rs\""
+          , "anchor = { marker = \"// olifant:modules\" }"
+          , "text = \"pub mod {{ cmd|snake }};\""
+          , "[[edits]]"
+          , "insert = \"svc/service.rs\""
+          , "anchor = { marker = \"// olifant:delegates\" }"
+          , "text = \"\\npub fn {{ cmd|snake }}(&self) {\\n    todo!()\\n}\\n\""
+          ]
+      lib = "pub mod a;\n// olifant:modules\n"
+      service = "impl S {\n    pub fn a(&self) {}\n    // olifant:delegates\n}\n"
+  it "inserts before the marker, using its indentation, keeping blank lines unindented" $ do
+    (Right plan, files) <- run [("svc/lib.rs", lib), ("svc/service.rs", service)] insertGen [("cmd", "refund_invoice")] Apply
+    M.lookup "svc/lib.rs" files `shouldBe` Just "pub mod a;\npub mod refund_invoice;\n// olifant:modules\n"
+    M.lookup "svc/service.rs" files
+      `shouldBe` Just "impl S {\n    pub fn a(&self) {}\n\n    pub fn refund_invoice(&self) {\n        todo!()\n    }\n    // olifant:delegates\n}\n"
+    map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}\n"]
+  it "keeps earlier inserts in order (the marker stays last)" $ do
+    (ws, snapshot) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
+    _ <- generate ws insertGen (M.fromList [("cmd", "b_b")]) now Apply
+    _ <- generate ws insertGen (M.fromList [("cmd", "c_c")]) now Apply
+    M.lookup "svc/lib.rs" <$> snapshot `shouldReturn` Just "pub mod a;\npub mod b_b;\npub mod c_c;\n// olifant:modules\n"
+  it "skips text that is already present, so re-running is a no-op" $ do
+    (ws, _) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
+    _ <- generate ws insertGen (M.fromList [("cmd", "b_b")]) now Apply
+    Right again <- generate ws insertGen (M.fromList [("cmd", "b_b")]) now Apply
+    map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent, Skipped AlreadyPresent]
+    planWrites again `shouldBe` M.empty
+  it "reports a missing or repeated marker, and a missing file, as conflicts" $ do
+    (Right plan, files) <- run [("svc/lib.rs", "pub mod a;\n"), ("svc/service.rs", service <> "// olifant:delegates\n")] insertGen [("cmd", "b_b")] Apply
+    planConflicts plan `shouldBe` [MarkerNotFound 1 "svc/lib.rs" "// olifant:modules", MarkerRepeated 2 "svc/service.rs" "// olifant:delegates" 2]
+    M.lookup "svc/lib.rs" files `shouldBe` Just "pub mod a;\n"
+    (Right plan2, _) <- run [] insertGen [("cmd", "b_b")] Apply
+    planConflicts plan2 `shouldBe` [InsertTargetMissing 1 "svc/lib.rs", InsertTargetMissing 2 "svc/service.rs"]
+  it "preserves CRLF line endings and a missing final newline" $ do
+    (_, files) <- run [("svc/lib.rs", "pub mod a;\r\n// olifant:modules"), ("svc/service.rs", service)] insertGen [("cmd", "b_b")] Apply
+    M.lookup "svc/lib.rs" files `shouldBe` Just "pub mod a;\r\npub mod b_b;\r\n// olifant:modules"
+  it "re-running with any command name changes nothing (property)" $ hedgehog $ do
+    ws' <- forAll (Gen.list (Range.linear 2 3) (Gen.text (Range.linear 2 6) Gen.lower))
+    let sets = M.fromList [("cmd", T.intercalate "_" ws')]
+    (ws, _) <- evalIO (memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)])
+    _ <- evalIO (generate ws insertGen sets now Apply)
+    second <- evalIO (generate ws insertGen sets now Apply)
+    fmap planWrites second === Right M.empty
