@@ -41,3 +41,24 @@ spec = do
   describe "caseName" $
     it "is the inverse of caseFromText" $
       map (caseFromText . caseName) allCases `shouldBe` map Just allCases
+
+  describe "pluralize / singularize" $ do
+    let corpus =
+          [ "post", "comment", "user", "category", "company", "box", "class", "match", "wish"
+          , "person", "child", "status", "bus", "leaf", "sheep", "series", "day", "key"
+          , "address", "case", "house", "invoice", "subscription", "quiz", "gas", "blog_post" ]
+        snakeOf f = render Snake . f . name
+    it "pluralizes regular, -es, -ies, irregular and uncountable words" $
+      map (snakeOf pluralize) ["post", "box", "category", "day", "person", "sheep", "blog_post"]
+        `shouldBe` ["posts", "boxes", "categories", "days", "people", "sheep", "blog_posts"]
+    it "keeps plural words plural" $
+      map (snakeOf pluralize) ["posts", "people", "categories"] `shouldBe` ["posts", "people", "categories"]
+    it "singularizes" $
+      map (snakeOf singularize) ["posts", "boxes", "categories", "people", "addresses", "statuses", "blog_posts"]
+        `shouldBe` ["post", "box", "category", "person", "address", "status", "blog_post"]
+    it "singularize undoes pluralize across the corpus" $ hedgehog $ do
+      w <- forAll (Gen.element corpus)
+      snakeOf (singularize . pluralize) w === w
+    it "pluralize is idempotent across the corpus" $ hedgehog $ do
+      w <- forAll (Gen.element corpus)
+      snakeOf (pluralize . pluralize) w === snakeOf pluralize w

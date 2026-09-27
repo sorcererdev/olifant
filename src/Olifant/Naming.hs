@@ -8,6 +8,8 @@ module Olifant.Naming
   , caseName
   , caseFromText
   , render
+  , pluralize
+  , singularize
   ) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, toUpper)
@@ -92,3 +94,53 @@ capitalise :: Text -> Text
 capitalise w = case T.uncons w of
   Nothing -> w
   Just (h, t) -> T.cons (toUpper h) t
+
+pluralize :: Name -> Name
+pluralize = onLastWord pluralWord
+
+singularize :: Name -> Name
+singularize = onLastWord singularWord
+
+onLastWord :: (Text -> Text) -> Name -> Name
+onLastWord f (Name ws) = case reverse ws of
+  [] -> Name ws
+  (w : rest) -> Name (reverse (f w : rest))
+
+irregulars :: [(Text, Text)]
+irregulars =
+  [ ("person", "people"), ("man", "men"), ("woman", "women"), ("child", "children")
+  , ("tooth", "teeth"), ("foot", "feet"), ("mouse", "mice"), ("goose", "geese"), ("ox", "oxen")
+  , ("leaf", "leaves"), ("knife", "knives"), ("life", "lives"), ("wife", "wives"), ("half", "halves")
+  , ("wolf", "wolves"), ("shelf", "shelves"), ("criterion", "criteria"), ("datum", "data")
+  , ("index", "indices"), ("matrix", "matrices"), ("vertex", "vertices"), ("quiz", "quizzes")
+  , ("status", "statuses"), ("bus", "buses"), ("gas", "gases"), ("alias", "aliases")
+  , ("analysis", "analyses"), ("crisis", "crises"), ("thesis", "theses") ]
+
+uncountables :: [Text]
+uncountables =
+  [ "equipment", "information", "rice", "money", "species", "series", "fish", "sheep"
+  , "news", "metadata", "feedback", "software", "staff" ]
+
+pluralWord :: Text -> Text
+pluralWord w
+  | w `elem` uncountables = w
+  | Just p <- lookup w irregulars = p
+  | w `elem` map snd irregulars = w
+  | otherwise = regularPlural (singularWord w)
+  where
+    regularPlural s
+      | any (`T.isSuffixOf` s) ["s", "x", "z", "ch", "sh"] = s <> "es"
+      | "y" `T.isSuffixOf` s && not (vowelBeforeLast s) = T.dropEnd 1 s <> "ies"
+      | otherwise = s <> "s"
+    vowelBeforeLast s = T.length s >= 2 && T.index s (T.length s - 2) `elem` ("aeiou" :: String)
+
+singularWord :: Text -> Text
+singularWord w
+  | w `elem` uncountables = w
+  | Just s <- lookup w [(p, s') | (s', p) <- irregulars] = s
+  | w `elem` map fst irregulars = w
+  | "ies" `T.isSuffixOf` w && T.length w > 3 = T.dropEnd 3 w <> "y"
+  | any (`T.isSuffixOf` w) ["sses", "xes", "zzes", "ches", "shes"] = T.dropEnd 2 w
+  | any (`T.isSuffixOf` w) ["ss", "us", "is"] = w
+  | "s" `T.isSuffixOf` w = T.dropEnd 1 w
+  | otherwise = w
