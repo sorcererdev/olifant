@@ -1,0 +1,46 @@
+cabal-version:      3.4
+name:               olifant
+version:            0.1.0.0
+synopsis:           Olifant: Durandal's generator engine (prototype)
+build-type:         Simple
+
+common shared
+  default-language:   GHC2021
+  default-extensions:
+    OverloadedStrings
+    LambdaCase
+    DerivingStrategies
+  ghc-options:        -Wall -Wcompat -Wincomplete-uni-patterns -Wincomplete-record-updates
+  build-depends:
+    , base                  >=4.18 && <5
+    , aeson                 >=2.1
+    , bytestring            >=0.11
+    , containers            >=0.6
+    , directory             >=1.3
+    , filepath              >=1.4
+    , megaparsec            >=9.5
+    , optparse-applicative  >=0.18
+    , text                  >=2.0
+    , time                  >=1.12
+    , toml-parser           >=2.0  && <3
+
+library
+  import:          shared
+  hs-source-dirs:  src
+  exposed-modules:
+    Olifant.Naming
+
+test-suite spec
+  import:             shared
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     src
+  main-is:            TestDriver.hs
+  build-tool-depends: hspec-discover:hspec-discover
+  build-depends:
+    , hedgehog        >=1.4
+    , hspec           >=2.11
+    , hspec-hedgehog  >=0.1
+    , temporary       >=1.3
+  other-modules:
+    Olifant.Naming
+    Olifant.NamingSpec
