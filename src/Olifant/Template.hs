@@ -11,9 +11,14 @@ module Olifant.Template
   , render
   , evaluate
   , freeVariables
+  , Binding (..)
+  , ExemplarError (..)
+  , describeExemplarError
+  , exemplar
   ) where
 
 import Olifant.Template.Error
+import Olifant.Template.Exemplar
 import Olifant.Template.Parse
 import Olifant.Template.Render
 import Olifant.Template.Syntax (Template, freeVariables, templateSource)

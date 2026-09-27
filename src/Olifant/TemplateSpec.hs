@@ -95,3 +95,32 @@ spec = do
     it "lists variables read from outside, not loop-bound ones" $
       fmap freeVariables (parseTemplate "{{ a }}{% for x in xs %}{{ x.b }}{{ loop.last }}{{ c }}{% endfor %}")
         `shouldBe` Right (S.fromList ["a", "xs", "c"])
+
+  describe "exemplar" $ do
+    let refund = either (error . T.unpack) id (parseName "refund_invoice")
+        bindings = [Binding "command_name" refund]
+        renderExemplar value src = do
+          t <- either (Left . describeExemplarError) Right (exemplar bindings src)
+          either (Left . describeTemplateError) Right (render (M.fromList [("command_name", value)]) t)
+    it "renames every case form, plurals, and names embedded in identifiers" $
+      renderExemplar (nameV "cancel_subscription")
+        "struct RefundInvoice; RefundInvoiceInput; fn refund_invoice(); REFUND_INVOICE; \"refund-invoice\"; Refund Invoice; refund invoice; refund_invoices; refundInvoiceId; get_refund_invoice"
+        `shouldBe` Right
+          "struct CancelSubscription; CancelSubscriptionInput; fn cancel_subscription(); CANCEL_SUBSCRIPTION; \"cancel-subscription\"; Cancel Subscription; cancel subscription; cancel_subscriptions; cancelSubscriptionId; get_cancel_subscription"
+    it "leaves partial-word matches alone" $
+      renderExemplar (nameV "cancel_subscription") "prefund_invoice refund_invoicex RefundInvoicer"
+        `shouldBe` Right "prefund_invoice refund_invoicex RefundInvoicer"
+    it "rejects single-word examples, whose case forms are ambiguous" $
+      exemplar [Binding "command_name" (either (error . T.unpack) id (parseName "refund"))] "x"
+        `shouldSatisfy` \case
+          Left (ExampleNeedsTwoWords "command_name" _) -> True
+          _ -> False
+    it "rejects two bindings that produce the same form" $
+      exemplar [Binding "a" refund, Binding "b" refund] "x" `shouldSatisfy` \case
+        Left (AmbiguousForm _) -> True
+        _ -> False
+    it "reproduces the exemplar exactly when rendered with its own example (identity)" $ hedgehog $ do
+      let forms = ["RefundInvoice", "refund_invoice", "refund-invoice", "refundInvoice", "REFUND_INVOICE", "Refund Invoice", "refund invoice", "refund_invoices", "RefundInvoices"]
+      pieces <- forAll (Gen.list (Range.linear 0 30) (Gen.choice [Gen.element forms, Gen.element ["_", "-", " ", "\n", "s", "x", "X", "(", "\"", "p"], Gen.text (Range.linear 0 4) Gen.unicode]))
+      let src = T.concat pieces
+      renderExemplar (VName refund) src === Right src
