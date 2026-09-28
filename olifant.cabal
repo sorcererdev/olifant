@@ -51,6 +51,7 @@ library
     Olifant.Template.Syntax
     Olifant.Template
     Olifant.Naming
+    Olifant.WorkspaceSync
     -- olifant:library-modules
 
 test-suite spec
@@ -96,6 +97,8 @@ test-suite spec
     Olifant.Naming
     Olifant.NamingSpec
     Olifant.TemplateSpec
+    Olifant.WorkspaceSync
+    Olifant.WorkspaceSyncSpec
     -- olifant:test-modules
 
 executable olifant
