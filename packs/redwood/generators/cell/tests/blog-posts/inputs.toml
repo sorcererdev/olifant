@@ -1,0 +1,4 @@
+now = "2026-09-27T15:30:00Z"
+
+[inputs]
+name = "blog_posts"

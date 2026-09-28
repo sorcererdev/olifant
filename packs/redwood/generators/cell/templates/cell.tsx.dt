@@ -1,0 +1,47 @@
+import type { {{ Query }}, {{ Query }}Variables } from 'types/graphql'
+
+import type {
+  CellSuccessProps,
+  CellFailureProps,
+  TypedDocumentNode,
+} from '@redwoodjs/web'
+
+export const QUERY: TypedDocumentNode<{{ Query }}, {{ Query }}Variables> = gql`
+{%- if is_list %}
+  query {{ Query }} {
+    {{ field }} {
+      id
+    }
+  }
+{%- else %}
+  query {{ Query }}($id: Int!) {
+    {{ field }}: {{ field }}(id: $id) {
+      id
+    }
+  }
+{%- endif %}
+`
+
+export const Loading = () => <div>Loading...</div>
+
+export const Empty = () => <div>Empty</div>
+
+export const Failure = ({ error }: CellFailureProps<{{ Query }}Variables>) => (
+  <div style={{ '{{' }} color: 'red' }}>Error: {error?.message}</div>
+)
+
+export const Success = ({
+  {{ field }},
+}: CellSuccessProps<{{ Query }}, {{ Query }}Variables>) => {
+{%- if is_list %}
+  return (
+    <ul>
+      {{ '{' }}{{ field }}.map((item) => {
+        return <li key={item.id}>{JSON.stringify(item)}</li>
+      })}
+    </ul>
+  )
+{%- else %}
+  return <div>{JSON.stringify({{ field }})}</div>
+{%- endif %}
+}
