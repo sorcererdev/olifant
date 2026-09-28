@@ -6,7 +6,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
 import Olifant.Cli (Runtime (..), runCli)
 import Olifant.Workspace (diskWorkspace)
-import System.Directory (getCurrentDirectory)
+import System.Directory (XdgDirectory (XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hIsTerminalDevice, stderr, stdout)
@@ -16,11 +16,15 @@ main = do
   args <- getArgs
   cwd <- getCurrentDirectory
   tty <- hIsTerminalDevice stdout
+  home <- getHomeDirectory
+  userConfigDir <- getXdgDirectory XdgConfig "olifant"
   result <-
     try . runCli
       Runtime
         { rtRoot = diskWorkspace "/"
         , rtProjectDir = cwd
+        , rtUserConfigDir = Just userConfigDir
+        , rtHomeDir = Just home
         , rtNow = getCurrentTime
         , rtStdoutIsTty = tty
         , rtOut = TIO.putStr

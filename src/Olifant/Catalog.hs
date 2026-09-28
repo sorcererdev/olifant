@@ -7,6 +7,7 @@ module Olifant.Catalog
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
+  , CatalogPaths (..)
   , openProjectCatalog
   , openPackCatalog
   , findEntry
@@ -42,10 +43,22 @@ data Catalog = Catalog
   { catalogProject :: Maybe FilePath
   , catalogEntries :: [CatalogEntry]
   , catalogBroken :: [(GeneratorId, FilePath, Text)]
+  , catalogPacks :: [Text]
+  }
+
+-- | Where configuration lives. Packs come from the user config
+-- (@<userConfigDir>/config.toml@, paths relative to that dir) and the project
+-- config (@<project>/.olifant/config.toml@, paths relative to the project);
+-- the project wins when both name the same pack. @~/@ expands to the home dir.
+data CatalogPaths = CatalogPaths
+  { catalogProjectDir :: FilePath
+  , catalogUserConfigDir :: Maybe FilePath
+  , catalogHomeDir :: Maybe FilePath
   }
 
 data CatalogError
-  = ConfigInvalid Text
+  = ConfigInvalid FilePath Text
+  | PackNotConfigured Text Text -- ^ pack, requested generator
   | GeneratorInvalid FilePath Text
   | GeneratorNotFound Text [GeneratorId]
   | GeneratorAmbiguous Text [GeneratorId]
@@ -55,22 +68,40 @@ data CatalogError
 
 describeCatalogError :: CatalogError -> Text
 describeCatalogError = \case
-  ConfigInvalid e -> ".olifant/config.toml: " <> e
+  ConfigInvalid p e -> T.pack p <> ": " <> e
+  PackNotConfigured pack r ->
+    "no generator named `" <> r <> "`: no pack named `" <> pack
+      <> "` is configured (add it under [packs] in .olifant/config.toml for this project, or ~/.config/olifant/config.toml for every project)"
   GeneratorInvalid p e -> T.pack p <> ": " <> e
   GeneratorNotFound r _ -> "no generator named `" <> r <> "`"
   GeneratorAmbiguous r ids -> "`" <> r <> "` matches several generators: " <> T.intercalate ", " (map generatorIdText ids)
   SourceMissing g p -> generatorIdText g <> ": missing source file " <> T.pack p
   SourceInvalid g p e -> generatorIdText g <> ": " <> T.pack p <> ": " <> e
 
-openProjectCatalog :: Monad m => Workspace m -> FilePath -> m (Either CatalogError Catalog)
-openProjectCatalog root project = do
-  config <- readText root (project </> ".olifant" </> "config.toml")
-  case maybe (Right []) packsFromConfig config of
-    Left err -> pure (Left (ConfigInvalid err))
-    Right packs -> do
-      let packRoots = [(name, normalisePath (project </> p)) | (name, p) <- packs]
+openProjectCatalog :: Monad m => Workspace m -> CatalogPaths -> m (Either CatalogError Catalog)
+openProjectCatalog root paths = do
+  let project = catalogProjectDir paths
+      userConfig = fmap (</> "config.toml") (catalogUserConfigDir paths)
+      projectConfig = project </> ".olifant" </> "config.toml"
+  userPacks <- maybe (pure (Right [])) (packsIn (fromMaybe "." (catalogUserConfigDir paths))) userConfig
+  projectPacks <- packsIn project projectConfig
+  case (,) <$> userPacks <*> projectPacks of
+    Left err -> pure (Left err)
+    Right (fromUser, fromProject) -> do
+      let packRoots = M.toList (M.fromList (fromUser ++ fromProject))
       result <- openCatalogAt root (Just (project </> ".olifant" </> "generators")) packRoots
       pure (fmap (\c -> c {catalogProject = Just project}) result)
+  where
+    packsIn base configPath =
+      readText root configPath <&> \case
+        Nothing -> Right []
+        Just src -> case packsFromConfig src of
+          Left err -> Left (ConfigInvalid configPath err)
+          Right packs -> Right [(name, normalisePath (base </> expandHome p)) | (name, p) <- packs]
+    expandHome p = case (catalogHomeDir paths, p) of
+      (Just home, '~' : '/' : rest) -> home </> rest
+      (Just home, "~") -> home
+      _ -> p
 
 openPackCatalog :: Monad m => Workspace m -> [(Text, FilePath)] -> m (Either CatalogError Catalog)
 openPackCatalog root = openCatalogAt root Nothing
@@ -88,7 +119,7 @@ openCatalogAt root localDir packs = do
   local <- maybe (pure []) (discover Nothing Nothing) localDir
   fromPacks <- concat <$> traverse (\(name, r) -> discover (Just name) (Just r) (r </> "generators")) packs
   let loaded = local ++ fromPacks
-  pure (Right (Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded))))
+  pure (Right (Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs)))
   where
     discover pack packRoot dir = do
       files <- listFiles root dir
@@ -112,11 +143,16 @@ findEntry cat ref =
       [e] -> Right e
       [] -> case [(p, err) | (gid, p, err) <- catalogBroken cat, gid == GeneratorId ref || bareName gid == ref] of
         ((p, err) : _) -> Left (GeneratorInvalid p err)
-        [] -> Left (GeneratorNotFound ref (map entryId entries))
+        []
+          | Just pack <- packPrefix, pack `notElem` catalogPacks cat -> Left (PackNotConfigured pack ref)
+          | otherwise -> Left (GeneratorNotFound ref (map entryId entries))
       several -> Left (GeneratorAmbiguous ref (map entryId several))
   where
     entries = catalogEntries cat
     bareName (GeneratorId t) = snd (T.breakOnEnd "/" t)
+    packPrefix = case T.breakOn "/" ref of
+      (pack, rest) | not (T.null pack), not (T.null rest) -> Just pack
+      _ -> Nothing
 
 loadGenerator :: Monad m => Workspace m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
 loadGenerator root cat entry = sequenceA <$> traverse resolve (entryDefinition entry)

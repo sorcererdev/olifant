@@ -47,6 +47,8 @@ runWith files tty args = do
       Runtime
         { rtRoot = root
         , rtProjectDir = "/proj"
+        , rtUserConfigDir = Nothing
+        , rtHomeDir = Nothing
         , rtNow = pure fixedNow
         , rtStdoutIsTty = tty
         , rtOut = \t -> modifyIORef' out (<> t)
@@ -97,6 +99,10 @@ spec = describe "runCli" $ do
     M.lookup "/proj/app/models/post.rb" files `shouldBe` Just "mine\n"
     M.size files `shouldBe` 2
     fmap (\case Array xs -> length xs; _ -> 0) (jsonAt ["conflicts"] out) `shouldBe` Just 1
+  it "exits 3 with a pack_not_configured hint for pack/generator of an unknown pack" $ do
+    (code, out, _, _) <- runWith project False ["gen", "elm/page"]
+    code `shouldBe` ExitFailure 3
+    jsonAt ["error", "code"] out `shouldBe` Just (String "pack_not_configured")
   it "exits 2 on bad usage" $ do
     (code, _, _, _) <- runWith project False ["gen"]
     code `shouldBe` ExitFailure 2
