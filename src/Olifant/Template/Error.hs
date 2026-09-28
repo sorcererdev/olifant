@@ -14,6 +14,6 @@ describeTemplateError :: TemplateError -> Text
 describeTemplateError = \case
   SyntaxError line msg -> "line " <> T.pack (show line) <> ": " <> msg
   HolesNotYetSupported line ->
-    "line " <> T.pack (show line) <> ": holes (<$ … $>) arrive in step 3; write {{ '<$' }} for a literal <$"
+    "line " <> T.pack (show line) <> ": holes ({= ? … =}) arrive in step 3"
   UndefinedVariable v -> "undefined variable `" <> v <> "`"
   TypeMismatch msg -> msg

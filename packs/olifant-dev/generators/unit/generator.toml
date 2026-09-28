@@ -7,28 +7,28 @@ type = "ident"
 prompt = "Unit name (what it does, e.g. workspace_sync)"
 
 [derive]
-Unit = "Olifant.{{ unit|pascal }}"
+Unit = "Olifant.{= unit|pascal =}"
 
 [requires]
 exists = ["olifant.cabal"]
 hint = "Run this from the root of the Olifant repo."
 
 [[edits]]
-create   = "src/Olifant/{{ unit|pascal }}.hs"
+create   = "src/Olifant/{= unit|pascal =}.hs"
 exemplar = "fixture:src/Olifant/SampleUnit.hs"
 bind     = { unit = "sample_unit" }
 
 [[edits]]
-create   = "src/Olifant/{{ unit|pascal }}Spec.hs"
+create   = "src/Olifant/{= unit|pascal =}Spec.hs"
 exemplar = "fixture:src/Olifant/SampleUnitSpec.hs"
 bind     = { unit = "sample_unit" }
 
 [[edits]]
 insert = "olifant.cabal"
 anchor = { marker = "-- olifant:library-modules" }
-text   = "{{ Unit }}"
+text   = "{= Unit =}"
 
 [[edits]]
 insert = "olifant.cabal"
 anchor = { marker = "-- olifant:test-modules" }
-text   = "{{ Unit }}\n{{ Unit }}Spec"
+text   = "{= Unit =}\n{= Unit =}Spec"

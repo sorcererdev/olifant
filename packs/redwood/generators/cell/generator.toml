@@ -7,23 +7,23 @@ type = "ident"
 prompt = "Cell name (plural for a list cell, e.g. blog_posts)"
 
 [derive]
-Cell = "{{ name|pascal }}Cell"
-is_list = "{{ name != name|singular }}"
-Query = "Find{{ name|pascal }}{% if not is_list %}Query{% endif %}"
-field = "{{ name|camel }}"
+Cell = "{= name|pascal =}Cell"
+is_list = "{= name != name|singular =}"
+Query = "Find{= name|pascal =}{= if not is_list =}Query{= end =}"
+field = "{= name|camel =}"
 
 [[edits]]
-create = "web/src/components/{{ Cell }}/{{ Cell }}.tsx"
+create = "web/src/components/{= Cell =}/{= Cell =}.tsx"
 template = "cell.tsx.dt"
 
 [[edits]]
-create = "web/src/components/{{ Cell }}/{{ Cell }}.test.tsx"
+create = "web/src/components/{= Cell =}/{= Cell =}.test.tsx"
 template = "cell.test.tsx.dt"
 
 [[edits]]
-create = "web/src/components/{{ Cell }}/{{ Cell }}.stories.tsx"
+create = "web/src/components/{= Cell =}/{= Cell =}.stories.tsx"
 template = "cell.stories.tsx.dt"
 
 [[edits]]
-create = "web/src/components/{{ Cell }}/{{ Cell }}.mock.ts"
+create = "web/src/components/{= Cell =}/{= Cell =}.mock.ts"
 template = "cell.mock.ts.dt"

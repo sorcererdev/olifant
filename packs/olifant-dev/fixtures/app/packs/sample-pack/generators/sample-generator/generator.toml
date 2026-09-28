@@ -6,5 +6,5 @@ version = 1
 type = "ident"
 
 [[edits]]
-create = "TODO/{{ name|snake }}.txt"
+create = "TODO/{= name|snake =}.txt"
 template = "main.dt"

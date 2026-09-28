@@ -27,15 +27,15 @@ modelToml =
     , "  { name = \"type\", type = \"enum\", choices = [\"string\", \"text\", \"references\"], default = \"string\" },"
     , "]"
     , "[derive]"
-    , "table = \"{{ name|plural|snake }}\""
-    , "Model = \"{{ name|pascal }}\""
+    , "table = \"{= name|plural|snake =}\""
+    , "Model = \"{= name|pascal =}\""
     , "[[edits]]"
-    , "create = \"app/models/{{ name|snake }}.rb\""
+    , "create = \"app/models/{= name|snake =}.rb\""
     , "template = \"model.rb.dt\""
     , "[[edits]]"
     , "insert = \"config/routes.rb\""
     , "anchor = { marker = \"# olifant:routes\" }"
-    , "text = \"resources :{{ table }}\""
+    , "text = \"resources :{= table =}\""
     ]
 
 load :: Text -> Either Text GeneratorDef
@@ -58,10 +58,10 @@ parseSpec = describe "parseGenerator" $ do
         ]
   it "reads derived values as templates" $
     fmap (map (fmap templateSource) . genDerived) (load modelToml)
-      `shouldBe` Right [("Model", "{{ name|pascal }}"), ("table", "{{ name|plural|snake }}")]
+      `shouldBe` Right [("Model", "{= name|pascal =}"), ("table", "{= name|plural|snake =}")]
   it "reads create and insert edits" $
     fmap (map describeEdit . genEdits) (load modelToml)
-      `shouldBe` Right ["create app/models/{{ name|snake }}.rb from model.rb.dt", "insert config/routes.rb at # olifant:routes"]
+      `shouldBe` Right ["create app/models/{= name|snake =}.rb from model.rb.dt", "insert config/routes.rb at # olifant:routes"]
   it "reads exemplar sources with their bindings" $ do
     let toml = "description = \"d\"\nlanguage = \"rust\"\n[[edits]]\ncreate = \"x.rs\"\nexemplar = \"fixture:src/refund_invoice.rs\"\nbind = { command_name = \"refund_invoice\" }\n"
     fmap (map (\e -> case editSource e of ExemplarFile ref bs -> (ref, length bs); _ -> ("?", 0)) . genEdits) (load toml)
@@ -73,7 +73,7 @@ parseSpec = describe "parseGenerator" $ do
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft
   it "reports template syntax errors with the key" $ do
-    let result = load (T.replace "{{ name|pascal }}" "{{ name|shout }}" modelToml)
+    let result = load (T.replace "{= name|pascal =}" "{= name|shout =}" modelToml)
     either id (const "") result `shouldSatisfy` T.isInfixOf "Model"
   where
     describeEdit = \case
@@ -108,12 +108,12 @@ envSpec = do
     it "lets --set override a derived value (irregular plurals)" $
       fmap (M.lookup "table") (env [("name", "octopus"), ("table", "octopodes")]) `shouldBe` Right (Just (VText "octopodes"))
     it "evaluates derived values in dependency order, keeping single-expression types" $ do
-      let toml = "description = \"d\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[derive]\na_second = \"{{ z_first }}!\"\nz_first = \"{{ name != name|singular }}\"\n"
+      let toml = "description = \"d\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[derive]\na_second = \"{= z_first =}!\"\nz_first = \"{= name != name|singular =}\"\n"
           g = either (error . T.unpack) id (load toml)
       fmap (\e -> (M.lookup "z_first" e, M.lookup "a_second" e)) (buildEnv g (M.fromList [("name", "posts")]) now)
         `shouldBe` Right (Just (VBool True), Just (VText "true!"))
     it "parses a --set override as the type of the derived value it replaces" $ do
-      let toml = "description = \"d\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[derive]\nis_list = \"{{ name != name|singular }}\"\nplural = \"{{ name|plural }}\"\nlabel = \"{% if is_list %}many{% else %}one{% endif %}\"\n"
+      let toml = "description = \"d\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[derive]\nis_list = \"{= name != name|singular =}\"\nplural = \"{= name|plural =}\"\nlabel = \"{= if is_list =}many{= else =}one{= end =}\"\n"
           g = either (error . T.unpack) id (load toml)
           envWith sets = buildEnv g (M.fromList sets) now
       fmap (\e -> (M.lookup "is_list" e, M.lookup "label" e)) (envWith [("name", "blog_post"), ("is_list", "false")])
@@ -123,7 +123,7 @@ envSpec = do
         Left (InputProblems ps) -> map problemKey ps `shouldBe` ["invalid:is_list"]
         other -> expectationFailure ("expected an invalid override, got " <> show other)
     it "detects cycles between derived values" $ do
-      let toml = "description = \"d\"\nlanguage = \"x\"\n[derive]\na = \"{{ b }}\"\nb = \"{{ a }}\"\n"
+      let toml = "description = \"d\"\nlanguage = \"x\"\n[derive]\na = \"{= b =}\"\nb = \"{= a =}\"\n"
           g = either (error . T.unpack) id (load toml)
       buildEnv g M.empty now `shouldBe` Left (DeriveCycle ["a", "b"])
   describe "describeInputType" $

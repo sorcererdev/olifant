@@ -12,7 +12,7 @@ import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
 tinyPack snapshotContent =
-  [ ("/packs/p/generators/g/generator.toml", "description = \"g\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"out/{{ name|snake }}.txt\"\ntext = \"hello {{ name|pascal }}\\n\"\n")
+  [ ("/packs/p/generators/g/generator.toml", "description = \"g\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"out/{= name|snake =}.txt\"\ntext = \"hello {= name|pascal =}\\n\"\n")
   , ("/packs/p/fixtures/app/README", "fixture\n")
   , ("/packs/p/generators/g/tests/basic/inputs.toml", "now = \"2026-09-27T15:30:00Z\"\n[inputs]\nname = \"blog_post\"\n")
   , ("/packs/p/generators/g/tests/basic/snapshot/out/blog_post.txt", snapshotContent)

@@ -1,8 +1,9 @@
+{-# LANGUAGE MultiWayIf #-}
+
 module Olifant.Template.Parse (parseTemplate) where
 
 import Data.Bifunctor (first)
 import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper)
-import Data.List (sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Void (Void)
@@ -15,7 +16,7 @@ import Text.Megaparsec.Char.Lexer qualified as L
 
 data Piece = TLit Text | TOut Int Text | TTag Int Text
 
-data Tag = TIf Expr | TElif Expr | TElse | TEndif | TFor Text Expr | TEndfor
+data Tag = TIf Expr | TElif Expr | TElse | TFor Text Expr | TEnd
 
 parseTemplate :: Text -> Either TemplateError Template
 parseTemplate src = do
@@ -27,27 +28,34 @@ parseTemplate src = do
 
 -- Lexing ------------------------------------------------------------------
 
+-- | Everything between @{=@ and @=}@ is one piece. A leading @-@ / trailing
+-- @-@ trims whitespace outside it; a first word of if/elif/else/for/end
+-- makes it a tag; a leading @?@ makes it a hole; anything else is output.
 lexTemplate :: Text -> Either TemplateError [Piece]
 lexTemplate = go 1 False []
   where
     go :: Int -> Bool -> [Piece] -> Text -> Either TemplateError [Piece]
-    go line trimNext acc src = case nextOpener src of
-      Nothing -> Right (reverse (addLit trimNext src acc))
-      Just (before, opener, afterOpener) -> do
+    go line trimNext acc src = case T.breakOn "{=" src of
+      (rest, "") -> Right (reverse (addLit trimNext rest acc))
+      (before, opened) -> do
         let acc' = addLit trimNext before acc
             line' = line + T.count "\n" before
-        case opener of
-          "<$" -> Left (HolesNotYetSupported line')
-          "{{" -> do
-            (inner, rest) <- closeWith line' "}}" afterOpener
-            go (line' + T.count "\n" inner) False (TOut line' (T.strip inner) : acc') rest
-          _ -> do
-            (inner, rest) <- closeWith line' "%}" afterOpener
-            let trimBefore = "-" `T.isPrefixOf` inner
-                trimAfter = "-" `T.isSuffixOf` inner
-                body = T.strip (T.dropWhileEnd (== '-') (T.dropWhile (== '-') inner))
-                acc'' = if trimBefore then trimLastLit acc' else acc'
-            go (line' + T.count "\n" inner) trimAfter (TTag line' body : acc'') rest
+        (inner, rest) <- closeWith line' (T.drop 2 opened)
+        let trimBefore = "-" `T.isPrefixOf` inner
+            trimAfter = "-" `T.isSuffixOf` inner && T.length inner > 1
+            body = T.strip (dropTrims inner)
+            acc'' = if trimBefore then trimLastLit acc' else acc'
+            next = go (line' + T.count "\n" inner) trimAfter
+        if
+          | "?" `T.isPrefixOf` body -> Left (HolesNotYetSupported line')
+          | isTagKeyword (T.takeWhile isIdentChar body) -> next (TTag line' body : acc'') rest
+          | otherwise -> next (TOut line' body : acc'') rest
+
+    dropTrims t =
+      let t' = if "-" `T.isPrefixOf` t then T.drop 1 t else t
+       in if "-" `T.isSuffixOf` t' then T.dropEnd 1 t' else t'
+
+    isTagKeyword w = w `elem` ["if", "elif", "else", "for", "end"]
 
     addLit trim t acc =
       let t' = if trim then T.stripStart t else t
@@ -57,17 +65,10 @@ lexTemplate = go 1 False []
       let t' = T.stripEnd t in if T.null t' then rest else TLit t' : rest
     trimLastLit acc = acc
 
-    closeWith line closer t = case T.breakOn closer t of
+    closeWith line t = case T.breakOn "=}" t of
       (inner, rest)
-        | T.null rest -> Left (SyntaxError line ("unclosed tag: expected `" <> closer <> "`"))
-        | otherwise -> Right (inner, T.drop (T.length closer) rest)
-
-    nextOpener t =
-      case sortOn
-        (\(b, _, _) -> T.length b)
-        [(b, o, T.drop 2 a) | o <- ["{{", "{%", "<$"], let (b, a) = T.breakOn o t, not (T.null a)] of
-        [] -> Nothing
-        (x : _) -> Just x
+        | T.null rest -> Left (SyntaxError line "unclosed `{=`: expected `=}`")
+        | otherwise -> Right (inner, T.drop 2 rest)
 
 -- Structure ---------------------------------------------------------------
 
@@ -88,8 +89,8 @@ block (tok : rest) = case tok of
       TFor v e -> do
         (body, stop, rest') <- block rest
         case stop of
-          Just (_, TEndfor) -> prepend (For v e body) (block rest')
-          _ -> Left (SyntaxError line "`for` without a matching `endfor`")
+          Just (_, TEnd) -> prepend (For v e body) (block rest')
+          _ -> Left (SyntaxError line "`for` without a matching `end`")
       closing -> Right ([], Just (line, closing), rest)
   where
     prepend s r = do
@@ -106,19 +107,18 @@ ifChain line cond toks = do
     Just (_, TElse) -> do
       (els, stop', rest') <- block rest
       case stop' of
-        Just (_, TEndif) -> Right ([(cond, body)], els, rest')
-        _ -> Left (SyntaxError line "`else` without a matching `endif`")
-    Just (_, TEndif) -> Right ([(cond, body)], [], rest)
-    _ -> Left (SyntaxError line "`if` without a matching `endif`")
+        Just (_, TEnd) -> Right ([(cond, body)], els, rest')
+        _ -> Left (SyntaxError line "`else` without a matching `end`")
+    Just (_, TEnd) -> Right ([(cond, body)], [], rest)
+    _ -> Left (SyntaxError line "`if` without a matching `end`")
 
 tagKeyword :: Tag -> Text
 tagKeyword = \case
   TIf _ -> "if"
   TElif _ -> "elif"
   TElse -> "else"
-  TEndif -> "endif"
   TFor _ _ -> "for"
-  TEndfor -> "endfor"
+  TEnd -> "end"
 
 -- Expressions -------------------------------------------------------------
 
@@ -143,7 +143,7 @@ keyword :: Text -> Parser ()
 keyword w = lexeme (try (string w *> notFollowedBy (satisfy isIdentChar)))
 
 reserved :: [Text]
-reserved = ["and", "or", "not", "true", "false", "in", "if", "elif", "else", "endif", "for", "endfor"]
+reserved = ["and", "or", "not", "true", "false", "in", "if", "elif", "else", "for", "end"]
 
 identifier :: Parser Text
 identifier = lexeme . try $ do
@@ -160,10 +160,9 @@ tagP =
   choice
     [ TIf <$> (keyword "if" *> expr)
     , TElif <$> (keyword "elif" *> expr)
-    , TEndif <$ keyword "endif"
     , TElse <$ keyword "else"
     , TFor <$> (keyword "for" *> identifier) <*> (keyword "in" *> expr)
-    , TEndfor <$ keyword "endfor"
+    , TEnd <$ keyword "end"
     ]
 
 expr :: Parser Expr

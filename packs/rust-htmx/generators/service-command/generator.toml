@@ -9,40 +9,40 @@ type = "ident"   # enum + choices_from in step 2
 type = "ident"
 
 [derive]
-service_dir = "{{ service|kebab }}/{{ service|kebab }}-service"
-Cmd = "{{ command_name|pascal }}"
-cmd = "{{ command_name|snake }}"
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+Cmd = "{= command_name|pascal =}"
+cmd = "{= command_name|snake =}"
 
 [requires]
-exists = ["{{ service_dir }}/src/service.rs"]
-hint = "Create the service first: olifant gen rust-htmx/service-skeleton --set service={{ service }}"
+exists = ["{= service_dir =}/src/service.rs"]
+hint = "Create the service first: olifant gen rust-htmx/service-skeleton --set service={= service =}"
 
 [[edits]]
-create   = "{{ service_dir }}/src/{{ cmd }}.rs"
+create   = "{= service_dir =}/src/{= cmd =}.rs"
 exemplar = "fixture:billing/billing-service/src/refund_invoice.rs"
 bind     = { command_name = "refund_invoice" }
 
 [[edits]]
-insert = "{{ service_dir }}/src/lib.rs"
+insert = "{= service_dir =}/src/lib.rs"
 anchor = { marker = "// olifant:modules" }
-text   = "pub mod {{ cmd }};"
+text   = "pub mod {= cmd =};"
 
 [[edits]]
-insert = "{{ service_dir }}/src/service.rs"
+insert = "{= service_dir =}/src/service.rs"
 anchor = { marker = "// olifant:command-imports" }
-text   = "{{ cmd }}::{{ '{' }}{{ Cmd }}, {{ Cmd }}Input, {{ Cmd }}Output},"
+text   = "{= cmd =}::{{= Cmd =}, {= Cmd =}Input, {= Cmd =}Output},"
 
 [[edits]]
-insert = "{{ service_dir }}/src/service.rs"
+insert = "{= service_dir =}/src/service.rs"
 anchor = { marker = "// olifant:command-fields" }
-text   = "pub {{ cmd }}: {{ Cmd }},"
+text   = "pub {= cmd =}: {= Cmd =},"
 
 [[edits]]
-insert = "{{ service_dir }}/src/service.rs"
+insert = "{= service_dir =}/src/service.rs"
 anchor = { marker = "// olifant:command-instantiations" }
-text   = "{{ cmd }}: {{ Cmd }} {},"
+text   = "{= cmd =}: {= Cmd =} {},"
 
 [[edits]]
-insert   = "{{ service_dir }}/src/service.rs"
+insert   = "{= service_dir =}/src/service.rs"
 anchor   = { marker = "// olifant:command-delegates" }
 template = "delegate.rs.dt"

@@ -1,4 +1,4 @@
 
-pub async fn {{ cmd }}(&self, input: {{ Cmd }}Input) -> {{ Cmd }}Output {
-    self.{{ cmd }}.{{ cmd }}(input).await
+pub async fn {= cmd =}(&self, input: {= Cmd =}Input) -> {= Cmd =}Output {
+    self.{= cmd =}.{= cmd =}(input).await
 }

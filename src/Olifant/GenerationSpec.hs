@@ -37,11 +37,11 @@ createGen :: Generator
 createGen =
   generatorFrom . (header <>) . T.unlines $
     [ "[[edits]]"
-    , "create = \"app/{{ name|snake }}.rb\""
-    , "text = \"class {{ name|pascal }}\\nend\\n\""
+    , "create = \"app/{= name|snake =}.rb\""
+    , "text = \"class {= name|pascal =}\\nend\\n\""
     , "[[edits]]"
-    , "create = \"test/{{ name|snake }}_test.rb\""
-    , "text = \"test {{ name|pascal }}\\n\""
+    , "create = \"test/{= name|snake =}_test.rb\""
+    , "text = \"test {= name|pascal =}\\n\""
     ]
 
 run :: [(FilePath, Text)] -> Generator -> [(Text, Text)] -> Mode -> IO (Either GenerationError Plan, M.Map FilePath Text)
@@ -81,7 +81,7 @@ createSpec = describe "generate (create edits)" $ do
     (_, files) <- run [("a.txt", "old")] (gen "overwrite") [("name", "x_y")] Apply
     M.lookup "a.txt" files `shouldBe` Just "new"
   it "refuses paths outside the project and writes nothing" $ do
-    let gen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[inputs.dir]\ntype = \"text\"\n[[edits]]\ncreate = \"{{ dir }}/x.txt\"\ntext = \"x\"\n"
+    let gen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[inputs.dir]\ntype = \"text\"\n[[edits]]\ncreate = \"{= dir =}/x.txt\"\ntext = \"x\"\n"
     (Right upward, files1) <- run [] gen [("dir", "../../etc")] Apply
     planConflicts upward `shouldBe` [UnsafePath 1 "../../etc/x.txt"]
     files1 `shouldBe` M.empty
@@ -89,7 +89,7 @@ createSpec = describe "generate (create edits)" $ do
     planConflicts absolute `shouldBe` [UnsafePath 1 "/etc/x.txt"]
     files2 `shouldBe` M.empty
   it "reports unmet requirements with the rendered hint" $ do
-    let gen = generatorFrom (header <> "[requires]\nexists = [\"{{ name|snake }}/service.rs\"]\nhint = \"run service-skeleton for {{ name }}\"\n[[edits]]\ncreate = \"a.txt\"\ntext = \"x\"\n")
+    let gen = generatorFrom (header <> "[requires]\nexists = [\"{= name|snake =}/service.rs\"]\nhint = \"run service-skeleton for {= name =}\"\n[[edits]]\ncreate = \"a.txt\"\ntext = \"x\"\n")
     (Right plan, files) <- run [] gen [("name", "billing")] Apply
     planConflicts plan `shouldBe` [RequirementUnmet ["billing/service.rs"] (Just "run service-skeleton for billing")]
     files `shouldBe` M.empty
@@ -110,11 +110,11 @@ insertSpec = describe "generate (marker inserts)" $ do
           , "[[edits]]"
           , "insert = \"svc/lib.rs\""
           , "anchor = { marker = \"// olifant:modules\" }"
-          , "text = \"pub mod {{ cmd|snake }};\""
+          , "text = \"pub mod {= cmd|snake =};\""
           , "[[edits]]"
           , "insert = \"svc/service.rs\""
           , "anchor = { marker = \"// olifant:delegates\" }"
-          , "text = \"\\npub fn {{ cmd|snake }}(&self) {\\n    todo!()\\n}\\n\""
+          , "text = \"\\npub fn {= cmd|snake =}(&self) {\\n    todo!()\\n}\\n\""
           ]
       lib = "pub mod a;\n// olifant:modules\n"
       service = "impl S {\n    pub fn a(&self) {}\n    // olifant:delegates\n}\n"
@@ -136,14 +136,14 @@ insertSpec = describe "generate (marker inserts)" $ do
     map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent, Skipped AlreadyPresent]
     planWrites again `shouldBe` M.empty
   it "does not mistake a longer identifier for the snippet (token-bounded already-present check)" $ do
-    let modGen = generatorFrom "description = \"d\"\nlanguage = \"cabal\"\n[inputs.m]\ntype = \"ident\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:modules\" }\ntext = \"Olifant.{{ m|pascal }}\"\n"
+    let modGen = generatorFrom "description = \"d\"\nlanguage = \"cabal\"\n[inputs.m]\ntype = \"ident\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:modules\" }\ntext = \"Olifant.{= m|pascal =}\"\n"
         cabal = "    Olifant.Generation\n    -- olifant:modules\n"
     (_, files) <- run [("x.cabal", cabal)] modGen [("m", "gen")] Apply
     M.lookup "x.cabal" files `shouldBe` Just "    Olifant.Generation\n    Olifant.Gen\n    -- olifant:modules\n"
     (Right again, _) <- run [("x.cabal", "    Olifant.Gen\n    -- olifant:modules\n")] modGen [("m", "gen")] Apply
     map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent]
   it "checks already-present only within the marker's block, so one line can go into two lists" $ do
-    let twoLists = generatorFrom "description = \"d\"\nlanguage = \"cabal\"\n[inputs.m]\ntype = \"ident\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:lib\" }\ntext = \"Olifant.{{ m|pascal }}\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:test\" }\ntext = \"Olifant.{{ m|pascal }}\"\n"
+    let twoLists = generatorFrom "description = \"d\"\nlanguage = \"cabal\"\n[inputs.m]\ntype = \"ident\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:lib\" }\ntext = \"Olifant.{= m|pascal =}\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:test\" }\ntext = \"Olifant.{= m|pascal =}\"\n"
         cabal = "library\n  exposed-modules:\n    Olifant.A\n    -- olifant:lib\n\ntest-suite spec\n  other-modules:\n    Olifant.A\n    -- olifant:test\n"
     (_, files) <- run [("x.cabal", cabal)] twoLists [("m", "b_b")] Apply
     M.lookup "x.cabal" files
@@ -167,7 +167,7 @@ insertSpec = describe "generate (marker inserts)" $ do
 
 unusableSpec :: Spec
 unusableSpec = describe "generate (targets that cannot be written)" $ do
-  let pathGen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[inputs.dir]\ntype = \"text\"\n[[edits]]\ncreate = \"a.txt\"\ntext = \"a\"\n[[edits]]\ncreate = \"{{ dir }}\"\ntext = \"X\\n\"\n"
+  let pathGen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[inputs.dir]\ntype = \"text\"\n[[edits]]\ncreate = \"a.txt\"\ntext = \"a\"\n[[edits]]\ncreate = \"{= dir =}\"\ntext = \"X\\n\"\n"
       isUnusable n p = \case
         TargetUnusable n' p' _ -> n == n' && p == p'
         _ -> False

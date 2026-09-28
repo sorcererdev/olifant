@@ -1,9 +1,9 @@
 import { render } from '@redwoodjs/testing/web'
 
-import { Loading, Empty, Failure, Success } from './{{ Cell }}'
-import { standard } from './{{ Cell }}.mock'
+import { Loading, Empty, Failure, Success } from './{= Cell =}'
+import { standard } from './{= Cell =}.mock'
 
-describe('{{ Cell }}', () => {
+describe('{= Cell =}', () => {
   it('renders Loading successfully', () => {
     expect(() => {
       render(<Loading />)
@@ -24,7 +24,7 @@ describe('{{ Cell }}', () => {
 
   it('renders Success successfully', async () => {
     expect(() => {
-      render(<Success {{ field }}={standard().{{ field }}} />)
+      render(<Success {= field =}={standard().{= field =}} />)
     }).not.toThrow()
   })
 })

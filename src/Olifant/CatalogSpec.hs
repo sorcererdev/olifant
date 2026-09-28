@@ -15,10 +15,10 @@ import Test.Hspec
 files :: [(FilePath, Text)]
 files =
   [ ("/proj/.olifant/config.toml", "[packs]\nrails = { path = \"../packs/rails\" }\n")
-  , ("/proj/.olifant/generators/model/generator.toml", "description = \"local model\"\nlanguage = \"ruby\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"local/{{ name|snake }}.rb\"\ntext = \"local\"\n")
-  , ("/packs/rails/generators/model/generator.toml", "description = \"pack model\"\nlanguage = \"ruby\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"app/models/{{ name|snake }}.rb\"\ntemplate = \"model.rb.dt\"\n")
-  , ("/packs/rails/generators/model/templates/model.rb.dt", "class {{ name|pascal }}\nend\n")
-  , ("/packs/rails/generators/cell/generator.toml", "description = \"cell\"\nlanguage = \"ts\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"src/{{ name|snake }}.ts\"\nexemplar = \"fixture:src/blog_post.ts\"\nbind = { name = \"blog_post\" }\n")
+  , ("/proj/.olifant/generators/model/generator.toml", "description = \"local model\"\nlanguage = \"ruby\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"local/{= name|snake =}.rb\"\ntext = \"local\"\n")
+  , ("/packs/rails/generators/model/generator.toml", "description = \"pack model\"\nlanguage = \"ruby\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"app/models/{= name|snake =}.rb\"\ntemplate = \"model.rb.dt\"\n")
+  , ("/packs/rails/generators/model/templates/model.rb.dt", "class {= name|pascal =}\nend\n")
+  , ("/packs/rails/generators/cell/generator.toml", "description = \"cell\"\nlanguage = \"ts\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncreate = \"src/{= name|snake =}.ts\"\nexemplar = \"fixture:src/blog_post.ts\"\nbind = { name = \"blog_post\" }\n")
   , ("/packs/rails/fixtures/app/src/blog_post.ts", "export const BlogPost = 'blog_posts'\n")
   , ("/packs/rails/generators/broken/generator.toml", "description = \"broken\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ntemplate = \"missing.dt\"\n")
   ]

@@ -1,10 +1,10 @@
 // Define your own mock data here:
 export const standard = (/* vars, { ctx, req } */) => ({
-{%- if is_list %}
-  {{ field }}: [{ id: 42 }, { id: 43 }, { id: 44 }],
-{%- else %}
-  {{ field }}: {
+{=- if is_list =}
+  {= field =}: [{ id: 42 }, { id: 43 }, { id: 44 }],
+{=- else =}
+  {= field =}: {
     id: 42,
   },
-{%- endif %}
+{=- end =}
 })

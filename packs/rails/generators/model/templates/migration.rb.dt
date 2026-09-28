@@ -1,9 +1,9 @@
-class Create{{ table|pascal }} < ActiveRecord::Migration[{{ rails_version }}]
+class Create{= table|pascal =} < ActiveRecord::Migration[{= rails_version =}]
   def change
-    create_table :{{ table }} do |t|
-{%- for f in fields %}
-      t.{{ f.type }} :{{ f.name|snake }}{% if f.type == "references" %}, null: false, foreign_key: true{% endif %}
-{%- endfor %}
+    create_table :{= table =} do |t|
+{=- for f in fields =}
+      t.{= f.type =} :{= f.name|snake =}{= if f.type == "references" =}, null: false, foreign_key: true{= end =}
+{=- end =}
 
       t.timestamps
     end
