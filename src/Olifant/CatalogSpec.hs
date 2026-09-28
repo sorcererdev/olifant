@@ -8,7 +8,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Catalog
 import Olifant.Generation
-import Olifant.Generator (GeneratorId (..))
+import Olifant.Generator (GeneratorId (..), GeneratorWith (..))
 import Olifant.Workspace
 import Test.Hspec
 
@@ -26,10 +26,19 @@ files =
 now :: UTCTime
 now = UTCTime (fromGregorian 2026 9 27) 0
 
+projectOnly :: CatalogPaths
+projectOnly = CatalogPaths {catalogProjectDir = "/proj", catalogUserConfigDir = Nothing, catalogHomeDir = Nothing}
+
+withUser :: CatalogPaths
+withUser = projectOnly {catalogUserConfigDir = Just "/home/u/.config/olifant", catalogHomeDir = Just "/home/u"}
+
 withCatalog :: [(FilePath, Text)] -> (Workspace IO -> Catalog -> IO a) -> IO a
-withCatalog fs k = do
+withCatalog = withCatalogAt projectOnly
+
+withCatalogAt :: CatalogPaths -> [(FilePath, Text)] -> (Workspace IO -> Catalog -> IO a) -> IO a
+withCatalogAt paths fs k = do
   (root, _) <- memoryWorkspace fs
-  openProjectCatalog root "/proj" >>= \case
+  openProjectCatalog root paths >>= \case
     Left err -> error (show err)
     Right cat -> k root cat
 
@@ -72,8 +81,8 @@ spec = describe "catalog" $ do
     withCatalog (drop 1 files) $ \_ cat -> map entryId (catalogEntries cat) `shouldBe` [GeneratorId "model"]
   it "reports an invalid config" $ do
     (root, _) <- memoryWorkspace [("/proj/.olifant/config.toml", "[packs]\nrails = { git = \"x\" }\n")]
-    openProjectCatalog root "/proj" >>= \case
-      Left err -> err `shouldBe` ConfigInvalid "`packs`: `rails`: unknown key(s) `git`; expected one of `path`"
+    openProjectCatalog root projectOnly >>= \case
+      Left err -> err `shouldBe` ConfigInvalid "/proj/.olifant/config.toml" "`packs`: `rails`: unknown key(s) `git`; expected one of `path`"
       Right _ -> expectationFailure "expected an invalid config"
 
   it "isolates a broken generator.toml: others still list and load" $ do
@@ -85,3 +94,32 @@ spec = describe "catalog" $ do
       findEntry cat "two" `shouldSatisfy` \case
         Left (GeneratorInvalid _ msg) -> "templete" `T.isInfixOf` msg
         _ -> False
+
+  describe "where packs come from" $ do
+    let gen desc = "description = \"" <> desc <> "\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a.txt\"\ntext = \"a\"\n"
+        packIds cat = map entryId (catalogEntries cat)
+        descriptions cat = [(entryId e, genDescription (entryDefinition e)) | e <- catalogEntries cat]
+    it "expands ~ in pack paths" $
+      withCatalogAt
+        withUser
+        [ ("/proj/.olifant/config.toml", "[packs]\nelm = { path = \"~/packs/elm\" }\n")
+        , ("/home/u/packs/elm/generators/page/generator.toml", gen "page")
+        ]
+        $ \_ cat -> packIds cat `shouldBe` [GeneratorId "elm/page"]
+    it "adds packs from the user config (relative to it), and the project config wins on a clash" $
+      withCatalogAt
+        withUser
+        [ ("/home/u/.config/olifant/config.toml", "[packs]\nelm = { path = \"packs/elm\" }\nrails = { path = \"~/user-rails\" }\n")
+        , ("/home/u/.config/olifant/packs/elm/generators/page/generator.toml", gen "user elm page")
+        , ("/home/u/user-rails/generators/model/generator.toml", gen "user rails model")
+        , ("/proj/.olifant/config.toml", "[packs]\nrails = { path = \"../packs/rails\" }\n")
+        , ("/packs/rails/generators/model/generator.toml", gen "project rails model")
+        ]
+        $ \_ cat ->
+          descriptions cat `shouldBe` [(GeneratorId "elm/page", "user elm page"), (GeneratorId "rails/model", "project rails model")]
+    it "says when a pack is not configured, and how to configure it" $
+      withCatalog files $ \_ cat -> case findEntry cat "elm/page" of
+        Left err@(PackNotConfigured "elm" "elm/page") -> do
+          describeCatalogError err `shouldSatisfy` T.isInfixOf "no pack named `elm` is configured"
+          describeCatalogError err `shouldSatisfy` T.isInfixOf "[packs]"
+        other -> expectationFailure ("expected PackNotConfigured, got " <> show (fmap entryId other))

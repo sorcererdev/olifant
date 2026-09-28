@@ -20,6 +20,8 @@ import System.Exit (ExitCode (..))
 data Runtime = Runtime
   { rtRoot :: Workspace IO
   , rtProjectDir :: FilePath
+  , rtUserConfigDir :: Maybe FilePath
+  , rtHomeDir :: Maybe FilePath
   , rtNow :: IO UTCTime
   , rtStdoutIsTty :: Bool
   , rtOut :: Text -> IO ()
@@ -32,7 +34,7 @@ runCli rt args = case parseOptions args of
   Left (text, _) -> rtErr rt text >> pure (ExitFailure 2)
   Right opts -> do
     let fmt = fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)
-    openProjectCatalog (rtRoot rt) (rtProjectDir rt) >>= \case
+    openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt)) >>= \case
       Left err -> catalogFailure rt fmt err
       Right cat -> runCommand rt fmt cat (optCommand opts)
 
@@ -80,6 +82,8 @@ catalogFailure rt fmt err = case err of
   GeneratorAmbiguous {} -> failWith rt fmt 2 "generator_ambiguous" msg (Just "use the full pack/name") []
   SourceMissing {} -> failWith rt fmt 3 "template_not_found" msg Nothing []
   ConfigInvalid {} -> failWith rt fmt 1 "config_invalid" msg Nothing []
+  PackNotConfigured pack _ ->
+    failWith rt fmt 3 "pack_not_configured" msg (Just (pack <> " = { path = \"/path/to/" <> pack <> "\" }")) ["pack" .= pack]
   GeneratorInvalid {} -> failWith rt fmt 1 "generator_invalid" msg Nothing []
   SourceInvalid {} -> failWith rt fmt 1 "template_invalid" msg Nothing []
   where
