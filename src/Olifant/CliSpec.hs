@@ -24,6 +24,7 @@ project =
         , "language = \"ruby\""
         , "[inputs.name]"
         , "type = \"ident\""
+        , "prompt = \"Model name, singular (e.g. blog_post)\""
         , "[[edits]]"
         , "create = \"db/{= now|timestamp =}_create_{= name|plural|snake =}.rb\""
         , "text = \"# {= name|pascal =}\\n\""
@@ -113,3 +114,8 @@ spec = describe "runCli" $ do
   it "shows a generator's inputs" $ do
     (_, out, _, _) <- runWith project False ["show", "model", "--json"]
     out `shouldSatisfy` T.isInfixOf "\"type\":\"ident\""
+  it "shows each input's prompt, so agents can use generators without reading code" $ do
+    (_, json, _, _) <- runWith project False ["show", "model", "--json"]
+    json `shouldSatisfy` T.isInfixOf "\"prompt\":\"Model name, singular (e.g. blog_post)\""
+    (_, human, _, _) <- runWith project True ["show", "model"]
+    human `shouldSatisfy` T.isInfixOf "Model name, singular (e.g. blog_post)"

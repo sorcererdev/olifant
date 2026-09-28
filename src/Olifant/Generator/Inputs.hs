@@ -17,7 +17,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generator.Definition
-import Olifant.Naming (parseName)
+import Olifant.Naming (nameWords, parseName)
 import Olifant.Template (Env, Template, TemplateError, Value (..), describeTemplateError, evaluate, freeVariables)
 
 data InputProblem = MissingInput InputSpec | InvalidInput Text Text | UnknownInput Text
@@ -69,7 +69,9 @@ parseItem (RecordItems fields) raw = do
 
 parseScalar :: Scalar -> Text -> Either Text Value
 parseScalar s raw = case s of
-  IdentS -> VName <$> parseName raw
+  IdentS
+    | looksLikeNameAndType -> Left ("`" <> raw <> "` looks like a name followed by other words (e.g. a type); pass only the name, like " <> firstChunk <> ", and give the rest to its own input")
+    | otherwise -> VName <$> parseName raw
   TextS -> Right (VText raw)
   BoolS -> case T.toLower raw of
     "true" -> Right (VBool True)
@@ -78,6 +80,13 @@ parseScalar s raw = case s of
   EnumS choices
     | raw `elem` choices -> Right (VText raw)
     | otherwise -> Left ("expected one of " <> T.intercalate ", " choices <> "; got `" <> raw <> "`")
+  where
+    chunks = T.words raw
+    firstChunk = case chunks of
+      (c : _) -> c
+      [] -> raw
+    -- "Blog Post" is a title-case name; "SetDisplayName String" is a name plus a type.
+    looksLikeNameAndType = length chunks > 1 && any (\c -> either (const False) ((> 1) . length . nameWords) (parseName c)) chunks
 
 emptyValue :: InputType -> Value
 emptyValue = \case

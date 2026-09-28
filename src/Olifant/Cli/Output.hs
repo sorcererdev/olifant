@@ -50,7 +50,7 @@ showJson e =
     , "description" .= genDescription d
     , "language" .= genLanguage d
     , "version" .= genVersion d
-    , "inputs" .= [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i] | i <- genInputs d]
+    , "inputs" .= [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] | i <- genInputs d]
     , "derived" .= map fst (genDerived d)
     , "edits" .= map editJson (genEdits d)
     ]
@@ -64,7 +64,11 @@ showHuman :: CatalogEntry -> Text
 showHuman e =
   T.unlines $
     [idText (entryId e) <> ": " <> genDescription d, "", "inputs:"]
-      ++ ["  --set " <> inputName i <> "=<" <> describeInputType (inputType i) <> ">" <> (if inputOptional i then "  (optional)" else "") | i <- genInputs d]
+      ++ concat
+        [ ("  --set " <> inputName i <> "=<" <> describeInputType (inputType i) <> ">" <> (if inputOptional i then "  (optional)" else "") <> maybe "" (\v -> "  (default " <> v <> ")") (inputDefault i))
+            : ["      " <> p | Just p <- [inputPrompt i]]
+        | i <- genInputs d
+        ]
       ++ ["", "edits:"]
       ++ [case ed of Create p _ _ -> "  create " <> templateSource p; Insert p _ _ -> "  insert " <> templateSource p | ed <- genEdits d]
   where
