@@ -1,0 +1,29 @@
+description = "A new generator skeleton in a pack: generator.toml, a template, and a test case to bless"
+language = "toml"
+version = 1
+
+[inputs.pack]
+type = "ident"
+prompt = "Pack (e.g. rails)"
+
+[inputs.name]
+type = "ident"
+prompt = "Generator name (e.g. controller)"
+
+[derive]
+dir = "packs/{{ pack|kebab }}/generators/{{ name|kebab }}"
+
+[[edits]]
+create   = "{{ dir }}/generator.toml"
+exemplar = "fixture:packs/sample-pack/generators/sample-generator/generator.toml"
+bind     = { name = "sample_generator" }
+
+[[edits]]
+create   = "{{ dir }}/templates/main.dt"
+exemplar = "fixture:packs/sample-pack/generators/sample-generator/templates/main.dt"
+bind     = { name = "sample_generator" }
+
+[[edits]]
+create   = "{{ dir }}/tests/example/inputs.toml"
+exemplar = "fixture:packs/sample-pack/generators/sample-generator/tests/example/inputs.toml"
+bind     = { name = "sample_generator" }

@@ -1,0 +1,33 @@
+description = "An internal module of an existing unit, registered in olifant.cabal (tested via the unit's public module)"
+language = "haskell"
+version = 1
+
+[inputs.unit]
+type = "ident"
+prompt = "Existing unit (e.g. generation)"
+
+[inputs.module]
+type = "ident"
+prompt = "Internal module name (e.g. marker_rules)"
+
+[derive]
+Module = "Olifant.{{ unit|pascal }}.{{ module|pascal }}"
+
+[requires]
+exists = ["src/Olifant/{{ unit|pascal }}.hs"]
+hint = "Create the unit first: olifant gen unit --set unit={{ unit }}"
+
+[[edits]]
+create   = "src/Olifant/{{ unit|pascal }}/{{ module|pascal }}.hs"
+exemplar = "fixture:src/Olifant/SampleUnit/SampleDetail.hs"
+bind     = { unit = "sample_unit", module = "sample_detail" }
+
+[[edits]]
+insert = "olifant.cabal"
+anchor = { marker = "-- olifant:library-modules" }
+text   = "{{ Module }}"
+
+[[edits]]
+insert = "olifant.cabal"
+anchor = { marker = "-- olifant:test-modules" }
+text   = "{{ Module }}"

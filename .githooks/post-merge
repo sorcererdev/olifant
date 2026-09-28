@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Keep ~/.local/bin/olifant in sync with main. Runs after merges into main.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+[ "$branch" = "main" ] || exit 0
+"$(git rev-parse --show-toplevel)/scripts/install-olifant.sh" >&2 || true

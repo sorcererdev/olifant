@@ -1,0 +1,3 @@
+# Olifant uses its own conventions pack on itself.
+[packs]
+olifant-dev = { path = "packs/olifant-dev" }

@@ -1,0 +1,5 @@
+now = "2026-09-28T12:00:00Z"
+
+[inputs]
+unit = "sample_unit"
+module = "marker_rules"

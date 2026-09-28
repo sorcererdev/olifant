@@ -1,0 +1,10 @@
+description = "TODO: what the controller creates"
+language = "TODO"
+version = 1
+
+[inputs.name]
+type = "ident"
+
+[[edits]]
+create = "TODO/{{ name|snake }}.txt"
+template = "main.dt"
