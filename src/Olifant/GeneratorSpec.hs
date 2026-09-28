@@ -112,6 +112,16 @@ envSpec = do
           g = either (error . T.unpack) id (load toml)
       fmap (\e -> (M.lookup "z_first" e, M.lookup "a_second" e)) (buildEnv g (M.fromList [("name", "posts")]) now)
         `shouldBe` Right (Just (VBool True), Just (VText "true!"))
+    it "parses a --set override as the type of the derived value it replaces" $ do
+      let toml = "description = \"d\"\nlanguage = \"x\"\n[inputs.name]\ntype = \"ident\"\n[derive]\nis_list = \"{{ name != name|singular }}\"\nplural = \"{{ name|plural }}\"\nlabel = \"{% if is_list %}many{% else %}one{% endif %}\"\n"
+          g = either (error . T.unpack) id (load toml)
+          envWith sets = buildEnv g (M.fromList sets) now
+      fmap (\e -> (M.lookup "is_list" e, M.lookup "label" e)) (envWith [("name", "blog_post"), ("is_list", "false")])
+        `shouldBe` Right (Just (VBool False), Just (VText "one"))
+      fmap (M.lookup "plural") (envWith [("name", "octopus"), ("plural", "octopodes")]) `shouldBe` Right (Just (nameV "octopodes"))
+      case envWith [("name", "post"), ("is_list", "maybe")] of
+        Left (InputProblems ps) -> map problemKey ps `shouldBe` ["invalid:is_list"]
+        other -> expectationFailure ("expected an invalid override, got " <> show other)
     it "detects cycles between derived values" $ do
       let toml = "description = \"d\"\nlanguage = \"x\"\n[derive]\na = \"{{ b }}\"\nb = \"{{ a }}\"\n"
           g = either (error . T.unpack) id (load toml)

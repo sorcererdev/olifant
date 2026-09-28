@@ -2,6 +2,7 @@
 -- 'Workspace'; tests use the in-memory adapter.
 module Olifant.Workspace
   ( Workspace (..)
+  , PathState (..)
   , memoryWorkspace
   , diskWorkspace
   , within
@@ -25,7 +26,13 @@ data Workspace m = Workspace
   , writeText :: FilePath -> Text -> m ()
   , fileExists :: FilePath -> m Bool
   , listFiles :: FilePath -> m [FilePath]
+  , inspectPath :: FilePath -> m PathState
   }
+
+-- | What is at a path. 'Unreadable' means a file exists but is not UTF-8
+-- text: it must never be mistaken for 'Absent' (that would overwrite it).
+data PathState = Absent | Readable Text | Unreadable | Directory
+  deriving stock (Eq, Show)
 
 memoryWorkspace :: [(FilePath, Text)] -> IO (Workspace IO, IO (Map FilePath Text))
 memoryWorkspace initial = do
@@ -41,6 +48,15 @@ memoryWorkspace initial = do
                     "." -> ""
                     d -> addTrailingPathSeparator d
               pure [drop (length prefix) f | f <- M.keys files, prefix `isPrefixOf` f]
+          , inspectPath = \p -> do
+              files <- readIORef ref
+              let key = normalisePath p
+                  prefix = if key == "." then "" else addTrailingPathSeparator key
+              pure $ case M.lookup key files of
+                Just t -> Readable t
+                Nothing
+                  | any (prefix `isPrefixOf`) (M.keys files) -> Directory
+                  | otherwise -> Absent
           }
   pure (ws, readIORef ref)
 
@@ -60,6 +76,13 @@ diskWorkspace root =
         let base = root </> dir
         isDir <- doesDirectoryExist base
         if isDir then sort <$> walk base "" else pure []
+    , inspectPath = \p -> do
+        let full = root </> p
+        isFile <- doesFileExist full
+        isDir <- doesDirectoryExist full
+        if isFile
+          then either (const Unreadable) Readable . decodeUtf8' <$> BS.readFile full
+          else pure (if isDir then Directory else Absent)
     }
   where
     walk base rel = do
@@ -81,6 +104,7 @@ within dir ws =
     , writeText = writeText ws . inside
     , fileExists = fileExists ws . inside
     , listFiles = listFiles ws . inside
+    , inspectPath = inspectPath ws . inside
     }
   where
     inside p = normalisePath (dir </> p)

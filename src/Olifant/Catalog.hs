@@ -3,6 +3,7 @@
 module Olifant.Catalog
   ( Catalog
   , catalogEntries
+  , catalogBroken
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
@@ -14,6 +15,7 @@ module Olifant.Catalog
 
 import Data.Bifunctor (bimap, first)
 import Data.Functor ((<&>))
+import Data.Either (lefts, rights)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust)
@@ -34,7 +36,13 @@ data CatalogEntry = CatalogEntry
   }
   deriving stock (Show)
 
-data Catalog = Catalog {catalogProject :: Maybe FilePath, catalogEntries :: [CatalogEntry]}
+-- | Valid generators, plus broken ones (id, generator.toml path, error) kept
+-- aside so one bad definition never breaks unrelated commands.
+data Catalog = Catalog
+  { catalogProject :: Maybe FilePath
+  , catalogEntries :: [CatalogEntry]
+  , catalogBroken :: [(GeneratorId, FilePath, Text)]
+  }
 
 data CatalogError
   = ConfigInvalid Text
@@ -79,7 +87,8 @@ openCatalogAt :: Monad m => Workspace m -> Maybe FilePath -> [(Text, FilePath)] 
 openCatalogAt root localDir packs = do
   local <- maybe (pure []) (discover Nothing Nothing) localDir
   fromPacks <- concat <$> traverse (\(name, r) -> discover (Just name) (Just r) (r </> "generators")) packs
-  pure (Catalog Nothing . sortOn entryId <$> sequence (local ++ fromPacks))
+  let loaded = local ++ fromPacks
+  pure (Right (Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded))))
   where
     discover pack packRoot dir = do
       files <- listFiles root dir
@@ -92,8 +101,8 @@ openCatalogAt root localDir packs = do
           path = gdir </> "generator.toml"
       src <- readText root path
       pure $ case src of
-        Nothing -> Left (GeneratorInvalid path "unreadable")
-        Just s -> bimap (GeneratorInvalid path) (CatalogEntry gid pack gdir packRoot) (parseGenerator gid s)
+        Nothing -> Left (gid, path, "unreadable")
+        Just s -> bimap (gid,path,) (CatalogEntry gid pack gdir packRoot) (parseGenerator gid s)
 
 findEntry :: Catalog -> Text -> Either CatalogError CatalogEntry
 findEntry cat ref =
@@ -101,10 +110,13 @@ findEntry cat ref =
     (e : _) -> Right e
     [] -> case [e | e <- entries, isJust (entryPack e), T.pack (takeFileName (entryDir e)) == ref] of
       [e] -> Right e
-      [] -> Left (GeneratorNotFound ref (map entryId entries))
+      [] -> case [(p, err) | (gid, p, err) <- catalogBroken cat, gid == GeneratorId ref || bareName gid == ref] of
+        ((p, err) : _) -> Left (GeneratorInvalid p err)
+        [] -> Left (GeneratorNotFound ref (map entryId entries))
       several -> Left (GeneratorAmbiguous ref (map entryId several))
   where
     entries = catalogEntries cat
+    bareName (GeneratorId t) = snd (T.breakOnEnd "/" t)
 
 loadGenerator :: Monad m => Workspace m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
 loadGenerator root cat entry = sequenceA <$> traverse resolve (entryDefinition entry)

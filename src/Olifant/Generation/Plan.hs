@@ -40,6 +40,8 @@ data Conflict
   | MarkerRepeated Int FilePath Text Int
   | UnsafePath Int FilePath
   | RequirementUnmet [FilePath] (Maybe Text)
+  | -- | edit, path, why it cannot be written (a directory, non-text file, or a file where a directory must be)
+    TargetUnusable Int FilePath Text
   deriving stock (Eq, Show)
 
 hasConflicts :: Plan -> Bool
@@ -52,6 +54,7 @@ describeConflict = \case
   MarkerNotFound n p m -> edit n <> "marker `" <> m <> "` not found in " <> T.pack p
   MarkerRepeated n p m k -> edit n <> "marker `" <> m <> "` appears " <> T.pack (show k) <> " times in " <> T.pack p <> "; it must appear once"
   UnsafePath n p -> edit n <> "path " <> T.pack p <> " is outside the project"
+  TargetUnusable n p why -> edit n <> "cannot write " <> T.pack p <> ": " <> why
   RequirementUnmet ps hint -> "required files missing: " <> T.intercalate ", " (map T.pack ps) <> maybe "" (". " <>) hint
   where
     edit n = "edit " <> T.pack (show n) <> ": "

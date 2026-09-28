@@ -28,14 +28,20 @@ encodeJson = TL.toStrict . TLE.decodeUtf8 . encode
 idText :: GeneratorId -> Text
 idText = generatorIdText
 
-listJson :: [CatalogEntry] -> Value
-listJson es =
-  object ["generators" .= [object ["id" .= idText (entryId e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)] | e <- es]]
+listJson :: [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Value
+listJson es broken =
+  object
+    [ "generators" .= [object ["id" .= idText (entryId e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)] | e <- es]
+    , "invalid" .= [object ["id" .= idText gid, "path" .= p, "error" .= err] | (gid, p, err) <- broken]
+    ]
 
-listHuman :: [CatalogEntry] -> Text
-listHuman es = T.unlines [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
+listHuman :: [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Text
+listHuman es broken =
+  T.unlines $
+    [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
+      ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> err | (gid, _, err) <- broken]
   where
-    width = maximum (0 : map (T.length . idText . entryId) es)
+    width = maximum (0 : map (T.length . idText . entryId) es ++ [T.length (idText gid) | (gid, _, _) <- broken])
 
 showJson :: CatalogEntry -> Value
 showJson e =
@@ -125,6 +131,7 @@ conflictCode = \case
   MarkerRepeated {} -> "marker_repeated"
   UnsafePath {} -> "unsafe_path"
   RequirementUnmet {} -> "requires_unmet"
+  TargetUnusable {} -> "target_unusable"
 
 errorJson :: Text -> Text -> [Pair] -> Value
 errorJson code message extra = object ["error" .= object (["code" .= code, "message" .= message] ++ extra)]

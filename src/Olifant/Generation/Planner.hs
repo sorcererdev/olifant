@@ -33,9 +33,10 @@ renderEdits env = traverse $ \case
     path t = normalisePath . T.unpack <$> render env t
 
 -- | Decide what every edit does, threading file contents so later edits see
--- earlier ones. Returns edits, conflicts, and the final contents to write.
-decideEdits :: [RenderedEdit] -> Map FilePath (Maybe Text) -> ([PlannedEdit], [Conflict], Map FilePath Text)
-decideEdits rendered original = finish (foldl step (original, [], []) (zip [1 ..] rendered))
+-- earlier ones. @blocked@ maps paths that cannot be written to the reason.
+-- Returns edits, conflicts, and the final contents to write.
+decideEdits :: [RenderedEdit] -> Map FilePath (Maybe Text) -> Map FilePath Text -> ([PlannedEdit], [Conflict], Map FilePath Text)
+decideEdits rendered original blocked = finish (foldl step (original, [], []) (zip [1 ..] rendered))
   where
     finish (current, edits, conflicts) =
       ( reverse edits
@@ -44,6 +45,7 @@ decideEdits rendered original = finish (foldl step (original, [], []) (zip [1 ..
       )
     step (current, edits, conflicts) (n, edit)
       | not (isSafeRelative (renderedPath edit)) = (current, edits, UnsafePath n (renderedPath edit) : conflicts)
+      | Just why <- M.lookup (renderedPath edit) blocked = (current, edits, TargetUnusable n (renderedPath edit) why : conflicts)
       | otherwise = case edit of
           RenderedCreate p content onExists -> case existing p of
             Nothing -> (M.insert p (Just content) current, PlannedEdit n p (WillCreate content) : edits, conflicts)

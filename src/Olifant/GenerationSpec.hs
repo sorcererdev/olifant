@@ -12,7 +12,10 @@ import Hedgehog.Range qualified as Range
 import Olifant.Generation
 import Olifant.Generator
 import Olifant.Template (Template)
-import Olifant.Workspace (memoryWorkspace)
+import Data.ByteString qualified as BS
+import Olifant.Workspace (diskWorkspace, memoryWorkspace)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
@@ -51,6 +54,7 @@ spec :: Spec
 spec = do
   createSpec
   insertSpec
+  unusableSpec
 
 createSpec :: Spec
 createSpec = describe "generate (create edits)" $ do
@@ -147,3 +151,25 @@ insertSpec = describe "generate (marker inserts)" $ do
     _ <- evalIO (generate ws insertGen sets now Apply)
     second <- evalIO (generate ws insertGen sets now Apply)
     fmap planWrites second === Right M.empty
+
+unusableSpec :: Spec
+unusableSpec = describe "generate (targets that cannot be written)" $ do
+  let pathGen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[inputs.dir]\ntype = \"text\"\n[[edits]]\ncreate = \"a.txt\"\ntext = \"a\"\n[[edits]]\ncreate = \"{{ dir }}\"\ntext = \"X\\n\"\n"
+      isUnusable n p = \case
+        TargetUnusable n' p' _ -> n == n' && p == p'
+        _ -> False
+  it "never overwrites an existing file it cannot read as text (all-or-nothing)" $
+    withSystemTempDirectory "olifant" $ \dir -> do
+      BS.writeFile (dir </> "mine.txt") "caf\xe9 precious\n"
+      Right plan <- generate (diskWorkspace dir) pathGen (M.fromList [("dir", "mine.txt")]) now Apply
+      planConflicts plan `shouldSatisfy` \case [c] -> isUnusable 2 "mine.txt" c; _ -> False
+      BS.readFile (dir </> "mine.txt") `shouldReturn` "caf\xe9 precious\n"
+      BS.readFile (dir </> "a.txt") `shouldThrow` anyIOException
+  it "reports a directory target as a conflict before writing anything" $ do
+    (Right plan, files) <- run [("src/m.rs", "")] pathGen [("dir", "src")] Apply
+    planConflicts plan `shouldSatisfy` \case [c] -> isUnusable 2 "src" c; _ -> False
+    M.member "a.txt" files `shouldBe` False
+  it "reports a file standing where a parent directory must be" $ do
+    (Right plan, files) <- run [("z", "x")] pathGen [("dir", "z/x.txt")] Apply
+    planConflicts plan `shouldSatisfy` \case [c] -> isUnusable 2 "z/x.txt" c; _ -> False
+    M.member "a.txt" files `shouldBe` False

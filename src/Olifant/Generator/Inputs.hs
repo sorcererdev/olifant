@@ -37,7 +37,7 @@ buildEnv gen sets now = do
       problems = unknown ++ lefts resolved
   unless (null problems) (Left (InputProblems problems))
   let base = M.insert "now" (VTime now) (M.fromList (rights resolved))
-      overrides = M.fromList [(k, VText v) | (k, v) <- M.toList sets, k `elem` derivedNames]
+      overrides = M.fromList [(k, v) | (k, v) <- M.toList sets, k `elem` derivedNames]
   deriveAll (genDerived gen) overrides base
 
 resolveInput :: Map Text Text -> InputSpec -> Either InputProblem (Text, Value)
@@ -87,8 +87,10 @@ emptyValue = \case
   _ -> VNull
 
 -- | Evaluate derived values in dependency order (TOML tables are unordered).
-deriveAll :: [(Text, Template)] -> Env -> Env -> Either EnvError Env
-deriveAll derived overrides base = go [d | d@(k, _) <- derived, k `M.notMember` overrides] (M.union overrides base)
+-- A --set override replaces a derived value but takes the type the derived
+-- value would have had, so @--set is_list=false@ is a bool, not truthy text.
+deriveAll :: [(Text, Template)] -> Map Text Text -> Env -> Either EnvError Env
+deriveAll derived overrides = go derived
   where
     go [] env = Right env
     go pending env =
@@ -96,7 +98,23 @@ deriveAll derived overrides base = go [d | d@(k, _) <- derived, k `M.notMember` 
           (ready, blocked) = partition (\(_, t) -> S.null (freeVariables t `S.intersection` pendingNames)) pending
        in if null ready
             then Left (DeriveCycle (map fst blocked))
-            else foldM (\e (k, t) -> bimap (DeriveFailed k) (\v -> M.insert k v e) (evaluate e t)) env ready >>= go blocked
+            else foldM step env ready >>= go blocked
+    step env (k, t) = do
+      v <- case (evaluate env t, M.lookup k overrides) of
+        (Left e, Nothing) -> Left (DeriveFailed k e)
+        (Right derivedValue, Nothing) -> Right derivedValue
+        (Right derivedValue, Just raw) -> coerceOverride k derivedValue raw
+        (Left _, Just raw) -> Right (VText raw)
+      Right (M.insert k v env)
+
+coerceOverride :: Text -> Value -> Text -> Either EnvError Value
+coerceOverride k derivedValue raw = case derivedValue of
+  VBool _ -> invalid (parseScalar BoolS raw)
+  VName _ -> invalid (parseScalar IdentS raw)
+  VList _ -> Left (InputProblems [InvalidInput k "a list-valued derived value cannot be overridden with --set"])
+  _ -> Right (VText raw)
+  where
+    invalid = either (\r -> Left (InputProblems [InvalidInput k r])) Right
 
 describeEnvError :: EnvError -> Text
 describeEnvError = \case

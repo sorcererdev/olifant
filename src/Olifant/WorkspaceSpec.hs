@@ -1,6 +1,8 @@
 module Olifant.WorkspaceSpec (spec) where
 
+import Data.ByteString qualified as BS
 import Olifant.Workspace
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
@@ -20,6 +22,11 @@ contract = do
     listFiles ws "gen" `shouldReturn` ["a.toml", "b/x.toml"]
   it "lists nothing for a missing directory" $ \ws ->
     listFiles ws "nope" `shouldReturn` []
+  it "inspects paths as absent, readable text, or a directory" $ \ws -> do
+    writeText ws "d/f.txt" "hi"
+    inspectPath ws "d/f.txt" `shouldReturn` Readable "hi"
+    inspectPath ws "d" `shouldReturn` Directory
+    inspectPath ws "nope" `shouldReturn` Absent
   it "scopes paths with `within`" $ \ws -> do
     writeText (within "proj" ws) "a.txt" "x"
     readText ws "proj/a.txt" `shouldReturn` Just "x"
@@ -29,6 +36,11 @@ spec :: Spec
 spec = do
   describe "memory adapter" $ around (\act -> memoryWorkspace [] >>= act . fst) contract
   describe "disk adapter" $ around (\act -> withSystemTempDirectory "olifant" (act . diskWorkspace)) contract
+  describe "disk adapter (bytes that are not UTF-8)" $
+    it "reports them as unreadable, never as absent" $
+      withSystemTempDirectory "olifant" $ \dir -> do
+        BS.writeFile (dir </> "latin1.txt") "caf\xe9 precious\n"
+        inspectPath (diskWorkspace dir) "latin1.txt" `shouldReturn` Unreadable
   describe "paths" $ do
     it "normalises . and .." $
       map normalisePath ["a/./b", "a/../b", "a/b/..", "/x/../y", "", "../a"] `shouldBe` ["a/b", "b", "a", "/y", ".", "../a"]

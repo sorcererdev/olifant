@@ -40,7 +40,8 @@ runCommand :: Runtime -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt fmt cat = \case
   ListCmd -> do
     let entries = catalogEntries cat
-    emit rt fmt (listJson entries) (listHuman entries)
+        broken = catalogBroken cat
+    emit rt fmt (listJson entries broken) (listHuman entries broken)
     pure ExitSuccess
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err

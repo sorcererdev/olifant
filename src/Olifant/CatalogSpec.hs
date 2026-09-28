@@ -4,6 +4,7 @@ module Olifant.CatalogSpec (spec) where
 
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Catalog
 import Olifant.Generation
@@ -74,3 +75,13 @@ spec = describe "catalog" $ do
     openProjectCatalog root "/proj" >>= \case
       Left err -> err `shouldBe` ConfigInvalid "`packs`: `rails`: unknown key(s) `git`; expected one of `path`"
       Right _ -> expectationFailure "expected an invalid config"
+
+  it "isolates a broken generator.toml: others still list and load" $ do
+    let broken = ("/proj/.olifant/generators/two/generator.toml", "description = \"two\"\nlanguage = \"x\"\ntemplete = \"oops\"\n")
+    withCatalog (broken : files) $ \root cat -> do
+      map entryId (catalogEntries cat) `shouldBe` map GeneratorId ["model", "rails/broken", "rails/cell", "rails/model"]
+      map (\(gid, _, _) -> gid) (catalogBroken cat) `shouldBe` [GeneratorId "two"]
+      genInto root cat "rails/model" `shouldReturn` M.fromList [("app/models/cancel_subscription.rb", "class CancelSubscription\nend\n")]
+      findEntry cat "two" `shouldSatisfy` \case
+        Left (GeneratorInvalid _ msg) -> "templete" `T.isInfixOf` msg
+        _ -> False
