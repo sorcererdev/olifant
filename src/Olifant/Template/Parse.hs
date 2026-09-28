@@ -19,8 +19,8 @@ data Tag = TIf Expr | TElif Expr | TElse | TEndif | TFor Text Expr | TEndfor
 
 parseTemplate :: Text -> Either TemplateError Template
 parseTemplate src = do
-  tokens <- lexTemplate src
-  (segs, stop, _) <- block tokens
+  pieces <- lexTemplate src
+  (segs, stop, _) <- block pieces
   case stop of
     Nothing -> Right (Template src segs)
     Just (line, tag) -> Left (SyntaxError line ("unexpected `" <> tagKeyword tag <> "`"))
