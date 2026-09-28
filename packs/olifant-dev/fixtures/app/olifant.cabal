@@ -1,0 +1,23 @@
+cabal-version:      3.4
+name:               olifant
+version:            0.1.0.0
+
+library
+  hs-source-dirs:  src
+  exposed-modules:
+    Olifant.Naming
+    Olifant.SampleUnit
+    Olifant.SampleUnit.SampleDetail
+    -- olifant:library-modules
+
+test-suite spec
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     src
+  main-is:            TestDriver.hs
+  other-modules:
+    Olifant.Naming
+    Olifant.NamingSpec
+    Olifant.SampleUnit
+    Olifant.SampleUnit.SampleDetail
+    Olifant.SampleUnitSpec
+    -- olifant:test-modules

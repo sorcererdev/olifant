@@ -57,11 +57,11 @@ decideEdits rendered original blocked = finish (foldl step (original, [], []) (z
                   OverwriteIfExists -> (M.insert p (Just content) current, PlannedEdit n p (WillOverwrite content) : edits, conflicts)
           RenderedInsert p marker snippet -> case existing p of
             Nothing -> (current, edits, InsertTargetMissing n p : conflicts)
-            Just old
-              | alreadyPresent snippet old -> (current, PlannedEdit n p (Skipped AlreadyPresent) : edits, conflicts)
-              | otherwise -> case insertBeforeMarker marker snippet old of
-                  Left MarkerMissing -> (current, edits, MarkerNotFound n p marker : conflicts)
-                  Left (MarkerAmbiguous k) -> (current, edits, MarkerRepeated n p marker k : conflicts)
-                  Right (line, updated) -> (M.insert p (Just updated) current, PlannedEdit n p (WillInsert line snippet) : edits, conflicts)
+            Just old -> case markerBlock marker old >>= \block -> fmap (block,) (insertBeforeMarker marker snippet old) of
+              Left MarkerMissing -> (current, edits, MarkerNotFound n p marker : conflicts)
+              Left (MarkerAmbiguous k) -> (current, edits, MarkerRepeated n p marker k : conflicts)
+              Right (block, (line, updated))
+                | alreadyPresent snippet block -> (current, PlannedEdit n p (Skipped AlreadyPresent) : edits, conflicts)
+                | otherwise -> (M.insert p (Just updated) current, PlannedEdit n p (WillInsert line snippet) : edits, conflicts)
       where
         existing p = M.findWithDefault Nothing p current

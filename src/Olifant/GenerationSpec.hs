@@ -142,6 +142,12 @@ insertSpec = describe "generate (marker inserts)" $ do
     M.lookup "x.cabal" files `shouldBe` Just "    Olifant.Generation\n    Olifant.Gen\n    -- olifant:modules\n"
     (Right again, _) <- run [("x.cabal", "    Olifant.Gen\n    -- olifant:modules\n")] modGen [("m", "gen")] Apply
     map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent]
+  it "checks already-present only within the marker's block, so one line can go into two lists" $ do
+    let twoLists = generatorFrom "description = \"d\"\nlanguage = \"cabal\"\n[inputs.m]\ntype = \"ident\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:lib\" }\ntext = \"Olifant.{{ m|pascal }}\"\n[[edits]]\ninsert = \"x.cabal\"\nanchor = { marker = \"-- olifant:test\" }\ntext = \"Olifant.{{ m|pascal }}\"\n"
+        cabal = "library\n  exposed-modules:\n    Olifant.A\n    -- olifant:lib\n\ntest-suite spec\n  other-modules:\n    Olifant.A\n    -- olifant:test\n"
+    (_, files) <- run [("x.cabal", cabal)] twoLists [("m", "b_b")] Apply
+    M.lookup "x.cabal" files
+      `shouldBe` Just "library\n  exposed-modules:\n    Olifant.A\n    Olifant.BB\n    -- olifant:lib\n\ntest-suite spec\n  other-modules:\n    Olifant.A\n    Olifant.BB\n    -- olifant:test\n"
   it "reports a missing or repeated marker, and a missing file, as conflicts" $ do
     (Right plan, files) <- run [("svc/lib.rs", "pub mod a;\n"), ("svc/service.rs", service <> "// olifant:delegates\n")] insertGen [("cmd", "b_b")] Apply
     planConflicts plan `shouldBe` [MarkerNotFound 1 "svc/lib.rs" "// olifant:modules", MarkerRepeated 2 "svc/service.rs" "// olifant:delegates" 2]
