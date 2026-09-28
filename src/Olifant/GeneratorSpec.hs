@@ -99,6 +99,12 @@ envSpec = do
       M.lookup "Model" e `shouldBe` Just (VText "BlogPost")
       M.lookup "fields" e `shouldBe` Just (VList [field "title" "string", field "body" "text"])
       M.lookup "now" e `shouldBe` Just (VTime now)
+    it "rejects an ident that looks like a name followed by a type" $
+      case env [("name", "SetDisplayName String")] of
+        Left (InputProblems [InvalidInput "name" reason]) -> reason `shouldSatisfy` T.isInfixOf "looks like"
+        other -> expectationFailure ("expected an invalid ident, got " <> show other)
+    it "still accepts title-case and space-separated names" $
+      fmap (M.lookup "table") (env [("name", "Blog Post")]) `shouldBe` Right (Just (VText "blog_posts"))
     it "gives optional lists an empty default" $
       fmap (M.lookup "fields") (env [("name", "post")]) `shouldBe` Right (Just (VList []))
     it "reports missing, invalid and unknown inputs all at once" $
