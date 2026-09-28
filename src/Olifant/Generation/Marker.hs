@@ -4,6 +4,7 @@ module Olifant.Generation.Marker
   , alreadyPresent
   ) where
 
+import Data.Char (isAlphaNum)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -27,8 +28,19 @@ insertBeforeMarker marker snippet content =
     ls = T.splitOn newline content
     dropFinalNewline t = fromMaybe t (T.stripSuffix "\n" t)
 
--- | Whitespace-insensitive "is this snippet already in the file?"
+-- | Whitespace-insensitive "is this snippet already in the file?". A match
+-- only counts if it doesn't continue an identifier on either side, so
+-- `Olifant.Gen` is not "present" in a file containing `Olifant.Generation`.
 alreadyPresent :: Text -> Text -> Bool
-alreadyPresent snippet content = normalise snippet `T.isInfixOf` normalise content
+alreadyPresent snippet content = T.null needle || any bounded (T.breakOnAll needle haystack)
   where
     normalise = T.unwords . T.words
+    needle = normalise snippet
+    haystack = normalise content
+    bounded (before, rest) =
+      not (joins (lastChar before) (firstChar needle))
+        && not (joins (lastChar needle) (firstChar (T.drop (T.length needle) rest)))
+    joins a b = maybe False isIdent a && maybe False isIdent b
+    isIdent c = isAlphaNum c || c == '_'
+    firstChar = fmap fst . T.uncons
+    lastChar = fmap snd . T.unsnoc
