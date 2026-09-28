@@ -1,0 +1,37 @@
+description = "A new Msg for an Elm page: the variant plus an update branch returning ( model, Cmd.none )"
+language = "elm"
+version = 1
+
+[inputs.page]
+type = "ident"
+prompt = "Existing page (e.g. counter)"
+
+[inputs.msg]
+type = "ident"
+prompt = "Message name (e.g. increment_by, clicked_save)"
+
+[inputs.arg]
+type = "text"
+optional = true
+prompt = "Payload type, if any (e.g. Int, String, (Result Http.Error Article))"
+
+[derive]
+Msg = "{= msg|pascal =}"
+
+[requires]
+exists = ["src/Page/{= page|pascal =}.elm"]
+hint = "Create the page first: olifant gen elm/page --set page={= page =}"
+
+[[edits]]
+insert = "src/Page/{= page|pascal =}.elm"
+anchor = { marker = "-- olifant:msgs" }
+text   = "| {= Msg =}{= if arg =} {= arg =}{= end =}"
+
+[[edits]]
+insert = "src/Page/{= page|pascal =}.elm"
+anchor = { marker = "-- olifant:update-branches" }
+text   = """
+{= Msg =}{= if arg =} _{= end =} ->
+    ( model, Cmd.none )
+
+"""
