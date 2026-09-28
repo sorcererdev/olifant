@@ -1,0 +1,6 @@
+now = "2026-09-28T12:00:00Z"
+
+[inputs]
+page = "home"
+msg = "increment_by"
+arg = "Int"

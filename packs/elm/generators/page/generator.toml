@@ -1,0 +1,71 @@
+description = "A page in the Elm architecture (Model/Msg/init/update/view), wired into Main and Route like elm-spa-example"
+language = "elm"
+version = 1
+
+[inputs.page]
+type = "ident"
+prompt = "Page name (e.g. counter, article_list)"
+
+[derive]
+P = "{= page|pascal =}"
+
+[requires]
+exists = ["src/Main.elm", "src/Route.elm"]
+hint = "This pack expects an elm-spa-example style app with src/Main.elm and src/Route.elm."
+
+[[edits]]
+create   = "src/Page/{= P =}.elm"
+exemplar = "fixture:src/Page/SamplePage.elm"
+bind     = { page = "sample_page" }
+
+[[edits]]
+insert = "src/Main.elm"
+anchor = { marker = "-- olifant:page-imports" }
+text   = "import Page.{= P =} as {= P =}"
+
+[[edits]]
+insert = "src/Main.elm"
+anchor = { marker = "-- olifant:pages" }
+text   = "| {= P =} {= P =}.Model"
+
+[[edits]]
+insert = "src/Main.elm"
+anchor = { marker = "-- olifant:page-msgs" }
+text   = "| Got{= P =}Msg {= P =}.Msg"
+
+[[edits]]
+insert = "src/Main.elm"
+anchor = { marker = "-- olifant:route-inits" }
+text   = """
+Just Route.{= P =} ->
+    {= P =}.init |> updateWith {= P =} Got{= P =}Msg model
+
+"""
+
+[[edits]]
+insert = "src/Main.elm"
+anchor = { marker = "-- olifant:page-updates" }
+text   = """
+( Got{= P =}Msg subMsg, {= P =} page ) ->
+    {= P =}.update subMsg page |> updateWith {= P =} Got{= P =}Msg model
+
+"""
+
+[[edits]]
+insert = "src/Main.elm"
+anchor = { marker = "-- olifant:page-views" }
+text   = """
+{= P =} page ->
+    viewPage Got{= P =}Msg ({= P =}.view page)
+
+"""
+
+[[edits]]
+insert = "src/Route.elm"
+anchor = { marker = "-- olifant:routes" }
+text   = "| {= P =}"
+
+[[edits]]
+insert = "src/Route.elm"
+anchor = { marker = "-- olifant:route-parsers" }
+text   = ', Parser.map {= P =} (s "{= page|kebab =}")'
