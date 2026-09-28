@@ -20,21 +20,21 @@ type = "text"
 default = "8.0"
 
 [derive]
-Model = "{{ name|pascal }}"
-table = "{{ name|plural|snake }}"
+Model = "{= name|pascal =}"
+table = "{= name|plural|snake =}"
 
 [[edits]]
-create = "db/migrate/{{ now|timestamp }}_create_{{ table }}.rb"
+create = "db/migrate/{= now|timestamp =}_create_{= table =}.rb"
 template = "migration.rb.dt"
 
 [[edits]]
-create = "app/models/{{ name|snake }}.rb"
+create = "app/models/{= name|snake =}.rb"
 template = "model.rb.dt"
 
 [[edits]]
-create = "test/models/{{ name|snake }}_test.rb"
+create = "test/models/{= name|snake =}_test.rb"
 template = "model_test.rb.dt"
 
 [[edits]]
-create = "test/fixtures/{{ table }}.yml"
+create = "test/fixtures/{= table =}.yml"
 template = "fixtures.yml.dt"

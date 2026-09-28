@@ -1,4 +1,4 @@
-import type { {{ Query }}, {{ Query }}Variables } from 'types/graphql'
+import type { {= Query =}, {= Query =}Variables } from 'types/graphql'
 
 import type {
   CellSuccessProps,
@@ -6,42 +6,42 @@ import type {
   TypedDocumentNode,
 } from '@redwoodjs/web'
 
-export const QUERY: TypedDocumentNode<{{ Query }}, {{ Query }}Variables> = gql`
-{%- if is_list %}
-  query {{ Query }} {
-    {{ field }} {
+export const QUERY: TypedDocumentNode<{= Query =}, {= Query =}Variables> = gql`
+{=- if is_list =}
+  query {= Query =} {
+    {= field =} {
       id
     }
   }
-{%- else %}
-  query {{ Query }}($id: Int!) {
-    {{ field }}: {{ field }}(id: $id) {
+{=- else =}
+  query {= Query =}($id: Int!) {
+    {= field =}: {= field =}(id: $id) {
       id
     }
   }
-{%- endif %}
+{=- end =}
 `
 
 export const Loading = () => <div>Loading...</div>
 
 export const Empty = () => <div>Empty</div>
 
-export const Failure = ({ error }: CellFailureProps<{{ Query }}Variables>) => (
-  <div style={{ '{{' }} color: 'red' }}>Error: {error?.message}</div>
+export const Failure = ({ error }: CellFailureProps<{= Query =}Variables>) => (
+  <div style={{ color: 'red' }}>Error: {error?.message}</div>
 )
 
 export const Success = ({
-  {{ field }},
-}: CellSuccessProps<{{ Query }}, {{ Query }}Variables>) => {
-{%- if is_list %}
+  {= field =},
+}: CellSuccessProps<{= Query =}, {= Query =}Variables>) => {
+{=- if is_list =}
   return (
     <ul>
-      {{ '{' }}{{ field }}.map((item) => {
+      {{= field =}.map((item) => {
         return <li key={item.id}>{JSON.stringify(item)}</li>
       })}
     </ul>
   )
-{%- else %}
-  return <div>{JSON.stringify({{ field }})}</div>
-{%- endif %}
+{=- else =}
+  return <div>{JSON.stringify({= field =})}</div>
+{=- end =}
 }

@@ -1,1 +1,1 @@
-Hello {{ name|pascal }}
+Hello {= name|pascal =}

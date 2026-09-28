@@ -1,6 +1,6 @@
 require "test_helper"
 
-class {{ Model }}Test < ActiveSupport::TestCase
+class {= Model =}Test < ActiveSupport::TestCase
   # test "the truth" do
   #   assert true
   # end

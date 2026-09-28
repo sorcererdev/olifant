@@ -25,11 +25,11 @@ project =
         , "[inputs.name]"
         , "type = \"ident\""
         , "[[edits]]"
-        , "create = \"db/{{ now|timestamp }}_create_{{ name|plural|snake }}.rb\""
-        , "text = \"# {{ name|pascal }}\\n\""
+        , "create = \"db/{= now|timestamp =}_create_{= name|plural|snake =}.rb\""
+        , "text = \"# {= name|pascal =}\\n\""
         , "[[edits]]"
-        , "create = \"app/models/{{ name|snake }}.rb\""
-        , "text = \"class {{ name|pascal }}\\nend\\n\""
+        , "create = \"app/models/{= name|snake =}.rb\""
+        , "text = \"class {= name|pascal =}\\nend\\n\""
         ]
     )
   ]

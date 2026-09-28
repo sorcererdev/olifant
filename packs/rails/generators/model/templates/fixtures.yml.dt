@@ -1,11 +1,11 @@
 # Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
 
 one:
-{%- for f in fields %}
-  {{ f.name|snake }}: {% if f.type == "string" %}MyString{% elif f.type == "text" %}MyText{% elif f.type == "integer" %}1{% elif f.type == "boolean" %}false{% else %}one{% endif %}
-{%- endfor %}
+{=- for f in fields =}
+  {= f.name|snake =}: {= if f.type == "string" =}MyString{= elif f.type == "text" =}MyText{= elif f.type == "integer" =}1{= elif f.type == "boolean" =}false{= else =}one{= end =}
+{=- end =}
 
 two:
-{%- for f in fields %}
-  {{ f.name|snake }}: {% if f.type == "string" %}MyString{% elif f.type == "text" %}MyText{% elif f.type == "integer" %}1{% elif f.type == "boolean" %}false{% else %}two{% endif %}
-{%- endfor %}
+{=- for f in fields =}
+  {= f.name|snake =}: {= if f.type == "string" =}MyString{= elif f.type == "text" =}MyText{= elif f.type == "integer" =}1{= elif f.type == "boolean" =}false{= else =}two{= end =}
+{=- end =}
