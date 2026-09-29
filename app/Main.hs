@@ -25,6 +25,7 @@ main = do
         , rtProjectDir = cwd
         , rtUserConfigDir = Just userConfigDir
         , rtHomeDir = Just home
+        , rtReadStdin = TIO.getContents
         , rtNow = getCurrentTime
         , rtStdoutIsTty = tty
         , rtOut = TIO.putStr

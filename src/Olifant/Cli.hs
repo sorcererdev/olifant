@@ -2,11 +2,15 @@
 -- use cases, and renders JSON or human output with the spec's exit codes.
 module Olifant.Cli (Runtime (..), runCli) where
 
-import Data.Aeson (Value)
+import Data.Aeson (Value, eitherDecodeStrict)
 import Data.Aeson.Types (Pair, (.=))
+import Data.Bifunctor (first)
+import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
 import Olifant.Catalog
 import Olifant.Cli.Options
@@ -22,6 +26,7 @@ data Runtime = Runtime
   , rtProjectDir :: FilePath
   , rtUserConfigDir :: Maybe FilePath
   , rtHomeDir :: Maybe FilePath
+  , rtReadStdin :: IO Text
   , rtNow :: IO UTCTime
   , rtStdoutIsTty :: Bool
   , rtOut :: Text -> IO ()
@@ -48,20 +53,29 @@ runCommand rt fmt cat = \case
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
     Right e -> emit rt fmt (showJson e) (showHuman e) >> pure ExitSuccess
-  GenCmd g -> case findEntry cat (genTarget g) of
-    Left err -> catalogFailure rt fmt err
-    Right entry ->
-      loadGenerator (rtRoot rt) cat entry >>= \case
-        Left err -> catalogFailure rt fmt err
-        Right gen -> do
-          now <- maybe (rtNow rt) pure (genNow g)
-          let mode = if genPlanOnly g then PlanOnly else Apply
-          generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) [Step gen (M.fromList (genSets g))] now mode >>= \case
-            Left err -> generationFailure rt fmt err
-            Right plan -> do
-              let applied = mode == Apply && not (hasConflicts plan)
-              emit rt fmt (planJson applied plan) (planHuman applied plan)
-              pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
+  GenCmd g -> do
+    specs <- case genStepsFile g of
+      Nothing -> pure (Right (genSteps g))
+      Just f -> do
+        raw <- if f == "-" then rtReadStdin rt else either (const "") id . TE.decodeUtf8' <$> BS.readFile f
+        pure (first (\e -> "--steps: " <> T.pack e) (eitherDecodeStrict (TE.encodeUtf8 raw)))
+    case specs of
+      Left msg -> rtErr rt (msg <> "\n") >> pure (ExitFailure 2)
+      Right [] -> rtErr rt "no steps to run\n" >> pure (ExitFailure 2)
+      Right ss -> do
+        loaded <- traverse (\s -> either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s))) ss
+        case sequence loaded of
+          Left err -> catalogFailure rt fmt err
+          Right gens -> do
+            now <- maybe (rtNow rt) pure (genNow g)
+            let mode = if genPlanOnly g then PlanOnly else Apply
+                steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
+            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) steps now mode >>= \case
+              Left err -> generationFailure rt fmt err
+              Right plan -> do
+                let applied = mode == Apply && not (hasConflicts plan)
+                emit rt fmt (planJson applied plan) (planHuman applied plan)
+                pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
 
 emit :: Runtime -> Format -> Value -> Text -> IO ()
 emit rt fmt json human = rtOut rt $ case fmt of
