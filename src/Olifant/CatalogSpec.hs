@@ -123,3 +123,13 @@ spec = describe "catalog" $ do
           describeCatalogError err `shouldSatisfy` T.isInfixOf "no pack named `elm` is configured"
           describeCatalogError err `shouldSatisfy` T.isInfixOf "[packs]"
         other -> expectationFailure ("expected PackNotConfigured, got " <> show (fmap entryId other))
+  it "resolves [[uses]] refs pack-locally first, then as written" $ do
+    let fs =
+          [ ("/proj/.olifant/config.toml", "[packs]\nelm = { path = \"../packs/elm\" }\n")
+          , ("/proj/.olifant/generators/msg/generator.toml", "description = \"local msg\"\nlanguage = \"x\"\n")
+          , ("/packs/elm/generators/msg/generator.toml", "description = \"elm msg\"\nlanguage = \"x\"\n")
+          ]
+    withCatalog fs $ \root cat -> do
+      fmap (fmap genDescription) (resolver root cat (Just "elm") "msg") `shouldReturn` Right "elm msg"
+      fmap (fmap genDescription) (resolver root cat Nothing "msg") `shouldReturn` Right "local msg"
+      fmap (either (const "err") genDescription) (resolver root cat (Just "elm") "nope") `shouldReturn` "err"

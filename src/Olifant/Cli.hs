@@ -56,7 +56,7 @@ runCommand rt fmt cat = \case
         Right gen -> do
           now <- maybe (rtNow rt) pure (genNow g)
           let mode = if genPlanOnly g then PlanOnly else Apply
-          generate (within (rtProjectDir rt) (rtRoot rt)) noResolve [Step gen (M.fromList (genSets g))] now mode >>= \case
+          generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) [Step gen (M.fromList (genSets g))] now mode >>= \case
             Left err -> generationFailure rt fmt err
             Right plan -> do
               let applied = mode == Apply && not (hasConflicts plan)
