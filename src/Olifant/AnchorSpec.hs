@@ -101,6 +101,20 @@ resolveSpec = do
       fmap locLine (runIdentity (resolveLayers noSyntax Nothing [PhraseAnchor "before marker -- lead"] source)) `shouldBe` Right 1
     it "needs an adapter for a named target" $
       runIdentity (resolveLayers noSyntax Nothing [PhraseAnchor "end of type Msg"] source) `shouldSatisfy` either (any (("no language adapter" `T.isInfixOf`) . missReason)) (const False)
+  describe "resolveLayers (items sharing a line with their container)" $ do
+    -- `[ a, b ]` on one line: the container is line 1, cols 4-12; items a and b.
+    let inline = Syntax $ \_ rule _ -> Identity . Right $
+          if "\"all\"" `isInfixOf` BL.unpack (encode rule)
+            then [Match (1, 6) (1, 7) "a", Match (1, 9) (1, 10) "b"]
+            else [Match (1, 4) (1, 12) "[ a, b ]"]
+        src = "x =\n    [ a, b ]\ny = 2\n"
+        resolve p = runIdentity (resolveLayers inline (Just caseTarget) [PhraseAnchor p] src)
+    it "misses `end of` when the last item does not end its line (review)" $
+      resolve "end of case in x" `shouldSatisfy` either (any (("whole lines" `T.isInfixOf`) . missReason)) (const False)
+    it "misses `start of` when the first item does not start its line (review)" $
+      resolve "start of case in x" `shouldSatisfy` either (any (("whole lines" `T.isInfixOf`) . missReason)) (const False)
+    it "still places `after` a container that ends its line" $
+      fmap locLine (resolve "after case in x") `shouldBe` Right 2
   describe "insertLines" $
     it "indents non-blank lines and reports the 1-based line" $
       insertLines (Located 1 "  " "" "x") "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")

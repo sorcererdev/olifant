@@ -53,7 +53,7 @@ resolveOne syntax lang anchor content = case anchor of
     Just l ->
       querySyntax syntax l rule content >>= \case
         Left f -> pure (Left (toolMiss f))
-        Right [m] -> pure (Right (around m pos))
+        Right [m] -> pure (around m pos)
         Right ms -> pure (Left (miss ("the rule matches " <> count ms <> " places; it must match once")))
   PhraseAnchor p -> case parsePhrase p of
     Left err -> pure (Left (miss err))
@@ -75,8 +75,17 @@ resolveOne syntax lang anchor content = case anchor of
     count = T.pack . show . length
     around m pos =
       let (s, e) = (fst (matchStart m), fst (matchEnd m))
-          line = if pos `elem` [StartOf, Before] then s else e + 1
-       in located line (indentAt s) (regionOf s e)
+       in if pos `elem` [StartOf, Before]
+            then wholeLine "the match" (startsLine (matchStart m)) (located s (indentAt s) (regionOf s e))
+            else wholeLine "the match" (endsLine (matchEnd m)) (located (e + 1) (indentAt s) (regionOf s e))
+    -- Olifant inserts whole lines, so a position must begin or end its line.
+    lineAt' i = if i < length ls then ls !! i else ""
+    -- A separator next to an item (`, b` in Elm, `x: X,` in Rust) is part of its line.
+    startsLine (l, col) = T.strip (T.take col (lineAt' l)) `elem` ["", ",", "|"]
+    endsLine (l, col) = T.strip (T.drop col (lineAt' l)) `elem` ["", ",", ";"]
+    wholeLine what ok loc
+      | ok = Right loc
+      | otherwise = Left (miss (what <> " shares its line with other code; Olifant inserts whole lines (use a multi-line layout, or another anchor)"))
     beforeAfter pos i what = case pos of
       Before -> Right i
       After -> Right (i + 1)
@@ -129,11 +138,15 @@ resolveOne syntax lang anchor content = case anchor of
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce
        in case (pos, items) of
-            (Before, _) -> Right (located cs (indentAt cs) region)
-            (After, _) -> Right (located (ce + 1) (indentAt cs) region)
+            (Before, _) -> wholeLine "the target's start" (startsLine (matchStart c)) (located cs (indentAt cs) region)
+            (After, _) -> wholeLine "the target's end" (endsLine (matchEnd c)) (located (ce + 1) (indentAt cs) region)
             (_, []) -> Left (miss "has no items to insert beside")
-            (StartOf, _) -> let f = minimumBy (comparing matchStart) items in Right (located (fst (matchStart f)) (indentAt (fst (matchStart f))) region)
-            (EndOf, _) -> let z = maximumBy (comparing matchEnd) items in Right (located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region)
+            (StartOf, _) ->
+              let f = minimumBy (comparing matchStart) items
+               in wholeLine "the first item" (startsLine (matchStart f)) (located (fst (matchStart f)) (indentAt (fst (matchStart f))) region)
+            (EndOf, _) ->
+              let z = maximumBy (comparing matchEnd) items
+               in wholeLine "the last item" (endsLine (matchEnd z)) (located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region)
     inside c m = matchStart m >= matchStart c && matchEnd m <= matchEnd c && m /= c
     topLevel ms = [m | m <- ms, not (any (\o -> o /= m && matchStart o <= matchStart m && matchEnd m <= matchEnd o) ms)]
 
