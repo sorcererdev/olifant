@@ -334,6 +334,18 @@ atSpec = describe "generate (at phrases)" $ do
     Right plan <- generate ws noResolve (Tools noSyntax noChecker [elm]) [Step gen' (M.fromList [("name", "b")])] now Apply
     map editAnchor (planEdits plan) `shouldBe` [Just "before marker -- olifant:pages"]
     (M.lookup "Main.elm" <$> snapshot) `shouldReturn` Just "type Page\n    = A\n    | B\n    -- olifant:pages\n"
+  it "re-running before/after inserts is a no-op (review)" $ do
+    let beside =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[[edits]]", "insert = \"a.elm\"", "at = \"after marker -- here\"", "text = \"after {= name =}\""
+            , "[[edits]]", "insert = \"a.elm\"", "at = \"before first line matching ^init \"", "text = \"before {= name =}\\n\""
+            ]
+        start = "x = 1\n-- here\n\ninit a = a\n"
+    (_, once) <- run [("a.elm", start)] beside [("name", "b")] Apply
+    M.lookup "a.elm" once `shouldBe` Just "x = 1\n-- here\nafter b\n\nbefore b\ninit a = a\n"
+    (Right again, twice) <- run (M.toList once) beside [("name", "b")] Apply
+    map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent, Skipped AlreadyPresent]
+    twice `shouldBe` once
   it "re-running an at-phrase insert is a no-op" $ hedgehog $ do
     n <- forAll (Gen.element ["c", "d_e", "f"])
     (_, once) <- evalIO (run [("lib.rs", "pub mod a;\n")] gen [("name", n)] Apply)

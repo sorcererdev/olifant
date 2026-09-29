@@ -7,6 +7,7 @@ module Olifant.Anchor.Resolve
   , locateContainer
   , insertLines
   , alreadyPresent
+  , presentAt
   , describeMisses
   ) where
 
@@ -158,6 +159,18 @@ insertLines loc snippet content =
    in (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
   where
     dropFinalNewline t = fromMaybe t (T.stripSuffix "\n" t)
+
+-- | Is the snippet already where this anchor would put it? Checks the
+-- anchor's region (a container or marker block) and the snippet-sized window
+-- on each side of the insertion line: a previous `after` run left the text
+-- just below it, a previous `before` run just above (spec §5.4).
+presentAt :: Located -> Text -> Text -> Bool
+presentAt loc snippet content =
+  alreadyPresent snippet (locRegion loc) || alreadyPresent snippet window
+  where
+    ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
+    k = max 1 (length (T.lines snippet))
+    window = T.intercalate "\n" (take (2 * k) (drop (max 0 (locLine loc - k)) ls))
 
 -- | Whitespace-insensitive "is this snippet already in the region?", on
 -- whole tokens (spec §5.4). Moved from Generation.Marker.

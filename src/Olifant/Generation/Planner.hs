@@ -11,7 +11,7 @@ import Data.Maybe (isNothing)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Text (Text)
-import Olifant.Anchor (Located (..), Miss, RenderedAnchor, alreadyPresent, insertLines)
+import Olifant.Anchor (Located (..), Miss, RenderedAnchor, insertLines, presentAt)
 import Olifant.Generation.Compose (PlanItem (..))
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (RenderedEdit (..))
@@ -60,7 +60,7 @@ decideItems locate items original blocked onDisk = finish <$> foldM step (origin
               locate p anchors old <&> \case
                 Left misses -> (current, planned path n p Conflicted, Just (AnchorUnresolved n p misses))
                 Right loc
-                  | alreadyPresent snippet (locRegion loc) -> (current, (planned path n p (Skipped AlreadyPresent)) {editAnchor = Just (locUsed loc)}, Nothing)
+                  | presentAt loc snippet old -> (current, (planned path n p (Skipped AlreadyPresent)) {editAnchor = Just (locUsed loc)}, Nothing)
                   | otherwise ->
                       let (line, updated) = insertLines loc snippet old
                        in (M.insert p (Just updated) current, (planned path n p (WillInsert line snippet)) {editAnchor = Just (locUsed loc)}, Nothing)
