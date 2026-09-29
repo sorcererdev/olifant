@@ -20,7 +20,7 @@ import Olifant.Generation.Plan
 import Olifant.Generation.Render (CompleteSpec (..))
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language
-import Olifant.Language.Elm (enclosingFunction, qualifyPattern)
+import Olifant.Language.Elm (enclosingFunction, qualifyPattern, visibleAt)
 import Olifant.Template (Value (..), describeTemplateError, render)
 import Olifant.Workspace (Workspace (..))
 import System.FilePath (splitDirectories)
@@ -63,7 +63,10 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
             Left f -> pure (reverse acc, [CompleteFailed step (describeCheckFailure f) (isToolMissing f)], [], current)
             Right report -> do
               let diags = reportMissing report
-                  wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, let cands = [s | s@(_, c) <- mine, mentions (completeConstructor c) p], not (null cands)]
+                  -- Candidates share the pattern's bare name and could appear
+                  -- at the site at all (a Route module never sees Main's).
+                  visible d c = langQualify lang /= Just "elm" || visibleAt (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
+                  wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, let cands = [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c], not (null cands)]
                   key (d, p, _) = (missingFile d, fst (missingCase d), p)
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
                 ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)

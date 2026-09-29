@@ -451,3 +451,18 @@ completeSpec = describe "generate (complete edits)" $ do
     Right plan <- generate ws noResolve (Tools noSyntax (brokenChecker [("src/A.elm", "SYNTAX PROBLEM")]) [elmLang]) [Step broken (M.fromList [("name", "reset")])] now Apply
     map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "src/A.elm" `T.isInfixOf` c && "SYNTAX PROBLEM" `T.isInfixOf` c)
     (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just page
+  it "narrows candidates to constructors visible at the site (Route cannot see Main)" $ do
+    let routeElm = "module Route exposing (..)\n\ntoPath r =\n    case r of\n        Home ->\n            \"/\"\n"
+        syntax = Syntax $ \_ _ _ -> pure (Right [])
+        two =
+          generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"elm\""
+            , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
+            , "[[edits]]", "complete = \"Main.Settings\"", "where = \"case in view\"", "text = \"Settings _ ->\\n    3\""
+            ]
+    ref <- newIORef [[MissingPatterns "src/Route.elm" (3, 5) ["Settings"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/Route.elm", routeElm)]
+    Right plan <- generate ws noResolve (Tools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
+    planConflicts plan `shouldBe` []
+    map (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
+    (M.lookup "src/Route.elm" <$> snapshot) `shouldReturn` Just (routeElm <> "\n        Settings ->\n            Debug.todo \"olifant: toPath Settings\"\n")

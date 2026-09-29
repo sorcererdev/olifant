@@ -63,7 +63,7 @@ text     = """
     {= P =}.init |> updateWith {= P =} Got{= P =}Msg model"""
 
 [[edits]]
-complete = "{= P =}"
+complete = "Main.{= P =}"
 where    = "case in view"
 text     = """
 {= P =} page ->

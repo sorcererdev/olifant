@@ -33,5 +33,6 @@ olifant gen elm/page --set page=settings --set msgs="toggle_dark_mode, set_displ
   `case` branches in `changeRouteTo`, `view` and each page's `update` are added where
   the Elm compiler reports them missing (needs `ast-grep` and `elm` installed).
 - If the result lists `todos`, each is a `Debug.todo` branch in a function the
-  generators don't know about (e.g. a hand-written `toPath : Route -> String`). Replace
-  the `Debug.todo` with the right branch body; `elm make --optimize` fails until you do.
+  generators don't know about (e.g. a hand-written `toPath : Route -> String`). The app
+  still compiles (even with `--optimize`), but that branch crashes if it runs: replace
+  each `Debug.todo` with the right branch body.
