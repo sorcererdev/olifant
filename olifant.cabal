@@ -58,6 +58,8 @@ library
     Olifant.Template.Syntax
     Olifant.Template
     Olifant.Naming
+    Olifant.Anchor
+    Olifant.Anchor.Phrase
     -- olifant:library-modules
 
 test-suite spec
@@ -104,6 +106,9 @@ test-suite spec
     Olifant.Naming
     Olifant.NamingSpec
     Olifant.TemplateSpec
+    Olifant.Anchor
+    Olifant.Anchor.Phrase
+    Olifant.AnchorSpec
     -- olifant:test-modules
 
 executable olifant
