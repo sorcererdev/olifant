@@ -14,6 +14,7 @@ module Olifant.Cli.Output
 import Data.Aeson (Value, encode, object, (.=))
 import Data.Aeson.Types (Pair)
 import Data.List (nub)
+import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
@@ -29,38 +30,57 @@ encodeJson = TL.toStrict . TLE.decodeUtf8 . encode
 idText :: GeneratorId -> Text
 idText = generatorIdText
 
-listJson :: [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Value
-listJson es broken =
+type Subs = CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
+
+listJson :: Bool -> Subs -> [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Value
+listJson detail subs es broken =
   object
-    [ "generators" .= [object ["id" .= idText (entryId e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)] | e <- es]
+    [ "generators" .= [if detail then showJson (subs e) e else summary e | e <- es]
     , "invalid" .= [object ["id" .= idText gid, "path" .= p, "error" .= err] | (gid, p, err) <- broken]
     , "tip" .= compositionTip
     ]
+  where
+    summary e = object ["id" .= idText (entryId e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)]
 
 -- | How to do a whole task in one call (agents pay per turn; spec §16).
 compositionTip :: Text
 compositionTip = "run a whole task in one call: olifant gen A --set k=v + B --set k=v (or --steps FILE with [{\"gen\": ..., \"set\": {...}}]); `olifant show GEN` lists inputs and examples"
 
-listHuman :: [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Text
-listHuman es broken =
-  T.unlines $
-    [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
-      ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> err | (gid, _, err) <- broken]
-      ++ ["", "Tip: " <> compositionTip]
+listHuman :: Bool -> Subs -> [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Text
+listHuman detail subs es broken
+  | detail = T.intercalate "\n" [showHuman (subs e) e | e <- es] <> T.unlines (["INVALID " <> idText gid <> ": " <> err | (gid, _, err) <- broken] ++ ["", "Tip: " <> compositionTip])
+  | otherwise =
+      T.unlines $
+        [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
+          ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> err | (gid, _, err) <- broken]
+          ++ ["", "Tip: " <> compositionTip]
   where
     width = maximum (0 : map (T.length . idText . entryId) es ++ [T.length (idText gid) | (gid, _, _) <- broken])
 
-showJson :: CatalogEntry -> Value
-showJson e =
+inputsJson :: GeneratorDef -> [Value]
+inputsJson d = [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] | i <- genInputs d]
+
+showJson :: [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Value
+showJson subs e =
   object
     [ "id" .= idText (entryId e)
     , "description" .= genDescription d
     , "language" .= genLanguage d
     , "version" .= genVersion d
-    , "inputs" .= [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] | i <- genInputs d]
+    , "inputs" .= inputsJson d
     , "derived" .= map fst (genDerived d)
     , "edits" .= map editJson (genEdits d)
     , "examples" .= genExamples d
+    , "uses"
+        .= [ object
+              [ "generator" .= useGenerator u
+              , "resolved" .= fmap (idText . entryId) sub
+              , "for_each" .= useForEach u
+              , "with" .= M.fromList [(k, templateSource t) | (k, t) <- useWith u]
+              , "inputs" .= maybe [] (inputsJson . entryDefinition) sub
+              ]
+           | (u, sub) <- subs
+           ]
     ]
   where
     d = entryDefinition e
@@ -68,8 +88,8 @@ showJson e =
       Create p _ _ -> object ["kind" .= ("create" :: Text), "path" .= templateSource p]
       Insert p _ _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p]
 
-showHuman :: CatalogEntry -> Text
-showHuman e =
+showHuman :: [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
+showHuman subs e =
   T.unlines $
     [idText (entryId e) <> ": " <> genDescription d, "", "inputs:"]
       ++ concat
@@ -79,9 +99,14 @@ showHuman e =
         ]
       ++ ["", "edits:"]
       ++ [case ed of Create p _ _ -> "  create " <> templateSource p; Insert p _ _ -> "  insert " <> templateSource p | ed <- genEdits d]
+      ++ (if null subs then [] else "" : "uses:" : concatMap useLines subs)
       ++ (if null (genExamples d) then [] else "" : "examples:" : ["  " <> x | x <- genExamples d])
   where
     d = entryDefinition e
+    useLines (u, sub) =
+      ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
+        : ("    with " <> T.unwords [k <> "=" <> templateSource t | (k, t) <- useWith u])
+        : ["    its input --set " <> inputName i <> "=<" <> describeInputType (inputType i) <> ">" | Just s' <- [sub], i <- genInputs (entryDefinition s')]
 
 planJson :: Bool -> Plan -> Value
 planJson applied plan =

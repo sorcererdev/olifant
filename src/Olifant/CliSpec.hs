@@ -202,3 +202,19 @@ spec = describe "runCli" $ do
     (code, _, err, _) <- runWith "" project True ["gen", "--plan"]
     code `shouldBe` ExitFailure 2
     err `shouldSatisfy` T.isInfixOf "missing GENERATOR"
+  it "shows a composite's sub-generators and their inputs, so one show is enough" $ do
+    let fs = project ++ [("/proj/.olifant/generators/outer/generator.toml", "description = \"o\"\nlanguage = \"x\"\n[inputs.names]\ntype = \"list\"\nof = \"ident\"\n[[uses]]\ngenerator = \"note\"\nfor_each = \"names\"\nwith = { name = \"{= item =}\", text = \"hi\" }\n")]
+    (_, json, _, _) <- runWith "" fs False ["show", "outer"]
+    json `shouldSatisfy` T.isInfixOf "\"uses\""
+    json `shouldSatisfy` T.isInfixOf "\"for_each\":\"names\""
+    json `shouldSatisfy` T.isInfixOf "\"name\":\"text\""
+    (_, human, _, _) <- runWith "" fs True ["show", "outer"]
+    human `shouldSatisfy` T.isInfixOf "uses:"
+    human `shouldSatisfy` T.isInfixOf "note (for each item of names)"
+  it "lists every generator with its inputs and examples via list --detail" $ do
+    (code, out, _, _) <- runWith "" project False ["list", "--detail"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "\"prompt\":\"Model name, singular (e.g. blog_post)\""
+    out `shouldSatisfy` T.isInfixOf "olifant gen model --set name=blog_post"
+    (_, human, _, _) <- runWith "" project True ["list", "--detail"]
+    human `shouldSatisfy` T.isInfixOf "--set name=<ident>"

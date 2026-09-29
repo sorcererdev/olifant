@@ -15,7 +15,7 @@ import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generation
-import Olifant.Generator (EnvError (..), generatorIdText, describeEnvError)
+import Olifant.Generator (EnvError (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText)
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), within)
 import System.FilePath ((</>))
@@ -49,14 +49,14 @@ runCli rt args = case parseOptions args of
 
 runCommand :: Runtime -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt fmt cat = \case
-  ListCmd -> do
+  ListCmd detail -> do
     let entries = catalogEntries cat
         broken = catalogBroken cat
-    emit rt fmt (listJson entries broken) (listHuman entries broken)
+    emit rt fmt (listJson detail (subsOf cat) entries broken) (listHuman detail (subsOf cat) entries broken)
     pure ExitSuccess
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
-    Right e -> emit rt fmt (showJson e) (showHuman e) >> pure ExitSuccess
+    Right e -> emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
   GenCmd g -> do
     let usage = usageIn rt fmt
     specs <- case genStepsFile g of
@@ -93,6 +93,11 @@ usageIn rt fmt msg = do
     Json -> rtOut rt (encodeJson (errorJson "usage" msg []) <> "\n")
     Human -> rtErr rt (msg <> "\n")
   pure (ExitFailure 2)
+
+-- | A generator's [[uses]] steps with the entries they resolve to, so `show`
+-- can describe a composite completely in one call.
+subsOf :: Catalog -> CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
+subsOf cat e = [(u, either (const Nothing) Just (resolveEntry cat (packOfEntry e) (useGenerator u))) | u <- genUses (entryDefinition e)]
 
 emit :: Runtime -> Format -> Value -> Text -> IO ()
 emit rt fmt json human = rtOut rt $ case fmt of

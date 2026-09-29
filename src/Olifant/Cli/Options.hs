@@ -28,7 +28,7 @@ data Format = Json | Human
 data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
-data Command = ListCmd | ShowCmd Text | GenCmd GenOptions
+data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions -- ^ ListCmd: --detail
   deriving stock (Eq, Show)
 
 -- | One step of a `gen` run: a generator and exactly its inputs (spec §7).
@@ -77,7 +77,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     parserInfo = info (commands <**> helper) (fullDesc <> progDesc "Olifant: Durandal's generator engine")
     commands =
       hsubparser
-        ( cmd "list" (pure ListCmd) "List generators"
+        ( cmd "list" (ListCmd <$> switch (long "detail" <> help "Include every generator's inputs, sub-generators and examples")) "List generators"
             <> cmd "show" (ShowCmd <$> strArgument (metavar "GENERATOR")) "Describe a generator's inputs and edits"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
@@ -100,7 +100,7 @@ parseGen = go Nothing False Nothing Nothing [] [] . concatMap splitEq
   where
     -- `--set=k=v` / `--now=T` / `--steps=F` are the same as the two-word forms.
     splitEq a = case break (== '=') a of
-      (flag, '=' : v) | flag `elem` ["--set", "--now", "--steps"] -> [flag, v]
+      (opt, '=' : v) | opt `elem` ["--set", "--now", "--steps"] -> [opt, v]
       _ -> [a]
     go fmt plan now stepsFile cur done = \case
       [] -> finish fmt plan now stepsFile (reverse (reverse cur : done))
