@@ -79,7 +79,7 @@ runCommand rt fmt cat = \case
             now <- maybe (rtNow rt) pure (genNow g)
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) noTools steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan -> do
                 let applied = mode == Apply && not (hasConflicts plan)

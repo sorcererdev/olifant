@@ -51,13 +51,14 @@ createGen =
 run :: [(FilePath, Text)] -> Generator -> [(Text, Text)] -> Mode -> IO (Either GenerationError Plan, M.Map FilePath Text)
 run files gen sets mode = do
   (ws, snapshot) <- memoryWorkspace files
-  result <- generate ws noResolve [Step gen (M.fromList sets)] now mode
+  result <- generate ws noResolve noTools [Step gen (M.fromList sets)] now mode
   (result,) <$> snapshot
 
 spec :: Spec
 spec = do
   createSpec
   insertSpec
+  atSpec
   unusableSpec
   composeSpec
 
@@ -131,13 +132,13 @@ insertSpec = describe "generate (marker inserts)" $ do
     map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}\n"]
   it "keeps earlier inserts in order (the marker stays last)" $ do
     (ws, snapshot) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
-    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
-    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "c_c")])] now Apply
+    _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "c_c")])] now Apply
     M.lookup "svc/lib.rs" <$> snapshot `shouldReturn` Just "pub mod a;\npub mod b_b;\npub mod c_c;\n// olifant:modules\n"
   it "skips text that is already present, so re-running is a no-op" $ do
     (ws, _) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
-    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
-    Right again <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    Right again <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
     map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent, Skipped AlreadyPresent]
     planWrites again `shouldBe` M.empty
   it "does not mistake a longer identifier for the snippet (token-bounded already-present check)" $ do
@@ -155,7 +156,10 @@ insertSpec = describe "generate (marker inserts)" $ do
       `shouldBe` Just "library\n  exposed-modules:\n    Olifant.A\n    Olifant.BB\n    -- olifant:lib\n\ntest-suite spec\n  other-modules:\n    Olifant.A\n    Olifant.BB\n    -- olifant:test\n"
   it "reports a missing or repeated marker, and a missing file, as conflicts" $ do
     (Right plan, files) <- run [("svc/lib.rs", "pub mod a;\n"), ("svc/service.rs", service <> "// olifant:delegates\n")] insertGen [("cmd", "b_b")] Apply
-    planConflicts plan `shouldBe` [MarkerNotFound 1 "svc/lib.rs" "// olifant:modules", MarkerRepeated 2 "svc/service.rs" "// olifant:delegates" 2]
+    map describeConflict (planConflicts plan)
+      `shouldBe` [ "edit 1: cannot place text in svc/lib.rs: `before marker // olifant:modules`: marker not found"
+                 , "edit 2: cannot place text in svc/service.rs: `before marker // olifant:delegates`: marker appears 2 times; it must appear once"
+                 ]
     M.lookup "svc/lib.rs" files `shouldBe` Just "pub mod a;\n"
     (Right plan2, _) <- run [] insertGen [("cmd", "b_b")] Apply
     planConflicts plan2 `shouldBe` [InsertTargetMissing 1 "svc/lib.rs", InsertTargetMissing 2 "svc/service.rs"]
@@ -166,8 +170,8 @@ insertSpec = describe "generate (marker inserts)" $ do
     ws' <- forAll (Gen.list (Range.linear 2 3) (Gen.text (Range.linear 2 6) Gen.lower))
     let sets = M.fromList [("cmd", T.intercalate "_" ws')]
     (ws, _) <- evalIO (memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)])
-    _ <- evalIO (generate ws noResolve [Step insertGen sets] now Apply)
-    second <- evalIO (generate ws noResolve [Step insertGen sets] now Apply)
+    _ <- evalIO (generate ws noResolve noTools [Step insertGen sets] now Apply)
+    second <- evalIO (generate ws noResolve noTools [Step insertGen sets] now Apply)
     fmap planWrites second === Right M.empty
 
 unusableSpec :: Spec
@@ -179,7 +183,7 @@ unusableSpec = describe "generate (targets that cannot be written)" $ do
   it "never overwrites an existing file it cannot read as text (all-or-nothing)" $
     withSystemTempDirectory "olifant" $ \dir -> do
       BS.writeFile (dir </> "mine.txt") "caf\xe9 precious\n"
-      Right plan <- generate (diskWorkspace dir) noResolve [Step pathGen (M.fromList [("dir", "mine.txt")])] now Apply
+      Right plan <- generate (diskWorkspace dir) noResolve noTools [Step pathGen (M.fromList [("dir", "mine.txt")])] now Apply
       planConflicts plan `shouldSatisfy` \case [c] -> isUnusable 2 "mine.txt" c; _ -> False
       BS.readFile (dir </> "mine.txt") `shouldReturn` "caf\xe9 precious\n"
       BS.readFile (dir </> "a.txt") `shouldThrow` anyIOException
@@ -215,7 +219,7 @@ composeSpec = describe "generate (composition)" $ do
       resolve = resolveTo [("msg", msgGen), ("page", pageGen)]
       gen1 steps = do
         (ws, snapshot) <- memoryWorkspace []
-        result <- generate ws resolve steps now Apply
+        result <- generate ws resolve noTools steps now Apply
         (result,) <$> snapshot
   it "runs a generator's [[uses]] once per for_each item, in one plan, with requires met by earlier steps" $ do
     (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings"), ("msgs", "toggle_dark_mode, reset")])]
@@ -247,7 +251,7 @@ composeSpec = describe "generate (composition)" $ do
     map editAction (drop 2 (planEdits plan)) `shouldBe` [Skipped AlreadyPresent]
   it "reports an unknown nested generator and writes nothing" $ do
     (ws, snapshot) <- memoryWorkspace []
-    result <- generate ws noResolve [Step pageGen (M.fromList [("page", "a_b"), ("msgs", "c_d")])] now Apply
+    result <- generate ws noResolve noTools [Step pageGen (M.fromList [("page", "a_b"), ("msgs", "c_d")])] now Apply
     result `shouldSatisfy` \case
       Left (UnknownGenerator ["page"] "msg" _) -> True
       _ -> False
@@ -255,7 +259,7 @@ composeSpec = describe "generate (composition)" $ do
   it "detects composition cycles instead of looping" $ do
     let loopGen = generatorNamed "loop" "description = \"loop\"\nlanguage = \"x\"\n[[uses]]\ngenerator = \"loop\"\n"
     (ws, _) <- memoryWorkspace []
-    result <- generate ws (resolveTo [("loop", loopGen)]) [Step loopGen M.empty] now Apply
+    result <- generate ws (resolveTo [("loop", loopGen)]) noTools [Step loopGen M.empty] now Apply
     result `shouldSatisfy` \case
       Left (CompositionCycle _) -> True
       _ -> False
@@ -263,7 +267,7 @@ composeSpec = describe "generate (composition)" $ do
   it "reports a cycle even behind an empty for_each" $ do
     let loopGen = generatorNamed "loop" "description = \"loop\"\nlanguage = \"x\"\n[inputs.xs]\ntype = \"list\"\noptional = true\nof = \"ident\"\n[[uses]]\ngenerator = \"loop\"\nfor_each = \"xs\"\n"
     (ws, _) <- memoryWorkspace []
-    result <- generate ws (resolveTo [("loop", loopGen)]) [Step loopGen M.empty] now Apply
+    result <- generate ws (resolveTo [("loop", loopGen)]) noTools [Step loopGen M.empty] now Apply
     result `shouldSatisfy` \case
       Left (CompositionCycle _) -> True
       _ -> False
@@ -282,7 +286,7 @@ composeSpec = describe "generate (composition)" $ do
     files `shouldBe` M.empty
   it "lists a conflicting edit with its step, so conflicts point at something" $ do
     (ws, snapshot) <- memoryWorkspace [("src/B.txt", "someone else's\n")]
-    Right plan <- generate ws noResolve [Step (pageOnly "page") (M.fromList [("page", "a")]), Step (pageOnly "page") (M.fromList [("page", "b")])] now Apply
+    Right plan <- generate ws noResolve noTools [Step (pageOnly "page") (M.fromList [("page", "a")]), Step (pageOnly "page") (M.fromList [("page", "b")])] now Apply
     map (\e -> (editStep e, editAction e)) (planEdits plan)
       `shouldBe` [(["page (step 1)"], WillCreate "page A\n"), (["page (step 2)"], Conflicted)]
     snapshot `shouldReturn` M.fromList [("src/B.txt", "someone else's\n")]
@@ -290,7 +294,33 @@ composeSpec = describe "generate (composition)" $ do
     withSystemTempDirectory "olifant" $ \dir -> do
       BS.writeFile (dir </> "logo.png") "\x89PNG\xff"
       let gen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[requires]\nexists = [\"logo.png\"]\n[[edits]]\ncreate = \"a.txt\"\ntext = \"a\"\n"
-      Right plan <- generate (diskWorkspace dir) noResolve [Step gen M.empty] now Apply
+      Right plan <- generate (diskWorkspace dir) noResolve noTools [Step gen M.empty] now Apply
       planConflicts plan `shouldBe` []
   where
     pageOnly gid = generatorNamed gid "description = \"p\"\nlanguage = \"x\"\n[inputs.page]\ntype = \"ident\"\n[[edits]]\ncreate = \"src/{= page|pascal =}.txt\"\ntext = \"page {= page|pascal =}\\n\"\n"
+
+atSpec :: Spec
+atSpec = describe "generate (at phrases)" $ do
+  let gen =
+        generatorFrom . (header <>) . T.unlines $
+          [ "[[edits]]"
+          , "insert = \"lib.rs\""
+          , "at = [\"end of mods in lib\", \"after last line matching ^pub mod \"]"
+          , "text = \"pub mod {= name|snake =};\""
+          ]
+  it "falls back to a line target when no adapter/tool is available, and says which anchor it used" $ do
+    (Right plan, files) <- run [("lib.rs", "pub mod a;\npub mod b;\n\nfn x() {}\n")] gen [("name", "c")] Apply
+    M.lookup "lib.rs" files `shouldBe` Just "pub mod a;\npub mod b;\npub mod c;\n\nfn x() {}\n"
+    map editAnchor (planEdits plan) `shouldBe` [Just "after last line matching ^pub mod "]
+  it "is a conflict listing every layer when none resolves" $ do
+    (Right plan, _) <- run [("lib.rs", "fn x() {}\n")] gen [("name", "c")] PlanOnly
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("`after last line matching ^pub mod `: no line matches" `T.isInfixOf`)
+  it "keeps `anchor = { marker = … }` working" $ do
+    let old = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"a.txt\"", "anchor = { marker = \"# here\" }", "text = \"{= name =}\""]
+    (_, files) <- run [("a.txt", "x\n# here\n")] old [("name", "y")] Apply
+    M.lookup "a.txt" files `shouldBe` Just "x\ny\n# here\n"
+  it "re-running an at-phrase insert is a no-op" $ hedgehog $ do
+    n <- forAll (Gen.element ["c", "d_e", "f"])
+    (_, once) <- evalIO (run [("lib.rs", "pub mod a;\n")] gen [("name", n)] Apply)
+    (_, twice) <- evalIO (run (M.toList once) gen [("name", n)] Apply)
+    twice === once

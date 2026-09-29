@@ -70,7 +70,7 @@ expand resolve now ancestors path gen sets = do
   when (genId gen `elem` ancestors) $ throwE (StepCycle path)
   checkCycles resolve (genId gen : ancestors) path gen
   env <- except (first (StepInputs path) (buildEnv gen sets now))
-  rendered <- except (first (StepTemplate path) (renderEdits env (genEdits gen)))
+  rendered <- except (first (StepTemplate path) (renderEdits (genLanguage gen) env (genEdits gen)))
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
   nested <- concat <$> zipWithM (expandUse env) [1 :: Int ..] (genUses gen)
   pure ([PlanRequire path required hint | not (null required)] ++ map (PlanEdit path) rendered ++ nested)

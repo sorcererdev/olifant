@@ -12,6 +12,7 @@ module Olifant.Generation
   , showStepPath
   , generate
   , module Olifant.Generation.Plan
+  , module Olifant.Generation.Tools
   ) where
 
 import Control.Monad (filterM, forM_, when)
@@ -24,9 +25,12 @@ import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Compose
 import Olifant.Generation.Plan
+import Olifant.Anchor (resolveLayers)
 import Olifant.Generation.Planner (decideItems)
+import Olifant.Generation.Tools
 import Olifant.Generation.Render (renderedPath)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..))
+import Olifant.Language (languageFor)
 import Olifant.Template (TemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative)
 import System.FilePath (takeDirectory)
@@ -42,24 +46,26 @@ data GenerationError
   | CompositionCycle StepPath
   deriving stock (Eq, Show)
 
-generate :: Monad m => Workspace m -> Resolve m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
-generate ws resolve steps now mode =
+generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
+generate ws resolve tools steps now mode =
   expandSteps resolve now steps >>= \case
     Left err -> pure (Left (fromComposition err))
     Right items -> do
-      let targets = nub [renderedPath e | PlanEdit _ e <- items]
+      let targets = nub [p | PlanEdit _ e <- items, Just p <- [renderedPath e]]
           required = nub [p | PlanRequire _ ps _ <- items, p <- ps]
       inspected <- traverse (\p -> (p,) <$> inspectTarget p) (nub (targets ++ required))
       onDisk <- S.fromList <$> filterM (\p -> if isSafeRelative p then (/= Absent) <$> inspectPath ws p else pure False) required
       let originals = M.fromList [(p, t) | (p, Right t) <- inspected]
           blocked = M.fromList [(p, why) | (p, Left why) <- inspected, p `elem` targets]
-          (edits, conflicts, writes) = decideItems items originals blocked onDisk
           ids = [generatorIdText (genId (stepGenerator s)) | s <- steps]
+      (edits, conflicts, current, _) <- decideItems locate items originals blocked onDisk
+      let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts writes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
   where
+    locate p anchors content = resolveLayers (toolSyntax tools) (languageFor (toolLanguages tools) p) anchors content
     fromComposition = \case
       StepInputs p e -> InvalidInputs p e
       StepTemplate p e -> TemplateFailed p e

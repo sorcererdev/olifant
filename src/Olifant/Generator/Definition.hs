@@ -6,7 +6,7 @@ module Olifant.Generator.Definition
   , Requires (..)
   , EditWith (..)
   , OnExists (..)
-  , Anchor (..)
+  , AnchorSpec (..)
   , SourceRef (..)
   , UseStep (..)
   , InputSpec (..)
@@ -17,6 +17,8 @@ module Olifant.Generator.Definition
   ) where
 
 import Data.Text (Text)
+import Olifant.Anchor (Position)
+import Olifant.Language (Rule)
 import Olifant.Template (Binding, Template)
 
 newtype GeneratorId = GeneratorId {generatorIdText :: Text}
@@ -57,14 +59,17 @@ data Requires = Requires {requiresExists :: [Template], requiresHint :: Maybe Te
 
 data EditWith src
   = Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists}
-  | Insert {editTarget :: Template, editAnchor :: Anchor, editSource :: src}
+  | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src}
+  | -- | Add a branch for 'editConstructor' to every case the compiler reports (spec §5.6).
+    Complete {editConstructor :: Template, editWhere :: Maybe Template, editSource :: src}
   deriving stock (Show, Functor, Foldable, Traversable)
 
 data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists
   deriving stock (Eq, Show)
 
-newtype Anchor = Marker Text
-  deriving stock (Eq, Show)
+-- | Where an insert goes: a phrase (rendered, then parsed) or a raw ast-grep rule.
+data AnchorSpec = AtPhrase Template | AtRule Rule Position
+  deriving stock (Show)
 
 data SourceRef
   = TemplateFile FilePath

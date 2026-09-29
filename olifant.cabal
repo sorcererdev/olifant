@@ -40,8 +40,8 @@ library
     Olifant.Cli.Options
     Olifant.Cli
     Olifant.Catalog
-    Olifant.Generation.Marker
     Olifant.Generation.Planner
+    Olifant.Generation.Tools
     Olifant.Generation.Plan
     Olifant.Generation
     Olifant.Generator.Inputs
@@ -90,8 +90,8 @@ test-suite spec
     Olifant.CliSpec
     Olifant.Catalog
     Olifant.CatalogSpec
-    Olifant.Generation.Marker
     Olifant.Generation.Planner
+    Olifant.Generation.Tools
     Olifant.Generation.Plan
     Olifant.Generation
     Olifant.GenerationSpec

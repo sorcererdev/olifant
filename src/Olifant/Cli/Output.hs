@@ -19,6 +19,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
+import Olifant.Anchor (positionWords)
 import Olifant.Catalog (CatalogEntry (..))
 import Olifant.Generation
 import Olifant.Generator
@@ -86,7 +87,8 @@ showJson subs e =
     d = entryDefinition e
     editJson = \case
       Create p _ _ -> object ["kind" .= ("create" :: Text), "path" .= templateSource p]
-      Insert p _ _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p]
+      Insert p anchors _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
+      Complete c w _ -> object ["kind" .= ("complete" :: Text), "constructor" .= templateSource c, "where" .= fmap templateSource w]
 
 showHuman :: [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
 showHuman subs e =
@@ -98,11 +100,15 @@ showHuman subs e =
         | i <- genInputs d
         ]
       ++ ["", "edits:"]
-      ++ [case ed of Create p _ _ -> "  create " <> templateSource p; Insert p _ _ -> "  insert " <> templateSource p | ed <- genEdits d]
+      ++ [editLine ed | ed <- genEdits d]
       ++ (if null subs then [] else "" : "uses:" : concatMap useLines subs)
       ++ (if null (genExamples d) then [] else "" : "examples:" : ["  " <> x | x <- genExamples d])
   where
     d = entryDefinition e
+    editLine = \case
+      Create p _ _ -> "  create " <> templateSource p
+      Insert p anchors _ -> "  insert " <> templateSource p <> " at " <> T.intercalate " | " (map anchorText anchors)
+      Complete c w _ -> "  complete " <> templateSource c <> maybe "" (\x -> " in " <> templateSource x) w
     useLines (u, sub) =
       ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
         : ("    with " <> T.unwords [k <> "=" <> templateSource t | (k, t) <- useWith u])
@@ -118,9 +124,16 @@ planJson applied plan =
     , "now" .= planNow plan
     , "edits" .= map editJson (planEdits plan)
     , "conflicts" .= [object ["code" .= conflictCode c, "message" .= describeConflict c] | c <- planConflicts plan]
+    , "todos" .= [object ["edit" .= editId e, "file" .= siteFile s, "function" .= siteFunction s, "pattern" .= sitePattern s] | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
     ]
   where
-    editJson (PlannedEdit st n p action) = object (["id" .= ("e" <> T.pack (show n)), "step" .= showStepPath st, "path" .= p] ++ actionFields action)
+    editId e = "e" <> T.pack (show (editNumber e))
+    editJson e =
+      object $
+        ["id" .= editId e, "step" .= showStepPath (editStep e), "path" .= editPath e]
+          ++ actionFields (editAction e)
+          ++ ["anchor_used" .= a | Just a <- [editAnchor e], Nothing <- [editSite e]]
+          ++ concat [["found_by" .= ("compiler" :: Text), "site" .= siteFunction s, "todo" .= siteTodo s] | Just s <- [editSite e]]
     -- Applied runs omit contents: the caller already has them on disk, and
     -- agents pay for every token of output in every later turn.
     content c = ["content" .= c | not applied]
@@ -132,7 +145,7 @@ planJson applied plan =
       Conflicted -> ["status" .= ("conflict" :: Text)]
 
 planHuman :: Bool -> Plan -> Text
-planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan)) <> details
+planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines) <> details
   where
     header =
       (if applied then "" else "Plan: ")
@@ -146,7 +159,8 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
     count xs noun = T.pack (show (length xs)) <> " " <> noun <> (if length xs == 1 then "" else "s")
     multiStep = length (nub (map editStep (planEdits plan))) > 1
     stepTag st = if multiStep then "  [" <> showStepPath st <> "]" else ""
-    editLine (PlannedEdit st _ p action) = (<> stepTag st) $ case action of
+    todoLines = ["  ? " <> T.pack (siteFile s) <> ": " <> siteFunction s <> " needs a branch for " <> sitePattern s <> " (left as a todo)" | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
+    editLine (PlannedEdit st _ p action _ _) = (<> stepTag st) $ case action of
       WillCreate c -> "  + " <> T.pack p <> " (" <> lineCount c <> ")"
       WillOverwrite c -> "  ~ " <> T.pack p <> " (overwritten, " <> lineCount c <> ")"
       WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> ")"
@@ -155,7 +169,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
     lineCount c = let n = length (T.lines c) in T.pack (show n) <> (if n == 1 then " line" else " lines")
     details
       | applied = ""
-      | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ _ p a <- planEdits plan, Just c <- [contentOf a]]
+      | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ _ p a _ _ <- planEdits plan, Just c <- [contentOf a]]
     contentOf = \case
       WillCreate c -> Just c
       WillOverwrite c -> Just c
@@ -173,8 +187,8 @@ conflictCode :: Conflict -> Text
 conflictCode = \case
   TargetExists {} -> "target_exists"
   InsertTargetMissing {} -> "insert_target_missing"
-  MarkerNotFound {} -> "anchor_unresolved"
-  MarkerRepeated {} -> "marker_repeated"
+  AnchorUnresolved {} -> "anchor_unresolved"
+  CompleteFailed {} -> "complete_failed"
   UnsafePath {} -> "unsafe_path"
   RequirementUnmet {} -> "requires_unmet"
   TargetUnusable {} -> "target_unusable"
@@ -192,3 +206,8 @@ inputProblemFields ps =
   , "unknown" .= [n | UnknownInput n <- ps]
   , "hint" .= T.unwords ["--set " <> inputName s <> "=<" <> describeInputType (inputType s) <> ">" | MissingInput s <- ps]
   ]
+
+anchorText :: AnchorSpec -> Text
+anchorText = \case
+  AtPhrase t -> templateSource t
+  AtRule _ pos -> "ast rule (" <> positionWords pos <> ")"

@@ -61,7 +61,7 @@ parseSpec = describe "parseGenerator" $ do
       `shouldBe` Right [("Model", "{= name|pascal =}"), ("table", "{= name|plural|snake =}")]
   it "reads create and insert edits" $
     fmap (map describeEdit . genEdits) (load modelToml)
-      `shouldBe` Right ["create app/models/{= name|snake =}.rb from model.rb.dt", "insert config/routes.rb at # olifant:routes"]
+      `shouldBe` Right ["create app/models/{= name|snake =}.rb from model.rb.dt", "insert config/routes.rb at before marker # olifant:routes"]
   it "reads exemplar sources with their bindings" $ do
     let toml = "description = \"d\"\nlanguage = \"rust\"\n[[edits]]\ncreate = \"x.rs\"\nexemplar = \"fixture:src/refund_invoice.rs\"\nbind = { command_name = \"refund_invoice\" }\n"
     fmap (map (\e -> case editSource e of ExemplarFile ref bs -> (ref, length bs); _ -> ("?", 0)) . genEdits) (load toml)
@@ -93,6 +93,23 @@ parseSpec = describe "parseGenerator" $ do
     let result = load (T.replace "template = " "templete = " modelToml)
     result `shouldSatisfy` isLeft
     either id (const "") result `shouldSatisfy` T.isInfixOf "templete"
+  it "reads `at` as one phrase or a list, and `complete` edits" $ do
+    let src =
+          T.unlines
+            [ "description = \"d\"", "language = \"elm\""
+            , "[[edits]]", "insert = \"a.elm\"", "at = [\"end of type Msg\", \"before marker -- m\"]", "text = \"x\""
+            , "[[edits]]", "complete = \"Route.X\"", "where = \"case in update\"", "text = \"{= pattern =} -> 1\""
+            ]
+    fmap (map describeEdit . genEdits) (load src) `shouldBe` Right ["insert a.elm at end of type Msg | before marker -- m", "complete Route.X"]
+  it "rejects a phrase without variables that does not parse, at load time" $
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "at = \"bottom of type Msg\"", "text = \"x\""])
+      `shouldSatisfy` either ("start of, end of, before or after" `T.isInfixOf`) (const False)
+  it "rejects a `where` that is not a target" $
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "complete = \"X\"", "where = \"marker\"", "text = \"x\""])
+      `shouldSatisfy` isLeft
+  it "needs exactly one of `at` or `anchor`" $
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
+      `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft
   it "reports template syntax errors with the key" $ do
@@ -101,7 +118,8 @@ parseSpec = describe "parseGenerator" $ do
   where
     describeEdit = \case
       Create p (TemplateFile f) _ -> "create " <> templateSource p <> " from " <> T.pack f
-      Insert p (Marker m) _ -> "insert " <> templateSource p <> " at " <> m
+      Insert p anchors _ -> "insert " <> templateSource p <> " at " <> T.intercalate " | " [case a of AtPhrase t -> templateSource t; AtRule _ _ -> "<ast rule>" | a <- anchors]
+      Complete c _ _ -> "complete " <> templateSource c
       _ -> "unexpected"
 
 envSpec :: Spec
