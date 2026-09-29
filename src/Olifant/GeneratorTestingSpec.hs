@@ -6,6 +6,10 @@ import Control.Monad (forM_)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.GeneratorTesting
+import Olifant.Language (noChecker, noSyntax, processChecker)
+import Olifant.Language.AstGrep (astGrepSyntax)
+import System.Directory (getTemporaryDirectory)
+import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
 import Test.Hspec
@@ -22,7 +26,7 @@ runTiny :: [(FilePath, Text)] -> IO CaseResult
 runTiny files = do
   (root, _) <- memoryWorkspace files
   [c] <- discoverCases root "/packs"
-  runCase root False c
+  runCase root noSyntax noChecker False c
 
 spec :: Spec
 spec = do
@@ -32,15 +36,19 @@ spec = do
     it "fails with the differing file when output differs" $
       runTiny (tinyPack "hello Wrong\n") >>= \case
         CaseFailed msgs -> T.unlines msgs `shouldSatisfy` T.isInfixOf "out/blog_post.txt"
-        CasePassed -> expectationFailure "expected a failure"
+        other -> expectationFailure ("expected a failure, got " <> show other)
     it "fails when a generated file is missing from the snapshot" $
       runTiny (take 3 (tinyPack "")) >>= \case
         CaseFailed msgs -> T.unlines msgs `shouldSatisfy` T.isInfixOf "not in snapshot"
-        CasePassed -> expectationFailure "expected a failure"
+        other -> expectationFailure ("expected a failure, got " <> show other)
 
   describe "packs" $ do
     cases <- runIO (discoverCases (diskWorkspace ".") "packs")
     bless <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_BLESS")
     it "has pack cases to run" $ cases `shouldNotBe` []
+    tmp <- runIO getTemporaryDirectory
     forM_ cases $ \c ->
-      it (T.unpack (caseName c)) $ runCase (diskWorkspace ".") bless c `shouldReturn` CasePassed
+      it (T.unpack (caseName c)) $
+        runCase (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) processChecker bless c >>= \case
+          CaseSkipped why -> pendingWith (T.unpack why)
+          other -> other `shouldBe` CasePassed

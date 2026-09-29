@@ -6,16 +6,19 @@ import Data.Aeson (Value, eitherDecodeStrict)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
 import Data.Map.Strict qualified as M
+import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
+import Olifant.Anchor (RenderedAnchor (..), describeMisses, parsePhrase, resolveLayers)
 import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generation
 import Olifant.Generator (EnvError (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText)
+import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), within)
 import System.FilePath ((</>))
@@ -31,6 +34,8 @@ data Runtime = Runtime
   , rtStdoutIsTty :: Bool
   , rtOut :: Text -> IO ()
   , rtErr :: Text -> IO ()
+  , rtSyntax :: Syntax IO
+  , rtChecker :: Checker IO
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -57,6 +62,19 @@ runCommand rt fmt cat = \case
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
     Right e -> emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
+  AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
+    Nothing ->
+      failWith rt fmt 3 "language_not_found" ("no language adapter named `" <> name <> "`") (Just "packs define languages in languages/<name>.toml") ["available" .= map langName (catalogLanguages cat)]
+    Just lang -> emit rt fmt (anchorsJson lang) (anchorsHuman lang) >> pure ExitSuccess
+  WhereCmd file phrase -> case parsePhrase phrase of
+    Left err -> usageIn rt fmt err
+    Right _ ->
+      readText (rtRoot rt) (rtProjectDir rt </> file) >>= \case
+        Nothing -> failWith rt fmt 3 "file_not_found" ("cannot read " <> T.pack file) Nothing []
+        Just content ->
+          resolveLayers (rtSyntax rt) (languageFor (catalogLanguages cat) file) [PhraseAnchor phrase] content >>= \case
+            Left misses -> failWith rt fmt 5 "anchor_unresolved" (describeMisses misses) (Just "`olifant anchors <language>` lists the targets") []
+            Right loc -> emit rt fmt (whereJson file phrase loc content) (whereHuman file loc content) >> pure ExitSuccess
   GenCmd g -> do
     let usage = usageIn rt fmt
     specs <- case genStepsFile g of
@@ -79,7 +97,7 @@ runCommand rt fmt cat = \case
             now <- maybe (rtNow rt) pure (genNow g)
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) noTools steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) (Tools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan -> do
                 let applied = mode == Apply && not (hasConflicts plan)

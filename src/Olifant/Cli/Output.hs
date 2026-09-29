@@ -5,6 +5,10 @@ module Olifant.Cli.Output
   , showJson
   , showHuman
   , planJson
+  , anchorsJson
+  , anchorsHuman
+  , whereJson
+  , whereHuman
   , planHuman
   , errorJson
   , errorHuman
@@ -19,10 +23,11 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
-import Olifant.Anchor (positionWords)
+import Olifant.Anchor (Located (..), positionWords)
 import Olifant.Catalog (CatalogEntry (..))
 import Olifant.Generation
 import Olifant.Generator
+import Olifant.Language (Language (..), TargetDef (..), targetPhrase)
 import Olifant.Template (templateSource)
 
 encodeJson :: Value -> Text
@@ -211,3 +216,40 @@ anchorText :: AnchorSpec -> Text
 anchorText = \case
   AtPhrase t -> templateSource t
   AtRule _ pos -> "ast rule (" <> positionWords pos <> ")"
+
+builtinForms :: [Text]
+builtinForms = ["before|after marker TEXT", "before|after first line matching REGEX", "before|after last line matching REGEX"]
+
+anchorsJson :: Language -> Value
+anchorsJson lang =
+  object
+    [ "language" .= langName lang
+    , "positions" .= (["start of", "end of", "before", "after"] :: [Text])
+    , "builtin" .= builtinForms
+    , "targets" .= [object ["phrase" .= targetPhrase t, "example" .= targetExample t] | t <- langTargets lang]
+    ]
+
+anchorsHuman :: Language -> Text
+anchorsHuman lang =
+  T.unlines $
+    [langName lang <> ": at = \"<start of|end of|before|after> <target>\"", "", "targets:"]
+      ++ ["  " <> T.justifyLeft 24 ' ' (targetPhrase t) <> "e.g. " <> targetExample t | t <- langTargets lang]
+      ++ ["", "built in (any file):"]
+      ++ map ("  " <>) builtinForms
+
+-- | Up to three lines either side of where text would go.
+whereContext :: Located -> Text -> ([Text], [Text])
+whereContext loc content =
+  let ls = T.lines content
+      i = locLine loc
+   in (drop (max 0 (i - 3)) (take i ls), take 3 (drop i ls))
+
+whereJson :: FilePath -> Text -> Located -> Text -> Value
+whereJson file phrase loc content =
+  let (before, after) = whereContext loc content
+   in object ["file" .= file, "phrase" .= phrase, "line" .= (locLine loc + 1), "indent" .= T.length (locIndent loc), "before" .= before, "after" .= after]
+
+whereHuman :: FilePath -> Located -> Text -> Text
+whereHuman file loc content =
+  let (before, after) = whereContext loc content
+   in T.unlines ([T.pack file <> ":" <> T.pack (show (locLine loc + 1))] ++ map ("    " <>) before ++ ["  ▶ " <> locIndent loc <> "(inserted here)"] ++ map ("    " <>) after)

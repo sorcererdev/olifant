@@ -96,6 +96,10 @@ spec = do
       at syn elm file "end of case in view" `shouldReturn` Right (lineOf file "viewPage GotSamplePageMsg (SamplePage.view page)" + 1)
     it "end of imports goes after the last import" $ withAstGrep $ \syn elm file ->
       at syn elm file "end of imports" `shouldReturn` Right (lineOf file "import Url exposing (Url)" + 1)
+    it "end of list in parser goes after the last element (Route.elm)" $ withAstGrepOn "src/Route.elm" $ \syn elm file ->
+      at syn elm file "end of list in parser" `shouldReturn` Right (lineOf file ", Parser.map SamplePage (s \"sample-page\")" + 1)
+    it "end of type Route goes after the last variant (Route.elm)" $ withAstGrepOn "src/Route.elm" $ \syn elm file ->
+      at syn elm file "end of type Route" `shouldReturn` Right (lineOf file "| SamplePage" + 1)
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
@@ -138,12 +142,15 @@ spec = do
 
 -- | Run with the real ast-grep and the pack's Elm adapter, or mark pending.
 withAstGrep :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
-withAstGrep k =
+withAstGrep = withAstGrepOn "src/Main.elm"
+
+withAstGrepOn :: FilePath -> (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withAstGrepOn fixtureFile k =
   findExecutable "ast-grep" >>= \case
     Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
     Just _ -> do
       src <- TIO.readFile "packs/elm/languages/elm.toml"
       tmp <- getTemporaryDirectory
       let Right elm = parseLanguage "elm" "packs/elm" src
-      mainElm <- TIO.readFile "packs/elm/fixtures/app/src/Main.elm"
-      k (astGrepSyntax (tmp </> "olifant-test-cache")) elm mainElm
+      file <- TIO.readFile ("packs/elm/fixtures/app" </> fixtureFile)
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) elm file

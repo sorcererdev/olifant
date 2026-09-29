@@ -28,7 +28,8 @@ data Format = Json | Human
 data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
-data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions -- ^ ListCmd: --detail
+-- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
+data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text
   deriving stock (Eq, Show)
 
 -- | One step of a `gen` run: a generator and exactly its inputs (spec §7).
@@ -79,6 +80,8 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
       hsubparser
         ( cmd "list" (ListCmd <$> switch (long "detail" <> help "Include every generator's inputs, sub-generators and examples")) "List generators"
             <> cmd "show" (ShowCmd <$> strArgument (metavar "GENERATOR")) "Describe a generator's inputs and edits"
+            <> cmd "anchors" (AnchorsCmd <$> strArgument (metavar "LANGUAGE")) "List the `at` targets a language supports"
+            <> cmd "where" (WhereCmd <$> strArgument (metavar "FILE") <*> strArgument (metavar "PHRASE")) "Show where an `at` phrase would put text in a file"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
     cmd name p desc = command name (info (Options <$> formatP <*> p) (progDesc desc))
