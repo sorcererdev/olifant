@@ -127,5 +127,5 @@ spec = do
 
   describe "parens" $
     it "wraps multi-word text in parentheses unless it already is one group" $
-      map (\t -> renderWith [("t", VText t)] "{= t|parens =}") ["Int", "List String", "(List String)", "(a) (b)", "  Maybe Int "]
-        `shouldBe` map Right ["Int", "(List String)", "(List String)", "((a) (b))", "(Maybe Int)"]
+      map (\t -> renderWith [("t", VText t)] "{= t|parens =}") ["Int", "List String", "(List String)", "(a) (b)", "  Maybe Int ", "List\tString"]
+        `shouldBe` map Right ["Int", "(List String)", "(List String)", "((a) (b))", "(Maybe Int)", "(List\tString)"]

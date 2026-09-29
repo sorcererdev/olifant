@@ -1,6 +1,9 @@
 description = "Model, migration, test and fixture (like `rails g model`)"
 language = "ruby"
 version = 1
+examples = [
+  "olifant gen rails/model --set name=post --set fields=\"title:string, body:text, user:references\"",
+]
 
 [inputs.name]
 type = "ident"

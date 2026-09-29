@@ -1,6 +1,10 @@
 description = "Cell: component, test, stories and mock (like `yarn rw g cell`)"
 language = "typescript"
 version = 1
+examples = [
+  "olifant gen redwood/cell --set name=blog_posts",
+  "olifant gen redwood/cell --set name=blog_post",
+]
 
 [inputs.name]
 type = "ident"

@@ -1,5 +1,6 @@
 module Olifant.Template.Render (render, evaluate) where
 
+import Data.Char (isSpace)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -104,7 +105,7 @@ applyFilter f v = case caseFromText f of
 -- parenthesised group, so a type argument like `List String` stays one type.
 parenthesise :: Text -> Text
 parenthesise t
-  | not (T.any (== ' ') t) = t
+  | not (T.any isSpace t) = t
   | oneGroup = t
   | otherwise = "(" <> t <> ")"
   where

@@ -36,12 +36,16 @@ data Runtime = Runtime
 runCli :: Runtime -> [String] -> IO ExitCode
 runCli rt args = case parseOptions args of
   Left (text, ExitSuccess) -> rtOut rt text >> pure ExitSuccess
-  Left (text, _) -> rtErr rt text >> pure (ExitFailure 2)
+  Left (text, _)
+    | wantsJson -> rtOut rt (encodeJson (errorJson "usage" (T.strip text) []) <> "\n") >> pure (ExitFailure 2)
+    | otherwise -> rtErr rt text >> pure (ExitFailure 2)
   Right opts -> do
     let fmt = fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)
     openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt)) >>= \case
       Left err -> catalogFailure rt fmt err
       Right cat -> runCommand rt fmt cat (optCommand opts)
+  where
+    wantsJson = "--json" `elem` args || (not (rtStdoutIsTty rt) && "--human" `notElem` args)
 
 runCommand :: Runtime -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt fmt cat = \case
@@ -54,6 +58,7 @@ runCommand rt fmt cat = \case
     Left err -> catalogFailure rt fmt err
     Right e -> emit rt fmt (showJson e) (showHuman e) >> pure ExitSuccess
   GenCmd g -> do
+    let usage = usageIn rt fmt
     specs <- case genStepsFile g of
       Nothing -> pure (Right (Right (genSteps g)))
       Just f -> do
@@ -63,8 +68,8 @@ runCommand rt fmt cat = \case
           Just text -> Right (first (\e -> "--steps: " <> T.pack e) (eitherDecodeStrict (TE.encodeUtf8 text)))
     case specs of
       Left f -> failWith rt fmt 3 "steps_not_found" ("--steps: cannot read " <> T.pack f <> " (missing, or not UTF-8 text)") Nothing []
-      Right (Left msg) -> rtErr rt (msg <> "\n") >> pure (ExitFailure 2)
-      Right (Right []) -> rtErr rt "no steps to run\n" >> pure (ExitFailure 2)
+      Right (Left msg) -> usage msg
+      Right (Right []) -> usage "no steps to run"
       Right (Right ss) -> do
         let label i s = specGenerator s <> if length ss > 1 then " (step " <> T.pack (show i) <> ")" else ""
         loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
@@ -80,6 +85,14 @@ runCommand rt fmt cat = \case
                 let applied = mode == Apply && not (hasConflicts plan)
                 emit rt fmt (planJson applied plan) (planHuman applied plan)
                 pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
+
+-- | A usage-level failure inside a command: JSON on stdout in JSON mode.
+usageIn :: Runtime -> Format -> Text -> IO ExitCode
+usageIn rt fmt msg = do
+  case fmt of
+    Json -> rtOut rt (encodeJson (errorJson "usage" msg []) <> "\n")
+    Human -> rtErr rt (msg <> "\n")
+  pure (ExitFailure 2)
 
 emit :: Runtime -> Format -> Value -> Text -> IO ()
 emit rt fmt json human = rtOut rt $ case fmt of

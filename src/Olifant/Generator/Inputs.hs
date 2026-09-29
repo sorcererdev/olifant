@@ -6,7 +6,7 @@ module Olifant.Generator.Inputs
   , describeInputType
   ) where
 
-import Control.Monad (foldM, unless, when, zipWithM)
+import Control.Monad (foldM, unless, zipWithM)
 import Data.Bifunctor (bimap)
 import Data.Either (lefts, rights)
 import Data.List (partition)
@@ -53,14 +53,14 @@ parseValue :: InputType -> Text -> Either Text Value
 parseValue (ScalarInput s) raw = parseScalar s raw
 parseValue (ListInput item) raw = VList <$> traverse (parseItem item) items
   where
-    items = filter (not . T.null) (map T.strip (T.splitOn "," raw))
+    items = filter (not . T.null) (map T.strip (splitTopLevel ',' raw))
 
 parseItem :: ListItem -> Text -> Either Text Value
 parseItem (ScalarItems s) raw = parseScalar s raw
 parseItem (RecordItems fields) raw = do
-  let parts = map T.strip (T.splitOn ":" raw)
-  when (length parts > length fields) $
-    Left ("`" <> raw <> "` has more than " <> T.pack (show (length fields)) <> " parts (" <> T.intercalate ":" (map fieldName fields) <> ")")
+  -- The last field takes the rest, so `name:Dict String Int` or a type with
+  -- colons inside brackets stays whole.
+  let parts = map T.strip (limitParts (length fields) (splitTopLevel ':' raw))
   VRecord . M.fromList <$> zipWithM field fields (map Just parts ++ repeat Nothing)
   where
     field f part = case maybe (fieldDefault f) Just part of
@@ -87,6 +87,23 @@ parseScalar s raw = case s of
       [] -> raw
     -- "Blog Post" is a title-case name; "SetDisplayName String" is a name plus a type.
     looksLikeNameAndType = length chunks > 1 && any (\c -> either (const False) ((> 1) . length . nameWords) (parseName c)) chunks
+
+-- | Split on a separator, ignoring separators nested inside () [] {}.
+splitTopLevel :: Char -> Text -> [Text]
+splitTopLevel sep = map T.pack . go (0 :: Int) "" . T.unpack
+  where
+    go _ acc [] = [reverse acc]
+    go depth acc (c : cs)
+      | c == sep && depth == 0 = reverse acc : go depth "" cs
+      | c `elem` ("([{" :: String) = go (depth + 1) (c : acc) cs
+      | c `elem` (")]}" :: String) = go (max 0 (depth - 1)) (c : acc) cs
+      | otherwise = go depth (c : acc) cs
+
+-- | Keep at most @n@ parts; the last one takes the remainder (rejoined).
+limitParts :: Int -> [Text] -> [Text]
+limitParts n parts
+  | n <= 0 || length parts <= n = parts
+  | otherwise = take (n - 1) parts ++ [T.intercalate ":" (drop (n - 1) parts)]
 
 emptyValue :: InputType -> Value
 emptyValue = \case

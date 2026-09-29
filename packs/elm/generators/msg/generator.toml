@@ -1,6 +1,10 @@
 description = "A new Msg for an Elm page: the variant plus an update branch returning ( model, Cmd.none )"
 language = "elm"
 version = 1
+examples = [
+  "olifant gen elm/msg --set page=settings --set msg=reset",
+  "olifant gen elm/msg --set page=article_list --set msg=got_articles --set arg=\"List String\"",
+]
 
 [inputs.page]
 type = "ident"
