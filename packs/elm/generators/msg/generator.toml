@@ -25,7 +25,7 @@ hint = "Create the page first: olifant gen elm/page --set page={= page =}"
 [[edits]]
 insert = "src/Page/{= page|pascal =}.elm"
 anchor = { marker = "-- olifant:msgs" }
-text   = "| {= Msg =}{= if arg =} {= arg =}{= end =}"
+text   = "| {= Msg =}{= if arg =} {= arg|parens =}{= end =}"
 
 [[edits]]
 insert = "src/Page/{= page|pascal =}.elm"

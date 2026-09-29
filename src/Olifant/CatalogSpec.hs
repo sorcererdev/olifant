@@ -46,7 +46,7 @@ genInto :: Workspace IO -> Catalog -> Text -> IO (M.Map FilePath Text)
 genInto root cat ref = do
   let Right entry = findEntry cat ref
   Right gen <- loadGenerator root cat entry
-  Right plan <- generate (within "/proj" root) gen (M.fromList [("name", "cancel_subscription")]) now PlanOnly
+  Right plan <- generate (within "/proj" root) noResolve [Step gen (M.fromList [("name", "cancel_subscription")])] now PlanOnly
   pure (planWrites plan)
 
 spec :: Spec
@@ -123,3 +123,28 @@ spec = describe "catalog" $ do
           describeCatalogError err `shouldSatisfy` T.isInfixOf "no pack named `elm` is configured"
           describeCatalogError err `shouldSatisfy` T.isInfixOf "[packs]"
         other -> expectationFailure ("expected PackNotConfigured, got " <> show (fmap entryId other))
+  it "resolves [[uses]] refs pack-locally first, then as written" $ do
+    let fs =
+          [ ("/proj/.olifant/config.toml", "[packs]\nelm = { path = \"../packs/elm\" }\n")
+          , ("/proj/.olifant/generators/msg/generator.toml", "description = \"local msg\"\nlanguage = \"x\"\n")
+          , ("/packs/elm/generators/msg/generator.toml", "description = \"elm msg\"\nlanguage = \"x\"\n")
+          ]
+    withCatalog fs $ \root cat -> do
+      fmap (fmap genDescription) (resolver root cat (Just "elm") "msg") `shouldReturn` Right "elm msg"
+      fmap (fmap genDescription) (resolver root cat Nothing "msg") `shouldReturn` Right "local msg"
+      fmap (either (const "err") genDescription) (resolver root cat (Just "elm") "nope") `shouldReturn` "err"
+  it "does not fall through to another generator when the pack-local one is broken" $ do
+    let fs =
+          [ ("/proj/.olifant/config.toml", "[packs]\nelm = { path = \"../packs/elm\" }\n")
+          , ("/proj/.olifant/generators/msg/generator.toml", "description = \"local msg\"\nlanguage = \"x\"\n")
+          , ("/packs/elm/generators/msg/generator.toml", "description = \"broken\"\nlanguage = \"x\"\nbogus = 1\n")
+          ]
+    withCatalog fs $ \root cat -> do
+      r <- resolver root cat (Just "elm") "msg"
+      r `shouldSatisfy` \case
+        Left (ResolveInvalid msg) -> "bogus" `T.isInfixOf` msg
+        _ -> False
+      r2 <- resolver root cat (Just "elm") "nope"
+      r2 `shouldSatisfy` \case
+        Left (ResolveNotFound _) -> True
+        _ -> False

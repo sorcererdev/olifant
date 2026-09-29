@@ -12,6 +12,7 @@ module Olifant.Catalog
   , openPackCatalog
   , findEntry
   , loadGenerator
+  , resolver
   ) where
 
 import Data.Bifunctor (bimap, first)
@@ -22,6 +23,7 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Generation.Compose (ResolveFailure (..))
 import Olifant.Generator
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
 import Olifant.Toml qualified as Toml
@@ -173,3 +175,17 @@ loadGenerator root cat entry = sequenceA <$> traverse resolve (entryDefinition e
         Just r -> Right (r </> "fixtures" </> "app" </> T.unpack rest)
         Nothing -> Left (SourceInvalid gid (T.unpack ref) "`fixture:` exemplars are only available in packs")
       Nothing -> Right (fromMaybe "." (catalogProject cat) </> T.unpack ref)
+
+-- | Resolve a generator named in a [[uses]] step. Inside a pack, a bare name
+-- means that pack's generator first (spec §7); otherwise the usual lookup.
+-- A broken candidate is an error, never a reason to fall through to another.
+resolver :: Monad m => Workspace m -> Catalog -> Maybe Text -> Text -> m (Either ResolveFailure Generator)
+resolver root cat pack ref = go candidates
+  where
+    candidates = [p <> "/" <> ref | Just p <- [pack], not ("/" `T.isInfixOf` ref)] ++ [ref]
+    go [] = pure (Left (ResolveNotFound (either describeCatalogError (const "not found") (findEntry cat ref))))
+    go (r : rest) = case findEntry cat r of
+      Right entry -> first (ResolveInvalid . describeCatalogError) <$> loadGenerator root cat entry
+      Left (GeneratorNotFound _ _) -> go rest
+      Left (PackNotConfigured _ _) -> go rest
+      Left err -> pure (Left (ResolveInvalid (describeCatalogError err)))

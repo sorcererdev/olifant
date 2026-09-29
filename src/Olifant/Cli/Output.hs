@@ -13,6 +13,7 @@ module Olifant.Cli.Output
 
 import Data.Aeson (Value, encode, object, (.=))
 import Data.Aeson.Types (Pair)
+import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
@@ -80,18 +81,19 @@ planJson applied plan =
     [ "plan_version" .= (1 :: Int)
     , "generator" .= idText (planGenerator plan)
     , "applied" .= applied
-    , "inputs" .= planSets plan
+    , "steps" .= [object ["gen" .= g, "set" .= s] | (g, s) <- planSteps plan]
     , "now" .= planNow plan
     , "edits" .= map editJson (planEdits plan)
     , "conflicts" .= [object ["code" .= conflictCode c, "message" .= describeConflict c] | c <- planConflicts plan]
     ]
   where
-    editJson (PlannedEdit n p action) = object (["id" .= ("e" <> T.pack (show n)), "path" .= p] ++ actionFields action)
+    editJson (PlannedEdit st n p action) = object (["id" .= ("e" <> T.pack (show n)), "step" .= showStepPath st, "path" .= p] ++ actionFields action)
     actionFields = \case
       WillCreate c -> ["status" .= ("create" :: Text), "content" .= c]
       WillOverwrite c -> ["status" .= ("overwrite" :: Text), "content" .= c]
       WillInsert l s -> ["status" .= ("insert" :: Text), "line" .= l, "content" .= s]
       Skipped r -> ["status" .= ("skipped" :: Text), "reason" .= skipReason r]
+      Conflicted -> ["status" .= ("conflict" :: Text)]
 
 planHuman :: Bool -> Plan -> Text
 planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan)) <> details
@@ -106,20 +108,24 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
         <> ")"
         <> (if hasConflicts plan then ": nothing written" else "")
     count xs noun = T.pack (show (length xs)) <> " " <> noun <> (if length xs == 1 then "" else "s")
-    editLine (PlannedEdit _ p action) = case action of
+    multiStep = length (nub (map editStep (planEdits plan))) > 1
+    stepTag st = if multiStep then "  [" <> showStepPath st <> "]" else ""
+    editLine (PlannedEdit st _ p action) = (<> stepTag st) $ case action of
       WillCreate c -> "  + " <> T.pack p <> " (" <> lineCount c <> ")"
       WillOverwrite c -> "  ~ " <> T.pack p <> " (overwritten, " <> lineCount c <> ")"
       WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> ")"
       Skipped r -> "  = " <> T.pack p <> " (skipped: " <> skipReason r <> ")"
+      Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
     lineCount c = let n = length (T.lines c) in T.pack (show n) <> (if n == 1 then " line" else " lines")
     details
       | applied = ""
-      | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ p a <- planEdits plan, Just c <- [contentOf a]]
+      | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ _ p a <- planEdits plan, Just c <- [contentOf a]]
     contentOf = \case
       WillCreate c -> Just c
       WillOverwrite c -> Just c
       WillInsert _ s -> Just s
       Skipped _ -> Nothing
+      Conflicted -> Nothing
 
 skipReason :: SkipReason -> Text
 skipReason = \case

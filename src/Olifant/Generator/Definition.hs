@@ -8,6 +8,7 @@ module Olifant.Generator.Definition
   , OnExists (..)
   , Anchor (..)
   , SourceRef (..)
+  , UseStep (..)
   , InputSpec (..)
   , InputType (..)
   , Scalar (..)
@@ -32,12 +33,23 @@ data GeneratorWith src = Generator
   , genDerived :: [(Text, Template)]
   , genRequires :: Maybe Requires
   , genEdits :: [EditWith src]
+  , genUses :: [UseStep]
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef
 
 type Generator = GeneratorWith Template
+
+-- | One composition step in a generator: run another generator with exactly
+-- the inputs in 'useWith' (rendered in this generator's scope), optionally
+-- once per item of the list named by 'useForEach' (binding @item@, @loop@).
+data UseStep = UseStep
+  { useGenerator :: Text
+  , useForEach :: Maybe Text
+  , useWith :: [(Text, Template)]
+  }
+  deriving stock (Show)
 
 data Requires = Requires {requiresExists :: [Template], requiresHint :: Maybe Template}
   deriving stock (Show)

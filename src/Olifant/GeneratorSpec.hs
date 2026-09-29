@@ -66,6 +66,27 @@ parseSpec = describe "parseGenerator" $ do
     let toml = "description = \"d\"\nlanguage = \"rust\"\n[[edits]]\ncreate = \"x.rs\"\nexemplar = \"fixture:src/refund_invoice.rs\"\nbind = { command_name = \"refund_invoice\" }\n"
     fmap (map (\e -> case editSource e of ExemplarFile ref bs -> (ref, length bs); _ -> ("?", 0)) . genEdits) (load toml)
       `shouldBe` Right [("fixture:src/refund_invoice.rs", 1)]
+  it "reads [[uses]] steps with for_each and with templates" $ do
+    let toml =
+          T.unlines
+            [ "description = \"page\""
+            , "language = \"elm\""
+            , "[inputs.page]"
+            , "type = \"ident\""
+            , "[[uses]]"
+            , "generator = \"msg\""
+            , "for_each = \"msgs\""
+            , "with = { page = \"{= page =}\", msg = \"{= item.name =}\" }"
+            , "[[uses]]"
+            , "generator = \"elm/route\""
+            ]
+    fmap (map (\u -> (useGenerator u, useForEach u, map (fmap templateSource) (useWith u))) . genUses) (load toml)
+      `shouldBe` Right
+        [ ("msg", Just "msgs", [("msg", "{= item.name =}"), ("page", "{= page =}")])
+        , ("elm/route", Nothing, [])
+        ]
+  it "rejects unknown keys in a [[uses]] step" $
+    load "description = \"d\"\nlanguage = \"x\"\n[[uses]]\ngenerator = \"g\"\nforeach = \"xs\"\n" `shouldSatisfy` isLeft
   it "rejects misspelled keys, naming them" $ do
     let result = load (T.replace "template = " "templete = " modelToml)
     result `shouldSatisfy` isLeft

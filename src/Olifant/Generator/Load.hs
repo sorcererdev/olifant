@@ -14,7 +14,7 @@ import Olifant.Toml
 parseGenerator :: GeneratorId -> Text -> Either Text GeneratorDef
 parseGenerator gid src = do
   top <- parseToml src
-  onlyKeys ["description", "language", "version", "inputs", "derive", "requires", "edits"] top
+  onlyKeys ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses"] top
   description <- required "description" text top
   language <- required "language" text top
   version <- maybe 1 fromInteger <$> optional "version" int top
@@ -22,7 +22,8 @@ parseGenerator gid src = do
   derived <- optional "derive" table top >>= maybe (Right []) deriveFrom
   requires <- optional "requires" (table >=> requiresFrom) top
   edits <- fromMaybe [] <$> optional "edits" (list (table >=> editFrom)) top
-  pure (Generator gid description language version inputs derived requires edits)
+  uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
+  pure (Generator gid description language version inputs derived requires edits uses)
 
 tmpl :: Text -> Either Text Template
 tmpl = first describeTemplateError . parseTemplate
@@ -121,3 +122,13 @@ onExistsFrom = \case
   "skip" -> Right SkipIfExists
   "overwrite" -> Right OverwriteIfExists
   other -> Left ("expected error, skip or overwrite, got `" <> other <> "`")
+
+useFrom :: Table -> Either Text UseStep
+useFrom t = do
+  onlyKeys ["generator", "for_each", "with"] t
+  ref <- required "generator" text t
+  forEach <- optional "for_each" text t
+  with <- fromMaybe [] <$> optional "with" (table >=> withFrom) t
+  pure (UseStep ref forEach with)
+  where
+    withFrom tbl = traverse (\(k, v) -> inKey k ((k,) <$> (text v >>= tmpl))) (M.toList tbl)
