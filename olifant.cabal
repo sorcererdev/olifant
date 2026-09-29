@@ -42,6 +42,7 @@ library
     Olifant.Catalog
     Olifant.Generation.Planner
     Olifant.Generation.Tools
+    Olifant.Generation.Complete
     Olifant.Generation.Plan
     Olifant.Generation
     Olifant.Generator.Inputs
@@ -95,6 +96,7 @@ test-suite spec
     Olifant.CatalogSpec
     Olifant.Generation.Planner
     Olifant.Generation.Tools
+    Olifant.Generation.Complete
     Olifant.Generation.Plan
     Olifant.Generation
     Olifant.GenerationSpec

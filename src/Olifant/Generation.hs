@@ -23,12 +23,13 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
+import Olifant.Generation.Complete (completeEdits)
 import Olifant.Generation.Compose
 import Olifant.Generation.Plan
 import Olifant.Anchor (resolveLayers)
 import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
-import Olifant.Generation.Render (renderedPath)
+import Olifant.Generation.Render (RenderedEdit (..), renderedPath)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..))
 import Olifant.Language (languageFor)
 import Olifant.Template (TemplateError)
@@ -58,8 +59,11 @@ generate ws resolve tools steps now mode =
       let originals = M.fromList [(p, t) | (p, Right t) <- inspected]
           blocked = M.fromList [(p, why) | (p, Left why) <- inspected, p `elem` targets]
           ids = [generatorIdText (genId (stepGenerator s)) | s <- steps]
-      (edits, conflicts, current, _) <- decideItems locate items originals blocked onDisk
-      let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
+      (positional, positionalConflicts, afterPositional, next) <- decideItems locate items originals blocked onDisk
+      (compiled, compileConflicts, current) <- completeEdits tools ws [(p, c) | PlanEdit p (RenderedComplete c) <- items] next afterPositional
+      let edits = positional ++ compiled
+          conflicts = positionalConflicts ++ compileConflicts
+          writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts writes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))

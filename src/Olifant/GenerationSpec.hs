@@ -11,7 +11,8 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Generation
 import Olifant.Generator
-import Olifant.Language (noChecker, noSyntax, parseLanguage)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Olifant.Language
 import Olifant.Template (Template)
 import Data.ByteString qualified as BS
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
@@ -60,6 +61,7 @@ spec = do
   createSpec
   insertSpec
   atSpec
+  completeSpec
   unusableSpec
   composeSpec
 
@@ -337,3 +339,71 @@ atSpec = describe "generate (at phrases)" $ do
     (_, once) <- evalIO (run [("lib.rs", "pub mod a;\n")] gen [("name", n)] Apply)
     (_, twice) <- evalIO (run (M.toList once) gen [("name", n)] Apply)
     twice === once
+
+-- | A checker that returns scripted rounds, then clean.
+scriptedChecker :: IORef [[MissingPatterns]] -> Checker IO
+scriptedChecker ref = Checker $ \_ _ -> atomicModifyIORef' ref (\case [] -> ([], Right []); (r : rs) -> (rs, Right r))
+
+elmLang :: Language
+elmLang = l
+  where
+    Right l = parseLanguage "elm" "/p" $ T.unlines
+      [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\"", "qualify = \"elm\""
+      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+      , "[check]", "command = [\"true\"]", "format = \"elm-json\"" ]
+
+completeSpec :: Spec
+completeSpec = describe "generate (complete edits)" $ do
+  let page = "module Page.A exposing (..)\n\nupdate msg model =\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n"
+      gen = generatorFrom . T.unlines $
+        [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+        , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} ->\\n    ( model, Cmd.none )\"" ]
+      go files rounds = do
+        ref <- newIORef rounds
+        (ws, snapshot) <- memoryWorkspace files
+        r <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+        (r,) <$> snapshot
+  it "adds a branch after the case the compiler reports" $ do
+    (Right plan, files) <- go [("src/A.elm", page)] [[MissingPatterns "src/A.elm" (3, 5) ["Reset"]]]
+    M.lookup "src/A.elm" files `shouldBe` Just (page <> "\n        Reset ->\n            ( model, Cmd.none )\n")
+    map editSite (planEdits plan) `shouldBe` [Just (Site "src/A.elm" "update" "Reset" False)]
+  it "leaves a placeholder todo where no `where` matches" $ do
+    let gen' = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"", "where = \"case in view\"", "text = \"{= pattern =} -> 1\"" ]
+    ref <- newIORef [[MissingPatterns "src/A.elm" (3, 5) ["Reset"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen' (M.fromList [("name", "reset")])] now Apply
+    fmap (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
+    (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just (page <> "\n        Reset ->\n            Debug.todo \"olifant: update Reset\"\n")
+  it "ignores diagnostics about constructors it did not introduce" $ do
+    (Right plan, files) <- go [("src/A.elm", page)] [[MissingPatterns "src/A.elm" (3, 5) ["Other"]]]
+    (planEdits plan, M.lookup "src/A.elm" files) `shouldBe` ([], Just page)
+  it "is a conflict when the compiler keeps reporting the same site (Review Focus 3)" $ do
+    let same = [MissingPatterns "src/A.elm" (3, 5) ["Reset"]]
+    (Right plan, _) <- go [("src/A.elm", page)] [same, same]
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("still reports Reset" `T.isInfixOf`)
+  it "is a conflict naming the tool when the check cannot run" $ do
+    (ws, _) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (Tools noSyntax (Checker (\_ _ -> pure (Left (CheckToolMissing "`elm` is not installed")))) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    map conflictToolMissing (planConflicts plan) `shouldBe` [True]
+  it "chooses the body by `where` when two edits complete the same bare name (Review Focus 2)" $ do
+    -- `where` needs Syntax; a fake one maps each target phrase to the case it names.
+    let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\nchange r =\n    case r of\n        Nothing ->\n            0\n\nview p =\n    case p of\n        Home ->\n            1\n"
+        syntax = Syntax $ \_ rule _ -> pure . Right $
+          if "change" `T.isInfixOf` T.pack (show rule) then [Match (4, 4) (6, 13) "case r of"] else [Match (9, 4) (11, 13) "case p of"]
+        two = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
+          , "[[edits]]", "complete = \"Settings\"", "where = \"case in view\"", "text = \"Settings _ ->\\n    3\"" ]
+        Right withTargets = parseLanguage "elm" "/p" $ T.unlines
+          [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\"", "qualify = \"elm\""
+          , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+          , "[check]", "command = [\"true\"]", "format = \"elm-json\""
+          , "[targets.case_in]", "phrase = \"case in FUNCTION\"", "container = { kind = \"case_of_expr\", regex = \"{= FUNCTION =}\" }", "items = { kind = \"case_of_branch\" }", "example = \"end of case in update\"" ]
+    ref <- newIORef [[MissingPatterns "src/Main.elm" (9, 11) ["Settings _"], MissingPatterns "src/Main.elm" (4, 6) ["Just Settings"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/Main.elm", mainElm)]
+    Right _ <- generate ws noResolve (Tools syntax (scriptedChecker ref) [withTargets]) [Step two M.empty] now Apply
+    Just out <- M.lookup "src/Main.elm" <$> snapshot
+    out `shouldSatisfy` ("        Just Route.Settings ->\n            2" `T.isInfixOf`)
+    out `shouldSatisfy` ("        Settings _ ->\n            3" `T.isInfixOf`)
