@@ -27,25 +27,25 @@ bind     = { command_name = "refund_invoice" }
 
 [[edits]]
 insert = "{= service_dir =}/src/lib.rs"
-anchor = { marker = "// olifant:modules" }
+at     = "after last line matching ^pub mod "
 text   = "pub mod {= cmd =};"
 
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
-anchor = { marker = "// olifant:command-imports" }
+at     = "end of crate imports"
 text   = "{= cmd =}::{{= Cmd =}, {= Cmd =}Input, {= Cmd =}Output},"
 
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
-anchor = { marker = "// olifant:command-fields" }
+at     = "end of struct {= service|pascal =}Service"
 text   = "pub {= cmd =}: {= Cmd =},"
 
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
-anchor = { marker = "// olifant:command-instantiations" }
+at     = "end of literal in new"
 text   = "{= cmd =}: {= Cmd =} {},"
 
 [[edits]]
 insert   = "{= service_dir =}/src/service.rs"
-anchor   = { marker = "// olifant:command-delegates" }
+at       = "end of impl {= service|pascal =}Service"
 template = "delegate.rs.dt"

@@ -103,6 +103,17 @@ spec = do
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
+  describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
+    let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
+        lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "end of struct goes after the last field" $ withRust $ \syn lang file ->
+      at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub refund_invoice: RefundInvoice," + 1)
+    it "end of impl goes after the last method" $ withRust $ \syn lang file ->
+      at syn lang file "end of impl BillingService" `shouldReturn` Right (lineOf file "self.refund_invoice.refund_invoice(input).await" + 2)
+    it "end of literal in new goes after the last initializer" $ withRust $ \syn lang file ->
+      at syn lang file "end of literal in new" `shouldReturn` Right (lineOf file "refund_invoice: RefundInvoice {}," + 1)
+    it "end of crate imports goes after the last imported item" $ withRust $ \syn lang file ->
+      at syn lang file "end of crate imports" `shouldReturn` Right (lineOf file "refund_invoice::{RefundInvoice" + 1)
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"
@@ -141,6 +152,18 @@ spec = do
           fmap (map (\m -> (missingFile m, missingPatterns m))) r `shouldBe` Right [("src/Page/SamplePage.elm", ["Reset"])]
 
 -- | Run with the real ast-grep and the pack's Elm adapter, or mark pending.
+-- | The rust-htmx pack's adapter on the fixture's service.rs, or pending.
+withRust :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withRust k =
+  findExecutable "ast-grep" >>= \case
+    Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
+    Just _ -> do
+      src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
+      tmp <- getTemporaryDirectory
+      let Right lang = parseLanguage "rust" "packs/rust-htmx" src
+      file <- TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
+
 withAstGrep :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
 withAstGrep = withAstGrepOn "src/Main.elm"
 

@@ -71,7 +71,6 @@ library
     Olifant.Language.Process
     Olifant.Language.AstGrep
     Olifant.Language.Elm
-    -- olifant:library-modules
 
 test-suite spec
   import:             shared
@@ -132,7 +131,6 @@ test-suite spec
     Olifant.Language.AstGrep
     Olifant.Language.Elm
     Olifant.LanguageSpec
-    -- olifant:test-modules
 
 executable olifant
   import:          shared

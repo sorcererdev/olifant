@@ -6,10 +6,9 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Olifant.Naming
+    Olifant.SampleUnit.MarkerRules
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
-    Olifant.SampleUnit.MarkerRules
-    -- olifant:library-modules
 
 test-suite spec
   type:               exitcode-stdio-1.0
@@ -22,4 +21,3 @@ test-suite spec
     Olifant.SampleUnit.SampleDetail
     Olifant.SampleUnitSpec
     Olifant.SampleUnit.MarkerRules
-    -- olifant:test-modules

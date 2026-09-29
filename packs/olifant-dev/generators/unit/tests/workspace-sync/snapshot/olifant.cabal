@@ -6,10 +6,9 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Olifant.Naming
+    Olifant.WorkspaceSync
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
-    Olifant.WorkspaceSync
-    -- olifant:library-modules
 
 test-suite spec
   type:               exitcode-stdio-1.0
@@ -23,4 +22,3 @@ test-suite spec
     Olifant.SampleUnitSpec
     Olifant.WorkspaceSync
     Olifant.WorkspaceSyncSpec
-    -- olifant:test-modules
