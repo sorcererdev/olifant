@@ -12,7 +12,6 @@ module Olifant.Anchor.Resolve
 
 import Data.Aeson (object, (.=))
 import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KM
 import Data.Char (isAlphaNum)
 import Data.List (maximumBy, minimumBy)
 import Data.Map.Strict qualified as M
@@ -115,7 +114,11 @@ resolveOne syntax lang anchor content = case anchor of
             querySyntax syntax l containerRule content >>= \case
               Left f -> pure (Left (toolMiss f))
               Right [c] -> do
-                let within = object ["all" .= [itemsRule, object ["inside" .= stopAtEnd containerRule]]]
+                -- Items are the container's direct children (ast-grep's default
+                -- `inside` checks only the parent), so branches of a nested
+                -- case never count, even when their parent branch was filtered
+                -- out as a catch-all.
+                let within = object ["all" .= [itemsRule, object ["inside" .= containerRule]]]
                 querySyntax syntax l within content >>= \case
                   Left f -> pure (Left (toolMiss f))
                   Right found -> pure (place pos c (topLevel (filter (inside c) found)))
@@ -132,9 +135,6 @@ resolveOne syntax lang anchor content = case anchor of
             (EndOf, _) -> let z = maximumBy (comparing matchEnd) items in Right (located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region)
     inside c m = matchStart m >= matchStart c && matchEnd m <= matchEnd c && m /= c
     topLevel ms = [m | m <- ms, not (any (\o -> o /= m && matchStart o <= matchStart m && matchEnd m <= matchEnd o) ms)]
-    stopAtEnd = \case
-      Aeson.Object o -> Aeson.Object (KM.insert "stopBy" (Aeson.String "end") o)
-      other -> other
 
 -- | The container of a named target, as 0-based (start, end) lines (used by
 -- `complete` edits' `where`, spec §5.6).
