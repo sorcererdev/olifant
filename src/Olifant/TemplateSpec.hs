@@ -124,3 +124,8 @@ spec = do
       pieces <- forAll (Gen.list (Range.linear 0 30) (Gen.choice [Gen.element forms, Gen.element ["_", "-", " ", "\n", "s", "x", "X", "(", "\"", "p"], Gen.text (Range.linear 0 4) Gen.unicode]))
       let src = T.concat pieces
       renderExemplar (VName refund) src === Right src
+
+  describe "parens" $
+    it "wraps multi-word text in parentheses unless it already is one group" $
+      map (\t -> renderWith [("t", VText t)] "{= t|parens =}") ["Int", "List String", "(List String)", "(a) (b)", "  Maybe Int "]
+        `shouldBe` map Right ["Int", "(List String)", "(List String)", "((a) (b))", "(Maybe Int)"]

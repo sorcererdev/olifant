@@ -89,6 +89,9 @@ applyFilter f v = case caseFromText f of
     "timestamp" -> case v of
       VTime t -> Right (VText (T.pack (formatTime defaultTimeLocale "%Y%m%d%H%M%S" t)))
       other -> Left (TypeMismatch ("`timestamp` needs a time, got " <> describeValue other))
+    "parens" -> case v of
+      VText t -> Right (VText (parenthesise (T.strip t)))
+      other -> Left (TypeMismatch ("`parens` needs text, got " <> describeValue other))
     _ -> Left (TypeMismatch ("unknown filter `" <> f <> "`"))
   where
     asName :: Either TemplateError Name
@@ -96,3 +99,19 @@ applyFilter f v = case caseFromText f of
       VName n -> Right n
       VText t -> either (Left . TypeMismatch . (("`" <> f <> "`: ") <>)) Right (parseName t)
       other -> Left (TypeMismatch ("`" <> f <> "` needs a name, got " <> describeValue other))
+
+-- | Wrap in parentheses when the text has spaces and isn't already a single
+-- parenthesised group, so a type argument like `List String` stays one type.
+parenthesise :: Text -> Text
+parenthesise t
+  | not (T.any (== ' ') t) = t
+  | oneGroup = t
+  | otherwise = "(" <> t <> ")"
+  where
+    n = T.length t
+    oneGroup = "(" `T.isPrefixOf` t && closesAtEnd (0 :: Int) (zip [1 ..] (T.unpack t))
+    closesAtEnd depth ((i, c) : rest)
+      | c == '(' = closesAtEnd (depth + 1) rest
+      | c == ')' = if depth == 1 then i == n else closesAtEnd (depth - 1) rest
+      | otherwise = closesAtEnd depth rest
+    closesAtEnd _ [] = False
