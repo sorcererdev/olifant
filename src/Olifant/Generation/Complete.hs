@@ -15,7 +15,7 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Anchor (Located (..), insertLines, locateContainer)
-import Olifant.Generation.Compose (StepPath)
+import Olifant.Generation.Compose (StepPath, showStepPath)
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (CompleteSpec (..))
 import Olifant.Generation.Tools (Tools (..))
@@ -31,17 +31,18 @@ maxRounds = 5
 -- | One branch to add: which spec produced it, where, and its text.
 data Branch = Branch {brStep :: StepPath, brSite :: MissingPatterns, brInfo :: Site, brText :: Text}
 
-completeEdits :: Monad m => Tools m -> Workspace m -> [(StepPath, CompleteSpec)] -> Int -> Map FilePath (Maybe Text) -> m ([PlannedEdit], [Conflict], Map FilePath (Maybe Text))
-completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], current0) (nub (map (completeLanguage . snd) specs))
+-- | Returns the added edits, conflicts, warnings, and the contents after them.
+completeEdits :: Monad m => Tools m -> Workspace m -> [(StepPath, CompleteSpec)] -> Int -> Map FilePath (Maybe Text) -> m ([PlannedEdit], [Conflict], [Text], Map FilePath (Maybe Text))
+completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [], current0) (nub (map (completeLanguage . snd) specs))
   where
-    perLanguage (edits, conflicts, current) name = case [s | s@(_, c) <- specs, completeLanguage c == name] of
-      [] -> pure (edits, conflicts, current)
+    perLanguage (edits, conflicts, warnings, current) name = case [s | s@(_, c) <- specs, completeLanguage c == name] of
+      [] -> pure (edits, conflicts, warnings, current)
       mine@((step, _) : _) -> case find (\l -> langName l == name && isJust (langCheck l)) (toolLanguages tools) of
-        Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("no language adapter with a [check] for `" <> name <> "`") False], current)
+        Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("no language adapter with a [check] for `" <> name <> "`") False], warnings, current)
         Just lang -> do
-          files <- gather lang current
-          (es, cs, current') <- loop lang step mine 1 S.empty (firstNumber + length edits) files current []
-          pure (edits ++ es, conflicts ++ cs, current')
+          (disk, files) <- gather lang current
+          (es, cs, ws', current') <- loop lang step mine disk 1 S.empty (firstNumber + length edits) files current []
+          pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
 
     ignored = ["elm-stuff", "node_modules", ".git", "dist-newstyle", "target"] :: [FilePath]
 
@@ -51,29 +52,45 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], c
       paths <- listFiles ws "."
       let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
           wanted p = not (any (`elem` ignored) (splitDirectories p)) && any (`matchesGlob` p) globs
-      disk <- traverse (\p -> (p,) <$> readText ws p) (filter wanted paths)
-      pure (M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, wanted p]) (M.fromList [(p, t) | (p, Just t) <- disk]))
+      read' <- traverse (\p -> (p,) <$> readText ws p) (filter wanted paths)
+      let disk = M.fromList [(p, t) | (p, Just t) <- read']
+      pure (disk, M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, wanted p]) disk)
 
-    loop lang step mine rnd seen n files current acc
-      | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], current)
+    loop lang step mine disk rnd seen n files current acc
+      | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], [], current)
       | otherwise =
           runCheck (toolChecker tools) lang files >>= \case
-            Left f -> pure (reverse acc, [CompleteFailed step (describeCheckFailure f) (isToolMissing f)], current)
-            Right diags -> do
-              let wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, let cands = [s | s@(_, c) <- mine, mentions (completeConstructor c) p], not (null cands)]
+            Left f -> pure (reverse acc, [CompleteFailed step (describeCheckFailure f) (isToolMissing f)], [], current)
+            Right report -> do
+              let diags = reportMissing report
+                  wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, let cands = [s | s@(_, c) <- mine, mentions (completeConstructor c) p], not (null cands)]
                   key (d, p, _) = (missingFile d, fst (missingCase d), p)
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
-                ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], current)
+                ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
                 []
-                  | null wanted -> pure (reverse acc, [], current)
+                  | null wanted -> pure (finish (reportBroken report))
                   | otherwise -> do
                       built <- traverse (branchFor lang files) wanted
                       case sequence built of
-                        Left why -> pure (reverse acc, [CompleteFailed step why False], current)
+                        Left why -> pure (reverse acc, [CompleteFailed step why False], [], current)
                         Right branches -> do
                           let (edits, files') = applyBranches n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
-                          loop lang step mine (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
+                          loop lang step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
+
+      where
+        -- Nothing left to add. A file that does not compile hides the
+        -- missing cases of every module that imports it: if the plan changed
+        -- it, the generated code is broken (conflict); otherwise the cases
+        -- could not be checked (warning).
+        finish broken =
+          let changed f = M.lookup f disk /= M.lookup f files
+              ours = [b | b@(f, _) <- broken, changed f]
+              describe bs = T.intercalate ", " [T.pack f <> " (" <> t <> ")" | (f, t) <- bs]
+           in case (ours, broken) of
+                (_ : _, _) -> (reverse acc, [CompleteFailed step ("the generated code does not compile: " <> describe ours) False], [], current)
+                ([], _ : _) -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
+                ([], []) -> (reverse acc, [], [], current)
 
     branchFor lang files (d, p, cands) = do
       let file = missingFile d

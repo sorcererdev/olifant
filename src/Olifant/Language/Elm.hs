@@ -9,17 +9,17 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (isAlphaNum, isSpace)
 import Data.Foldable (toList)
-import Data.Maybe (catMaybes, listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language.Diagnostics (MissingPatterns (..))
+import Olifant.Language.Diagnostics (CheckReport (..), MissingPatterns (..))
 
 -- | The `MISSING PATTERNS` problems in a report (stderr of `elm make
 -- --report=json`), with the paths as printed. Empty input means a clean
 -- compile; a non-compile error (bad elm.json, …) is a failure.
-parseElmReport :: ByteString -> Either Text [MissingPatterns]
+parseElmReport :: ByteString -> Either Text CheckReport
 parseElmReport raw
-  | BS.all (`elem` [9, 10, 13, 32]) raw = Right []
+  | BS.all (`elem` [9, 10, 13, 32]) raw = Right (CheckReport [] [])
   | otherwise = case eitherDecodeStrict raw of
       Left err -> Left ("unreadable elm report: " <> T.pack err)
       Right v -> either (Left . T.pack) id (parseEither report v)
@@ -27,7 +27,7 @@ parseElmReport raw
     report = withObject "report" $ \o -> do
       ty <- o .: "type" :: Parser Text
       case ty of
-        "compile-errors" -> Right . concat <$> ((o .: "errors" :: Parser [Value]) >>= traverse errorsIn)
+        "compile-errors" -> Right . collect . concat <$> ((o .: "errors" :: Parser [Value]) >>= traverse errorsIn)
         _ -> do
           title <- o .: "title"
           msg <- o .: "message"
@@ -35,17 +35,18 @@ parseElmReport raw
     errorsIn = withObject "error" $ \e -> do
       path <- e .: "path"
       problems <- e .: "problems" :: Parser [Value]
-      catMaybes <$> traverse (problem path) problems
+      traverse (problem path) problems
+    collect found = CheckReport [m | Right m <- found] [b | Left b <- found]
     problem path = withObject "problem" $ \p -> do
       title <- p .: "title" :: Parser Text
       if title /= "MISSING PATTERNS"
-        then pure Nothing
+        then pure (Left (path, title))
         else do
           region <- p .: "region"
           s <- region .: "start" >>= (.: "line")
           e <- region .: "end" >>= (.: "line")
           msg <- p .: "message"
-          pure (Just (MissingPatterns path (s, e) (patternsIn (messageText msg))))
+          pure (Right (MissingPatterns path (s, e) (patternsIn (messageText msg))))
     patternsIn t =
       let after = drop 1 (dropWhile (not . ("Missing possibilities include:" `T.isInfixOf`)) (T.lines t))
        in map T.strip (takeWhile (not . T.null . T.strip) (dropWhile (T.null . T.strip) after))

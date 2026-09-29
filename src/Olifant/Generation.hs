@@ -60,11 +60,11 @@ generate ws resolve tools steps now mode =
           blocked = M.fromList [(p, why) | (p, Left why) <- inspected, p `elem` targets]
           ids = [generatorIdText (genId (stepGenerator s)) | s <- steps]
       (positional, positionalConflicts, afterPositional, next) <- decideItems locate items originals blocked onDisk
-      (compiled, compileConflicts, current) <- completeEdits tools ws [(p, c) | PlanEdit p (RenderedComplete c) <- items] next afterPositional
+      (compiled, compileConflicts, warnings, current) <- completeEdits tools ws [(p, c) | PlanEdit p (RenderedComplete c) <- items] next afterPositional
       let edits = positional ++ compiled
           conflicts = positionalConflicts ++ compileConflicts
           writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts writes
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts warnings writes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

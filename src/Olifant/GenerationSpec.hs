@@ -354,7 +354,11 @@ atSpec = describe "generate (at phrases)" $ do
 
 -- | A checker that returns scripted rounds, then clean.
 scriptedChecker :: IORef [[MissingPatterns]] -> Checker IO
-scriptedChecker ref = Checker $ \_ _ -> atomicModifyIORef' ref (\case [] -> ([], Right []); (r : rs) -> (rs, Right r))
+scriptedChecker ref = Checker $ \_ _ -> atomicModifyIORef' ref (\case [] -> ([], Right (CheckReport [] [])); (r : rs) -> (rs, Right (CheckReport r [])))
+
+-- | A checker that always reports the given broken files and nothing missing.
+brokenChecker :: [(FilePath, Text)] -> Checker IO
+brokenChecker broken = Checker $ \_ _ -> pure (Right (CheckReport [] broken))
 
 elmLang :: Language
 elmLang = l
@@ -433,3 +437,17 @@ completeSpec = describe "generate (complete edits)" $ do
     Right plan <- generate ws noResolve (Tools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
     map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "Route.Settings" `T.isInfixOf` c && "pageName" `T.isInfixOf` c)
     (M.lookup "src/Main.elm" <$> snapshot) `shouldReturn` Just mainElm
+  it "warns when the project does not compile, so cases could not be checked (review)" $ do
+    (ws, _) <- memoryWorkspace [("src/A.elm", page), ("src/B.elm", "module B\n")]
+    Right plan <- generate ws noResolve (Tools noSyntax (brokenChecker [("src/B.elm", "NAMING ERROR")]) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    planConflicts plan `shouldBe` []
+    planWarnings plan `shouldSatisfy` any ("src/B.elm" `T.isInfixOf`)
+  it "is a conflict when a file the plan changed does not compile (review)" $ do
+    let broken = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "insert = \"src/A.elm\"", "at = \"after first line matching ^module\"", "text = \"oops\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} -> 1\"" ]
+    (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (Tools noSyntax (brokenChecker [("src/A.elm", "SYNTAX PROBLEM")]) [elmLang]) [Step broken (M.fromList [("name", "reset")])] now Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "src/A.elm" `T.isInfixOf` c && "SYNTAX PROBLEM" `T.isInfixOf` c)
+    (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just page

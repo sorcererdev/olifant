@@ -129,6 +129,7 @@ planJson applied plan =
     , "now" .= planNow plan
     , "edits" .= map editJson (planEdits plan)
     , "conflicts" .= [object ["code" .= conflictCode c, "message" .= describeConflict c] | c <- planConflicts plan]
+    , "warnings" .= planWarnings plan
     , "todos" .= [object ["edit" .= editId e, "file" .= siteFile s, "function" .= siteFunction s, "pattern" .= sitePattern s] | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
     ]
   where
@@ -150,7 +151,7 @@ planJson applied plan =
       Conflicted -> ["status" .= ("conflict" :: Text)]
 
 planHuman :: Bool -> Plan -> Text
-planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines) <> details
+planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines ++ map ("  ? warning: " <>) (planWarnings plan)) <> details
   where
     header =
       (if applied then "" else "Plan: ")

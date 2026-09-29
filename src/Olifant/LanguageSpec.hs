@@ -7,6 +7,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.ByteString qualified as BS
+import Data.List (nub)
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (enclosingFunction, parseElmReport, qualifyPattern)
 import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
@@ -122,10 +123,16 @@ spec = do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"
       parseElmReport report
         `shouldBe` Right
-          [ MissingPatterns "/tmp/elmcheck/src/Page/SamplePage.elm" (30, 32) ["SetName _"]
-          , MissingPatterns "/tmp/elmcheck/src/Route.elm" (29, 34) ["Settings"]
-          ]
-    it "is empty for a clean compile" $ parseElmReport "" `shouldBe` Right []
+          ( CheckReport
+              [ MissingPatterns "/tmp/elmcheck/src/Page/SamplePage.elm" (30, 32) ["SetName _"]
+              , MissingPatterns "/tmp/elmcheck/src/Route.elm" (29, 34) ["Settings"]
+              ]
+              []
+          )
+    it "is empty for a clean compile" $ parseElmReport "" `shouldBe` Right (CheckReport [] [])
+    it "lists files with other problems as broken (review)" $
+      parseElmReport "{\"type\":\"compile-errors\",\"errors\":[{\"path\":\"/x/src/A.elm\",\"name\":\"A\",\"problems\":[{\"title\":\"NAMING ERROR\",\"region\":{\"start\":{\"line\":1,\"column\":0},\"end\":{\"line\":1,\"column\":3}},\"message\":[\"x\"]}]}]}"
+        `shouldBe` Right (CheckReport [] [("/x/src/A.elm", "NAMING ERROR")])
     it "reports a non-compile error as a failure" $
       parseElmReport "{\"type\":\"error\",\"path\":\"elm.json\",\"title\":\"BAD JSON\",\"message\":[\"oops\"]}" `shouldSatisfy` either ("BAD JSON" `T.isInfixOf`) (const False)
   describe "qualifyPattern" $ do
@@ -142,7 +149,7 @@ spec = do
   describe "enclosingFunction" $
     it "finds the top-level declaration above a line" $
       enclosingFunction "toPath : Route -> String\ntoPath route =\n    case route of\n        Home ->\n" 2 `shouldBe` "toPath"
-  describe "processChecker (real elm)" $
+  describe "processChecker (real elm)" $ do
     it "reports the missing branch in a page's update" $
       findExecutable "elm" >>= \case
         Nothing -> pendingWith "elm is not installed"
@@ -152,7 +159,17 @@ spec = do
           files <- traverse (\p -> (p,) <$> TIO.readFile ("packs/elm/fixtures/app" </> p)) ["elm.json", "src/Main.elm", "src/Route.elm", "src/Page/Home.elm", "src/Page/SamplePage.elm"]
           let withReset = [(p, if p == "src/Page/SamplePage.elm" then T.replace "    = NoOp\n" "    = NoOp\n    | Reset\n" t else t) | (p, t) <- files]
           r <- runCheck processChecker elm (M.fromList withReset)
-          fmap (map (\m -> (missingFile m, missingPatterns m))) r `shouldBe` Right [("src/Page/SamplePage.elm", ["Reset"])]
+          fmap (map (\m -> (missingFile m, missingPatterns m)) . reportMissing) r `shouldBe` Right [("src/Page/SamplePage.elm", ["Reset"])]
+    it "reports a file that does not compile as broken, relative to the project (review)" $
+      findExecutable "elm" >>= \case
+        Nothing -> pendingWith "elm is not installed"
+        Just _ -> do
+          src <- TIO.readFile "packs/elm/languages/elm.toml"
+          let Right elm = parseLanguage "elm" "packs/elm" src
+          files <- traverse (\p -> (p,) <$> TIO.readFile ("packs/elm/fixtures/app" </> p)) ["elm.json", "src/Main.elm", "src/Route.elm", "src/Page/Home.elm", "src/Page/SamplePage.elm"]
+          let typo = [(p, if p == "src/Page/Home.elm" then T.replace "Cmd.none" "Cmd.nonee" t else t) | (p, t) <- files]
+          r <- runCheck processChecker elm (M.fromList typo)
+          fmap (nub . map fst . reportBroken) r `shouldBe` Right ["src/Page/Home.elm"]
 
 -- | Run with the real ast-grep and the pack's Elm adapter, or mark pending.
 -- | The rust-htmx pack's adapter on the fixture's service.rs, or pending.

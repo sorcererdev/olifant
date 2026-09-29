@@ -24,6 +24,8 @@ data Plan = Plan
   , planNow :: UTCTime
   , planEdits :: [PlannedEdit]
   , planConflicts :: [Conflict]
+  , -- | problems that did not stop the plan but mean it may be incomplete
+    planWarnings :: [Text]
   , planWrites :: Map FilePath Text
   }
   deriving stock (Eq, Show)

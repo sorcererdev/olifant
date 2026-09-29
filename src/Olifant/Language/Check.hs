@@ -2,6 +2,7 @@
 module Olifant.Language.Check
   ( Checker (..)
   , MissingPatterns (..)
+  , CheckReport (..)
   , CheckFailure (..)
   , noChecker
   , describeCheckFailure
@@ -27,12 +28,12 @@ import System.Directory (canonicalizePath, createDirectoryIfMissing, findExecuta
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
-import Olifant.Language.Diagnostics (MissingPatterns (..))
+import Olifant.Language.Diagnostics (CheckReport (..), MissingPatterns (..))
 
 data CheckFailure = CheckToolMissing Text | CheckFailed Text
   deriving stock (Eq, Show)
 
-newtype Checker m = Checker {runCheck :: Language -> Map FilePath Text -> m (Either CheckFailure [MissingPatterns])}
+newtype Checker m = Checker {runCheck :: Language -> Map FilePath Text -> m (Either CheckFailure CheckReport)}
 
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))
@@ -50,8 +51,12 @@ processChecker = Checker $ \lang files -> case langCheck lang of
   Just check ->
     runIn lang check files <&> \case
       Left f -> Left f
-      Right (_, err, dir) -> case checkFormat check of
-        "elm-json" -> either (Left . CheckFailed) (Right . map (relativeTo dir)) (parseElmReport err)
+      Right (code, err, dir) -> case checkFormat check of
+        "elm-json" -> case parseElmReport err of
+          Left why -> Left (CheckFailed why)
+          Right (CheckReport [] [])
+            | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
+          Right report -> Right (relativeTo dir report)
         other -> Left (CheckFailed ("unknown check format `" <> other <> "`"))
 
 -- | Whether the files compile cleanly (exit 0); pack tests use it to prove
@@ -82,5 +87,6 @@ runIn lang check files = case checkCommand check of
         (code, _, err) <- runBytes path (concatMap expand args) (Just tmp) ""
         pure (Right (code, err, tmp))
 
-relativeTo :: FilePath -> MissingPatterns -> MissingPatterns
-relativeTo dir m = m {missingFile = makeRelative dir (missingFile m)}
+relativeTo :: FilePath -> CheckReport -> CheckReport
+relativeTo dir (CheckReport missing broken) =
+  CheckReport [m {missingFile = makeRelative dir (missingFile m)} | m <- missing] [(makeRelative dir p, t) | (p, t) <- broken]
