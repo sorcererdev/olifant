@@ -1,0 +1,96 @@
+-- | Elm specifics for `complete` edits (spec §5.6): `elm make --report=json`
+-- diagnostics, and how a constructor is written at a site.
+module Olifant.Language.Elm (parseElmReport, qualifyPattern, enclosingFunction) where
+
+import Control.Applicative ((<|>))
+import Data.Aeson (Value (..), eitherDecodeStrict, withObject, (.:))
+import Data.Aeson.Types (Parser, parseEither, parseMaybe)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
+import Data.Char (isAlphaNum, isSpace)
+import Data.Foldable (toList)
+import Data.Maybe (catMaybes, listToMaybe)
+import Data.Text (Text)
+import Data.Text qualified as T
+import Olifant.Language.Diagnostics (MissingPatterns (..))
+
+-- | The `MISSING PATTERNS` problems in a report (stderr of `elm make
+-- --report=json`), with the paths as printed. Empty input means a clean
+-- compile; a non-compile error (bad elm.json, …) is a failure.
+parseElmReport :: ByteString -> Either Text [MissingPatterns]
+parseElmReport raw
+  | BS.all (`elem` [9, 10, 13, 32]) raw = Right []
+  | otherwise = case eitherDecodeStrict raw of
+      Left err -> Left ("unreadable elm report: " <> T.pack err)
+      Right v -> either (Left . T.pack) id (parseEither report v)
+  where
+    report = withObject "report" $ \o -> do
+      ty <- o .: "type" :: Parser Text
+      case ty of
+        "compile-errors" -> Right . concat <$> ((o .: "errors" :: Parser [Value]) >>= traverse errorsIn)
+        _ -> do
+          title <- o .: "title"
+          msg <- o .: "message"
+          pure (Left (title <> ": " <> messageText msg))
+    errorsIn = withObject "error" $ \e -> do
+      path <- e .: "path"
+      problems <- e .: "problems" :: Parser [Value]
+      catMaybes <$> traverse (problem path) problems
+    problem path = withObject "problem" $ \p -> do
+      title <- p .: "title" :: Parser Text
+      if title /= "MISSING PATTERNS"
+        then pure Nothing
+        else do
+          region <- p .: "region"
+          s <- region .: "start" >>= (.: "line")
+          e <- region .: "end" >>= (.: "line")
+          msg <- p .: "message"
+          pure (Just (MissingPatterns path (s, e) (patternsIn (messageText msg))))
+    patternsIn t =
+      let after = drop 1 (dropWhile (not . ("Missing possibilities include:" `T.isInfixOf`)) (T.lines t))
+       in map T.strip (takeWhile (not . T.null . T.strip) (dropWhile (T.null . T.strip) after))
+
+-- | Elm messages are a list of strings and styled `{ "string": … }` chunks.
+messageText :: Value -> Text
+messageText = \case
+  Array xs -> T.concat (map piece (toList xs))
+  String s -> s
+  _ -> ""
+  where
+    piece = \case
+      String s -> s
+      Object o -> maybe "" id (parseMaybe (.: "string") o)
+      _ -> ""
+
+-- | @qualifyPattern site constructor pattern@: write the constructor (as
+-- given in the `complete` edit, e.g. @Route.Settings@) the way the site's
+-- module refers to it, inside the compiler's unqualified pattern.
+qualifyPattern :: Text -> Text -> Text -> Text
+qualifyPattern site constructor pattern = case T.breakOnEnd "." constructor of
+  ("", bare) -> replaceWord bare bare pattern
+  (withDot, bare) -> replaceWord bare (qualified (T.dropEnd 1 withDot) bare) pattern
+  where
+    ls = T.lines site
+    siteModule = listToMaybe [T.takeWhile (not . isSpace) (T.strip rest) | l <- ls, Just rest <- [T.stripPrefix "module " l <|> T.stripPrefix "port module " l]]
+    qualified m bare
+      | siteModule == Just m = bare
+      | otherwise = case [T.words rest | l <- ls, Just rest <- [T.stripPrefix ("import " <> m) l], T.null rest || " " `T.isPrefixOf` rest] of
+          (ws : _)
+            | "(..)" `elem` ws -> bare
+            | ("as" : alias : _) <- dropWhile (/= "as") ws -> alias <> "." <> bare
+          _ -> m <> "." <> bare
+
+-- | Replace whole identifier runs equal to @old@ (dots count as part of a run).
+replaceWord :: Text -> Text -> Text -> Text
+replaceWord old new = T.concat . map swap . T.groupBy (\a b -> ident a == ident b)
+  where
+    ident c = isAlphaNum c || c == '_' || c == '.'
+    swap w = if w == old then new else w
+
+-- | The declaration a 0-based line belongs to: the first word of the nearest
+-- line at or above it that starts in column 0 (not blank, not a comment).
+enclosingFunction :: Text -> Int -> Text
+enclosingFunction content line =
+  case [l | l <- reverse (take (line + 1) (T.lines content)), Just (c, _) <- [T.uncons l], not (isSpace c), not ("--" `T.isPrefixOf` l)] of
+    (l : _) -> T.takeWhile (\c -> isAlphaNum c || c == '_' || c == '\'') l
+    [] -> "?"

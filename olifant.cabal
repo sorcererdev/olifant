@@ -69,6 +69,7 @@ library
     Olifant.Language.Check
     Olifant.Language.Process
     Olifant.Language.AstGrep
+    Olifant.Language.Elm
     -- olifant:library-modules
 
 test-suite spec
@@ -127,6 +128,7 @@ test-suite spec
     Olifant.Language.Check
     Olifant.Language.Process
     Olifant.Language.AstGrep
+    Olifant.Language.Elm
     Olifant.LanguageSpec
     -- olifant:test-modules
 
