@@ -82,12 +82,18 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], c
       matching <- filterM (whereMatches lang content d . snd) cands
       let chosen = listToMaybe matching
           (step, spec) = maybe (head' cands) id chosen
+          ctors = nub (map (completeConstructor . snd) cands)
           pat = if langQualify lang == Just "elm" then qualifyPattern content (completeConstructor spec) p else p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
             Just _ -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) (completeBody spec))
             Nothing -> todoBranch lang pat fn
-      pure (Branch step d (Site file fn pat (isNothing chosen)) <$> text)
+      -- Elm prints constructors unqualified, so with no `where` to decide,
+      -- two edits sharing a bare name cannot be told apart: never guess.
+      pure $
+        if isNothing chosen && length ctors > 1
+          then Left (p <> " in " <> fn <> " (" <> T.pack file <> ") could be any of " <> T.intercalate ", " ctors <> "; add a `complete` edit with `where = \"case in " <> fn <> "\"`, or give the case a catch-all")
+          else Branch step d (Site file fn pat (isNothing chosen)) <$> text
       where
         head' (x : _) = x
         head' [] = error "branchFor: candidates are never empty"

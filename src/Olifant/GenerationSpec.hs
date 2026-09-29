@@ -407,3 +407,17 @@ completeSpec = describe "generate (complete edits)" $ do
     Just out <- M.lookup "src/Main.elm" <$> snapshot
     out `shouldSatisfy` ("        Just Route.Settings ->\n            2" `T.isInfixOf`)
     out `shouldSatisfy` ("        Settings _ ->\n            3" `T.isInfixOf`)
+  it "is a conflict, not a guess, when an unmatched site could be either constructor (review)" $ do
+    let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\npageName p =\n    case p of\n        Home ->\n            \"home\"\n"
+        syntax = Syntax $ \_ _ _ -> pure (Right [])
+        two =
+          generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"elm\""
+            , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
+            , "[[edits]]", "complete = \"Settings\"", "where = \"case in view\"", "text = \"Settings _ ->\\n    3\""
+            ]
+    ref <- newIORef [[MissingPatterns "src/Main.elm" (4, 6) ["Settings _"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/Main.elm", mainElm)]
+    Right plan <- generate ws noResolve (Tools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "Route.Settings" `T.isInfixOf` c && "pageName" `T.isInfixOf` c)
+    (M.lookup "src/Main.elm" <$> snapshot) `shouldReturn` Just mainElm
