@@ -86,7 +86,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
         finish broken =
           let changed f = M.lookup f disk /= M.lookup f files
               ours = [b | b@(f, _) <- broken, changed f]
-              describe bs = T.intercalate ", " [T.pack f <> " (" <> t <> ")" | (f, t) <- bs]
+              describe bs = T.intercalate ", " (nub [T.pack f <> " (" <> t <> ")" | (f, t) <- bs])
            in case (ours, broken) of
                 (_ : _, _) -> (reverse acc, [CompleteFailed step ("the generated code does not compile: " <> describe ours) False], [], current)
                 ([], _ : _) -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
