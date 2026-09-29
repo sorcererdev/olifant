@@ -68,7 +68,8 @@ elm/page (11 edits, 0 conflicts)
 ```
 
 `+` is a new file, `~` an insert, `=` an edit skipped because its text is already there,
-`!` a conflict. The tag on the right says which generator made the edit;
+`!` a conflict. `compiler: view` means the Elm compiler found that spot
+([chapter 4](04-compiler-branches-and-todos.md)). The tag on the right says which generator made the edit;
 `elm/page › elm/msg[1]` is the first message's `elm/msg` run inside `elm/page`.
 
 `gen` applies by default. Add `--plan` to see the same plan, with the full text of every
@@ -139,10 +140,8 @@ file contents (you have the files); `--plan` includes them.
 
 ## Running it again
 
-Re-running a generator with the same inputs is meant to be a no-op: inserts whose text is
-already in place are skipped (`=`).
-
-**Known rough edge:** a run that *created* a file which later steps then changed (a page
-plus its messages) conflicts on the second run (`src/Page/Settings.elm already exists`),
-because the created file no longer matches the template. Nothing is written, so it is
-safe, but it is not yet the no-op it should be.
+Re-running a generator with the same inputs is a no-op (exit 0, nothing written): inserts
+whose text is already in place are skipped (`=`), and a file the run would create is left
+alone when planning it from scratch reproduces it exactly, even when later steps (a
+page's messages) changed it after creation. A file that was created and then edited by
+hand still stops the run (`already exists`), so your edits are never overwritten.

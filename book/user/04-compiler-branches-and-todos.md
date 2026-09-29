@@ -20,8 +20,8 @@ time, so it can take a few rounds). `{= pattern =}` is the missing pattern, writ
 that file refers to it: `Just Route.Settings` in `Main.elm`, just `Settings` in
 `Route.elm`.
 
-In the JSON plan these edits say so: `"found_by": "compiler", "site": "changeRouteTo"`.
-(The human output does not mark them yet.)
+The plan marks these edits: `(+2 lines at line 59, compiler: changeRouteTo)` in the
+human output, `"found_by": "compiler", "site": "changeRouteTo"` in JSON.
 
 ## Places nobody told the generator about
 
@@ -45,7 +45,7 @@ $ olifant gen elm/page --set page=settings
 elm/page (10 edits, 0 conflicts)
   + src/Page/Settings.elm (42 lines)
   …
-  ~ src/Route.elm (+2 lines at line 36)
+  ~ src/Route.elm (+2 lines at line 36, compiler: toPath, todo)
   …
   ? src/Route.elm: toPath needs a branch for Settings (left as a todo)
 ```
@@ -88,8 +88,8 @@ nothing else stops one reaching production, where it crashes if that branch runs
 one). Without `elm` the `complete` edits are a conflict that says so. Checking costs one
 `elm make` of the project per round, a second or two for a small app.
 
-## Known rough edges
+## Line numbers
 
-- Line numbers reported for compiler-found edits are those at the moment of insertion,
-  not the final file's.
-- The human output does not mark which edits the compiler found.
+Every edit's line is where its text starts when the plan's edits are applied in order
+(`e1`, `e2`, …). Compiler-found branches are applied bottom-up within a file, and numbered
+that way, so an earlier line is never shifted by a later edit in the same file.

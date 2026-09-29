@@ -59,16 +59,36 @@ generate ws resolve tools steps now mode =
       let originals = M.fromList [(p, t) | (p, Right t) <- inspected]
           blocked = M.fromList [(p, why) | (p, Left why) <- inspected, p `elem` targets]
           ids = [generatorIdText (genId (stepGenerator s)) | s <- steps]
-      (positional, positionalConflicts, afterPositional, next) <- decideItems locate items originals blocked onDisk
-      (compiled, compileConflicts, warnings, current) <- completeEdits tools ws [(p, c) | PlanEdit p (RenderedComplete c) <- items] next afterPositional
-      let edits = positional ++ compiled
-          conflicts = positionalConflicts ++ compileConflicts
-          writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
+      let completes = [(p, c) | PlanEdit p (RenderedComplete c) <- items]
+          -- Both phases (spec §5.6): positional edits, then compiler-found branches.
+          phases originals' = do
+            (positional, pc, afterPositional, next) <- decideItems locate items originals' blocked onDisk
+            (compiled, cc, ws', current') <- completeEdits tools ws completes next afterPositional
+            pure (positional ++ compiled, pc ++ cc, ws', current')
+      first <- phases originals
+      (edits, conflicts, warnings, current) <- case [p | TargetExists _ p <- (\(_, c, _, _) -> c) first] of
+        [] -> pure first
+        -- A file this plan creates and then edits no longer matches its
+        -- template on a re-run, so its create reports `target_exists`. If
+        -- planning as if it were absent reproduces it exactly, the run is a
+        -- no-op for it, not a conflict (spec §5.4).
+        existing -> do
+          (edits2, conflicts2, warnings2, current2) <- phases (foldr (\p -> M.insert p Nothing) originals existing)
+          let unchanged p = M.lookup p current2 == M.lookup p originals
+          pure $
+            if null conflicts2 && all unchanged existing
+              then ([if editPath e `elem` existing then e {editAction = Skipped UnchangedContent, editSite = Nothing} else e | e <- edits2], conflicts2, warnings2, current2)
+              else first
+      let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts warnings writes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
   where
+    -- A file this plan creates and then edits no longer matches its
+    -- template on a re-run, so the create reports `target_exists`. If
+    -- planning those files from scratch reproduces them exactly, the run is
+    -- a no-op for them, not a conflict (spec §5.4).
     locate p anchors content = resolveLayers (toolSyntax tools) (languageFor (toolLanguages tools) p) anchors content
     fromComposition = \case
       StepInputs p e -> InvalidInputs p e

@@ -166,16 +166,17 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
     multiStep = length (nub (map editStep (planEdits plan))) > 1
     stepTag st = if multiStep then "  [" <> showStepPath st <> "]" else ""
     todoLines = ["  ? " <> T.pack (siteFile s) <> ": " <> siteFunction s <> " needs a branch for " <> sitePattern s <> " (left as a todo)" | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
-    editLine (PlannedEdit st _ p action _ _) = (<> stepTag st) $ case action of
+    editLine (PlannedEdit st _ p action _ site) = (<> stepTag st) $ case action of
       WillCreate c -> "  + " <> T.pack p <> " (" <> lineCount c <> ")"
       WillOverwrite c -> "  ~ " <> T.pack p <> " (overwritten, " <> lineCount c <> ")"
-      WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> ")"
+      WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> foundBy site <> ")"
       Skipped r -> "  = " <> T.pack p <> " (skipped: " <> skipReason r <> ")"
       Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
+    foundBy = maybe "" (\x -> ", compiler: " <> siteFunction x <> (if siteTodo x then ", todo" else ""))
     lineCount c = let n = length (T.lines c) in T.pack (show n) <> (if n == 1 then " line" else " lines")
     details
       | applied = ""
-      | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ _ p a _ _ <- planEdits plan, Just c <- [contentOf a]]
+      | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ _ p a _ _ <- planEdits plan, Just c0 <- [contentOf a], let c = if "\n" `T.isSuffixOf` c0 then c0 else c0 <> "\n"]
     contentOf = \case
       WillCreate c -> Just c
       WillOverwrite c -> Just c
