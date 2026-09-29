@@ -28,14 +28,12 @@ hint = "Create the page first: olifant gen elm/page --set page={= page =}"
 
 [[edits]]
 insert = "src/Page/{= page|pascal =}.elm"
-anchor = { marker = "-- olifant:msgs" }
+at     = "end of type Msg"
 text   = "| {= Msg =}{= if arg =} {= arg|parens =}{= end =}"
 
 [[edits]]
-insert = "src/Page/{= page|pascal =}.elm"
-anchor = { marker = "-- olifant:update-branches" }
-text   = """
-{= Msg =}{= if arg =} _{= end =} ->
-    ( model, Cmd.none )
-
-"""
+complete = "{= Msg =}"
+where    = "case in update"
+text     = """
+{= pattern =} ->
+    ( model, Cmd.none )"""

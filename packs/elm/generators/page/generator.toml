@@ -24,55 +24,50 @@ bind     = { page = "sample_page" }
 
 [[edits]]
 insert = "src/Main.elm"
-anchor = { marker = "-- olifant:page-imports" }
+at     = "after last line matching ^import Page\\."
 text   = "import Page.{= P =} as {= P =}"
 
 [[edits]]
 insert = "src/Main.elm"
-anchor = { marker = "-- olifant:pages" }
+at     = "end of type Page"
 text   = "| {= P =} {= P =}.Model"
 
 [[edits]]
 insert = "src/Main.elm"
-anchor = { marker = "-- olifant:page-msgs" }
+at     = "end of type Msg"
 text   = "| Got{= P =}Msg {= P =}.Msg"
 
 [[edits]]
 insert = "src/Main.elm"
-anchor = { marker = "-- olifant:route-inits" }
+at     = "end of case in update"
 text   = """
-Just Route.{= P =} ->
-    {= P =}.init |> updateWith {= P =} Got{= P =}Msg model
 
-"""
-
-[[edits]]
-insert = "src/Main.elm"
-anchor = { marker = "-- olifant:page-updates" }
-text   = """
 ( Got{= P =}Msg subMsg, {= P =} page ) ->
-    {= P =}.update subMsg page |> updateWith {= P =} Got{= P =}Msg model
-
-"""
-
-[[edits]]
-insert = "src/Main.elm"
-anchor = { marker = "-- olifant:page-views" }
-text   = """
-{= P =} page ->
-    viewPage Got{= P =}Msg ({= P =}.view page)
-
-"""
+    {= P =}.update subMsg page |> updateWith {= P =} Got{= P =}Msg model"""
 
 [[edits]]
 insert = "src/Route.elm"
-anchor = { marker = "-- olifant:routes" }
+at     = "end of type Route"
 text   = "| {= P =}"
 
 [[edits]]
 insert = "src/Route.elm"
-anchor = { marker = "-- olifant:route-parsers" }
+at     = "end of list in parser"
 text   = ', Parser.map {= P =} (s "{= page|kebab =}")'
+
+[[edits]]
+complete = "Route.{= P =}"
+where    = "case in changeRouteTo"
+text     = """
+{= pattern =} ->
+    {= P =}.init |> updateWith {= P =} Got{= P =}Msg model"""
+
+[[edits]]
+complete = "{= P =}"
+where    = "case in view"
+text     = """
+{= P =} page ->
+    viewPage Got{= P =}Msg ({= P =}.view page)"""
 
 [inputs.msgs]
 type = "list"

@@ -23,7 +23,6 @@ init =
 type Msg
     = NoOp
     | Reset
-    -- olifant:msgs
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -34,8 +33,6 @@ update msg model =
 
         Reset ->
             ( model, Cmd.none )
-
-        -- olifant:update-branches
 
 
 

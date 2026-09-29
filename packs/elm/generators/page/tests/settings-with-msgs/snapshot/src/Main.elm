@@ -6,7 +6,6 @@ import Html
 import Page.Home as Home
 import Page.SamplePage as SamplePage
 import Page.Settings as Settings
--- olifant:page-imports
 import Route exposing (Route)
 import Url exposing (Url)
 
@@ -26,7 +25,6 @@ type Page
     | Home Home.Model
     | SamplePage SamplePage.Model
     | Settings Settings.Model
-    -- olifant:pages
 
 
 init : () -> Url -> Nav.Key -> ( Model, Cmd Msg )
@@ -44,7 +42,6 @@ type Msg
     | GotHomeMsg Home.Msg
     | GotSamplePageMsg SamplePage.Msg
     | GotSettingsMsg Settings.Msg
-    -- olifant:page-msgs
 
 
 changeRouteTo : Maybe Route -> Model -> ( Model, Cmd Msg )
@@ -61,8 +58,6 @@ changeRouteTo maybeRoute model =
 
         Just Route.Settings ->
             Settings.init |> updateWith Settings GotSettingsMsg model
-
-        -- olifant:route-inits
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -87,8 +82,6 @@ update msg model =
 
         ( GotSettingsMsg subMsg, Settings page ) ->
             Settings.update subMsg page |> updateWith Settings GotSettingsMsg model
-
-        -- olifant:page-updates
 
         ( _, _ ) ->
             ( model, Cmd.none )
@@ -117,8 +110,6 @@ view model =
 
         Settings page ->
             viewPage GotSettingsMsg (Settings.view page)
-
-        -- olifant:page-views
 
 
 viewPage : (subMsg -> Msg) -> { title : String, body : List (Html.Html subMsg) } -> Browser.Document Msg

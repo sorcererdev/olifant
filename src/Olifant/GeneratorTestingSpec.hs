@@ -6,7 +6,11 @@ import Control.Monad (forM_)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.GeneratorTesting
-import Olifant.Language (noChecker, noSyntax, processChecker)
+import Data.Map.Strict qualified as M
+import Data.Text.IO qualified as TIO
+import Olifant.Language (compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Workspace (Workspace (..))
+import System.Directory (findExecutable)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (getTemporaryDirectory)
 import System.FilePath ((</>))
@@ -52,3 +56,22 @@ spec = do
         runCase (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) processChecker bless c >>= \case
           CaseSkipped why -> pendingWith (T.unpack why)
           other -> other `shouldBe` CasePassed
+
+  -- Structure-placed code must still build: fixture + each Elm case's output.
+  describe "elm pack output compiles" $ do
+    cases <- runIO (discoverCases (diskWorkspace ".") "packs")
+    elmSrc <- runIO (TIO.readFile "packs/elm/languages/elm.toml")
+    let Right elm = parseLanguage "elm" "packs/elm" elmSrc
+    forM_ [c | c <- cases, casePack c == "elm"] $ \c ->
+      it (T.unpack (caseName c)) $
+        findExecutable "elm" >>= \case
+          Nothing -> pendingWith "elm is not installed"
+          Just _ -> do
+            fixture <- readTree "packs/elm/fixtures/app"
+            snapshot <- readTree (caseDir c </> "snapshot")
+            compileClean elm (M.union snapshot fixture) `shouldReturn` Right ()
+  where
+    readTree dir = do
+      let ws = diskWorkspace "."
+      paths <- filter (\p -> takeWhile (/= '/') p /= "elm-stuff") <$> listFiles ws dir
+      M.fromList <$> traverse (\p -> (p,) . maybe "" id <$> readText ws (dir </> p)) paths

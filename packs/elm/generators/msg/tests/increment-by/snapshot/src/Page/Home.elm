@@ -23,7 +23,6 @@ init =
 type Msg
     = NoOp
     | IncrementBy Int
-    -- olifant:msgs
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -34,8 +33,6 @@ update msg model =
 
         IncrementBy _ ->
             ( model, Cmd.none )
-
-        -- olifant:update-branches
 
 
 

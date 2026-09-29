@@ -28,3 +28,10 @@ olifant gen elm/page --set page=settings --set msgs="toggle_dark_mode, set_displ
 - To add messages to an existing page: `olifant gen elm/msg --set page=NAME --set msg=NAME [--set arg=Type]`.
 - Add `--plan` to preview without writing. Output is JSON when not on a terminal.
 - Exit codes: 0 ok, 3 unknown generator, 4 bad inputs (the JSON lists what to fix), 5 conflict (nothing written).
+- No marker comments are needed: code is placed by structure (`olifant anchors elm`
+  lists the places, `olifant where FILE "end of case in update"` shows one), and the
+  `case` branches in `changeRouteTo`, `view` and each page's `update` are added where
+  the Elm compiler reports them missing (needs `ast-grep` and `elm` installed).
+- If the result lists `todos`, each is a `Debug.todo` branch in a function the
+  generators don't know about (e.g. a hand-written `toPath : Route -> String`). Replace
+  the `Debug.todo` with the right branch body; `elm make --optimize` fails until you do.
