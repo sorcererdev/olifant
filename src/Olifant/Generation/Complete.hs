@@ -134,19 +134,18 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       CheckFailed _ -> False
 
 -- | Insert every branch, bottom-up within a file so earlier line numbers stay
--- valid; edits are numbered in diagnostic order. Reported lines are those at
--- insertion time.
+-- valid. Edits are numbered in that application order, so each reported line
+-- is where the text lands when the plan's edits are replayed in order.
 applyBranches :: Int -> [Branch] -> Map FilePath Text -> ([PlannedEdit], Map FilePath Text)
-applyBranches n branches files0 = (map snd (sortOn fst numbered), final)
+applyBranches n branches files0 = (reverse edits, final)
   where
-    indexed = zip [n ..] branches
-    order = sortOn (\(i, b) -> (missingFile (brSite b), Down (snd (missingCase (brSite b))), Down i)) indexed
-    (numbered, final) = foldl step ([], files0) order
+    order = sortOn (\(k, b) -> (missingFile (brSite b), Down (snd (missingCase (brSite b))), Down k)) (zip [0 :: Int ..] branches)
+    (edits, final) = foldl step ([], files0) (zip [n ..] (map snd order))
     step (acc, files) (i, b) =
       let file = missingFile (brSite b)
           (line, updated) = insertBranch (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
           edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) (Just ("compiler: missing " <> sitePattern (brInfo b))) (Just (brInfo b))
-       in ((i, edit) : acc, M.insert file updated files)
+       in (edit : acc, M.insert file updated files)
 
 insertBranch :: (Int, Int) -> Text -> Text -> (Int, Text)
 insertBranch (caseStart, caseEnd) branch content =

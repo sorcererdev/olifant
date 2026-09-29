@@ -67,6 +67,25 @@ spec = do
 
 createSpec :: Spec
 createSpec = describe "generate (create edits)" $ do
+  it "re-running a create that later edits changed is a no-op (fix pass)" $ do
+    let grow =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[[edits]]", "create = \"a.txt\"", "text = \"start\\n# more\\n\""
+            , "[[edits]]", "insert = \"a.txt\"", "at = \"before marker # more\"", "text = \"{= name =}\"" ]
+    (_, once) <- run [] grow [("name", "x")] Apply
+    M.lookup "a.txt" once `shouldBe` Just "start\nx\n# more\n"
+    (Right again, twice) <- run (M.toList once) grow [("name", "x")] Apply
+    planConflicts again `shouldBe` []
+    planWrites again `shouldBe` M.empty
+    map editAction (planEdits again) `shouldBe` [Skipped UnchangedContent, Skipped UnchangedContent]
+    twice `shouldBe` once
+  it "still refuses to replace a created file that was changed by hand" $ do
+    let grow =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[[edits]]", "create = \"a.txt\"", "text = \"start\\n# more\\n\""
+            , "[[edits]]", "insert = \"a.txt\"", "at = \"before marker # more\"", "text = \"{= name =}\"" ]
+    (Right plan, _) <- run [("a.txt", "start\nhand edit\n# more\n")] grow [("name", "x")] Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("already exists" `T.isInfixOf`)
   it "creates rendered files when applied" $ do
     (Right plan, files) <- run [] createGen [("name", "blog_post")] Apply
     files `shouldBe` M.fromList [("app/blog_post.rb", "class BlogPost\nend\n"), ("test/blog_post_test.rb", "test BlogPost\n")]
@@ -466,3 +485,28 @@ completeSpec = describe "generate (complete edits)" $ do
     planConflicts plan `shouldBe` []
     map (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
     (M.lookup "src/Route.elm" <$> snapshot) `shouldReturn` Just (routeElm <> "\n        Settings ->\n            Debug.todo \"olifant: toPath Settings\"\n")
+  it "numbers compiler branches in the order they are applied, so lines replay (fix pass)" $ do
+    let two = "module A exposing (..)\n\nf m =\n    case m of\n        A ->\n            1\n\ng m =\n    case m of\n        A ->\n            2\n"
+    ref <- newIORef [[MissingPatterns "src/A.elm" (3, 5) ["Reset"], MissingPatterns "src/A.elm" (8, 10) ["Reset"]]]
+    (ws, _) <- memoryWorkspace [("src/A.elm", two)]
+    Right plan <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    [(editNumber e, siteFunction s', l) | e <- planEdits plan, Just s' <- [editSite e], WillInsert l _ <- [editAction e]]
+      `shouldBe` [(1, "g", 13), (2, "f", 8)]
+  it "re-running a create whose cases the compiler completed is a no-op (fix pass)" $ do
+    let pageGen =
+          generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+            , "[[edits]]", "create = \"src/A.elm\"", "text = \"update msg =\\n    case msg of\\n        NoOp ->\\n            1\\n\""
+            , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} ->\\n    2\"" ]
+        -- Reports the case in src/A.elm as missing Reset until a Reset branch exists.
+        honest = Checker $ \_ files -> pure . Right $
+          CheckReport [MissingPatterns "src/A.elm" (1, 3) ["Reset"] | Just t <- [M.lookup "src/A.elm" files], not ("Reset ->" `T.isInfixOf` t)] []
+        go files = do
+          (ws, snap) <- memoryWorkspace files
+          Right plan <- generate ws noResolve (Tools noSyntax honest [elmLang]) [Step pageGen (M.fromList [("name", "reset")])] now Apply
+          (plan,) <$> snap
+    (_, once) <- go []
+    M.lookup "src/A.elm" once `shouldBe` Just "update msg =\n    case msg of\n        NoOp ->\n            1\n\n        Reset ->\n            2\n"
+    (again, twice) <- go (M.toList once)
+    planConflicts again `shouldBe` []
+    twice `shouldBe` once

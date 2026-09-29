@@ -12,6 +12,9 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Olifant.Cli
+import Olifant.Cli.Output (planHuman)
+import Olifant.Generation (EditAction (..), Plan (..), PlannedEdit (..), Site (..))
+import Olifant.Generator (GeneratorId (..))
 import Olifant.Language (noChecker, noSyntax)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
@@ -75,7 +78,28 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = describe "runCli" $ do
+spec = planOutputSpec >> runCliSpec
+
+planOutputSpec :: Spec
+planOutputSpec = describe "planHuman" $ do
+  let at0 = UTCTime (fromGregorian 2026 9 29) 0
+      edit n p a site = PlannedEdit ["g"] n p a Nothing site
+      plan =
+        Plan (GeneratorId "g") [] at0
+          [ edit 1 "a.elm" (WillInsert 3 "x") Nothing
+          , edit 2 "b.elm" (WillInsert 9 "Settings ->\n    1") (Just (Site "b.elm" "view" "Settings" False))
+          , edit 3 "c.elm" (WillInsert 4 "T ->\n    Debug.todo \"\"") (Just (Site "c.elm" "toPath" "T" True))
+          ]
+          [] [] M.empty
+  it "marks edits the compiler found, and todos (fix pass)" $ do
+    let out = planHuman True plan
+    out `shouldSatisfy` ("(+2 lines at line 9, compiler: view)" `T.isInfixOf`)
+    out `shouldSatisfy` ("(+2 lines at line 4, compiler: toPath, todo)" `T.isInfixOf`)
+  it "ends every file's contents with a newline in --plan output (fix pass)" $
+    planHuman False plan `shouldSatisfy` ("Debug.todo \"\"\n" `T.isSuffixOf`)
+
+runCliSpec :: Spec
+runCliSpec = describe "runCli" $ do
   it "suggests `gen` when the first word looks like a generator" $ do
     (code, _, err, _) <- runWith "" project True ["elm/page", "--set", "page=settings"]
     code `shouldBe` ExitFailure 2
