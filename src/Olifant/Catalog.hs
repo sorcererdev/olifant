@@ -4,6 +4,8 @@ module Olifant.Catalog
   ( Catalog
   , catalogEntries
   , catalogBroken
+  , catalogLanguages
+  , catalogBrokenLanguages
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
@@ -27,10 +29,11 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generation.Compose (ResolveFailure (..))
 import Olifant.Generator
+import Olifant.Language (Language, parseLanguage)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (splitDirectories, takeDirectory, takeFileName, (</>))
+import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 
 data CatalogEntry = CatalogEntry
   { entryId :: GeneratorId
@@ -48,6 +51,9 @@ data Catalog = Catalog
   , catalogEntries :: [CatalogEntry]
   , catalogBroken :: [(GeneratorId, FilePath, Text)]
   , catalogPacks :: [Text]
+  , -- | language adapters from every pack's `languages/*.toml` (spec §12), in pack order
+    catalogLanguages :: [Language]
+  , catalogBrokenLanguages :: [(FilePath, Text)]
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -123,8 +129,21 @@ openCatalogAt root localDir packs = do
   local <- maybe (pure []) (discover Nothing Nothing) localDir
   fromPacks <- concat <$> traverse (\(name, r) -> discover (Just name) (Just r) (r </> "generators")) packs
   let loaded = local ++ fromPacks
-  pure (Right (Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs)))
+  langs <- concat <$> traverse (uncurry languagesIn) packs
+  pure (Right (Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs)))
   where
+    languagesIn _ r = do
+      let dir = r </> "languages"
+      files <- listFiles root dir
+      traverse
+        ( \f -> do
+            let path = dir </> f
+            src <- readText root path
+            pure $ case src of
+              Nothing -> Left (path, "unreadable")
+              Just t -> first (path,) (parseLanguage (T.pack (takeBaseName f)) r t)
+        )
+        [f | f <- files, takeExtension f == ".toml", length (splitDirectories f) == 1]
     discover pack packRoot dir = do
       files <- listFiles root dir
       let gens = [takeDirectory f | f <- files, takeFileName f == "generator.toml", length (splitDirectories f) == 2]

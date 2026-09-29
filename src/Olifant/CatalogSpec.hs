@@ -9,6 +9,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Catalog
 import Olifant.Generation
 import Olifant.Generator (GeneratorId (..), GeneratorWith (..))
+import Olifant.Language (Language (..))
 import Olifant.Workspace
 import Test.Hspec
 
@@ -51,6 +52,17 @@ genInto root cat ref = do
 
 spec :: Spec
 spec = describe "catalog" $ do
+  it "loads a pack's language adapters and keeps broken ones aside" $ do
+    (root, _) <-
+      memoryWorkspace
+        [ ("/packs/elm/languages/elm.toml", "files = [\"**/*.elm\"]\ncomment = \"--\"\ngrammar = { source = \"grammar/elm\" }\n")
+        , ("/packs/elm/languages/bad.toml", "files = 1\n")
+        , ("/packs/elm/languages/grammar/elm/parser.c", "/* not an adapter */\n")
+        , ("/packs/elm/generators/g/generator.toml", "description = \"d\"\nlanguage = \"elm\"\n")
+        ]
+    Right cat <- openPackCatalog root [("elm", "/packs/elm")]
+    map langName (catalogLanguages cat) `shouldBe` ["elm"]
+    map fst (catalogBrokenLanguages cat) `shouldBe` ["/packs/elm/languages/bad.toml"]
   it "lists local and pack generators, sorted by id" $
     withCatalog files $ \_ cat ->
       map entryId (catalogEntries cat) `shouldBe` map GeneratorId ["model", "rails/broken", "rails/cell", "rails/model"]

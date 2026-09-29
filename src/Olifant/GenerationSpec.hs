@@ -11,6 +11,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Generation
 import Olifant.Generator
+import Olifant.Language (noChecker, noSyntax, parseLanguage)
 import Olifant.Template (Template)
 import Data.ByteString qualified as BS
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
@@ -319,6 +320,18 @@ atSpec = describe "generate (at phrases)" $ do
     let old = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"a.txt\"", "anchor = { marker = \"# here\" }", "text = \"{= name =}\""]
     (_, files) <- run [("a.txt", "x\n# here\n")] old [("name", "y")] Apply
     M.lookup "a.txt" files `shouldBe` Just "x\ny\n# here\n"
+  it "uses a marker fallback when the syntax tool is missing" $ do
+    let Right elm =
+          parseLanguage "elm" "/p" . T.unlines $
+            [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
+            , "[targets.type]", "phrase = \"type NAME\"", "container = { kind = \"type_declaration\" }"
+            , "items = { kind = \"union_variant\" }", "example = \"end of type Msg\""
+            ]
+        gen' = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"Main.elm\"", "at = [\"end of type Page\", \"before marker -- olifant:pages\"]", "text = \"| {= name|pascal =}\""]
+    (ws, snapshot) <- memoryWorkspace [("Main.elm", "type Page\n    = A\n    -- olifant:pages\n")]
+    Right plan <- generate ws noResolve (Tools noSyntax noChecker [elm]) [Step gen' (M.fromList [("name", "b")])] now Apply
+    map editAnchor (planEdits plan) `shouldBe` [Just "before marker -- olifant:pages"]
+    (M.lookup "Main.elm" <$> snapshot) `shouldReturn` Just "type Page\n    = A\n    | B\n    -- olifant:pages\n"
   it "re-running an at-phrase insert is a no-op" $ hedgehog $ do
     n <- forAll (Gen.element ["c", "d_e", "f"])
     (_, once) <- evalIO (run [("lib.rs", "pub mod a;\n")] gen [("name", n)] Apply)
