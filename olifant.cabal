@@ -24,6 +24,7 @@ common shared
     , time                  >=1.12
     , toml-parser           >=2.0  && <3
     , transformers          >=0.6
+    , scientific            >=0.3
 
 library
   import:          shared

@@ -93,6 +93,7 @@ planJson applied plan =
       WillOverwrite c -> ["status" .= ("overwrite" :: Text), "content" .= c]
       WillInsert l s -> ["status" .= ("insert" :: Text), "line" .= l, "content" .= s]
       Skipped r -> ["status" .= ("skipped" :: Text), "reason" .= skipReason r]
+      Conflicted -> ["status" .= ("conflict" :: Text)]
 
 planHuman :: Bool -> Plan -> Text
 planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan)) <> details
@@ -114,6 +115,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillOverwrite c -> "  ~ " <> T.pack p <> " (overwritten, " <> lineCount c <> ")"
       WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> ")"
       Skipped r -> "  = " <> T.pack p <> " (skipped: " <> skipReason r <> ")"
+      Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
     lineCount c = let n = length (T.lines c) in T.pack (show n) <> (if n == 1 then " line" else " lines")
     details
       | applied = ""
@@ -123,6 +125,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillOverwrite c -> Just c
       WillInsert _ s -> Just s
       Skipped _ -> Nothing
+      Conflicted -> Nothing
 
 skipReason :: SkipReason -> Text
 skipReason = \case

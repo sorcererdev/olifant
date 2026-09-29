@@ -211,7 +211,7 @@ composeSpec = describe "generate (composition)" $ do
           , "[requires]", "exists = [\"src/{= page|pascal =}.txt\"]"
           , "[[edits]]", "insert = \"src/{= page|pascal =}.txt\"", "anchor = { marker = \"-- msgs\" }", "text = \"| {= msg|pascal =}\""
           ]
-      resolveTo gens _ ref = pure (maybe (Left ("no generator `" <> ref <> "`")) Right (lookup ref gens))
+      resolveTo gens _ ref = pure (maybe (Left (ResolveNotFound ("no generator `" <> ref <> "`"))) Right (lookup ref gens))
       resolve = resolveTo [("msg", msgGen), ("page", pageGen)]
       gen1 steps = do
         (ws, snapshot) <- memoryWorkspace []
@@ -259,3 +259,18 @@ composeSpec = describe "generate (composition)" $ do
     result `shouldSatisfy` \case
       Left (CompositionCycle _) -> True
       _ -> False
+
+  it "lists a conflicting edit with its step, so conflicts point at something" $ do
+    (ws, snapshot) <- memoryWorkspace [("src/B.txt", "someone else's\n")]
+    Right plan <- generate ws noResolve [Step (pageOnly "page") (M.fromList [("page", "a")]), Step (pageOnly "page") (M.fromList [("page", "b")])] now Apply
+    map (\e -> (editStep e, editAction e)) (planEdits plan)
+      `shouldBe` [(["page (step 1)"], WillCreate "page A\n"), (["page (step 2)"], Conflicted)]
+    snapshot `shouldReturn` M.fromList [("src/B.txt", "someone else's\n")]
+  it "counts an existing binary file as present for requires" $
+    withSystemTempDirectory "olifant" $ \dir -> do
+      BS.writeFile (dir </> "logo.png") "\x89PNG\xff"
+      let gen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[requires]\nexists = [\"logo.png\"]\n[[edits]]\ncreate = \"a.txt\"\ntext = \"a\"\n"
+      Right plan <- generate (diskWorkspace dir) noResolve [Step gen M.empty] now Apply
+      planConflicts plan `shouldBe` []
+  where
+    pageOnly gid = generatorNamed gid "description = \"p\"\nlanguage = \"x\"\n[inputs.page]\ntype = \"ident\"\n[[edits]]\ncreate = \"src/{= page|pascal =}.txt\"\ntext = \"page {= page|pascal =}\\n\"\n"

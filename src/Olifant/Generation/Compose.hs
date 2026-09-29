@@ -4,6 +4,7 @@ module Olifant.Generation.Compose
   ( StepPath
   , Step (..)
   , Resolve
+  , ResolveFailure (..)
   , noResolve
   , CompositionError (..)
   , PlanItem (..)
@@ -30,15 +31,21 @@ data Step = Step {stepGenerator :: Generator, stepSets :: Map Text Text}
 
 -- | Load a generator named in a [[uses]] step. Arguments: the pack of the
 -- generator doing the using (bare names resolve there first), and the ref.
-type Resolve m = Maybe Text -> Text -> m (Either Text Generator)
+type Resolve m = Maybe Text -> Text -> m (Either ResolveFailure Generator)
+
+-- | Why a [[uses]] ref did not resolve: it names nothing, or it names a
+-- generator whose definition is broken (a different exit code, spec §11.3).
+data ResolveFailure = ResolveNotFound Text | ResolveInvalid Text
+  deriving stock (Eq, Show)
 
 noResolve :: Applicative m => Resolve m
-noResolve _ ref = pure (Left ("cannot resolve `" <> ref <> "`: no generator catalog available"))
+noResolve _ ref = pure (Left (ResolveNotFound ("cannot resolve `" <> ref <> "`: no generator catalog available")))
 
 data CompositionError
   = StepInputs StepPath EnvError
   | StepTemplate StepPath TemplateError
   | StepUnknown StepPath Text Text
+  | StepInvalid StepPath Text Text
   | StepCycle StepPath
   deriving stock (Eq, Show)
 
@@ -68,11 +75,15 @@ expand resolve now ancestors path gen sets = do
   where
     expandUse env u = do
       childSets <- except (first (StepTemplate path) (renderUse env u))
-      child <- ExceptT (first (StepUnknown path (useGenerator u)) <$> resolve (packOf (genId gen)) (useGenerator u))
+      child <- ExceptT (first (failure (useGenerator u)) <$> resolve (packOf (genId gen)) (useGenerator u))
       concat
         <$> traverse
           (\(i, s) -> expand resolve now (genId gen : ancestors) (path ++ [idText child <> maybe "" (\n -> "[" <> T.pack (show n) <> "]") i]) child s)
           childSets
+
+    failure ref = \case
+      ResolveNotFound why -> StepUnknown path ref why
+      ResolveInvalid why -> StepInvalid path ref why
 
 renderRequires :: Env -> Maybe Requires -> Either TemplateError ([FilePath], Maybe Text)
 renderRequires _ Nothing = Right ([], Nothing)

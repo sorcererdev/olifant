@@ -5,7 +5,6 @@ module Olifant.Cli (Runtime (..), runCli) where
 import Data.Aeson (Value, eitherDecodeStrict)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
-import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -18,7 +17,8 @@ import Olifant.Cli.Output
 import Olifant.Generation
 import Olifant.Generator (EnvError (..), generatorIdText, describeEnvError)
 import Olifant.Template (describeTemplateError)
-import Olifant.Workspace (Workspace, within)
+import Olifant.Workspace (Workspace (..), within)
+import System.FilePath ((</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -55,17 +55,21 @@ runCommand rt fmt cat = \case
     Right e -> emit rt fmt (showJson e) (showHuman e) >> pure ExitSuccess
   GenCmd g -> do
     specs <- case genStepsFile g of
-      Nothing -> pure (Right (genSteps g))
+      Nothing -> pure (Right (Right (genSteps g)))
       Just f -> do
-        raw <- if f == "-" then rtReadStdin rt else either (const "") id . TE.decodeUtf8' <$> BS.readFile f
-        pure (first (\e -> "--steps: " <> T.pack e) (eitherDecodeStrict (TE.encodeUtf8 raw)))
+        raw <- if f == "-" then Just <$> rtReadStdin rt else readText (rtRoot rt) (rtProjectDir rt </> f)
+        pure $ case raw of
+          Nothing -> Left f
+          Just text -> Right (first (\e -> "--steps: " <> T.pack e) (eitherDecodeStrict (TE.encodeUtf8 text)))
     case specs of
-      Left msg -> rtErr rt (msg <> "\n") >> pure (ExitFailure 2)
-      Right [] -> rtErr rt "no steps to run\n" >> pure (ExitFailure 2)
-      Right ss -> do
-        loaded <- traverse (\s -> either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s))) ss
+      Left f -> failWith rt fmt 3 "steps_not_found" ("--steps: cannot read " <> T.pack f <> " (missing, or not UTF-8 text)") Nothing []
+      Right (Left msg) -> rtErr rt (msg <> "\n") >> pure (ExitFailure 2)
+      Right (Right []) -> rtErr rt "no steps to run\n" >> pure (ExitFailure 2)
+      Right (Right ss) -> do
+        let label i s = specGenerator s <> if length ss > 1 then " (step " <> T.pack (show i) <> ")" else ""
+        loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
-          Left err -> catalogFailure rt fmt err
+          Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
           Right gens -> do
             now <- maybe (rtNow rt) pure (genNow g)
             let mode = if genPlanOnly g then PlanOnly else Apply
@@ -90,18 +94,23 @@ failWith rt fmt code errCode message hint extra = do
   pure (ExitFailure code)
 
 catalogFailure :: Runtime -> Format -> CatalogError -> IO ExitCode
-catalogFailure rt fmt err = case err of
+catalogFailure rt fmt = catalogFailureAt rt fmt Nothing
+
+-- | Like 'catalogFailure', naming the chain step it happened in (spec §7).
+catalogFailureAt :: Runtime -> Format -> Maybe Text -> CatalogError -> IO ExitCode
+catalogFailureAt rt fmt step err = case err of
   GeneratorNotFound _ available ->
-    failWith rt fmt 3 "generator_not_found" msg (Just "run `olifant list` to see generators") ["available" .= map generatorIdText available]
-  GeneratorAmbiguous {} -> failWith rt fmt 2 "generator_ambiguous" msg (Just "use the full pack/name") []
-  SourceMissing {} -> failWith rt fmt 3 "template_not_found" msg Nothing []
-  ConfigInvalid {} -> failWith rt fmt 1 "config_invalid" msg Nothing []
+    failWith' 3 "generator_not_found" msg (Just "run `olifant list` to see generators") ["available" .= map generatorIdText available]
+  GeneratorAmbiguous {} -> failWith' 2 "generator_ambiguous" msg (Just "use the full pack/name") []
+  SourceMissing {} -> failWith' 3 "template_not_found" msg Nothing []
+  ConfigInvalid {} -> failWith' 1 "config_invalid" msg Nothing []
   PackNotConfigured pack _ ->
-    failWith rt fmt 3 "pack_not_configured" msg (Just (pack <> " = { path = \"/path/to/" <> pack <> "\" }")) ["pack" .= pack]
-  GeneratorInvalid {} -> failWith rt fmt 1 "generator_invalid" msg Nothing []
-  SourceInvalid {} -> failWith rt fmt 1 "template_invalid" msg Nothing []
+    failWith' 3 "pack_not_configured" msg (Just (pack <> " = { path = \"/path/to/" <> pack <> "\" }")) ["pack" .= pack]
+  GeneratorInvalid {} -> failWith' 1 "generator_invalid" msg Nothing []
+  SourceInvalid {} -> failWith' 1 "template_invalid" msg Nothing []
   where
-    msg = describeCatalogError err
+    msg = maybe "" (<> ": ") step <> describeCatalogError err
+    failWith' code c m h extra = failWith rt fmt code c m h (extra ++ maybe [] (\st -> ["step" .= st]) step)
 
 generationFailure :: Runtime -> Format -> GenerationError -> IO ExitCode
 generationFailure rt fmt = \case
@@ -109,6 +118,7 @@ generationFailure rt fmt = \case
   InvalidInputs path e -> failWith rt fmt 1 "generator_invalid" (inStep path (describeEnvError e)) Nothing []
   TemplateFailed path e -> failWith rt fmt 1 "template_failed" (inStep path (describeTemplateError e)) Nothing []
   UnknownGenerator path ref why -> failWith rt fmt 3 "generator_not_found" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
+  InvalidGenerator path ref why -> failWith rt fmt 1 "generator_invalid" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
   CompositionCycle path -> failWith rt fmt 1 "composition_cycle" ("generators use each other in a cycle: " <> showStepPath path) Nothing []
   where
     inStep path msg = showStepPath path <> ": " <> msg

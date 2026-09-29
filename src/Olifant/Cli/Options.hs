@@ -7,7 +7,10 @@ module Olifant.Cli.Options
   , parseOptions
   ) where
 
-import Data.Aeson (FromJSON (..), withObject, (.:), (.:?))
+import Data.Aeson (FromJSON (..), Value (..), withObject, (.:), (.:?))
+import Data.Aeson.Types qualified as Aeson
+import Data.Foldable (toList)
+import Data.Scientific (floatingOrInteger)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -30,7 +33,23 @@ data StepSpec = StepSpec {specGenerator :: Text, specSets :: [(Text, Text)]}
   deriving stock (Eq, Show)
 
 instance FromJSON StepSpec where
-  parseJSON = withObject "step" $ \o -> StepSpec <$> o .: "gen" <*> (maybe [] M.toList <$> o .:? "set")
+  parseJSON = withObject "step" $ \o -> do
+    gen <- o .: "gen"
+    sets <- maybe (pure []) (traverse (\(k, v) -> (k,) <$> asText v) . M.toList) =<< (o .:? "set" :: Aeson.Parser (Maybe (M.Map Text Value)))
+    pure (StepSpec gen sets)
+    where
+      -- JSON values become the same text a --set would carry: numbers and
+      -- booleans as written, arrays joined with "," (the CLI list form).
+      asText = \case
+        String t -> pure t
+        Number n -> pure (T.pack (either (show :: Double -> String) (show :: Integer -> String) (floatingOrInteger n)))
+        Bool b -> pure (if b then "true" else "false")
+        Array xs -> T.intercalate "," <$> traverse scalar (toList xs)
+        other -> fail ("expected text, a number, a boolean or a list, got " <> show other)
+      scalar = \case
+        Array _ -> fail "nested lists are not supported"
+        Object _ -> fail "objects are not supported in a list"
+        v -> asText v
 
 data GenOptions = GenOptions
   { genSteps :: [StepSpec]

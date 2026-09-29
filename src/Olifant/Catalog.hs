@@ -23,6 +23,7 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Generation.Compose (ResolveFailure (..))
 import Olifant.Generator
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
 import Olifant.Toml qualified as Toml
@@ -177,10 +178,14 @@ loadGenerator root cat entry = sequenceA <$> traverse resolve (entryDefinition e
 
 -- | Resolve a generator named in a [[uses]] step. Inside a pack, a bare name
 -- means that pack's generator first (spec §7); otherwise the usual lookup.
-resolver :: Monad m => Workspace m -> Catalog -> Maybe Text -> Text -> m (Either Text Generator)
-resolver root cat pack ref =
-  case [e | r <- candidates, Right e <- [findEntry cat r]] of
-    (entry : _) -> first describeCatalogError <$> loadGenerator root cat entry
-    [] -> pure (Left (either describeCatalogError (const "not found") (findEntry cat ref)))
+-- A broken candidate is an error, never a reason to fall through to another.
+resolver :: Monad m => Workspace m -> Catalog -> Maybe Text -> Text -> m (Either ResolveFailure Generator)
+resolver root cat pack ref = go candidates
   where
     candidates = [p <> "/" <> ref | Just p <- [pack], not ("/" `T.isInfixOf` ref)] ++ [ref]
+    go [] = pure (Left (ResolveNotFound (either describeCatalogError (const "not found") (findEntry cat ref))))
+    go (r : rest) = case findEntry cat r of
+      Right entry -> first (ResolveInvalid . describeCatalogError) <$> loadGenerator root cat entry
+      Left (GeneratorNotFound _ _) -> go rest
+      Left (PackNotConfigured _ _) -> go rest
+      Left err -> pure (Left (ResolveInvalid (describeCatalogError err)))

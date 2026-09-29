@@ -6,6 +6,7 @@ module Olifant.Generation
   , GenerationError (..)
   , Step (..)
   , Resolve
+  , ResolveFailure (..)
   , noResolve
   , StepPath
   , showStepPath
@@ -17,6 +18,7 @@ import Control.Monad (filterM, forM_, when)
 import Data.Functor ((<&>))
 import Data.List (nub)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
@@ -36,6 +38,7 @@ data GenerationError
   = InvalidInputs StepPath EnvError
   | TemplateFailed StepPath TemplateError
   | UnknownGenerator StepPath Text Text
+  | InvalidGenerator StepPath Text Text
   | CompositionCycle StepPath
   deriving stock (Eq, Show)
 
@@ -47,9 +50,10 @@ generate ws resolve steps now mode =
       let targets = nub [renderedPath e | PlanEdit _ e <- items]
           required = nub [p | PlanRequire _ ps _ <- items, p <- ps]
       inspected <- traverse (\p -> (p,) <$> inspectTarget p) (nub (targets ++ required))
+      onDisk <- S.fromList <$> filterM (\p -> if isSafeRelative p then (/= Absent) <$> inspectPath ws p else pure False) required
       let originals = M.fromList [(p, t) | (p, Right t) <- inspected]
           blocked = M.fromList [(p, why) | (p, Left why) <- inspected, p `elem` targets]
-          (edits, conflicts, writes) = decideItems items originals blocked
+          (edits, conflicts, writes) = decideItems items originals blocked onDisk
           ids = [generatorIdText (genId (stepGenerator s)) | s <- steps]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts writes
       when (mode == Apply && not (hasConflicts plan)) $
@@ -60,6 +64,7 @@ generate ws resolve steps now mode =
       StepInputs p e -> InvalidInputs p e
       StepTemplate p e -> TemplateFailed p e
       StepUnknown p ref why -> UnknownGenerator p ref why
+      StepInvalid p ref why -> InvalidGenerator p ref why
       StepCycle p -> CompositionCycle p
     -- Right: current text (or Nothing if absent). Left: why it cannot be written.
     -- Unsafe paths are never touched; the planner reports them.

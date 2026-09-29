@@ -133,3 +133,18 @@ spec = describe "catalog" $ do
       fmap (fmap genDescription) (resolver root cat (Just "elm") "msg") `shouldReturn` Right "elm msg"
       fmap (fmap genDescription) (resolver root cat Nothing "msg") `shouldReturn` Right "local msg"
       fmap (either (const "err") genDescription) (resolver root cat (Just "elm") "nope") `shouldReturn` "err"
+  it "does not fall through to another generator when the pack-local one is broken" $ do
+    let fs =
+          [ ("/proj/.olifant/config.toml", "[packs]\nelm = { path = \"../packs/elm\" }\n")
+          , ("/proj/.olifant/generators/msg/generator.toml", "description = \"local msg\"\nlanguage = \"x\"\n")
+          , ("/packs/elm/generators/msg/generator.toml", "description = \"broken\"\nlanguage = \"x\"\nbogus = 1\n")
+          ]
+    withCatalog fs $ \root cat -> do
+      r <- resolver root cat (Just "elm") "msg"
+      r `shouldSatisfy` \case
+        Left (ResolveInvalid msg) -> "bogus" `T.isInfixOf` msg
+        _ -> False
+      r2 <- resolver root cat (Just "elm") "nope"
+      r2 `shouldSatisfy` \case
+        Left (ResolveNotFound _) -> True
+        _ -> False

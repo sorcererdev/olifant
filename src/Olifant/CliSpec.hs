@@ -142,9 +142,29 @@ spec = describe "runCli" $ do
     (code, out, _, files) <- runWith "" project False ["gen", "model", "--set", "name=post", "+", "nope", "--set", "x=y"]
     code `shouldBe` ExitFailure 3
     jsonAt ["error", "code"] out `shouldBe` Just (String "generator_not_found")
+    jsonAt ["error", "step"] out `shouldBe` Just (String "nope (step 2)")
     files `shouldBe` M.fromList project
   it "rejects an empty step and mixing --steps with positional steps" $ do
     (c1, _, _, _) <- runWith "" project False ["gen", "model", "--set", "name=post", "+"]
     c1 `shouldBe` ExitFailure 2
     (c2, _, _, _) <- runWith "[]" project False ["gen", "model", "--steps", "-"]
     c2 `shouldBe` ExitFailure 2
+  it "reports a missing --steps file as not found (exit 3), without crashing" $ do
+    (code, out, _, _) <- runWith "" project False ["gen", "--steps", "missing.json"]
+    code `shouldBe` ExitFailure 3
+    jsonAt ["error", "code"] out `shouldBe` Just (String "steps_not_found")
+  it "accepts numbers, booleans and lists in --steps values" $ do
+    let steps = "[{\"gen\":\"note\",\"set\":{\"name\":\"n1\",\"text\":3}},{\"gen\":\"note\",\"set\":{\"name\":\"n2\",\"text\":[\"a\",\"b\"]}}]"
+    (code, _, _, files) <- runWith steps project False ["gen", "--steps", "-"]
+    code `shouldBe` ExitSuccess
+    M.lookup "/proj/notes/n1.txt" files `shouldBe` Just "3\n"
+    M.lookup "/proj/notes/n2.txt" files `shouldBe` Just "a,b\n"
+  it "treats a broken nested generator as a definition error (exit 1)" $ do
+    let fs =
+          project
+            ++ [ ("/proj/.olifant/generators/outer/generator.toml", "description = \"o\"\nlanguage = \"x\"\n[[uses]]\ngenerator = \"inner\"\n")
+               , ("/proj/.olifant/generators/inner/generator.toml", "description = \"i\"\nlanguage = \"x\"\nbogus = 1\n")
+               ]
+    (code, out, _, _) <- runWith "" fs False ["gen", "outer"]
+    code `shouldBe` ExitFailure 1
+    jsonAt ["error", "code"] out `shouldBe` Just (String "generator_invalid")

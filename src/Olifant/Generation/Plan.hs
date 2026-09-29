@@ -27,7 +27,8 @@ data Plan = Plan
 data PlannedEdit = PlannedEdit {editStep :: [Text], editNumber :: Int, editPath :: FilePath, editAction :: EditAction}
   deriving stock (Eq, Show)
 
-data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | Skipped SkipReason
+-- | 'Conflicted': this edit produced a conflict (see 'planConflicts').
+data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | Skipped SkipReason | Conflicted
   deriving stock (Eq, Show)
 
 data SkipReason = AlreadyExists | AlreadyPresent | UnchangedContent
