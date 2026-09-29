@@ -17,6 +17,7 @@ import Data.Time (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
+import Olifant.Language (Checker, Syntax)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
 import System.FilePath (splitDirectories, (</>))
@@ -30,7 +31,8 @@ data PackCase = PackCase
   }
   deriving stock (Eq, Show)
 
-data CaseResult = CasePassed | CaseFailed [Text]
+-- | 'CaseSkipped': a tool the case needs is not installed.
+data CaseResult = CasePassed | CaseFailed [Text] | CaseSkipped Text
   deriving stock (Eq, Show)
 
 discoverCases :: Monad m => Workspace m -> FilePath -> m [PackCase]
@@ -42,8 +44,8 @@ discoverCases root packsDir = do
     , [pack, "generators", gen, "tests", c, "inputs.toml"] <- [splitDirectories f]
     ]
 
-runCase :: Workspace IO -> Bool -> PackCase -> IO CaseResult
-runCase root bless pc = do
+runCase :: Workspace IO -> Syntax IO -> Checker IO -> Bool -> PackCase -> IO CaseResult
+runCase root syntax checker bless pc = do
   caseInputs <- readText root (caseDir pc </> "inputs.toml")
   case caseInputs >>= either (const Nothing) Just . parseCase of
     Nothing -> pure (CaseFailed ["cannot read " <> T.pack (caseDir pc </> "inputs.toml") <> " (needs `now` and an [inputs] table of strings)"])
@@ -60,11 +62,14 @@ runCase root bless pc = do
                 fixturePaths <- listFiles root fixtureDir
                 fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
                 (ws, _) <- memoryWorkspace fixture
-                firstRun <- generate ws (resolver root cat) [Step gen sets] now Apply
-                secondRun <- generate ws (resolver root cat) [Step gen sets] now Apply
+                let tools = Tools syntax checker (catalogLanguages cat)
+                firstRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
+                secondRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
                 case (firstRun, secondRun) of
                   (Left err, _) -> pure (CaseFailed [T.pack (show err)])
-                  (Right plan, _) | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
+                  (Right plan, _)
+                    | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
+                    | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
                   (Right plan, again) -> do
                     snapshotProblems <- checkSnapshot (planWrites plan)
                     let rerunProblems = case again of

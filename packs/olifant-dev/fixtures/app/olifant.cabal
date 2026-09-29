@@ -8,7 +8,6 @@ library
     Olifant.Naming
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
-    -- olifant:library-modules
 
 test-suite spec
   type:               exitcode-stdio-1.0
@@ -20,4 +19,3 @@ test-suite spec
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
     Olifant.SampleUnitSpec
-    -- olifant:test-modules

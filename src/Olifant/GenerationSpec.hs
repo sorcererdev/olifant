@@ -11,6 +11,8 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Generation
 import Olifant.Generator
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Olifant.Language
 import Olifant.Template (Template)
 import Data.ByteString qualified as BS
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
@@ -51,13 +53,15 @@ createGen =
 run :: [(FilePath, Text)] -> Generator -> [(Text, Text)] -> Mode -> IO (Either GenerationError Plan, M.Map FilePath Text)
 run files gen sets mode = do
   (ws, snapshot) <- memoryWorkspace files
-  result <- generate ws noResolve [Step gen (M.fromList sets)] now mode
+  result <- generate ws noResolve noTools [Step gen (M.fromList sets)] now mode
   (result,) <$> snapshot
 
 spec :: Spec
 spec = do
   createSpec
   insertSpec
+  atSpec
+  completeSpec
   unusableSpec
   composeSpec
 
@@ -131,13 +135,13 @@ insertSpec = describe "generate (marker inserts)" $ do
     map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}\n"]
   it "keeps earlier inserts in order (the marker stays last)" $ do
     (ws, snapshot) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
-    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
-    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "c_c")])] now Apply
+    _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "c_c")])] now Apply
     M.lookup "svc/lib.rs" <$> snapshot `shouldReturn` Just "pub mod a;\npub mod b_b;\npub mod c_c;\n// olifant:modules\n"
   it "skips text that is already present, so re-running is a no-op" $ do
     (ws, _) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
-    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
-    Right again <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    Right again <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
     map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent, Skipped AlreadyPresent]
     planWrites again `shouldBe` M.empty
   it "does not mistake a longer identifier for the snippet (token-bounded already-present check)" $ do
@@ -155,7 +159,10 @@ insertSpec = describe "generate (marker inserts)" $ do
       `shouldBe` Just "library\n  exposed-modules:\n    Olifant.A\n    Olifant.BB\n    -- olifant:lib\n\ntest-suite spec\n  other-modules:\n    Olifant.A\n    Olifant.BB\n    -- olifant:test\n"
   it "reports a missing or repeated marker, and a missing file, as conflicts" $ do
     (Right plan, files) <- run [("svc/lib.rs", "pub mod a;\n"), ("svc/service.rs", service <> "// olifant:delegates\n")] insertGen [("cmd", "b_b")] Apply
-    planConflicts plan `shouldBe` [MarkerNotFound 1 "svc/lib.rs" "// olifant:modules", MarkerRepeated 2 "svc/service.rs" "// olifant:delegates" 2]
+    map describeConflict (planConflicts plan)
+      `shouldBe` [ "edit 1: cannot place text in svc/lib.rs: `before marker // olifant:modules`: marker not found"
+                 , "edit 2: cannot place text in svc/service.rs: `before marker // olifant:delegates`: marker appears 2 times; it must appear once"
+                 ]
     M.lookup "svc/lib.rs" files `shouldBe` Just "pub mod a;\n"
     (Right plan2, _) <- run [] insertGen [("cmd", "b_b")] Apply
     planConflicts plan2 `shouldBe` [InsertTargetMissing 1 "svc/lib.rs", InsertTargetMissing 2 "svc/service.rs"]
@@ -166,8 +173,8 @@ insertSpec = describe "generate (marker inserts)" $ do
     ws' <- forAll (Gen.list (Range.linear 2 3) (Gen.text (Range.linear 2 6) Gen.lower))
     let sets = M.fromList [("cmd", T.intercalate "_" ws')]
     (ws, _) <- evalIO (memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)])
-    _ <- evalIO (generate ws noResolve [Step insertGen sets] now Apply)
-    second <- evalIO (generate ws noResolve [Step insertGen sets] now Apply)
+    _ <- evalIO (generate ws noResolve noTools [Step insertGen sets] now Apply)
+    second <- evalIO (generate ws noResolve noTools [Step insertGen sets] now Apply)
     fmap planWrites second === Right M.empty
 
 unusableSpec :: Spec
@@ -179,7 +186,7 @@ unusableSpec = describe "generate (targets that cannot be written)" $ do
   it "never overwrites an existing file it cannot read as text (all-or-nothing)" $
     withSystemTempDirectory "olifant" $ \dir -> do
       BS.writeFile (dir </> "mine.txt") "caf\xe9 precious\n"
-      Right plan <- generate (diskWorkspace dir) noResolve [Step pathGen (M.fromList [("dir", "mine.txt")])] now Apply
+      Right plan <- generate (diskWorkspace dir) noResolve noTools [Step pathGen (M.fromList [("dir", "mine.txt")])] now Apply
       planConflicts plan `shouldSatisfy` \case [c] -> isUnusable 2 "mine.txt" c; _ -> False
       BS.readFile (dir </> "mine.txt") `shouldReturn` "caf\xe9 precious\n"
       BS.readFile (dir </> "a.txt") `shouldThrow` anyIOException
@@ -215,7 +222,7 @@ composeSpec = describe "generate (composition)" $ do
       resolve = resolveTo [("msg", msgGen), ("page", pageGen)]
       gen1 steps = do
         (ws, snapshot) <- memoryWorkspace []
-        result <- generate ws resolve steps now Apply
+        result <- generate ws resolve noTools steps now Apply
         (result,) <$> snapshot
   it "runs a generator's [[uses]] once per for_each item, in one plan, with requires met by earlier steps" $ do
     (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings"), ("msgs", "toggle_dark_mode, reset")])]
@@ -247,7 +254,7 @@ composeSpec = describe "generate (composition)" $ do
     map editAction (drop 2 (planEdits plan)) `shouldBe` [Skipped AlreadyPresent]
   it "reports an unknown nested generator and writes nothing" $ do
     (ws, snapshot) <- memoryWorkspace []
-    result <- generate ws noResolve [Step pageGen (M.fromList [("page", "a_b"), ("msgs", "c_d")])] now Apply
+    result <- generate ws noResolve noTools [Step pageGen (M.fromList [("page", "a_b"), ("msgs", "c_d")])] now Apply
     result `shouldSatisfy` \case
       Left (UnknownGenerator ["page"] "msg" _) -> True
       _ -> False
@@ -255,7 +262,7 @@ composeSpec = describe "generate (composition)" $ do
   it "detects composition cycles instead of looping" $ do
     let loopGen = generatorNamed "loop" "description = \"loop\"\nlanguage = \"x\"\n[[uses]]\ngenerator = \"loop\"\n"
     (ws, _) <- memoryWorkspace []
-    result <- generate ws (resolveTo [("loop", loopGen)]) [Step loopGen M.empty] now Apply
+    result <- generate ws (resolveTo [("loop", loopGen)]) noTools [Step loopGen M.empty] now Apply
     result `shouldSatisfy` \case
       Left (CompositionCycle _) -> True
       _ -> False
@@ -263,7 +270,7 @@ composeSpec = describe "generate (composition)" $ do
   it "reports a cycle even behind an empty for_each" $ do
     let loopGen = generatorNamed "loop" "description = \"loop\"\nlanguage = \"x\"\n[inputs.xs]\ntype = \"list\"\noptional = true\nof = \"ident\"\n[[uses]]\ngenerator = \"loop\"\nfor_each = \"xs\"\n"
     (ws, _) <- memoryWorkspace []
-    result <- generate ws (resolveTo [("loop", loopGen)]) [Step loopGen M.empty] now Apply
+    result <- generate ws (resolveTo [("loop", loopGen)]) noTools [Step loopGen M.empty] now Apply
     result `shouldSatisfy` \case
       Left (CompositionCycle _) -> True
       _ -> False
@@ -282,7 +289,7 @@ composeSpec = describe "generate (composition)" $ do
     files `shouldBe` M.empty
   it "lists a conflicting edit with its step, so conflicts point at something" $ do
     (ws, snapshot) <- memoryWorkspace [("src/B.txt", "someone else's\n")]
-    Right plan <- generate ws noResolve [Step (pageOnly "page") (M.fromList [("page", "a")]), Step (pageOnly "page") (M.fromList [("page", "b")])] now Apply
+    Right plan <- generate ws noResolve noTools [Step (pageOnly "page") (M.fromList [("page", "a")]), Step (pageOnly "page") (M.fromList [("page", "b")])] now Apply
     map (\e -> (editStep e, editAction e)) (planEdits plan)
       `shouldBe` [(["page (step 1)"], WillCreate "page A\n"), (["page (step 2)"], Conflicted)]
     snapshot `shouldReturn` M.fromList [("src/B.txt", "someone else's\n")]
@@ -290,7 +297,157 @@ composeSpec = describe "generate (composition)" $ do
     withSystemTempDirectory "olifant" $ \dir -> do
       BS.writeFile (dir </> "logo.png") "\x89PNG\xff"
       let gen = generatorFrom "description = \"d\"\nlanguage = \"x\"\n[requires]\nexists = [\"logo.png\"]\n[[edits]]\ncreate = \"a.txt\"\ntext = \"a\"\n"
-      Right plan <- generate (diskWorkspace dir) noResolve [Step gen M.empty] now Apply
+      Right plan <- generate (diskWorkspace dir) noResolve noTools [Step gen M.empty] now Apply
       planConflicts plan `shouldBe` []
   where
     pageOnly gid = generatorNamed gid "description = \"p\"\nlanguage = \"x\"\n[inputs.page]\ntype = \"ident\"\n[[edits]]\ncreate = \"src/{= page|pascal =}.txt\"\ntext = \"page {= page|pascal =}\\n\"\n"
+
+atSpec :: Spec
+atSpec = describe "generate (at phrases)" $ do
+  let gen =
+        generatorFrom . (header <>) . T.unlines $
+          [ "[[edits]]"
+          , "insert = \"lib.rs\""
+          , "at = [\"end of mods in lib\", \"after last line matching ^pub mod \"]"
+          , "text = \"pub mod {= name|snake =};\""
+          ]
+  it "falls back to a line target when no adapter/tool is available, and says which anchor it used" $ do
+    (Right plan, files) <- run [("lib.rs", "pub mod a;\npub mod b;\n\nfn x() {}\n")] gen [("name", "c")] Apply
+    M.lookup "lib.rs" files `shouldBe` Just "pub mod a;\npub mod b;\npub mod c;\n\nfn x() {}\n"
+    map editAnchor (planEdits plan) `shouldBe` [Just "after last line matching ^pub mod "]
+  it "is a conflict listing every layer when none resolves" $ do
+    (Right plan, _) <- run [("lib.rs", "fn x() {}\n")] gen [("name", "c")] PlanOnly
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("`after last line matching ^pub mod `: no line matches" `T.isInfixOf`)
+  it "keeps `anchor = { marker = … }` working" $ do
+    let old = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"a.txt\"", "anchor = { marker = \"# here\" }", "text = \"{= name =}\""]
+    (_, files) <- run [("a.txt", "x\n# here\n")] old [("name", "y")] Apply
+    M.lookup "a.txt" files `shouldBe` Just "x\ny\n# here\n"
+  it "uses a marker fallback when the syntax tool is missing" $ do
+    let Right elm =
+          parseLanguage "elm" "/p" . T.unlines $
+            [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
+            , "[targets.type]", "phrase = \"type NAME\"", "container = { kind = \"type_declaration\" }"
+            , "items = { kind = \"union_variant\" }", "example = \"end of type Msg\""
+            ]
+        gen' = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"Main.elm\"", "at = [\"end of type Page\", \"before marker -- olifant:pages\"]", "text = \"| {= name|pascal =}\""]
+    (ws, snapshot) <- memoryWorkspace [("Main.elm", "type Page\n    = A\n    -- olifant:pages\n")]
+    Right plan <- generate ws noResolve (Tools noSyntax noChecker [elm]) [Step gen' (M.fromList [("name", "b")])] now Apply
+    map editAnchor (planEdits plan) `shouldBe` [Just "before marker -- olifant:pages"]
+    (M.lookup "Main.elm" <$> snapshot) `shouldReturn` Just "type Page\n    = A\n    | B\n    -- olifant:pages\n"
+  it "re-running before/after inserts is a no-op (review)" $ do
+    let beside =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[[edits]]", "insert = \"a.elm\"", "at = \"after marker -- here\"", "text = \"after {= name =}\""
+            , "[[edits]]", "insert = \"a.elm\"", "at = \"before first line matching ^init \"", "text = \"before {= name =}\\n\""
+            ]
+        start = "x = 1\n-- here\n\ninit a = a\n"
+    (_, once) <- run [("a.elm", start)] beside [("name", "b")] Apply
+    M.lookup "a.elm" once `shouldBe` Just "x = 1\n-- here\nafter b\n\nbefore b\ninit a = a\n"
+    (Right again, twice) <- run (M.toList once) beside [("name", "b")] Apply
+    map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent, Skipped AlreadyPresent]
+    twice `shouldBe` once
+  it "re-running an at-phrase insert is a no-op" $ hedgehog $ do
+    n <- forAll (Gen.element ["c", "d_e", "f"])
+    (_, once) <- evalIO (run [("lib.rs", "pub mod a;\n")] gen [("name", n)] Apply)
+    (_, twice) <- evalIO (run (M.toList once) gen [("name", n)] Apply)
+    twice === once
+
+-- | A checker that returns scripted rounds, then clean.
+scriptedChecker :: IORef [[MissingPatterns]] -> Checker IO
+scriptedChecker ref = Checker $ \_ _ -> atomicModifyIORef' ref (\case [] -> ([], Right (CheckReport [] [])); (r : rs) -> (rs, Right (CheckReport r [])))
+
+-- | A checker that always reports the given broken files and nothing missing.
+brokenChecker :: [(FilePath, Text)] -> Checker IO
+brokenChecker broken = Checker $ \_ _ -> pure (Right (CheckReport [] broken))
+
+elmLang :: Language
+elmLang = l
+  where
+    Right l = parseLanguage "elm" "/p" $ T.unlines
+      [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\"", "qualify = \"elm\""
+      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+      , "[check]", "command = [\"true\"]", "format = \"elm-json\"" ]
+
+completeSpec :: Spec
+completeSpec = describe "generate (complete edits)" $ do
+  let page = "module Page.A exposing (..)\n\nupdate msg model =\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n"
+      gen = generatorFrom . T.unlines $
+        [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+        , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} ->\\n    ( model, Cmd.none )\"" ]
+      go files rounds = do
+        ref <- newIORef rounds
+        (ws, snapshot) <- memoryWorkspace files
+        r <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+        (r,) <$> snapshot
+  it "adds a branch after the case the compiler reports" $ do
+    (Right plan, files) <- go [("src/A.elm", page)] [[MissingPatterns "src/A.elm" (3, 5) ["Reset"]]]
+    M.lookup "src/A.elm" files `shouldBe` Just (page <> "\n        Reset ->\n            ( model, Cmd.none )\n")
+    map editSite (planEdits plan) `shouldBe` [Just (Site "src/A.elm" "update" "Reset" False)]
+  it "leaves a placeholder todo where no `where` matches" $ do
+    let gen' = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"", "where = \"case in view\"", "text = \"{= pattern =} -> 1\"" ]
+    ref <- newIORef [[MissingPatterns "src/A.elm" (3, 5) ["Reset"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen' (M.fromList [("name", "reset")])] now Apply
+    fmap (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
+    (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just (page <> "\n        Reset ->\n            Debug.todo \"olifant: update Reset\"\n")
+  it "ignores diagnostics about constructors it did not introduce" $ do
+    (Right plan, files) <- go [("src/A.elm", page)] [[MissingPatterns "src/A.elm" (3, 5) ["Other"]]]
+    (planEdits plan, M.lookup "src/A.elm" files) `shouldBe` ([], Just page)
+  it "is a conflict when the compiler keeps reporting the same site (Review Focus 3)" $ do
+    let same = [MissingPatterns "src/A.elm" (3, 5) ["Reset"]]
+    (Right plan, _) <- go [("src/A.elm", page)] [same, same]
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("still reports Reset" `T.isInfixOf`)
+  it "is a conflict naming the tool when the check cannot run" $ do
+    (ws, _) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (Tools noSyntax (Checker (\_ _ -> pure (Left (CheckToolMissing "`elm` is not installed")))) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    map conflictToolMissing (planConflicts plan) `shouldBe` [True]
+  it "chooses the body by `where` when two edits complete the same bare name (Review Focus 2)" $ do
+    -- `where` needs Syntax; a fake one maps each target phrase to the case it names.
+    let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\nchange r =\n    case r of\n        Nothing ->\n            0\n\nview p =\n    case p of\n        Home ->\n            1\n"
+        syntax = Syntax $ \_ rule _ -> pure . Right $
+          if "change" `T.isInfixOf` T.pack (show rule) then [Match (4, 4) (6, 13) "case r of"] else [Match (9, 4) (11, 13) "case p of"]
+        two = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
+          , "[[edits]]", "complete = \"Settings\"", "where = \"case in view\"", "text = \"Settings _ ->\\n    3\"" ]
+        Right withTargets = parseLanguage "elm" "/p" $ T.unlines
+          [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\"", "qualify = \"elm\""
+          , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+          , "[check]", "command = [\"true\"]", "format = \"elm-json\""
+          , "[targets.case_in]", "phrase = \"case in FUNCTION\"", "container = { kind = \"case_of_expr\", regex = \"{= FUNCTION =}\" }", "items = { kind = \"case_of_branch\" }", "example = \"end of case in update\"" ]
+    ref <- newIORef [[MissingPatterns "src/Main.elm" (9, 11) ["Settings _"], MissingPatterns "src/Main.elm" (4, 6) ["Just Settings"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/Main.elm", mainElm)]
+    Right _ <- generate ws noResolve (Tools syntax (scriptedChecker ref) [withTargets]) [Step two M.empty] now Apply
+    Just out <- M.lookup "src/Main.elm" <$> snapshot
+    out `shouldSatisfy` ("        Just Route.Settings ->\n            2" `T.isInfixOf`)
+    out `shouldSatisfy` ("        Settings _ ->\n            3" `T.isInfixOf`)
+  it "is a conflict, not a guess, when an unmatched site could be either constructor (review)" $ do
+    let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\npageName p =\n    case p of\n        Home ->\n            \"home\"\n"
+        syntax = Syntax $ \_ _ _ -> pure (Right [])
+        two =
+          generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"elm\""
+            , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
+            , "[[edits]]", "complete = \"Settings\"", "where = \"case in view\"", "text = \"Settings _ ->\\n    3\""
+            ]
+    ref <- newIORef [[MissingPatterns "src/Main.elm" (4, 6) ["Settings _"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/Main.elm", mainElm)]
+    Right plan <- generate ws noResolve (Tools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "Route.Settings" `T.isInfixOf` c && "pageName" `T.isInfixOf` c)
+    (M.lookup "src/Main.elm" <$> snapshot) `shouldReturn` Just mainElm
+  it "warns when the project does not compile, so cases could not be checked (review)" $ do
+    (ws, _) <- memoryWorkspace [("src/A.elm", page), ("src/B.elm", "module B\n")]
+    Right plan <- generate ws noResolve (Tools noSyntax (brokenChecker [("src/B.elm", "NAMING ERROR")]) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    planConflicts plan `shouldBe` []
+    planWarnings plan `shouldSatisfy` any ("src/B.elm" `T.isInfixOf`)
+  it "is a conflict when a file the plan changed does not compile (review)" $ do
+    let broken = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "insert = \"src/A.elm\"", "at = \"after first line matching ^module\"", "text = \"oops\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} -> 1\"" ]
+    (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (Tools noSyntax (brokenChecker [("src/A.elm", "SYNTAX PROBLEM")]) [elmLang]) [Step broken (M.fromList [("name", "reset")])] now Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "src/A.elm" `T.isInfixOf` c && "SYNTAX PROBLEM" `T.isInfixOf` c)
+    (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just page

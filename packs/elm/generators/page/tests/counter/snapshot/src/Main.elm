@@ -6,7 +6,6 @@ import Html
 import Page.Home as Home
 import Page.SamplePage as SamplePage
 import Page.Counter as Counter
--- olifant:page-imports
 import Route exposing (Route)
 import Url exposing (Url)
 
@@ -26,7 +25,6 @@ type Page
     | Home Home.Model
     | SamplePage SamplePage.Model
     | Counter Counter.Model
-    -- olifant:pages
 
 
 init : () -> Url -> Nav.Key -> ( Model, Cmd Msg )
@@ -44,7 +42,6 @@ type Msg
     | GotHomeMsg Home.Msg
     | GotSamplePageMsg SamplePage.Msg
     | GotCounterMsg Counter.Msg
-    -- olifant:page-msgs
 
 
 changeRouteTo : Maybe Route -> Model -> ( Model, Cmd Msg )
@@ -61,8 +58,6 @@ changeRouteTo maybeRoute model =
 
         Just Route.Counter ->
             Counter.init |> updateWith Counter GotCounterMsg model
-
-        -- olifant:route-inits
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -87,8 +82,6 @@ update msg model =
 
         ( GotCounterMsg subMsg, Counter page ) ->
             Counter.update subMsg page |> updateWith Counter GotCounterMsg model
-
-        -- olifant:page-updates
 
         ( _, _ ) ->
             ( model, Cmd.none )
@@ -117,8 +110,6 @@ view model =
 
         Counter page ->
             viewPage GotCounterMsg (Counter.view page)
-
-        -- olifant:page-views
 
 
 viewPage : (subMsg -> Msg) -> { title : String, body : List (Html.Html subMsg) } -> Browser.Document Msg

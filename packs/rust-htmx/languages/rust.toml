@@ -1,0 +1,31 @@
+# Rust: ast-grep's built-in grammar. No [check] yet (rustc JSON is step 2c).
+files = ["**/*.rs"]
+comment = "//"
+grammar = "rust"
+placeholder = 'todo!("{= message =}")'
+branch = "{= pattern =} => {= body =},"
+
+[targets.struct]
+phrase = "struct NAME"
+container = { kind = "field_declaration_list", inside = { kind = "struct_item", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { kind = "field_declaration" }
+example = "end of struct BillingService"
+
+[targets.impl]
+phrase = "impl NAME"
+container = { kind = "declaration_list", inside = { kind = "impl_item", has = { field = "type", regex = "^{= NAME =}$" } } }
+items = { kind = "function_item" }
+example = "end of impl BillingService"
+
+[targets.literal_in]
+phrase = "literal in FUNCTION"
+container = { kind = "field_initializer_list", inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" }, not = { inside = { kind = "field_initializer_list", stopBy = "end" } } }
+items = { any = [{ kind = "field_initializer" }, { kind = "shorthand_field_initializer" }] }
+example = "end of literal in new"
+
+[targets.crate_imports]
+phrase = "crate imports"
+container = { kind = "use_list", inside = { kind = "use_declaration", regex = "^use crate::", stopBy = "end" }, not = { inside = { kind = "use_list", stopBy = "end" } } }
+# ast-grep needs a kind: everything a use list can hold.
+items = { any = [{ kind = "scoped_use_list" }, { kind = "scoped_identifier" }, { kind = "identifier" }, { kind = "use_as_clause" }, { kind = "use_wildcard" }, { kind = "self" }] }
+example = "end of crate imports"

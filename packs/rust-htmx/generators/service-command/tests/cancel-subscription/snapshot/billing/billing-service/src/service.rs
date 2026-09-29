@@ -1,14 +1,12 @@
 use crate::{
     refund_invoice::{RefundInvoice, RefundInvoiceInput, RefundInvoiceOutput},
     cancel_subscription::{CancelSubscription, CancelSubscriptionInput, CancelSubscriptionOutput},
-    // olifant:command-imports
 };
 
 #[derive(Clone)]
 pub struct BillingService {
     pub refund_invoice: RefundInvoice,
     pub cancel_subscription: CancelSubscription,
-    // olifant:command-fields
 }
 
 impl BillingService {
@@ -16,7 +14,6 @@ impl BillingService {
         Self {
             refund_invoice: RefundInvoice {},
             cancel_subscription: CancelSubscription {},
-            // olifant:command-instantiations
         }
     }
 
@@ -27,5 +24,4 @@ impl BillingService {
     pub async fn cancel_subscription(&self, input: CancelSubscriptionInput) -> CancelSubscriptionOutput {
         self.cancel_subscription.cancel_subscription(input).await
     }
-    // olifant:command-delegates
 }

@@ -12,6 +12,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Olifant.Cli
+import Olifant.Language (noChecker, noSyntax)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
 import Test.Hspec
@@ -60,6 +61,8 @@ runWith stdinText files tty args = do
         , rtStdoutIsTty = tty
         , rtOut = \t -> modifyIORef' out (<> t)
         , rtErr = \t -> modifyIORef' err (<> t)
+        , rtSyntax = noSyntax
+        , rtChecker = noChecker
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
@@ -73,6 +76,25 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
 
 spec :: Spec
 spec = describe "runCli" $ do
+  it "lists a language's anchor targets" $ do
+    (code, out, _, _) <- runWith "" elmPack False ["anchors", "elm"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` ("\"phrase\":\"case in FUNCTION\"" `T.isInfixOf`)
+  it "reports an unknown language" $ do
+    (code, out, _, _) <- runWith "" elmPack False ["anchors", "cobol"]
+    code `shouldBe` ExitFailure 3
+    out `shouldSatisfy` ("language_not_found" `T.isInfixOf`)
+  it "shows where a line phrase resolves" $ do
+    (code, out, _, _) <- runWith "" (("/proj/lib.rs", "pub mod a;\nfn x() {}\n") : elmPack) False ["where", "lib.rs", "after last line matching ^pub mod "]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` ("\"line\":2" `T.isInfixOf`)
+  it "explains a phrase that does not resolve" $ do
+    (code, out, _, _) <- runWith "" (("/proj/lib.rs", "fn x() {}\n") : elmPack) False ["where", "lib.rs", "before marker // m"]
+    code `shouldBe` ExitFailure 5
+    out `shouldSatisfy` ("marker not found" `T.isInfixOf`)
+  it "rejects a phrase that does not parse as a usage error" $ do
+    (code, _, _, _) <- runWith "" (("/proj/lib.rs", "fn x() {}\n") : elmPack) False ["where", "lib.rs", "bottom of lib"]
+    code `shouldBe` ExitFailure 2
   it "gen applies by default and prints a human summary on a TTY" $ do
     (code, out, _, files) <- runWith "" project True ["gen", "model", "--set", "name=blog_post"]
     code `shouldBe` ExitSuccess
@@ -218,3 +240,18 @@ spec = describe "runCli" $ do
     out `shouldSatisfy` T.isInfixOf "olifant gen model --set name=blog_post"
     (_, human, _, _) <- runWith "" project True ["list", "--detail"]
     human `shouldSatisfy` T.isInfixOf "--set name=<ident>"
+
+-- | A project whose config points at a pack with one Elm adapter.
+elmPack :: [(FilePath, Text)]
+elmPack =
+  [ ("/proj/.olifant/config.toml", "[packs]\nelm = { path = \"/packs/elm\" }\n")
+  , ("/packs/elm/generators/g/generator.toml", "description = \"d\"\nlanguage = \"elm\"\n")
+  , ( "/packs/elm/languages/elm.toml"
+    , T.unlines
+        [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
+        , "[targets.case_in]", "phrase = \"case in FUNCTION\""
+        , "container = { kind = \"case_of_expr\" }", "items = { kind = \"case_of_branch\" }"
+        , "example = \"end of case in update\""
+        ]
+    )
+  ]

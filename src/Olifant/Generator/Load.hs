@@ -6,9 +6,11 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Anchor (Position (..), parsePhrase)
 import Olifant.Generator.Definition
+import Olifant.Language (ruleFromTree)
 import Olifant.Naming (parseName)
-import Olifant.Template (Binding (..), Template, describeTemplateError, parseTemplate)
+import Olifant.Template (Binding (..), Template, describeTemplateError, freeVariables, parseTemplate)
 import Olifant.Toml
 
 parseGenerator :: GeneratorId -> Text -> Either Text GeneratorDef
@@ -84,20 +86,29 @@ requiresFrom t = do
   pure (Requires exists hint)
 
 editFrom :: Table -> Either Text (EditWith SourceRef)
-editFrom t = case (M.member "create" t, M.member "insert" t) of
-  (True, False) -> do
+editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
+  ["create"] -> do
     onlyKeys ["create", "template", "exemplar", "bind", "text", "on_exists"] t
     target <- required "create" (text >=> tmpl) t
     src <- sourceFrom True t
     onExists <- fromMaybe ErrorIfExists <$> optional "on_exists" (text >=> onExistsFrom) t
     pure (Create target src onExists)
-  (False, True) -> do
-    onlyKeys ["insert", "anchor", "template", "text"] t
+  ["insert"] -> do
+    onlyKeys ["insert", "at", "anchor", "template", "text"] t
     target <- required "insert" (text >=> tmpl) t
-    anchor <- required "anchor" (table >=> anchorFrom) t
+    anchors <- case (M.lookup "at" t, M.lookup "anchor" t) of
+      (Just v, Nothing) -> inKey "at" (atFrom v)
+      (Nothing, Just v) -> inKey "anchor" (table v >>= markerAlias)
+      _ -> Left "an insert needs exactly one of `at` (preferred) or `anchor`"
     src <- sourceFrom False t
-    pure (Insert target anchor src)
-  _ -> Left "each edit needs exactly one of `create` or `insert`"
+    pure (Insert target anchors src)
+  ["complete"] -> do
+    onlyKeys ["complete", "where", "template", "text"] t
+    ctor <- required "complete" (text >=> tmpl) t
+    wher <- optional "where" (text >=> targetTemplate) t
+    src <- sourceFrom False t
+    pure (Complete ctor wher src)
+  _ -> Left "each edit needs exactly one of `create`, `insert` or `complete`"
 
 sourceFrom :: Bool -> Table -> Either Text SourceRef
 sourceFrom allowExemplar t = case (M.lookup "template" t, M.lookup "exemplar" t, M.lookup "text" t) of
@@ -114,8 +125,44 @@ sourceFrom allowExemplar t = case (M.lookup "template" t, M.lookup "exemplar" t,
 bindsFrom :: Table -> Either Text [Binding]
 bindsFrom tbl = traverse (\(k, v) -> inKey k (text v >>= fmap (Binding k) . parseName)) (M.toList tbl)
 
-anchorFrom :: Table -> Either Text Anchor
-anchorFrom t = onlyKeys ["marker"] t >> Marker <$> required "marker" text t
+atFrom :: Tree -> Either Text [AnchorSpec]
+atFrom = \case
+  TList [] -> Left "`at` needs at least one anchor"
+  v@(TList _) -> list one v
+  v -> (: []) <$> one v
+  where
+    one = \case
+      TText s -> AtPhrase <$> checkedTemplate "" s
+      TTable tb -> do
+        onlyKeys ["ast", "pos"] tb
+        AtRule <$> required "ast" ruleFromTree tb <*> required "pos" (text >=> positionFrom) tb
+      other -> Left ("expected a phrase or { ast = …, pos = … }, got " <> describeTree other)
+
+-- | `where` holds a target (`case in update`), checked as the target of a phrase.
+targetTemplate :: Text -> Either Text Template
+targetTemplate = checkedTemplate "end of "
+
+-- | A phrase template; one without variables is parsed now, so typos fail at load.
+checkedTemplate :: Text -> Text -> Either Text Template
+checkedTemplate prefix s = do
+  t <- tmpl s
+  if null (freeVariables t) then () <$ parsePhrase (prefix <> s) else Right ()
+  pure t
+
+positionFrom :: Text -> Either Text Position
+positionFrom = \case
+  "start" -> Right StartOf
+  "end" -> Right EndOf
+  "before" -> Right Before
+  "after" -> Right After
+  other -> Left ("expected start, end, before or after, got `" <> other <> "`")
+
+-- | Step 1's `anchor = { marker = "X" }`, kept as `at = "before marker X"`.
+markerAlias :: Table -> Either Text [AnchorSpec]
+markerAlias t = do
+  onlyKeys ["marker"] t
+  m <- required "marker" text t
+  (: []) . AtPhrase <$> tmpl ("before marker " <> m)
 
 onExistsFrom :: Text -> Either Text OnExists
 onExistsFrom = \case

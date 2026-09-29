@@ -27,10 +27,10 @@ bind     = { unit = "sample_unit", module = "sample_detail" }
 
 [[edits]]
 insert = "olifant.cabal"
-anchor = { marker = "-- olifant:library-modules" }
+at     = "after first line matching ^    Olifant\\."
 text   = "{= Module =}"
 
 [[edits]]
 insert = "olifant.cabal"
-anchor = { marker = "-- olifant:test-modules" }
+at     = "after last line matching ^    Olifant\\."
 text   = "{= Module =}"

@@ -8,7 +8,6 @@ type Route
     = Home
     | SamplePage
     | Counter
-    -- olifant:routes
 
 
 parser : Parser (Route -> a) a
@@ -17,7 +16,6 @@ parser =
         [ Parser.map Home Parser.top
         , Parser.map SamplePage (s "sample-page")
         , Parser.map Counter (s "counter")
-        -- olifant:route-parsers
         ]
 
 

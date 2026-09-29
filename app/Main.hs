@@ -5,8 +5,10 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
 import Olifant.Cli (Runtime (..), runCli)
+import Olifant.Language (processChecker)
+import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Workspace (diskWorkspace)
-import System.Directory (XdgDirectory (XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
+import System.Directory (XdgDirectory (XdgCache, XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hIsTerminalDevice, stderr, stdout)
@@ -18,6 +20,7 @@ main = do
   tty <- hIsTerminalDevice stdout
   home <- getHomeDirectory
   userConfigDir <- getXdgDirectory XdgConfig "olifant"
+  cache <- getXdgDirectory XdgCache "olifant"
   result <-
     try . runCli
       Runtime
@@ -30,6 +33,8 @@ main = do
         , rtStdoutIsTty = tty
         , rtOut = TIO.putStr
         , rtErr = TIO.hPutStr stderr
+        , rtSyntax = astGrepSyntax cache
+        , rtChecker = processChecker
         }
       $ args
   case result of

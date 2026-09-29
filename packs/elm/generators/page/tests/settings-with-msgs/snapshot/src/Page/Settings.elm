@@ -25,7 +25,6 @@ type Msg
     | ToggleDarkMode
     | SetDisplayName String
     | GotArticles (List String)
-    -- olifant:msgs
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -42,8 +41,6 @@ update msg model =
 
         GotArticles _ ->
             ( model, Cmd.none )
-
-        -- olifant:update-branches
 
 
 
