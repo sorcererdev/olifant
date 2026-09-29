@@ -60,6 +60,7 @@ library
     Olifant.Naming
     Olifant.Anchor
     Olifant.Anchor.Phrase
+    Olifant.Anchor.Resolve
     Olifant.Language
     Olifant.Language.Rule
     Olifant.Language.Adapter
@@ -114,6 +115,7 @@ test-suite spec
     Olifant.TemplateSpec
     Olifant.Anchor
     Olifant.Anchor.Phrase
+    Olifant.Anchor.Resolve
     Olifant.AnchorSpec
     Olifant.Language
     Olifant.Language.Rule

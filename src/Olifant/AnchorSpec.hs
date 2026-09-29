@@ -1,15 +1,24 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Olifant.AnchorSpec (spec) where
+
+import Data.Aeson (encode)
+import Data.ByteString.Lazy.Char8 qualified as BL
+import Data.Functor.Identity (Identity (..))
+import Data.List (isInfixOf)
+import Data.Text (Text)
 
 import Data.Text qualified as T
 import Hedgehog (Gen, forAll, tripping)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor
+import Olifant.Language
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
 spec :: Spec
-spec = phraseSpec
+spec = phraseSpec >> resolveSpec
 
 phraseSpec :: Spec
 phraseSpec = describe "parsePhrase" $ do
@@ -40,3 +49,58 @@ genPhrase = Phrase <$> Gen.enumBounded <*> Gen.choice [marker, line, named]
     marker = MarkerTarget . T.unwords <$> Gen.list (Range.linear 1 3) word
     line = LineTarget <$> Gen.element [FirstLine, LastLine] <*> (("^" <>) <$> word)
     named = NamedTarget <$> Gen.filter (\ws -> take 1 ws `notElem` [["marker"], ["first"], ["last"]]) (Gen.list (Range.linear 1 3) word)
+
+-- | A fake syntax port: the container rule matches lines 2-8; the items rule
+-- (recognised by its "all") returns two branches plus one nested in the first.
+fakeSyntax :: Syntax Identity
+fakeSyntax = Syntax $ \_ rule _ -> Identity . Right $
+  let json = BL.unpack (encode rule)
+   in if "\"all\"" `isInfixOf` json
+        then [Match (3, 8) (5, 20) "A -> …", Match (4, 12) (4, 20) "nested", Match (7, 8) (8, 20) "B -> …"]
+        else [Match (2, 4) (8, 20) "case x of …"]
+
+caseTarget :: Language
+caseTarget = lang
+  where
+    Right lang =
+      parseLanguage "elm" "/p" $
+        T.unlines
+          [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
+          , "[targets.case_in]", "phrase = \"case in FUNCTION\""
+          , "container = { kind = \"case_of_expr\" }", "items = { kind = \"case_of_branch\" }"
+          , "example = \"end of case in update\""
+          ]
+
+source :: Text
+source = T.unlines ["update msg =", "  -- lead", "    case x of", "        A ->", "            1", "", "", "        B ->", "            2", "tail"]
+
+resolveSpec :: Spec
+resolveSpec = do
+  describe "resolveLayers" $ do
+    let resolve anchors = runIdentity (resolveLayers fakeSyntax (Just caseTarget) anchors source)
+    it "puts `end of` after the last top-level item, at its indentation" $
+      fmap (\l -> (locLine l, locIndent l, locUsed l)) (resolve [PhraseAnchor "end of case in update"]) `shouldBe` Right (9, "        ", "end of case in update")
+    it "puts `start of` before the first item" $
+      fmap locLine (resolve [PhraseAnchor "start of case in update"]) `shouldBe` Right 3
+    it "puts `after` after the whole container, at the container's indentation" $
+      fmap (\l -> (locLine l, locIndent l)) (resolve [PhraseAnchor "after case in update"]) `shouldBe` Right (9, "    ")
+    it "resolves line targets with before/after" $ do
+      fmap locLine (resolve [PhraseAnchor "after last line matching ^ +[AB] ->"]) `shouldBe` Right 8
+      fmap locLine (resolve [PhraseAnchor "before first line matching ^tail"]) `shouldBe` Right 9
+    it "rejects start of/end of on a line target" $
+      resolve [PhraseAnchor "end of last line matching x"] `shouldSatisfy` either (any (("before" `T.isInfixOf`) . missReason)) (const False)
+    it "falls through layers and reports which one resolved" $
+      fmap locUsed (resolve [PhraseAnchor "end of type Nope", PhraseAnchor "after first line matching ^tail"]) `shouldBe` Right "after first line matching ^tail"
+    it "reports every layer's miss when nothing resolves" $
+      resolve [PhraseAnchor "end of type Nope", PhraseAnchor "before marker -- none"] `shouldSatisfy` either ((== 2) . length) (const False)
+    it "suggests a known target for an unknown one" $
+      resolve [PhraseAnchor "end of cases in update"] `shouldSatisfy` either (any (("did you mean `end of case in update`" `T.isInfixOf`) . missReason)) (const False)
+    it "misses (flagged as a tool problem) when the syntax tool is missing" $
+      runIdentity (resolveLayers noSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source) `shouldSatisfy` either (all missTool) (const False)
+    it "resolves a marker without any tools" $
+      fmap locLine (runIdentity (resolveLayers noSyntax Nothing [PhraseAnchor "before marker -- lead"] source)) `shouldBe` Right 1
+    it "needs an adapter for a named target" $
+      runIdentity (resolveLayers noSyntax Nothing [PhraseAnchor "end of type Msg"] source) `shouldSatisfy` either (any (("no language adapter" `T.isInfixOf`) . missReason)) (const False)
+  describe "insertLines" $
+    it "indents non-blank lines and reports the 1-based line" $
+      insertLines (Located 1 "  " "" "x") "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
