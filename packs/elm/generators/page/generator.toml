@@ -1,6 +1,10 @@
 description = "A page in the Elm architecture (Model/Msg/init/update/view), wired into Main and Route like elm-spa-example"
 language = "elm"
 version = 1
+examples = [
+  "olifant gen elm/page --set page=settings --set msgs=\"toggle_dark_mode, set_display_name:String\"",
+  "olifant gen elm/page --set page=settings + elm/page --set page=profile --set msgs=\"follow, got_bio:String\"",
+]
 
 [inputs.page]
 type = "ident"

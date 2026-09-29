@@ -85,6 +85,8 @@ parseSpec = describe "parseGenerator" $ do
         [ ("msg", Just "msgs", [("msg", "{= item.name =}"), ("page", "{= page =}")])
         , ("elm/route", Nothing, [])
         ]
+  it "reads examples" $
+    fmap genExamples (load "description = \"d\"\nlanguage = \"x\"\nexamples = [\"olifant gen x --set a=b\"]\n") `shouldBe` Right ["olifant gen x --set a=b"]
   it "rejects unknown keys in a [[uses]] step" $
     load "description = \"d\"\nlanguage = \"x\"\n[[uses]]\ngenerator = \"g\"\nforeach = \"xs\"\n" `shouldSatisfy` isLeft
   it "rejects misspelled keys, naming them" $ do
@@ -126,6 +128,12 @@ envSpec = do
         other -> expectationFailure ("expected an invalid ident, got " <> show other)
     it "still accepts title-case and space-separated names" $
       fmap (M.lookup "table") (env [("name", "Blog Post")]) `shouldBe` Right (Just (VText "blog_posts"))
+    it "splits list items and record fields outside brackets only" $ do
+      let toml = "description = \"d\"\nlanguage = \"x\"\n[inputs.msgs]\ntype = \"list\"\nof = [{ name = \"name\", type = \"ident\" }, { name = \"arg\", type = \"text\", default = \"\" }]\n"
+          g = either (error . T.unpack) id (load toml)
+          rec n a = VRecord (M.fromList [("name", nameV n), ("arg", VText a)])
+      fmap (M.lookup "msgs") (buildEnv g (M.fromList [("msgs", "set_pair:(Int, String), set_rec:{ a : Int }, plain, got:Dict String (List Int)")]) now)
+        `shouldBe` Right (Just (VList [rec "set_pair" "(Int, String)", rec "set_rec" "{ a : Int }", rec "plain" "", rec "got" "Dict String (List Int)"]))
     it "gives optional lists an empty default" $
       fmap (M.lookup "fields") (env [("name", "post")]) `shouldBe` Right (Just (VList []))
     it "reports missing, invalid and unknown inputs all at once" $

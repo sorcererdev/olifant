@@ -260,6 +260,26 @@ composeSpec = describe "generate (composition)" $ do
       Left (CompositionCycle _) -> True
       _ -> False
 
+  it "reports a cycle even behind an empty for_each" $ do
+    let loopGen = generatorNamed "loop" "description = \"loop\"\nlanguage = \"x\"\n[inputs.xs]\ntype = \"list\"\noptional = true\nof = \"ident\"\n[[uses]]\ngenerator = \"loop\"\nfor_each = \"xs\"\n"
+    (ws, _) <- memoryWorkspace []
+    result <- generate ws (resolveTo [("loop", loopGen)]) [Step loopGen M.empty] now Apply
+    result `shouldSatisfy` \case
+      Left (CompositionCycle _) -> True
+      _ -> False
+  it "labels repeated uses of the same generator distinctly" $ do
+    let twice = generatorNamed "page" . T.unlines $
+          [ "description = \"page\"", "language = \"x\""
+          , "[[edits]]", "create = \"src/P.txt\"", "text = \"-- msgs\\n\""
+          , "[[uses]]", "generator = \"msg\"", "with = { page = \"p\", msg = \"a_a\" }"
+          , "[[uses]]", "generator = \"msg\"", "with = { page = \"p\", msg = \"b_b\" }"
+          ]
+    (Right plan, _) <- gen1 [Step twice M.empty]
+    map editStep (planEdits plan) `shouldBe` [["page"], ["page", "msg (use 1)"], ["page", "msg (use 2)"]]
+  it "does not let a later step satisfy an earlier step's requires" $ do
+    (Right plan, files) <- gen1 [Step msgGen (M.fromList [("page", "x_y"), ("msg", "a_b")]), Step pageGen (M.fromList [("page", "x_y")])]
+    planConflicts plan `shouldSatisfy` any (\case RequirementUnmet ["msg (step 1)"] _ _ -> True; _ -> False)
+    files `shouldBe` M.empty
   it "lists a conflicting edit with its step, so conflicts point at something" $ do
     (ws, snapshot) <- memoryWorkspace [("src/B.txt", "someone else's\n")]
     Right plan <- generate ws noResolve [Step (pageOnly "page") (M.fromList [("page", "a")]), Step (pageOnly "page") (M.fromList [("page", "b")])] now Apply

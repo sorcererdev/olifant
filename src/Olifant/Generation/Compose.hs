@@ -13,6 +13,7 @@ module Olifant.Generation.Compose
   ) where
 
 import Control.Monad (when, zipWithM)
+import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE)
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
@@ -67,23 +68,43 @@ expandSteps resolve now steps = runExceptT (concat <$> zipWithM top [1 :: Int ..
 expand :: Monad m => Resolve m -> UTCTime -> [GeneratorId] -> StepPath -> Generator -> Map Text Text -> ExceptT CompositionError m [PlanItem]
 expand resolve now ancestors path gen sets = do
   when (genId gen `elem` ancestors) $ throwE (StepCycle path)
+  checkCycles resolve (genId gen : ancestors) path gen
   env <- except (first (StepInputs path) (buildEnv gen sets now))
   rendered <- except (first (StepTemplate path) (renderEdits env (genEdits gen)))
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
-  nested <- concat <$> traverse (expandUse env) (genUses gen)
+  nested <- concat <$> zipWithM (expandUse env) [1 :: Int ..] (genUses gen)
   pure ([PlanRequire path required hint | not (null required)] ++ map (PlanEdit path) rendered ++ nested)
   where
-    expandUse env u = do
+    repeated u = length (filter ((== useGenerator u) . useGenerator) (genUses gen)) > 1
+    expandUse env k u = do
       childSets <- except (first (StepTemplate path) (renderUse env u))
       child <- ExceptT (first (failure (useGenerator u)) <$> resolve (packOf (genId gen)) (useGenerator u))
       concat
         <$> traverse
-          (\(i, s) -> expand resolve now (genId gen : ancestors) (path ++ [idText child <> maybe "" (\n -> "[" <> T.pack (show n) <> "]") i]) child s)
+          (\(i, s) -> expand resolve now (genId gen : ancestors) (path ++ [label child k u i]) child s)
           childSets
 
+    label child k u i =
+      idText child
+        <> (if repeated u then " (use " <> T.pack (show k) <> ")" else "")
+        <> maybe "" (\n -> "[" <> T.pack (show n) <> "]") i
     failure ref = \case
       ResolveNotFound why -> StepUnknown path ref why
       ResolveInvalid why -> StepInvalid path ref why
+
+-- | Walk the [[uses]] graph without rendering, so a cycle is reported even
+-- when a for_each list happens to be empty (spec §7: before anything is planned).
+checkCycles :: Monad m => Resolve m -> [GeneratorId] -> StepPath -> Generator -> ExceptT CompositionError m ()
+checkCycles resolve seen path gen =
+  mapM_ visit (genUses gen)
+  where
+    visit u = do
+      found <- lift (resolve (packOf (genId gen)) (useGenerator u))
+      case found of
+        Left _ -> pure () -- reported with its step when (if) the use is expanded
+        Right child
+          | genId child `elem` seen -> throwE (StepCycle (path ++ [idText child]))
+          | otherwise -> checkCycles resolve (genId child : seen) (path ++ [idText child]) child
 
 renderRequires :: Env -> Maybe Requires -> Either TemplateError ([FilePath], Maybe Text)
 renderRequires _ Nothing = Right ([], Nothing)

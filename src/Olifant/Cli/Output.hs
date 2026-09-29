@@ -34,13 +34,19 @@ listJson es broken =
   object
     [ "generators" .= [object ["id" .= idText (entryId e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)] | e <- es]
     , "invalid" .= [object ["id" .= idText gid, "path" .= p, "error" .= err] | (gid, p, err) <- broken]
+    , "tip" .= compositionTip
     ]
+
+-- | How to do a whole task in one call (agents pay per turn; spec §16).
+compositionTip :: Text
+compositionTip = "run a whole task in one call: olifant gen A --set k=v + B --set k=v (or --steps FILE with [{\"gen\": ..., \"set\": {...}}]); `olifant show GEN` lists inputs and examples"
 
 listHuman :: [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Text
 listHuman es broken =
   T.unlines $
     [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
       ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> err | (gid, _, err) <- broken]
+      ++ ["", "Tip: " <> compositionTip]
   where
     width = maximum (0 : map (T.length . idText . entryId) es ++ [T.length (idText gid) | (gid, _, _) <- broken])
 
@@ -54,6 +60,7 @@ showJson e =
     , "inputs" .= [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] | i <- genInputs d]
     , "derived" .= map fst (genDerived d)
     , "edits" .= map editJson (genEdits d)
+    , "examples" .= genExamples d
     ]
   where
     d = entryDefinition e
@@ -72,13 +79,14 @@ showHuman e =
         ]
       ++ ["", "edits:"]
       ++ [case ed of Create p _ _ -> "  create " <> templateSource p; Insert p _ _ -> "  insert " <> templateSource p | ed <- genEdits d]
+      ++ (if null (genExamples d) then [] else "" : "examples:" : ["  " <> x | x <- genExamples d])
   where
     d = entryDefinition e
 
 planJson :: Bool -> Plan -> Value
 planJson applied plan =
   object
-    [ "plan_version" .= (1 :: Int)
+    [ "plan_version" .= (2 :: Int)
     , "generator" .= idText (planGenerator plan)
     , "applied" .= applied
     , "steps" .= [object ["gen" .= g, "set" .= s] | (g, s) <- planSteps plan]
@@ -88,10 +96,13 @@ planJson applied plan =
     ]
   where
     editJson (PlannedEdit st n p action) = object (["id" .= ("e" <> T.pack (show n)), "step" .= showStepPath st, "path" .= p] ++ actionFields action)
+    -- Applied runs omit contents: the caller already has them on disk, and
+    -- agents pay for every token of output in every later turn.
+    content c = ["content" .= c | not applied]
     actionFields = \case
-      WillCreate c -> ["status" .= ("create" :: Text), "content" .= c]
-      WillOverwrite c -> ["status" .= ("overwrite" :: Text), "content" .= c]
-      WillInsert l s -> ["status" .= ("insert" :: Text), "line" .= l, "content" .= s]
+      WillCreate c -> ["status" .= ("create" :: Text)] ++ content c
+      WillOverwrite c -> ["status" .= ("overwrite" :: Text)] ++ content c
+      WillInsert l s -> ["status" .= ("insert" :: Text), "line" .= l] ++ content s
       Skipped r -> ["status" .= ("skipped" :: Text), "reason" .= skipReason r]
       Conflicted -> ["status" .= ("conflict" :: Text)]
 

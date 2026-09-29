@@ -3,6 +3,7 @@ module Olifant.CliSpec (spec) where
 import Data.Aeson (Value (..), decodeStrict)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -22,6 +23,7 @@ project =
     , T.unlines
         [ "description = \"A model\""
         , "language = \"ruby\""
+        , "examples = [\"olifant gen model --set name=blog_post\"]"
         , "[inputs.name]"
         , "type = \"ident\""
         , "prompt = \"Model name, singular (e.g. blog_post)\""
@@ -168,3 +170,35 @@ spec = describe "runCli" $ do
     (code, out, _, _) <- runWith "" fs False ["gen", "outer"]
     code `shouldBe` ExitFailure 1
     jsonAt ["error", "code"] out `shouldBe` Just (String "generator_invalid")
+  it "keeps applied output compact (no file contents); --plan still shows them" $ do
+    (_, applied, _, _) <- runWith "" project False ["gen", "model", "--set", "name=post"]
+    (_, planned, _, _) <- runWith "" project False ["gen", "model", "--set", "name=post", "--plan"]
+    let firstEdit out = case jsonAt ["edits"] out of
+          Just (Array xs) | (Object o : _) <- toList xs -> Just o
+          _ -> Nothing
+    fmap (KM.member "content") (firstEdit applied) `shouldBe` Just False
+    fmap (KM.member "content") (firstEdit planned) `shouldBe` Just True
+    jsonAt ["plan_version"] applied `shouldBe` Just (Number 2)
+  it "shows examples and lists a composition tip" $ do
+    (_, shown, _, _) <- runWith "" project False ["show", "model"]
+    shown `shouldSatisfy` T.isInfixOf "olifant gen model --set name=blog_post"
+    (_, listed, _, _) <- runWith "" project False ["list"]
+    fmap (\case String s -> "+" `T.isInfixOf` s; _ -> False) (jsonAt ["tip"] listed) `shouldBe` Just True
+    (_, human, _, _) <- runWith "" project True ["list"]
+    human `shouldSatisfy` T.isInfixOf "Tip:"
+  it "accepts --flag=value forms" $ do
+    (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
+    code `shouldBe` ExitSuccess
+    M.member "/proj/db/20300102030405_create_posts.rb" files `shouldBe` True
+  it "rejects unknown keys in --steps and hints at gen/set" $ do
+    (code, out, _, _) <- runWith "[{\"generator\":\"model\",\"with\":{\"name\":\"post\"}}]" project False ["gen", "--steps", "-"]
+    code `shouldBe` ExitFailure 2
+    fmap (\case String s -> "\"gen\" and \"set\"" `T.isInfixOf` s; _ -> False) (jsonAt ["error", "message"] out) `shouldBe` Just True
+  it "reports usage errors as JSON when output is JSON" $ do
+    (code, out, _, _) <- runWith "" project False ["gen", "model", "+"]
+    code `shouldBe` ExitFailure 2
+    jsonAt ["error", "code"] out `shouldBe` Just (String "usage")
+  it "says a generator is missing when gen has none" $ do
+    (code, _, err, _) <- runWith "" project True ["gen", "--plan"]
+    code `shouldBe` ExitFailure 2
+    err `shouldSatisfy` T.isInfixOf "missing GENERATOR"

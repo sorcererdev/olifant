@@ -1,6 +1,9 @@
 description = "Add a command (use case) to an existing service"
 language = "rust"
 version = 1
+examples = [
+  "olifant gen rust-htmx/service-command --set service=billing --set command_name=cancel_subscription",
+]
 
 [inputs.service]
 type = "ident"   # enum + choices_from in step 2

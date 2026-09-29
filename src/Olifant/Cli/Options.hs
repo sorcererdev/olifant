@@ -7,7 +7,10 @@ module Olifant.Cli.Options
   , parseOptions
   ) where
 
+import Control.Monad (unless)
 import Data.Aeson (FromJSON (..), Value (..), withObject, (.:), (.:?))
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types qualified as Aeson
 import Data.Foldable (toList)
 import Data.Scientific (floatingOrInteger)
@@ -34,6 +37,9 @@ data StepSpec = StepSpec {specGenerator :: Text, specSets :: [(Text, Text)]}
 
 instance FromJSON StepSpec where
   parseJSON = withObject "step" $ \o -> do
+    let unknown = filter (`notElem` ["gen", "set"]) (map Key.toText (KM.keys o))
+    unless (null unknown) $
+      fail ("unknown key(s) " <> show unknown <> "; each step is {\"gen\": GENERATOR, \"set\": {...}}: use \"gen\" and \"set\"")
     gen <- o .: "gen"
     sets <- maybe (pure []) (traverse (\(k, v) -> (k,) <$> asText v) . M.toList) =<< (o .:? "set" :: Aeson.Parser (Maybe (M.Map Text Value)))
     pure (StepSpec gen sets)
@@ -90,8 +96,12 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
 
 -- | `gen` arguments: global flags anywhere; steps separated by a standalone "+".
 parseGen :: [String] -> Either Text Options
-parseGen = go Nothing False Nothing Nothing [] []
+parseGen = go Nothing False Nothing Nothing [] [] . concatMap splitEq
   where
+    -- `--set=k=v` / `--now=T` / `--steps=F` are the same as the two-word forms.
+    splitEq a = case break (== '=') a of
+      (flag, '=' : v) | flag `elem` ["--set", "--now", "--steps"] -> [flag, v]
+      _ -> [a]
     go fmt plan now stepsFile cur done = \case
       [] -> finish fmt plan now stepsFile (reverse (reverse cur : done))
       "--json" : xs -> go (Just Json) plan now stepsFile cur done xs
@@ -109,6 +119,7 @@ parseGen = go Nothing False Nothing Nothing [] []
           | all null segments -> Right []
           | otherwise -> Left "use either --steps or positional generator steps, not both"
         Nothing
+          | all null segments -> Left "missing GENERATOR: olifant gen GENERATOR [--set KEY=VALUE]... [+ GENERATOR ...]"
           | any null segments -> Left "empty step: each `+` must be followed by a generator"
           | otherwise -> traverse step segments
       pure (Options fmt (GenCmd (GenOptions steps stepsFile plan now)))

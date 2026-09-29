@@ -1,6 +1,9 @@
 description = "A new generator skeleton in a pack: generator.toml, a template, and a test case to bless"
 language = "toml"
 version = 1
+examples = [
+  "olifant gen olifant-dev/generator --set pack=rails --set name=controller",
+]
 
 [inputs.pack]
 type = "ident"

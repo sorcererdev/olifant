@@ -34,6 +34,7 @@ data GeneratorWith src = Generator
   , genRequires :: Maybe Requires
   , genEdits :: [EditWith src]
   , genUses :: [UseStep]
+  , genExamples :: [Text] -- ^ example commands, shown by `olifant show`
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 

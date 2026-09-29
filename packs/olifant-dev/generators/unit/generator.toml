@@ -1,6 +1,9 @@
 description = "A new unit: public module + colocated spec, registered in olifant.cabal"
 language = "haskell"
 version = 1
+examples = [
+  "olifant gen olifant-dev/unit --set unit=workspace_sync",
+]
 
 [inputs.unit]
 type = "ident"

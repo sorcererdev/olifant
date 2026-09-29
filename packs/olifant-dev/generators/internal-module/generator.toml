@@ -1,6 +1,9 @@
 description = "An internal module of an existing unit, registered in olifant.cabal (tested via the unit's public module)"
 language = "haskell"
 version = 1
+examples = [
+  "olifant gen olifant-dev/internal-module --set unit=generation --set module=marker_rules",
+]
 
 [inputs.unit]
 type = "ident"
