@@ -68,3 +68,13 @@ spec = do
       let Right elm = parseLanguage "elm" "/p" elmToml
       fmap langName (languageFor [elm] "src/Main.elm") `shouldBe` Just "elm"
       fmap langName (languageFor [elm] "src/lib.rs") `shouldBe` Nothing
+  describe "ports without tools" $ do
+    it "noSyntax reports ast-grep as missing, with the install command" $ do
+      let Right lang = parseLanguage "elm" "/p" elmToml
+      r <- querySyntax noSyntax lang (object []) "x"
+      either (const True) (const False) r `shouldBe` True
+      either describeSyntaxFailure (const "") r `shouldSatisfy` ("brew install ast-grep" `T.isInfixOf`)
+    it "noChecker reports that no check is available" $ do
+      let Right lang = parseLanguage "elm" "/p" elmToml
+      r <- runCheck noChecker lang M.empty
+      either describeCheckFailure (const "") r `shouldSatisfy` ("no checker" `T.isInfixOf`)

@@ -63,6 +63,9 @@ library
     Olifant.Language
     Olifant.Language.Rule
     Olifant.Language.Adapter
+    Olifant.Language.Syntax
+    Olifant.Language.Diagnostics
+    Olifant.Language.Check
     -- olifant:library-modules
 
 test-suite spec
@@ -115,6 +118,9 @@ test-suite spec
     Olifant.Language
     Olifant.Language.Rule
     Olifant.Language.Adapter
+    Olifant.Language.Syntax
+    Olifant.Language.Diagnostics
+    Olifant.Language.Check
     Olifant.LanguageSpec
     -- olifant:test-modules
 

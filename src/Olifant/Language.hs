@@ -3,7 +3,11 @@
 module Olifant.Language
   ( module Olifant.Language.Adapter
   , module Olifant.Language.Rule
+  , module Olifant.Language.Syntax
+  , module Olifant.Language.Check
   ) where
 
 import Olifant.Language.Adapter
+import Olifant.Language.Check
 import Olifant.Language.Rule
+import Olifant.Language.Syntax
