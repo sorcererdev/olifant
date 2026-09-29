@@ -6,7 +6,12 @@ import Data.Aeson (object, (.=))
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
+import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
 import Olifant.Language
+import Olifant.Language.AstGrep (astGrepSyntax)
+import System.Directory (findExecutable, getTemporaryDirectory)
+import System.FilePath ((</>))
 import Olifant.Template (Value (..))
 import Test.Hspec
 
@@ -78,3 +83,28 @@ spec = do
       let Right lang = parseLanguage "elm" "/p" elmToml
       r <- runCheck noChecker lang M.empty
       either describeCheckFailure (const "") r `shouldSatisfy` ("no checker" `T.isInfixOf`)
+  describe "the Elm adapter (ast-grep, fixture Main.elm)" $ do
+    let at syn elm file p = fmap (fmap locLine) (resolveLayers syn (Just elm) [PhraseAnchor p] file)
+        lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "end of type Page goes after the last variant" $ withAstGrep $ \syn elm file ->
+      at syn elm file "end of type Page" `shouldReturn` Right (lineOf file "| SamplePage SamplePage.Model" + 1)
+    it "end of case in update skips the catch-all and the nested case" $ withAstGrep $ \syn elm file ->
+      at syn elm file "end of case in update" `shouldReturn` Right (lineOf file "SamplePage.update subMsg page" + 1)
+    it "end of case in view goes after the last branch" $ withAstGrep $ \syn elm file ->
+      at syn elm file "end of case in view" `shouldReturn` Right (lineOf file "viewPage GotSamplePageMsg (SamplePage.view page)" + 1)
+    it "end of imports goes after the last import" $ withAstGrep $ \syn elm file ->
+      at syn elm file "end of imports" `shouldReturn` Right (lineOf file "import Url exposing (Url)" + 1)
+    it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
+      fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
+
+-- | Run with the real ast-grep and the pack's Elm adapter, or mark pending.
+withAstGrep :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withAstGrep k =
+  findExecutable "ast-grep" >>= \case
+    Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
+    Just _ -> do
+      src <- TIO.readFile "packs/elm/languages/elm.toml"
+      tmp <- getTemporaryDirectory
+      let Right elm = parseLanguage "elm" "packs/elm" src
+      mainElm <- TIO.readFile "packs/elm/fixtures/app/src/Main.elm"
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) elm mainElm

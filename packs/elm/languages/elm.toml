@@ -1,0 +1,44 @@
+# Elm: tree-sitter-elm (vendored, MIT) via ast-grep; checks with `elm make`.
+files = ["**/*.elm"]
+comment = "--"
+grammar = { source = "grammar/elm" }
+placeholder = 'Debug.todo "{= message =}"'
+branch = """
+{= pattern =} ->
+    {= body =}"""
+qualify = "elm"
+
+[check]
+command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]
+context = ["elm.json"]
+format = "elm-json"
+
+[targets.type]
+phrase = "type NAME"
+container = { kind = "type_declaration", regex = "^type {= NAME =}\\b" }
+items = { kind = "union_variant" }
+example = "end of type Msg"
+
+[targets.record]
+phrase = "record NAME"
+container = { kind = "record_type", inside = { kind = "type_alias_declaration", regex = "^type alias {= NAME =}\\b", stopBy = "end" } }
+items = { kind = "field_type" }
+example = "end of record Model"
+
+[targets.case_in]
+phrase = "case in FUNCTION"
+container = { kind = "case_of_expr", inside = { kind = "value_declaration", regex = "^{= FUNCTION =}\\b", stopBy = "end" }, not = { inside = { kind = "case_of_expr", stopBy = "end" } } }
+items = { kind = "case_of_branch", not = { regex = "^(_|\\(\\s*_\\s*(,\\s*_\\s*)*\\))\\s*->" } }
+example = "end of case in update"
+
+[targets.list_in]
+phrase = "list in FUNCTION"
+container = { kind = "list_expr", inside = { kind = "value_declaration", regex = "^{= FUNCTION =}\\b", stopBy = "end" }, not = { inside = { kind = "list_expr", stopBy = "end" } } }
+items = { regex = "." }
+example = "end of list in parser"
+
+[targets.imports]
+phrase = "imports"
+container = { kind = "file" }
+items = { kind = "import_clause" }
+example = "end of imports"

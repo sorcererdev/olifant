@@ -67,6 +67,8 @@ library
     Olifant.Language.Syntax
     Olifant.Language.Diagnostics
     Olifant.Language.Check
+    Olifant.Language.Process
+    Olifant.Language.AstGrep
     -- olifant:library-modules
 
 test-suite spec
@@ -123,6 +125,8 @@ test-suite spec
     Olifant.Language.Syntax
     Olifant.Language.Diagnostics
     Olifant.Language.Check
+    Olifant.Language.Process
+    Olifant.Language.AstGrep
     Olifant.LanguageSpec
     -- olifant:test-modules
 
