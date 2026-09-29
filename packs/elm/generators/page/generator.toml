@@ -69,3 +69,17 @@ text   = "| {= P =}"
 insert = "src/Route.elm"
 anchor = { marker = "-- olifant:route-parsers" }
 text   = ', Parser.map {= P =} (s "{= page|kebab =}")'
+
+[inputs.msgs]
+type = "list"
+optional = true
+prompt = "Messages to add to the page, as name or name:PayloadType, comma separated (e.g. toggle_dark_mode, set_display_name:String)"
+of = [
+  { name = "name", type = "ident" },
+  { name = "arg", type = "text", default = "" },
+]
+
+[[uses]]
+generator = "msg"
+for_each  = "msgs"
+with      = { page = "{= page =}", msg = "{= item.name =}", arg = "{= item.arg =}" }

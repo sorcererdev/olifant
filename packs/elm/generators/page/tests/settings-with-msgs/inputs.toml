@@ -1,0 +1,5 @@
+now = "2026-09-28T12:00:00Z"
+
+[inputs]
+page = "settings"
+msgs = "toggle_dark_mode, set_display_name:String, got_articles:List String"
