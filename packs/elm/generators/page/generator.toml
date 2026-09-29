@@ -37,6 +37,9 @@ insert = "src/Main.elm"
 at     = "end of type Msg"
 text   = "| Got{= P =}Msg {= P =}.Msg"
 
+# Multi-line text: TOML drops the newline right after an opening """, so the
+# empty line below is what puts a blank line between this branch and the last.
+# `complete` edits add that separator themselves; `at` inserts do not.
 [[edits]]
 insert = "src/Main.elm"
 at     = "end of case in update"

@@ -70,6 +70,11 @@ data GenOptions = GenOptions
 parseOptions :: [String] -> Either (Text, ExitCode) Options
 parseOptions ("gen" : rest)
   | "--help" `notElem` rest && "-h" `notElem` rest = either (\e -> Left (e <> "\n", ExitFailure 2)) Right (parseGen rest)
+-- A generator name where a command belongs (`olifant elm/page …`) is a
+-- common slip for agents: point at `gen` instead of optparse's generic error.
+parseOptions (ref : rest)
+  | '/' `elem` ref && take 1 ref /= "-" =
+      Left ("unknown command `" <> T.pack ref <> "`; did you mean `olifant gen " <> T.pack (unwords (ref : rest)) <> "`?\n", ExitFailure 2)
 parseOptions args = case execParserPure defaultPrefs parserInfo args of
   Success o -> Right o
   Failure f -> let (msg, code) = renderFailure f "olifant" in Left (T.pack msg <> "\n", code)

@@ -76,6 +76,10 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
 
 spec :: Spec
 spec = describe "runCli" $ do
+  it "suggests `gen` when the first word looks like a generator" $ do
+    (code, _, err, _) <- runWith "" project True ["elm/page", "--set", "page=settings"]
+    code `shouldBe` ExitFailure 2
+    err `shouldSatisfy` ("did you mean `olifant gen elm/page --set page=settings`?" `T.isInfixOf`)
   it "lists a language's anchor targets" $ do
     (code, out, _, _) <- runWith "" elmPack False ["anchors", "elm"]
     code `shouldBe` ExitSuccess
