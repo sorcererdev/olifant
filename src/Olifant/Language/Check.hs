@@ -84,8 +84,10 @@ runIn lang check files = case checkCommand check of
           BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
         let sources = sort [p | p <- M.keys files, any (`matchesGlob` p) (langFiles lang)]
             expand a = if T.strip a == "{= files =}" then sources else [T.unpack a]
-        (code, _, err) <- runBytes path (concatMap expand args) (Just tmp) ""
-        pure (Right (code, err, tmp))
+        ran <- runBytes path (concatMap expand args) (Just tmp) ""
+        pure $ case ran of
+          Left why -> Left (CheckFailed why)
+          Right (code, _, err) -> Right (code, err, tmp)
 
 relativeTo :: FilePath -> CheckReport -> CheckReport
 relativeTo dir (CheckReport missing broken) =

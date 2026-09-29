@@ -8,6 +8,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Text.Encoding.Error (lenientDecode)
 import Data.Word (Word64)
 import Numeric (showHex)
 import Olifant.Language.Adapter
@@ -38,10 +39,11 @@ astGrepSyntax cache = Syntax $ \lang rule source ->
         Left f -> pure (Left f)
         Right dir -> do
           let yaml = "id: olifant\nlanguage: " <> langName lang <> "\nrule: " <> TE.decodeUtf8 (BL.toStrict (encode rule)) <> "\n"
-          (code, out, err) <- runBytes sg ["scan", "--stdin", "--inline-rules", T.unpack yaml, "--json=compact"] (Just dir) (TE.encodeUtf8 source)
-          pure $ case code of
-            ExitSuccess -> either (Left . SyntaxFailed . T.pack) (Right . map (\(Found m) -> m)) (eitherDecodeStrict out)
-            ExitFailure _ -> Left (SyntaxFailed ("ast-grep failed: " <> T.strip (TE.decodeUtf8 err)))
+          ran <- runBytes sg ["scan", "--stdin", "--inline-rules", T.unpack yaml, "--json=compact"] (Just dir) (TE.encodeUtf8 source)
+          pure $ case ran of
+            Left why -> Left (SyntaxFailed ("ast-grep failed: " <> why))
+            Right (ExitSuccess, out, _) -> either (Left . SyntaxFailed . T.pack) (Right . map (\(Found m) -> m)) (eitherDecodeStrict out)
+            Right (ExitFailure _, _, err) -> Left (SyntaxFailed ("ast-grep failed: " <> T.strip (TE.decodeUtf8With lenientDecode err)))
 
 -- | A directory whose sgconfig.yml registers the language (custom grammars only).
 prepare :: FilePath -> Language -> IO (Either SyntaxFailure FilePath)
@@ -70,8 +72,9 @@ prepare cache lang = case langGrammar lang of
           createDirectoryIfMissing True (cache </> "grammars")
           hasScanner <- doesFileExist (src </> "scanner.c")
           let sources = (src </> "parser.c") : [src </> "scanner.c" | hasScanner]
-          (code, _, err) <- runBytes cc (["-shared", "-fPIC", "-O2", "-I", src] ++ sources ++ ["-o", lib]) Nothing ""
-          pure $ case code of
-            ExitSuccess -> Right ()
-            ExitFailure _ -> Left (SyntaxFailed ("building the " <> langName lang <> " grammar failed: " <> T.strip (TE.decodeUtf8 err)))
+          ran <- runBytes cc (["-shared", "-fPIC", "-O2", "-I", src] ++ sources ++ ["-o", lib]) Nothing ""
+          pure $ case ran of
+            Right (ExitSuccess, _, _) -> Right ()
+            Right (ExitFailure _, _, err) -> Left (SyntaxFailed ("building the " <> langName lang <> " grammar failed: " <> T.strip (TE.decodeUtf8With lenientDecode err)))
+            Left why -> Left (SyntaxFailed ("building the " <> langName lang <> " grammar failed: " <> why))
     fnv = BS.foldl' (\h b -> (h `xor` fromIntegral b) * 1099511628211) (14695981039346656037 :: Word64)

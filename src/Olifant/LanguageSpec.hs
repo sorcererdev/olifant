@@ -104,6 +104,10 @@ spec = do
     it "end of case skips a case nested in the catch-all branch (review)" $ withAstGrep $ \syn elm _ -> do
       let src = T.unlines ["module A exposing (..)", "", "update msg model =", "    case msg of", "        Foo ->", "            model", "", "        _ ->", "            case model of", "                X ->", "                    1", "", "                Y ->", "                    2"]
       at syn elm src "end of case in update" `shouldReturn` Right 6
+    it "a rule ast-grep rejects on a large file is a failure, not a crash (review)" $ withAstGrep $ \syn elm _ -> do
+      let big = T.replicate 20000 "x = 1\n\n"
+      r <- querySyntax syn elm (object ["kind" .= ("no_such_kind" :: Text)]) big
+      either (const True) (const False) r `shouldBe` True
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
