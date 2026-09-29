@@ -1,6 +1,6 @@
 -- | Elm specifics for `complete` edits (spec §5.6): `elm make --report=json`
 -- diagnostics, and how a constructor is written at a site.
-module Olifant.Language.Elm (parseElmReport, qualifyPattern, enclosingFunction) where
+module Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt, enclosingFunction) where
 
 import Control.Applicative ((<|>))
 import Data.Aeson (Value (..), eitherDecodeStrict, withObject, (.:))
@@ -80,6 +80,19 @@ qualifyPattern site constructor pattern = case T.breakOnEnd "." constructor of
             | "(..)" `elem` ws -> bare
             | ("as" : alias : _) <- dropWhile (/= "as") ws -> alias <> "." <> bare
           _ -> m <> "." <> bare
+
+-- | Can a constructor written @M.C@ appear at this site? Only in module @M@
+-- or a module importing it (Elm has no cyclic imports, so `Route` never sees
+-- `Main`'s constructors). An unqualified constructor could be anywhere.
+visibleAt :: Text -> Text -> Bool
+visibleAt site constructor = case T.breakOnEnd "." constructor of
+  ("", _) -> True
+  (withDot, _) ->
+    let m = T.dropEnd 1 withDot
+        ls = T.lines site
+        isModule = any (\l -> any (\p -> maybe False ((== m) . T.takeWhile (not . isSpace) . T.strip) (T.stripPrefix p l)) ["module ", "port module "]) ls
+        imports = any (\l -> maybe False (\r -> T.null r || " " `T.isPrefixOf` r) (T.stripPrefix ("import " <> m) l)) ls
+     in isModule || imports
 
 -- | Replace whole identifier runs equal to @old@ (dots count as part of a run).
 replaceWord :: Text -> Text -> Text -> Text

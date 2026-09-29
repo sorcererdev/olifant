@@ -9,7 +9,7 @@ import Data.Text qualified as T
 import Data.ByteString qualified as BS
 import Data.List (nub)
 import Data.Text.IO qualified as TIO
-import Olifant.Language.Elm (enclosingFunction, parseElmReport, qualifyPattern)
+import Olifant.Language.Elm (enclosingFunction, parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -150,6 +150,15 @@ spec = do
       qualifyPattern "module Main exposing (main)\nimport Page.Home as Home\n" "Page.Home.Reset" "Reset" `shouldBe` "Home.Reset"
     it "leaves unqualified constructors and other words alone" $
       qualifyPattern mainElm "SetName" "SetName _" `shouldBe` "SetName _"
+  describe "visibleAt" $
+    it "sees a qualified constructor only in its module or a module importing it" $ do
+      let route = "module Route exposing (..)\nimport Url\n"
+          mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n"
+      visibleAt route "Route.Settings" `shouldBe` True
+      visibleAt route "Main.Settings" `shouldBe` False
+      visibleAt mainElm "Route.Settings" `shouldBe` True
+      visibleAt mainElm "Main.Settings" `shouldBe` True
+      visibleAt route "Settings" `shouldBe` True
   describe "enclosingFunction" $
     it "finds the top-level declaration above a line" $
       enclosingFunction "toPath : Route -> String\ntoPath route =\n    case route of\n        Home ->\n" 2 `shouldBe` "toPath"
