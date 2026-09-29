@@ -24,7 +24,11 @@ now = UTCTime (fromGregorian 2026 9 27) 0
 
 -- | Build a generator from TOML whose edits use inline `text` only.
 generatorFrom :: Text -> Generator
-generatorFrom src = either (error . T.unpack) (fmap inlineOnly) (parseGenerator (GeneratorId "test/gen") src)
+generatorFrom = generatorNamed "test/gen"
+
+-- | Like 'generatorFrom', with a chosen id (composition tests need distinct ids).
+generatorNamed :: Text -> Text -> Generator
+generatorNamed gid src = either (error . T.unpack) (fmap inlineOnly) (parseGenerator (GeneratorId gid) src)
   where
     inlineOnly :: SourceRef -> Template
     inlineOnly (InlineText t) = t
@@ -47,7 +51,7 @@ createGen =
 run :: [(FilePath, Text)] -> Generator -> [(Text, Text)] -> Mode -> IO (Either GenerationError Plan, M.Map FilePath Text)
 run files gen sets mode = do
   (ws, snapshot) <- memoryWorkspace files
-  result <- generate ws gen (M.fromList sets) now mode
+  result <- generate ws noResolve [Step gen (M.fromList sets)] now mode
   (result,) <$> snapshot
 
 spec :: Spec
@@ -55,6 +59,7 @@ spec = do
   createSpec
   insertSpec
   unusableSpec
+  composeSpec
 
 createSpec :: Spec
 createSpec = describe "generate (create edits)" $ do
@@ -91,12 +96,12 @@ createSpec = describe "generate (create edits)" $ do
   it "reports unmet requirements with the rendered hint" $ do
     let gen = generatorFrom (header <> "[requires]\nexists = [\"{= name|snake =}/service.rs\"]\nhint = \"run service-skeleton for {= name =}\"\n[[edits]]\ncreate = \"a.txt\"\ntext = \"x\"\n")
     (Right plan, files) <- run [] gen [("name", "billing")] Apply
-    planConflicts plan `shouldBe` [RequirementUnmet ["billing/service.rs"] (Just "run service-skeleton for billing")]
+    planConflicts plan `shouldBe` [RequirementUnmet ["test/gen"] ["billing/service.rs"] (Just "run service-skeleton for billing")]
     files `shouldBe` M.empty
   it "returns input problems instead of planning" $ do
     (result, _) <- run [] createGen [] Apply
     result `shouldSatisfy` \case
-      Left (InvalidInputs (InputProblems [MissingInput _])) -> True
+      Left (InvalidInputs _ (InputProblems [MissingInput _])) -> True
       _ -> False
 
 insertSpec :: Spec
@@ -126,13 +131,13 @@ insertSpec = describe "generate (marker inserts)" $ do
     map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}\n"]
   it "keeps earlier inserts in order (the marker stays last)" $ do
     (ws, snapshot) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
-    _ <- generate ws insertGen (M.fromList [("cmd", "b_b")]) now Apply
-    _ <- generate ws insertGen (M.fromList [("cmd", "c_c")]) now Apply
+    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "c_c")])] now Apply
     M.lookup "svc/lib.rs" <$> snapshot `shouldReturn` Just "pub mod a;\npub mod b_b;\npub mod c_c;\n// olifant:modules\n"
   it "skips text that is already present, so re-running is a no-op" $ do
     (ws, _) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
-    _ <- generate ws insertGen (M.fromList [("cmd", "b_b")]) now Apply
-    Right again <- generate ws insertGen (M.fromList [("cmd", "b_b")]) now Apply
+    _ <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
+    Right again <- generate ws noResolve [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
     map editAction (planEdits again) `shouldBe` [Skipped AlreadyPresent, Skipped AlreadyPresent]
     planWrites again `shouldBe` M.empty
   it "does not mistake a longer identifier for the snippet (token-bounded already-present check)" $ do
@@ -161,8 +166,8 @@ insertSpec = describe "generate (marker inserts)" $ do
     ws' <- forAll (Gen.list (Range.linear 2 3) (Gen.text (Range.linear 2 6) Gen.lower))
     let sets = M.fromList [("cmd", T.intercalate "_" ws')]
     (ws, _) <- evalIO (memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)])
-    _ <- evalIO (generate ws insertGen sets now Apply)
-    second <- evalIO (generate ws insertGen sets now Apply)
+    _ <- evalIO (generate ws noResolve [Step insertGen sets] now Apply)
+    second <- evalIO (generate ws noResolve [Step insertGen sets] now Apply)
     fmap planWrites second === Right M.empty
 
 unusableSpec :: Spec
@@ -174,7 +179,7 @@ unusableSpec = describe "generate (targets that cannot be written)" $ do
   it "never overwrites an existing file it cannot read as text (all-or-nothing)" $
     withSystemTempDirectory "olifant" $ \dir -> do
       BS.writeFile (dir </> "mine.txt") "caf\xe9 precious\n"
-      Right plan <- generate (diskWorkspace dir) pathGen (M.fromList [("dir", "mine.txt")]) now Apply
+      Right plan <- generate (diskWorkspace dir) noResolve [Step pathGen (M.fromList [("dir", "mine.txt")])] now Apply
       planConflicts plan `shouldSatisfy` \case [c] -> isUnusable 2 "mine.txt" c; _ -> False
       BS.readFile (dir </> "mine.txt") `shouldReturn` "caf\xe9 precious\n"
       BS.readFile (dir </> "a.txt") `shouldThrow` anyIOException
@@ -186,3 +191,71 @@ unusableSpec = describe "generate (targets that cannot be written)" $ do
     (Right plan, files) <- run [("z", "x")] pathGen [("dir", "z/x.txt")] Apply
     planConflicts plan `shouldSatisfy` \case [c] -> isUnusable 2 "z/x.txt" c; _ -> False
     M.member "a.txt" files `shouldBe` False
+
+composeSpec :: Spec
+composeSpec = describe "generate (composition)" $ do
+  let pageGen =
+        generatorNamed "page" . T.unlines $
+          [ "description = \"page\"", "language = \"x\""
+          , "[inputs.page]", "type = \"ident\""
+          , "[inputs.msgs]", "type = \"list\"", "optional = true", "of = \"ident\""
+          , "[[edits]]", "create = \"src/{= page|pascal =}.txt\"", "text = \"page {= page|pascal =}\\n-- msgs\\n\""
+          , "[[uses]]", "generator = \"msg\"", "for_each = \"msgs\""
+          , "with = { page = \"{= page =}\", msg = \"{= item =}\" }"
+          ]
+      msgGen =
+        generatorNamed "msg" . T.unlines $
+          [ "description = \"msg\"", "language = \"x\""
+          , "[inputs.page]", "type = \"ident\""
+          , "[inputs.msg]", "type = \"ident\""
+          , "[requires]", "exists = [\"src/{= page|pascal =}.txt\"]"
+          , "[[edits]]", "insert = \"src/{= page|pascal =}.txt\"", "anchor = { marker = \"-- msgs\" }", "text = \"| {= msg|pascal =}\""
+          ]
+      resolveTo gens _ ref = pure (maybe (Left ("no generator `" <> ref <> "`")) Right (lookup ref gens))
+      resolve = resolveTo [("msg", msgGen), ("page", pageGen)]
+      gen1 steps = do
+        (ws, snapshot) <- memoryWorkspace []
+        result <- generate ws resolve steps now Apply
+        (result,) <$> snapshot
+  it "runs a generator's [[uses]] once per for_each item, in one plan, with requires met by earlier steps" $ do
+    (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings"), ("msgs", "toggle_dark_mode, reset")])]
+    M.lookup "src/Settings.txt" files `shouldBe` Just "page Settings\n| ToggleDarkMode\n| Reset\n-- msgs\n"
+    map editStep (planEdits plan) `shouldBe` [["page"], ["page", "msg[1]"], ["page", "msg[2]"]]
+  it "treats an empty for_each list as no steps" $ do
+    (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings")])]
+    M.keys files `shouldBe` ["src/Settings.txt"]
+    length (planEdits plan) `shouldBe` 1
+  it "chains top-level steps into one plan with explicit inputs only" $ do
+    (Right plan, files) <-
+      gen1 [Step pageGen (M.fromList [("page", "profile")]), Step msgGen (M.fromList [("page", "profile"), ("msg", "follow")])]
+    M.lookup "src/Profile.txt" files `shouldBe` Just "page Profile\n| Follow\n-- msgs\n"
+    map editStep (planEdits plan) `shouldBe` [["page (step 1)"], ["msg (step 2)"]]
+  it "does not inherit inputs: a step missing an input fails even if an earlier step set it" $ do
+    (result, files) <- gen1 [Step pageGen (M.fromList [("page", "profile")]), Step msgGen (M.fromList [("msg", "follow")])]
+    result `shouldSatisfy` \case
+      Left (InvalidInputs ["msg (step 2)"] (InputProblems [MissingInput _])) -> True
+      _ -> False
+    files `shouldBe` M.empty
+  it "is idempotent when the same step appears twice" $ do
+    (Right plan, _) <-
+      gen1
+        [ Step pageGen (M.fromList [("page", "a_b")])
+        , Step msgGen (M.fromList [("page", "a_b"), ("msg", "x_y")])
+        , Step msgGen (M.fromList [("page", "a_b"), ("msg", "x_y")])
+        ]
+    planConflicts plan `shouldBe` []
+    map editAction (drop 2 (planEdits plan)) `shouldBe` [Skipped AlreadyPresent]
+  it "reports an unknown nested generator and writes nothing" $ do
+    (ws, snapshot) <- memoryWorkspace []
+    result <- generate ws noResolve [Step pageGen (M.fromList [("page", "a_b"), ("msgs", "c_d")])] now Apply
+    result `shouldSatisfy` \case
+      Left (UnknownGenerator ["page"] "msg" _) -> True
+      _ -> False
+    snapshot `shouldReturn` M.empty
+  it "detects composition cycles instead of looping" $ do
+    let loopGen = generatorNamed "loop" "description = \"loop\"\nlanguage = \"x\"\n[[uses]]\ngenerator = \"loop\"\n"
+    (ws, _) <- memoryWorkspace []
+    result <- generate ws (resolveTo [("loop", loopGen)]) [Step loopGen M.empty] now Apply
+    result `shouldSatisfy` \case
+      Left (CompositionCycle _) -> True
+      _ -> False

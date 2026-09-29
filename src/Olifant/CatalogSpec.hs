@@ -46,7 +46,7 @@ genInto :: Workspace IO -> Catalog -> Text -> IO (M.Map FilePath Text)
 genInto root cat ref = do
   let Right entry = findEntry cat ref
   Right gen <- loadGenerator root cat entry
-  Right plan <- generate (within "/proj" root) gen (M.fromList [("name", "cancel_subscription")]) now PlanOnly
+  Right plan <- generate (within "/proj" root) noResolve [Step gen (M.fromList [("name", "cancel_subscription")])] now PlanOnly
   pure (planWrites plan)
 
 spec :: Spec

@@ -56,7 +56,7 @@ runCommand rt fmt cat = \case
         Right gen -> do
           now <- maybe (rtNow rt) pure (genNow g)
           let mode = if genPlanOnly g then PlanOnly else Apply
-          generate (within (rtProjectDir rt) (rtRoot rt)) gen (M.fromList (genSets g)) now mode >>= \case
+          generate (within (rtProjectDir rt) (rtRoot rt)) noResolve [Step gen (M.fromList (genSets g))] now mode >>= \case
             Left err -> generationFailure rt fmt err
             Right plan -> do
               let applied = mode == Apply && not (hasConflicts plan)
@@ -91,6 +91,10 @@ catalogFailure rt fmt err = case err of
 
 generationFailure :: Runtime -> Format -> GenerationError -> IO ExitCode
 generationFailure rt fmt = \case
-  InvalidInputs e@(InputProblems ps) -> failWith rt fmt 4 "invalid_inputs" (describeEnvError e) Nothing (inputProblemFields ps)
-  InvalidInputs e -> failWith rt fmt 1 "generator_invalid" (describeEnvError e) Nothing []
-  TemplateFailed e -> failWith rt fmt 1 "template_failed" (describeTemplateError e) Nothing []
+  InvalidInputs path e@(InputProblems ps) -> failWith rt fmt 4 "invalid_inputs" (inStep path (describeEnvError e)) Nothing (inputProblemFields ps ++ ["step" .= showStepPath path])
+  InvalidInputs path e -> failWith rt fmt 1 "generator_invalid" (inStep path (describeEnvError e)) Nothing []
+  TemplateFailed path e -> failWith rt fmt 1 "template_failed" (inStep path (describeTemplateError e)) Nothing []
+  UnknownGenerator path ref why -> failWith rt fmt 3 "generator_not_found" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
+  CompositionCycle path -> failWith rt fmt 1 "composition_cycle" ("generators use each other in a cycle: " <> showStepPath path) Nothing []
+  where
+    inStep path msg = showStepPath path <> ": " <> msg

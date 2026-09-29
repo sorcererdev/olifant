@@ -60,8 +60,8 @@ runCase root bless pc = do
                 fixturePaths <- listFiles root fixtureDir
                 fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
                 (ws, _) <- memoryWorkspace fixture
-                firstRun <- generate ws gen sets now Apply
-                secondRun <- generate ws gen sets now Apply
+                firstRun <- generate ws noResolve [Step gen sets] now Apply
+                secondRun <- generate ws noResolve [Step gen sets] now Apply
                 case (firstRun, secondRun) of
                   (Left err, _) -> pure (CaseFailed [T.pack (show err)])
                   (Right plan, _) | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
