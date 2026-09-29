@@ -60,6 +60,9 @@ library
     Olifant.Naming
     Olifant.Anchor
     Olifant.Anchor.Phrase
+    Olifant.Language
+    Olifant.Language.Rule
+    Olifant.Language.Adapter
     -- olifant:library-modules
 
 test-suite spec
@@ -109,6 +112,10 @@ test-suite spec
     Olifant.Anchor
     Olifant.Anchor.Phrase
     Olifant.AnchorSpec
+    Olifant.Language
+    Olifant.Language.Rule
+    Olifant.Language.Adapter
+    Olifant.LanguageSpec
     -- olifant:test-modules
 
 executable olifant
