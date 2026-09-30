@@ -37,16 +37,14 @@ insert = "src/Main.elm"
 at     = "end of type Msg"
 text   = "| Got{= P =}Msg {= P =}.Msg"
 
-# Multi-line text: TOML drops the newline right after an opening """, so the
-# empty line below is what puts a blank line between this branch and the last.
-# `complete` edits add that separator themselves; `at` inserts do not.
+# The branch is copied from the fixture's real `update` (a fragment), so it
+# cannot drift from the app's style; the blank line before it comes from the
+# spacing between the existing branches.
 [[edits]]
-insert = "src/Main.elm"
-at     = "end of case in update"
-text   = """
-
-( Got{= P =}Msg subMsg, {= P =} page ) ->
-    {= P =}.update subMsg page |> updateWith {= P =} Got{= P =}Msg model"""
+insert   = "src/Main.elm"
+at       = "end of case in update"
+fragment = { file = "fixture:src/Main.elm", items_of = "case in update", matching = "GotSamplePageMsg" }
+bind     = { page = "sample_page" }
 
 [[edits]]
 insert = "src/Route.elm"
