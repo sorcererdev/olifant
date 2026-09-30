@@ -33,9 +33,9 @@ import Olifant.Language.Process (runBytes)
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..))
 import Olifant.Toml
-import System.Directory (findExecutable)
+import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
-import System.FilePath (dropExtension, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory)
+import System.FilePath (dropExtension, isAbsolute, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory, (</>))
 
 data Query = GlobQuery Text [Text] | CommandQuery [Text] (Maybe Text) (Maybe Text)
   deriving stock (Eq, Show)
@@ -97,13 +97,25 @@ processCommands :: FilePath -> Commands IO
 processCommands dir = Commands $ \case
   [] -> pure (Left "empty command")
   (exe : args) ->
-    findExecutable (T.unpack exe) >>= \case
+    locate (T.unpack exe) >>= \case
       Nothing -> pure (Left ("`" <> exe <> "` is not installed"))
       Just path ->
         runBytes path (map T.unpack args) (Just dir) "" >>= \case
           Left why -> pure (Left why)
           Right (ExitSuccess, out, _) -> pure (Right out)
           Right (ExitFailure c, _, err) -> pure (Left ("exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8With lenientDecode err)))
+  where
+    locate = locateIn dir
+
+-- | A program with a `/` (`bin/list`, `./scripts/x`) is the project's own,
+-- resolved against the project directory; a bare name is looked up on PATH.
+locateIn :: FilePath -> FilePath -> IO (Maybe FilePath)
+locateIn dir exe
+  | '/' `elem` exe = do
+      let path = if isAbsolute exe then exe else dir </> exe
+      ok <- doesFileExist path
+      pure (if ok then Just path else Nothing)
+  | otherwise = findExecutable exe
 
 runQuery :: Monad m => Commands m -> [FilePath] -> Query -> m (Either Text [Record])
 runQuery commands paths q = case q of

@@ -7,6 +7,9 @@ import Data.Text qualified as T
 import Olifant.Query
 import Olifant.Template (Value (..))
 import Olifant.Toml (Tree (..))
+import System.Directory (createDirectoryIfMissing, getPermissions, setOwnerExecutable, setPermissions)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
 paths :: [FilePath]
@@ -42,7 +45,17 @@ spec = do
     it "reports invalid JSON and command failures, naming the command (Review Focus 4)" $ do
       runIdentity (runQuery (fake (Right "not json")) [] (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("command x" `T.isInfixOf`) (const False)
       runIdentity (runQuery (fake (Left "boom")) [] (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("boom" `T.isInfixOf`) (const False)
-  describe "processCommands" $
+  describe "processCommands" $ do
+    it "runs a project script given by a relative path (review #5)" $
+      withSystemTempDirectory "olifant-cmd" $ \dir -> do
+        createDirectoryIfMissing True (dir </> "bin")
+        writeFile (dir </> "bin" </> "list") "#!/bin/sh\necho '[{\"name\":\"a\"}]'\n"
+        p <- getPermissions (dir </> "bin" </> "list")
+        setPermissions (dir </> "bin" </> "list") (setOwnerExecutable True p)
+        r <- runQuery (processCommands dir) [] (CommandQuery ["bin/list"] Nothing Nothing)
+        r `shouldBe` Right [M.fromList [("name", VText "a")]]
+        r2 <- runQuery (processCommands dir) [] (CommandQuery ["./bin/list"] Nothing Nothing)
+        r2 `shouldBe` r
     it "runs a real command in the given directory" $ do
       r <- runQuery (processCommands ".") [] (CommandQuery ["echo", "[{\"k\":\"v\"}]"] Nothing Nothing)
       r `shouldBe` Right [M.fromList [("k", VText "v")]]
