@@ -3,10 +3,11 @@
 module Olifant.Generation.Regions (RegionMode (..), refreshRegions) where
 
 import Control.Monad (foldM)
-import Data.List (nub, sortOn, (\\))
+import Data.List (sortOn, (\\))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generation.Plan
@@ -15,7 +16,7 @@ import Olifant.Language (Language (..), languageFor)
 import Olifant.Query (Query, Record, runQuery)
 import Olifant.Region
 import Olifant.Template (describeTemplateError)
-import Olifant.Workspace (Workspace (..))
+import Olifant.Workspace (Workspace (..), isSafeRelative)
 
 -- | 'SkipUnset' (`gen`): a region whose file or fences are absent is not set
 -- up in this project, so it is skipped. 'ReportUnset' (`sync --check`)
@@ -30,7 +31,8 @@ refreshRegions mode tools ws firstNumber current0
   | null (toolRegions tools) = pure ([], [], current0)
   | otherwise = do
       disk <- listFiles ws "."
-      let universe = nub (disk ++ [p | (p, Just _) <- M.toList current0])
+      -- A set, not `nub`: projects can hold hundreds of thousands of files.
+      let universe = S.toList (S.fromList (disk ++ [p | (p, Just _) <- M.toList current0]))
       (edits, conflicts, current, _) <- foldM (step universe) ([], [], current0, []) (sortOn regionName (toolRegions tools))
       pure (reverse edits, reverse conflicts, current)
   where
@@ -39,8 +41,9 @@ refreshRegions mode tools ws firstNumber current0
           name = regionName def
           conflict why = pure (edits, RegionBroken name file why : conflicts, current, cache)
           unset why = if mode == ReportUnset then conflict why else pure (edits, conflicts, current, cache)
-      old <- maybe (readText ws file) pure (M.lookup file current)
+      old <- if isSafeRelative file then maybe (readText ws file) pure (M.lookup file current) else pure Nothing
       case (commentFor file def, old) of
+        _ | not (isSafeRelative file) -> conflict ("region `" <> name <> "`: " <> T.pack file <> " is outside the project")
         (Nothing, _) -> conflict ("region `" <> name <> "`: no comment syntax for " <> T.pack file <> " (add `comment` to the region)")
         (_, Nothing) | not (regionWholeFile def) -> unset ("region `" <> name <> "`: " <> T.pack file <> " does not exist")
         (Just c, _) -> do

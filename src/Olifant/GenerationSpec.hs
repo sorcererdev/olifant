@@ -20,6 +20,7 @@ import Data.ByteString qualified as BS
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Timeout (timeout)
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
@@ -540,6 +541,17 @@ regionSpec = describe "generate (owned regions)" $ do
     out `shouldSatisfy` ("    Olifant.A\n    Olifant.B\n    -- olifant:end mods" `T.isInfixOf`)
     Right again <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
     planWrites again `shouldBe` M.empty
+  it "stays fast with many files outside the region's glob (review #1)" $ do
+    (ws, _) <- memoryWorkspace (("x.cabal", cabal) : [("node_modules/pkg" <> show i <> "/index.js", "") | i <- [1 :: Int .. 30000]])
+    result <- timeout 5000000 (generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply)
+    fmap (either (const False) (not . hasConflicts)) result `shouldBe` Just True
+  it "never writes a region outside the project (review #3)" $ do
+    let Right t = parseTemplate "{= dotted =}"
+        escape = RegionDef "esc" "../escaped.txt" (GlobQuery "src/**/*.hs" []) (ItemTemplate t) True (Just "#") Nothing Nothing
+    (ws, snap) <- memoryWorkspace [("src/Olifant/A.hs", "")]
+    Right plan <- generate ws noResolve (noTools {toolRegions = [escape]}) [Step unit (M.fromList [("name", "b")])] now Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("outside the project" `T.isInfixOf`)
+    (M.member "../escaped.txt" <$> snap) `shouldReturn` False
   it "skips a region whose file or fences are not set up here" $ do
     (ws, _) <- memoryWorkspace [("src/Olifant/A.hs", "")]
     Right plan <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
