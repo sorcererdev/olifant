@@ -10,14 +10,14 @@ import Olifant.Anchor (Position (..), parsePhrase)
 import Olifant.Generator.Definition
 import Olifant.Language (ruleFromTree)
 import Olifant.Naming (parseName)
-import Olifant.Query (queryFromTree)
+import Olifant.Query (posixRegex, queryFromTree)
 import Olifant.Template (Binding (..), Template, describeTemplateError, freeVariables, parseTemplate)
 import Olifant.Toml
 
 parseGenerator :: GeneratorId -> Text -> Either Text GeneratorDef
 parseGenerator gid src = do
   top <- parseToml src
-  onlyKeys ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples"] top
+  onlyKeys ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query"] top
   description <- required "description" text top
   language <- required "language" text top
   version <- maybe 1 fromInteger <$> optional "version" int top
@@ -27,7 +27,8 @@ parseGenerator gid src = do
   edits <- fromMaybe [] <$> optional "edits" (list (table >=> editFrom)) top
   uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
   examples <- fromMaybe [] <$> optional "examples" (list text) top
-  pure (Generator gid description language version inputs derived requires edits uses examples)
+  queries <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryFromTree v)) . M.toList) =<< optional "query" table top
+  pure (Generator gid description language version inputs derived requires edits uses examples queries)
 
 tmpl :: Text -> Either Text Template
 tmpl = first describeTemplateError . parseTemplate
@@ -103,13 +104,19 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
     unlessG <- unlessFrom t
     pure (Create target src onExists unlessG)
   ["insert"] -> do
-    onlyKeys ["insert", "at", "anchor", "template", "text", "unless"] t
+    onlyKeys ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"] t
     target <- required "insert" (text >=> tmpl) t
     anchors <- case (M.lookup "at" t, M.lookup "anchor" t) of
       (Just v, Nothing) -> inKey "at" (atFrom v)
       (Nothing, Just v) -> inKey "anchor" (table v >>= markerAlias)
       _ -> Left "an insert needs exactly one of `at` (preferred) or `anchor`"
-    src <- sourceFrom False t
+    src <- case M.lookup "fragment" t of
+      Nothing -> sourceFrom False t
+      Just v -> inKey "fragment" $ do
+        f <- table v
+        onlyKeys ["file", "items_of", "matching"] f
+        binds <- inKey "bind" (required "bind" (table >=> bindsFrom) t)
+        FragmentFile <$> required "file" text f <*> required "items_of" text f <*> inKey "fragment.matching" (required "matching" text f >>= posixRegex) <*> pure binds
     unlessG <- unlessFrom t
     pure (Insert target anchors src unlessG)
   ["complete"] -> do
@@ -130,7 +137,7 @@ sourceFrom allowExemplar t = case (M.lookup "template" t, M.lookup "exemplar" t,
   (Nothing, Nothing, Just v) -> InlineText <$> inKey "text" (text v >>= tmpl)
   _
     | allowExemplar -> Left "a create needs exactly one of `template`, `exemplar` or `text`"
-    | otherwise -> Left "an insert needs exactly one of `template` or `text`"
+    | otherwise -> Left "an insert needs exactly one of `template`, `text` or `fragment`"
 
 bindsFrom :: Table -> Either Text [Binding]
 bindsFrom tbl = traverse (\(k, v) -> inKey k (text v >>= fmap (Binding k) . parseName)) (M.toList tbl)

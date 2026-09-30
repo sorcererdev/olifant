@@ -3,17 +3,21 @@
 module Olifant.GenerationSpec (spec) where
 
 import Data.Map.Strict qualified as M
+import Data.List (isInfixOf)
+import Data.ByteString.Lazy.Char8 qualified as BL
+import Data.Aeson (encode)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Hedgehog (evalIO, forAll, (===))
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
+import Olifant.Anchor (astQueries)
 import Olifant.Generation
 import Olifant.Generator
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Olifant.Language
-import Olifant.Query (Query (..))
+import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), noQueries)
 import Olifant.Region
 import Olifant.Template (Template, parseTemplate)
 import Data.ByteString qualified as BS
@@ -71,6 +75,14 @@ spec = do
 
 createSpec :: Spec
 createSpec = describe "generate (create edits)" $ do
+  it "binds a generator query after derived values, for templates (Review Focus 5)" $ do
+    let gen =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[derive]", "dir = \"src/{= name|snake =}\""
+            , "[query.mods]", "glob = \"{= dir =}/*.hs\""
+            , "[[edits]]", "create = \"index.txt\"", "text = \"{= for m in mods =}{= m.stem =}\\n{= end =}\"" ]
+    (_, files) <- run [("src/core/A.hs", ""), ("src/core/B.hs", ""), ("src/other/C.hs", "")] gen [("name", "core")] Apply
+    M.lookup "index.txt" files `shouldBe` Just "A\nB\n"
   it "skips a create when `unless` finds a match, on disk or created earlier in the plan" $ do
     let migration =
           generatorFrom . (header <>) . T.unlines $
@@ -559,6 +571,35 @@ regionSpec = describe "generate (owned regions)" $ do
     Right plan <- generate ws noResolve (noTools {toolRegions = [whole]}) [Step unit (M.fromList [("name", "b")])] now Apply
     planConflicts plan `shouldBe` []
     (M.member "Pages.txt" <$> snap) `shouldReturn` False
+  it "refreshes a region from an AST query" $ do
+    let Right t = parseTemplate "{= head =}"
+        Right caseLang =
+          parseLanguage "elm" "/p" . T.unlines $
+            [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
+            , "[targets.case_in]", "phrase = \"case in FUNCTION\"", "container = { kind = \"case_of_expr\" }"
+            , "items = { kind = \"case_of_branch\" }", "example = \"end of case in update\""
+            ]
+        variants = RegionDef "variants" "list.txt" (AstQueryQ (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")])) (ItemTemplate t) False (Just "#") Nothing Nothing
+        fake = Syntax $ \_ rule _ -> pure . Right $
+          if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 1) "A -> 1", Match (7, 8) (8, 1) "B -> 2"] else [Match (2, 4) (8, 1) "case"]
+    (ws, snap) <- memoryWorkspace [("src/A.elm", "x"), ("list.txt", "# olifant:region variants\n# olifant:end variants\n")]
+    let queries = noQueries {queryAst = astQueries fake [caseLang]}
+    Right _ <- generate ws noResolve (noTools {toolRegions = [variants], toolQueries = queries}) [Step unit (M.fromList [("name", "b")])] now Apply
+    (M.lookup "list.txt" <$> snap) `shouldReturn` Just "# olifant:region variants (generated from ast src/A.elm (items of case in update); edit the declaration, not this block)\nA\nB\n# olifant:end variants\n"
+  it "an AST region sees what the same plan inserted" $ do
+    let Right t = parseTemplate "{= head =}"
+        Right lang = parseLanguage "x" "/p" "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.type]\nphrase = \"type NAME\"\ncontainer = { kind = \"t\" }\nitems = { kind = \"v\" }\nexample = \"end of type T\"\n"
+        -- The container is the whole text; items are the lines holding "| ".
+        bars = Syntax $ \_ rule content -> pure . Right $
+          if "\"all\"" `isInfixOf` BL.unpack (encode rule)
+            then [Match (i, 2) (i, T.length l) (T.strip l) | (i, l) <- zip [0 ..] (T.lines content), "| " `T.isInfixOf` l]
+            else [Match (0, 0) (length (T.lines content), 0) content]
+        variants = RegionDef "variants" "list.txt" (AstQueryQ (AstQuery "a.x" (ItemsOf "type T") [("head", "[|] ([A-Z])")])) (ItemTemplate t) False (Just "#") Nothing Nothing
+        addC = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"a.x\"", "at = \"after last line matching [|] \"", "text = \"| C\""]
+    (ws, snap) <- memoryWorkspace [("a.x", "type T\n  = A\n  | B\n"), ("list.txt", "# olifant:region variants\n# olifant:end variants\n")]
+    let barTools = noTools {toolRegions = [variants], toolLanguages = [lang], toolQueries = noQueries {queryAst = astQueries bars [lang]}}
+    Right _ <- generate ws noResolve barTools [Step addC (M.fromList [("name", "b")])] now Apply
+    (M.lookup "list.txt" <$> snap) `shouldReturn` Just "# olifant:region variants (generated from ast a.x (items of type T); edit the declaration, not this block)\nB\nC\n# olifant:end variants\n"
   it "skips a region whose file or fences are not set up here" $ do
     (ws, _) <- memoryWorkspace [("src/Olifant/A.hs", "")]
     Right plan <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply

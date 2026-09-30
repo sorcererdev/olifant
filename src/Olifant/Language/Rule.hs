@@ -10,8 +10,9 @@ import Data.Text (Text)
 import Olifant.Template (Env, Template, TemplateError, describeTemplateError, parseTemplate, render)
 import Olifant.Toml (Tree (..), describeTree, inKey)
 
-data Rule = RObject [(Text, Rule)] | RList [Rule] | RText Template | RInt Integer | RBool Bool
-  deriving stock (Show)
+-- | 'RLit': a string already rendered (a rule after 'renderRule').
+data Rule = RObject [(Text, Rule)] | RList [Rule] | RText Template | RLit Text | RInt Integer | RBool Bool
+  deriving stock (Eq, Show)
 
 ruleFromTree :: Tree -> Either Text Rule
 ruleFromTree = \case
@@ -25,6 +26,7 @@ ruleFromTree = \case
 renderRule :: Env -> Rule -> Either TemplateError Value
 renderRule env = \case
   RText t -> String <$> render env t
+  RLit s -> Right (String s)
   RInt i -> Right (toJSON i)
   RBool b -> Right (Bool b)
   RList xs -> toJSON <$> traverse (renderRule env) xs

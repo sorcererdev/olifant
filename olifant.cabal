@@ -35,6 +35,7 @@ library
   exposed-modules:
     -- olifant:region library-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Anchor
+    Olifant.Anchor.Items
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.Catalog
@@ -92,6 +93,7 @@ test-suite spec
   other-modules:
     -- olifant:region test-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Anchor
+    Olifant.Anchor.Items
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.AnchorSpec

@@ -36,15 +36,36 @@ spec = do
     it "needs exactly one of glob or command" $
       queryFromTree (TTable M.empty) `shouldSatisfy` either ("glob" `T.isInfixOf`) (const False)
   describe "runQuery (commands)" $ do
-    let fake out = Commands (\_ -> Identity out)
+    let fake out = noQueries {queryCommand = \_ -> Identity out}
     it "turns a JSON array of objects into records, sorted by `sort`" $
-      runIdentity (runQuery (fake (Right "[{\"name\":\"b\",\"n\":2},{\"name\":\"a\",\"n\":1}]")) [] (CommandQuery ["x"] Nothing (Just "name")))
+      runIdentity (runQuery (fake (Right "[{\"name\":\"b\",\"n\":2},{\"name\":\"a\",\"n\":1}]")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing (Just "name")))
         `shouldBe` Right [M.fromList [("name", VText "a"), ("n", VInt 1)], M.fromList [("name", VText "b"), ("n", VInt 2)]]
     it "selects an array out of an object" $
-      fmap length (runIdentity (runQuery (fake (Right "{\"packages\":[{\"name\":\"a\"}]}")) [] (CommandQuery ["x"] (Just "packages") Nothing))) `shouldBe` Right 1
+      fmap length (runIdentity (runQuery (fake (Right "{\"packages\":[{\"name\":\"a\"}]}")) [] (const (pure Nothing)) (CommandQuery ["x"] (Just "packages") Nothing))) `shouldBe` Right 1
     it "reports invalid JSON and command failures, naming the command (Review Focus 4)" $ do
-      runIdentity (runQuery (fake (Right "not json")) [] (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("command x" `T.isInfixOf`) (const False)
-      runIdentity (runQuery (fake (Left "boom")) [] (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("boom" `T.isInfixOf`) (const False)
+      runIdentity (runQuery (fake (Right "not json")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("command x" `T.isInfixOf`) (const False)
+      runIdentity (runQuery (fake (Left "boom")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("boom" `T.isInfixOf`) (const False)
+  describe "queryFromTree (ast)" $ do
+    it "reads items_of with each fields" $
+      queryFromTree (TTable (M.fromList [("files", TText "src/*.rs"), ("items_of", TText "struct Foo"), ("each", TTable (M.fromList [("name", TText "^pub ([a-z_]+):")]))]))
+        `shouldBe` Right (AstQueryQ (AstQuery "src/*.rs" (ItemsOf "struct Foo") [("name", "^pub ([a-z_]+):")]))
+    it "rejects an invalid each regex, naming the field (Review Focus 2)" $
+      queryFromTree (TTable (M.fromList [("files", TText "a"), ("items_of", TText "type X"), ("each", TTable (M.fromList [("bad", TText "(")]))]))
+        `shouldSatisfy` either ("bad" `T.isInfixOf`) (const False)
+    it "rejects Perl classes such as \\s and \\w, which POSIX reads as literals" $
+      queryFromTree (TTable (M.fromList [("files", TText "a"), ("items_of", TText "type X"), ("each", TTable (M.fromList [("f", TText "^\\(\\s*(\\w+)")]))]))
+        `shouldSatisfy` either ("each.f" `T.isInfixOf`) (const False)
+    it "accepts an escaped backslash before s" $
+      queryFromTree (TTable (M.fromList [("files", TText "a"), ("items_of", TText "type X"), ("each", TTable (M.fromList [("f", TText "a\\\\s")]))]))
+        `shouldSatisfy` either (const False) (const True)
+  describe "eachFields" $
+    it "takes the first capture group, the whole match without one, empty without a match" $
+      eachFields [("name", "^pub ([a-z_]+):"), ("kw", "pub"), ("none", "zzz")] "pub repo: Repo,"
+        `shouldBe` M.fromList [("name", VText "repo"), ("kw", VText "pub"), ("none", VText "")]
+  describe "renderQuery" $
+    it "renders templates in a query's text" $
+      fmap describeQuery (renderQuery (M.fromList [("Cmd", VText "Refund")]) (AstQueryQ (AstQuery "src/{= Cmd|snake =}.rs" (ItemsOf "struct {= Cmd =}") [])))
+        `shouldBe` Right "ast src/refund.rs (items of struct Refund)"
   describe "processCommands" $ do
     it "runs a project script given by a relative path (review #5)" $
       withSystemTempDirectory "olifant-cmd" $ \dir -> do
@@ -52,10 +73,10 @@ spec = do
         writeFile (dir </> "bin" </> "list") "#!/bin/sh\necho '[{\"name\":\"a\"}]'\n"
         p <- getPermissions (dir </> "bin" </> "list")
         setPermissions (dir </> "bin" </> "list") (setOwnerExecutable True p)
-        r <- runQuery (processCommands dir) [] (CommandQuery ["bin/list"] Nothing Nothing)
+        r <- runQuery (noQueries {queryCommand = processCommand dir}) [] (const (pure Nothing)) (CommandQuery ["bin/list"] Nothing Nothing)
         r `shouldBe` Right [M.fromList [("name", VText "a")]]
-        r2 <- runQuery (processCommands dir) [] (CommandQuery ["./bin/list"] Nothing Nothing)
+        r2 <- runQuery (noQueries {queryCommand = processCommand dir}) [] (const (pure Nothing)) (CommandQuery ["./bin/list"] Nothing Nothing)
         r2 `shouldBe` r
     it "runs a real command in the given directory" $ do
-      r <- runQuery (processCommands ".") [] (CommandQuery ["echo", "[{\"k\":\"v\"}]"] Nothing Nothing)
+      r <- runQuery (noQueries {queryCommand = processCommand "."}) [] (const (pure Nothing)) (CommandQuery ["echo", "[{\"k\":\"v\"}]"] Nothing Nothing)
       r `shouldBe` Right [M.fromList [("k", VText "v")]]

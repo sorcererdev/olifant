@@ -31,7 +31,9 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generation.Compose (ResolveFailure (..))
 import Olifant.Generator
-import Olifant.Language (Language, parseLanguage)
+import Olifant.Anchor (itemsOfTarget)
+import Olifant.Language (Language, Match (..), Syntax, languageFor, parseLanguage)
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
 import Olifant.Toml qualified as Toml
@@ -186,8 +188,10 @@ findEntry cat ref =
       (pack, rest) | not (T.null pack), not (T.null rest) -> Just pack
       _ -> Nothing
 
-loadGenerator :: Monad m => Workspace m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
-loadGenerator root cat entry = sequenceA <$> traverse resolve (entryDefinition entry)
+-- | Resolve a generator's sources (templates, exemplars, fragments) into
+-- templates. Fragments need the syntax port and the catalog's adapters.
+loadGenerator :: Monad m => Workspace m -> Syntax m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
+loadGenerator root syntax cat entry = sequenceA <$> traverse resolve (entryDefinition entry)
   where
     gid = entryId entry
     resolve = \case
@@ -196,6 +200,28 @@ loadGenerator root cat entry = sequenceA <$> traverse resolve (entryDefinition e
       ExemplarFile ref binds -> case exemplarPath ref of
         Left err -> pure (Left err)
         Right path -> fromFile path (first describeExemplarError . exemplar binds)
+      FragmentFile ref target matching binds -> case exemplarPath ref of
+        Left err -> pure (Left err)
+        Right path ->
+          readText root path >>= \case
+            Nothing -> pure (Left (SourceMissing gid path))
+            Just content -> case languageFor (catalogLanguages cat) path of
+              Nothing -> pure (Left (SourceInvalid gid path "no language adapter for this file, so its fragments cannot be found"))
+              Just lang ->
+                itemsOfTarget syntax lang "items of" (T.words target) content <&> \case
+                  Left (why, _) -> Left (SourceInvalid gid path ("fragment `" <> target <> "`: " <> why))
+                  Right Nothing -> Left (SourceInvalid gid path ("fragment: `" <> target <> "` not found"))
+                  Right (Just (_, items)) -> case [m | m <- items, maybe False (`matchTest` T.unpack (matchText m)) (makeRegexM (T.unpack matching) :: Maybe Regex)] of
+                    [m] -> first (SourceInvalid gid path . describeExemplarError) (exemplar binds (dedent m))
+                    ms -> Left (SourceInvalid gid path ("fragment `" <> target <> "` matching `" <> matching <> "` matched " <> T.pack (show (length ms)) <> " items (expected 1)"))
+    -- A node's first line starts at its column; later lines keep the file's
+    -- indentation, so remove the node's column from each of them.
+    dedent m = case T.lines (T.replace "\r\n" "\n" (matchText m)) of
+      [] -> ""
+      (firstLine : rest) ->
+        let col = snd (matchStart m)
+            strip l = let ws = T.takeWhile (\c -> c == ' ' || c == '\t') l in T.drop (min col (T.length ws)) l
+         in T.intercalate "\n" (firstLine : map strip rest)
     fromFile path build =
       readText root path <&> \case
         Nothing -> Left (SourceMissing gid path)
@@ -220,9 +246,9 @@ resolveEntry cat pack ref = go candidates
       other -> other
 
 -- | Resolve and load a generator named in a [[uses]] step.
-resolver :: Monad m => Workspace m -> Catalog -> Maybe Text -> Text -> m (Either ResolveFailure Generator)
-resolver root cat pack ref = case resolveEntry cat pack ref of
-  Right entry -> first (ResolveInvalid . describeCatalogError) <$> loadGenerator root cat entry
+resolver :: Monad m => Workspace m -> Syntax m -> Catalog -> Maybe Text -> Text -> m (Either ResolveFailure Generator)
+resolver root syntax cat pack ref = case resolveEntry cat pack ref of
+  Right entry -> first (ResolveInvalid . describeCatalogError) <$> loadGenerator root syntax cat entry
   Left err@(GeneratorNotFound _ _) -> pure (Left (ResolveNotFound (describeCatalogError err)))
   Left err@(PackNotConfigured _ _) -> pure (Left (ResolveNotFound (describeCatalogError err)))
   Left err -> pure (Left (ResolveInvalid (describeCatalogError err)))

@@ -1,7 +1,8 @@
 # 6. Queries, `choices_from` and `unless`
 
 A **query** reads facts out of the project. Regions use one to know what to list; enum
-inputs use one to know their choices.
+inputs use one to know their choices; a generator can bind one to a name and use it in
+its templates.
 
 ## Glob queries
 
@@ -45,6 +46,113 @@ query = { command = ["cargo", "metadata", "--format-version=1", "--no-deps"], se
 - A command that fails or prints something else is a conflict carrying its error output.
 - Commands come from packs and project config, which you trust the way you trust any
   plugin you install.
+
+## AST queries: facts from the code itself
+
+A glob sees files; an AST query sees what is *in* them. This region keeps
+`src/RouteNames.elm` equal to the constructors of `type Route`:
+
+```toml
+# .olifant/regions.toml
+[regions.route-names]
+file       = "src/RouteNames.elm"
+query      = { files = "src/Route.elm", items_of = "type Route", each = { ctor = "([A-Z][A-Za-z0-9_]*)" } }
+whole_file = true
+template   = "route-names.elm.dt"
+```
+
+```
+-- .olifant/route-names.elm.dt
+module RouteNames exposing (all)
+
+
+all : List String
+all =
+    [ {= for r in items =}"{= r.ctor =}"{= if not loop.last =}, {= end =}{= end =} ]
+```
+
+```
+$ olifant sync --init route-names
+$ olifant gen elm/page --set page=profile
+elm/page (10 edits, 0 conflicts)
+  + src/Page/Profile.elm (42 lines)  [elm/page]
+  …
+  ~ src/Route.elm (+1 line at line 11)  [elm/page]
+  …
+  ~ src/RouteNames.elm (region route-names: +1 −1)  [region route-names]
+```
+
+```diff
+-    [ "Home", "SamplePage", "Settings" ]
++    [ "Home", "SamplePage", "Settings", "Profile" ]
+```
+
+The page generator knows nothing about `RouteNames`. The region reads `Route.elm` as the
+plan leaves it, with the new `| Profile`, so the list is right in the same run.
+
+- **`files`** is a glob (and a template), so one query can span many files. Each file's
+  language adapter supplies the grammar and the targets.
+- **`items_of = "<target>"`** selects the items of a target, exactly as `end of` sees them:
+  the vocabulary is the one `at` uses (`olifant anchors elm` lists it), and `olifant where`
+  tests it. A file without the target gives no records, so a misspelt *name*
+  (`type Rout`) gives an empty list rather than an error. A misspelt target *kind* is an
+  error ("unknown target `typo Route` for elm (targets: …)"), and so is a target that
+  appears twice in one file.
+- **`ast = { … }`** is a raw ast-grep rule, for nodes no target covers. Every matching node
+  is a record:
+
+  ```toml
+  query = { files = "src/Page/*.elm", ast = { kind = "module_declaration" }, each = { module = "^module ([A-Za-z.]+)" } }
+  ```
+
+  gives `Page.Home (src/Page/Home.elm:1)`, `Page.Profile (src/Page/Profile.elm:1)`, … when
+  rendered as `{= m.module =} ({= m.path =}:{= m.line =})`.
+- Every record has **`text`** (the node's source), **`path`** and **`line`** (1-based).
+- **`each`** adds fields. Each is a regular expression over the node's text; the field is
+  its first capture group (the whole match if it has no group). No match gives an empty
+  field, never a dropped record.
+- The expressions are POSIX, not Perl: `[[:space:]]` rather than `\s`, `[A-Za-z0-9_]`
+  rather than `\w`, and no lazy `*?`. An invalid expression fails when the query is read,
+  naming the field, and so does a Perl class like `\s` or `\w` (POSIX would read it as a
+  plain letter and silently match nothing).
+- AST queries need `ast-grep`; without it the query fails with the install hint.
+
+## Queries in generators: `[query.NAME]`
+
+A generator can bind a query's records to a name:
+
+```toml
+[query.routes]
+files    = "src/Route.elm"
+items_of = "type Route"
+each     = { ctor = "([A-Z][A-Za-z0-9_]*)" }
+
+[[edits]]
+create = "src/RouteNames.elm"
+text = """
+module RouteNames exposing (all)
+
+
+all : List String
+all =
+    [ {= for r in routes =}"{= r.ctor =}"{= if not loop.last =}, {= end =}{= end =} ]
+"""
+```
+
+```
+$ olifant gen route-names
+route-names (1 edit, 0 conflicts)
+  + src/RouteNames.elm (6 lines)
+```
+
+`routes` is a list like any other: templates, `for_each` and `[[uses]]` can use it. Any
+query works here (`glob`, `command`, `items_of`, `ast`). Queries run after inputs and
+`[derive]`, so their strings can use them (`files = "{= service_dir =}/src/{= cmd =}.rs"`).
+A query that fails stops the generator with `query_failed` (exit 1).
+
+Two limits. Generator queries read the files on disk, so in a chain of steps they do not
+see what earlier steps planned (regions do). And a generator that *creates* a list, like the
+one above, is stale as soon as a route is added; for that, the region is the better tool.
 
 ## `choices_from`: inputs whose values come from the project
 

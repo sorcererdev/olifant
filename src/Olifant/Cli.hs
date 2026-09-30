@@ -14,14 +14,14 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
-import Olifant.Anchor (Located (..), RenderedAnchor (..), describeMisses, insertLines, parsePhrase, resolveLayers)
+import Olifant.Anchor (Located (..), RenderedAnchor (..), astQueries, describeMisses, insertLines, parsePhrase, resolveLayers)
 import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyRegion, fenceLines, wholeHeader)
 import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generation
 import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText, needsChoices, withChoices)
-import Olifant.Query (processCommands)
+import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), isSafeRelative, within)
@@ -63,14 +63,14 @@ runCommand rt fmt cat = \case
     -- --detail prints inputs, so choices_from must be live, as in `show`.
     entries <-
       if detail
-        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt (entryDefinition e)) (catalogEntries cat)
+        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat (entryDefinition e)) (catalogEntries cat)
         else pure (catalogEntries cat)
     emit rt fmt (listJson detail (subsOf cat) entries broken) (listHuman detail (subsOf cat) entries broken)
     pure ExitSuccess
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
     Right e0 ->
-      resolveChoicesFor rt (entryDefinition e0) >>= \case
+      resolveChoicesFor rt cat (entryDefinition e0) >>= \case
         Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
         Right d -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
@@ -89,7 +89,7 @@ runCommand rt fmt cat = \case
   SyncCmd mode -> do
     now <- rtNow rt
     let ws = within (rtProjectDir rt) (rtRoot rt)
-        tools = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolCommands = processCommands (rtProjectDir rt)}
+        tools = projectTools rt cat
     case mode of
       SyncApply -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset False now
       SyncCheck -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools ReportUnset True now
@@ -111,20 +111,20 @@ runCommand rt fmt cat = \case
       Right (Right []) -> usage "no steps to run"
       Right (Right ss) -> do
         let label i s = specGenerator s <> if length ss > 1 then " (step " <> T.pack (show i) <> ")" else ""
-        loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
+        loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) (rtSyntax rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
-          Right gens0 -> fmap sequence (traverse (resolveChoicesFor rt) gens0) >>= \case
+          Right gens0 -> fmap sequence (traverse (resolveChoicesFor rt cat) gens0) >>= \case
            Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
            Right gens -> do
             now <- maybe (rtNow rt) pure (genNow g)
             let resolveWithChoices pack ref =
-                  resolver (rtRoot rt) cat pack ref >>= \case
+                  resolver (rtRoot rt) (rtSyntax rt) cat pack ref >>= \case
                     Left err -> pure (Left err)
-                    Right gen -> first ResolveInvalid <$> resolveChoicesFor rt gen
+                    Right gen -> first ResolveInvalid <$> resolveChoicesFor rt cat gen
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices ((basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolCommands = processCommands (rtProjectDir rt)}) steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices (projectTools rt cat) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan = plan0 {planWarnings = planWarnings plan0 ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]}
@@ -183,18 +183,19 @@ generationFailure rt fmt = \case
   TemplateFailed path e -> failWith rt fmt 1 "template_failed" (inStep path (describeTemplateError e)) Nothing []
   UnknownGenerator path ref why -> failWith rt fmt 3 "generator_not_found" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
   InvalidGenerator path ref why -> failWith rt fmt 1 "generator_invalid" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
+  QueryFailed path why -> failWith rt fmt 1 "query_failed" (inStep path why) Nothing []
   CompositionCycle path -> failWith rt fmt 1 "composition_cycle" ("generators use each other in a cycle: " <> showStepPath path) Nothing []
   where
     inStep path msg = showStepPath path <> ": " <> msg
 
 -- | Resolve `choices_from` inputs against the project (spec §4.1); the
 -- project is listed only when a generator needs it.
-resolveChoicesFor :: Runtime -> GeneratorWith s -> IO (Either Text (GeneratorWith s))
-resolveChoicesFor rt gen
+resolveChoicesFor :: Runtime -> Catalog -> GeneratorWith s -> IO (Either Text (GeneratorWith s))
+resolveChoicesFor rt cat gen
   | not (needsChoices gen) = pure (Right gen)
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      withChoices (processCommands (rtProjectDir rt)) paths gen
+      withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.
@@ -238,3 +239,17 @@ initRegion rt fmt ws tools def now
     file = regionFile def
     lang = languageFor (toolLanguages tools) file
     fill = syncRegions rt fmt [] ws tools {toolRegions = [def]} SkipUnset False now
+
+-- | The tools a command in this project uses: the runtime's syntax and
+-- checker, the catalog's languages and regions, and the project's queries.
+projectTools :: Runtime -> Catalog -> Tools IO
+projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries rt cat}
+
+-- | Queries run in the project: commands in its root, AST queries over its
+-- files with the catalog's language adapters.
+projectQueries :: Runtime -> Catalog -> Queries IO
+projectQueries rt cat =
+  Queries
+    { queryCommand = processCommand (rtProjectDir rt)
+    , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
+    }

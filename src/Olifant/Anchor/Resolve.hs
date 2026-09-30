@@ -2,9 +2,11 @@
 module Olifant.Anchor.Resolve
   ( RenderedAnchor (..)
   , Located (..)
+  , Spacing (..)
   , Miss (..)
   , resolveLayers
   , locateContainer
+  , itemsOfTarget
   , insertLines
   , alreadyPresent
   , presentAt
@@ -14,9 +16,10 @@ module Olifant.Anchor.Resolve
 import Data.Aeson (object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Char (isAlphaNum)
-import Data.List (maximumBy, minimumBy)
+import Data.Functor ((<&>))
+import Data.List (maximumBy, minimumBy, sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Ord (comparing)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -28,7 +31,12 @@ import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 data RenderedAnchor = PhraseAnchor Text | RuleAnchor Aeson.Value Position
   deriving stock (Eq, Show)
 
-data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text}
+-- | 'locSpacing': a blank line to add around the new text, copied from the
+-- spacing between the target's neighbouring items (spec §5.2).
+data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing}
+  deriving stock (Eq, Show)
+
+data Spacing = NoSpacing | BlankBefore | BlankAfter
   deriving stock (Eq, Show)
 
 data Miss = Miss {missAnchor :: Text, missReason :: Text, missTool :: Bool}
@@ -71,13 +79,15 @@ resolveOne syntax lang anchor content = case anchor of
     ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
     indentAt i = T.takeWhile (\c -> c == ' ' || c == '\t') (if i < length ls then ls !! i else "")
     regionOf a b = T.intercalate "\n" (take (b - a + 1) (drop a ls))
-    located line indent region = Located line indent region used
+    located line indent region = Located line indent region used NoSpacing
     count = T.pack . show . length
     around m pos =
       let (s, e) = (fst (matchStart m), fst (matchEnd m))
        in if pos `elem` [StartOf, Before]
             then wholeLine "the match" (startsLine (matchStart m)) (located s (indentAt s) (regionOf s e))
             else wholeLine "the match" (endsLine (matchEnd m)) (located (e + 1) (indentAt s) (regionOf s e))
+    -- Items separated by a blank line (Elm case branches, Rust methods).
+    blankBetween a b = any (T.null . T.strip . lineAt') [fst (matchEnd a) + 1 .. fst (matchStart b) - 1]
     -- Olifant inserts whole lines, so a position must begin or end its line.
     lineAt' i = if i < length ls then ls !! i else ""
     -- A separator next to an item (`, b` in Elm, `x: X,` in Rust) is part of its line.
@@ -111,29 +121,11 @@ resolveOne syntax lang anchor content = case anchor of
               (h : _) ->
                 let i = if which == FirstLine then h else last hits
                  in (\line -> located line (indentAt i) (runAround i)) <$> beforeAfter pos i "line"
-    named l pos ws = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
-      [] ->
-        let examples = map targetExample (langTargets l)
-            suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (closest (positionWords pos <> " " <> T.unwords ws) examples)
-         in pure (Left (miss ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l)) <> ")")))
-      ((t, binds) : _) -> do
-        let env = M.fromList [(k, VText v) | (k, v) <- binds]
-        case (,) <$> renderRule env (targetContainer t) <*> renderRule env (targetItems t) of
-          Left err -> pure (Left (miss (describeTemplateError err)))
-          Right (containerRule, itemsRule) ->
-            querySyntax syntax l containerRule content >>= \case
-              Left f -> pure (Left (toolMiss f))
-              Right [c] -> do
-                -- Items are the container's direct children (ast-grep's default
-                -- `inside` checks only the parent), so branches of a nested
-                -- case never count, even when their parent branch was filtered
-                -- out as a catch-all.
-                let within = object ["all" .= [itemsRule, object ["inside" .= containerRule]]]
-                querySyntax syntax l within content >>= \case
-                  Left f -> pure (Left (toolMiss f))
-                  Right found -> pure (place pos c (topLevel (filter (inside c) found)))
-              Right [] -> pure (Left (miss "not found"))
-              Right cs -> pure (Left (miss ("matches " <> count cs <> " places; it must match once")))
+    named l pos ws =
+      itemsOfTarget syntax l (positionWords pos) ws content <&> \case
+        Left (why, tool) -> Left (Miss used why tool)
+        Right Nothing -> Left (miss "not found")
+        Right (Just (c, items)) -> place pos c items
     place pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce
@@ -143,10 +135,46 @@ resolveOne syntax lang anchor content = case anchor of
             (_, []) -> Left (miss "has no items to insert beside")
             (StartOf, _) ->
               let f = minimumBy (comparing matchStart) items
-               in wholeLine "the first item" (startsLine (matchStart f)) (located (fst (matchStart f)) (indentAt (fst (matchStart f))) region)
+                  spacing = case sortOn matchStart items of
+                    (a : b : _) | blankBetween a b -> BlankAfter
+                    _ -> NoSpacing
+               in wholeLine "the first item" (startsLine (matchStart f)) ((located (fst (matchStart f)) (indentAt (fst (matchStart f))) region) {locSpacing = spacing})
             (EndOf, _) ->
               let z = maximumBy (comparing matchEnd) items
-               in wholeLine "the last item" (endsLine (matchEnd z)) (located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region)
+                  spacing = case reverse (sortOn matchStart items) of
+                    (b : a : _) | blankBetween a b -> BlankBefore
+                    _ -> NoSpacing
+               in wholeLine "the last item" (endsLine (matchEnd z)) ((located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region) {locSpacing = spacing})
+
+-- | A target's container and its items: the container's direct children, top
+-- level (as `end of` sees them). 'Right Nothing' when the container is absent;
+-- 'Left' (why, a tool is missing) when the target is unknown, ambiguous or the
+-- syntax tool fails. @prefix@ ("end of", "items of") only shapes suggestions.
+itemsOfTarget :: Monad m => Syntax m -> Language -> Text -> [Text] -> Text -> m (Either (Text, Bool) (Maybe (Match, [Match])))
+itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
+  [] ->
+    let suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (closest (prefix <> " " <> T.unwords ws) (map targetExample (langTargets l)))
+     in pure (Left ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l)) <> ")", False))
+  ((t, binds) : _) -> do
+    let env = M.fromList [(k, VText v) | (k, v) <- binds]
+    case (,) <$> renderRule env (targetContainer t) <*> renderRule env (targetItems t) of
+      Left err -> pure (Left (describeTemplateError err, False))
+      Right (containerRule, itemsRule) ->
+        querySyntax syntax l containerRule content >>= \case
+          Left f -> pure (Left (failure f))
+          Right [] -> pure (Right Nothing)
+          Right [c] -> do
+            -- Items are the container's direct children (ast-grep's default
+            -- `inside` checks only the parent), so branches of a nested case
+            -- never count, even when their parent branch was filtered out as a
+            -- catch-all.
+            let within = object ["all" .= [itemsRule, object ["inside" .= containerRule]]]
+            querySyntax syntax l within content <&> \case
+              Left f -> Left (failure f)
+              Right found -> Right (Just (c, topLevel (filter (inside c) found)))
+          Right cs -> pure (Left ("matches " <> T.pack (show (length cs)) <> " places; it must match once", False))
+  where
+    failure f = (describeSyntaxFailure f, case f of SyntaxToolMissing _ -> True; SyntaxFailed _ -> False)
     inside c m = matchStart m >= matchStart c && matchEnd m <= matchEnd c && m /= c
     topLevel ms = [m | m <- ms, not (any (\o -> o /= m && matchStart o <= matchStart m && matchEnd m <= matchEnd o) ms)]
 
@@ -167,7 +195,13 @@ insertLines :: Located -> Text -> Text -> (Int, Text)
 insertLines loc snippet content =
   let newline = if "\r\n" `T.isInfixOf` content then "\r\n" else "\n"
       ls = T.splitOn newline content
-      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- T.splitOn "\n" (dropFinalNewline snippet)]
+      body = T.splitOn "\n" (dropFinalNewline snippet)
+      blank = maybe False (T.null . T.strip)
+      spaced = case locSpacing loc of
+        BlankBefore | not (blank (listToMaybe body)) -> "" : body
+        BlankAfter | not (blank (listToMaybe (reverse body))) -> body ++ [""]
+        _ -> body
+      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- spaced]
       i = min (locLine loc) (length ls)
    in (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
   where

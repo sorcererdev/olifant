@@ -38,6 +38,8 @@ data GeneratorWith src = Generator
   , genEdits :: [EditWith src]
   , genUses :: [UseStep]
   , genExamples :: [Text] -- ^ example commands, shown by `olifant show`
+  , -- | `[query.NAME]` (spec §4.5): lists bound after derived values
+    genQueries :: [(Text, Query)]
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -76,6 +78,8 @@ data AnchorSpec = AtPhrase Template | AtRule Rule Position
 data SourceRef
   = TemplateFile FilePath
   | ExemplarFile Text [Binding]
+  | -- | a fragment exemplar (spec §4.3): file ref, items_of target, matching regex, bindings
+    FragmentFile Text Text Text [Binding]
   | InlineText Template
   deriving stock (Show)
 

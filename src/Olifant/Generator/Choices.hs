@@ -8,19 +8,19 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generator.Definition
-import Olifant.Query (Commands, runQuery)
+import Olifant.Query (Queries, runQuery)
 import Olifant.Template (describeTemplateError, render)
 
 -- | Fill every unresolved `choices_from` with the values its query finds in
 -- @paths@ (sorted, deduplicated, empty values dropped).
-withChoices :: Monad m => Commands m -> [FilePath] -> GeneratorWith s -> m (Either Text (GeneratorWith s))
-withChoices commands paths gen = do
+withChoices :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> GeneratorWith s -> m (Either Text (GeneratorWith s))
+withChoices commands paths readFile' gen = do
   inputs <- traverse resolve (genInputs gen)
   pure ((\is -> gen {genInputs = is}) <$> sequence inputs)
   where
     resolve spec = case inputType spec of
       ScalarInput (EnumQ q valueT Nothing) ->
-        runQuery commands paths q <&> \case
+        runQuery commands paths readFile' q <&> \case
           Left why -> Left ("`" <> inputName spec <> "`: " <> why)
           Right records -> do
             values <- first describeTemplateError (traverse (`render` valueT) records)

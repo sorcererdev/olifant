@@ -6,6 +6,7 @@ import Data.Aeson (encode)
 import Data.ByteString.Lazy.Char8 qualified as BL
 import Data.Functor.Identity (Identity (..))
 import Data.List (isInfixOf)
+import Data.Map.Strict qualified as M
 import Data.Text (Text)
 
 import Data.Text qualified as T
@@ -14,6 +15,8 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor
 import Olifant.Language
+import Olifant.Query (AstQuery (..), AstSelect (..))
+import Olifant.Template (Value (..))
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
@@ -115,6 +118,31 @@ resolveSpec = do
       resolve "start of case in x" `shouldSatisfy` either (any (("whole lines" `T.isInfixOf`) . missReason)) (const False)
     it "still places `after` a container that ends its line" $
       fmap locLine (resolve "after case in x") `shouldBe` Right 2
+  describe "astQueries" $ do
+    let files = M.fromList [("src/A.elm", source), ("src/B.elm", "module B\n")]
+        reader p = Identity (M.lookup p files)
+    it "gives a record per item: text, path, line and each fields" $
+      fmap (map (\r -> (M.lookup "path" r, M.lookup "line" r, M.lookup "head" r))) (runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")]) (M.keys files) reader))
+        `shouldBe` Right [(Just (VText "src/A.elm"), Just (VInt 4), Just (VText "A")), (Just (VText "src/A.elm"), Just (VInt 8), Just (VText "B"))]
+    it "gives no records for a file without the target (Review Focus 1)" $
+      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/B.elm" (ItemsOf "case in update") []) (M.keys files) reader))
+        `shouldBe` Right 0
+    it "is an error when the target appears twice in a file" $
+      runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
+        `shouldSatisfy` either ("src/A.elm" `T.isInfixOf`) (const False)
+    it "drops the CR of a CRLF file from text and each fields" $
+      fmap (map (\r -> (M.lookup "text" r, M.lookup "rhs" r))) (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 5) "A ->\r\n    a"]))) [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("kind", RLit "x")])) [("rhs", "->(.*)")]) (M.keys files) reader))
+        `shouldBe` Right [(Just (VText "A ->\n    a"), Just (VText ""))]
+  describe "spacing copied from neighbouring items" $ do
+    it "end of puts a blank line before the text when the last two items are separated by one" $
+      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right BlankBefore
+    it "copies nothing from a one-item container (Review Focus 4)" $ do
+      let one = Syntax $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …"] else [Match (2, 4) (4, 20) "case"]
+      fmap locSpacing (runIdentity (resolveLayers one (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right NoSpacing
+    it "insertLines adds the blank line unless the text already has it" $ do
+      insertLines (Located 1 "" "" "x" BlankBefore) "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
+      insertLines (Located 1 "" "" "x" BlankBefore) "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
   describe "insertLines" $
     it "indents non-blank lines and reports the 1-based line" $
-      insertLines (Located 1 "  " "" "x") "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
+      insertLines (Located 1 "  " "" "x" NoSpacing) "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
