@@ -14,8 +14,8 @@ import Olifant.Template (Value (..), describeTemplateError)
 -- | Evaluate an AST query over the files among @paths@ that its `files` glob
 -- selects. A file without the target contributes nothing; an unknown or
 -- ambiguous target, or a file with no language adapter, is an error.
-astQueries :: Monad m => Syntax m -> [Language] -> (FilePath -> m (Maybe Text)) -> AstQuery -> [FilePath] -> m (Either Text [Record])
-astQueries syntax langs readFile' q paths = fmap concat . sequence <$> traverse one (sort [p | p <- paths, matchesGlob (astFiles q) p])
+astQueries :: Monad m => Syntax m -> [Language] -> AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either Text [Record])
+astQueries syntax langs q paths readFile' = fmap concat . sequence <$> traverse one (sort [p | p <- paths, matchesGlob (astFiles q) p])
   where
     one path =
       readFile' path >>= \case

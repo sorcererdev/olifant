@@ -123,14 +123,16 @@ globRecords g excludes paths =
 -- failed), and evaluating an AST query over a list of paths.
 data Queries m = Queries
   { queryCommand :: [Text] -> m (Either Text ByteString)
-  , queryAst :: AstQuery -> [FilePath] -> m (Either Text [Record])
+  , -- | an AST query over some paths, reading files through the given view
+    -- (a plan's contents first, then disk)
+    queryAst :: AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either Text [Record])
   }
 
 noQueries :: Applicative m => Queries m
 noQueries =
   Queries
     { queryCommand = \argv -> pure (Left ("commands are not available here (" <> T.unwords argv <> ")"))
-    , queryAst = \q _ -> pure (Left ("AST queries are not available here (" <> describeQuery (AstQueryQ q) <> ")"))
+    , queryAst = \q _ _ -> pure (Left ("AST queries are not available here (" <> describeQuery (AstQueryQ q) <> ")"))
     }
 
 processCommand :: FilePath -> [Text] -> IO (Either Text ByteString)
@@ -155,10 +157,10 @@ locateIn dir exe
       pure (if ok then Just path else Nothing)
   | otherwise = findExecutable exe
 
-runQuery :: Monad m => Queries m -> [FilePath] -> Query -> m (Either Text [Record])
-runQuery queries paths q = case q of
+runQuery :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Query -> m (Either Text [Record])
+runQuery queries paths readFile' q = case q of
   GlobQuery g excludes -> pure (Right (globRecords g excludes paths))
-  AstQueryQ ast -> queryAst queries ast paths
+  AstQueryQ ast -> queryAst queries ast paths readFile'
   CommandQuery argv select sortKey ->
     queryCommand queries argv >>= \case
       Left why -> pure (Left (describeQuery q <> " failed: " <> why))
@@ -170,7 +172,7 @@ runQuery queries paths q = case q of
             (Just k, Aeson.Object o) | Just (Aeson.Array xs) <- KM.lookup (Key.fromText k) o -> Right (toList xs)
             _ -> Left (describeQuery q <> ": expected a JSON array of objects" <> maybe "" (\k -> " under `" <> k <> "`") select)
           let records = mapMaybe toRecord arr
-          Right (maybe records (\k -> sortOn (fmap render . M.lookup k) records) sortKey)
+          Right (maybe records (\k -> sortOn (fmap asText . M.lookup k) records) sortKey)
   where
     toRecord = \case
       Aeson.Object o -> Just (M.fromList [(Key.toText k, scalar x) | (k, x) <- KM.toList o])
@@ -180,7 +182,7 @@ runQuery queries paths q = case q of
       Aeson.Bool b -> VBool b
       Aeson.Number n -> either (VText . T.pack . show) VInt (floatingOrInteger n :: Either Double Integer)
       _ -> VNull
-    render = \case
+    asText = \case
       VText t -> t
       VInt i -> T.pack (show i)
       other -> T.pack (show other)

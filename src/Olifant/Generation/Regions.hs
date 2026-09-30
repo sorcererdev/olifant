@@ -47,7 +47,7 @@ refreshRegions mode tools ws firstNumber current0
         (Nothing, _) -> conflict ("region `" <> name <> "`: no comment syntax for " <> T.pack file <> " (add `comment` to the region)")
         (_, Nothing) -> unset ("region `" <> name <> "`: " <> T.pack file <> " does not exist")
         (Just c, _) -> do
-          (found, cache') <- cachedQuery universe cache (regionQuery def)
+          (found, cache') <- cachedQuery universe (\p -> maybe (readText ws p) pure (M.lookup p current)) cache (regionQuery def)
           case found of
             Left why -> conflict ("region `" <> name <> "`: " <> why)
             Right records -> case renderRegion def records of
@@ -66,10 +66,10 @@ refreshRegions mode tools ws firstNumber current0
       Just c -> Just c
       Nothing -> langComment <$> languageFor (toolLanguages tools) file
     -- A command query runs once per refresh, however many regions use it.
-    cachedQuery universe cache q = case lookup q (cache :: Cache) of
+    cachedQuery universe view cache q = case lookup q (cache :: Cache) of
       Just r -> pure (r, cache)
       Nothing -> do
-        r <- runQuery (toolQueries tools) universe q
+        r <- runQuery (toolQueries tools) universe view q
         pure (r, (q, r) : cache)
 
 -- | The lines currently inside a region (stripped), for counting what changed.

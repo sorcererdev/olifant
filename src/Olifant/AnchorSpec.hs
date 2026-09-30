@@ -122,13 +122,13 @@ resolveSpec = do
     let files = M.fromList [("src/A.elm", source), ("src/B.elm", "module B\n")]
         reader p = Identity (M.lookup p files)
     it "gives a record per item: text, path, line and each fields" $
-      fmap (map (\r -> (M.lookup "path" r, M.lookup "line" r, M.lookup "head" r))) (runIdentity (astQueries fakeSyntax [caseTarget] reader (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")]) (M.keys files)))
+      fmap (map (\r -> (M.lookup "path" r, M.lookup "line" r, M.lookup "head" r))) (runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")]) (M.keys files) reader))
         `shouldBe` Right [(Just (VText "src/A.elm"), Just (VInt 4), Just (VText "A")), (Just (VText "src/A.elm"), Just (VInt 8), Just (VText "B"))]
     it "gives no records for a file without the target (Review Focus 1)" $
-      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] reader (AstQuery "src/B.elm" (ItemsOf "case in update") []) (M.keys files)))
+      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/B.elm" (ItemsOf "case in update") []) (M.keys files) reader))
         `shouldBe` Right 0
     it "is an error when the target appears twice in a file" $
-      runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] reader (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files))
+      runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
         `shouldSatisfy` either ("src/A.elm" `T.isInfixOf`) (const False)
   describe "insertLines" $
     it "indents non-blank lines and reports the 1-based line" $

@@ -18,7 +18,8 @@ import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
 import Olifant.Generator (withChoices)
-import Olifant.Query (noQueries)
+import Olifant.Anchor (astQueries)
+import Olifant.Query (Queries (..), noQueries)
 import Olifant.Language (Checker, Syntax)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
@@ -64,10 +65,11 @@ runCase root syntax checker bless pc = do
                 fixturePaths <- listFiles root fixtureDir
                 fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
                 (ws, _) <- memoryWorkspace fixture
-                withChoices noQueries fixturePaths gen0 >>= \case
+                let queries = noQueries {queryAst = astQueries syntax (catalogLanguages cat)}
+                withChoices queries fixturePaths (readText ws) gen0 >>= \case
                  Left why -> pure (CaseFailed [why])
                  Right gen -> do
-                   let tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat}
+                   let tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
                    firstRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
                    secondRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of

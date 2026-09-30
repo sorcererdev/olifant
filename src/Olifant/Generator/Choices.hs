@@ -13,14 +13,14 @@ import Olifant.Template (describeTemplateError, render)
 
 -- | Fill every unresolved `choices_from` with the values its query finds in
 -- @paths@ (sorted, deduplicated, empty values dropped).
-withChoices :: Monad m => Queries m -> [FilePath] -> GeneratorWith s -> m (Either Text (GeneratorWith s))
-withChoices commands paths gen = do
+withChoices :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> GeneratorWith s -> m (Either Text (GeneratorWith s))
+withChoices commands paths readFile' gen = do
   inputs <- traverse resolve (genInputs gen)
   pure ((\is -> gen {genInputs = is}) <$> sequence inputs)
   where
     resolve spec = case inputType spec of
       ScalarInput (EnumQ q valueT Nothing) ->
-        runQuery commands paths q <&> \case
+        runQuery commands paths readFile' q <&> \case
           Left why -> Left ("`" <> inputName spec <> "`: " <> why)
           Right records -> do
             values <- first describeTemplateError (traverse (`render` valueT) records)

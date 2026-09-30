@@ -117,13 +117,13 @@ parseSpec = describe "parseGenerator" $ do
     let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\", value = \"{= dir =}\" }"]
         Right g = load src
         at0 = UTCTime (fromGregorian 2026 9 29) 0
-        Right resolved = runIdentity (withChoices noQueries ["billing/billing-service", "accounts/accounts-service"] g)
+        Right resolved = runIdentity (withChoices noQueries ["billing/billing-service", "accounts/accounts-service"] (const (pure Nothing)) g)
     map (describeInputType . inputType) (genInputs resolved) `shouldBe` ["enum(accounts|billing)"]
     either describeEnvError (const "") (buildEnv resolved (M.fromList [("service", "biling")]) at0) `shouldSatisfy` ("did you mean billing" `T.isInfixOf`)
     fmap (M.lookup "service") (buildEnv resolved (M.fromList [("service", "billing")]) at0) `shouldBe` Right (Just (VText "billing"))
   it "says so when a choices_from query finds nothing" $ do
     let Right g = load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\" }"])
-        Right resolved = runIdentity (withChoices noQueries [] g)
+        Right resolved = runIdentity (withChoices noQueries [] (const (pure Nothing)) g)
     either describeEnvError (const "") (buildEnv resolved (M.fromList [("service", "x")]) (UTCTime (fromGregorian 2026 9 29) 0)) `shouldSatisfy` ("found nothing" `T.isInfixOf`)
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft

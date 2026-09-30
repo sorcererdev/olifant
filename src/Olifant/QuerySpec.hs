@@ -38,13 +38,13 @@ spec = do
   describe "runQuery (commands)" $ do
     let fake out = noQueries {queryCommand = \_ -> Identity out}
     it "turns a JSON array of objects into records, sorted by `sort`" $
-      runIdentity (runQuery (fake (Right "[{\"name\":\"b\",\"n\":2},{\"name\":\"a\",\"n\":1}]")) [] (CommandQuery ["x"] Nothing (Just "name")))
+      runIdentity (runQuery (fake (Right "[{\"name\":\"b\",\"n\":2},{\"name\":\"a\",\"n\":1}]")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing (Just "name")))
         `shouldBe` Right [M.fromList [("name", VText "a"), ("n", VInt 1)], M.fromList [("name", VText "b"), ("n", VInt 2)]]
     it "selects an array out of an object" $
-      fmap length (runIdentity (runQuery (fake (Right "{\"packages\":[{\"name\":\"a\"}]}")) [] (CommandQuery ["x"] (Just "packages") Nothing))) `shouldBe` Right 1
+      fmap length (runIdentity (runQuery (fake (Right "{\"packages\":[{\"name\":\"a\"}]}")) [] (const (pure Nothing)) (CommandQuery ["x"] (Just "packages") Nothing))) `shouldBe` Right 1
     it "reports invalid JSON and command failures, naming the command (Review Focus 4)" $ do
-      runIdentity (runQuery (fake (Right "not json")) [] (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("command x" `T.isInfixOf`) (const False)
-      runIdentity (runQuery (fake (Left "boom")) [] (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("boom" `T.isInfixOf`) (const False)
+      runIdentity (runQuery (fake (Right "not json")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("command x" `T.isInfixOf`) (const False)
+      runIdentity (runQuery (fake (Left "boom")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("boom" `T.isInfixOf`) (const False)
   describe "queryFromTree (ast)" $ do
     it "reads items_of with each fields" $
       queryFromTree (TTable (M.fromList [("files", TText "src/*.rs"), ("items_of", TText "struct Foo"), ("each", TTable (M.fromList [("name", TText "^pub ([a-z_]+):")]))]))
@@ -67,10 +67,10 @@ spec = do
         writeFile (dir </> "bin" </> "list") "#!/bin/sh\necho '[{\"name\":\"a\"}]'\n"
         p <- getPermissions (dir </> "bin" </> "list")
         setPermissions (dir </> "bin" </> "list") (setOwnerExecutable True p)
-        r <- runQuery (noQueries {queryCommand = processCommand dir}) [] (CommandQuery ["bin/list"] Nothing Nothing)
+        r <- runQuery (noQueries {queryCommand = processCommand dir}) [] (const (pure Nothing)) (CommandQuery ["bin/list"] Nothing Nothing)
         r `shouldBe` Right [M.fromList [("name", VText "a")]]
-        r2 <- runQuery (noQueries {queryCommand = processCommand dir}) [] (CommandQuery ["./bin/list"] Nothing Nothing)
+        r2 <- runQuery (noQueries {queryCommand = processCommand dir}) [] (const (pure Nothing)) (CommandQuery ["./bin/list"] Nothing Nothing)
         r2 `shouldBe` r
     it "runs a real command in the given directory" $ do
-      r <- runQuery (noQueries {queryCommand = processCommand "."}) [] (CommandQuery ["echo", "[{\"k\":\"v\"}]"] Nothing Nothing)
+      r <- runQuery (noQueries {queryCommand = processCommand "."}) [] (const (pure Nothing)) (CommandQuery ["echo", "[{\"k\":\"v\"}]"] Nothing Nothing)
       r `shouldBe` Right [M.fromList [("k", VText "v")]]
