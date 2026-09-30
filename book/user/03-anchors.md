@@ -96,17 +96,45 @@ Use this when a structural target needs a tool (below) that might not be install
   the Elm grammar). Without them the edit misses with "ast-grep is not installed (brew
   install ast-grep)" and the next fallback is tried. Line and marker targets need nothing.
 
-## Multi-line `text`
+## Spacing
 
-TOML drops the newline right after an opening `"""`. To start an insert with a blank line
-(to separate it from the previous `case` branch), leave an empty line:
+`end of` and `start of` copy the spacing of the items already there. In `update`, the
+`case` branches are separated by a blank line, so a new branch gets one too, with no blank
+line in your `text`:
 
 ```toml
-text = """
-
+[[edits]]
+insert = "src/Main.elm"
+at     = "end of case in update"
+text   = """
 ( Got{= P =}Msg subMsg, {= P =} page ) ->
     {= P =}.update subMsg page |> updateWith {= P =} Got{= P =}Msg model"""
 ```
 
-`complete` edits ([next chapter](04-compiler-branches-and-todos.md)) add that separator
-themselves.
+```diff
+         ( GotSamplePageMsg subMsg, SamplePage page ) ->
+             SamplePage.update subMsg page |> updateWith SamplePage GotSamplePageMsg model
+ 
++        ( GotSettingsMsg subMsg, Settings page ) ->
++            Settings.update subMsg page |> updateWith Settings GotSettingsMsg model
++
+         ( _, _ ) ->
+```
+
+The branch still goes before the catch-all `( _, _ )`, which is not an item. The rule:
+
+- The blank lines between the last two items (for `end of`) or the first two (for
+  `start of`) are copied to the new item. Items written tightly together (`type Page`'s
+  `| Home Home.Model` lines, an import block) stay tight.
+- A container with one item has nothing to copy, so nothing is added.
+- If your text already starts (or ends) with the blank line, it is not doubled.
+
+`before` and `after` insert the text exactly as written. For those, TOML is the snag:
+it drops the newline right after an opening `"""`, so a leading blank line needs an empty
+line after the `"""`:
+
+```toml
+text = """
+
+-- the text starts with this blank line"""
+```

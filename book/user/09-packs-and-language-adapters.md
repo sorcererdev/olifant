@@ -27,7 +27,7 @@ packs/elm/
 | `generators/<name>/generator.toml` | every command; the id is `<pack>/<name>` | [chapter 7](07-writing-a-generator.md) |
 | `generators/<name>/templates/` | `template = "…"` edits | chapter 7 |
 | `generators/<name>/tests/<case>/` | the test suite | [chapter 10](10-testing-generators.md) |
-| `fixtures/app/` | `exemplar = "fixture:…"`, tests, `scripts/try-pack.sh` | chapters 7 and 10 |
+| `fixtures/app/` | `exemplar = "fixture:…"`, `fragment = { file = "fixture:…" }`, tests, `scripts/try-pack.sh` | chapters 7 and 10 |
 | `languages/<name>.toml` | `at` phrases, `complete`, `olifant anchors`/`where`, region comments | below |
 | `regions.toml` | every `gen` and `sync` | [chapter 5](05-owned-regions.md) |
 | `SKILL.md` | agent harnesses | [chapter 11](11-olifant-and-agents.md) |

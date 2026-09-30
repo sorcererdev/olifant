@@ -233,6 +233,7 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `version` | no (1) | shown in `show --json`; nothing else reads it yet |
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
 | `[inputs.*]`, `[derive]`, `[requires]`, `[[edits]]`, `[[uses]]` | no | below; `[[uses]]` is [chapter 8](08-composing-generators.md) |
+| `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)) |
 
 Any other key is an error that names the key, so typos fail at load (`list` marks the
 generator `INVALID`, `gen` exits 1).
@@ -371,6 +372,50 @@ record Model"` shows the spot or says why not (for `Page/Home.elm`, whose `Model
 when the generator loads (a missing or misspelt `end of` fails at once), but the target name
 is only checked against the language adapter when the edit runs, so `end of cases in update`
 is a conflict at run time, not a load error.
+
+### Fragments: insert text copied from a real file
+
+An exemplar copies a whole file. A **fragment** copies one item out of a file, for an
+`insert`, so the wiring code is also real code that compiles. `elm/page`'s `update` branch
+is the fixture's own `SamplePage` branch:
+
+```toml
+[[edits]]
+insert   = "src/Main.elm"
+at       = "end of case in update"
+fragment = { file = "fixture:src/Main.elm", items_of = "case in update", matching = "GotSamplePageMsg" }
+bind     = { page = "sample_page" }
+```
+
+- `items_of` is a target, the same vocabulary as `at` (`case in update`, `type Route`,
+  `record Model`). Its items are the candidates.
+- `matching` is a POSIX regular expression. Exactly one item must match it.
+- The item's text is dedented and then renamed like an exemplar: every case form of each
+  `bind` value (`sample_page`, `SamplePage`, `samplePage`, …) becomes the input.
+- `file = "fixture:…"` reads from the pack's fixture; a plain path reads the project's own
+  file, so a project generator can copy "a branch like the ones already there".
+
+With `--set page=settings` the branch comes out as:
+
+```elm
+        ( GotSettingsMsg subMsg, Settings page ) ->
+            Settings.update subMsg page |> updateWith Settings GotSettingsMsg model
+```
+
+Only the bound names change. In a fragment of `( GotProfileMsg subMsg, Profile page ) -> …`
+bound on `got_profile_msg` alone, `Profile page` stays `Profile page`, so bind every name
+that varies.
+
+A `matching` that fits several items is an error when the generator runs (as with exemplars,
+`list` and `show` do not check it):
+
+```
+$ olifant gen msg --set msg=x --plan
+error: msg: …/src/Main.elm: fragment `case in update` matching `Got` matched 4 items (expected 1)
+```
+
+The blank line before the new branch is not in the fragment: `end of` copies the spacing
+between the existing branches ([chapter 3](03-anchors.md#spacing)).
 
 ### `complete`
 
@@ -558,10 +603,10 @@ copied literally) or print it from a string (`{= "{=" =}`).
 
 ## Multi-line `text` in TOML
 
-Covered in [chapter 3](03-anchors.md#multi-line-text), and worth repeating because it is the
-most common authoring snag: TOML drops the newline right after an opening `"""`. A
-separating blank line before an `at` insert needs an empty line after the `"""`. `complete`
-edits add that separator themselves.
+TOML drops the newline right after an opening `"""`. For `end of` and `start of` inserts
+this no longer matters: the blank lines between items are copied ([chapter 3](03-anchors.md#spacing)),
+so leave them out of the text. A `before` or `after` insert that needs a leading blank line
+needs an empty line after the `"""`. `complete` edits add their separator themselves.
 
 ## Working habits
 

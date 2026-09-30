@@ -26,7 +26,7 @@ By the end you should be able to say which function produced each of those lines
 last three come out in that odd order. First, a map of the repository, the units it is split
 into, and the ports that keep the core testable.
 
-Olifant is small: about 4,400 lines of library code in `src/`, 2,100 lines of tests next to
+Olifant is small: about 4,600 lines of library code in `src/`, 2,200 lines of tests next to
 it, and a 42-line `app/Main.hs`. Line references (`src/Olifant/Cli.hs:45`) are to the code as
 of this chapter; if one is off, the code has moved and the chapter needs fixing.
 
@@ -110,14 +110,14 @@ From the bottom up:
 | **Template** | The `{= … =}` language: parse, render, exemplars | `Template.hs` over `Template/{Syntax,Parse,Render,Value,Exemplar,Error}`: `Template`, `parseTemplate`, `render`, `evaluate`, `Value`, `Env`, `exemplar`, `freeVariables` | Naming |
 | **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`: `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`. `Language.AstGrep` (the ast-grep adapter) is imported directly by `Main` | Glob, Template, Toml |
 | **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `diskWorkspace`, `memoryWorkspace`, `within`, `normalisePath`, `isSafeRelative` | Language (only `Language.Process`, to run `git`) |
-| **Query** | Facts from the repo as records (globs, or commands printing JSON), and the **Commands** port | `Query.hs`: `Query`, `Record`, `runQuery`, `Commands`, `noCommands`, `processCommands` | Glob, Language (`Process`), Naming, Template, Toml |
-| **Anchor** | `at` phrases and where they put text | `Anchor.hs` re-exports `Anchor/Phrase` and `Anchor/Resolve`: `parsePhrase`, `resolveLayers`, `Located`, `Miss`, `insertLines`, `presentAt`, `locateContainer` | Language, Template |
+| **Query** | Facts from the repo as records (globs, commands printing JSON, or AST queries selecting nodes), and the **Queries** port | `Query.hs`: `Query`, `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `noQueries`, `processCommand` | Glob, Language (`Process`, `Rule`), Naming, Template, Toml |
+| **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Spacing`, `Miss`, `insertLines`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Language, Query, Template |
 | **Generator** | A generator definition: the types, loading `generator.toml`, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` and `Inputs`, plus `parseGenerator`, `withChoices`, `needsChoices` | Anchor, Language, Naming, Query, Template, Toml |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
-| **Generation** | Running generators: expand `[[uses]]`, render edits, plan them, check, refresh regions, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `refreshRegions`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions` | Anchor, Generator, Glob, Language, Query, Region, Template, Workspace |
-| **Catalog** | Finding packs and generators, and loading one into a runnable `Generator` | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `resolver`, `Catalog`, `CatalogEntry` | Generation (one type), Generator, Language, Region, Template, Toml, Workspace |
+| **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `refreshRegions`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions` | Anchor, Generator, Glob, Language, Query, Region, Template, Workspace |
+| **Catalog** | Finding packs and generators, and loading one into a runnable `Generator` | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `resolver`, `Catalog`, `CatalogEntry` | Anchor, Generation (one type), Generator, Language, Region, Template, Toml, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `runCli`. Internals: `Cli/Options` (argument parsing), `Cli/Output` (rendering) | almost everything |
-| **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`) | `GeneratorTesting.hs`: `discoverCases`, `runCase` | Catalog, Generation, Generator, Language, Query, Toml, Workspace |
+| **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`) | `GeneratorTesting.hs`: `discoverCases`, `runCase` | Anchor, Catalog, Generation, Generator, Language, Query, Toml, Workspace |
 
 `GeneratorTesting` isn't used by the CLI yet. Only `GeneratorTestingSpec` calls it.
 
@@ -139,7 +139,9 @@ none upwards.
   ├────────────────────────────────────────────────────────────┤
   │ Generator                   Region                         │  definitions (generator.toml, regions.toml)
   ├────────────────────────────────────────────────────────────┤
-  │ Anchor         Query        Workspace                      │  placing text, reading facts, files
+  │ Anchor                                                     │  placing text (`at` phrases, AST queries)
+  ├────────────────────────────────────────────────────────────┤
+  │ Query                       Workspace                      │  reading facts, files
   ├────────────────────────────────────────────────────────────┤
   │ Language                                                   │  adapters as data; Syntax and Checker ports
   ├────────────────────────────────────────────────────────────┤
@@ -156,27 +158,33 @@ Naming, Toml, Glob   → (nothing)
 Template             → Naming
 Language             → Glob, Template, Toml
 Workspace            → Language            (Language.Process, for `git ls-files`)
-Anchor               → Language, Template
-Query                → Glob, Language, Naming, Template, Toml     (Language.Process)
+Query                → Glob, Language, Naming, Template, Toml     (Language.Process, Language.Rule)
+Anchor               → Language, Query, Template
 Region               → Query, Template, Toml
 Generator            → Anchor, Language, Naming, Query, Template, Toml
 Generation           → Anchor, Generator, Glob, Language, Query, Region, Template, Workspace
-Catalog              → Generation, Generator, Language, Region, Template, Toml, Workspace
+Catalog              → Anchor, Generation, Generator, Language, Region, Template, Toml, Workspace
 Cli                  → Anchor, Catalog, Generation, Generator, Language, Query, Region, Template, Workspace
-GeneratorTesting     → Catalog, Generation, Generator, Language, Query, Toml, Workspace
+GeneratorTesting     → Anchor, Catalog, Generation, Generator, Language, Query, Toml, Workspace
 app/Main             → Cli, Language, Language.AstGrep, Workspace
 ```
+
+`Anchor` importing `Query` is the one edge worth pausing on: an `at` target and an `ast`
+query both end up asking the same question ("what are this container's items?"), so
+`itemsOfTarget` (`Anchor/Resolve.hs:153`) is shared, and `Anchor.Items.astQueries` builds
+`Record`s (`Query`'s type) from what it finds. `Query` itself has no idea `Anchor` exists.
 
 Two things to notice:
 
 - **Generation does not import Catalog.** Generation has to load the generators named in
   `[[uses]]`, but it never looks them up itself. It takes a function
   (`type Resolve m = Maybe Text -> Text -> m (Either ResolveFailure Generator)`,
-  `src/Olifant/Generation/Compose.hs:35`), and `Cli` passes in `Catalog.resolver`. This is the
+  `src/Olifant/Generation/Compose.hs:37`), and `Cli` passes in `Catalog.resolver`. This is the
   same dependency inversion as the ports below, applied to a single function.
 - **`Language.Process` is misfiled.** It holds `runBytes` (run a program with byte stdin,
   stdout and stderr, never throw). It is general plumbing, but it sits in `Language/`, so
-  `Workspace` and `Query` import the Language unit just to reach it.
+  `Workspace` and `Query` import the Language unit just to reach it. `Query` also reaches
+  into `Language.Rule` directly, for the `Rule` an `ast` query wraps.
 
 A module outside a unit normally imports only that unit's facade. These are the exceptions
 (found with `grep -n 'import Olifant\.[A-Za-z]*\.[A-Z]'`):
@@ -184,7 +192,8 @@ A module outside a unit normally imports only that unit's facade. These are the 
 ```
 app/Main.hs:9                          import Olifant.Language.AstGrep (astGrepSyntax)
 src/Olifant/Workspace.hs:22            import Olifant.Language.Process (runBytes)
-src/Olifant/Query.hs:32                import Olifant.Language.Process (runBytes)
+src/Olifant/Query.hs:36                import Olifant.Language.Process (runBytes)
+src/Olifant/Query.hs:38                import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
 src/Olifant/Catalog.hs:32              import Olifant.Generation.Compose (ResolveFailure (..))
 src/Olifant/Generation/Complete.hs:23  import Olifant.Language.Elm (enclosingFunction, qualifyPattern, visibleAt)
 ```
@@ -196,7 +205,8 @@ Catalog import is unnecessary, because `Olifant.Generation` re-exports `ResolveF
 ## Ports and adapters
 
 Olifant touches four things outside its own memory: the filesystem, ast-grep, a language's
-compiler, and arbitrary commands (for queries). Each is a **port**. A port is a record of
+compiler, and arbitrary commands (for queries; AST queries reuse ast-grep through the Syntax
+port instead of touching anything new). Each is a **port**. A port is a record of
 functions, parameterised by the monad `m` it runs in:
 
 ```haskell
@@ -217,8 +227,11 @@ newtype Syntax m = Syntax {querySyntax :: Language -> Value -> Text -> m (Either
 -- src/Olifant/Language/Check.hs:36
 newtype Checker m = Checker {runCheck :: Language -> Map FilePath Text -> m (Either CheckFailure CheckReport)}
 
--- src/Olifant/Query.hs:91
-newtype Commands m = Commands {runCommand :: [Text] -> m (Either Text ByteString)}
+-- src/Olifant/Query.hs:124
+data Queries m = Queries
+  { queryCommand :: [Text] -> m (Either Text ByteString)
+  , queryAst :: AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either Text [Record])
+  }
 ```
 
 In Rust you would write a trait (`trait Workspace { fn read_text(&self, p: &Path) -> … }`)
@@ -229,15 +242,19 @@ first). The `m` parameter is the part Rust has no direct equivalent for. The sam
 run in `IO` in production and in a pure monad in a test. [Chapter 2](02-haskell-for-this-codebase.md#monads-and-monad-m-)
 explains how.
 
+`Queries` is a `data`, not a `newtype`, because it has two fields instead of one: running a
+`command` query and evaluating an `ast` query are different capabilities, but both need to
+reach outside Olifant's memory, so they travel together in one port.
+
 | port | defined at | real adapter | no-op / test adapters |
 |---|---|---|---|
 | `Workspace m` | `Workspace.hs:27` | `diskWorkspace` (`Workspace.hs:66`): reads and writes under a root; lists files with `git ls-files` when inside a git work tree, otherwise walks the tree. `within dir` (`:121`) views a workspace from a subdirectory | `memoryWorkspace` (`Workspace.hs:40`): a `Map` in an `IORef`, which also hands back an action that reads the final map, so tests can assert on "the disk" |
-| `Syntax m` | `Language/Syntax.hs:15` | `astGrepSyntax` (`Language/AstGrep.hs:33`): runs `ast-grep scan --stdin --inline-rules … --json=compact`; compiles a pack's vendored grammar with `cc` into the cache on first use | `noSyntax` (`Language/Syntax.hs:17`) always says "ast-grep is not installed"; `fakeSyntax :: Syntax Identity` in `AnchorSpec.hs:55` returns canned matches |
-| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, parses the report (`elm-json` only) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:390`) replays a list of reports, one per round |
-| `Commands m` | `Query.hs:91` | `processCommands dir` (`Query.hs:96`): runs a program (a bare name from `PATH`, or a project path like `bin/list`) in the project dir | `noCommands` (`Query.hs:93`); a one-line fake in `QuerySpec.hs:39` |
+| `Syntax m` | `Language/Syntax.hs:15` | `astGrepSyntax` (`Language/AstGrep.hs:33`): runs `ast-grep scan --stdin --inline-rules … --json=compact`; compiles a pack's vendored grammar with `cc` into the cache on first use | `noSyntax` (`Language/Syntax.hs:17`) always says "ast-grep is not installed"; `fakeSyntax :: Syntax Identity` in `AnchorSpec.hs:58` returns canned matches |
+| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, parses the report (`elm-json` only) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:402`) replays a list of reports, one per round |
+| `Queries m` | `Query.hs:124` | `processCommand dir` (`Query.hs:138`): runs a program (a bare name from `PATH`, or a project path like `bin/list`) in the project dir, for `queryCommand`; `astQueries syntax langs` (`Anchor/Items.hs:17`): evaluates an `ast` query's target over every matching file, for `queryAst` | `noQueries` (`Query.hs:131`); `QuerySpec.hs:39`'s `fake out = noQueries {queryCommand = …}` overrides one field and leaves `queryAst` as the no-op |
 
 The ports are bundled at two levels. `Tools m` (`src/Olifant/Generation/Tools.hs:10`) holds
-Syntax, Checker and Commands, plus the catalog's language adapters and regions, and it is what
+Syntax, Checker and Queries, plus the catalog's language adapters and regions, and it is what
 `generate` takes. `noTools` (`:18`) needs nothing installed. `Runtime`
 (`src/Olifant/Cli.hs:31`) is the CLI's port: the root workspace, the project dir, stdin, the
 clock, stdout, stderr, whether stdout is a terminal, and the Syntax and Checker adapters.
@@ -348,17 +365,17 @@ That is: no format flag, one step, no `--steps` file, not `--plan`, no `--now`.
 The **output format** is decided once (`Cli.hs:52`): the flag if given, otherwise human
 output for a terminal and JSON when piped.
 
-**`openProjectCatalog`** (`src/Olifant/Catalog.hs:97`) runs for every command. It reads
+**`openProjectCatalog`** (`src/Olifant/Catalog.hs:99`) runs for every command. It reads
 `[packs]` from `~/.config/olifant/config.toml` and `.olifant/config.toml`. The project's
-entry wins for the same name (`M.fromList (fromUser ++ fromProject)`, `:107`: a later key
-overwrites an earlier one). Then `openCatalogAt` (`:134`) goes through each pack:
+entry wins for the same name (`M.fromList (fromUser ++ fromProject)`, `:109`: a later key
+overwrites an earlier one). Then `openCatalogAt` (`:136`) goes through each pack:
 
-- `discover` (`:156`) lists the files and keeps `generators/<name>/generator.toml`, exactly
-  two levels deep. `load` (`:160`) parses each one with `parseGenerator`
+- `discover` (`:158`) lists the files and keeps `generators/<name>/generator.toml`, exactly
+  two levels deep. `load` (`:162`) parses each one with `parseGenerator`
   (`src/Olifant/Generator/Load.hs:17`) into a `GeneratorDef`.
-- `languagesIn` (`Catalog.hs:144`) parses `languages/*.toml` into `Language` values with
+- `languagesIn` (`Catalog.hs:146`) parses `languages/*.toml` into `Language` values with
   `parseLanguage` (`src/Olifant/Language/Adapter.hs:50`).
-- `regionsIn` (`Catalog.hs:236`) reads `regions.toml`.
+- `regionsIn` (`Catalog.hs:262`) reads `regions.toml`.
 
 A generator, language or regions file that fails to parse is kept aside (`catalogBroken`,
 `catalogBrokenLanguages`, `catalogBrokenRegions`) instead of failing the command. One bad
@@ -376,32 +393,41 @@ decoded by the `FromJSON StepSpec` instance at `Options.hs:44`). Then it loads e
 
 ```haskell
 -- src/Olifant/Cli.hs:114
-        loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
+        loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) (rtSyntax rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
 ```
 
 Read from the inside out:
 
-1. **`findEntry cat "elm/page"`** (`Catalog.hs:170`) looks for an exact id first. Failing
+1. **`findEntry cat "elm/page"`** (`Catalog.hs:172`) looks for an exact id first. Failing
    that, it looks for a bare name that is unique across packs (`page` would work). Then it
    checks the broken list, and only then reports "not found" or "pack not configured".
-2. **`loadGenerator`** (`Catalog.hs:189`) turns the `GeneratorDef`, whose edit sources are
+2. **`loadGenerator`** (`Catalog.hs:193`) turns the `GeneratorDef`, whose edit sources are
    still file references, into a runnable `Generator`, whose sources are parsed templates.
-   It's one line:
+   It also needs the Syntax port now, because a fragment exemplar (below) has to search a
+   file's syntax tree at load time, not just render text. It's still one line:
 
    ```haskell
-   -- src/Olifant/Catalog.hs:189
-   loadGenerator :: Monad m => Workspace m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
-   loadGenerator root cat entry = sequenceA <$> traverse resolve (entryDefinition entry)
+   -- src/Olifant/Catalog.hs:193
+   loadGenerator :: Monad m => Workspace m -> Syntax m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
+   loadGenerator root syntax cat entry = sequenceA <$> traverse resolve (entryDefinition entry)
    ```
 
-   `resolve` (`:193`) handles each source:
+   `resolve` (`:197`) handles each source:
    - `TemplateFile f` reads `templates/f` and parses it.
    - `ExemplarFile ref binds` reads the exemplar (`fixture:…` means the pack's
      `fixtures/app/`) and turns it into a template with `exemplar`
      (`src/Olifant/Template/Exemplar.hs:37`). That function replaces every case form of
      `sample_page` (`SamplePage`, `samplePage`, `SAMPLE_PAGE`, …) with the matching filter
      applied to `page`.
+   - `FragmentFile ref target matching binds` (spec §4.3) is an exemplar cut out of a bigger
+     file instead of read whole. It reads the same kind of file reference as `ExemplarFile`,
+     finds the `target`'s items with `itemsOfTarget` (`Anchor/Resolve.hs:153`, the same
+     function `end of`/`start of` anchors and `items_of` AST queries use), requires exactly
+     one of them to match the regex `matching`, dedents it by the node's starting column
+     (`dedent`, `Catalog.hs:219`, since only its first line sits at that column in the
+     source), then turns the result into a template with `exemplar` just like `ExemplarFile`
+     does.
    - `InlineText t` is already a template.
 
    `traverse` over a *generator* is possible because `GeneratorWith` derives `Traversable`.
@@ -409,7 +435,7 @@ Read from the inside out:
 3. `traverse` over the steps, then **`sequence loaded`**, turns "a list of results" into "the
    first error, or a list of generators", like `.collect::<Result<Vec<_>, _>>()`.
 
-Next, **`resolveChoicesFor`** (`Cli.hs:192`) fills in `choices_from` enums, which are enum
+Next, **`resolveChoicesFor`** (`Cli.hs:193`) fills in `choices_from` enums, which are enum
 inputs whose choices come from a query over the project. It only lists the project if some
 input needs it (`needsChoices`, `src/Olifant/Generator/Choices.hs:31`). `elm/page` has none,
 so this is a no-op here.
@@ -420,20 +446,22 @@ Then the call into the core:
 -- src/Olifant/Cli.hs:125
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices ((basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolCommands = processCommands (rtProjectDir rt)}) steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices (projectTools rt cat) steps now mode >>= \case
 ```
 
 The arguments, in order:
 - the workspace narrowed to the project, so paths are now project-relative
 - `resolveWithChoices`, which is `Catalog.resolver` followed by the same choices step, used
   for `[[uses]]`
-- the `Tools`: the real Syntax and Checker, the catalog's languages and regions, and real
-  Commands
+- the `Tools`, built by `projectTools rt cat` (`Cli.hs:245`): the real Syntax and Checker,
+  the catalog's languages and regions, and `projectQueries rt cat` (`:250`) — `queryCommand
+  = processCommand (rtProjectDir rt)`, `queryAst = astQueries (rtSyntax rt) (catalogLanguages
+  cat)`
 - the steps
 - the time (`--now` or the clock)
 - `Apply`
 
-### 4. `generate`: from steps to a plan (`src/Olifant/Generation.hs:54`)
+### 4. `generate`: from steps to a plan (`src/Olifant/Generation.hs:57`)
 
 ```haskell
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
@@ -443,16 +471,17 @@ generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime 
 
 #### 4a. Expand the steps into plan items (`Generation/Compose.hs`)
 
-`expandSteps` (`Compose.hs:60`) calls `expand` for each top-level step. `expand` runs in
+`expandSteps` (`Compose.hs:66`) calls `expand` for each top-level step. `expand` runs in
 `ExceptT CompositionError m`, a monad in which any line can fail with a composition error
 and stop the rest (chapter 2 has a section on it):
 
 ```haskell
--- src/Olifant/Generation/Compose.hs:69
-expand resolve now ancestors path gen sets = do
+-- src/Olifant/Generation/Compose.hs:75
+expand resolve bindQ now ancestors path gen sets = do
   when (genId gen `elem` ancestors) $ throwE (StepCycle path)
   checkCycles resolve (genId gen : ancestors) path gen
-  env <- except (first (StepInputs path) (buildEnv gen sets now))
+  env0 <- except (first (StepInputs path) (buildEnv gen sets now))
+  env <- if null (genQueries gen) then pure env0 else ExceptT (first (StepQuery path) <$> bindQ env0 (genQueries gen))
   rendered <- except (first (StepTemplate path) (renderEdits (genLanguage gen) env (genEdits gen)))
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
   nested <- concat <$> zipWithM (expandUse env) [1 :: Int ..] (genUses gen)
@@ -465,15 +494,26 @@ expand resolve now ancestors path gen sets = do
   `[derive]` values in dependency order (`deriveAll`, `:125`). Here the environment ends up
   with `page` as a name (`["settings"]`), `msgs` as a list of one record `{name =
   ["toggle","dark","mode"], arg = ""}`, `now`, and `P = "Settings"`.
+- **`bindQ`** binds the generator's own `[query.NAME]` queries (`genQueries`, spec §4.5) into
+  the environment, if it has any (`elm/page` doesn't, so this step is skipped here).
+  `BindQueries m` (`Compose.hs:57`) is another dependency-inverted function, like `Resolve
+  m`: `Cli`/`GeneratorTesting` pass in `generate`'s real `bindQueries` (`Generation.hs:104`),
+  which renders each query's text against the environment so far (`renderQuery`,
+  `Query.hs:192`) and runs it over the project's files (`runQuery`, `Query.hs:160`), reading
+  through the same plan-aware view every phase uses. A query's records are bound as a
+  `VList` under its name, so a template can loop over it. For example (`GenerationSpec.hs:78`):
+  `[query.mods] glob = "{= dir =}/*.hs"` makes `mods` a list of records, one per matching
+  file, and `{= for m in mods =}{= m.stem =}\n{= end =}` lists their stems. A failed query
+  is `StepQuery`/`QueryFailed`, exit code 1.
 - **`renderEdits`** (`src/Olifant/Generation/Render.hs:43`) renders every template in every
   edit: target path, anchors, contents. The results:
   - `RenderedCreate "src/Page/Settings.elm" …`
   - `RenderedInsert "src/Main.elm" [PhraseAnchor "end of type Page"] "| Settings Settings.Model" …`
   - two `RenderedComplete` specs. These carry their body *unrendered*, plus the env, because
     the `{= pattern =}` in the body is only known once the compiler has named a site.
-- **`expandUse`** (`Compose.hs:79`) handles `[[uses]]`. `renderUse` (`Compose.hs:115`) makes one input set per
+- **`expandUse`** (`Compose.hs:86`) handles `[[uses]]`. `renderUse` (`Compose.hs:122`) makes one input set per
   item of `msgs`. `resolve (Just "elm") "msg"` finds `elm/msg`: inside a pack, a bare name
-  means that pack's generator first (`Catalog.resolveEntry`, `Catalog.hs:212`). Then
+  means that pack's generator first (`Catalog.resolveEntry`, `Catalog.hs:239`). Then
   `expand` recurses with the step path `["elm/page", "elm/msg[1]"]`. That path is the
   `[elm/page › elm/msg[1]]` tag in the output.
 
@@ -486,21 +526,21 @@ PlanRequire ["elm/page","elm/msg[1]"] ["src/Page/Settings.elm"] …
 PlanEdit    ["elm/page","elm/msg[1]"] (1 insert, 1 complete)
 ```
 
-#### 4b. Look at the files the plan touches (`Generation.hs:59`)
+#### 4b. Look at the files the plan touches (`Generation.hs:62`)
 
-`generate` collects every target path and required path and calls `inspectTarget` (`:108`)
+`generate` collects every target path and required path and calls `inspectTarget` (`:122`)
 on each one. The result is a map, `originals :: Map FilePath (Maybe Text)`, where `Nothing`
 means absent. A second map, `blocked`, holds paths that can't be written: a directory, a
 file that isn't UTF-8, or a path whose parent is a file. The project's full file list is
-fetched only if some edit has an `unless` glob (`:67`).
+fetched only if some edit has an `unless` glob (`:70`).
 
 From here on, "the files" means that map. Each phase takes the current contents and returns
 new contents. Nothing touches the disk until the very end.
 
-#### 4c. The phases (`Generation.hs:70`)
+#### 4c. The phases (`Generation.hs:73`)
 
 ```haskell
--- src/Olifant/Generation.hs:70
+-- src/Olifant/Generation.hs:73
           phases originals' = do
             (positional, pc, afterPositional, next) <- decideItems locate diskPaths items originals' blocked onDisk
             (compiled, cc, ws', afterComplete) <- completeEdits tools ws completes next afterPositional
@@ -540,29 +580,34 @@ starts from those contents. `ws'` here is the list of warnings, not a workspace.
 
 - `RenderedComplete` items are skipped here (`:42`) and left for phase 2.
 
-**Anchors, `resolveLayers`** (`src/Olifant/Anchor/Resolve.hs:40`), tries the edit's anchors in
-order and returns the first that resolves, or every miss. `resolveOne` (`:49`) parses the
+**Anchors, `resolveLayers`** (`src/Olifant/Anchor/Resolve.hs:48`), tries the edit's anchors in
+order and returns the first that resolves, or every miss. `resolveOne` (`:57`) parses the
 phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on the target:
 
 - `after last line matching ^import Page\.` is a **line target**. It's resolved in Haskell
-  with `regex-tdfa` (`lineAt`, `Resolve.hs:101`), with no ast-grep call.
-- `end of type Page` is a **named target**, `["type", "Page"]`. `named` (`Resolve.hs:114`) matches it
-  against the Elm adapter's targets (`packs/elm/languages/elm.toml`). The shape `type NAME`
-  fits and binds `NAME = Page`. It renders that target's `container` rule (`{ kind =
-  "type_declaration", regex = "^type Page\b" }`) and asks the **Syntax port** for matches
-  (`querySyntax`, `:124`). Exactly one match is required. Then it asks for the `items`
-  (`union_variant`) *inside* that container (`:131`). `place` (`:137`) picks the line after
-  the last item, indented like it.
+  with `regex-tdfa` (`lineAt`, `Resolve.hs:111`), with no ast-grep call.
+- `end of type Page` is a **named target**, `["type", "Page"]`. `named` (`Resolve.hs:124`)
+  hands it to `itemsOfTarget` (`:153`), a top-level function shared with two other callers:
+  a fragment exemplar's `items_of` (`Catalog.loadGenerator`, above) and an `ast` query's
+  `items_of` (`Anchor.Items.astQueries`). `itemsOfTarget` matches the target against the Elm
+  adapter's targets (`packs/elm/languages/elm.toml`); the shape `type NAME` fits and binds
+  `NAME = Page`. It renders that target's `container` rule (`{ kind = "type_declaration",
+  regex = "^type Page\b" }`) and asks the **Syntax port** for matches (`querySyntax`,
+  `:163`). Exactly one match is required. Then it asks for the `items` (`union_variant`)
+  *inside* that container (`:172`). Back in `resolveOne`'s `where`, `place` (`:129`) picks
+  the line after the last item, indented like it — and sets `locSpacing`: if the container's
+  existing items are separated by a blank line, `place` copies that spacing onto the new one
+  (`BlankAfter` for `start of`, `BlankBefore` for `end of`; spec §5.2).
 
 Each `querySyntax` call against the real adapter is one `ast-grep` process fed the file on
 stdin (`src/Olifant/Language/AstGrep.hs:34`). The Elm pack vendors its tree-sitter grammar,
 so the first ever call compiles `packs/elm/languages/grammar/elm/parser.c` with `cc` into
 `~/.cache/olifant/grammars/`. The key is a hash of `parser.c` (`prepare`, `:49`).
 
-`presentAt` (`Resolve.hs:180`) makes re-runs idempotent: if the snippet's tokens already sit
+`presentAt` (`Resolve.hs:214`) makes re-runs idempotent: if the snippet's tokens already sit
 in the target region, or just next to the insertion line, the insert is `Skipped
-AlreadyPresent`. `insertLines` (`:166`) does the actual splice, keeping the file's line
-endings.
+AlreadyPresent`. `insertLines` (`:194`) does the actual splice, keeping the file's line
+endings and, per `locSpacing`, a blank line around the new text if one isn't already there.
 
 **Phase 2: `complete` edits, the check loop** (`src/Olifant/Generation/Complete.hs:35`). For
 each language that has `complete` edits, `gather` (`:51`) collects every file the check
@@ -615,7 +660,7 @@ re-renders every owned region against the files as the plan leaves them. The Elm
 declares no regions, so `toolRegions` is empty and the phase returns immediately (`:31`). In
 this repository the phase is where `olifant.cabal`'s module lists are refreshed.
 
-#### 4d. The re-run second pass (`Generation.hs:76`)
+#### 4d. The re-run second pass (`Generation.hs:79`)
 
 Run the same command a second time. The page's `create` now finds `src/Page/Settings.elm`
 on disk, but with different content from its template, because `elm/msg` changed the file
@@ -640,10 +685,10 @@ That's 9 edits, not 11: in the second pass the compiler finds nothing missing in
 so the two `Main` branches never appear. A re-run costs two full passes, including the
 compiler.
 
-#### 4e. Writes (`Generation.hs:89`)
+#### 4e. Writes (`Generation.hs:92`)
 
 ```haskell
--- src/Olifant/Generation.hs:89
+-- src/Olifant/Generation.hs:92
       let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts warnings writes
       when (mode == Apply && not (hasConflicts plan)) $
@@ -676,13 +721,13 @@ files would already be written.
 one printed is computed.
 
 - **`planHuman`** (`src/Olifant/Cli/Output.hs:155`) prints the header, one line per edit
-  (`editLine`, `:171`: `+`, `~`, `=`, `!`), then the conflicts, the todos and the warnings.
+  (`editLine`, `:170`: `+`, `~`, `=`, `!`), then the conflicts, the todos and the warnings.
   In `--plan` mode it also prints the full text of each edit. The `[step]` tag appears only
   when edits came from more than one step path (`multiStep`, `:168`).
 - **`planJson`** (`:123`) produces the `plan_version: 2` object. Applied runs leave out file
   contents (`:146`).
 
-Errors that stop generation before there is a plan (`GenerationError`, `Generation.hs:46`)
+Errors that stop generation before there is a plan (`GenerationError`, `Generation.hs:48`)
 go through `generationFailure` (`Cli.hs:179`), which picks the exit code: 4 for inputs, 3
 for an unknown generator, 1 for a broken one.
 
@@ -696,28 +741,31 @@ them is urgent.
   `:106`). `Language/Check.hs:55` dispatches on the report format `"elm-json"`. A second
   compiled language will need these behind the adapter.
 - **`Language.Process` is shared plumbing filed under Language**, so Workspace and Query
-  depend on the Language unit (`Workspace.hs:22`, `Query.hs:32`).
+  depend on the Language unit (`Workspace.hs:22`, `Query.hs:36`). `Query` also reaches into
+  `Language.Rule` directly (`:38`), for the same reason.
 - **Three lists of directories to ignore**: `pruned` (`Workspace.hs:150`), `ignored`
-  (`Generation/Complete.hs:47`) and `ignoredDirs` (`Query.hs:65`). Only the last one
+  (`Generation/Complete.hs:47`) and `ignoredDirs` (`Query.hs:95`). Only the last one
   includes `.olifant`.
-- **The `Tools` for a run are built in two places** in `Cli.hs` (`:92` for `sync`, `:127`
-  for `gen`) with the same expression.
-- **A duplicated comment.** The re-run explanation at `Generation.hs:78-81` is repeated at
-  `:95-98`, in the `where` block above `locate`, where it describes nothing.
+- **A duplicated comment.** The re-run explanation at `Generation.hs:81-84` is repeated at
+  `:98-101`, in the `where` block above `bindQueries`, where it describes nothing.
 - **Stale comments.** `Template/Render.hs:18` says `{{ expr }}`, but the syntax is `{= … =}`.
-  `Anchor/Resolve.hs:189` says "Moved from Generation.Marker", a module that no longer
+  `Anchor/Resolve.hs:223` says "Moved from Generation.Marker", a module that no longer
   exists.
 - **The re-run pass leaks a label into JSON.** A compiler-found branch stores
   `"compiler: missing X"` in `editAnchor` (`Generation/Complete.hs:147`). JSON prints
   `anchor_used` only when `editSite` is empty (`Cli/Output.hs:142`). The second pass clears
-  `editSite` when it rewrites an edit to `Skipped UnchangedContent` (`Generation.hs:87`), so
+  `editSite` when it rewrites an edit to `Skipped UnchangedContent` (`Generation.hs:90`), so
   a re-run's JSON shows `"anchor_used": "compiler: missing ToggleDarkMode"`, which isn't an
   anchor.
-- **`openCatalogAt` can't fail** (`Catalog.hs:142` always returns `Right`), so the `Either`
-  in `openPackCatalog`'s type is never `Left`. Its helper `languagesIn _ r` (`:144`) ignores
+- **`openCatalogAt` can't fail** (`Catalog.hs:144` always returns `Right`), so the `Either`
+  in `openPackCatalog`'s type is never `Left`. Its helper `languagesIn _ r` (`:146`) ignores
   its first argument.
-- **Pack tests can't run command queries.** `runCase` resolves choices with `noCommands`
-  and uses `basicTools`, which also sets `noCommands` (`GeneratorTesting.hs:67`, `:70`).
+- **Pack tests can run AST queries but not command queries.** `runCase` builds `queries =
+  noQueries {queryAst = astQueries syntax (catalogLanguages cat)}` (`GeneratorTesting.hs:68`)
+  and passes it to both `withChoices` and `toolQueries` (`:69`, `:72`), so `items_of`/`ast`
+  queries run for real against the fixture. `queryCommand` is left as `noQueries`'s no-op, so
+  a pack's `choices_from` or `[query.NAME]` that runs a `command` is still untestable in
+  `olifant test`.
 - **A partial function.** `branchFor` uses `head'`, which calls `error` on an empty list
   (`Generation/Complete.hs:119`). The comment says the list is never empty, and today that's
   true by construction (`:69`).
