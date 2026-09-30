@@ -91,8 +91,8 @@ showJson subs e =
   where
     d = entryDefinition e
     editJson = \case
-      Create p _ _ -> object ["kind" .= ("create" :: Text), "path" .= templateSource p]
-      Insert p anchors _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
+      Create p _ _ _ -> object ["kind" .= ("create" :: Text), "path" .= templateSource p]
+      Insert p anchors _ _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
       Complete c w _ -> object ["kind" .= ("complete" :: Text), "constructor" .= templateSource c, "where" .= fmap templateSource w]
 
 showHuman :: [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
@@ -111,8 +111,8 @@ showHuman subs e =
   where
     d = entryDefinition e
     editLine = \case
-      Create p _ _ -> "  create " <> templateSource p
-      Insert p anchors _ -> "  insert " <> templateSource p <> " at " <> T.intercalate " | " (map anchorText anchors)
+      Create p _ _ _ -> "  create " <> templateSource p
+      Insert p anchors _ _ -> "  insert " <> templateSource p <> " at " <> T.intercalate " | " (map anchorText anchors)
       Complete c w _ -> "  complete " <> templateSource c <> maybe "" (\x -> " in " <> templateSource x) w
     useLines (u, sub) =
       ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
@@ -189,6 +189,7 @@ skipReason = \case
   AlreadyExists -> "already exists"
   AlreadyPresent -> "already present"
   UnchangedContent -> "unchanged"
+  UnlessMatched p -> "unless: " <> T.pack p <> " exists"
 
 conflictCode :: Conflict -> Text
 conflictCode = \case

@@ -29,6 +29,7 @@ table = "{= name|plural|snake =}"
 [[edits]]
 create = "db/migrate/{= now|timestamp =}_create_{= table =}.rb"
 template = "migration.rb.dt"
+unless = { exists = "db/migrate/*_create_{= table =}.rb" }   # re-runs must not add a second migration
 
 [[edits]]
 create = "app/models/{= name|snake =}.rb"

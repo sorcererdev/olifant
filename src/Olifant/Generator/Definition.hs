@@ -58,8 +58,9 @@ data Requires = Requires {requiresExists :: [Template], requiresHint :: Maybe Te
   deriving stock (Show)
 
 data EditWith src
-  = Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists}
-  | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src}
+  = -- | 'editUnless': a glob; the edit is skipped when it matches a file (spec §5).
+    Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists, editUnless :: Maybe Template}
+  | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src, editUnless :: Maybe Template}
   | -- | Add a branch for 'editConstructor' to every case the compiler reports (spec §5.6).
     Complete {editConstructor :: Template, editWhere :: Maybe Template, editSource :: src}
   deriving stock (Show, Functor, Foldable, Traversable)

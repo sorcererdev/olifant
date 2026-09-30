@@ -117,8 +117,8 @@ parseSpec = describe "parseGenerator" $ do
     either id (const "") result `shouldSatisfy` T.isInfixOf "Model"
   where
     describeEdit = \case
-      Create p (TemplateFile f) _ -> "create " <> templateSource p <> " from " <> T.pack f
-      Insert p anchors _ -> "insert " <> templateSource p <> " at " <> T.intercalate " | " [case a of AtPhrase t -> templateSource t; AtRule _ _ -> "<ast rule>" | a <- anchors]
+      Create p (TemplateFile f) _ _ -> "create " <> templateSource p <> " from " <> T.pack f
+      Insert p anchors _ _ -> "insert " <> templateSource p <> " at " <> T.intercalate " | " [case a of AtPhrase t -> templateSource t; AtRule _ _ -> "<ast rule>" | a <- anchors]
       Complete c _ _ -> "complete " <> templateSource c
       _ -> "unexpected"
 

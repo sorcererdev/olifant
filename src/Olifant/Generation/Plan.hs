@@ -53,7 +53,7 @@ planned st n p a = PlannedEdit st n p a Nothing Nothing
 data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | Skipped SkipReason | Conflicted
   deriving stock (Eq, Show)
 
-data SkipReason = AlreadyExists | AlreadyPresent | UnchangedContent
+data SkipReason = AlreadyExists | AlreadyPresent | UnchangedContent | UnlessMatched FilePath
   deriving stock (Eq, Show)
 
 data Conflict

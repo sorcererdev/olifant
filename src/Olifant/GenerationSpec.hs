@@ -67,6 +67,17 @@ spec = do
 
 createSpec :: Spec
 createSpec = describe "generate (create edits)" $ do
+  it "skips a create when `unless` finds a match, on disk or created earlier in the plan" $ do
+    let migration =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[[edits]]", "create = \"db/migrate/{= now|timestamp =}_create_{= name|plural|snake =}.rb\""
+            , "text = \"class Create\\n\"", "unless = { exists = \"db/migrate/*_create_{= name|plural|snake =}.rb\" }" ]
+    (_, once) <- run [] migration [("name", "post")] Apply
+    M.keys once `shouldBe` ["db/migrate/20260927000000_create_posts.rb"]
+    (ws, snap) <- memoryWorkspace (M.toList once)
+    Right plan <- generate ws noResolve noTools [Step migration (M.fromList [("name", "post")])] (UTCTime (fromGregorian 2026 9 28) 0) Apply
+    map editAction (planEdits plan) `shouldBe` [Skipped (UnlessMatched "db/migrate/20260927000000_create_posts.rb")]
+    (M.keys <$> snap) `shouldReturn` ["db/migrate/20260927000000_create_posts.rb"]
   it "re-running a create that later edits changed is a no-op (fix pass)" $ do
     let grow =
           generatorFrom . (header <>) . T.unlines $

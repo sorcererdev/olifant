@@ -88,20 +88,22 @@ requiresFrom t = do
 editFrom :: Table -> Either Text (EditWith SourceRef)
 editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
   ["create"] -> do
-    onlyKeys ["create", "template", "exemplar", "bind", "text", "on_exists"] t
+    onlyKeys ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"] t
     target <- required "create" (text >=> tmpl) t
     src <- sourceFrom True t
     onExists <- fromMaybe ErrorIfExists <$> optional "on_exists" (text >=> onExistsFrom) t
-    pure (Create target src onExists)
+    unlessG <- unlessFrom t
+    pure (Create target src onExists unlessG)
   ["insert"] -> do
-    onlyKeys ["insert", "at", "anchor", "template", "text"] t
+    onlyKeys ["insert", "at", "anchor", "template", "text", "unless"] t
     target <- required "insert" (text >=> tmpl) t
     anchors <- case (M.lookup "at" t, M.lookup "anchor" t) of
       (Just v, Nothing) -> inKey "at" (atFrom v)
       (Nothing, Just v) -> inKey "anchor" (table v >>= markerAlias)
       _ -> Left "an insert needs exactly one of `at` (preferred) or `anchor`"
     src <- sourceFrom False t
-    pure (Insert target anchors src)
+    unlessG <- unlessFrom t
+    pure (Insert target anchors src unlessG)
   ["complete"] -> do
     onlyKeys ["complete", "where", "template", "text"] t
     ctor <- required "complete" (text >=> tmpl) t
@@ -180,3 +182,7 @@ useFrom t = do
   pure (UseStep ref forEach with)
   where
     withFrom tbl = traverse (\(k, v) -> inKey k ((k,) <$> (text v >>= tmpl))) (M.toList tbl)
+
+-- | `unless = { exists = "<glob>" }` (spec §5).
+unlessFrom :: Table -> Either Text (Maybe Template)
+unlessFrom = optional "unless" (table >=> \u -> onlyKeys ["exists"] u >> required "exists" (text >=> tmpl) u)
