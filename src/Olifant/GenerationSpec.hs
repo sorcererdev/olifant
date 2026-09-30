@@ -505,7 +505,7 @@ completeSpec = describe "generate (complete edits)" $ do
           (ws, snap) <- memoryWorkspace files
           Right plan <- generate ws noResolve (Tools noSyntax honest [elmLang]) [Step pageGen (M.fromList [("name", "reset")])] now Apply
           (plan,) <$> snap
-    (_, once) <- go []
+    (_, once) <- runTwice []
     M.lookup "src/A.elm" once `shouldBe` Just "update msg =\n    case msg of\n        NoOp ->\n            1\n\n        Reset ->\n            2\n"
     (again, twice) <- runTwice (M.toList once)
     planConflicts again `shouldBe` []
