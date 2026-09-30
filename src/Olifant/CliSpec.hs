@@ -116,6 +116,13 @@ runCliSpec = describe "runCli" $ do
     let synced = [(p, t) | (p, t) <- regionProject stale, p /= "/proj/x.cabal"] ++ [("/proj/x.cabal", files2 M.! "/proj/x.cabal")]
     (code3, _, _, _) <- runWith "" synced True ["sync", "--check"]
     code3 `shouldBe` ExitSuccess
+  it "sync --check reads as a lint result for people" $ do
+    let stale = "  exposed-modules:\n    -- olifant:region mods\n    Olifant.Handwritten\n    -- olifant:end mods\n"
+    (_, out, _, _) <- runWith "" (regionProject stale) True ["sync", "--check"]
+    out `shouldSatisfy` ("1 region out of date in x.cabal: mods (+1 −1); nothing written, run `olifant sync`" `T.isInfixOf`)
+    (_, _, _, files) <- runWith "" (regionProject stale) True ["sync"]
+    (_, clean, _, _) <- runWith "" ([(p, t) | (p, t) <- regionProject stale, p /= "/proj/x.cabal"] ++ [("/proj/x.cabal", files M.! "/proj/x.cabal")]) True ["sync", "--check"]
+    clean `shouldSatisfy` ("regions up to date" `T.isInfixOf`)
   it "sync --check reports a region that is not set up" $ do
     (code, out, _, _) <- runWith "" (regionProject "  exposed-modules:\n") False ["sync", "--check"]
     code `shouldBe` ExitFailure 5

@@ -200,7 +200,7 @@ syncRegions rt fmt ws tools regionMode checkOnly now = do
       plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes
       applied = not checkOnly && not (hasConflicts plan)
   when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
-  emit rt fmt (planJson applied plan) (planHuman applied plan)
+  emit rt fmt (planJson applied plan) (if checkOnly then syncCheckHuman plan else planHuman applied plan)
   pure (if hasConflicts plan || (checkOnly && not (null edits)) then ExitFailure 5 else ExitSuccess)
 
 -- | `sync --init NAME`: put a region's empty fences at its `init_at`, then fill it.

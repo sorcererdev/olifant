@@ -10,6 +10,7 @@ module Olifant.Cli.Output
   , whereJson
   , whereHuman
   , planHuman
+  , syncCheckHuman
   , errorJson
   , errorHuman
   , inputProblemFields
@@ -260,3 +261,17 @@ whereHuman :: FilePath -> Located -> Text -> Text
 whereHuman file loc content =
   let (before, after) = whereContext loc content
    in T.unlines ([T.pack file <> ":" <> T.pack (show (locLine loc + 1))] ++ map ("    " <>) before ++ ["  ▶ " <> locIndent loc <> "(inserted here)"] ++ map ("    " <>) after)
+
+-- | `olifant sync --check` for people: a lint result, not a plan.
+syncCheckHuman :: Plan -> Text
+syncCheckHuman plan
+  | null drifted && null (planConflicts plan) = "regions up to date\n"
+  | otherwise =
+      T.unlines $
+        [ count (length rs) <> " out of date in " <> T.pack f <> ": " <> T.intercalate ", " [r <> " (+" <> T.pack (show a) <> " −" <> T.pack (show d) <> ")" | (r, a, d) <- rs] <> "; nothing written, run `olifant sync`"
+        | (f, rs) <- M.toList (M.fromListWith (flip (++)) [(p, [x]) | (p, x) <- drifted])
+        ]
+          ++ map (("  ! " <>) . describeConflict) (planConflicts plan)
+  where
+    drifted = [(editPath e, (r, a, d)) | e <- planEdits plan, WillRefresh r a d _ <- [editAction e]]
+    count n = T.pack (show n) <> (if n == 1 then " region" else " regions")
