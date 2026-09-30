@@ -2,7 +2,9 @@
 -- use cases, and renders JSON or human output with the spec's exit codes.
 module Olifant.Cli (Runtime (..), runCli) where
 
-import Data.Aeson (Value, eitherDecodeStrict)
+import Control.Applicative ((<|>))
+import Control.Monad (when)
+import Data.Aeson (Value, eitherDecodeStrict, object)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
 import Data.Map.Strict qualified as M
@@ -12,12 +14,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
-import Olifant.Anchor (RenderedAnchor (..), describeMisses, parsePhrase, resolveLayers)
+import Olifant.Anchor (Located (..), RenderedAnchor (..), describeMisses, insertLines, parsePhrase, resolveLayers)
+import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyRegion, fenceLines)
 import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generation
-import Olifant.Generator (EnvError (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (processCommands)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Template (describeTemplateError)
@@ -79,6 +82,16 @@ runCommand rt fmt cat = \case
           resolveLayers (rtSyntax rt) (languageFor (catalogLanguages cat) file) [PhraseAnchor phrase] content >>= \case
             Left misses -> failWith rt fmt 5 "anchor_unresolved" (describeMisses misses) (Just "`olifant anchors <language>` lists the targets") []
             Right loc -> emit rt fmt (whereJson file phrase loc content) (whereHuman file loc content) >> pure ExitSuccess
+  SyncCmd mode -> do
+    now <- rtNow rt
+    let ws = within (rtProjectDir rt) (rtRoot rt)
+        tools = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolCommands = processCommands (rtProjectDir rt)}
+    case mode of
+      SyncApply -> syncRegions rt fmt ws tools SkipUnset False now
+      SyncCheck -> syncRegions rt fmt ws tools ReportUnset True now
+      SyncInit name -> case find ((== name) . regionName) (catalogRegions cat) of
+        Nothing -> failWith rt fmt 3 "region_not_found" ("no region named `" <> name <> "`") (Just "regions are declared in regions.toml") ["available" .= map regionName (catalogRegions cat)]
+        Just def -> initRegion rt fmt ws tools def now
   GenCmd g -> do
     let usage = usageIn rt fmt
     specs <- case genStepsFile g of
@@ -177,3 +190,39 @@ resolveChoicesFor rt gen
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
       withChoices (processCommands (rtProjectDir rt)) paths gen
+
+-- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
+-- fail (exit 5) if any region drifted, is broken, or is not set up.
+syncRegions :: Runtime -> Format -> Workspace IO -> Tools IO -> RegionMode -> Bool -> UTCTime -> IO ExitCode
+syncRegions rt fmt ws tools regionMode checkOnly now = do
+  (edits, conflicts, current) <- refreshRegions regionMode tools ws 1 M.empty
+  let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current]
+      plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes
+      applied = not checkOnly && not (hasConflicts plan)
+  when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
+  emit rt fmt (planJson applied plan) (planHuman applied plan)
+  pure (if hasConflicts plan || (checkOnly && not (null edits)) then ExitFailure 5 else ExitSuccess)
+
+-- | `sync --init NAME`: put a region's empty fences at its `init_at`, then fill it.
+initRegion :: Runtime -> Format -> Workspace IO -> Tools IO -> RegionDef -> UTCTime -> IO ExitCode
+initRegion rt fmt ws tools def now =
+  readText ws file >>= \case
+    Nothing -> failWith rt fmt 3 "file_not_found" ("cannot read " <> T.pack file) Nothing []
+    Just content -> case regionComment def <|> (langComment <$> lang) of
+      Nothing -> failWith rt fmt 1 "region_broken" ("no comment syntax for " <> T.pack file <> " (add `comment` to the region)") Nothing []
+      Just c -> case applyRegion def c [] content of
+        Right _ -> emit rt fmt (object ["region" .= regionName def, "status" .= ("already set up" :: Text)]) ("region " <> regionName def <> " is already set up in " <> T.pack file <> "\n") >> pure ExitSuccess
+        Left (FenceBroken why) -> failWith rt fmt 5 "region_broken" ("region `" <> regionName def <> "` in " <> T.pack file <> " is broken: " <> why) Nothing []
+        Left FenceMissing -> case regionInitAt def of
+          Nothing -> failWith rt fmt 2 "usage" ("region `" <> regionName def <> "` has no `init_at`, so Olifant cannot tell where its fences go") Nothing []
+          Just phrase ->
+            resolveLayers (toolSyntax tools) lang [PhraseAnchor phrase] content >>= \case
+              Left misses -> failWith rt fmt 5 "anchor_unresolved" (describeMisses misses) Nothing []
+              Right loc -> do
+                let (open, close) = fenceLines def c
+                    placed = maybe loc (\i -> loc {locIndent = i}) (regionInitIndent def)
+                writeText ws file (snd (insertLines placed (open <> "\n" <> close) content))
+                syncRegions rt fmt ws tools {toolRegions = [def]} SkipUnset False now
+  where
+    file = regionFile def
+    lang = languageFor (toolLanguages tools) file

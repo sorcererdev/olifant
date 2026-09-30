@@ -4,6 +4,7 @@ module Olifant.Cli.Options
   , Command (..)
   , GenOptions (..)
   , StepSpec (..)
+  , SyncMode (..)
   , parseOptions
   ) where
 
@@ -29,7 +30,11 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text
+data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode
+  deriving stock (Eq, Show)
+
+-- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
+data SyncMode = SyncApply | SyncCheck | SyncInit Text
   deriving stock (Eq, Show)
 
 -- | One step of a `gen` run: a generator and exactly its inputs (spec §7).
@@ -87,6 +92,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "show" (ShowCmd <$> strArgument (metavar "GENERATOR")) "Describe a generator's inputs and edits"
             <> cmd "anchors" (AnchorsCmd <$> strArgument (metavar "LANGUAGE")) "List the `at` targets a language supports"
             <> cmd "where" (WhereCmd <$> strArgument (metavar "FILE") <*> strArgument (metavar "PHRASE")) "Show where an `at` phrase would put text in a file"
+            <> cmd "sync" (SyncCmd <$> syncP) "Refresh owned regions (--check: report drift and write nothing; --init REGION: create a region's fences)"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
     cmd name p desc = command name (info (Options <$> formatP <*> p) (progDesc desc))
@@ -99,6 +105,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> switch (long "plan" <> help "Show what would change without writing anything")
         <*> optional (option (eitherReader timeP) (long "now" <> metavar "ISO8601" <> help "Pin the current time"))
         <*> optional (strOption (long "steps" <> metavar "FILE|-" <> help "Read the steps as JSON: [{\"gen\": ..., \"set\": {...}}]"))
+    syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
     timeP s = maybe (Left "expected an ISO 8601 time like 2026-09-27T15:30:00Z") Right (iso8601ParseM s)
 

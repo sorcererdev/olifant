@@ -33,6 +33,8 @@ data RegionDefWith src = RegionDef
   , regionWholeFile :: Bool
   , regionComment :: Maybe Text
   , regionInitAt :: Maybe Text
+  , -- | indentation for fences `sync --init` creates (default: the anchor's)
+    regionInitIndent :: Maybe Text
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -49,7 +51,7 @@ parseRegions src = do
   traverse (\(name, v) -> inKey ("regions." <> name) (table v >>= region name)) (M.toList regions)
   where
     region name t = do
-      onlyKeys ["file", "query", "item", "template", "whole_file", "comment", "init_at"] t
+      onlyKeys ["file", "query", "item", "template", "whole_file", "comment", "init_at", "init_indent"] t
       file <- T.unpack <$> required "file" text t
       q <- required "query" queryFromTree t
       body <- case (M.lookup "item" t, M.lookup "template" t) of
@@ -59,7 +61,8 @@ parseRegions src = do
       whole <- fromMaybe False <$> optional "whole_file" bool t
       comment <- optional "comment" text t
       initAt <- optional "init_at" text t
-      pure (RegionDef name file q body whole comment initAt)
+      initIndent <- optional "init_indent" text t
+      pure (RegionDef name file q body whole comment initAt initIndent)
 
 renderRegion :: RegionDef -> [Record] -> Either TemplateError [Text]
 renderRegion def records = case regionBody def of

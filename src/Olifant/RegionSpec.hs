@@ -10,7 +10,7 @@ import Olifant.Template (Value (..), parseTemplate)
 import Test.Hspec
 
 cabalRegion :: RegionDef
-cabalRegion = RegionDef "library-modules" "olifant.cabal" (GlobQuery "src/**/*.hs" []) (ItemTemplate t) False Nothing Nothing
+cabalRegion = RegionDef "library-modules" "olifant.cabal" (GlobQuery "src/**/*.hs" []) (ItemTemplate t) False Nothing Nothing Nothing
   where Right t = parseTemplate "{= dotted =}"
 
 records :: [M.Map Text Value]

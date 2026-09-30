@@ -528,7 +528,7 @@ completeSpec = describe "generate (complete edits)" $ do
 regionSpec :: Spec
 regionSpec = describe "generate (owned regions)" $ do
   let Right item = parseTemplate "{= dotted =}"
-      mods = RegionDef "mods" "x.cabal" (GlobQuery "src/**/*.hs" []) (ItemTemplate item) False (Just "--") Nothing
+      mods = RegionDef "mods" "x.cabal" (GlobQuery "src/**/*.hs" []) (ItemTemplate item) False (Just "--") Nothing Nothing
       tools = (noTools :: Tools IO) {toolRegions = [mods]}
       cabal = "  exposed-modules:\n    -- olifant:region mods\n    -- olifant:end mods\n"
       unit = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "create = \"src/Olifant/{= name|pascal =}.hs\"", "text = \"module X\\n\""]

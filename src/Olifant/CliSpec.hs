@@ -100,6 +100,26 @@ planOutputSpec = describe "planHuman" $ do
 
 runCliSpec :: Spec
 runCliSpec = describe "runCli" $ do
+  it "sync --init creates the fences, and fills them" $ do
+    (code, _, _, files) <- runWith "" (regionProject "  exposed-modules:\n") True ["sync", "--init", "mods"]
+    code `shouldBe` ExitSuccess
+    M.lookup "/proj/x.cabal" files `shouldSatisfy` maybe False ("  exposed-modules:\n    -- olifant:region mods" `T.isInfixOf`)
+    M.lookup "/proj/x.cabal" files `shouldSatisfy` maybe False ("    Olifant.A\n    -- olifant:end mods" `T.isInfixOf`)
+  it "sync --check reports drift without writing, and passes once synced (Review Focus 2)" $ do
+    let stale = "  exposed-modules:\n    -- olifant:region mods\n    Olifant.Handwritten\n    -- olifant:end mods\n"
+    (code, out, _, files) <- runWith "" (regionProject stale) False ["sync", "--check"]
+    code `shouldBe` ExitFailure 5
+    out `shouldSatisfy` ("mods" `T.isInfixOf`)
+    M.lookup "/proj/x.cabal" files `shouldBe` Just stale
+    (code2, _, _, files2) <- runWith "" (regionProject stale) True ["sync"]
+    code2 `shouldBe` ExitSuccess
+    let synced = [(p, t) | (p, t) <- regionProject stale, p /= "/proj/x.cabal"] ++ [("/proj/x.cabal", files2 M.! "/proj/x.cabal")]
+    (code3, _, _, _) <- runWith "" synced True ["sync", "--check"]
+    code3 `shouldBe` ExitSuccess
+  it "sync --check reports a region that is not set up" $ do
+    (code, out, _, _) <- runWith "" (regionProject "  exposed-modules:\n") False ["sync", "--check"]
+    code `shouldBe` ExitFailure 5
+    out `shouldSatisfy` ("sync --init mods" `T.isInfixOf`)
   it "shows choices_from values found in the project" $ do
     let svc = ("/proj/.olifant/generators/svc/generator.toml", "description = \"d\"\nlanguage = \"x\"\n[inputs.service]\ntype = \"enum\"\nchoices_from = { glob = \"*/*-service\", value = \"{= dir =}\" }\n")
     (code, out, _, _) <- runWith "" (svc : ("/proj/billing/billing-service/Cargo.toml", "") : project) True ["show", "svc"]
@@ -288,3 +308,16 @@ elmPack =
         ]
     )
   ]
+
+-- | A project with one fenced region over src/**/*.hs in x.cabal.
+regionProject :: Text -> [(FilePath, Text)]
+regionProject cabalText =
+  [ ( "/proj/.olifant/regions.toml"
+    , T.unlines
+        [ "[regions.mods]", "file = \"x.cabal\"", "comment = \"--\"", "query = { glob = \"src/**/*.hs\" }", "item = \"{= dotted =}\""
+        , "init_at = \"after first line matching ^  exposed-modules:\"", "init_indent = \"    \"" ]
+    )
+  , ("/proj/x.cabal", cabalText)
+  , ("/proj/src/Olifant/A.hs", "module Olifant.A where\n")
+  ]
+    ++ project
