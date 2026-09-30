@@ -50,7 +50,8 @@ planned :: [Text] -> Int -> FilePath -> EditAction -> PlannedEdit
 planned st n p a = PlannedEdit st n p a Nothing Nothing
 
 -- | 'Conflicted': this edit produced a conflict (see 'planConflicts').
-data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | Skipped SkipReason | Conflicted
+-- | 'WillRefresh': an owned region (name, lines added, lines removed, new file content).
+data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | WillRefresh Text Int Int Text | Skipped SkipReason | Conflicted
   deriving stock (Eq, Show)
 
 data SkipReason = AlreadyExists | AlreadyPresent | UnchangedContent | UnlessMatched FilePath
@@ -62,6 +63,8 @@ data Conflict
   | AnchorUnresolved Int FilePath [Miss]
   | -- | step, why, whether a tool is missing
     CompleteFailed [Text] Text Bool
+  | -- | region, file, why
+    RegionBroken Text FilePath Text
   | UnsafePath Int FilePath
   | RequirementUnmet [Text] [FilePath] (Maybe Text)
   | -- | edit, path, why it cannot be written (a directory, non-text file, or a file where a directory must be)
@@ -77,6 +80,7 @@ describeConflict = \case
   InsertTargetMissing n p -> edit n <> "cannot insert into " <> T.pack p <> ": it does not exist"
   AnchorUnresolved n p misses -> edit n <> "cannot place text in " <> T.pack p <> ": " <> describeMisses misses
   CompleteFailed step why _ -> T.intercalate " › " step <> ": cannot complete cases: " <> why
+  RegionBroken _ _ why -> why
   UnsafePath n p -> edit n <> "path " <> T.pack p <> " is outside the project"
   TargetUnusable n p why -> edit n <> "cannot write " <> T.pack p <> ": " <> why
   RequirementUnmet step ps hint -> T.intercalate " › " step <> ": required files missing: " <> T.intercalate ", " (map T.pack ps) <> maybe "" (". " <>) hint

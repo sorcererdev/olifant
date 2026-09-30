@@ -107,7 +107,7 @@ runCommand rt fmt cat = \case
                     Right gen -> first ResolveInvalid <$> resolveChoicesFor rt gen
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices (Tools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices ((basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolCommands = processCommands (rtProjectDir rt)}) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan -> do
                 let applied = mode == Apply && not (hasConflicts plan)

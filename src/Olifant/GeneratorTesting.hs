@@ -67,7 +67,7 @@ runCase root syntax checker bless pc = do
                 withChoices noCommands fixturePaths gen0 >>= \case
                  Left why -> pure (CaseFailed [why])
                  Right gen -> do
-                   let tools = Tools syntax checker (catalogLanguages cat)
+                   let tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat}
                    firstRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
                    secondRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of

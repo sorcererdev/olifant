@@ -147,6 +147,7 @@ planJson applied plan =
       WillCreate c -> ["status" .= ("create" :: Text)] ++ content c
       WillOverwrite c -> ["status" .= ("overwrite" :: Text)] ++ content c
       WillInsert l s -> ["status" .= ("insert" :: Text), "line" .= l] ++ content s
+      WillRefresh r a d c -> ["status" .= ("region" :: Text), "region" .= r, "added" .= a, "removed" .= d] ++ content c
       Skipped r -> ["status" .= ("skipped" :: Text), "reason" .= skipReason r]
       Conflicted -> ["status" .= ("conflict" :: Text)]
 
@@ -170,6 +171,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillCreate c -> "  + " <> T.pack p <> " (" <> lineCount c <> ")"
       WillOverwrite c -> "  ~ " <> T.pack p <> " (overwritten, " <> lineCount c <> ")"
       WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> foundBy site <> ")"
+      WillRefresh r a d _ -> "  ~ " <> T.pack p <> " (region " <> r <> ": +" <> T.pack (show a) <> " −" <> T.pack (show d) <> ")"
       Skipped r -> "  = " <> T.pack p <> " (skipped: " <> skipReason r <> ")"
       Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
     foundBy = maybe "" (\x -> ", compiler: " <> siteFunction x <> (if siteTodo x then ", todo" else ""))
@@ -181,6 +183,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillCreate c -> Just c
       WillOverwrite c -> Just c
       WillInsert _ s -> Just s
+      WillRefresh _ _ _ c -> Just c
       Skipped _ -> Nothing
       Conflicted -> Nothing
 
@@ -197,6 +200,7 @@ conflictCode = \case
   InsertTargetMissing {} -> "insert_target_missing"
   AnchorUnresolved {} -> "anchor_unresolved"
   CompleteFailed {} -> "complete_failed"
+  RegionBroken {} -> "region_broken"
   UnsafePath {} -> "unsafe_path"
   RequirementUnmet {} -> "requires_unmet"
   TargetUnusable {} -> "target_unusable"

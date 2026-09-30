@@ -13,7 +13,9 @@ import Olifant.Generation
 import Olifant.Generator
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Olifant.Language
-import Olifant.Template (Template)
+import Olifant.Query (Query (..))
+import Olifant.Region
+import Olifant.Template (Template, parseTemplate)
 import Data.ByteString qualified as BS
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.FilePath ((</>))
@@ -62,6 +64,7 @@ spec = do
   insertSpec
   atSpec
   completeSpec
+  regionSpec
   unusableSpec
   composeSpec
 
@@ -361,7 +364,7 @@ atSpec = describe "generate (at phrases)" $ do
             ]
         gen' = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"Main.elm\"", "at = [\"end of type Page\", \"before marker -- olifant:pages\"]", "text = \"| {= name|pascal =}\""]
     (ws, snapshot) <- memoryWorkspace [("Main.elm", "type Page\n    = A\n    -- olifant:pages\n")]
-    Right plan <- generate ws noResolve (Tools noSyntax noChecker [elm]) [Step gen' (M.fromList [("name", "b")])] now Apply
+    Right plan <- generate ws noResolve (basicTools noSyntax noChecker [elm]) [Step gen' (M.fromList [("name", "b")])] now Apply
     map editAnchor (planEdits plan) `shouldBe` [Just "before marker -- olifant:pages"]
     (M.lookup "Main.elm" <$> snapshot) `shouldReturn` Just "type Page\n    = A\n    | B\n    -- olifant:pages\n"
   it "re-running before/after inserts is a no-op (review)" $ do
@@ -407,7 +410,7 @@ completeSpec = describe "generate (complete edits)" $ do
       go files rounds = do
         ref <- newIORef rounds
         (ws, snapshot) <- memoryWorkspace files
-        r <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+        r <- generate ws noResolve (basicTools noSyntax (scriptedChecker ref) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
         (r,) <$> snapshot
   it "adds a branch after the case the compiler reports" $ do
     (Right plan, files) <- go [("src/A.elm", page)] [[MissingPatterns "src/A.elm" (3, 5) ["Reset"]]]
@@ -419,7 +422,7 @@ completeSpec = describe "generate (complete edits)" $ do
           , "[[edits]]", "complete = \"{= name|pascal =}\"", "where = \"case in view\"", "text = \"{= pattern =} -> 1\"" ]
     ref <- newIORef [[MissingPatterns "src/A.elm" (3, 5) ["Reset"]]]
     (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
-    Right plan <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen' (M.fromList [("name", "reset")])] now Apply
+    Right plan <- generate ws noResolve (basicTools noSyntax (scriptedChecker ref) [elmLang]) [Step gen' (M.fromList [("name", "reset")])] now Apply
     fmap (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
     (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just (page <> "\n        Reset ->\n            Debug.todo \"olifant: update Reset\"\n")
   it "ignores diagnostics about constructors it did not introduce" $ do
@@ -431,7 +434,7 @@ completeSpec = describe "generate (complete edits)" $ do
     map describeConflict (planConflicts plan) `shouldSatisfy` any ("still reports Reset" `T.isInfixOf`)
   it "is a conflict naming the tool when the check cannot run" $ do
     (ws, _) <- memoryWorkspace [("src/A.elm", page)]
-    Right plan <- generate ws noResolve (Tools noSyntax (Checker (\_ _ -> pure (Left (CheckToolMissing "`elm` is not installed")))) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    Right plan <- generate ws noResolve (basicTools noSyntax (Checker (\_ _ -> pure (Left (CheckToolMissing "`elm` is not installed")))) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
     map conflictToolMissing (planConflicts plan) `shouldBe` [True]
   it "chooses the body by `where` when two edits complete the same bare name (Review Focus 2)" $ do
     -- `where` needs Syntax; a fake one maps each target phrase to the case it names.
@@ -449,7 +452,7 @@ completeSpec = describe "generate (complete edits)" $ do
           , "[targets.case_in]", "phrase = \"case in FUNCTION\"", "container = { kind = \"case_of_expr\", regex = \"{= FUNCTION =}\" }", "items = { kind = \"case_of_branch\" }", "example = \"end of case in update\"" ]
     ref <- newIORef [[MissingPatterns "src/Main.elm" (9, 11) ["Settings _"], MissingPatterns "src/Main.elm" (4, 6) ["Just Settings"]]]
     (ws, snapshot) <- memoryWorkspace [("src/Main.elm", mainElm)]
-    Right _ <- generate ws noResolve (Tools syntax (scriptedChecker ref) [withTargets]) [Step two M.empty] now Apply
+    Right _ <- generate ws noResolve (basicTools syntax (scriptedChecker ref) [withTargets]) [Step two M.empty] now Apply
     Just out <- M.lookup "src/Main.elm" <$> snapshot
     out `shouldSatisfy` ("        Just Route.Settings ->\n            2" `T.isInfixOf`)
     out `shouldSatisfy` ("        Settings _ ->\n            3" `T.isInfixOf`)
@@ -464,12 +467,12 @@ completeSpec = describe "generate (complete edits)" $ do
             ]
     ref <- newIORef [[MissingPatterns "src/Main.elm" (4, 6) ["Settings _"]]]
     (ws, snapshot) <- memoryWorkspace [("src/Main.elm", mainElm)]
-    Right plan <- generate ws noResolve (Tools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
+    Right plan <- generate ws noResolve (basicTools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
     map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "Route.Settings" `T.isInfixOf` c && "pageName" `T.isInfixOf` c)
     (M.lookup "src/Main.elm" <$> snapshot) `shouldReturn` Just mainElm
   it "warns when the project does not compile, so cases could not be checked (review)" $ do
     (ws, _) <- memoryWorkspace [("src/A.elm", page), ("src/B.elm", "module B\n")]
-    Right plan <- generate ws noResolve (Tools noSyntax (brokenChecker [("src/B.elm", "NAMING ERROR")]) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    Right plan <- generate ws noResolve (basicTools noSyntax (brokenChecker [("src/B.elm", "NAMING ERROR")]) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
     planConflicts plan `shouldBe` []
     planWarnings plan `shouldSatisfy` any ("src/B.elm" `T.isInfixOf`)
   it "is a conflict when a file the plan changed does not compile (review)" $ do
@@ -478,7 +481,7 @@ completeSpec = describe "generate (complete edits)" $ do
           , "[[edits]]", "insert = \"src/A.elm\"", "at = \"after first line matching ^module\"", "text = \"oops\""
           , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} -> 1\"" ]
     (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
-    Right plan <- generate ws noResolve (Tools noSyntax (brokenChecker [("src/A.elm", "SYNTAX PROBLEM")]) [elmLang]) [Step broken (M.fromList [("name", "reset")])] now Apply
+    Right plan <- generate ws noResolve (basicTools noSyntax (brokenChecker [("src/A.elm", "SYNTAX PROBLEM")]) [elmLang]) [Step broken (M.fromList [("name", "reset")])] now Apply
     map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "src/A.elm" `T.isInfixOf` c && "SYNTAX PROBLEM" `T.isInfixOf` c)
     (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just page
   it "narrows candidates to constructors visible at the site (Route cannot see Main)" $ do
@@ -492,7 +495,7 @@ completeSpec = describe "generate (complete edits)" $ do
             ]
     ref <- newIORef [[MissingPatterns "src/Route.elm" (3, 5) ["Settings"]]]
     (ws, snapshot) <- memoryWorkspace [("src/Route.elm", routeElm)]
-    Right plan <- generate ws noResolve (Tools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
+    Right plan <- generate ws noResolve (basicTools syntax (scriptedChecker ref) [elmLang]) [Step two M.empty] now Apply
     planConflicts plan `shouldBe` []
     map (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
     (M.lookup "src/Route.elm" <$> snapshot) `shouldReturn` Just (routeElm <> "\n        Settings ->\n            Debug.todo \"olifant: toPath Settings\"\n")
@@ -500,7 +503,7 @@ completeSpec = describe "generate (complete edits)" $ do
     let two = "module A exposing (..)\n\nf m =\n    case m of\n        A ->\n            1\n\ng m =\n    case m of\n        A ->\n            2\n"
     ref <- newIORef [[MissingPatterns "src/A.elm" (3, 5) ["Reset"], MissingPatterns "src/A.elm" (8, 10) ["Reset"]]]
     (ws, _) <- memoryWorkspace [("src/A.elm", two)]
-    Right plan <- generate ws noResolve (Tools noSyntax (scriptedChecker ref) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
+    Right plan <- generate ws noResolve (basicTools noSyntax (scriptedChecker ref) [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
     [(editNumber e, siteFunction s', l) | e <- planEdits plan, Just s' <- [editSite e], WillInsert l _ <- [editAction e]]
       `shouldBe` [(1, "g", 13), (2, "f", 8)]
   it "re-running a create whose cases the compiler completed is a no-op (fix pass)" $ do
@@ -514,10 +517,34 @@ completeSpec = describe "generate (complete edits)" $ do
           CheckReport [MissingPatterns "src/A.elm" (1, 3) ["Reset"] | Just t <- [M.lookup "src/A.elm" files], not ("Reset ->" `T.isInfixOf` t)] []
         runTwice files = do
           (ws, snap) <- memoryWorkspace files
-          Right plan <- generate ws noResolve (Tools noSyntax honest [elmLang]) [Step pageGen (M.fromList [("name", "reset")])] now Apply
+          Right plan <- generate ws noResolve (basicTools noSyntax honest [elmLang]) [Step pageGen (M.fromList [("name", "reset")])] now Apply
           (plan,) <$> snap
     (_, once) <- runTwice []
     M.lookup "src/A.elm" once `shouldBe` Just "update msg =\n    case msg of\n        NoOp ->\n            1\n\n        Reset ->\n            2\n"
     (again, twice) <- runTwice (M.toList once)
     planConflicts again `shouldBe` []
     twice `shouldBe` once
+
+regionSpec :: Spec
+regionSpec = describe "generate (owned regions)" $ do
+  let Right item = parseTemplate "{= dotted =}"
+      mods = RegionDef "mods" "x.cabal" (GlobQuery "src/**/*.hs" []) (ItemTemplate item) False (Just "--") Nothing
+      tools = (noTools :: Tools IO) {toolRegions = [mods]}
+      cabal = "  exposed-modules:\n    -- olifant:region mods\n    -- olifant:end mods\n"
+      unit = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "create = \"src/Olifant/{= name|pascal =}.hs\"", "text = \"module X\\n\""]
+  it "lists a module the same run creates, and re-running is a no-op (Review Focus 1)" $ do
+    (ws, snap) <- memoryWorkspace [("x.cabal", cabal), ("src/Olifant/A.hs", "")]
+    Right plan <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
+    [(r, a) | WillRefresh r a _ _ <- map editAction (planEdits plan)] `shouldBe` [("mods", 2)]
+    Just out <- M.lookup "x.cabal" <$> snap
+    out `shouldSatisfy` ("    Olifant.A\n    Olifant.B\n    -- olifant:end mods" `T.isInfixOf`)
+    Right again <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
+    planWrites again `shouldBe` M.empty
+  it "skips a region whose file or fences are not set up here" $ do
+    (ws, _) <- memoryWorkspace [("src/Olifant/A.hs", "")]
+    Right plan <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
+    planConflicts plan `shouldBe` []
+  it "is a conflict when a fence is broken" $ do
+    (ws, _) <- memoryWorkspace [("x.cabal", "    -- olifant:region mods\n")]
+    Right plan <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("has no end" `T.isInfixOf`)

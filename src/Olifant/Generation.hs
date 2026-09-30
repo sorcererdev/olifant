@@ -11,6 +11,8 @@ module Olifant.Generation
   , StepPath
   , showStepPath
   , generate
+  , RegionMode (..)
+  , refreshRegions
   , module Olifant.Generation.Plan
   , module Olifant.Generation.Tools
   ) where
@@ -25,6 +27,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Complete (completeEdits)
+import Olifant.Generation.Regions (RegionMode (..), refreshRegions)
 import Olifant.Generation.Compose
 import Olifant.Generation.Plan
 import Olifant.Anchor (resolveLayers)
@@ -66,8 +69,9 @@ generate ws resolve tools steps now mode =
           -- Both phases (spec §5.6): positional edits, then compiler-found branches.
           phases originals' = do
             (positional, pc, afterPositional, next) <- decideItems locate diskPaths items originals' blocked onDisk
-            (compiled, cc, ws', current') <- completeEdits tools ws completes next afterPositional
-            pure (positional ++ compiled, pc ++ cc, ws', current')
+            (compiled, cc, ws', afterComplete) <- completeEdits tools ws completes next afterPositional
+            (refreshed, rc, current') <- refreshRegions SkipUnset tools ws (next + length compiled) afterComplete
+            pure (positional ++ compiled ++ refreshed, pc ++ cc ++ rc, ws', current')
       first <- phases originals
       (edits, conflicts, warnings, current) <- case [p | TargetExists _ p <- (\(_, c, _, _) -> c) first] of
         [] -> pure first
