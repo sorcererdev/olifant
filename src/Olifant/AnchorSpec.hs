@@ -130,6 +130,16 @@ resolveSpec = do
     it "is an error when the target appears twice in a file" $
       runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
         `shouldSatisfy` either ("src/A.elm" `T.isInfixOf`) (const False)
+  describe "spacing copied from neighbouring items" $ do
+    it "end of puts a blank line before the text when the last two items are separated by one" $
+      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right BlankBefore
+    it "copies nothing from a one-item container (Review Focus 4)" $ do
+      let one = Syntax $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …"] else [Match (2, 4) (4, 20) "case"]
+      fmap locSpacing (runIdentity (resolveLayers one (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right NoSpacing
+    it "insertLines adds the blank line unless the text already has it" $ do
+      insertLines (Located 1 "" "" "x" BlankBefore) "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
+      insertLines (Located 1 "" "" "x" BlankBefore) "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
   describe "insertLines" $
     it "indents non-blank lines and reports the 1-based line" $
-      insertLines (Located 1 "  " "" "x") "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
+      insertLines (Located 1 "  " "" "x" NoSpacing) "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")

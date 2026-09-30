@@ -14,7 +14,7 @@ import Data.Ord (Down (..))
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Anchor (Located (..), insertLines, locateContainer)
+import Olifant.Anchor (Located (..), Spacing (..), insertLines, locateContainer)
 import Olifant.Generation.Compose (StepPath, showStepPath)
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (CompleteSpec (..))
@@ -153,7 +153,7 @@ insertBranch (caseStart, caseEnd) branch content =
       indent = case [l | l <- drop (caseStart + 1) ls, not (T.null (T.strip l))] of
         (l : _) -> T.takeWhile (\c -> c == ' ' || c == '\t') l
         [] -> "    "
-   in insertLines (Located (caseEnd + 1) indent "" "") ("\n" <> branch) content
+   in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing) ("\n" <> branch) content
 
 bareName :: Text -> Text
 bareName = snd . T.breakOnEnd "."

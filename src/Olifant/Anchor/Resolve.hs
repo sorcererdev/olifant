@@ -2,6 +2,7 @@
 module Olifant.Anchor.Resolve
   ( RenderedAnchor (..)
   , Located (..)
+  , Spacing (..)
   , Miss (..)
   , resolveLayers
   , locateContainer
@@ -16,9 +17,9 @@ import Data.Aeson (object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Char (isAlphaNum)
 import Data.Functor ((<&>))
-import Data.List (maximumBy, minimumBy)
+import Data.List (maximumBy, minimumBy, sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Ord (comparing)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -30,7 +31,12 @@ import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 data RenderedAnchor = PhraseAnchor Text | RuleAnchor Aeson.Value Position
   deriving stock (Eq, Show)
 
-data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text}
+-- | 'locSpacing': a blank line to add around the new text, copied from the
+-- spacing between the target's neighbouring items (spec §5.2).
+data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing}
+  deriving stock (Eq, Show)
+
+data Spacing = NoSpacing | BlankBefore | BlankAfter
   deriving stock (Eq, Show)
 
 data Miss = Miss {missAnchor :: Text, missReason :: Text, missTool :: Bool}
@@ -73,13 +79,15 @@ resolveOne syntax lang anchor content = case anchor of
     ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
     indentAt i = T.takeWhile (\c -> c == ' ' || c == '\t') (if i < length ls then ls !! i else "")
     regionOf a b = T.intercalate "\n" (take (b - a + 1) (drop a ls))
-    located line indent region = Located line indent region used
+    located line indent region = Located line indent region used NoSpacing
     count = T.pack . show . length
     around m pos =
       let (s, e) = (fst (matchStart m), fst (matchEnd m))
        in if pos `elem` [StartOf, Before]
             then wholeLine "the match" (startsLine (matchStart m)) (located s (indentAt s) (regionOf s e))
             else wholeLine "the match" (endsLine (matchEnd m)) (located (e + 1) (indentAt s) (regionOf s e))
+    -- Items separated by a blank line (Elm case branches, Rust methods).
+    blankBetween a b = any (T.null . T.strip . lineAt') [fst (matchEnd a) + 1 .. fst (matchStart b) - 1]
     -- Olifant inserts whole lines, so a position must begin or end its line.
     lineAt' i = if i < length ls then ls !! i else ""
     -- A separator next to an item (`, b` in Elm, `x: X,` in Rust) is part of its line.
@@ -127,10 +135,16 @@ resolveOne syntax lang anchor content = case anchor of
             (_, []) -> Left (miss "has no items to insert beside")
             (StartOf, _) ->
               let f = minimumBy (comparing matchStart) items
-               in wholeLine "the first item" (startsLine (matchStart f)) (located (fst (matchStart f)) (indentAt (fst (matchStart f))) region)
+                  spacing = case sortOn matchStart items of
+                    (a : b : _) | blankBetween a b -> BlankAfter
+                    _ -> NoSpacing
+               in wholeLine "the first item" (startsLine (matchStart f)) ((located (fst (matchStart f)) (indentAt (fst (matchStart f))) region) {locSpacing = spacing})
             (EndOf, _) ->
               let z = maximumBy (comparing matchEnd) items
-               in wholeLine "the last item" (endsLine (matchEnd z)) (located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region)
+                  spacing = case reverse (sortOn matchStart items) of
+                    (b : a : _) | blankBetween a b -> BlankBefore
+                    _ -> NoSpacing
+               in wholeLine "the last item" (endsLine (matchEnd z)) ((located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region) {locSpacing = spacing})
 
 -- | A target's container and its items: the container's direct children, top
 -- level (as `end of` sees them). 'Right Nothing' when the container is absent;
@@ -181,7 +195,13 @@ insertLines :: Located -> Text -> Text -> (Int, Text)
 insertLines loc snippet content =
   let newline = if "\r\n" `T.isInfixOf` content then "\r\n" else "\n"
       ls = T.splitOn newline content
-      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- T.splitOn "\n" (dropFinalNewline snippet)]
+      body = T.splitOn "\n" (dropFinalNewline snippet)
+      blank = maybe False (T.null . T.strip)
+      spaced = case locSpacing loc of
+        BlankBefore | not (blank (listToMaybe body)) -> "" : body
+        BlankAfter | not (blank (listToMaybe (reverse body))) -> body ++ [""]
+        _ -> body
+      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- spaced]
       i = min (locLine loc) (length ls)
    in (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
   where
