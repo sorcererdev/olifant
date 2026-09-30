@@ -10,7 +10,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 
 import Data.Text qualified as T
-import Hedgehog (Gen, forAll, tripping)
+import Hedgehog (Gen, forAll, tripping, (===))
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor
@@ -150,6 +150,8 @@ resolveSpec = do
   describe "spacing copied from neighbouring items" $ do
     it "end of puts a blank line before the text when the last two items are separated by one" $
       fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right BlankBefore
+    it "start of puts a blank line after the text when the first two items are separated by one" $
+      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "start of case in update"] source)) `shouldBe` Right BlankAfter
     it "copies nothing from a one-item container (Review Focus 4)" $ do
       let one = Syntax $ \_ rule _ -> Identity . Right $
             if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …"] else [Match (2, 4) (4, 20) "case"]
@@ -165,6 +167,21 @@ resolveSpec = do
     it "keeps tab indentation relative" $
       insertLines (Located 1 "\t" "" "x" NoSpacing) "\t\ta\n\t\t\tb" "one\n" `shouldBe` (2, "one\n\ta\n\t\tb\n")
   describe "insertedText" $ do
+    it "does not depend on how far the whole text is indented" $ hedgehog $ do
+      ls <- forAll (Gen.list (Range.linear 1 6) (Gen.text (Range.linear 0 10) (Gen.element ("ab (){}=-> " :: String))))
+      k <- forAll (Gen.int (Range.linear 0 12))
+      let t = T.intercalate "\n" ls
+          shifted = T.intercalate "\n" [if T.null (T.strip l) then l else T.replicate k " " <> l | l <- ls]
+      insertedText NoSpacing shifted === insertedText NoSpacing t
+    it "keeps every line, and leaves the least indented one at column 0" $ hedgehog $ do
+      t <- forAll (Gen.text (Range.linear 0 40) (Gen.element ("ab \n\t{}" :: String)))
+      let out = T.splitOn "\n" (insertedText NoSpacing t)
+          body = maybe t id (T.stripSuffix "\n" t)
+          lead l = T.length (T.takeWhile (`elem` (" \t" :: String)) l)
+      length out === length (T.splitOn "\n" body)
+      case [lead l | l <- out, not (T.null (T.strip l))] of
+        [] -> pure ()
+        ns -> minimum ns === 0
     it "is the text as written, dedented, with the blank line spacing adds (what the plan shows)" $ do
       insertedText BlankBefore "    a\n      b" `shouldBe` "\na\n  b"
       insertedText BlankAfter "a" `shouldBe` "a\n"

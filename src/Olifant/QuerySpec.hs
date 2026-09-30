@@ -10,7 +10,11 @@ import Olifant.Toml (Tree (..))
 import System.Directory (createDirectoryIfMissing, getPermissions, setOwnerExecutable, setPermissions)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import Hedgehog (forAll, (===))
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
 import Test.Hspec
+import Test.Hspec.Hedgehog (hedgehog)
 
 paths :: [FilePath]
 paths = ["src/Olifant/Anchor/Phrase.hs", "src/Olifant/Anchor.hs", "src/Olifant/AnchorSpec.hs", "src/TestDriver.hs", "app/Main.hs", "dist-newstyle/x/src/Y.hs"]
@@ -58,6 +62,14 @@ spec = do
     it "accepts an escaped backslash before s" $
       queryFromTree (TTable (M.fromList [("files", TText "a"), ("items_of", TText "type X"), ("each", TTable (M.fromList [("f", TText "a\\\\s")]))]))
         `shouldSatisfy` either (const False) (const True)
+  describe "eachFields (properties)" $ do
+    it "gives every field, whatever the text, and never drops one" $ hedgehog $ do
+      t <- forAll (Gen.text (Range.linear 0 40) Gen.unicode)
+      M.keys (eachFields [("a", "^([a-z]+)"), ("b", "zzz"), ("c", "[0-9]")] t) === ["a", "b", "c"]
+    it "captures a word it can see" $ hedgehog $ do
+      w <- forAll (Gen.text (Range.linear 1 8) Gen.lower)
+      pre <- forAll (Gen.text (Range.linear 0 8) (Gen.element (" ,;:" :: String)))
+      M.lookup "w" (eachFields [("w", "([a-z]+)")] (pre <> w <> " 1")) === Just (VText w)
   describe "eachFields" $
     it "takes the first capture group, the whole match without one, empty without a match" $
       eachFields [("name", "^pub ([a-z_]+):"), ("kw", "pub"), ("none", "zzz")] "pub repo: Repo,"
