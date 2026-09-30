@@ -14,15 +14,16 @@ module Olifant.Language.Adapter
 import Control.Monad ((>=>))
 import Data.Bifunctor (first)
 import Data.Char (isUpper)
-import Data.List (find, tails)
+import Data.List (find)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Glob (matchesGlob)
 import Olifant.Language.Rule
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Toml
-import System.FilePath (splitDirectories, (</>))
+import System.FilePath ((</>))
 
 data Language = Language
   { langName :: Text
@@ -90,20 +91,6 @@ matchShape t ws
       | s == w = Just []
       | otherwise = Nothing
     isParam s = T.all (\c -> isUpper c || c == '_') s && T.any isUpper s
-
--- | `**` spans directories, `*` stays within one segment.
-matchesGlob :: Text -> FilePath -> Bool
-matchesGlob g p = go (T.splitOn "/" g) (map T.pack (splitDirectories p))
-  where
-    go [] [] = True
-    go ["**"] _ = True
-    go ("**" : gs) ps = any (go gs) (tails ps)
-    go (x : gs) (y : ps) = segment (T.unpack x) (T.unpack y) && go gs ps
-    go _ _ = False
-    segment ('*' : rest) s = any (segment rest) (tails s)
-    segment (c : rest) (x : xs) = c == x && segment rest xs
-    segment [] [] = True
-    segment _ _ = False
 
 languageFor :: [Language] -> FilePath -> Maybe Language
 languageFor langs p = find (\l -> any (`matchesGlob` p) (langFiles l)) langs

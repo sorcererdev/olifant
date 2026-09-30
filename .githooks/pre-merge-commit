@@ -12,3 +12,10 @@ if ! cabal test --test-show-details=failures >&2; then
   echo "pre-merge-commit: tests failed; merge aborted (fix, then run \`git merge --continue\`)." >&2
   exit 1
 fi
+
+# Owned regions (spec §5.8) must match the files: e.g. the cabal module lists.
+echo "pre-merge-commit: checking owned regions (olifant sync --check)..." >&2
+if ! cabal run -v0 olifant -- sync --check --human >&2; then
+  echo "pre-merge-commit: a region drifted or is broken; run \`olifant sync\` and commit, then \`git merge --continue\`." >&2
+  exit 1
+fi

@@ -19,6 +19,7 @@ module Olifant.Generator.Definition
 import Data.Text (Text)
 import Olifant.Anchor (Position)
 import Olifant.Language (Rule)
+import Olifant.Query (Query)
 import Olifant.Template (Binding, Template)
 
 newtype GeneratorId = GeneratorId {generatorIdText :: Text}
@@ -58,8 +59,9 @@ data Requires = Requires {requiresExists :: [Template], requiresHint :: Maybe Te
   deriving stock (Show)
 
 data EditWith src
-  = Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists}
-  | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src}
+  = -- | 'editUnless': a glob; the edit is skipped when it matches a file (spec §5).
+    Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists, editUnless :: Maybe Template}
+  | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src, editUnless :: Maybe Template}
   | -- | Add a branch for 'editConstructor' to every case the compiler reports (spec §5.6).
     Complete {editConstructor :: Template, editWhere :: Maybe Template, editSource :: src}
   deriving stock (Show, Functor, Foldable, Traversable)
@@ -89,7 +91,9 @@ data InputSpec = InputSpec
 data InputType = ScalarInput Scalar | ListInput ListItem
   deriving stock (Eq, Show)
 
-data Scalar = IdentS | TextS | BoolS | EnumS [Text]
+-- | 'EnumQ': `choices_from` — the query, the value template, and the choices
+-- once resolved against a project ('Nothing' until then).
+data Scalar = IdentS | TextS | BoolS | EnumS [Text] | EnumQ Query Template (Maybe [Text])
   deriving stock (Eq, Show)
 
 data ListItem = ScalarItems Scalar | RecordItems [FieldSpec]

@@ -33,44 +33,51 @@ library
   import:          shared
   hs-source-dirs:  src
   exposed-modules:
-    Olifant.Generation.Render
-    Olifant.Generation.Compose
-    Olifant.GeneratorTesting
-    Olifant.Cli.Output
-    Olifant.Cli.Options
-    Olifant.Cli
-    Olifant.Catalog
-    Olifant.Generation.Planner
-    Olifant.Generation.Tools
-    Olifant.Generation.Complete
-    Olifant.Generation.Plan
-    Olifant.Generation
-    Olifant.Generator.Inputs
-    Olifant.Generator.Load
-    Olifant.Generator.Definition
-    Olifant.Generator
-    Olifant.Toml
-    Olifant.Workspace
-    Olifant.Template.Exemplar
-    Olifant.Template.Render
-    Olifant.Template.Parse
-    Olifant.Template.Error
-    Olifant.Template.Value
-    Olifant.Template.Syntax
-    Olifant.Template
-    Olifant.Naming
+    -- olifant:region library-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Anchor
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
+    Olifant.Catalog
+    Olifant.Cli
+    Olifant.Cli.Options
+    Olifant.Cli.Output
+    Olifant.Generation
+    Olifant.Generation.Complete
+    Olifant.Generation.Compose
+    Olifant.Generation.Plan
+    Olifant.Generation.Planner
+    Olifant.Generation.Regions
+    Olifant.Generation.Render
+    Olifant.Generation.Tools
+    Olifant.Generator
+    Olifant.Generator.Choices
+    Olifant.Generator.Definition
+    Olifant.Generator.Inputs
+    Olifant.Generator.Load
+    Olifant.GeneratorTesting
+    Olifant.Glob
     Olifant.Language
-    Olifant.Language.Rule
     Olifant.Language.Adapter
-    Olifant.Language.Syntax
-    Olifant.Language.Diagnostics
-    Olifant.Language.Check
-    Olifant.Language.Process
     Olifant.Language.AstGrep
+    Olifant.Language.Check
+    Olifant.Language.Diagnostics
     Olifant.Language.Elm
+    Olifant.Language.Process
+    Olifant.Language.Rule
+    Olifant.Language.Syntax
+    Olifant.Naming
+    Olifant.Query
+    Olifant.Region
+    Olifant.Template
+    Olifant.Template.Error
+    Olifant.Template.Exemplar
+    Olifant.Template.Parse
+    Olifant.Template.Render
+    Olifant.Template.Syntax
+    Olifant.Template.Value
+    Olifant.Toml
+    Olifant.Workspace
+    -- olifant:end library-modules
 
 test-suite spec
   import:             shared
@@ -83,54 +90,64 @@ test-suite spec
     , hspec           >=2.11
     , hspec-hedgehog  >=0.1
   other-modules:
-    Olifant.Generation.Render
-    Olifant.Generation.Compose
-    Olifant.GeneratorTesting
-    Olifant.GeneratorTestingSpec
-    Olifant.Cli.Output
-    Olifant.Cli.Options
-    Olifant.Cli
-    Olifant.CliSpec
-    Olifant.Catalog
-    Olifant.CatalogSpec
-    Olifant.Generation.Planner
-    Olifant.Generation.Tools
-    Olifant.Generation.Complete
-    Olifant.Generation.Plan
-    Olifant.Generation
-    Olifant.GenerationSpec
-    Olifant.Generator.Inputs
-    Olifant.Generator.Load
-    Olifant.Generator.Definition
-    Olifant.Generator
-    Olifant.Toml
-    Olifant.GeneratorSpec
-    Olifant.Workspace
-    Olifant.WorkspaceSpec
-    Olifant.Template.Exemplar
-    Olifant.Template.Render
-    Olifant.Template.Parse
-    Olifant.Template.Error
-    Olifant.Template.Value
-    Olifant.Template.Syntax
-    Olifant.Template
-    Olifant.Naming
-    Olifant.NamingSpec
-    Olifant.TemplateSpec
+    -- olifant:region test-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Anchor
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.AnchorSpec
+    Olifant.Catalog
+    Olifant.CatalogSpec
+    Olifant.Cli
+    Olifant.Cli.Options
+    Olifant.Cli.Output
+    Olifant.CliSpec
+    Olifant.Generation
+    Olifant.Generation.Complete
+    Olifant.Generation.Compose
+    Olifant.Generation.Plan
+    Olifant.Generation.Planner
+    Olifant.Generation.Regions
+    Olifant.Generation.Render
+    Olifant.Generation.Tools
+    Olifant.GenerationSpec
+    Olifant.Generator
+    Olifant.Generator.Choices
+    Olifant.Generator.Definition
+    Olifant.Generator.Inputs
+    Olifant.Generator.Load
+    Olifant.GeneratorSpec
+    Olifant.GeneratorTesting
+    Olifant.GeneratorTestingSpec
+    Olifant.Glob
+    Olifant.GlobSpec
     Olifant.Language
-    Olifant.Language.Rule
     Olifant.Language.Adapter
-    Olifant.Language.Syntax
-    Olifant.Language.Diagnostics
-    Olifant.Language.Check
-    Olifant.Language.Process
     Olifant.Language.AstGrep
+    Olifant.Language.Check
+    Olifant.Language.Diagnostics
     Olifant.Language.Elm
+    Olifant.Language.Process
+    Olifant.Language.Rule
+    Olifant.Language.Syntax
     Olifant.LanguageSpec
+    Olifant.Naming
+    Olifant.NamingSpec
+    Olifant.Query
+    Olifant.QuerySpec
+    Olifant.Region
+    Olifant.RegionSpec
+    Olifant.Template
+    Olifant.Template.Error
+    Olifant.Template.Exemplar
+    Olifant.Template.Parse
+    Olifant.Template.Render
+    Olifant.Template.Syntax
+    Olifant.Template.Value
+    Olifant.TemplateSpec
+    Olifant.Toml
+    Olifant.Workspace
+    Olifant.WorkspaceSpec
+    -- olifant:end test-modules
 
 executable olifant
   import:          shared

@@ -2,6 +2,9 @@
 
 module Olifant.GeneratorSpec (spec) where
 
+import Data.Functor.Identity (runIdentity)
+import Olifant.Query (noCommands)
+
 import Data.Either (isLeft)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -110,6 +113,18 @@ parseSpec = describe "parseGenerator" $ do
   it "needs exactly one of `at` or `anchor`" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
       `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
+  it "reads choices_from and resolves it from the repo (Review Focus 5)" $ do
+    let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\", value = \"{= dir =}\" }"]
+        Right g = load src
+        at0 = UTCTime (fromGregorian 2026 9 29) 0
+        Right resolved = runIdentity (withChoices noCommands ["billing/billing-service", "accounts/accounts-service"] g)
+    map (describeInputType . inputType) (genInputs resolved) `shouldBe` ["enum(accounts|billing)"]
+    either describeEnvError (const "") (buildEnv resolved (M.fromList [("service", "biling")]) at0) `shouldSatisfy` ("did you mean billing" `T.isInfixOf`)
+    fmap (M.lookup "service") (buildEnv resolved (M.fromList [("service", "billing")]) at0) `shouldBe` Right (Just (VText "billing"))
+  it "says so when a choices_from query finds nothing" $ do
+    let Right g = load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\" }"])
+        Right resolved = runIdentity (withChoices noCommands [] g)
+    either describeEnvError (const "") (buildEnv resolved (M.fromList [("service", "x")]) (UTCTime (fromGregorian 2026 9 29) 0)) `shouldSatisfy` ("found nothing" `T.isInfixOf`)
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft
   it "reports template syntax errors with the key" $ do
@@ -117,8 +132,8 @@ parseSpec = describe "parseGenerator" $ do
     either id (const "") result `shouldSatisfy` T.isInfixOf "Model"
   where
     describeEdit = \case
-      Create p (TemplateFile f) _ -> "create " <> templateSource p <> " from " <> T.pack f
-      Insert p anchors _ -> "insert " <> templateSource p <> " at " <> T.intercalate " | " [case a of AtPhrase t -> templateSource t; AtRule _ _ -> "<ast rule>" | a <- anchors]
+      Create p (TemplateFile f) _ _ -> "create " <> templateSource p <> " from " <> T.pack f
+      Insert p anchors _ _ -> "insert " <> templateSource p <> " at " <> T.intercalate " | " [case a of AtPhrase t -> templateSource t; AtRule _ _ -> "<ast rule>" | a <- anchors]
       Complete c _ _ -> "complete " <> templateSource c
       _ -> "unexpected"
 

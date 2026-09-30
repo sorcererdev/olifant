@@ -11,6 +11,8 @@ module Olifant.Generation
   , StepPath
   , showStepPath
   , generate
+  , RegionMode (..)
+  , refreshRegions
   , module Olifant.Generation.Plan
   , module Olifant.Generation.Tools
   ) where
@@ -19,17 +21,19 @@ import Control.Monad (filterM, forM_, when)
 import Data.Functor ((<&>))
 import Data.List (nub)
 import Data.Map.Strict qualified as M
+import Data.Maybe (isJust)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Complete (completeEdits)
+import Olifant.Generation.Regions (RegionMode (..), refreshRegions)
 import Olifant.Generation.Compose
 import Olifant.Generation.Plan
 import Olifant.Anchor (resolveLayers)
 import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
-import Olifant.Generation.Render (RenderedEdit (..), renderedPath)
+import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..))
 import Olifant.Language (languageFor)
 import Olifant.Template (TemplateError)
@@ -59,12 +63,15 @@ generate ws resolve tools steps now mode =
       let originals = M.fromList [(p, t) | (p, Right t) <- inspected]
           blocked = M.fromList [(p, why) | (p, Left why) <- inspected, p `elem` targets]
           ids = [generatorIdText (genId (stepGenerator s)) | s <- steps]
+      -- `unless` globs need the project's paths; list them only when used.
+      diskPaths <- if any (isJust . renderedUnless) [e | PlanEdit _ e <- items] then listFiles ws "." else pure []
       let completes = [(p, c) | PlanEdit p (RenderedComplete c) <- items]
           -- Both phases (spec §5.6): positional edits, then compiler-found branches.
           phases originals' = do
-            (positional, pc, afterPositional, next) <- decideItems locate items originals' blocked onDisk
-            (compiled, cc, ws', current') <- completeEdits tools ws completes next afterPositional
-            pure (positional ++ compiled, pc ++ cc, ws', current')
+            (positional, pc, afterPositional, next) <- decideItems locate diskPaths items originals' blocked onDisk
+            (compiled, cc, ws', afterComplete) <- completeEdits tools ws completes next afterPositional
+            (refreshed, rc, current') <- refreshRegions SkipUnset tools ws (next + length compiled) afterComplete
+            pure (positional ++ compiled ++ refreshed, pc ++ cc ++ rc, ws', current')
       first <- phases originals
       (edits, conflicts, warnings, current) <- case [p | TargetExists _ p <- (\(_, c, _, _) -> c) first] of
         [] -> pure first

@@ -4,6 +4,8 @@ import Data.ByteString qualified as BS
 import Olifant.Workspace
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Directory (findExecutable)
+import System.Process (readProcess)
 import Test.Hspec
 
 contract :: SpecWith (Workspace IO)
@@ -41,6 +43,21 @@ spec = do
       withSystemTempDirectory "olifant" $ \dir -> do
         BS.writeFile (dir </> "latin1.txt") "caf\xe9 precious\n"
         inspectPath (diskWorkspace dir) "latin1.txt" `shouldReturn` Unreadable
+  describe "disk adapter (listing a project)" $ do
+    it "never descends into dependency and build directories" $
+      withSystemTempDirectory "olifant" $ \dir -> do
+        let ws = diskWorkspace dir
+        mapM_ (\p -> writeText ws p "x") ["src/a.hs", "node_modules/pkg/index.js", "target/debug/x", "elm-stuff/0.19/y", "dist-newstyle/z", ".git/HEAD"]
+        listFiles ws "." `shouldReturn` ["src/a.hs"]
+    it "lists what git considers part of the project, honouring .gitignore" $
+      findExecutable "git" >>= \case
+        Nothing -> pendingWith "git is not installed"
+        Just _ -> withSystemTempDirectory "olifant" $ \dir -> do
+          let ws = diskWorkspace dir
+          _ <- readProcess "git" ["-C", dir, "init", "-q"] ""
+          mapM_ (\(p, t) -> writeText ws p t) [(".gitignore", "build/\n*.log\n"), ("build/out.js", "x"), ("debug.log", "x"), ("src/b.hs", "x"), ("src/new.hs", "untracked but not ignored")]
+          listFiles ws "." `shouldReturn` [".gitignore", "src/b.hs", "src/new.hs"]
+          listFiles ws "src" `shouldReturn` ["b.hs", "new.hs"]
   describe "paths" $ do
     it "normalises . and .." $
       map normalisePath ["a/./b", "a/../b", "a/b/..", "/x/../y", "", "../a"] `shouldBe` ["a/b", "b", "a", "/y", ".", "../a"]

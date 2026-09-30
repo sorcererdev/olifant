@@ -1,0 +1,18 @@
+# Olifant's module lists, kept equal to the files under src/ (spec §5.8).
+# Every `gen` refreshes them; `olifant sync --check` guards merges.
+
+[regions.library-modules]
+file        = "olifant.cabal"
+comment     = "--"
+query       = { glob = "src/**/*.hs", exclude = ["**/*Spec.hs", "src/TestDriver.hs"] }
+item        = "{= dotted =}"
+init_at     = "after first line matching ^  exposed-modules:"
+init_indent = "    "
+
+[regions.test-modules]
+file        = "olifant.cabal"
+comment     = "--"
+query       = { glob = "src/**/*.hs", exclude = ["src/TestDriver.hs"] }
+item        = "{= dotted =}"
+init_at     = "after first line matching ^  other-modules:"
+init_indent = "    "

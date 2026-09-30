@@ -69,7 +69,9 @@ elm/page (11 edits, 0 conflicts)
 
 `+` is a new file, `~` an insert, `=` an edit skipped because its text is already there,
 `!` a conflict. `compiler: view` means the Elm compiler found that spot
-([chapter 4](04-compiler-branches-and-todos.md)). The tag on the right says which generator made the edit;
+([chapter 4](04-compiler-branches-and-todos.md)). `region library-modules: +1 −0` is an owned region being
+refreshed ([chapter 5](05-owned-regions.md)); `skipped: unless: …` is an edit whose `unless`
+matched ([chapter 6](06-queries-and-choices.md)). The tag on the right says which generator made the edit;
 `elm/page › elm/msg[1]` is the first message's `elm/msg` run inside `elm/page`.
 
 `gen` applies by default. Add `--plan` to see the same plan, with the full text of every

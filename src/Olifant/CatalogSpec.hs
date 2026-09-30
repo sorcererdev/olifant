@@ -10,6 +10,7 @@ import Olifant.Catalog
 import Olifant.Generation
 import Olifant.Generator (GeneratorId (..), GeneratorWith (..))
 import Olifant.Language (Language (..))
+import Olifant.Region (RegionDefWith (..))
 import Olifant.Workspace
 import Test.Hspec
 
@@ -52,6 +53,22 @@ genInto root cat ref = do
 
 spec :: Spec
 spec = describe "catalog" $ do
+  it "loads regions from packs and the project, the project overriding by name" $ do
+    (root, _) <-
+      memoryWorkspace
+        [ ("/packs/p/regions.toml", "[regions.mods]\nfile = \"a.cabal\"\nquery = { glob = \"src/**/*.hs\" }\nitem = \"{= dotted =}\"\n")
+        , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"x\"\n")
+        , ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+        , ("/proj/.olifant/regions.toml", "[regions.mods]\nfile = \"b.cabal\"\nquery = { glob = \"src/**/*.hs\" }\nitem = \"{= dotted =}\"\n[regions.pages]\nfile = \"Pages.elm\"\nwhole_file = true\nquery = { glob = \"src/Page/*.elm\" }\ntemplate = \"pages.dt\"\n")
+        , ("/proj/.olifant/pages.dt", "{= for p in items =}{= p.stem =}\n{= end =}")
+        ]
+    Right cat <- openProjectCatalog root (CatalogPaths "/proj" Nothing Nothing)
+    map (\r -> (regionName r, regionFile r)) (catalogRegions cat) `shouldBe` [("mods", "b.cabal"), ("pages", "Pages.elm")]
+    catalogBrokenRegions cat `shouldBe` []
+  it "keeps a broken regions.toml aside" $ do
+    (root, _) <- memoryWorkspace [("/packs/p/regions.toml", "[regions.x]\nfile = 1\n"), ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"x\"\n")]
+    Right cat <- openPackCatalog root [("p", "/packs/p")]
+    map fst (catalogBrokenRegions cat) `shouldBe` ["/packs/p/regions.toml"]
   it "loads a pack's language adapters and keeps broken ones aside" $ do
     (root, _) <-
       memoryWorkspace

@@ -10,15 +10,18 @@ module Olifant.Workspace
   , isSafeRelative
   ) where
 
-import Control.Monad (forM)
+import Control.Monad (filterM, forM)
 import Data.ByteString qualified as BS
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (isPrefixOf, sort)
+import Data.List (isPrefixOf, nub, sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8', encodeUtf8)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import Olifant.Language.Process (runBytes)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
+import System.Exit (ExitCode (..))
 import System.FilePath (addTrailingPathSeparator, isAbsolute, joinPath, splitDirectories, takeDirectory, (</>))
 
 data Workspace m = Workspace
@@ -75,7 +78,9 @@ diskWorkspace root =
     , listFiles = \dir -> do
         let base = root </> dir
         isDir <- doesDirectoryExist base
-        if isDir then sort <$> walk base "" else pure []
+        if not isDir
+          then pure []
+          else gitFiles base >>= maybe (sort <$> walk base "") pure
     , inspectPath = \p -> do
         let full = root </> p
         isFile <- doesFileExist full
@@ -85,8 +90,24 @@ diskWorkspace root =
           else pure (if isDir then Directory else Absent)
     }
   where
+    -- Inside a git work tree, the project is what git says it is: tracked and
+    -- new files, minus anything .gitignore excludes (and tracked files that
+    -- were deleted). Outside one, walk, never descending into 'pruned'.
+    gitFiles base =
+      findExecutable "git" >>= \case
+        Nothing -> pure Nothing
+        Just git -> do
+          inside <- runBytes git ["-C", base, "rev-parse", "--is-inside-work-tree"] Nothing ""
+          case inside of
+            Right (ExitSuccess, out, _) | BS.take 4 out == "true" ->
+              runBytes git ["-C", base, "ls-files", "-z", "--cached", "--others", "--exclude-standard"] Nothing "" >>= \case
+                Right (ExitSuccess, listing, _) -> do
+                  let paths = [p | raw <- BS.split 0 listing, not (BS.null raw), Right t <- [decodeUtf8' raw], let p = T.unpack t, not (any (`elem` pruned) (splitDirectories p))]
+                  Just . sort . nub <$> filterM (doesFileExist . (base </>)) paths
+                _ -> pure Nothing
+            _ -> pure Nothing
     walk base rel = do
-      entries <- listDirectory (if null rel then base else base </> rel)
+      entries <- filter (`notElem` pruned) <$> listDirectory (if null rel then base else base </> rel)
       concat
         <$> forM
           entries
@@ -123,3 +144,8 @@ isSafeRelative :: FilePath -> Bool
 isSafeRelative p = not (isAbsolute p) && n /= "." && ".." `notElem` splitDirectories n
   where
     n = normalisePath p
+
+-- | Directories that hold dependencies, build output or VCS data: never part
+-- of what generators and queries see, and never walked.
+pruned :: [FilePath]
+pruned = [".git", "node_modules", "elm-stuff", "dist-newstyle", "target"]

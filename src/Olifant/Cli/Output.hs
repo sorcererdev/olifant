@@ -10,6 +10,7 @@ module Olifant.Cli.Output
   , whereJson
   , whereHuman
   , planHuman
+  , syncCheckHuman
   , errorJson
   , errorHuman
   , inputProblemFields
@@ -91,8 +92,8 @@ showJson subs e =
   where
     d = entryDefinition e
     editJson = \case
-      Create p _ _ -> object ["kind" .= ("create" :: Text), "path" .= templateSource p]
-      Insert p anchors _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
+      Create p _ _ _ -> object ["kind" .= ("create" :: Text), "path" .= templateSource p]
+      Insert p anchors _ _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
       Complete c w _ -> object ["kind" .= ("complete" :: Text), "constructor" .= templateSource c, "where" .= fmap templateSource w]
 
 showHuman :: [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
@@ -111,8 +112,8 @@ showHuman subs e =
   where
     d = entryDefinition e
     editLine = \case
-      Create p _ _ -> "  create " <> templateSource p
-      Insert p anchors _ -> "  insert " <> templateSource p <> " at " <> T.intercalate " | " (map anchorText anchors)
+      Create p _ _ _ -> "  create " <> templateSource p
+      Insert p anchors _ _ -> "  insert " <> templateSource p <> " at " <> T.intercalate " | " (map anchorText anchors)
       Complete c w _ -> "  complete " <> templateSource c <> maybe "" (\x -> " in " <> templateSource x) w
     useLines (u, sub) =
       ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
@@ -147,6 +148,7 @@ planJson applied plan =
       WillCreate c -> ["status" .= ("create" :: Text)] ++ content c
       WillOverwrite c -> ["status" .= ("overwrite" :: Text)] ++ content c
       WillInsert l s -> ["status" .= ("insert" :: Text), "line" .= l] ++ content s
+      WillRefresh r a d c -> ["status" .= ("region" :: Text), "region" .= r, "added" .= a, "removed" .= d] ++ content c
       Skipped r -> ["status" .= ("skipped" :: Text), "reason" .= skipReason r]
       Conflicted -> ["status" .= ("conflict" :: Text)]
 
@@ -170,6 +172,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillCreate c -> "  + " <> T.pack p <> " (" <> lineCount c <> ")"
       WillOverwrite c -> "  ~ " <> T.pack p <> " (overwritten, " <> lineCount c <> ")"
       WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> foundBy site <> ")"
+      WillRefresh r a d _ -> "  ~ " <> T.pack p <> " (region " <> r <> ": +" <> T.pack (show a) <> " −" <> T.pack (show d) <> ")"
       Skipped r -> "  = " <> T.pack p <> " (skipped: " <> skipReason r <> ")"
       Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
     foundBy = maybe "" (\x -> ", compiler: " <> siteFunction x <> (if siteTodo x then ", todo" else ""))
@@ -181,6 +184,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillCreate c -> Just c
       WillOverwrite c -> Just c
       WillInsert _ s -> Just s
+      WillRefresh _ _ _ c -> Just c
       Skipped _ -> Nothing
       Conflicted -> Nothing
 
@@ -189,6 +193,7 @@ skipReason = \case
   AlreadyExists -> "already exists"
   AlreadyPresent -> "already present"
   UnchangedContent -> "unchanged"
+  UnlessMatched p -> "unless: " <> T.pack p <> " exists"
 
 conflictCode :: Conflict -> Text
 conflictCode = \case
@@ -196,6 +201,7 @@ conflictCode = \case
   InsertTargetMissing {} -> "insert_target_missing"
   AnchorUnresolved {} -> "anchor_unresolved"
   CompleteFailed {} -> "complete_failed"
+  RegionBroken {} -> "region_broken"
   UnsafePath {} -> "unsafe_path"
   RequirementUnmet {} -> "requires_unmet"
   TargetUnusable {} -> "target_unusable"
@@ -255,3 +261,17 @@ whereHuman :: FilePath -> Located -> Text -> Text
 whereHuman file loc content =
   let (before, after) = whereContext loc content
    in T.unlines ([T.pack file <> ":" <> T.pack (show (locLine loc + 1))] ++ map ("    " <>) before ++ ["  ▶ " <> locIndent loc <> "(inserted here)"] ++ map ("    " <>) after)
+
+-- | `olifant sync --check` for people: a lint result, not a plan.
+syncCheckHuman :: Plan -> Text
+syncCheckHuman plan
+  | null drifted && null (planConflicts plan) = "regions up to date\n"
+  | otherwise =
+      T.unlines $
+        [ count (length rs) <> " out of date in " <> T.pack f <> ": " <> T.intercalate ", " [r <> " (+" <> T.pack (show a) <> " −" <> T.pack (show d) <> ")" | (r, a, d) <- rs] <> "; nothing written, run `olifant sync`"
+        | (f, rs) <- M.toList (M.fromListWith (flip (++)) [(p, [x]) | (p, x) <- drifted])
+        ]
+          ++ map (("  ! " <>) . describeConflict) (planConflicts plan)
+  where
+    drifted = [(editPath e, (r, a, d)) | e <- planEdits plan, WillRefresh r a d _ <- [editAction e]]
+    count n = T.pack (show n) <> (if n == 1 then " region" else " regions")

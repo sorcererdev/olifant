@@ -24,13 +24,3 @@ hint = "Create the unit first: olifant gen unit --set unit={= unit =}"
 create   = "src/Olifant/{= unit|pascal =}/{= module|pascal =}.hs"
 exemplar = "fixture:src/Olifant/SampleUnit/SampleDetail.hs"
 bind     = { unit = "sample_unit", module = "sample_detail" }
-
-[[edits]]
-insert = "olifant.cabal"
-at     = "after first line matching ^    Olifant\\."
-text   = "{= Module =}"
-
-[[edits]]
-insert = "olifant.cabal"
-at     = "after last line matching ^    Olifant\\."
-text   = "{= Module =}"

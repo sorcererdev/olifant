@@ -6,6 +6,8 @@ module Olifant.Catalog
   , catalogBroken
   , catalogLanguages
   , catalogBrokenLanguages
+  , catalogRegions
+  , catalogBrokenRegions
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
@@ -30,6 +32,7 @@ import Data.Text qualified as T
 import Olifant.Generation.Compose (ResolveFailure (..))
 import Olifant.Generator
 import Olifant.Language (Language, parseLanguage)
+import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -54,6 +57,9 @@ data Catalog = Catalog
   , -- | language adapters from every pack's `languages/*.toml` (spec §12), in pack order
     catalogLanguages :: [Language]
   , catalogBrokenLanguages :: [(FilePath, Text)]
+  , -- | owned regions (spec §5.8): packs' then the project's; a later one replaces an earlier one of the same name
+    catalogRegions :: [RegionDef]
+  , catalogBrokenRegions :: [(FilePath, Text)]
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -100,7 +106,8 @@ openProjectCatalog root paths = do
     Right (fromUser, fromProject) -> do
       let packRoots = M.toList (M.fromList (fromUser ++ fromProject))
       result <- openCatalogAt root (Just (project </> ".olifant" </> "generators")) packRoots
-      pure (fmap (\c -> c {catalogProject = Just project}) result)
+      own <- regionsIn root (project </> ".olifant")
+      pure (fmap (\c -> addRegions own c {catalogProject = Just project}) result)
   where
     packsIn base configPath =
       readText root configPath <&> \case
@@ -130,7 +137,9 @@ openCatalogAt root localDir packs = do
   fromPacks <- concat <$> traverse (\(name, r) -> discover (Just name) (Just r) (r </> "generators")) packs
   let loaded = local ++ fromPacks
   langs <- concat <$> traverse (uncurry languagesIn) packs
-  pure (Right (Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs)))
+  regions <- traverse (regionsIn root . snd) packs
+  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] []
+  pure (Right (foldl (flip addRegions) base regions))
   where
     languagesIn _ r = do
       let dir = r </> "languages"
@@ -221,3 +230,31 @@ resolver root cat pack ref = case resolveEntry cat pack ref of
 -- | The pack an entry belongs to, if any (for resolving its [[uses]]).
 packOfEntry :: CatalogEntry -> Maybe Text
 packOfEntry = entryPack
+
+-- | Read `regions.toml` in a directory (a pack root, or a project's `.olifant`):
+-- the regions, with whole-region templates read relative to that directory.
+regionsIn :: Monad m => Workspace m -> FilePath -> m (Either (FilePath, Text) [RegionDef])
+regionsIn root dir = do
+  let path = dir </> "regions.toml"
+  readText root path >>= \case
+    Nothing -> pure (Right [])
+    Just src -> case parseRegions src of
+      Left err -> pure (Left (path, err))
+      Right defs -> do
+        resolved <- traverse (fmap sequenceA . traverse template) defs
+        pure (first (path,) (sequence resolved))
+  where
+    template f =
+      readText root (dir </> f) <&> \case
+        Nothing -> Left ("missing template " <> T.pack f)
+        Just t -> first describeTemplateError (parseTemplate t)
+
+-- | Add regions (or a broken file); a region replaces an earlier one with its name.
+addRegions :: Either (FilePath, Text) [RegionDef] -> Catalog -> Catalog
+addRegions found cat = case found of
+  Left broken -> cat {catalogBrokenRegions = catalogBrokenRegions cat ++ [broken]}
+  Right defs -> cat {catalogRegions = foldl place (catalogRegions cat) defs}
+  where
+    place acc r
+      | any ((== regionName r) . regionName) acc = [if regionName x == regionName r then r else x | x <- acc]
+      | otherwise = acc ++ [r]

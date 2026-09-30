@@ -10,6 +10,7 @@ import Olifant.Anchor (Position (..), parsePhrase)
 import Olifant.Generator.Definition
 import Olifant.Language (ruleFromTree)
 import Olifant.Naming (parseName)
+import Olifant.Query (queryFromTree)
 import Olifant.Template (Binding (..), Template, describeTemplateError, freeVariables, parseTemplate)
 import Olifant.Toml
 
@@ -36,7 +37,7 @@ inputsFrom tbl = traverse (\(k, v) -> inKey ("inputs." <> k) (table v >>= inputF
 
 inputFrom :: Text -> Table -> Either Text InputSpec
 inputFrom name t = do
-  onlyKeys ["type", "optional", "default", "prompt", "choices", "of"] t
+  onlyKeys ["type", "optional", "default", "prompt", "choices", "choices_from", "of"] t
   ty <- required "type" text t
   itype <- case ty of
     "list" -> ListInput <$> required "of" listItemFrom t
@@ -51,7 +52,14 @@ scalarFrom ty t = case ty of
   "ident" -> Right IdentS
   "text" -> Right TextS
   "bool" -> Right BoolS
-  "enum" -> EnumS <$> required "choices" (list text) t
+  "enum" -> case (M.lookup "choices" t, M.lookup "choices_from" t) of
+    (Just _, Nothing) -> EnumS <$> required "choices" (list text) t
+    (Nothing, Just v) -> inKey "choices_from" $ do
+      q <- table v
+      query <- queryFromTree (TTable (M.delete "value" q))
+      valueT <- maybe (tmpl "{= name =}") (text >=> tmpl) (M.lookup "value" q)
+      pure (EnumQ query valueT Nothing)
+    _ -> Left "an enum needs exactly one of `choices` or `choices_from`"
   other -> Left ("unknown type `" <> other <> "`; expected ident, text, bool, enum or list")
 
 listItemFrom :: Tree -> Either Text ListItem
@@ -88,20 +96,22 @@ requiresFrom t = do
 editFrom :: Table -> Either Text (EditWith SourceRef)
 editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
   ["create"] -> do
-    onlyKeys ["create", "template", "exemplar", "bind", "text", "on_exists"] t
+    onlyKeys ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"] t
     target <- required "create" (text >=> tmpl) t
     src <- sourceFrom True t
     onExists <- fromMaybe ErrorIfExists <$> optional "on_exists" (text >=> onExistsFrom) t
-    pure (Create target src onExists)
+    unlessG <- unlessFrom t
+    pure (Create target src onExists unlessG)
   ["insert"] -> do
-    onlyKeys ["insert", "at", "anchor", "template", "text"] t
+    onlyKeys ["insert", "at", "anchor", "template", "text", "unless"] t
     target <- required "insert" (text >=> tmpl) t
     anchors <- case (M.lookup "at" t, M.lookup "anchor" t) of
       (Just v, Nothing) -> inKey "at" (atFrom v)
       (Nothing, Just v) -> inKey "anchor" (table v >>= markerAlias)
       _ -> Left "an insert needs exactly one of `at` (preferred) or `anchor`"
     src <- sourceFrom False t
-    pure (Insert target anchors src)
+    unlessG <- unlessFrom t
+    pure (Insert target anchors src unlessG)
   ["complete"] -> do
     onlyKeys ["complete", "where", "template", "text"] t
     ctor <- required "complete" (text >=> tmpl) t
@@ -180,3 +190,7 @@ useFrom t = do
   pure (UseStep ref forEach with)
   where
     withFrom tbl = traverse (\(k, v) -> inKey k ((k,) <$> (text v >>= tmpl))) (M.toList tbl)
+
+-- | `unless = { exists = "<glob>" }` (spec §5).
+unlessFrom :: Table -> Either Text (Maybe Template)
+unlessFrom = optional "unless" (table >=> \u -> onlyKeys ["exists"] u >> required "exists" (text >=> tmpl) u)

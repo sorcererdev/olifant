@@ -64,13 +64,6 @@ spec = do
       matchShape t ["case", "in", "view"] `shouldBe` Just [("FUNCTION", "view")]
       matchShape t ["case", "of", "view"] `shouldBe` Nothing
       matchShape t ["case", "in"] `shouldBe` Nothing
-  describe "matchesGlob" $ do
-    it "matches ** across directories and * within a segment" $ do
-      matchesGlob "**/*.elm" "src/Page/Home.elm" `shouldBe` True
-      matchesGlob "**/*.elm" "Main.elm" `shouldBe` True
-      matchesGlob "src/**/*.elm" "tests/Main.elm" `shouldBe` False
-      matchesGlob "elm.json" "elm.json" `shouldBe` True
-      matchesGlob "*.rs" "src/lib.rs" `shouldBe` False
   describe "languageFor" $
     it "picks the first adapter whose globs match" $ do
       let Right elm = parseLanguage "elm" "/p" elmToml
