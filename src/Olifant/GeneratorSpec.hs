@@ -113,6 +113,16 @@ parseSpec = describe "parseGenerator" $ do
   it "needs exactly one of `at` or `anchor`" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
       `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
+  it "refuses a fragment alongside text or template" $
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "at = \"end of type T\"", "text = \"x\"", "fragment = { file = \"a\", items_of = \"type T\", matching = \"X\" }", "bind = { x = \"a_b\" }"])
+      `shouldSatisfy` either ("exactly one of `template`, `text` or `fragment`" `T.isInfixOf`) (const False)
+  it "refuses `bind` without an exemplar or fragment" $ do
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "at = \"end of type T\"", "text = \"x\"", "bind = { x = \"a_b\" }"])
+      `shouldSatisfy` either ("`bind`" `T.isInfixOf`) (const False)
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "create = \"a\"", "text = \"x\"", "bind = { x = \"a_b\" }"])
+      `shouldSatisfy` either ("`bind`" `T.isInfixOf`) (const False)
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "create = \"a\"", "template = \"x.dt\"", "bind = { x = \"a_b\" }"])
+      `shouldSatisfy` either ("`bind`" `T.isInfixOf`) (const False)
   it "reads choices_from and resolves it from the repo (Review Focus 5)" $ do
     let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\", value = \"{= dir =}\" }"]
         Right g = load src
