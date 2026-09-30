@@ -69,7 +69,7 @@ refreshRegions mode tools ws firstNumber current0
     cachedQuery universe cache q = case lookup q (cache :: Cache) of
       Just r -> pure (r, cache)
       Nothing -> do
-        r <- runQuery (toolCommands tools) universe q
+        r <- runQuery (toolQueries tools) universe q
         pure (r, (q, r) : cache)
 
 -- | The lines currently inside a region (stripped), for counting what changed.

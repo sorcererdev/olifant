@@ -21,7 +21,7 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generation
 import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText, needsChoices, withChoices)
-import Olifant.Query (processCommands)
+import Olifant.Query (Queries (..), noQueries, processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), isSafeRelative, within)
@@ -89,7 +89,7 @@ runCommand rt fmt cat = \case
   SyncCmd mode -> do
     now <- rtNow rt
     let ws = within (rtProjectDir rt) (rtRoot rt)
-        tools = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolCommands = processCommands (rtProjectDir rt)}
+        tools = projectTools rt cat
     case mode of
       SyncApply -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset False now
       SyncCheck -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools ReportUnset True now
@@ -124,7 +124,7 @@ runCommand rt fmt cat = \case
                     Right gen -> first ResolveInvalid <$> resolveChoicesFor rt gen
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices ((basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolCommands = processCommands (rtProjectDir rt)}) steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices (projectTools rt cat) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan = plan0 {planWarnings = planWarnings plan0 ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]}
@@ -194,7 +194,7 @@ resolveChoicesFor rt gen
   | not (needsChoices gen) = pure (Right gen)
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      withChoices (processCommands (rtProjectDir rt)) paths gen
+      withChoices (projectQueries rt) paths gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.
@@ -238,3 +238,12 @@ initRegion rt fmt ws tools def now
     file = regionFile def
     lang = languageFor (toolLanguages tools) file
     fill = syncRegions rt fmt [] ws tools {toolRegions = [def]} SkipUnset False now
+
+-- | The tools a command in this project uses: the runtime's syntax and
+-- checker, the catalog's languages and regions, and the project's queries.
+projectTools :: Runtime -> Catalog -> Tools IO
+projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries rt}
+
+-- | Queries run in the project: commands in its root.
+projectQueries :: Runtime -> Queries IO
+projectQueries rt = noQueries {queryCommand = processCommand (rtProjectDir rt)}

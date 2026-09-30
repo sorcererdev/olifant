@@ -1,15 +1,19 @@
 -- | Queries (spec §4.5): facts read out of the repo as a list of records,
 -- for owned regions, `choices_from` and generators. Globs are evaluated over
--- a list of paths (pure); commands go through the 'Commands' port.
+-- a list of paths (pure); commands and AST queries go through the 'Queries' port.
 module Olifant.Query
   ( Query (..)
   , Record
   , queryFromTree
   , describeQuery
   , globRecords
-  , Commands (..)
-  , noCommands
-  , processCommands
+  , AstQuery (..)
+  , AstSelect (..)
+  , renderQuery
+  , eachFields
+  , Queries (..)
+  , noQueries
+  , processCommand
   , runQuery
   ) where
 
@@ -31,13 +35,24 @@ import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Glob (globPrefix, matchesGlob)
 import Olifant.Language.Process (runBytes)
 import Olifant.Naming (parseName)
-import Olifant.Template (Value (..))
+import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
+import Olifant.Template (Env, TemplateError, Value (..), parseTemplate, render)
+import Text.Regex.TDFA (Regex, makeRegexM, match, matchTest)
 import Olifant.Toml
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, isAbsolute, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory, (</>))
 
-data Query = GlobQuery Text [Text] | CommandQuery [Text] (Maybe Text) (Maybe Text)
+data Query = GlobQuery Text [Text] | CommandQuery [Text] (Maybe Text) (Maybe Text) | AstQueryQ AstQuery
+  deriving stock (Eq, Show)
+
+-- | Nodes in code (spec §4.5): in the files a glob selects, the items of an
+-- adapter target, or every node a raw ast-grep rule matches; `each` adds
+-- fields (field name, POSIX regex over the node's text).
+data AstQuery = AstQuery {astFiles :: Text, astSelect :: AstSelect, astEach :: [(Text, Text)]}
+  deriving stock (Eq, Show)
+
+data AstSelect = ItemsOf Text | RawRule Rule
   deriving stock (Eq, Show)
 
 type Record = Map Text Value
@@ -45,19 +60,35 @@ type Record = Map Text Value
 queryFromTree :: Tree -> Either Text Query
 queryFromTree tree = do
   t <- table tree
-  case (M.member "glob" t, M.member "command" t) of
-    (True, False) -> do
+  case filter (`M.member` t) ["glob", "command", "files"] of
+    ["files"] -> do
+      onlyKeys ["files", "items_of", "ast", "each"] t
+      files <- required "files" text t
+      sel <- case (M.lookup "items_of" t, M.lookup "ast" t) of
+        (Just v, Nothing) -> ItemsOf <$> inKey "items_of" (text v)
+        (Nothing, Just v) -> RawRule <$> inKey "ast" (ruleFromTree v)
+        _ -> Left "an AST query needs exactly one of `items_of` or `ast`"
+      each <- maybe (Right []) (\tb -> traverse field (M.toList tb)) =<< optional "each" table t
+      pure (AstQueryQ (AstQuery files sel each))
+    ["glob"] -> do
       onlyKeys ["glob", "exclude"] t
       GlobQuery <$> required "glob" text t <*> (maybe [] id <$> optional "exclude" (list text) t)
-    (False, True) -> do
+    ["command"] -> do
       onlyKeys ["command", "select", "sort"] t
       argv <- required "command" (list text) t
       if null argv then Left "`command` needs at least the program" else pure ()
       CommandQuery argv <$> optional "select" text t <*> optional "sort" text t
-    _ -> Left "a query needs exactly one of `glob` or `command`"
+    _ -> Left "a query needs exactly one of `glob`, `command` or `files` (an AST query)"
+  where
+    field (name, v) = inKey ("each." <> name) $ do
+      re <- text v
+      case makeRegexM (T.unpack re) :: Maybe Regex of
+        Nothing -> Left ("`" <> re <> "` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \\s or \\w)")
+        Just _ -> Right (name, re)
 
 describeQuery :: Query -> Text
 describeQuery = \case
+  AstQueryQ (AstQuery files sel _) -> "ast " <> files <> " (" <> (case sel of ItemsOf target -> "items of " <> target; RawRule _ -> "rule") <> ")"
   GlobQuery g _ -> "glob " <> g
   CommandQuery argv _ _ -> "command " <> T.unwords argv
 
@@ -88,24 +119,31 @@ globRecords g excludes paths =
             , ("dotted", VText (T.intercalate "." (map T.pack (splitDirectories rel))))
             ]
 
-newtype Commands m = Commands {runCommand :: [Text] -> m (Either Text ByteString)}
+-- | The ports that answer queries: running a command (stdout, or why it
+-- failed), and evaluating an AST query over a list of paths.
+data Queries m = Queries
+  { queryCommand :: [Text] -> m (Either Text ByteString)
+  , queryAst :: AstQuery -> [FilePath] -> m (Either Text [Record])
+  }
 
-noCommands :: Applicative m => Commands m
-noCommands = Commands (\argv -> pure (Left ("commands are not available here (" <> T.unwords argv <> ")")))
+noQueries :: Applicative m => Queries m
+noQueries =
+  Queries
+    { queryCommand = \argv -> pure (Left ("commands are not available here (" <> T.unwords argv <> ")"))
+    , queryAst = \q _ -> pure (Left ("AST queries are not available here (" <> describeQuery (AstQueryQ q) <> ")"))
+    }
 
-processCommands :: FilePath -> Commands IO
-processCommands dir = Commands $ \case
+processCommand :: FilePath -> [Text] -> IO (Either Text ByteString)
+processCommand dir = \case
   [] -> pure (Left "empty command")
   (exe : args) ->
-    locate (T.unpack exe) >>= \case
+    locateIn dir (T.unpack exe) >>= \case
       Nothing -> pure (Left ("`" <> exe <> "` is not installed"))
       Just path ->
         runBytes path (map T.unpack args) (Just dir) "" >>= \case
           Left why -> pure (Left why)
           Right (ExitSuccess, out, _) -> pure (Right out)
           Right (ExitFailure c, _, err) -> pure (Left ("exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8With lenientDecode err)))
-  where
-    locate = locateIn dir
 
 -- | A program with a `/` (`bin/list`, `./scripts/x`) is the project's own,
 -- resolved against the project directory; a bare name is looked up on PATH.
@@ -117,11 +155,12 @@ locateIn dir exe
       pure (if ok then Just path else Nothing)
   | otherwise = findExecutable exe
 
-runQuery :: Monad m => Commands m -> [FilePath] -> Query -> m (Either Text [Record])
-runQuery commands paths q = case q of
+runQuery :: Monad m => Queries m -> [FilePath] -> Query -> m (Either Text [Record])
+runQuery queries paths q = case q of
   GlobQuery g excludes -> pure (Right (globRecords g excludes paths))
+  AstQueryQ ast -> queryAst queries ast paths
   CommandQuery argv select sortKey ->
-    runCommand commands argv >>= \case
+    queryCommand queries argv >>= \case
       Left why -> pure (Left (describeQuery q <> " failed: " <> why))
       Right out -> pure $ case Aeson.eitherDecodeStrict out of
         Left err -> Left (describeQuery q <> " did not print JSON: " <> T.pack err)
@@ -145,3 +184,39 @@ runQuery commands paths q = case q of
       VText t -> t
       VInt i -> T.pack (show i)
       other -> T.pack (show other)
+
+-- | Queries' text is template text (a generator's `[query.NAME]` can use its
+-- inputs and derived values): render it.
+renderQuery :: Env -> Query -> Either TemplateError Query
+renderQuery env = \case
+  GlobQuery g excludes -> GlobQuery <$> tmpl g <*> traverse tmpl excludes
+  CommandQuery argv sel sortKey -> CommandQuery <$> traverse tmpl argv <*> pure sel <*> pure sortKey
+  AstQueryQ (AstQuery files sel each) -> do
+    files' <- tmpl files
+    sel' <- case sel of
+      ItemsOf target -> ItemsOf <$> tmpl target
+      RawRule rule -> RawRule . literal <$> renderRule env rule
+    pure (AstQueryQ (AstQuery files' sel' each))
+  where
+    tmpl t = parseTemplate t >>= render env
+    literal = \case
+      Aeson.String x -> RLit x
+      Aeson.Number n -> RInt (either round id (floatingOrInteger n :: Either Double Integer))
+      Aeson.Bool b -> RBool b
+      Aeson.Array xs -> RList (map literal (toList xs))
+      Aeson.Object o -> RObject [(Key.toText k, literal v) | (k, v) <- KM.toList o]
+      Aeson.Null -> RLit ""
+
+-- | `each` fields for a node's text: the first capture group of each regex
+-- (the whole match if it has none; empty text if it does not match).
+eachFields :: [(Text, Text)] -> Text -> Record
+eachFields each nodeText = M.fromList [(name, VText (capture re)) | (name, re) <- each]
+  where
+    capture re = case makeRegexM (T.unpack re) :: Maybe Regex of
+      Nothing -> ""
+      Just rx
+        | not (matchTest rx str) -> ""
+        | otherwise ->
+            let (_, whole, _, groups) = match rx str :: (String, String, String, [String])
+             in T.pack (case groups of (g : _) -> g; [] -> whole)
+    str = T.unpack nodeText
