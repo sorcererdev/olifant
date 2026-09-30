@@ -6,6 +6,7 @@ import Data.Aeson (encode)
 import Data.ByteString.Lazy.Char8 qualified as BL
 import Data.Functor.Identity (Identity (..))
 import Data.List (isInfixOf)
+import Data.Map.Strict qualified as M
 import Data.Text (Text)
 
 import Data.Text qualified as T
@@ -14,6 +15,8 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor
 import Olifant.Language
+import Olifant.Query (AstQuery (..), AstSelect (..))
+import Olifant.Template (Value (..))
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
@@ -115,6 +118,18 @@ resolveSpec = do
       resolve "start of case in x" `shouldSatisfy` either (any (("whole lines" `T.isInfixOf`) . missReason)) (const False)
     it "still places `after` a container that ends its line" $
       fmap locLine (resolve "after case in x") `shouldBe` Right 2
+  describe "astQueries" $ do
+    let files = M.fromList [("src/A.elm", source), ("src/B.elm", "module B\n")]
+        reader p = Identity (M.lookup p files)
+    it "gives a record per item: text, path, line and each fields" $
+      fmap (map (\r -> (M.lookup "path" r, M.lookup "line" r, M.lookup "head" r))) (runIdentity (astQueries fakeSyntax [caseTarget] reader (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")]) (M.keys files)))
+        `shouldBe` Right [(Just (VText "src/A.elm"), Just (VInt 4), Just (VText "A")), (Just (VText "src/A.elm"), Just (VInt 8), Just (VText "B"))]
+    it "gives no records for a file without the target (Review Focus 1)" $
+      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] reader (AstQuery "src/B.elm" (ItemsOf "case in update") []) (M.keys files)))
+        `shouldBe` Right 0
+    it "is an error when the target appears twice in a file" $
+      runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] reader (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files))
+        `shouldSatisfy` either ("src/A.elm" `T.isInfixOf`) (const False)
   describe "insertLines" $
     it "indents non-blank lines and reports the 1-based line" $
       insertLines (Located 1 "  " "" "x") "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")

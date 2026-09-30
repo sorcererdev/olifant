@@ -5,6 +5,7 @@ module Olifant.Anchor.Resolve
   , Miss (..)
   , resolveLayers
   , locateContainer
+  , itemsOfTarget
   , insertLines
   , alreadyPresent
   , presentAt
@@ -14,6 +15,7 @@ module Olifant.Anchor.Resolve
 import Data.Aeson (object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Char (isAlphaNum)
+import Data.Functor ((<&>))
 import Data.List (maximumBy, minimumBy)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
@@ -111,29 +113,11 @@ resolveOne syntax lang anchor content = case anchor of
               (h : _) ->
                 let i = if which == FirstLine then h else last hits
                  in (\line -> located line (indentAt i) (runAround i)) <$> beforeAfter pos i "line"
-    named l pos ws = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
-      [] ->
-        let examples = map targetExample (langTargets l)
-            suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (closest (positionWords pos <> " " <> T.unwords ws) examples)
-         in pure (Left (miss ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l)) <> ")")))
-      ((t, binds) : _) -> do
-        let env = M.fromList [(k, VText v) | (k, v) <- binds]
-        case (,) <$> renderRule env (targetContainer t) <*> renderRule env (targetItems t) of
-          Left err -> pure (Left (miss (describeTemplateError err)))
-          Right (containerRule, itemsRule) ->
-            querySyntax syntax l containerRule content >>= \case
-              Left f -> pure (Left (toolMiss f))
-              Right [c] -> do
-                -- Items are the container's direct children (ast-grep's default
-                -- `inside` checks only the parent), so branches of a nested
-                -- case never count, even when their parent branch was filtered
-                -- out as a catch-all.
-                let within = object ["all" .= [itemsRule, object ["inside" .= containerRule]]]
-                querySyntax syntax l within content >>= \case
-                  Left f -> pure (Left (toolMiss f))
-                  Right found -> pure (place pos c (topLevel (filter (inside c) found)))
-              Right [] -> pure (Left (miss "not found"))
-              Right cs -> pure (Left (miss ("matches " <> count cs <> " places; it must match once")))
+    named l pos ws =
+      itemsOfTarget syntax l (positionWords pos) ws content <&> \case
+        Left (why, tool) -> Left (Miss used why tool)
+        Right Nothing -> Left (miss "not found")
+        Right (Just (c, items)) -> place pos c items
     place pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce
@@ -147,6 +131,36 @@ resolveOne syntax lang anchor content = case anchor of
             (EndOf, _) ->
               let z = maximumBy (comparing matchEnd) items
                in wholeLine "the last item" (endsLine (matchEnd z)) (located (fst (matchEnd z) + 1) (indentAt (fst (matchStart z))) region)
+
+-- | A target's container and its items: the container's direct children, top
+-- level (as `end of` sees them). 'Right Nothing' when the container is absent;
+-- 'Left' (why, a tool is missing) when the target is unknown, ambiguous or the
+-- syntax tool fails. @prefix@ ("end of", "items of") only shapes suggestions.
+itemsOfTarget :: Monad m => Syntax m -> Language -> Text -> [Text] -> Text -> m (Either (Text, Bool) (Maybe (Match, [Match])))
+itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
+  [] ->
+    let suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (closest (prefix <> " " <> T.unwords ws) (map targetExample (langTargets l)))
+     in pure (Left ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l)) <> ")", False))
+  ((t, binds) : _) -> do
+    let env = M.fromList [(k, VText v) | (k, v) <- binds]
+    case (,) <$> renderRule env (targetContainer t) <*> renderRule env (targetItems t) of
+      Left err -> pure (Left (describeTemplateError err, False))
+      Right (containerRule, itemsRule) ->
+        querySyntax syntax l containerRule content >>= \case
+          Left f -> pure (Left (failure f))
+          Right [] -> pure (Right Nothing)
+          Right [c] -> do
+            -- Items are the container's direct children (ast-grep's default
+            -- `inside` checks only the parent), so branches of a nested case
+            -- never count, even when their parent branch was filtered out as a
+            -- catch-all.
+            let within = object ["all" .= [itemsRule, object ["inside" .= containerRule]]]
+            querySyntax syntax l within content <&> \case
+              Left f -> Left (failure f)
+              Right found -> Right (Just (c, topLevel (filter (inside c) found)))
+          Right cs -> pure (Left ("matches " <> T.pack (show (length cs)) <> " places; it must match once", False))
+  where
+    failure f = (describeSyntaxFailure f, case f of SyntaxToolMissing _ -> True; SyntaxFailed _ -> False)
     inside c m = matchStart m >= matchStart c && matchEnd m <= matchEnd c && m /= c
     topLevel ms = [m | m <- ms, not (any (\o -> o /= m && matchStart o <= matchStart m && matchEnd m <= matchEnd o) ms)]
 
