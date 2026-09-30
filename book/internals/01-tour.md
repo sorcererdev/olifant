@@ -111,7 +111,7 @@ From the bottom up:
 | **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`: `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`. `Language.AstGrep` (the ast-grep adapter) is imported directly by `Main` | Glob, Template, Toml |
 | **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `diskWorkspace`, `memoryWorkspace`, `within`, `normalisePath`, `isSafeRelative` | Language (only `Language.Process`, to run `git`) |
 | **Query** | Facts from the repo as records (globs, commands printing JSON, or AST queries selecting nodes), and the **Queries** port | `Query.hs`: `Query`, `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `noQueries`, `processCommand` | Glob, Language (`Process`, `Rule`), Naming, Template, Toml |
-| **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Spacing`, `Miss`, `insertLines`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Language, Query, Template |
+| **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Language, Query, Template |
 | **Generator** | A generator definition: the types, loading `generator.toml`, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` and `Inputs`, plus `parseGenerator`, `withChoices`, `needsChoices` | Anchor, Language, Naming, Query, Template, Toml |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `refreshRegions`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions` | Anchor, Generator, Glob, Language, Query, Region, Template, Workspace |
@@ -575,7 +575,7 @@ starts from those contents. `ws'` here is the list of warnings, not a workspace.
                   | presentAt loc snippet old -> (current, (planned path n p (Skipped AlreadyPresent)) {editAnchor = Just (locUsed loc)}, Nothing)
                   | otherwise ->
                       let (line, updated) = insertLines loc snippet old
-                       in (M.insert p (Just updated) current, (planned path n p (WillInsert line snippet)) {editAnchor = Just (locUsed loc)}, Nothing)
+                       in (M.insert p (Just updated) current, (planned path n p (WillInsert line (insertedText (locSpacing loc) snippet))) {editAnchor = Just (locUsed loc)}, Nothing)
   ```
 
 - `RenderedComplete` items are skipped here (`:42`) and left for phase 2.
@@ -602,12 +602,17 @@ phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on 
 Each `querySyntax` call against the real adapter is one `ast-grep` process fed the file on
 stdin (`src/Olifant/Language/AstGrep.hs:34`). The Elm pack vendors its tree-sitter grammar,
 so the first ever call compiles `packs/elm/languages/grammar/elm/parser.c` with `cc` into
-`~/.cache/olifant/grammars/`. The key is a hash of `parser.c` (`prepare`, `:49`).
+`~/.cache/olifant/grammars/`. The key is the language name plus a hash of `parser.c`'s
+path, size and modification time (`prepare`): a `stat` per query, since hashing a
+megabyte-sized grammar on every call cost a third of an AST query's time.
 
 `presentAt` (`Resolve.hs:214`) makes re-runs idempotent: if the snippet's tokens already sit
 in the target region, or just next to the insertion line, the insert is `Skipped
-AlreadyPresent`. `insertLines` (`:194`) does the actual splice, keeping the file's line
-endings and, per `locSpacing`, a blank line around the new text if one isn't already there.
+AlreadyPresent`. `insertLines` does the actual splice, keeping the file's line endings.
+The lines it adds come from `insertedText`: the snippet less its common indentation (so a
+snippet written at its absolute column is not indented twice), plus, per `locSpacing`, a
+blank line if one isn't already there. The plan's `WillInsert` holds that same text, so
+what `--plan` shows is what is written, apart from the site's indentation.
 
 **Phase 2: `complete` edits, the check loop** (`src/Olifant/Generation/Complete.hs:35`). For
 each language that has `complete` edits, `gather` (`:51`) collects every file the check
