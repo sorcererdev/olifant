@@ -96,8 +96,10 @@ plan leaves it, with the new `| Profile`, so the list is right in the same run.
   the vocabulary is the one `at` uses (`olifant anchors elm` lists it), and `olifant where`
   tests it. A file without the target gives no records, so a misspelt *name*
   (`type Rout`) gives an empty list rather than an error. A misspelt target *kind* is an
-  error ("unknown target `typo Route` for elm (targets: …)"), and so is a target that
-  appears twice in one file.
+  error even when no file matches ("unknown target `typo Route` in any language adapter
+  (targets: …)"), and so is a target that appears twice in one file. Files the glob
+  matches that have no language adapter (`src/*` catching `elm.json`) are skipped; a file
+  named outright must have one.
 - **`ast = { … }`** is a raw ast-grep rule, for nodes no target covers. Every matching node
   is a record:
 

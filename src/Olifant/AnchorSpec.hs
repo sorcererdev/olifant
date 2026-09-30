@@ -16,7 +16,7 @@ import Hedgehog.Range qualified as Range
 import Olifant.Anchor
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..))
-import Olifant.Template (Value (..))
+import Olifant.Template (Value (..), parseTemplate)
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
@@ -130,6 +130,20 @@ resolveSpec = do
     it "is an error when the target appears twice in a file" $
       runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
         `shouldSatisfy` either ("src/A.elm" `T.isInfixOf`) (const False)
+    it "rejects an unknown target kind even when the glob matches no file" $
+      runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "nowhere/*.elm" (ItemsOf "typo in update") []) (M.keys files) reader)
+        `shouldSatisfy` either (\e -> "unknown target `typo in update`" `T.isPrefixOf` e) (const False)
+    it "skips files without a language adapter when the glob has a wildcard, but not a named file" $ do
+      let files' = M.insert "src/data.json" "{}" files
+          reader' p = Identity (M.lookup p files')
+      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/*" (ItemsOf "case in update") []) (M.keys files') reader'))
+        `shouldBe` Right 0
+      runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/data.json" (ItemsOf "case in update") []) (M.keys files') reader')
+        `shouldSatisfy` either ("no language adapter for src/data.json" `T.isInfixOf`) (const False)
+    it "names the query when a raw rule's template fails" $ do
+      let Right tpl = parseTemplate "{= nope =}"
+      runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("regex", RText tpl)])) []) (M.keys files) reader)
+        `shouldSatisfy` either ("ast src/A.elm (rule)" `T.isInfixOf`) (const False)
     it "drops the CR of a CRLF file from text and each fields" $
       fmap (map (\r -> (M.lookup "text" r, M.lookup "rhs" r))) (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 5) "A ->\r\n    a"]))) [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("kind", RLit "x")])) [("rhs", "->(.*)")]) (M.keys files) reader))
         `shouldBe` Right [(Just (VText "A ->\n    a"), Just (VText ""))]
