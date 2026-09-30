@@ -30,6 +30,7 @@ import Olifant.Generation
 import Olifant.Generator
 import Olifant.Language (Language (..), TargetDef (..), targetPhrase)
 import Olifant.Template (templateSource)
+import System.FilePath ((</>))
 
 encodeJson :: Value -> Text
 encodeJson = TL.toStrict . TLE.decodeUtf8 . encode
@@ -78,6 +79,7 @@ showJson subs e =
     , "derived" .= map fst (genDerived d)
     , "edits" .= map editJson (genEdits d)
     , "examples" .= genExamples d
+    , "source" .= (entryDir e </> "generator.toml")
     , "uses"
         .= [ object
               [ "generator" .= useGenerator u
@@ -107,8 +109,12 @@ showHuman subs e =
         ]
       ++ ["", "edits:"]
       ++ [editLine ed | ed <- genEdits d]
+      ++ [ "  (a complete body can use {= pattern =}, the missing case as the site writes it, e.g. Just Route.About; also {= site.file =} and {= site.function =})"
+         | any (\case Complete {} -> True; _ -> False) (genEdits d)
+         ]
       ++ (if null subs then [] else "" : "uses:" : concatMap useLines subs)
       ++ (if null (genExamples d) then [] else "" : "examples:" : ["  " <> x | x <- genExamples d])
+      ++ ["", "defined in " <> T.pack (entryDir e </> "generator.toml")]
   where
     d = entryDefinition e
     editLine = \case

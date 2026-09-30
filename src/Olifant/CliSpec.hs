@@ -290,6 +290,15 @@ runCliSpec = describe "runCli" $ do
     fmap (\case String s -> "+" `T.isInfixOf` s; _ -> False) (jsonAt ["tip"] listed) `shouldBe` Just True
     (_, human, _, _) <- runWith "" project True ["list"]
     human `shouldSatisfy` T.isInfixOf "Tip:"
+  it "shows where a generator is defined, and what a complete body can use" $ do
+    let withRoute = project ++ [("/proj/.olifant/generators/route/generator.toml", "description = \"r\"\nlanguage = \"elm\"\n[inputs.name]\ntype = \"ident\"\n[[edits]]\ncomplete = \"Route.{= name|pascal =}\"\ntext = \"{= pattern =} -> x\"\n")]
+    (_, human, _, _) <- runWith "" withRoute True ["show", "route"]
+    human `shouldSatisfy` T.isInfixOf "defined in /proj/.olifant/generators/route/generator.toml"
+    human `shouldSatisfy` T.isInfixOf "{= pattern =}"
+    (_, json, _, _) <- runWith "" withRoute False ["show", "route"]
+    jsonAt ["source"] json `shouldBe` Just (String "/proj/.olifant/generators/route/generator.toml")
+    (_, model, _, _) <- runWith "" project True ["show", "model"]
+    model `shouldNotSatisfy` T.isInfixOf "{= pattern =}"
   it "accepts --flag=value forms" $ do
     (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess

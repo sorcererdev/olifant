@@ -85,7 +85,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
   Failure f -> let (msg, code) = renderFailure f "olifant" in Left (T.pack msg <> "\n", code)
   CompletionInvoked _ -> Left ("shell completion is not supported\n", ExitFailure 2)
   where
-    parserInfo = info (commands <**> helper) (fullDesc <> progDesc "Olifant: Durandal's generator engine")
+    parserInfo = info (commands <**> helper) (fullDesc <> progDesc "Olifant: Durandal's generator engine" <> footer "Generators live in packs (listed under [packs] in .olifant/config.toml) and in the project: .olifant/generators/NAME/generator.toml is found automatically as NAME. `olifant show GEN` says where a generator is defined.")
     commands =
       hsubparser
         ( cmd "list" (ListCmd <$> switch (long "detail" <> help "Include every generator's inputs, sub-generators and examples")) "List generators"
