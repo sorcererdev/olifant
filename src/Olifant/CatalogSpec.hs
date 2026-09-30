@@ -2,6 +2,7 @@
 
 module Olifant.CatalogSpec (spec) where
 
+import Control.Monad (forM_)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -82,6 +83,13 @@ spec = describe "catalog" $ do
       either describeCatalogError (const "") none `shouldSatisfy` ("matched 0 items" `T.isInfixOf`)
       both <- load "."
       either describeCatalogError (const "") both `shouldSatisfy` ("matched 2 items" `T.isInfixOf`)
+    it "refuses a fragment or exemplar path that leaves the fixture" $ do
+      (root, _) <- memoryWorkspace [("/packs/p/languages/x.toml", lang), ("/packs/p/fixtures/app/Main.x", "x\n"), ("/packs/secret.x", "s\n"), ("/packs/p/generators/g/generator.toml", T.replace "fixture:Main.x" "fixture:../../../secret.x" (gen "GotSamplePageMsg")), ("/packs/p/generators/h/generator.toml", "description = \"d\"\nlanguage = \"x\"\n[inputs.page]\ntype = \"ident\"\n[[edits]]\ncreate = \"a.x\"\nexemplar = \"fixture:/packs/secret.x\"\nbind = { page = \"s\" }\n")]
+      Right cat <- openPackCatalog root [("p", "/packs/p")]
+      forM_ ["p/g", "p/h"] $ \g -> do
+        let Right entry = findEntry cat g
+        r <- loadGenerator root (fakeWith branches) cat entry
+        either describeCatalogError (const "") r `shouldSatisfy` ("outside" `T.isInfixOf`)
     it "drops the CR of a CRLF file's lines" $ do
       Right g <- loadWith [Match (5, 8) (6, 29) "( GotSamplePageMsg sub, SamplePage page ) ->\r\n            SamplePage.update sub"] "GotSamplePageMsg"
       let [Insert _ _ src _] = genEdits g

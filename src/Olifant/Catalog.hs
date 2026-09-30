@@ -37,7 +37,7 @@ import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
 import Olifant.Toml qualified as Toml
-import Olifant.Workspace (Workspace (..), normalisePath)
+import Olifant.Workspace (Workspace (..), isSafeRelative, normalisePath)
 import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 
 data CatalogEntry = CatalogEntry
@@ -226,11 +226,17 @@ loadGenerator root syntax cat entry = sequenceA <$> traverse resolve (entryDefin
       readText root path <&> \case
         Nothing -> Left (SourceMissing gid path)
         Just src -> first (SourceInvalid gid path) (build src)
+    -- Exemplars and fragments are read from inside the pack's fixture or
+    -- the project, never from an absolute path or through `..`.
     exemplarPath ref = case T.stripPrefix "fixture:" ref of
       Just rest -> case entryPackRoot entry of
-        Just r -> Right (r </> "fixtures" </> "app" </> T.unpack rest)
+        Just r -> inside rest (r </> "fixtures" </> "app")
         Nothing -> Left (SourceInvalid gid (T.unpack ref) "`fixture:` exemplars are only available in packs")
-      Nothing -> Right (fromMaybe "." (catalogProject cat) </> T.unpack ref)
+      Nothing -> inside ref (fromMaybe "." (catalogProject cat))
+      where
+        inside rel base
+          | isSafeRelative (T.unpack rel) = Right (base </> T.unpack rel)
+          | otherwise = Left (SourceInvalid gid (T.unpack ref) "the path is outside the fixture or project (use a relative path without `..`)")
 
 -- | Which catalog entry a [[uses]] ref names. Inside a pack, a bare name
 -- means that pack's generator first (spec §7); otherwise the usual lookup.
