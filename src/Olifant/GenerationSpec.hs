@@ -83,6 +83,15 @@ createSpec = describe "generate (create edits)" $ do
             , "[[edits]]", "create = \"index.txt\"", "text = \"{= for m in mods =}{= m.stem =}\\n{= end =}\"" ]
     (_, files) <- run [("src/core/A.hs", ""), ("src/core/B.hs", ""), ("src/other/C.hs", "")] gen [("name", "core")] Apply
     M.lookup "index.txt" files `shouldBe` Just "A\nB\n"
+  it "stops with QueryFailed when a generator query fails" $ do
+    let gen = generatorFrom . (header <>) . T.unlines $ ["[query.types]", "files = \"a.x\"", "items_of = \"type T\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
+    (result, files) <- run [("a.x", "")] gen [("name", "x")] Apply
+    either (\case QueryFailed _ why -> "query `types`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
+    M.keys files `shouldBe` ["a.x"]
+  it "renders every query with inputs and derived values only, so query order does not matter" $ do
+    let gen = generatorFrom . (header <>) . T.unlines $ ["[query.a]", "glob = \"*.hs\"", "[query.b]", "glob = \"{= a =}\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
+    (result, _) <- run [("A.hs", "")] gen [("name", "x")] Apply
+    either (\case QueryFailed _ why -> "undefined variable `a`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
   it "skips a create when `unless` finds a match, on disk or created earlier in the plan" $ do
     let migration =
           generatorFrom . (header <>) . T.unlines $
@@ -278,6 +287,18 @@ composeSpec = describe "generate (composition)" $ do
     (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings"), ("msgs", "toggle_dark_mode, reset")])]
     M.lookup "src/Settings.txt" files `shouldBe` Just "page Settings\n| ToggleDarkMode\n| Reset\n-- msgs\n"
     map editStep (planEdits plan) `shouldBe` [["page"], ["page", "msg[1]"], ["page", "msg[2]"]]
+  it "runs [[uses]] once per record of a generator query" $ do
+    let fromPages =
+          generatorNamed "all" . T.unlines $
+            [ "description = \"all\"", "language = \"x\""
+            , "[query.pages]", "glob = \"pages/*.txt\""
+            , "[[uses]]", "generator = \"page\"", "for_each = \"pages\""
+            , "with = { page = \"{= item.stem =}\" }"
+            ]
+    (ws, snapshot) <- memoryWorkspace [("pages/about.txt", ""), ("pages/contact_us.txt", "")]
+    Right _ <- generate ws resolve noTools [Step fromPages M.empty] now Apply
+    files <- snapshot
+    [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
   it "treats an empty for_each list as no steps" $ do
     (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings")])]
     M.keys files `shouldBe` ["src/Settings.txt"]

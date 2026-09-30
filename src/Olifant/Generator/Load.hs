@@ -28,6 +28,9 @@ parseGenerator gid src = do
   uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
   examples <- fromMaybe [] <$> optional "examples" (list text) top
   queries <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryFromTree v)) . M.toList) =<< optional "query" table top
+  case [k | (k, _) <- queries, k `elem` map inputName inputs ++ map fst derived] of
+    k : _ -> Left ("`query." <> k <> "`: `" <> k <> "` is already an input or derived value; name the query differently")
+    [] -> Right ()
   pure (Generator gid description language version inputs derived requires edits uses examples queries)
 
 tmpl :: Text -> Either Text Template

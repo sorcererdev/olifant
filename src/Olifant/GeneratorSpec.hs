@@ -113,6 +113,11 @@ parseSpec = describe "parseGenerator" $ do
   it "needs exactly one of `at` or `anchor`" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
       `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
+  it "refuses a query named like an input or derived value" $ do
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.pages]", "type = \"text\"", "[query.pages]", "glob = \"*\""])
+      `shouldSatisfy` either ("`query.pages`" `T.isInfixOf`) (const False)
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[derive]", "pages = \"x\"", "[query.pages]", "glob = \"*\""])
+      `shouldSatisfy` either ("`query.pages`" `T.isInfixOf`) (const False)
   it "refuses a fragment alongside text or template" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "at = \"end of type T\"", "text = \"x\"", "fragment = { file = \"a\", items_of = \"type T\", matching = \"X\" }", "bind = { x = \"a_b\" }"])
       `shouldSatisfy` either ("exactly one of `template`, `text` or `fragment`" `T.isInfixOf`) (const False)

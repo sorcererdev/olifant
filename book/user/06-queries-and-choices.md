@@ -147,7 +147,8 @@ route-names (1 edit, 0 conflicts)
 
 `routes` is a list like any other: templates, `for_each` and `[[uses]]` can use it. Any
 query works here (`glob`, `command`, `items_of`, `ast`). Queries run after inputs and
-`[derive]`, so their strings can use them (`files = "{= service_dir =}/src/{= cmd =}.rs"`).
+`[derive]`, so their strings can use them (`files = "{= service_dir =}/src/{= cmd =}.rs"`),
+but not each other's records. A query named like an input or derived value is an error.
 A query that fails stops the generator with `query_failed` (exit 1).
 
 Two limits. Generator queries read the files on disk, so in a chain of steps they do not
