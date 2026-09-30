@@ -13,7 +13,7 @@ import Data.Text qualified as T
 import Olifant.Generation.Plan
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language (Language (..), languageFor)
-import Olifant.Query (Query, Record, runQuery)
+import Olifant.Query (Query (..), Record, runQuery)
 import Olifant.Region
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), isSafeRelative)
@@ -66,11 +66,14 @@ refreshRegions mode tools ws firstNumber current0
       Just c -> Just c
       Nothing -> langComment <$> languageFor (toolLanguages tools) file
     -- A command query runs once per refresh, however many regions use it.
-    cachedQuery universe view cache q = case lookup q (cache :: Cache) of
-      Just r -> pure (r, cache)
-      Nothing -> do
+    -- Other queries read files through the view, which earlier regions may
+    -- have just rewritten, so they run each time (and are cheap enough to).
+    cachedQuery universe view cache q = case (q, lookup q (cache :: Cache)) of
+      (CommandQuery {}, Just r) -> pure (r, cache)
+      (CommandQuery {}, Nothing) -> do
         r <- runQuery (toolQueries tools) universe view q
         pure (r, (q, r) : cache)
+      _ -> (,cache) <$> runQuery (toolQueries tools) universe view q
 
 -- | The lines currently inside a region (stripped), for counting what changed.
 oldBody :: RegionDef -> Text -> Text -> [Text]

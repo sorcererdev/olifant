@@ -19,7 +19,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), noQueries)
 import Olifant.Region
-import Olifant.Template (Template, parseTemplate)
+import Olifant.Template (Template, Value (..), parseTemplate)
 import Data.ByteString qualified as BS
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.FilePath ((</>))
@@ -578,6 +578,17 @@ regionSpec = describe "generate (owned regions)" $ do
     out `shouldSatisfy` ("    Olifant.A\n    Olifant.B\n    -- olifant:end mods" `T.isInfixOf`)
     Right again <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
     planWrites again `shouldBe` M.empty
+  it "re-runs an AST query for a later region after an earlier one rewrote the file it reads" $ do
+    let Right n = parseTemplate "{= n =}"
+        q = AstQueryQ (AstQuery "f.txt" (ItemsOf "type T") [])
+        lineCount = Queries (\_ -> pure (Left "no")) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt"))
+        region name = RegionDef name "f.txt" q (ItemTemplate n) False (Just "--") Nothing Nothing
+        both = (noTools :: Tools IO) {toolRegions = [region "a", region "b"], toolQueries = lineCount}
+    (ws, snap) <- memoryWorkspace [("f.txt", "-- olifant:region a\n-- olifant:end a\n-- olifant:region b\n-- olifant:end b\n")]
+    Right _ <- generate ws noResolve both [Step unit (M.fromList [("name", "b")])] now Apply
+    Just out <- M.lookup "f.txt" <$> snap
+    out `shouldSatisfy` ("\n4\n-- olifant:end a\n" `T.isInfixOf`)
+    out `shouldSatisfy` ("\n5\n-- olifant:end b\n" `T.isInfixOf`)
   it "stays fast with many files outside the region's glob (review #1)" $ do
     (ws, _) <- memoryWorkspace (("x.cabal", cabal) : [("node_modules/pkg" <> show i <> "/index.js", "") | i <- [1 :: Int .. 30000]])
     result <- timeout 5000000 (generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply)
