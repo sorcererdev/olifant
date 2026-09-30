@@ -38,6 +38,8 @@ data GeneratorWith src = Generator
   , genEdits :: [EditWith src]
   , genUses :: [UseStep]
   , genExamples :: [Text] -- ^ example commands, shown by `olifant show`
+  , -- | `[query.NAME]` (spec §4.5): lists bound after derived values
+    genQueries :: [(Text, Query)]
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 

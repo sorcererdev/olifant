@@ -9,6 +9,7 @@ module Olifant.Generation.Compose
   , CompositionError (..)
   , PlanItem (..)
   , expandSteps
+  , BindQueries
   , showStepPath
   ) where
 
@@ -22,6 +23,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Render (RenderedEdit, renderEdits)
+import Olifant.Query (Query)
 import Olifant.Generator
 import Olifant.Template (Env, TemplateError (..), Value (..), render)
 import Olifant.Workspace (normalisePath)
@@ -48,7 +50,11 @@ data CompositionError
   | StepUnknown StepPath Text Text
   | StepInvalid StepPath Text Text
   | StepCycle StepPath
+  | StepQuery StepPath Text
   deriving stock (Eq, Show)
+
+-- | Bind a generator's `[query.NAME]` lists into its environment (spec §4.5).
+type BindQueries m = Env -> [(Text, Query)] -> m (Either Text Env)
 
 data PlanItem
   = PlanRequire StepPath [FilePath] (Maybe Text)
@@ -57,19 +63,20 @@ data PlanItem
 showStepPath :: StepPath -> Text
 showStepPath = T.intercalate " › "
 
-expandSteps :: Monad m => Resolve m -> UTCTime -> [Step] -> m (Either CompositionError [PlanItem])
-expandSteps resolve now steps = runExceptT (concat <$> zipWithM top [1 :: Int ..] steps)
+expandSteps :: Monad m => Resolve m -> BindQueries m -> UTCTime -> [Step] -> m (Either CompositionError [PlanItem])
+expandSteps resolve bindQ now steps = runExceptT (concat <$> zipWithM top [1 :: Int ..] steps)
   where
-    top i (Step gen sets) = expand resolve now [] [label gen i] gen sets
+    top i (Step gen sets) = expand resolve bindQ now [] [label gen i] gen sets
     label gen i
       | length steps > 1 = idText gen <> " (step " <> T.pack (show i) <> ")"
       | otherwise = idText gen
 
-expand :: Monad m => Resolve m -> UTCTime -> [GeneratorId] -> StepPath -> Generator -> Map Text Text -> ExceptT CompositionError m [PlanItem]
-expand resolve now ancestors path gen sets = do
+expand :: Monad m => Resolve m -> BindQueries m -> UTCTime -> [GeneratorId] -> StepPath -> Generator -> Map Text Text -> ExceptT CompositionError m [PlanItem]
+expand resolve bindQ now ancestors path gen sets = do
   when (genId gen `elem` ancestors) $ throwE (StepCycle path)
   checkCycles resolve (genId gen : ancestors) path gen
-  env <- except (first (StepInputs path) (buildEnv gen sets now))
+  env0 <- except (first (StepInputs path) (buildEnv gen sets now))
+  env <- if null (genQueries gen) then pure env0 else ExceptT (first (StepQuery path) <$> bindQ env0 (genQueries gen))
   rendered <- except (first (StepTemplate path) (renderEdits (genLanguage gen) env (genEdits gen)))
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
   nested <- concat <$> zipWithM (expandUse env) [1 :: Int ..] (genUses gen)
@@ -81,7 +88,7 @@ expand resolve now ancestors path gen sets = do
       child <- ExceptT (first (failure (useGenerator u)) <$> resolve (packOf (genId gen)) (useGenerator u))
       concat
         <$> traverse
-          (\(i, s) -> expand resolve now (genId gen : ancestors) (path ++ [label child k u i]) child s)
+          (\(i, s) -> expand resolve bindQ now (genId gen : ancestors) (path ++ [label child k u i]) child s)
           childSets
 
     label child k u i =

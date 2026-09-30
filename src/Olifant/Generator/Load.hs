@@ -17,7 +17,7 @@ import Olifant.Toml
 parseGenerator :: GeneratorId -> Text -> Either Text GeneratorDef
 parseGenerator gid src = do
   top <- parseToml src
-  onlyKeys ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples"] top
+  onlyKeys ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query"] top
   description <- required "description" text top
   language <- required "language" text top
   version <- maybe 1 fromInteger <$> optional "version" int top
@@ -27,7 +27,8 @@ parseGenerator gid src = do
   edits <- fromMaybe [] <$> optional "edits" (list (table >=> editFrom)) top
   uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
   examples <- fromMaybe [] <$> optional "examples" (list text) top
-  pure (Generator gid description language version inputs derived requires edits uses examples)
+  queries <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryFromTree v)) . M.toList) =<< optional "query" table top
+  pure (Generator gid description language version inputs derived requires edits uses examples queries)
 
 tmpl :: Text -> Either Text Template
 tmpl = first describeTemplateError . parseTemplate

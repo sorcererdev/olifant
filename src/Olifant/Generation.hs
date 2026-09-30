@@ -17,7 +17,8 @@ module Olifant.Generation
   , module Olifant.Generation.Tools
   ) where
 
-import Control.Monad (filterM, forM_, when)
+import Control.Monad (filterM, foldM, forM_, when)
+import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.List (nub)
 import Data.Map.Strict qualified as M
@@ -36,7 +37,8 @@ import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..))
 import Olifant.Language (languageFor)
-import Olifant.Template (TemplateError)
+import Olifant.Query (renderQuery, runQuery)
+import Olifant.Template (TemplateError, Value (..), describeTemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative)
 import System.FilePath (takeDirectory)
 
@@ -49,11 +51,12 @@ data GenerationError
   | UnknownGenerator StepPath Text Text
   | InvalidGenerator StepPath Text Text
   | CompositionCycle StepPath
+  | QueryFailed StepPath Text
   deriving stock (Eq, Show)
 
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
 generate ws resolve tools steps now mode =
-  expandSteps resolve now steps >>= \case
+  expandSteps resolve bindQueries now steps >>= \case
     Left err -> pure (Left (fromComposition err))
     Right items -> do
       let targets = nub [p | PlanEdit _ e <- items, Just p <- [renderedPath e]]
@@ -72,9 +75,9 @@ generate ws resolve tools steps now mode =
             (compiled, cc, ws', afterComplete) <- completeEdits tools ws completes next afterPositional
             (refreshed, rc, current') <- refreshRegions SkipUnset tools ws (next + length compiled) afterComplete
             pure (positional ++ compiled ++ refreshed, pc ++ cc ++ rc, ws', current')
-      first <- phases originals
-      (edits, conflicts, warnings, current) <- case [p | TargetExists _ p <- (\(_, c, _, _) -> c) first] of
-        [] -> pure first
+      firstPass <- phases originals
+      (edits, conflicts, warnings, current) <- case [p | TargetExists _ p <- (\(_, c, _, _) -> c) firstPass] of
+        [] -> pure firstPass
         -- A file this plan creates and then edits no longer matches its
         -- template on a re-run, so its create reports `target_exists`. If
         -- planning as if it were absent reproduces it exactly, the run is a
@@ -85,7 +88,7 @@ generate ws resolve tools steps now mode =
           pure $
             if null conflicts2 && all unchanged existing
               then ([if editPath e `elem` existing then e {editAction = Skipped UnchangedContent, editSite = Nothing} else e | e <- edits2], conflicts2, warnings2, current2)
-              else first
+              else firstPass
       let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts warnings writes
       when (mode == Apply && not (hasConflicts plan)) $
@@ -96,6 +99,16 @@ generate ws resolve tools steps now mode =
     -- template on a re-run, so the create reports `target_exists`. If
     -- planning those files from scratch reproduces them exactly, the run is
     -- a no-op for them, not a conflict (spec §5.4).
+    -- `[query.NAME]`: render each query with the generator's values, run it
+    -- over the project as it is on disk, and bind the records as a list.
+    bindQueries env queries = do
+      paths <- listFiles ws "."
+      let one acc (name, q) = case acc of
+            Left why -> pure (Left why)
+            Right e -> case renderQuery e q of
+              Left err -> pure (Left ("query `" <> name <> "`: " <> describeTemplateError err))
+              Right q' -> fmap (\rs -> M.insert name (VList (map VRecord rs)) e) . first (\why -> "query `" <> name <> "`: " <> why) <$> runQuery (toolQueries tools) paths (readText ws) q'
+      foldM one (Right env) queries
     locate p anchors content = resolveLayers (toolSyntax tools) (languageFor (toolLanguages tools) p) anchors content
     fromComposition = \case
       StepInputs p e -> InvalidInputs p e
@@ -103,6 +116,7 @@ generate ws resolve tools steps now mode =
       StepUnknown p ref why -> UnknownGenerator p ref why
       StepInvalid p ref why -> InvalidGenerator p ref why
       StepCycle p -> CompositionCycle p
+      StepQuery p why -> QueryFailed p why
     -- Right: current text (or Nothing if absent). Left: why it cannot be written.
     -- Unsafe paths are never touched; the planner reports them.
     inspectTarget p

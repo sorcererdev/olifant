@@ -183,6 +183,7 @@ generationFailure rt fmt = \case
   TemplateFailed path e -> failWith rt fmt 1 "template_failed" (inStep path (describeTemplateError e)) Nothing []
   UnknownGenerator path ref why -> failWith rt fmt 3 "generator_not_found" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
   InvalidGenerator path ref why -> failWith rt fmt 1 "generator_invalid" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
+  QueryFailed path why -> failWith rt fmt 1 "query_failed" (inStep path why) Nothing []
   CompositionCycle path -> failWith rt fmt 1 "composition_cycle" ("generators use each other in a cycle: " <> showStepPath path) Nothing []
   where
     inStep path msg = showStepPath path <> ": " <> msg

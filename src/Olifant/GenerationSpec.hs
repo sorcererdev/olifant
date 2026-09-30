@@ -75,6 +75,14 @@ spec = do
 
 createSpec :: Spec
 createSpec = describe "generate (create edits)" $ do
+  it "binds a generator query after derived values, for templates (Review Focus 5)" $ do
+    let gen =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[derive]", "dir = \"src/{= name|snake =}\""
+            , "[query.mods]", "glob = \"{= dir =}/*.hs\""
+            , "[[edits]]", "create = \"index.txt\"", "text = \"{= for m in mods =}{= m.stem =}\\n{= end =}\"" ]
+    (_, files) <- run [("src/core/A.hs", ""), ("src/core/B.hs", ""), ("src/other/C.hs", "")] gen [("name", "core")] Apply
+    M.lookup "index.txt" files `shouldBe` Just "A\nB\n"
   it "skips a create when `unless` finds a match, on disk or created earlier in the plan" $ do
     let migration =
           generatorFrom . (header <>) . T.unlines $
