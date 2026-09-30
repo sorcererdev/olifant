@@ -25,13 +25,3 @@ bind     = { unit = "sample_unit" }
 create   = "src/Olifant/{= unit|pascal =}Spec.hs"
 exemplar = "fixture:src/Olifant/SampleUnitSpec.hs"
 bind     = { unit = "sample_unit" }
-
-[[edits]]
-insert = "olifant.cabal"
-at     = "after first line matching ^    Olifant\\."
-text   = "{= Unit =}"
-
-[[edits]]
-insert = "olifant.cabal"
-at     = "after last line matching ^    Olifant\\."
-text   = "{= Unit =}\n{= Unit =}Spec"

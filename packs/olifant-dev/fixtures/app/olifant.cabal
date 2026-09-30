@@ -5,17 +5,21 @@ version:            0.1.0.0
 library
   hs-source-dirs:  src
   exposed-modules:
+    -- olifant:region library-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Naming
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
+    -- olifant:end library-modules
 
 test-suite spec
   type:               exitcode-stdio-1.0
   hs-source-dirs:     src
   main-is:            TestDriver.hs
   other-modules:
+    -- olifant:region test-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Naming
     Olifant.NamingSpec
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
     Olifant.SampleUnitSpec
+    -- olifant:end test-modules
