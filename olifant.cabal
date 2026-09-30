@@ -60,6 +60,7 @@ library
     Olifant.Template
     Olifant.Naming
     Olifant.Glob
+    Olifant.Query
     Olifant.Anchor
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
@@ -117,6 +118,8 @@ test-suite spec
     Olifant.Template
     Olifant.Naming
     Olifant.Glob
+    Olifant.Query
+    Olifant.QuerySpec
     Olifant.GlobSpec
     Olifant.NamingSpec
     Olifant.TemplateSpec
