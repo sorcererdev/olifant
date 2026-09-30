@@ -111,7 +111,7 @@ runCommand rt fmt cat = \case
       Right (Right []) -> usage "no steps to run"
       Right (Right ss) -> do
         let label i s = specGenerator s <> if length ss > 1 then " (step " <> T.pack (show i) <> ")" else ""
-        loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
+        loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) (rtSyntax rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
           Right gens0 -> fmap sequence (traverse (resolveChoicesFor rt cat) gens0) >>= \case
@@ -119,7 +119,7 @@ runCommand rt fmt cat = \case
            Right gens -> do
             now <- maybe (rtNow rt) pure (genNow g)
             let resolveWithChoices pack ref =
-                  resolver (rtRoot rt) cat pack ref >>= \case
+                  resolver (rtRoot rt) (rtSyntax rt) cat pack ref >>= \case
                     Left err -> pure (Left err)
                     Right gen -> first ResolveInvalid <$> resolveChoicesFor rt cat gen
             let mode = if genPlanOnly g then PlanOnly else Apply

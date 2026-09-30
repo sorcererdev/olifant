@@ -8,8 +8,13 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Catalog
 import Olifant.Generation
-import Olifant.Generator (GeneratorId (..), GeneratorWith (..))
-import Olifant.Language (Language (..))
+import Data.Aeson (encode)
+import Data.ByteString.Lazy.Char8 qualified as BL
+import Data.List (isInfixOf)
+import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..))
+import Olifant.Naming (parseName)
+import Olifant.Template (Value (..), render)
+import Olifant.Language (Language (..), Match (..), Syntax (..), noSyntax)
 import Olifant.Region (RegionDefWith (..))
 import Olifant.Workspace
 import Test.Hspec
@@ -47,12 +52,35 @@ withCatalogAt paths fs k = do
 genInto :: Workspace IO -> Catalog -> Text -> IO (M.Map FilePath Text)
 genInto root cat ref = do
   let Right entry = findEntry cat ref
-  Right gen <- loadGenerator root cat entry
+  Right gen <- loadGenerator root noSyntax cat entry
   Right plan <- generate (within "/proj" root) noResolve noTools [Step gen (M.fromList [("name", "cancel_subscription")])] now PlanOnly
   pure (planWrites plan)
 
 spec :: Spec
 spec = describe "catalog" $ do
+  describe "fragment exemplars" $ do
+    let lang = "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.case_in]\nphrase = \"case in FUNCTION\"\ncontainer = { kind = \"c\" }\nitems = { kind = \"b\" }\nexample = \"end of case in update\"\n"
+        gen matching = "description = \"d\"\nlanguage = \"x\"\n[inputs.page]\ntype = \"ident\"\n[[edits]]\ninsert = \"Main.x\"\nat = \"end of case in update\"\nfragment = { file = \"fixture:Main.x\", items_of = \"case in update\", matching = \"" <> matching <> "\" }\nbind = { page = \"sample_page\" }\n"
+        -- The container, then two items; the second spans two lines, its body indented 12 (the node starts at column 8).
+        fake = Syntax $ \_ rule _ -> pure . Right $
+          if "\"all\"" `isInfixOf` BL.unpack (encode rule)
+            then [Match (3, 8) (3, 20) "Home -> home", Match (5, 8) (6, 29) "( GotSamplePageMsg sub, SamplePage page ) ->\n            SamplePage.update sub"]
+            else [Match (2, 4) (6, 29) "case"]
+        load matching = do
+          (root, _) <- memoryWorkspace [("/packs/p/languages/x.toml", lang), ("/packs/p/fixtures/app/Main.x", "x\n"), ("/packs/p/generators/g/generator.toml", gen matching)]
+          Right cat <- openPackCatalog root [("p", "/packs/p")]
+          let Right entry = findEntry cat "p/g"
+          loadGenerator root fake cat entry
+    it "turns the one matching item into a template, dedented and renamed" $ do
+      Right g <- load "GotSamplePageMsg"
+      let [Insert _ _ src _] = genEdits g
+          Right name = parseName "settings"
+      render (M.fromList [("page", VName name)]) src `shouldBe` Right "( GotSettingsMsg sub, Settings page ) ->\n    Settings.update sub"
+    it "refuses a fragment that matches no item, or several (Review Focus 3)" $ do
+      none <- load "Nothing"
+      either describeCatalogError (const "") none `shouldSatisfy` ("matched 0 items" `T.isInfixOf`)
+      both <- load "."
+      either describeCatalogError (const "") both `shouldSatisfy` ("matched 2 items" `T.isInfixOf`)
   it "loads regions from packs and the project, the project overriding by name" $ do
     (root, _) <-
       memoryWorkspace
@@ -103,7 +131,7 @@ spec = describe "catalog" $ do
   it "reports a missing template file" $
     withCatalog files $ \root cat -> do
       let Right entry = findEntry cat "rails/broken"
-      loadGenerator root cat entry >>= \case
+      loadGenerator root noSyntax cat entry >>= \case
         Left err -> err `shouldBe` SourceMissing (GeneratorId "rails/broken") "/packs/rails/generators/broken/templates/missing.dt"
         Right _ -> expectationFailure "expected a missing template"
   it "works without a config file (local generators only)" $
@@ -159,9 +187,9 @@ spec = describe "catalog" $ do
           , ("/packs/elm/generators/msg/generator.toml", "description = \"elm msg\"\nlanguage = \"x\"\n")
           ]
     withCatalog fs $ \root cat -> do
-      fmap (fmap genDescription) (resolver root cat (Just "elm") "msg") `shouldReturn` Right "elm msg"
-      fmap (fmap genDescription) (resolver root cat Nothing "msg") `shouldReturn` Right "local msg"
-      fmap (either (const "err") genDescription) (resolver root cat (Just "elm") "nope") `shouldReturn` "err"
+      fmap (fmap genDescription) (resolver root noSyntax cat (Just "elm") "msg") `shouldReturn` Right "elm msg"
+      fmap (fmap genDescription) (resolver root noSyntax cat Nothing "msg") `shouldReturn` Right "local msg"
+      fmap (either (const "err") genDescription) (resolver root noSyntax cat (Just "elm") "nope") `shouldReturn` "err"
   it "does not fall through to another generator when the pack-local one is broken" $ do
     let fs =
           [ ("/proj/.olifant/config.toml", "[packs]\nelm = { path = \"../packs/elm\" }\n")
@@ -169,11 +197,11 @@ spec = describe "catalog" $ do
           , ("/packs/elm/generators/msg/generator.toml", "description = \"broken\"\nlanguage = \"x\"\nbogus = 1\n")
           ]
     withCatalog fs $ \root cat -> do
-      r <- resolver root cat (Just "elm") "msg"
+      r <- resolver root noSyntax cat (Just "elm") "msg"
       r `shouldSatisfy` \case
         Left (ResolveInvalid msg) -> "bogus" `T.isInfixOf` msg
         _ -> False
-      r2 <- resolver root cat (Just "elm") "nope"
+      r2 <- resolver root noSyntax cat (Just "elm") "nope"
       r2 `shouldSatisfy` \case
         Left (ResolveNotFound _) -> True
         _ -> False

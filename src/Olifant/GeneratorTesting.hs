@@ -58,7 +58,7 @@ runCase root syntax checker bless pc = do
         Right cat -> case findEntry cat (casePack pc <> "/" <> caseGenerator pc) of
           Left err -> pure (CaseFailed [describeCatalogError err])
           Right entry ->
-            loadGenerator root cat entry >>= \case
+            loadGenerator root syntax cat entry >>= \case
               Left err -> pure (CaseFailed [describeCatalogError err])
               Right gen0 -> do
                 let fixtureDir = casePackRoot pc </> "fixtures" </> "app"
@@ -70,8 +70,8 @@ runCase root syntax checker bless pc = do
                  Left why -> pure (CaseFailed [why])
                  Right gen -> do
                    let tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
-                   firstRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
-                   secondRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
+                   firstRun <- generate ws (resolver root syntax cat) tools [Step gen sets] now Apply
+                   secondRun <- generate ws (resolver root syntax cat) tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of
                      (Left err, _) -> pure (CaseFailed [T.pack (show err)])
                      (Right plan, _)

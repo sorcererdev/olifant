@@ -78,6 +78,8 @@ data AnchorSpec = AtPhrase Template | AtRule Rule Position
 data SourceRef
   = TemplateFile FilePath
   | ExemplarFile Text [Binding]
+  | -- | a fragment exemplar (spec §4.3): file ref, items_of target, matching regex, bindings
+    FragmentFile Text Text Text [Binding]
   | InlineText Template
   deriving stock (Show)
 

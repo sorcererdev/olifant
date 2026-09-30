@@ -104,13 +104,19 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
     unlessG <- unlessFrom t
     pure (Create target src onExists unlessG)
   ["insert"] -> do
-    onlyKeys ["insert", "at", "anchor", "template", "text", "unless"] t
+    onlyKeys ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"] t
     target <- required "insert" (text >=> tmpl) t
     anchors <- case (M.lookup "at" t, M.lookup "anchor" t) of
       (Just v, Nothing) -> inKey "at" (atFrom v)
       (Nothing, Just v) -> inKey "anchor" (table v >>= markerAlias)
       _ -> Left "an insert needs exactly one of `at` (preferred) or `anchor`"
-    src <- sourceFrom False t
+    src <- case M.lookup "fragment" t of
+      Nothing -> sourceFrom False t
+      Just v -> inKey "fragment" $ do
+        f <- table v
+        onlyKeys ["file", "items_of", "matching"] f
+        binds <- inKey "bind" (required "bind" (table >=> bindsFrom) t)
+        FragmentFile <$> required "file" text f <*> required "items_of" text f <*> required "matching" text f <*> pure binds
     unlessG <- unlessFrom t
     pure (Insert target anchors src unlessG)
   ["complete"] -> do
@@ -131,7 +137,7 @@ sourceFrom allowExemplar t = case (M.lookup "template" t, M.lookup "exemplar" t,
   (Nothing, Nothing, Just v) -> InlineText <$> inKey "text" (text v >>= tmpl)
   _
     | allowExemplar -> Left "a create needs exactly one of `template`, `exemplar` or `text`"
-    | otherwise -> Left "an insert needs exactly one of `template` or `text`"
+    | otherwise -> Left "an insert needs exactly one of `template`, `text` or `fragment`"
 
 bindsFrom :: Table -> Either Text [Binding]
 bindsFrom tbl = traverse (\(k, v) -> inKey k (text v >>= fmap (Binding k) . parseName)) (M.toList tbl)
