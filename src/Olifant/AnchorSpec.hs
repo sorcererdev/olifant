@@ -143,6 +143,17 @@ resolveSpec = do
     it "insertLines adds the blank line unless the text already has it" $ do
       insertLines (Located 1 "" "" "x" BlankBefore) "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
       insertLines (Located 1 "" "" "x" BlankBefore) "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
-  describe "insertLines" $
+  describe "insertLines" $ do
     it "indents non-blank lines and reports the 1-based line" $
       insertLines (Located 1 "  " "" "x" NoSpacing) "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
+    it "removes the text's common indentation first, so text written at its absolute column is not doubled" $
+      insertLines (Located 1 "  " "" "x" NoSpacing) "\n    a ->\n        b" "one\ntwo\n" `shouldBe` (2, "one\n\n  a ->\n      b\ntwo\n")
+    it "keeps tab indentation relative" $
+      insertLines (Located 1 "\t" "" "x" NoSpacing) "\t\ta\n\t\t\tb" "one\n" `shouldBe` (2, "one\n\ta\n\t\tb\n")
+  describe "insertedText" $ do
+    it "is the text as written, dedented, with the blank line spacing adds (what the plan shows)" $ do
+      insertedText BlankBefore "    a\n      b" `shouldBe` "\na\n  b"
+      insertedText BlankAfter "a" `shouldBe` "a\n"
+      insertedText NoSpacing "a\n" `shouldBe` "a"
+    it "start of puts the blank line after (copied from the first two items)" $
+      insertedText BlankAfter "\nx" `shouldBe` "\nx\n"

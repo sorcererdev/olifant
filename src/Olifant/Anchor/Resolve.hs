@@ -8,6 +8,7 @@ module Olifant.Anchor.Resolve
   , locateContainer
   , itemsOfTarget
   , insertLines
+  , insertedText
   , alreadyPresent
   , presentAt
   , describeMisses
@@ -195,17 +196,30 @@ insertLines :: Located -> Text -> Text -> (Int, Text)
 insertLines loc snippet content =
   let newline = if "\r\n" `T.isInfixOf` content then "\r\n" else "\n"
       ls = T.splitOn newline content
-      body = T.splitOn "\n" (dropFinalNewline snippet)
+      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- T.splitOn "\n" (insertedText (locSpacing loc) snippet)]
+      i = min (locLine loc) (length ls)
+   in (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
+
+-- | The lines an insert adds, before the site's indentation: the text less
+-- its common indentation (so text written at its absolute column is not
+-- indented twice), plus the blank line 'Spacing' asks for unless the text
+-- already has it. The plan shows this, so it matches what is written.
+insertedText :: Spacing -> Text -> Text
+insertedText spacing snippet =
+  let body = dedentLines (T.splitOn "\n" (fromMaybe snippet (T.stripSuffix "\n" snippet)))
       blank = maybe False (T.null . T.strip)
-      spaced = case locSpacing loc of
+      spaced = case spacing of
         BlankBefore | not (blank (listToMaybe body)) -> "" : body
         BlankAfter | not (blank (listToMaybe (reverse body))) -> body ++ [""]
         _ -> body
-      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- spaced]
-      i = min (locLine loc) (length ls)
-   in (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
+   in T.intercalate "\n" spaced
   where
-    dropFinalNewline t = fromMaybe t (T.stripSuffix "\n" t)
+    dedentLines ls =
+      let lead l = T.length (T.takeWhile (\c -> c == ' ' || c == '\t') l)
+          common = case [lead l | l <- ls, not (T.null (T.strip l))] of
+            [] -> 0
+            ns -> minimum ns
+       in map (\l -> if T.null (T.strip l) then "" else T.drop common l) ls
 
 -- | Is the snippet already where this anchor would put it? Checks the
 -- anchor's region (a container or marker block) and the snippet-sized window

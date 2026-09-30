@@ -156,8 +156,9 @@ createSpec = describe "generate (create edits)" $ do
 
 insertSpec :: Spec
 insertSpec = describe "generate (marker inserts)" $ do
-  let insertGen =
-        generatorFrom . T.unlines $
+  let insertGen = generatorFrom insertToml
+      insertToml =
+        T.unlines
           [ "description = \"d\""
           , "language = \"rust\""
           , "[inputs.cmd]"
@@ -178,7 +179,10 @@ insertSpec = describe "generate (marker inserts)" $ do
     M.lookup "svc/lib.rs" files `shouldBe` Just "pub mod a;\npub mod refund_invoice;\n// olifant:modules\n"
     M.lookup "svc/service.rs" files
       `shouldBe` Just "impl S {\n    pub fn a(&self) {}\n\n    pub fn refund_invoice(&self) {\n        todo!()\n    }\n    // olifant:delegates\n}\n"
-    map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}\n"]
+    map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}"]
+  it "shows in the plan the text as written: dedented, final newline dropped" $ do
+    (Right plan, _) <- run [("svc/lib.rs", lib), ("svc/service.rs", service)] (generatorFrom (T.replace "text = \"pub mod" "text = \"        pub mod" insertToml)) [("cmd", "refund_invoice")] PlanOnly
+    take 1 (map editAction (planEdits plan)) `shouldBe` [WillInsert 2 "pub mod refund_invoice;"]
   it "keeps earlier inserts in order (the marker stays last)" $ do
     (ws, snapshot) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
     _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
