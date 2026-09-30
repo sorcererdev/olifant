@@ -216,11 +216,11 @@ loadGenerator root syntax cat entry = sequenceA <$> traverse resolve (entryDefin
                     ms -> Left (SourceInvalid gid path ("fragment `" <> target <> "` matching `" <> matching <> "` matched " <> T.pack (show (length ms)) <> " items (expected 1)"))
     -- A node's first line starts at its column; later lines keep the file's
     -- indentation, so remove the node's column from each of them.
-    dedent m = case T.lines (matchText m) of
+    dedent m = case T.lines (T.replace "\r\n" "\n" (matchText m)) of
       [] -> ""
       (firstLine : rest) ->
         let col = snd (matchStart m)
-            strip l = let ws = T.takeWhile (== ' ') l in T.drop (min col (T.length ws)) l
+            strip l = let ws = T.takeWhile (\c -> c == ' ' || c == '\t') l in T.drop (min col (T.length ws)) l
          in T.intercalate "\n" (firstLine : map strip rest)
     fromFile path build =
       readText root path <&> \case

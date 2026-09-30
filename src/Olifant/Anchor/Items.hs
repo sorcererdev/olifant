@@ -32,7 +32,9 @@ astQueries syntax langs q paths readFile' = fmap concat . sequence <$> traverse 
       RawRule rule -> case renderRule M.empty rule of
         Left err -> pure (Left (describeTemplateError err))
         Right value -> either (\f -> Left (T.pack path <> ": " <> describeSyntaxFailure f)) Right <$> querySyntax syntax lang value content
+    -- A CRLF file's node text keeps its CRs; records never do.
     record path m =
-      M.union
-        (M.fromList [("text", VText (matchText m)), ("path", VText (T.pack path)), ("line", VInt (fromIntegral (fst (matchStart m) + 1)))])
-        (eachFields (astEach q) (matchText m))
+      let body = T.replace "\r\n" "\n" (matchText m)
+       in M.union
+            (M.fromList [("text", VText body), ("path", VText (T.pack path)), ("line", VInt (fromIntegral (fst (matchStart m) + 1)))])
+            (eachFields (astEach q) body)

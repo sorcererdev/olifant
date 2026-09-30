@@ -11,6 +11,7 @@ module Olifant.Query
   , AstSelect (..)
   , renderQuery
   , eachFields
+  , posixRegex
   , Queries (..)
   , noQueries
   , processCommand
@@ -80,11 +81,22 @@ queryFromTree tree = do
       CommandQuery argv <$> optional "select" text t <*> optional "sort" text t
     _ -> Left "a query needs exactly one of `glob`, `command` or `files` (an AST query)"
   where
-    field (name, v) = inKey ("each." <> name) $ do
-      re <- text v
-      case makeRegexM (T.unpack re) :: Maybe Regex of
-        Nothing -> Left ("`" <> re <> "` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \\s or \\w)")
-        Just _ -> Right (name, re)
+    field (name, v) = inKey ("each." <> name) ((name,) <$> (text v >>= posixRegex))
+
+-- | A POSIX extended regular expression, checked. Perl classes (@\\s@, @\\w@,
+-- @\\d@, @\\b@…) are refused: POSIX reads them as literal letters, so they
+-- would compile and silently match nothing.
+posixRegex :: Text -> Either Text Text
+posixRegex re
+  | perlClass (T.unpack re) || invalid = Left ("`" <> re <> "` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \\s or \\w)")
+  | otherwise = Right re
+  where
+    invalid = null (makeRegexM (T.unpack re) :: Maybe Regex)
+    perlClass = \case
+      '\\' : '\\' : rest -> perlClass rest
+      '\\' : c : rest -> c `elem` ("sSwWdDbB" :: String) || perlClass rest
+      _ : rest -> perlClass rest
+      [] -> False
 
 describeQuery :: Query -> Text
 describeQuery = \case

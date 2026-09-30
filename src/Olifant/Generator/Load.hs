@@ -10,7 +10,7 @@ import Olifant.Anchor (Position (..), parsePhrase)
 import Olifant.Generator.Definition
 import Olifant.Language (ruleFromTree)
 import Olifant.Naming (parseName)
-import Olifant.Query (queryFromTree)
+import Olifant.Query (posixRegex, queryFromTree)
 import Olifant.Template (Binding (..), Template, describeTemplateError, freeVariables, parseTemplate)
 import Olifant.Toml
 
@@ -116,7 +116,7 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
         f <- table v
         onlyKeys ["file", "items_of", "matching"] f
         binds <- inKey "bind" (required "bind" (table >=> bindsFrom) t)
-        FragmentFile <$> required "file" text f <*> required "items_of" text f <*> required "matching" text f <*> pure binds
+        FragmentFile <$> required "file" text f <*> required "items_of" text f <*> inKey "fragment.matching" (required "matching" text f >>= posixRegex) <*> pure binds
     unlessG <- unlessFrom t
     pure (Insert target anchors src unlessG)
   ["complete"] -> do

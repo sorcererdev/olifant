@@ -389,7 +389,8 @@ bind     = { page = "sample_page" }
 
 - `items_of` is a target, the same vocabulary as `at` (`case in update`, `type Route`,
   `record Model`). Its items are the candidates.
-- `matching` is a POSIX regular expression. Exactly one item must match it.
+- `matching` is a POSIX regular expression, checked when the generator is read (so `list`
+  marks a bad one `INVALID`). Exactly one item must match it.
 - The item's text is dedented and then renamed like an exemplar: every case form of each
   `bind` value (`sample_page`, `SamplePage`, `samplePage`, …) becomes the input.
 - `file = "fixture:…"` reads from the pack's fixture; a plain path reads the project's own

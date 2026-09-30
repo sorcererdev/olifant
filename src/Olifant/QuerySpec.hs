@@ -52,6 +52,12 @@ spec = do
     it "rejects an invalid each regex, naming the field (Review Focus 2)" $
       queryFromTree (TTable (M.fromList [("files", TText "a"), ("items_of", TText "type X"), ("each", TTable (M.fromList [("bad", TText "(")]))]))
         `shouldSatisfy` either ("bad" `T.isInfixOf`) (const False)
+    it "rejects Perl classes such as \\s and \\w, which POSIX reads as literals" $
+      queryFromTree (TTable (M.fromList [("files", TText "a"), ("items_of", TText "type X"), ("each", TTable (M.fromList [("f", TText "^\\(\\s*(\\w+)")]))]))
+        `shouldSatisfy` either ("each.f" `T.isInfixOf`) (const False)
+    it "accepts an escaped backslash before s" $
+      queryFromTree (TTable (M.fromList [("files", TText "a"), ("items_of", TText "type X"), ("each", TTable (M.fromList [("f", TText "a\\\\s")]))]))
+        `shouldSatisfy` either (const False) (const True)
   describe "eachFields" $
     it "takes the first capture group, the whole match without one, empty without a match" $
       eachFields [("name", "^pub ([a-z_]+):"), ("kw", "pub"), ("none", "zzz")] "pub repo: Repo,"

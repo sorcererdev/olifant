@@ -113,7 +113,8 @@ plan leaves it, with the new `| Profile`, so the list is right in the same run.
   field, never a dropped record.
 - The expressions are POSIX, not Perl: `[[:space:]]` rather than `\s`, `[A-Za-z0-9_]`
   rather than `\w`, and no lazy `*?`. An invalid expression fails when the query is read,
-  naming the field.
+  naming the field, and so does a Perl class like `\s` or `\w` (POSIX would read it as a
+  plain letter and silently match nothing).
 - AST queries need `ast-grep`; without it the query fails with the install hint.
 
 ## Queries in generators: `[query.NAME]`

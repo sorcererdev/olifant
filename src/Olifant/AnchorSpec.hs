@@ -130,6 +130,9 @@ resolveSpec = do
     it "is an error when the target appears twice in a file" $
       runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
         `shouldSatisfy` either ("src/A.elm" `T.isInfixOf`) (const False)
+    it "drops the CR of a CRLF file from text and each fields" $
+      fmap (map (\r -> (M.lookup "text" r, M.lookup "rhs" r))) (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 5) "A ->\r\n    a"]))) [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("kind", RLit "x")])) [("rhs", "->(.*)")]) (M.keys files) reader))
+        `shouldBe` Right [(Just (VText "A ->\n    a"), Just (VText ""))]
   describe "spacing copied from neighbouring items" $ do
     it "end of puts a blank line before the text when the last two items are separated by one" $
       fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right BlankBefore
