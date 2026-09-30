@@ -45,7 +45,7 @@ refreshRegions mode tools ws firstNumber current0
       case (commentFor file def, old) of
         _ | not (isSafeRelative file) -> conflict ("region `" <> name <> "`: " <> T.pack file <> " is outside the project")
         (Nothing, _) -> conflict ("region `" <> name <> "`: no comment syntax for " <> T.pack file <> " (add `comment` to the region)")
-        (_, Nothing) | not (regionWholeFile def) -> unset ("region `" <> name <> "`: " <> T.pack file <> " does not exist")
+        (_, Nothing) -> unset ("region `" <> name <> "`: " <> T.pack file <> " does not exist")
         (Just c, _) -> do
           (found, cache') <- cachedQuery universe cache (regionQuery def)
           case found of

@@ -552,6 +552,13 @@ regionSpec = describe "generate (owned regions)" $ do
     Right plan <- generate ws noResolve (noTools {toolRegions = [escape]}) [Step unit (M.fromList [("name", "b")])] now Apply
     map describeConflict (planConflicts plan) `shouldSatisfy` any ("outside the project" `T.isInfixOf`)
     (M.member "../escaped.txt" <$> snap) `shouldReturn` False
+  it "does not create a whole-file region's file on an unrelated gen (review #4)" $ do
+    let Right t = parseTemplate "{= dotted =}"
+        whole = RegionDef "pages" "Pages.txt" (GlobQuery "src/**/*.hs" []) (ItemTemplate t) True (Just "#") Nothing Nothing
+    (ws, snap) <- memoryWorkspace [("src/Olifant/A.hs", "")]
+    Right plan <- generate ws noResolve (noTools {toolRegions = [whole]}) [Step unit (M.fromList [("name", "b")])] now Apply
+    planConflicts plan `shouldBe` []
+    (M.member "Pages.txt" <$> snap) `shouldReturn` False
   it "skips a region whose file or fences are not set up here" $ do
     (ws, _) <- memoryWorkspace [("src/Olifant/A.hs", "")]
     Right plan <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
