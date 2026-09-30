@@ -501,12 +501,12 @@ completeSpec = describe "generate (complete edits)" $ do
         -- Reports the case in src/A.elm as missing Reset until a Reset branch exists.
         honest = Checker $ \_ files -> pure . Right $
           CheckReport [MissingPatterns "src/A.elm" (1, 3) ["Reset"] | Just t <- [M.lookup "src/A.elm" files], not ("Reset ->" `T.isInfixOf` t)] []
-        go files = do
+        runTwice files = do
           (ws, snap) <- memoryWorkspace files
           Right plan <- generate ws noResolve (Tools noSyntax honest [elmLang]) [Step pageGen (M.fromList [("name", "reset")])] now Apply
           (plan,) <$> snap
     (_, once) <- go []
     M.lookup "src/A.elm" once `shouldBe` Just "update msg =\n    case msg of\n        NoOp ->\n            1\n\n        Reset ->\n            2\n"
-    (again, twice) <- go (M.toList once)
+    (again, twice) <- runTwice (M.toList once)
     planConflicts again `shouldBe` []
     twice `shouldBe` once

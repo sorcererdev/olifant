@@ -59,6 +59,7 @@ library
     Olifant.Template.Syntax
     Olifant.Template
     Olifant.Naming
+    Olifant.Glob
     Olifant.Anchor
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
@@ -115,6 +116,8 @@ test-suite spec
     Olifant.Template.Syntax
     Olifant.Template
     Olifant.Naming
+    Olifant.Glob
+    Olifant.GlobSpec
     Olifant.NamingSpec
     Olifant.TemplateSpec
     Olifant.Anchor
