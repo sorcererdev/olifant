@@ -46,6 +46,7 @@ library
     Olifant.Generation.Plan
     Olifant.Generation
     Olifant.Generator.Inputs
+    Olifant.Generator.Choices
     Olifant.Generator.Load
     Olifant.Generator.Definition
     Olifant.Generator
@@ -103,6 +104,7 @@ test-suite spec
     Olifant.Generation
     Olifant.GenerationSpec
     Olifant.Generator.Inputs
+    Olifant.Generator.Choices
     Olifant.Generator.Load
     Olifant.Generator.Definition
     Olifant.Generator

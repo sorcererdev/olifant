@@ -18,7 +18,8 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
 import Data.Foldable (toList)
-import Data.List (sortOn)
+import Data.List (inits, sortOn)
+import Data.Set qualified as S
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (mapMaybe)
@@ -34,7 +35,7 @@ import Olifant.Template (Value (..))
 import Olifant.Toml
 import System.Directory (findExecutable)
 import System.Exit (ExitCode (..))
-import System.FilePath (dropExtension, makeRelative, splitDirectories, takeBaseName, takeDirectory)
+import System.FilePath (dropExtension, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory)
 
 data Query = GlobQuery Text [Text] | CommandQuery [Text] (Maybe Text) (Maybe Text)
   deriving stock (Eq, Show)
@@ -66,12 +67,14 @@ ignoredDirs = ["elm-stuff", "node_modules", ".git", "dist-newstyle", "target", "
 globRecords :: Text -> [Text] -> [FilePath] -> [Record]
 globRecords g excludes paths =
   [ record p
-  | p <- sortOn id paths
+  | p <- S.toAscList (S.fromList (paths ++ concatMap ancestors paths))
   , not (any (`elem` ignoredDirs) (splitDirectories p))
   , matchesGlob g p
   , not (any (`matchesGlob` p) excludes)
   ]
   where
+    -- Directories are matchable too (`*/*-service`), though only files are listed.
+    ancestors = map joinPath . drop 1 . reverse . drop 1 . reverse . inits . splitDirectories
     prefix = globPrefix g
     record p =
       let rel = dropExtension (if null prefix then p else makeRelative prefix p)

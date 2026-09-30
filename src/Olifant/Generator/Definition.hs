@@ -19,6 +19,7 @@ module Olifant.Generator.Definition
 import Data.Text (Text)
 import Olifant.Anchor (Position)
 import Olifant.Language (Rule)
+import Olifant.Query (Query)
 import Olifant.Template (Binding, Template)
 
 newtype GeneratorId = GeneratorId {generatorIdText :: Text}
@@ -90,7 +91,9 @@ data InputSpec = InputSpec
 data InputType = ScalarInput Scalar | ListInput ListItem
   deriving stock (Eq, Show)
 
-data Scalar = IdentS | TextS | BoolS | EnumS [Text]
+-- | 'EnumQ': `choices_from` — the query, the value template, and the choices
+-- once resolved against a project ('Nothing' until then).
+data Scalar = IdentS | TextS | BoolS | EnumS [Text] | EnumQ Query Template (Maybe [Text])
   deriving stock (Eq, Show)
 
 data ListItem = ScalarItems Scalar | RecordItems [FieldSpec]

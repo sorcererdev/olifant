@@ -100,6 +100,11 @@ planOutputSpec = describe "planHuman" $ do
 
 runCliSpec :: Spec
 runCliSpec = describe "runCli" $ do
+  it "shows choices_from values found in the project" $ do
+    let svc = ("/proj/.olifant/generators/svc/generator.toml", "description = \"d\"\nlanguage = \"x\"\n[inputs.service]\ntype = \"enum\"\nchoices_from = { glob = \"*/*-service\", value = \"{= dir =}\" }\n")
+    (code, out, _, _) <- runWith "" (svc : ("/proj/billing/billing-service/Cargo.toml", "") : project) True ["show", "svc"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` ("--set service=<enum(billing)>" `T.isInfixOf`)
   it "suggests `gen` when the first word looks like a generator" $ do
     (code, _, err, _) <- runWith "" project True ["elm/page", "--set", "page=settings"]
     code `shouldBe` ExitFailure 2

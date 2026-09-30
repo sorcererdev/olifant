@@ -17,7 +17,8 @@ import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generation
-import Olifant.Generator (EnvError (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText)
+import Olifant.Generator (EnvError (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText, needsChoices, withChoices)
+import Olifant.Query (processCommands)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), within)
@@ -61,7 +62,10 @@ runCommand rt fmt cat = \case
     pure ExitSuccess
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
-    Right e -> emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
+    Right e0 ->
+      resolveChoicesFor rt (entryDefinition e0) >>= \case
+        Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
+        Right d -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
     Nothing ->
       failWith rt fmt 3 "language_not_found" ("no language adapter named `" <> name <> "`") (Just "packs define languages in languages/<name>.toml") ["available" .= map langName (catalogLanguages cat)]
@@ -93,11 +97,17 @@ runCommand rt fmt cat = \case
         loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
-          Right gens -> do
+          Right gens0 -> fmap sequence (traverse (resolveChoicesFor rt) gens0) >>= \case
+           Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
+           Right gens -> do
             now <- maybe (rtNow rt) pure (genNow g)
+            let resolveWithChoices pack ref =
+                  resolver (rtRoot rt) cat pack ref >>= \case
+                    Left err -> pure (Left err)
+                    Right gen -> first ResolveInvalid <$> resolveChoicesFor rt gen
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) cat) (Tools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices (Tools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan -> do
                 let applied = mode == Apply && not (hasConflicts plan)
@@ -158,3 +168,12 @@ generationFailure rt fmt = \case
   CompositionCycle path -> failWith rt fmt 1 "composition_cycle" ("generators use each other in a cycle: " <> showStepPath path) Nothing []
   where
     inStep path msg = showStepPath path <> ": " <> msg
+
+-- | Resolve `choices_from` inputs against the project (spec §4.1); the
+-- project is listed only when a generator needs it.
+resolveChoicesFor :: Runtime -> GeneratorWith s -> IO (Either Text (GeneratorWith s))
+resolveChoicesFor rt gen
+  | not (needsChoices gen) = pure (Right gen)
+  | otherwise = do
+      paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
+      withChoices (processCommands (rtProjectDir rt)) paths gen

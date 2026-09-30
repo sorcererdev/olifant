@@ -20,6 +20,9 @@ spec = do
         `shouldBe` [ (Just (VText "src/Olifant/Anchor.hs"), Just (VText "Olifant/Anchor"), Just (VText "Olifant.Anchor"))
                    , (Just (VText "src/Olifant/Anchor/Phrase.hs"), Just (VText "Olifant/Anchor/Phrase"), Just (VText "Olifant.Anchor.Phrase"))
                    ]
+    it "matches directories as well as files" $
+      map (M.lookup "path") (globRecords "*/*-service" [] ["billing/billing-service/Cargo.toml", "billing/billing-service/src/lib.rs"])
+        `shouldBe` [Just (VText "billing/billing-service")]
     it "gives dir and stem" $
       map (\r -> (M.lookup "dir" r, M.lookup "stem" r)) (globRecords "*/*-service" [] ["billing/billing-service"])
         `shouldBe` [(Just (VText "billing"), Just (VText "billing-service"))]

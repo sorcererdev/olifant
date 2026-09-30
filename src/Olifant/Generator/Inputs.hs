@@ -17,7 +17,9 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generator.Definition
+import Olifant.Anchor (closest)
 import Olifant.Naming (nameWords, parseName)
+import Olifant.Query (describeQuery)
 import Olifant.Template (Env, Template, TemplateError, Value (..), describeTemplateError, evaluate, freeVariables)
 
 data InputProblem = MissingInput InputSpec | InvalidInput Text Text | UnknownInput Text
@@ -77,10 +79,15 @@ parseScalar s raw = case s of
     "true" -> Right (VBool True)
     "false" -> Right (VBool False)
     _ -> Left ("expected true or false, got `" <> raw <> "`")
-  EnumS choices
-    | raw `elem` choices -> Right (VText raw)
-    | otherwise -> Left ("expected one of " <> T.intercalate ", " choices <> "; got `" <> raw <> "`")
+  EnumS choices -> oneOf choices
+  EnumQ q _ resolved -> case resolved of
+    Nothing -> Left "its choices were not resolved (an Olifant bug)"
+    Just [] -> Left ("the query " <> describeQuery q <> " found nothing, so there is nothing to choose")
+    Just choices -> oneOf choices
   where
+    oneOf choices
+      | raw `elem` choices = Right (VText raw)
+      | otherwise = Left ("expected one of " <> T.intercalate ", " choices <> "; got `" <> raw <> "`" <> maybe "" (\c -> " (did you mean " <> c <> "?)") (closest raw choices))
     chunks = T.words raw
     firstChunk = case chunks of
       (c : _) -> c
@@ -164,3 +171,5 @@ describeInputType = \case
       TextS -> "text"
       BoolS -> "bool"
       EnumS cs -> "enum(" <> T.intercalate "|" cs <> ")"
+      EnumQ _ _ (Just cs) -> "enum(" <> T.intercalate "|" cs <> ")"
+      EnumQ q _ Nothing -> "enum(from " <> describeQuery q <> ")"

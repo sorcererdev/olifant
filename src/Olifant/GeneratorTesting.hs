@@ -17,6 +17,8 @@ import Data.Time (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
+import Olifant.Generator (withChoices)
+import Olifant.Query (noCommands)
 import Olifant.Language (Checker, Syntax)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
@@ -57,26 +59,29 @@ runCase root syntax checker bless pc = do
           Right entry ->
             loadGenerator root cat entry >>= \case
               Left err -> pure (CaseFailed [describeCatalogError err])
-              Right gen -> do
+              Right gen0 -> do
                 let fixtureDir = casePackRoot pc </> "fixtures" </> "app"
                 fixturePaths <- listFiles root fixtureDir
                 fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
                 (ws, _) <- memoryWorkspace fixture
-                let tools = Tools syntax checker (catalogLanguages cat)
-                firstRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
-                secondRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
-                case (firstRun, secondRun) of
-                  (Left err, _) -> pure (CaseFailed [T.pack (show err)])
-                  (Right plan, _)
-                    | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
-                    | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
-                  (Right plan, again) -> do
-                    snapshotProblems <- checkSnapshot (planWrites plan)
-                    let rerunProblems = case again of
-                          Right p | not (M.null (planWrites p)) -> ["re-running changed: " <> T.intercalate ", " (map T.pack (M.keys (planWrites p)))]
-                          Left err -> ["re-running failed: " <> T.pack (show err)]
-                          _ -> []
-                    pure (if null (snapshotProblems ++ rerunProblems) then CasePassed else CaseFailed (snapshotProblems ++ rerunProblems))
+                withChoices noCommands fixturePaths gen0 >>= \case
+                 Left why -> pure (CaseFailed [why])
+                 Right gen -> do
+                   let tools = Tools syntax checker (catalogLanguages cat)
+                   firstRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
+                   secondRun <- generate ws (resolver root cat) tools [Step gen sets] now Apply
+                   case (firstRun, secondRun) of
+                     (Left err, _) -> pure (CaseFailed [T.pack (show err)])
+                     (Right plan, _)
+                       | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
+                       | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
+                     (Right plan, again) -> do
+                       snapshotProblems <- checkSnapshot (planWrites plan)
+                       let rerunProblems = case again of
+                             Right p | not (M.null (planWrites p)) -> ["re-running changed: " <> T.intercalate ", " (map T.pack (M.keys (planWrites p)))]
+                             Left err -> ["re-running failed: " <> T.pack (show err)]
+                             _ -> []
+                       pure (if null (snapshotProblems ++ rerunProblems) then CasePassed else CaseFailed (snapshotProblems ++ rerunProblems))
   where
     snapshotDir = caseDir pc </> "snapshot"
     checkSnapshot :: Map FilePath Text -> IO [Text]

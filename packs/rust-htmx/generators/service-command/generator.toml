@@ -6,7 +6,9 @@ examples = [
 ]
 
 [inputs.service]
-type = "ident"   # enum + choices_from in step 2
+type = "enum"
+choices_from = { glob = "*/*-service", value = "{= dir =}" }   # billing/billing-service → billing
+prompt = "The service to add the command to"
 
 [inputs.command_name]
 type = "ident"
