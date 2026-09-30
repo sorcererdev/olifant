@@ -33,7 +33,9 @@ command that prints JSON:
 query = { command = ["cargo", "metadata", "--format-version=1", "--no-deps"], select = "packages", sort = "name" }
 ```
 
-- The command is an argument list, run in the project root, with no shell.
+- The command is an argument list, run in the project root, with no shell. A program
+  with a `/` in its name (`bin/rails`, `./scripts/list-routes`) is the project's own; a
+  bare name (`cargo`) is looked up on PATH.
 - It prints a JSON array of objects, or an object plus `select` naming the array. Each
   object becomes a record (string, number and boolean fields).
 - `sort` names a field to sort by, so the output is stable.
