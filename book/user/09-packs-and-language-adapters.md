@@ -148,7 +148,6 @@ grammar     = "rust"                              # a grammar ast-grep has built
 # grammar   = { source = "grammar/elm" }          # …or C sources vendored in the pack
 placeholder = 'todo!("{= message =}")'            # the body of a todo branch
 branch      = "{= pattern =} => {= body =},"      # how a case branch is written
-# qualify   = "elm"                               # Elm's module rules for `complete`
 
 [check]                                           # optional: enables `complete` edits
 command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]
@@ -168,9 +167,47 @@ example   = "end of struct BillingService"
 | `comment` | region fences in this language's files (chapter 5) |
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
-| `qualify` | only `"elm"` means anything: rule out constructors a module cannot import, and write patterns the way the file refers to them (`Just Route.Settings` in `Main.elm`) |
-| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files. `format` says how to read the report; `elm-json` is the only format today, so `complete` works for Elm only (Rust's comment says rustc JSON is future work) |
+| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files. `format` picks a *compiler support* record — the code that reads that compiler's report, decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm) and `ghc-json` (GHC) |
 | `[targets.*]` | the `at` targets (below) |
+
+There used to be a `qualify` key (`qualify = "elm"`) for Elm's module rules. It is retired:
+loading an adapter that still has it is now a load error saying the `[check] format`
+decides that instead. An unknown `format` is also a load error, listing the known ones:
+`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json ``. Like any
+broken adapter, this keeps the pack's language aside instead of failing the whole command
+(`catalogBrokenLanguages`); it bites only commands that need that language, such as `olifant
+anchors` on it or a `complete` edit whose `language` names it.
+
+### A second example: Haskell
+
+`packs/olifant-dev/languages/haskell.toml` uses ast-grep's grammar built in for Haskell, and
+checks with GHC through `cabal repl` instead of `elm make`:
+
+```toml
+files       = ["**/*.hs"]
+comment     = "--"
+grammar     = "haskell"
+placeholder = 'error "{= message =}"'
+branch      = "{= pattern =} -> {= body =}"
+
+[targets.data]
+phrase    = "data NAME"
+container = { kind = "data_constructors", inside = { kind = "data_type", regex = "^data {= NAME =}\\b" } }
+items     = { kind = "data_constructor" }
+example   = "end of data CatalogError"
+
+[check]
+command = ["cabal", "repl", "-v0", "lib:olifant", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns"]
+context = ["*.cabal", "cabal.project"]
+format  = "ghc-json"
+```
+
+`repl`, not `build`: with `-fno-code`, `cabal build` always exits 1 at its link step, while
+`repl` exits 0 once type-checking succeeds (a compile error still arrives as a JSON
+diagnostic). `-fdiagnostics-as-json` and `-Wincomplete-patterns` are both needed; GHC's
+warning 62161 is what carries the missing patterns. A `complete` edit for this adapter
+names its constructor `Type.Ctor` rather than Elm's `Module.Ctor` — chapter 4 covers what
+that changes.
 
 A vendored grammar is compiled once with `cc` into `~/.cache/olifant/grammars/`, keyed by a
 hash of `parser.c`, so an updated grammar is rebuilt automatically. The first Elm run on a
