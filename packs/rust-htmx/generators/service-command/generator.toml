@@ -32,22 +32,25 @@ insert = "{= service_dir =}/src/lib.rs"
 at     = "after last line matching ^pub mod "
 text   = "pub mod {= cmd =};"
 
+# Structure first; a service fresh from service-skeleton has no commands yet
+# (empty struct, empty `use` list), so the template's hook comments are the
+# fallback.
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
-at     = "end of crate imports"
+at     = ["end of crate imports", "after marker //##PLOP INSERT COMMAND IMPORTS HOOK##"]
 text   = "{= cmd =}::{{= Cmd =}, {= Cmd =}Input, {= Cmd =}Output},"
 
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
-at     = "end of struct {= service|pascal =}Service"
+at     = ["end of struct {= service|pascal =}Service", "after marker //##PLOP INSERT COMMAND HOOK##"]
 text   = "pub {= cmd =}: {= Cmd =},"
 
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
-at     = "end of literal in new"
+at     = ["end of literal in new", "after marker //##PLOP INSERT COMMAND INSTANTIATION HOOK##"]
 text   = "{= cmd =}: {= Cmd =} {},"
 
 [[edits]]
 insert   = "{= service_dir =}/src/service.rs"
-at       = "end of impl {= service|pascal =}Service"
+at       = ["end of impl {= service|pascal =}Service", "after marker //##PLOP INSERT DELEGATE HOOK##"]
 template = "delegate.rs.dt"
