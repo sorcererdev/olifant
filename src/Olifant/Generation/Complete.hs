@@ -9,7 +9,9 @@ import Data.Char (isAlphaNum)
 import Data.List (find, nub, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.List.NonEmpty (nonEmpty)
+import Data.List.NonEmpty qualified as NE
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -66,7 +68,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   -- Candidates share the pattern's bare name and could appear
                   -- at the site at all (a Route module never sees Main's).
                   visible d c = langQualify lang /= Just "elm" || visibleAt (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
-                  wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, let cands = [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c], not (null cands)]
+                  wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, Just cands <- [nonEmpty [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c]]]
                   key (d, p, _) = (missingFile d, fst (missingCase d), p)
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
                 ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
@@ -99,10 +101,10 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       let file = missingFile d
           content = M.findWithDefault "" file files
           fn = enclosingFunction content (fst (missingCase d))
-      matching <- filterM (whereMatches lang content d . snd) cands
+      matching <- filterM (whereMatches lang content d . snd) (NE.toList cands)
       let chosen = listToMaybe matching
-          (step, spec) = maybe (head' cands) id chosen
-          ctors = nub (map (completeConstructor . snd) cands)
+          (step, spec) = fromMaybe (NE.head cands) chosen
+          ctors = nub (map (completeConstructor . snd) (NE.toList cands))
           pat = if langQualify lang == Just "elm" then qualifyPattern content (completeConstructor spec) p else p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
@@ -114,9 +116,6 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
         if isNothing chosen && length ctors > 1
           then Left (p <> " in " <> fn <> " (" <> T.pack file <> ") could be any of " <> T.intercalate ", " ctors <> "; add a `complete` edit with `where = \"case in " <> fn <> "\"`, or give the case a catch-all")
           else Branch step d (Site file fn pat (isNothing chosen)) <$> text
-      where
-        head' (x : _) = x
-        head' [] = error "branchFor: candidates are never empty"
 
     whereMatches lang content d spec = case T.words <$> completeWhere spec of
       Nothing -> pure True
