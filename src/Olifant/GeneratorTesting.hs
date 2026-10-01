@@ -17,9 +17,7 @@ import Data.Time (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
-import Olifant.Generator (withChoices)
 import Olifant.Anchor (astQueries)
-import Data.Bifunctor (first)
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Syntax)
 import Olifant.Toml qualified as Toml
@@ -68,16 +66,12 @@ runCase root syntax checker bless pc = do
                 (ws, _) <- memoryWorkspace fixture
                 -- Commands run in the fixture on disk (the case's own copy is
                 -- in memory), like a project's commands run in the project.
+                -- choices_from (here and in [[uses]] generators) is resolved by
+                -- generate against the fixture and the plan so far.
                 let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat)}
-                    choices = withChoices queries fixturePaths (readText ws)
-                    -- [[uses]] generators get their choices from the fixture too.
-                    resolve pack ref =
-                      resolver root syntax cat pack ref >>= \case
-                        Left err -> pure (Left err)
-                        Right g -> first ResolveInvalid <$> choices g
-                choices gen0 >>= \case
-                 Left why -> pure (CaseFailed [why])
-                 Right gen -> do
+                    resolve = resolver root syntax cat
+                    gen = gen0
+                 in do
                    let tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
                    firstRun <- generate ws resolve tools [Step gen sets] now Apply
                    secondRun <- generate ws resolve tools [Step gen sets] now Apply

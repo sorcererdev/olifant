@@ -471,10 +471,13 @@ Read from the inside out:
 3. `traverse` over the steps, then **`sequence loaded`**, turns "a list of results" into "the
    first error, or a list of generators", like `.collect::<Result<Vec<_>, _>>()`.
 
-Next, **`resolveChoicesFor`** (`Cli.hs:218`) fills in `choices_from` enums, which are enum
-inputs whose choices come from a query over the project. It only lists the project if some
-input needs it (`needsChoices`, `src/Olifant/Generator/Choices.hs:31`). `elm/page` has none,
-so this is a no-op here.
+`choices_from` enums (inputs whose choices come from a query over the project) are not
+resolved here: `generate` resolves them step by step during composition (`Choose` in
+`Generation/Compose.hs`), against the project plus the files created by the steps before,
+so a chain can choose what an earlier step creates. `generate` lists the project only if an
+input needs it (`needsChoices`). `elm/page` has none, so for this command it is a no-op.
+(`show` and `list --detail` still use the CLI's `resolveChoicesFor`, against the project as
+it is, which is what they describe.)
 
 Then the call into the core:
 

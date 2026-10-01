@@ -205,17 +205,13 @@ runCommand rt cwd fmt cat = \case
         loaded <- traverse (\(i, s) -> fmap (first (label i s,)) (either (pure . Left) (loadGenerator (rtRoot rt) (rtSyntax rt) cat) (findEntry cat (specGenerator s)))) (zip [1 :: Int ..] ss)
         case sequence loaded of
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
-          Right gens0 -> fmap sequence (traverse (resolveChoicesFor rt cat) gens0) >>= \case
-           Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
-           Right gens -> do
+          -- choices_from is resolved inside generate, step by step, so a
+          -- step can choose what an earlier step of the chain creates.
+          Right gens -> do
             now <- maybe (rtNow rt) pure (genNow g)
-            let resolveWithChoices pack ref =
-                  resolver (rtRoot rt) (rtSyntax rt) cat pack ref >>= \case
-                    Left err -> pure (Left err)
-                    Right gen -> first ResolveInvalid <$> resolveChoicesFor rt cat gen
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices (projectTools rt cat) steps now mode >>= \case
+            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) (projectTools rt cat) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan =
