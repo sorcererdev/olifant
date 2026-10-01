@@ -23,10 +23,10 @@ $ olifant show elm/page
 elm/page: A page in the Elm architecture (Model/Msg/init/update/view), wired into Main and Route like elm-spa-example
 
 inputs:
-  --set msgs=<list<name:arg>>  (optional)
-      Messages to add to the page, as name or name:PayloadType, comma separated (e.g. toggle_dark_mode, set_display_name:String)
   --set page=<ident>
       Page name (e.g. counter, article_list)
+  --set msgs=<list<name:arg>>  (optional)
+      Messages to add to the page, as name or name:PayloadType, comma separated (e.g. toggle_dark_mode, set_display_name:String)
 
 edits:
   create src/Page/{= P =}.elm
@@ -75,7 +75,8 @@ matched ([chapter 6](06-queries-and-choices.md)). The tag on the right says whic
 `elm/page › elm/msg[1]` is the first message's `elm/msg` run inside `elm/page`.
 
 `gen` applies by default. Add `--plan` to see the same plan, with the full text of every
-edit, without writing anything.
+edit, without writing anything — unless the plan has a conflict, in which case nothing would
+be written anyway, so neither `--plan` nor a plain `gen` prints any edit's text.
 
 ## One task, one command: `+`
 

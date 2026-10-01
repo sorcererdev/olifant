@@ -192,18 +192,10 @@ After the generator changes, the case says where the output moved:
 
 (the first differing line, not a full diff). If the change is intended, bless again.
 
-### Rough edge: blessing never deletes
-
-Blessing writes files but does not remove snapshot files the generator no longer writes.
-Rename the output (`_controller.rb` → `_ctl.rb`), bless, and the blessed run passes, but the
-next plain run fails:
-
-```
-    rails/controller/example [✘]
-        but got: CaseFailed ["app/controllers/posts_controller.rb: in snapshot but not generated"]
-```
-
-When a generator's file set changes, delete the case's `snapshot/` before blessing.
+Blessing also removes snapshot files the run no longer generates: rename the output
+(`_controller.rb` → `_ctl.rb`) and bless, and the old `posts_controller.rb` is deleted from
+`snapshot/` while the new `posts_ctl.rb` is added. Still read the diff before committing it —
+blessing is recording, not checking.
 
 ## Missing tools make cases pending
 
@@ -227,18 +219,42 @@ Finished in 0.0383 seconds
 "0 failures" there is not a pass. On a machine or CI runner without the tools, look for
 `pending` in the summary.
 
+Set `OLIFANT_REQUIRE_TOOLS=1` where the tools are supposed to be there (CI, the pre-merge
+hook) and a missing tool fails the case instead of letting it pass as pending:
+
+```
+$ PATH="$HOME/.ghcup/bin:/usr/bin:/bin" OLIFANT_REQUIRE_TOOLS=1 cabal test --test-show-details=direct --test-options='--match "elm/msg/reset"'
+  packs
+    elm/msg/reset [✘]
+  elm pack output compiles
+    elm/msg/reset [✘]
+
+Failures:
+
+  1) Olifant.GeneratorTesting.packs elm/msg/reset
+       required tool missing: edit 1: cannot place text in src/Page/Home.elm: `end of type Msg`: ast-grep is not installed (brew install ast-grep); elm/msg: cannot complete cases: `elm` is not installed (needed to check elm)
+
+  2) Olifant.GeneratorTesting, elm pack output compiles, elm/msg/reset
+       required tool missing: elm is not installed
+
+2 examples, 2 failures
+```
+
+The pre-merge hook sets `OLIFANT_REQUIRE_TOOLS=1`, so a merge into `main` on a machine
+missing `ast-grep` or `elm` fails instead of quietly skipping those cases.
+
 ## Other limits of pack tests
 
-- **Command queries do not run.** A `choices_from` or region `query` with a `command` fails in
-  tests ("commands are not available here"). Glob queries work, against the fixture's files.
-- **`choices_from` in a used generator is not resolved.** A case for a composite whose
-  `[[uses]]` target has a `choices_from` input fails with the message `its choices were not
-  resolved (an Olifant bug)`, although the same run works from the CLI. (Found while writing
-  this chapter; top-level `choices_from`, like `rust-htmx/service-command`'s own case, is
-  fine.)
-- **Failure messages can be raw.** Input errors in a case print as Haskell values
-  (`CaseFailed ["InvalidInputs [\"rust-htmx/commands\", …] (InputProblems [InvalidInput …])"]`)
-  rather than the CLI's sentences.
+- **Command queries run in the fixture directory on disk.** A `choices_from` or region
+  `query` with a `command` runs for real, rooted at the case's `fixtures/app/` — like a
+  project's own command queries run rooted at the project. The case's in-memory copy of the
+  fixture is what gets written to and compared; the command only reads what is on disk.
+- **`choices_from` in a `[[uses]]` generator is resolved from the fixture too.** A case for a
+  composite whose `[[uses]]` target has a `choices_from` input works the same as it does from
+  the CLI.
+- **Failure messages are words, not Haskell values.** A case failure (a generation error, or
+  one from re-running) prints the same sentence the CLI would, e.g. "undefined variable
+  `nope`", not `CaseFailed ["TemplateFailed …"]`.
 - **One fixture per pack.** Every case of every generator runs against the same
   `fixtures/app/`. A case that needs a different starting point (a page that already has
   messages) needs the fixture to contain it.
@@ -277,13 +293,15 @@ in the owner's clone; a fresh clone needs it):
 
 | hook | on `main` only | does |
 |---|---|---|
-| `pre-merge-commit` | yes | runs `cabal test` and then `olifant sync --check` (via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
+| `pre-merge-commit` | yes | runs `cabal test` with `OLIFANT_REQUIRE_TOOLS=1` (a missing `ast-grep` or `elm` fails instead of pending), then `olifant sync --check` (via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
 | `post-commit` | yes | runs `scripts/install-olifant.sh`, so `~/.local/bin/olifant` is always built from `main`; never blocks the commit |
 | `post-merge` | yes | the same install, after a merge into `main` |
 
 So pack snapshots, the Elm "compiles" check, and the cabal module lists (chapter 5) are all
 enforced at the point a branch lands on `main`.
 
-Git only runs `pre-merge-commit` when a merge creates a merge commit. A fast-forward merge
-into `main` (`git merge` of a branch that is strictly ahead) skips it, and with it the tests.
-Use `git merge --no-ff` to get the check, or run `cabal test` yourself first.
+Git only runs `pre-merge-commit` when a merge creates a merge commit; a fast-forward merge
+(`git merge` of a branch that is strictly ahead) skips it, and with it the tests.
+`git config branch.main.mergeoptions --no-ff` makes a plain `git merge` into `main` always
+create a merge commit, so the hook always runs (already set in the owner's clone; a fresh
+clone needs it too).
