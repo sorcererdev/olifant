@@ -1,0 +1,23 @@
+description = "A web-htmx component (an rscx component in web-htmx/src/components)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/web-htmx-component --set component=status_badge",
+]
+
+[inputs.component]
+type = "ident"
+prompt = "The component's name (e.g. status_badge)"
+
+[requires]
+exists = ["web-htmx/src/components.rs"]
+hint = "Run this from the workspace root of a rust-htmx-axum-template app."
+
+[[edits]]
+create   = "web-htmx/src/components/{= component|snake =}.rs"
+template = "component.rs.dt"
+
+[[edits]]
+insert = "web-htmx/src/components.rs"
+at     = ["after last line matching ^pub mod ", "end of file"]
+text   = "pub mod {= component|snake =};"
