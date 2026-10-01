@@ -78,7 +78,9 @@ exits 1 at its link step, while `repl` exits 0 once type-checking succeeds. Abou
 a round on Olifant itself.
 
 GHC names the scrutinee's type, so a `complete` edit names its constructor `Type.Ctor`
-instead of Elm's `Module.Ctor`:
+instead of Elm's `Module.Ctor`. It applies wherever `Type` appears in the type GHC prints, so
+a `case` over a `Maybe CatalogError` or a `(CatalogError, Bool)` gets its branch too
+(`Just (PackLocked _)`, `((PackLocked _), _)`):
 
 ```toml
 [[edits]]
@@ -112,10 +114,20 @@ Two GHC rounds, about 7 seconds. The inserted line in `Cli.hs`:
 
 and the result type-checks clean.
 
-Function equations ("In an equation for `f`") are a kind of site the loop cannot place a
-branch at — Olifant only knows how to add a `case` alternative, not a new equation. Those
-sites are reported as plan warnings instead, naming the file, the function and the pattern,
-never guessed at and never silently dropped.
+Only `case` and `\case` alternatives are extended. GHC also reports gaps in a function's
+equations ("In an equation for `f`"), in a lambda (`\(SampleMissing p) -> p`) and in a
+pattern binding (`let SampleMissing n = e`); Olifant cannot add to those, so each becomes a
+plan warning naming the file, the line, what GHC called it and the pattern, never guessed
+at:
+
+```
+  ? warning: olifant-dev/error-case: src/Olifant/SampleErrors.hs (line 41): an equation for `label` needs a case for SampleLocked _, which olifant cannot extend yet
+```
+
+The same goes for a `case` that needs one of the run's constructors where none of its edits
+can appear (another type's constructor with the same name): a warning, never a silent skip.
+A `case` already missing other patterns gets only the run's own: GHC lists every missing
+pattern, one per line, and Olifant adds just those naming its constructors.
 
 A branch is spaced like the `case`'s own alternatives, Haskell or Elm: a blank line before
 the new branch only when one already separates the last two alternatives, none when they

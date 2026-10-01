@@ -197,7 +197,7 @@ items     = { kind = "data_constructor" }
 example   = "end of data CatalogError"
 
 [check]
-command = ["cabal", "repl", "-v0", "lib:olifant", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns"]
+command = ["cabal", "repl", "-v0", "lib:olifant", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns", "--repl-options=-fmax-uncovered-patterns=1000"]
 context = ["*.cabal", "cabal.project"]
 format  = "ghc-json"
 ```

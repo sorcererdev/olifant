@@ -71,10 +71,13 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   visible d c = supportVisible support d (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
                   wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, Just cands <- [nonEmpty [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c]]]
                   key (d, p, _) = (missingFile d, fst (missingCase d), p)
+                  -- Sites whose pattern names one of our constructors but where
+                  -- none of our edits can appear: never dropped silently.
+                  hidden = [(d, p) | d <- diags, p <- missingPatterns d, let named = [c | (_, c) <- mine, mentions (completeConstructor c) p], not (null named), not (any (visible d) named)]
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
                 ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
                 []
-                  | null wanted -> pure (addUnplaced (reportUnplaced report) (finish (reportBroken report)))
+                  | null wanted -> pure (addHidden hidden (addUnplaced (reportUnplaced report) (finish (reportBroken report))))
                   | otherwise -> do
                       built <- traverse (branchFor lang support files) wanted
                       case sequence built of
@@ -89,12 +92,21 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
         -- missing cases of every module that imports it: if the plan changed
         -- it, the generated code is broken (conflict); otherwise the cases
         -- could not be checked (warning).
-        -- Sites the loop cannot extend (GHC function equations) that need one
-        -- of this run's constructors: say so, never guess (spec §5.6).
+        -- Sites the loop cannot extend (GHC: equations, lambdas, pattern
+        -- bindings) that need one of this run's constructors: say so, never
+        -- guess (spec §5.6). The description is the compiler's ("a lambda
+        -- abstraction", "an equation for `f`").
         addUnplaced unplaced (es, cs, ws', cur) =
-          let ours = [(m, f, p) | (m, f) <- unplaced, p <- missingPatterns m, any (\(_, c) -> mentions (completeConstructor c) p) mine]
-              warn (m, f, p) = showStepPath step <> ": " <> T.pack (missingFile m) <> ": " <> f <> " (line " <> T.pack (show (fst (missingCase m) + 1)) <> ") needs a case for " <> p <> ", but it is a function equation, which olifant cannot extend yet"
+          let ours = [(m, described, p) | (m, described) <- unplaced, p <- missingPatterns m, any (\(_, c) -> mentions (completeConstructor c) p) mine]
+              warn (m, described, p) = showStepPath step <> ": " <> siteText m <> ": " <> described <> " needs a case for " <> p <> ", which olifant cannot extend yet"
            in (es, cs, ws' ++ map warn ours, cur)
+        addHidden hidden (es, cs, ws', cur) =
+          let warn (d, p) =
+                showStepPath step <> ": " <> siteText d <> " needs a case for " <> p <> maybe "" (\t -> " (type " <> t <> ")") (missingType d)
+                  <> ", but " <> T.intercalate ", " (nub [completeConstructor c | (_, c) <- mine, mentions (completeConstructor c) p])
+                  <> " cannot appear there, so olifant did not extend it"
+           in (es, cs, ws' ++ map warn hidden, cur)
+        siteText m = T.pack (missingFile m) <> " (line " <> T.pack (show (fst (missingCase m) + 1)) <> ")"
         finish broken =
           let changed f = M.lookup f disk /= M.lookup f files
               ours = [b | b@(f, _) <- broken, changed f]

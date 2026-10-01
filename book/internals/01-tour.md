@@ -680,11 +680,14 @@ raw output to `supportParse` — `parseElmReport` (`Language/Elm.hs:20`) for `el
 `parseGhcReport` (`Language/Ghc.hs:34`) for `ghc-json` — into a `CheckReport`:
 `MissingPatterns` (file, the `case`'s line range, the missing patterns, and the scrutinee's
 type when the compiler names it), broken files, and now `reportUnplaced`: sites the loop
-cannot extend (GHC's function equations), paired with the function they are in.
+cannot extend (GHC's equations, lambdas and pattern bindings), paired with GHC's own
+description of the context ("an equation for `label`", "a lambda abstraction").
 
 The loop narrows a reported pattern's candidates with `supportVisible` (`:71`): for Elm, by
-module import (`visibleAt`); for GHC, by the reported type matching the edit's `Type.Ctor`
-qualifier. For each missing pattern, `branchFor` (`Complete.hs:107`) picks the `complete`
+module import (`visibleAt`); for GHC, by the edit's `Type.Ctor` qualifier appearing as a
+word in the reported type (`Maybe T`, `(T, Bool)`). A pattern that names one of the run's
+constructors but has no visible candidate becomes a warning (`addHidden`), never a silent
+skip. For each missing pattern, `branchFor` (`Complete.hs:107`) picks the `complete`
 spec whose constructor it names, from the candidates sharing the pattern's bare name — a
 `NonEmpty` list, since the call site only builds `cands` when it's non-empty (`nonEmpty`,
 `:72`), so `branchFor` itself needs no "this is never empty" comment or partial `head`. Specs

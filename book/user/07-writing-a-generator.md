@@ -478,8 +478,8 @@ person (or a model) to fill in, each one listed as a todo in the plan.
 
 How you write the constructor depends on the adapter: Elm's `[check] format` (`elm-json`)
 names it `Module.Ctor` (`Route.{= R =}`, visible by module import); GHC's (`ghc-json`) names
-it `Type.Ctor` (`{= T =}.{= C =}`, e.g. `CatalogError.PackLocked`, visible only where GHC
-reports that type).
+it `Type.Ctor` (`{= T =}.{= C =}`, e.g. `CatalogError.PackLocked`, visible where that type
+appears in the type GHC reports: `T`, `Maybe T`, `(T, Bool)`).
 
 ## Putting inserts and `complete` together
 

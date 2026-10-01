@@ -1,0 +1,1 @@
+{"version":"1.0","ghcVersion":"ghc-9.10.3","span":{"file":"src/Olifant/SampleErrors.hs","start":{"line":9,"column":23},"end":{"line":10,"column":37}},"severity":"Error","code":62161,"message":["Pattern match(es) are non-exhaustive\nIn a \\case alternative:\n    Patterns of type `SampleError' not matched:\n        SampleBroken _ _\n        SampleLocked _"],"hints":[]}

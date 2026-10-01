@@ -455,7 +455,7 @@ completeSpec = describe "generate (complete edits)" $ do
     M.lookup "src/A.elm" files `shouldBe` Just (page <> "\n        Reset ->\n            ( model, Cmd.none )\n")
     map editSite (planEdits plan) `shouldBe` [Just (Site "src/A.elm" "update" "Reset" False)]
   it "warns about a site it cannot extend (a function equation) that needs one of its constructors" $ do
-    let unplaced = Checker $ \_ _ -> pure (Right (CheckReport [] [] [(missing "src/A.elm" (7, 9) ["Reset"], "reset")]))
+    let unplaced = Checker $ \_ _ -> pure (Right (CheckReport [] [] [(missing "src/A.elm" (7, 9) ["Reset"], "an equation for `reset`")]))
     (ws, _) <- memoryWorkspace [("src/A.elm", page)]
     Right plan <- generate ws noResolve (basicTools noSyntax unplaced [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
     planWarnings plan `shouldSatisfy` any (\w -> "src/A.elm" `T.isInfixOf` w && "reset" `T.isInfixOf` w && "Reset" `T.isInfixOf` w)
@@ -473,6 +473,15 @@ completeSpec = describe "generate (complete edits)" $ do
     Right plan <- generate ws noResolve (basicTools noSyntax (scriptedChecker ref) [elmLang]) [Step bodiless (M.fromList [("name", "reset")])] now Apply
     fmap (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
     (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just (page <> "\n        Reset ->\n            Debug.todo \"olifant: update Reset\"\n")
+  it "warns, never drops silently, when a site needs our constructor but none of our edits is visible there (review C2)" $ do
+    let mainGen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "complete = \"Main.{= name|pascal =}\"", "text = \"{= pattern =} -> 1\"" ]
+    ref <- newIORef [[missing "src/A.elm" (3, 5) ["Reset"]]]
+    (ws, _) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (basicTools noSyntax (scriptedChecker ref) [elmLang]) [Step mainGen (M.fromList [("name", "reset")])] now Apply
+    planEdits plan `shouldBe` []
+    planWarnings plan `shouldSatisfy` any (\w -> "src/A.elm" `T.isInfixOf` w && "Reset" `T.isInfixOf` w && "Main.Reset" `T.isInfixOf` w)
   it "leaves a placeholder todo where no `where` matches" $ do
     let gen' = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""

@@ -137,34 +137,49 @@ spec = do
       forM_ ["src/Olifant/Generation/Complete.hs", "src/Olifant/Language/Check.hs"] $ \f -> do
         src <- TIO.readFile f
         (f, "Olifant.Language.Elm" `T.isInfixOf` src) `shouldBe` (f, False)
-  describe "GHC support" $ do
-    let line t = "{\"version\":\"1.0\",\"span\":{\"file\":\"src/A.hs\",\"start\":{\"line\":5,\"column\":3},\"end\":{\"line\":9,\"column\":20}},\"severity\":\"Warning\",\"code\":62161,\"message\":[\"Pattern match(es) are non-exhaustive\\nIn a \\\\case alternative:\\n    " <> t <> "\"],\"hints\":[]}"
-        parse = parseGhcReport . TE.encodeUtf8
-    it "reads a missing-pattern warning: the case span (0-based), the patterns and the type" $
-      parse ("Resolving dependencies...\n" <> line "Patterns of type `SampleError' not matched: SampleLocked _" <> "\n")
-        `shouldBe` Right (CheckReport [MissingPatterns "src/A.hs" (4, 8) ["SampleLocked _"] (Just "SampleError")] [] [])
-    it "splits patterns on top-level commas only, and drops GHC's ellipsis (Review Focus 1)" $
-      fmap (map missingPatterns . reportMissing) (parse (line "Patterns of type `T' not matched: Foo (Bar 1, 2) _, Baz, ..."))
-        `shouldBe` Right [["Foo (Bar 1, 2) _", "Baz"]]
-    it "names no type when the message lists several (Review Focus 2)" $
-      typeOf "Patterns of type `A', `B' not matched: X Y" `shouldBe` Nothing
-    it "reads unicode quotes and qualified types (Review Focus 3)" $ do
-      typeOf "Patterns of type \8216CatalogError\8217 not matched: PackLocked _" `shouldBe` Just "CatalogError"
-      typeOf "Patterns of type `Olifant.Catalog.CatalogError' not matched: PackLocked _" `shouldBe` Just "CatalogError"
-    it "puts function-equation sites in reportUnplaced, with the function (Review Focus 4)" $
-      fmap reportUnplaced (parse (T.replace "In a \\\\case alternative:" "In an equation for `describe':" (line "Patterns of type `T' not matched: Locked")))
-        `shouldBe` Right [(MissingPatterns "src/A.hs" (4, 8) ["Locked"] (Just "T"), "describe")]
+  describe "GHC support (fixtures captured from GHC 9.10.3)" $ do
+    let real = BS.readFile "src/Olifant/Language/testdata/ghc-62161.jsonl"
+    it "reads one pattern per line, the full type, and only case alternatives as sites (review C1, C2, I1)" $ do
+      Right r <- parseGhcReport <$> real
+      [(missingPatterns m, missingType m) | m <- reportMissing r]
+        `shouldBe` [ (["SampleBroken _ _", "SampleLocked _"], Just "SampleError")
+                   , (["((SampleLocked _), _)"], Just "(SampleError, Bool)")
+                   , (["Just (SampleLocked _)"], Just "Maybe SampleError")
+                   ]
+      map (fst . missingCase) (reportMissing r) `shouldBe` [8, 12, 17]
+    it "puts equations, lambdas and pattern bindings in reportUnplaced, described (review I1)" $ do
+      Right r <- parseGhcReport <$> real
+      [(missingPatterns m, d) | (m, d) <- reportUnplaced r]
+        `shouldBe` [ (["SampleLocked _"], "an equation for `label`")
+                   , (["SampleBroken _ _", "SampleLocked _"], "a lambda abstraction")
+                   , (["SampleBroken _ _", "SampleLocked _"], "a pattern binding")
+                   ]
+    it "reads a missing-pattern site even when -Werror makes it an error (review I2)" $ do
+      Right r <- parseGhcReport <$> BS.readFile "src/Olifant/Language/testdata/ghc-62161-werror.jsonl"
+      (map missingPatterns (reportMissing r), reportBroken r) `shouldBe` ([["SampleBroken _ _", "SampleLocked _"]], [])
+    it "drops GHC's truncation marker" $
+      fmap (map missingPatterns . reportMissing) (parseGhcReport (TE.encodeUtf8 ("{\"span\":{\"file\":\"src/A.hs\",\"start\":{\"line\":2,\"column\":1},\"end\":{\"line\":4,\"column\":1}},\"severity\":\"Warning\",\"code\":62161,\"message\":[\"Pattern match(es) are non-exhaustive\\nIn a case alternative:\\n    Patterns of type `T' not matched:\\n        A\\n        B\\n        ...\"]}")))
+        `shouldBe` Right [["A", "B"]]
     it "reports errors as broken files and ignores other warnings" $ do
       let err = "{\"span\":{\"file\":\"src/B.hs\",\"start\":{\"line\":1,\"column\":1},\"end\":{\"line\":1,\"column\":2}},\"severity\":\"Error\",\"code\":88464,\"message\":[\"Variable not in scope: x\"]}"
           other = "{\"span\":{\"file\":\"src/C.hs\",\"start\":{\"line\":1,\"column\":1},\"end\":{\"line\":1,\"column\":2}},\"severity\":\"Warning\",\"code\":40910,\"message\":[\"Defined but not used\"]}"
-      parse (err <> "\n" <> other) `shouldBe` Right (CheckReport [] [("src/B.hs", "Variable not in scope: x")] [])
-    it "is visible by type: `Type.Ctor` only where GHC names that type; a bare name anywhere" $ do
+      parseGhcReport (TE.encodeUtf8 (err <> "\n" <> other)) `shouldBe` Right (CheckReport [] [("src/B.hs", "Variable not in scope: x")] [])
+    it "reads the type with ASCII or unicode quotes (Review Focus 3)" $ do
+      typeOf "Patterns of type \8216CatalogError\8217 not matched: PackLocked _" `shouldBe` Just "CatalogError"
+      typeOf "Patterns of type `Olifant.Catalog.CatalogError' not matched: PackLocked _" `shouldBe` Just "Olifant.Catalog.CatalogError"
+    it "is visible where the type appears anywhere in GHC's type: tuples, Maybe, qualified (review C2)" $ do
       let Just g = supportFor "ghc-json"
-          d = MissingPatterns "src/A.hs" (4, 8) ["PackLocked _"] (Just "CatalogError")
-      supportVisible g d "" "CatalogError.PackLocked" `shouldBe` True
-      supportVisible g d "" "RegionError.PackLocked" `shouldBe` False
-      supportVisible g d "" "PackLocked" `shouldBe` True
+          at ty = MissingPatterns "src/A.hs" (4, 8) ["x"] (Just ty)
+      supportVisible g (at "(SampleError, Bool)") "" "SampleError.SampleLocked" `shouldBe` True
+      supportVisible g (at "Maybe SampleError") "" "SampleError.SampleLocked" `shouldBe` True
+      supportVisible g (at "Olifant.Catalog.CatalogError") "" "CatalogError.PackLocked" `shouldBe` True
+      supportVisible g (at "SampleErrorish") "" "SampleError.SampleLocked" `shouldBe` False
+      supportVisible g (at "RegionError") "" "SampleError.SampleLocked" `shouldBe` False
+      supportVisible g (at "RegionError") "" "SampleLocked" `shouldBe` True
       supportPattern g "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
+    it "asks GHC not to truncate pattern lists (review M2)" $ do
+      src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+      src `shouldSatisfy` T.isInfixOf "-fmax-uncovered-patterns="
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"
