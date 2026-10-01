@@ -22,13 +22,13 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), Language (..), matchesGlob)
-import Olifant.Language.Elm (parseElmReport)
+import Olifant.Language.Support (supportFor)
 import Olifant.Process (runBytes)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, findExecutable)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
-import Olifant.Language.Diagnostics (CheckReport (..), MissingPatterns (..))
+import Olifant.Language.Diagnostics (CheckReport (..), CompilerSupport (..), MissingPatterns (..))
 
 data CheckFailure = CheckToolMissing Text | CheckFailed Text
   deriving stock (Eq, Show)
@@ -51,13 +51,13 @@ processChecker = Checker $ \lang files -> case langCheck lang of
   Just check ->
     runIn lang check files <&> \case
       Left f -> Left f
-      Right (code, err, dir) -> case checkFormat check of
-        "elm-json" -> case parseElmReport err of
+      Right (code, err, dir) -> case supportFor (checkFormat check) of
+        Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
+        Just support -> case supportParse support err of
           Left why -> Left (CheckFailed why)
-          Right (CheckReport [] [])
+          Right (CheckReport [] [] [])
             | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
           Right report -> Right (relativeTo dir report)
-        other -> Left (CheckFailed ("unknown check format `" <> other <> "`"))
 
 -- | Whether the files compile cleanly (exit 0); pack tests use it to prove
 -- generated output builds.
@@ -89,6 +89,9 @@ runIn lang check files = case checkCommand check of
           Left why -> Left (CheckFailed why)
           Right (code, _, err) -> Right (code, err, tmp)
 
+-- | GHC already prints relative paths; makeRelative leaves those unchanged.
 relativeTo :: FilePath -> CheckReport -> CheckReport
-relativeTo dir (CheckReport missing broken) =
-  CheckReport [m {missingFile = makeRelative dir (missingFile m)} | m <- missing] [(makeRelative dir p, t) | (p, t) <- broken]
+relativeTo dir (CheckReport missingPs broken unplaced) =
+  CheckReport [rel m | m <- missingPs] [(makeRelative dir p, t) | (p, t) <- broken] [(rel m, f) | (m, f) <- unplaced]
+  where
+    rel m = m {missingFile = makeRelative dir (missingFile m)}

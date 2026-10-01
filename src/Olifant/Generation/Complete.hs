@@ -23,7 +23,6 @@ import Olifant.Generation.Render (CompleteSpec (..))
 import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language
-import Olifant.Language.Elm (enclosingFunction, qualifyPattern, visibleAt)
 import Olifant.Template (Value (..), describeTemplateError, render)
 import Olifant.Workspace (Workspace (..))
 import System.FilePath (splitDirectories)
@@ -42,10 +41,12 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       [] -> pure (edits, conflicts, warnings, current)
       mine@((step, _) : _) -> case find (\l -> langName l == name && isJust (langCheck l)) (toolLanguages tools) of
         Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("no language adapter with a [check] for `" <> name <> "`") False], warnings, current)
-        Just lang -> do
-          (disk, files) <- gather lang current
-          (es, cs, ws', current') <- loop lang step mine disk 1 S.empty (firstNumber + length edits) files current []
-          pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
+        Just lang -> case langCheck lang >>= supportFor . checkFormat of
+          Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("the " <> name <> " adapter's check format has no compiler support") False], warnings, current)
+          Just support -> do
+            (disk, files) <- gather lang current
+            (es, cs, ws', current') <- loop lang support step mine disk 1 S.empty (firstNumber + length edits) files current []
+            pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
 
 
     -- Everything the check needs: the adapter's sources and context files,
@@ -58,7 +59,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       let disk = M.fromList [(p, t) | (p, Just t) <- read']
       pure (disk, M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, wanted p]) disk)
 
-    loop lang step mine disk rnd seen n files current acc
+    loop lang support step mine disk rnd seen n files current acc
       | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], [], current)
       | otherwise =
           runCheck (toolChecker tools) lang files >>= \case
@@ -67,27 +68,33 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
               let diags = reportMissing report
                   -- Candidates share the pattern's bare name and could appear
                   -- at the site at all (a Route module never sees Main's).
-                  visible d c = langQualify lang /= Just "elm" || visibleAt (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
+                  visible d c = supportVisible support d (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
                   wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, Just cands <- [nonEmpty [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c]]]
                   key (d, p, _) = (missingFile d, fst (missingCase d), p)
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
                 ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
                 []
-                  | null wanted -> pure (finish (reportBroken report))
+                  | null wanted -> pure (addUnplaced (reportUnplaced report) (finish (reportBroken report)))
                   | otherwise -> do
-                      built <- traverse (branchFor lang files) wanted
+                      built <- traverse (branchFor lang support files) wanted
                       case sequence built of
                         Left why -> pure (reverse acc, [CompleteFailed step why False], [], current)
                         Right branches -> do
                           let (edits, files') = applyBranches n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
-                          loop lang step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
+                          loop lang support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
 
       where
         -- Nothing left to add. A file that does not compile hides the
         -- missing cases of every module that imports it: if the plan changed
         -- it, the generated code is broken (conflict); otherwise the cases
         -- could not be checked (warning).
+        -- Sites the loop cannot extend (GHC function equations) that need one
+        -- of this run's constructors: say so, never guess (spec §5.6).
+        addUnplaced unplaced (es, cs, ws', cur) =
+          let ours = [(m, f, p) | (m, f) <- unplaced, p <- missingPatterns m, any (\(_, c) -> mentions (completeConstructor c) p) mine]
+              warn (m, f, p) = showStepPath step <> ": " <> T.pack (missingFile m) <> ": " <> f <> " (line " <> T.pack (show (fst (missingCase m) + 1)) <> ") needs a case for " <> p <> ", but it is a function equation, which olifant cannot extend yet"
+           in (es, cs, ws' ++ map warn ours, cur)
         finish broken =
           let changed f = M.lookup f disk /= M.lookup f files
               ours = [b | b@(f, _) <- broken, changed f]
@@ -97,15 +104,15 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                 ([], _ : _) -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
                 ([], []) -> (reverse acc, [], [], current)
 
-    branchFor lang files (d, p, cands) = do
+    branchFor lang support files (d, p, cands) = do
       let file = missingFile d
           content = M.findWithDefault "" file files
-          fn = enclosingFunction content (fst (missingCase d))
+          fn = supportFunction support content (fst (missingCase d))
       matching <- filterM (whereMatches lang content d . snd) (NE.toList cands)
       let chosen = listToMaybe matching
           (step, spec) = fromMaybe (NE.head cands) chosen
           ctors = nub (map (completeConstructor . snd) (NE.toList cands))
-          pat = if langQualify lang == Just "elm" then qualifyPattern content (completeConstructor spec) p else p
+          pat = supportPattern support content (completeConstructor spec) p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
             Just _ -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) (completeBody spec))

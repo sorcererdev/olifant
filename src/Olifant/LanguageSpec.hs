@@ -9,13 +9,16 @@ import Data.Text qualified as T
 import Data.ByteString qualified as BS
 import Data.List (nub)
 import Data.Text.IO qualified as TIO
-import Olifant.Language.Elm (enclosingFunction, parseElmReport, qualifyPattern, visibleAt)
+import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
 import System.FilePath ((</>))
 import Olifant.Template (Value (..))
+import Control.Monad (forM_)
+import Olifant.Language.Diagnostics (CompilerSupport (..))
+import Olifant.Language.Support (supportFor)
 import Test.Hspec
 
 elmToml :: Text
@@ -115,21 +118,31 @@ spec = do
       at syn lang file "end of literal in new" `shouldReturn` Right (lineOf file "refund_invoice: RefundInvoice {}," + 1)
     it "end of crate imports goes after the last imported item" $ withRust $ \syn lang file ->
       at syn lang file "end of crate imports" `shouldReturn` Right (lineOf file "refund_invoice::{RefundInvoice" + 1)
+  describe "compiler support" $ do
+    it "maps the elm-json format to Elm's support" $
+      fmap supportFormat (supportFor "elm-json") `shouldBe` Just "elm-json"
+    it "has no support for an unknown format" $
+      fmap supportFormat (supportFor "cobol-json") `shouldBe` Nothing
+    it "keeps the language-neutral modules free of Elm" $
+      forM_ ["src/Olifant/Generation/Complete.hs", "src/Olifant/Language/Check.hs"] $ \f -> do
+        src <- TIO.readFile f
+        (f, "Olifant.Language.Elm" `T.isInfixOf` src) `shouldBe` (f, False)
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"
       parseElmReport report
         `shouldBe` Right
           ( CheckReport
-              [ MissingPatterns "/tmp/elmcheck/src/Page/SamplePage.elm" (30, 32) ["SetName _"]
-              , MissingPatterns "/tmp/elmcheck/src/Route.elm" (29, 34) ["Settings"]
+              [ missing "/tmp/elmcheck/src/Page/SamplePage.elm" (30, 32) ["SetName _"]
+              , missing "/tmp/elmcheck/src/Route.elm" (29, 34) ["Settings"]
               ]
               []
+              []
           )
-    it "is empty for a clean compile" $ parseElmReport "" `shouldBe` Right (CheckReport [] [])
+    it "is empty for a clean compile" $ parseElmReport "" `shouldBe` Right (CheckReport [] [] [])
     it "lists files with other problems as broken (review)" $
       parseElmReport "{\"type\":\"compile-errors\",\"errors\":[{\"path\":\"/x/src/A.elm\",\"name\":\"A\",\"problems\":[{\"title\":\"NAMING ERROR\",\"region\":{\"start\":{\"line\":1,\"column\":0},\"end\":{\"line\":1,\"column\":3}},\"message\":[\"x\"]}]}]}"
-        `shouldBe` Right (CheckReport [] [("/x/src/A.elm", "NAMING ERROR")])
+        `shouldBe` Right (CheckReport [] [("/x/src/A.elm", "NAMING ERROR")] [])
     it "reports a non-compile error as a failure" $
       parseElmReport "{\"type\":\"error\",\"path\":\"elm.json\",\"title\":\"BAD JSON\",\"message\":[\"oops\"]}" `shouldSatisfy` either ("BAD JSON" `T.isInfixOf`) (const False)
   describe "qualifyPattern" $ do
@@ -152,9 +165,9 @@ spec = do
       visibleAt mainElm "Route.Settings" `shouldBe` True
       visibleAt mainElm "Main.Settings" `shouldBe` True
       visibleAt route "Settings" `shouldBe` True
-  describe "enclosingFunction" $
+  describe "declarationAt" $
     it "finds the top-level declaration above a line" $
-      enclosingFunction "toPath : Route -> String\ntoPath route =\n    case route of\n        Home ->\n" 2 `shouldBe` "toPath"
+      declarationAt "toPath : Route -> String\ntoPath route =\n    case route of\n        Home ->\n" 2 `shouldBe` "toPath"
   describe "processChecker (real elm)" $ do
     it "reports the missing branch in a page's update" $
       findExecutable "elm" >>= \case
