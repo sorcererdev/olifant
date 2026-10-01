@@ -60,10 +60,12 @@ listHuman detail subs es broken
   | otherwise =
       T.unlines $
         [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
-          ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> err | (gid, _, err) <- broken]
+          ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> hang err | (gid, _, err) <- broken]
           ++ ["", "Tip: " <> compositionTip]
   where
     width = maximum (0 : map (T.length . idText . entryId) es ++ [T.length (idText gid) | (gid, _, _) <- broken])
+    -- A multi-line error (a parser's caret diagram) stays under its generator.
+    hang err = T.intercalate "\n" (case T.lines err of (l : ls) -> l : map (T.replicate (width + 4) " " <>) ls; [] -> [])
 
 inputsJson :: GeneratorDef -> [Value]
 inputsJson d = [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] | i <- genInputs d]

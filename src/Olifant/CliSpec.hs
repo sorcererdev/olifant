@@ -299,6 +299,13 @@ runCliSpec = describe "runCli" $ do
     jsonAt ["source"] json `shouldBe` Just (String "/proj/.olifant/generators/route/generator.toml")
     (_, model, _, _) <- runWith "" project True ["show", "model"]
     model `shouldNotSatisfy` T.isInfixOf "{= pattern =}"
+  it "indents a multi-line load error under its generator in list" $ do
+    let broken = project ++ [("/proj/.olifant/generators/broken/generator.toml", "description = \"b\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"x\"\ntext = \"{= if =}\"\n")]
+    (_, out, _, _) <- runWith "" broken True ["list"]
+    let after = drop 1 (dropWhile (not . T.isInfixOf "INVALID") (T.lines out))
+        continuation = takeWhile (\l -> not (T.null (T.strip l)) && not ("Tip:" `T.isPrefixOf` l)) after
+    continuation `shouldNotBe` []
+    continuation `shouldSatisfy` all ("        " `T.isPrefixOf`)
   it "accepts --flag=value forms" $ do
     (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess
