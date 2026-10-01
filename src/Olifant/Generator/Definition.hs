@@ -66,7 +66,8 @@ data EditWith src
     Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists, editUnless :: Maybe Template}
   | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src, editUnless :: Maybe Template}
   | -- | Add a branch for 'editConstructor' to every case the compiler reports (spec §5.6).
-    Complete {editConstructor :: Template, editWhere :: Maybe Template, editSource :: src}
+    -- With no body, every site gets a todo branch.
+    Complete {editConstructor :: Template, editWhere :: Maybe Template, editBody :: Maybe src}
   deriving stock (Show, Functor, Foldable, Traversable)
 
 data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists

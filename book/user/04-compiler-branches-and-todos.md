@@ -1,8 +1,10 @@
 # 4. Branches the compiler finds, and todos
 
-Add a variant to a type and every `case` over that type is now incomplete. Elm knows
-exactly which ones. Olifant uses that: a `complete` edit adds a branch to every `case` the
-compiler says is missing the new constructor.
+Add a variant to a type and every `case` over that type is now incomplete. The compiler
+knows exactly which ones — Elm's or GHC's. Olifant uses that: a `complete` edit adds a
+branch to every `case` the compiler says is missing the new constructor. This chapter shows
+Elm first, then Haskell, which works the same way with two differences: how a constructor
+is named, and what happens with no `text`/`template` at all.
 
 ```toml
 [[edits]]
@@ -65,6 +67,72 @@ todo list fixed these correctly every time, reading only the file it named.
 
 Treat todos as must-fix: **Elm 0.19.2 compiles `Debug.todo` even with `--optimize`**, so
 nothing else stops one reaching production, where it crashes if that branch runs.
+
+## Haskell (GHC)
+
+GHC's `-Wincomplete-patterns` reports the same shape of problem — a `case` missing
+constructors — through `-fdiagnostics-as-json`. Olifant's check command for a cabal project
+is `cabal repl -v0 lib:NAME --repl-options=-fno-code --repl-options=-fdiagnostics-as-json
+--repl-options=-Wincomplete-patterns`, not `cabal build`: with `-fno-code`, `build` always
+exits 1 at its link step, while `repl` exits 0 once type-checking succeeds. About 3 seconds
+a round on Olifant itself.
+
+GHC names the scrutinee's type, so a `complete` edit names its constructor `Type.Ctor`
+instead of Elm's `Module.Ctor`. It applies wherever `Type` appears in the type GHC prints, so
+a `case` over a `Maybe CatalogError` or a `(CatalogError, Bool)` gets its branch too
+(`Just (PackLocked _)`, `((PackLocked _), _)`):
+
+```toml
+[[edits]]
+complete = "{= T =}.{= C =}"   # e.g. CatalogError.PackLocked
+```
+
+and it is visible only where GHC reports that type — `CatalogError.PackLocked` can extend a
+`case` over `CatalogError`, never one over some other type that happens to have a
+constructor of the same bare name.
+
+A `complete` edit with no `text` and no `template` at all leaves a todo branch at *every*
+site the compiler finds: there is no body to try, so nothing is ever chosen. That is what
+`olifant-dev/error-case` does: it adds the constructor and leaves every `case` for a person
+(or a model) to fill in. A real run, adding `PackLocked Text` to `CatalogError`:
+
+```
+$ olifant gen olifant-dev/error-case --set path=src/Olifant/Catalog.hs --set type=catalog_error --set name=pack_locked --set fields=Text --human
+olifant-dev/error-case (3 edits, 0 conflicts)
+  ~ src/Olifant/Catalog.hs (+1 line at line 87)
+  ~ src/Olifant/Catalog.hs (+1 line at line 103, compiler: describeCatalogError, todo)
+  ~ src/Olifant/Cli.hs (+1 line at line 265, compiler: catalogFailureAt, todo)
+  ? src/Olifant/Catalog.hs: describeCatalogError needs a branch for PackLocked _ (left as a todo)
+  ? src/Olifant/Cli.hs: catalogFailureAt needs a branch for PackLocked _ (left as a todo)
+```
+
+Two GHC rounds, about 7 seconds. The inserted line in `Cli.hs`:
+
+```haskell
+  PackLocked _ -> error "olifant: catalogFailureAt PackLocked _"
+```
+
+and the result type-checks clean.
+
+Only `case` and `\case` alternatives are extended. GHC also reports gaps in a function's
+equations ("In an equation for `f`"), in a lambda (`\(SampleMissing p) -> p`) and in a
+pattern binding (`let SampleMissing n = e`); Olifant cannot add to those, so each becomes a
+plan warning naming the file, the line, what GHC called it and the pattern, never guessed
+at:
+
+```
+  ? warning: olifant-dev/error-case: src/Olifant/SampleErrors.hs (line 41): an equation for `label` needs a case for SampleLocked _, which olifant cannot extend yet
+```
+
+The same goes for a `case` that needs one of the run's constructors where none of its edits
+can appear (another type's constructor with the same name): a warning, never a silent skip.
+A `case` already missing other patterns gets only the run's own: GHC lists every missing
+pattern, one per line, and Olifant adds just those naming its constructors.
+
+A branch is spaced like the `case`'s own alternatives, Haskell or Elm: a blank line before
+the new branch only when one already separates the last two alternatives, none when they
+sit flush against each other (ordinary Haskell style), and a blank line when the `case` has
+only one alternative to copy the spacing from.
 
 ## When Olifant refuses to guess
 

@@ -25,7 +25,7 @@ import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), U
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeBaseName, takeDirectory, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -124,7 +124,10 @@ runCommand rt cwd fmt cat = \case
     -- Sources and fixed targets are checked here, so a broken generator shows
     -- as INVALID before anyone runs it.
     checked <- traverse (\e -> (e,) <$> checkEntry (rtRoot rt) (rtSyntax rt) cat e) (catalogEntries cat)
-    let broken = catalogBroken cat ++ [(entryId e, entryDir e </> "generator.toml", why) | (e, Just why) <- checked]
+    let broken =
+          catalogBroken cat
+            ++ [(entryId e, entryDir e </> "generator.toml", why) | (e, Just why) <- checked]
+            ++ [(GeneratorId ("language " <> T.pack (takeBaseName path)), path, why) | (path, why) <- catalogBrokenLanguages cat]
         ok = [e | (e, Nothing) <- checked]
     -- --detail prints inputs, so choices_from must be live, as in `show`.
     entries <-
@@ -163,7 +166,7 @@ runCommand rt cwd fmt cat = \case
         Right d -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
     Nothing ->
-      failWith rt fmt 3 "language_not_found" ("no language adapter named `" <> name <> "`") (Just "packs define languages in languages/<name>.toml") ["available" .= map langName (catalogLanguages cat)]
+      failWith rt fmt 3 "language_not_found" ("no language adapter named `" <> name <> "`" <> T.concat ["; " <> T.pack path <> " failed to load: " <> why | (path, why) <- catalogBrokenLanguages cat, takeBaseName path == T.unpack name]) (Just "packs define languages in languages/<name>.toml") ["available" .= map langName (catalogLanguages cat)]
     Just lang -> emit rt fmt (anchorsJson lang) (anchorsHuman lang) >> pure ExitSuccess
   WhereCmd file phrase -> case parsePhrase phrase of
     Left err -> usageIn rt fmt err
@@ -215,7 +218,13 @@ runCommand rt cwd fmt cat = \case
             generate (within (rtProjectDir rt) (rtRoot rt)) resolveWithChoices (projectTools rt cat) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
-                let plan = plan0 {planWarnings = planWarnings plan0 ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]}
+                let plan =
+                      plan0
+                        { planWarnings =
+                            planWarnings plan0
+                              ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]
+                              ++ ["language adapter " <> T.pack path <> " failed to load: " <> err | (path, err) <- catalogBrokenLanguages cat]
+                        }
                     applied = mode == Apply && not (hasConflicts plan)
                 emit rt fmt (planJson applied plan) (planHuman applied plan)
                 pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)

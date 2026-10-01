@@ -354,6 +354,18 @@ runCliSpec = describe "runCli" $ do
     let broken = project ++ [("/proj/.olifant/generators/bad/generator.toml", "description = \"b\"\nlanguage = \"x\"\npath = \"x\"\n")]
     (_, out, _, _) <- runWith "" broken False ["gen", "bad"]
     fmap (\case String s -> "olifant schema" `T.isInfixOf` s && "olifant new" `T.isInfixOf` s; _ -> False) (jsonAt ["error", "hint"] out) `shouldBe` Just True
+  it "shows an adapter that failed to load in list, anchors and gen (review I3)" $ do
+    let withBroken = ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          : ("/packs/p/languages/elmish.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\nqualify = \"elm\"\n")
+          : ("/packs/p/generators/g/generator.toml", "description = \"g\"\nlanguage = \"x\"\n")
+          : filter ((/= "/proj/.olifant/config.toml") . fst) project
+    (_, listed, _, _) <- runWith "" withBroken False ["list"]
+    listed `shouldSatisfy` T.isInfixOf "elmish.toml"
+    listed `shouldSatisfy` T.isInfixOf "qualify"
+    (_, anchors, _, _) <- runWith "" withBroken False ["anchors", "elmish"]
+    anchors `shouldSatisfy` T.isInfixOf "qualify"
+    (_, genned, _, _) <- runWith "" withBroken False ["gen", "model", "--set", "name=post", "--plan"]
+    genned `shouldSatisfy` T.isInfixOf "elmish.toml"
   it "accepts --flag=value forms" $ do
     (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess

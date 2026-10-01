@@ -471,6 +471,16 @@ See [chapter 4](04-compiler-branches-and-todos.md). The body can also use `{= si
 and `{= site.function =}`. It needs the adapter named by the generator's `language` to have a
 `[check]`.
 
+`text`/`template` is optional. Leave both out and every site the compiler finds gets a todo
+branch — there is no body to try, so nothing is ever matched or chosen. That is how
+`olifant-dev/error-case` works: it only adds a constructor and leaves every `case` for a
+person (or a model) to fill in, each one listed as a todo in the plan.
+
+How you write the constructor depends on the adapter: Elm's `[check] format` (`elm-json`)
+names it `Module.Ctor` (`Route.{= R =}`, visible by module import); GHC's (`ghc-json`) names
+it `Type.Ctor` (`{= T =}.{= C =}`, e.g. `CatalogError.PackLocked`, visible where that type
+appears in the type GHC reports: `T`, `Maybe T`, `(T, Bool)`).
+
 ## Putting inserts and `complete` together
 
 The third generator gives an existing page a second URL. It has no file of its own: it edits

@@ -23,7 +23,6 @@ import Olifant.Generation.Render (CompleteSpec (..))
 import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language
-import Olifant.Language.Elm (enclosingFunction, qualifyPattern, visibleAt)
 import Olifant.Template (Value (..), describeTemplateError, render)
 import Olifant.Workspace (Workspace (..))
 import System.FilePath (splitDirectories)
@@ -42,10 +41,12 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       [] -> pure (edits, conflicts, warnings, current)
       mine@((step, _) : _) -> case find (\l -> langName l == name && isJust (langCheck l)) (toolLanguages tools) of
         Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("no language adapter with a [check] for `" <> name <> "`") False], warnings, current)
-        Just lang -> do
-          (disk, files) <- gather lang current
-          (es, cs, ws', current') <- loop lang step mine disk 1 S.empty (firstNumber + length edits) files current []
-          pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
+        Just lang -> case langCheck lang >>= supportFor . checkFormat of
+          Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("the " <> name <> " adapter's check format has no compiler support") False], warnings, current)
+          Just support -> do
+            (disk, files) <- gather lang current
+            (es, cs, ws', current') <- loop lang support step mine disk 1 S.empty (firstNumber + length edits) files current []
+            pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
 
 
     -- Everything the check needs: the adapter's sources and context files,
@@ -58,7 +59,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       let disk = M.fromList [(p, t) | (p, Just t) <- read']
       pure (disk, M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, wanted p]) disk)
 
-    loop lang step mine disk rnd seen n files current acc
+    loop lang support step mine disk rnd seen n files current acc
       | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], [], current)
       | otherwise =
           runCheck (toolChecker tools) lang files >>= \case
@@ -67,27 +68,45 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
               let diags = reportMissing report
                   -- Candidates share the pattern's bare name and could appear
                   -- at the site at all (a Route module never sees Main's).
-                  visible d c = langQualify lang /= Just "elm" || visibleAt (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
+                  visible d c = supportVisible support d (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
                   wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, Just cands <- [nonEmpty [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c]]]
                   key (d, p, _) = (missingFile d, fst (missingCase d), p)
+                  -- Sites whose pattern names one of our constructors but where
+                  -- none of our edits can appear: never dropped silently.
+                  hidden = [(d, p) | d <- diags, p <- missingPatterns d, let named = [c | (_, c) <- mine, mentions (completeConstructor c) p], not (null named), not (any (visible d) named)]
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
                 ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
                 []
-                  | null wanted -> pure (finish (reportBroken report))
+                  | null wanted -> pure (addHidden hidden (addUnplaced (reportUnplaced report) (finish (reportBroken report))))
                   | otherwise -> do
-                      built <- traverse (branchFor lang files) wanted
+                      built <- traverse (branchFor lang support files) wanted
                       case sequence built of
                         Left why -> pure (reverse acc, [CompleteFailed step why False], [], current)
                         Right branches -> do
                           let (edits, files') = applyBranches n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
-                          loop lang step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
+                          loop lang support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
 
       where
         -- Nothing left to add. A file that does not compile hides the
         -- missing cases of every module that imports it: if the plan changed
         -- it, the generated code is broken (conflict); otherwise the cases
         -- could not be checked (warning).
+        -- Sites the loop cannot extend (GHC: equations, lambdas, pattern
+        -- bindings) that need one of this run's constructors: say so, never
+        -- guess (spec §5.6). The description is the compiler's ("a lambda
+        -- abstraction", "an equation for `f`").
+        addUnplaced unplaced (es, cs, ws', cur) =
+          let ours = [(m, described, p) | (m, described) <- unplaced, p <- missingPatterns m, any (\(_, c) -> mentions (completeConstructor c) p) mine]
+              warn (m, described, p) = showStepPath step <> ": " <> siteText m <> ": " <> described <> " needs a case for " <> p <> ", which olifant cannot extend yet"
+           in (es, cs, ws' ++ map warn ours, cur)
+        addHidden hidden (es, cs, ws', cur) =
+          let warn (d, p) =
+                showStepPath step <> ": " <> siteText d <> " needs a case for " <> p <> maybe "" (\t -> " (type " <> t <> ")") (missingType d)
+                  <> ", but " <> T.intercalate ", " (nub [completeConstructor c | (_, c) <- mine, mentions (completeConstructor c) p])
+                  <> " cannot appear there, so olifant did not extend it"
+           in (es, cs, ws' ++ map warn hidden, cur)
+        siteText m = T.pack (missingFile m) <> " (line " <> T.pack (show (fst (missingCase m) + 1)) <> ")"
         finish broken =
           let changed f = M.lookup f disk /= M.lookup f files
               ours = [b | b@(f, _) <- broken, changed f]
@@ -97,19 +116,20 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                 ([], _ : _) -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
                 ([], []) -> (reverse acc, [], [], current)
 
-    branchFor lang files (d, p, cands) = do
+    branchFor lang support files (d, p, cands) = do
       let file = missingFile d
           content = M.findWithDefault "" file files
-          fn = enclosingFunction content (fst (missingCase d))
-      matching <- filterM (whereMatches lang content d . snd) (NE.toList cands)
+          fn = supportFunction support content (fst (missingCase d))
+      -- A bodiless edit never supplies a branch: its sites get todos.
+      matching <- filterM (whereMatches lang content d . snd) [c | c@(_, s) <- NE.toList cands, isJust (completeBody s)]
       let chosen = listToMaybe matching
           (step, spec) = fromMaybe (NE.head cands) chosen
           ctors = nub (map (completeConstructor . snd) (NE.toList cands))
-          pat = if langQualify lang == Just "elm" then qualifyPattern content (completeConstructor spec) p else p
+          pat = supportPattern support content (completeConstructor spec) p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
-            Just _ -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) (completeBody spec))
-            Nothing -> todoBranch lang pat fn
+            Just (_, s) | Just body <- completeBody s -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) body)
+            _ -> todoBranch lang pat fn
       -- Elm prints constructors unqualified, so with no `where` to decide,
       -- two edits sharing a bare name cannot be told apart: never guess.
       pure $
@@ -146,13 +166,23 @@ applyBranches n branches files0 = (reverse edits, final)
           edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) Nothing (Just (brInfo b))
        in (edit : acc, M.insert file updated files)
 
+-- | Add a branch after the case's last line, indented like its alternatives
+-- and spaced like them: a blank line before it only if one precedes the
+-- last alternative (Elm's style), none if they are adjacent (Haskell's).
+-- With a single alternative there is nothing to copy: a blank line.
 insertBranch :: (Int, Int) -> Text -> Text -> (Int, Text)
 insertBranch (caseStart, caseEnd) branch content =
   let ls = T.lines content
-      indent = case [l | l <- drop (caseStart + 1) ls, not (T.null (T.strip l))] of
+      body = zip [0 :: Int ..] ls
+      inCase = [(i, l) | (i, l) <- body, i > caseStart, i <= caseEnd]
+      indent = case [l | (_, l) <- inCase, not (T.null (T.strip l))] of
         (l : _) -> T.takeWhile (\c -> c == ' ' || c == '\t') l
         [] -> "    "
-   in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing) ("\n" <> branch) content
+      alternatives = [i | (i, l) <- inCase, not (T.null (T.strip l)), T.takeWhile (\c -> c == ' ' || c == '\t') l == indent]
+      blankBefore = case reverse alternatives of
+        (lastAlt : _ : _) -> lastAlt > 0 && T.null (T.strip (ls !! (lastAlt - 1)))
+        _ -> True
+   in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing) ((if blankBefore then "\n" else "") <> branch) content
 
 bareName :: Text -> Text
 bareName = snd . T.breakOnEnd "."

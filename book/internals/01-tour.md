@@ -26,7 +26,7 @@ By the end you should be able to say which function produced each of those lines
 last three come out in that odd order. First, a map of the repository, the units it is split
 into, and the ports that keep the core testable.
 
-Olifant is small: about 4,800 lines of library code in `src/`, 2,500 lines of tests next to
+Olifant is small: about 5,200 lines of library code in `src/`, 2,600 lines of tests next to
 it, and a 42-line `app/Main.hs`. Line references (`src/Olifant/Cli.hs:44`) are to the code as
 of this chapter; if one is off, the code has moved and the chapter needs fixing.
 
@@ -108,7 +108,7 @@ From the bottom up:
 | **Toml** | TOML parsed into a small `Tree`, plus decoders with readable errors; the only module that knows the `toml-parser` API | `Toml.hs`: `Tree`, `Table`, `parseToml`, `keyOrder`, `required`, `optional`, `inKey`, `text`, `list`, `table`, `onlyKeys` | none |
 | **Glob** | `**` / `*` path globs | `Glob.hs`: `matchesGlob`, `globPrefix` | none |
 | **Template** | The `{= … =}` language: parse, render, exemplars | `Template.hs` over `Template/{Syntax,Parse,Render,Value,Exemplar,Error}`: `Template`, `parseTemplate`, `render`, `evaluate`, `Value`, `Env`, `exemplar`, `freeVariables` | Naming |
-| **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`: `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`. `Language.AstGrep` (the ast-grep adapter) is imported directly by `Main` | Glob, Template, Toml |
+| **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`, `Diagnostics`, `Support`: `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`, `CompilerSupport`, `supportFor`. `Language.Elm` and `Language.Ghc` (one `CompilerSupport` record each, spec §5.6) and `Language.AstGrep` (the ast-grep adapter) are internal; only `AstGrep` is imported directly, by `Main` | Glob, Template, Toml |
 | **Process** | Run an external program with byte stdin/stdout/stderr; never throws | `Process.hs`: `runBytes` | none |
 | **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `pruned`, `diskWorkspace`, `memoryWorkspace`, `within`, `normalisePath`, `isSafeRelative` | Process (to run `git`) |
 | **Query** | Facts from the repo as records (globs, commands printing JSON, or AST queries selecting nodes), and the **Queries** port | `Query.hs`: `Query`, `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `noQueries`, `processCommand` | Glob, Language (`Rule`), Naming, Process, Template, Toml |
@@ -192,11 +192,14 @@ A module outside a unit normally imports only that unit's facade. These are the 
 ```
 app/Main.hs:9                          import Olifant.Language.AstGrep (astGrepSyntax)
 src/Olifant/Query.hs:39                import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
-src/Olifant/Generation/Complete.hs:26  import Olifant.Language.Elm (enclosingFunction, qualifyPattern, visibleAt)
 ```
 
-`Main` importing an adapter directly is fine: wiring adapters together is `Main`'s job. The
-`Elm` import is a real rough spot, covered at the end of this chapter.
+`Main` importing an adapter directly is fine: wiring adapters together is `Main`'s job.
+`Generation/Complete.hs` used to be a third exception here: it imported `Olifant.Language.Elm`
+directly and branched on `langQualify lang == Just "elm"` to decide whether to qualify a
+pattern. Step 2c (compiler support, below) closed that gap — the check loop now goes through
+a `CompilerSupport` record the adapter's `[check] format` selects, and `Generation/Complete.hs`
+imports nothing from `Language.Elm` or `Language.Ghc` at all.
 
 ## Ports and adapters
 
@@ -252,7 +255,7 @@ reach outside Olifant's memory, so they travel together in one port.
 |---|---|---|---|
 | `Workspace m` | `Workspace.hs:29` | `diskWorkspace` (`Workspace.hs:72`): reads and writes under a root; lists files with `git ls-files` when inside a git work tree, otherwise walks the tree. `within dir` (`:131`) views a workspace from a subdirectory | `memoryWorkspace` (`Workspace.hs:45`): a `Map` in an `IORef`, which also hands back an action that reads the final map, so tests can assert on "the disk" |
 | `Syntax m` | `Language/Syntax.hs:15` | `astGrepSyntax` (`Language/AstGrep.hs:33`): runs `ast-grep scan --stdin --inline-rules … --json=compact`; compiles a pack's vendored grammar with `cc` into the cache on first use | `noSyntax` (`Language/Syntax.hs:17`) always says "ast-grep is not installed"; `fakeSyntax :: Syntax Identity` in `AnchorSpec.hs:58` returns canned matches |
-| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, parses the report (`elm-json` only) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:402`) replays a list of reports, one per round |
+| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, and parses the report through the `CompilerSupport` its `format` names (`elm-json`, `ghc-json`) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:427`) replays a list of reports, one per round |
 | `Queries m` | `Query.hs:138` | `processCommand dir` (`Query.hs:152`): runs a program (a bare name from `PATH`, or a project path like `bin/list`) in the project dir, for `queryCommand`; `astQueries syntax langs` (`Anchor/Items.hs:17`): evaluates an `ast` query's target over every matching file, for `queryAst` | `noQueries` (`Query.hs:145`); `QuerySpec.hs:39`'s `fake out = noQueries {queryCommand = …}` overrides one field and leaves `queryAst` as the no-op |
 
 The ports are bundled at two levels. `Tools m` (`src/Olifant/Generation/Tools.hs:10`) holds
@@ -652,37 +655,62 @@ snippet written at its absolute column is not indented twice), plus, per `locSpa
 blank line if one isn't already there. The plan's `WillInsert` holds that same text, so
 what `--plan` shows is what is written, apart from the site's indentation.
 
-**Phase 2: `complete` edits, the check loop** (`src/Olifant/Generation/Complete.hs:38`). For
-each language that has `complete` edits, `gather` (`:53`) collects every file the check
-needs, meaning the adapter's `files` globs plus its `context` (`elm.json`), *as they will be
-after phase 1*. Then `loop` (`:61`) runs:
+**Phase 2: `complete` edits, the check loop** (`src/Olifant/Generation/Complete.hs:38`).
+`perLanguage` (`:40`) first turns the adapter's `[check] format` into a `CompilerSupport`
+record with `supportFor` (`Language/Support.hs:12`) — `elmSupport` or `ghcSupport`. A format
+`supportFor` doesn't recognise fails every `complete` edit for that language with one message
+(`:45`), rather than surfacing the problem deep inside the loop. For each language that has
+`complete` edits, `gather` (`:54`) collects every file the check needs, meaning the adapter's
+`files` globs plus its `context` (`elm.json`; a Haskell adapter's `*.cabal` and
+`cabal.project`), *as they will be after phase 1*. Then `loop` (`:62`) runs, carrying that
+`support` record alongside the language:
 
 ```haskell
--- src/Olifant/Generation/Complete.hs:61
-    loop lang step mine disk rnd seen n files current acc
+-- src/Olifant/Generation/Complete.hs:62
+    loop lang support step mine disk rnd seen n files current acc
       | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], [], current)
       | otherwise =
           runCheck (toolChecker tools) lang files >>= \case
 ```
 
 `runCheck` goes through the **Checker port**. `processChecker` (`src/Olifant/Language/Check.hs:48`)
-writes the files into a temp directory and runs the command from the Elm adapter's `[check]`,
-`elm make {= files =} --report=json --output=/dev/null`, in that directory. It then parses
-the report with `parseElmReport` (`src/Olifant/Language/Elm.hs:20`) into `MissingPatterns`
-(file, the `case`'s line range, the missing constructors), plus a list of files broken for
-any other reason.
+writes the files into a temp directory, runs the adapter's `[check] command` there, looks up
+the same `CompilerSupport` by format (`supportFor`, `Check.hs:54`), and hands the compiler's
+raw output to `supportParse` — `parseElmReport` (`Language/Elm.hs:20`) for `elm-json`,
+`parseGhcReport` (`Language/Ghc.hs:34`) for `ghc-json` — into a `CheckReport`:
+`MissingPatterns` (file, the `case`'s line range, the missing patterns, and the scrutinee's
+type when the compiler names it), broken files, and now `reportUnplaced`: sites the loop
+cannot extend (GHC's equations, lambdas and pattern bindings), paired with GHC's own
+description of the context ("an equation for `label`", "a lambda abstraction").
 
-For each missing pattern, `branchFor` (`Complete.hs:100`) picks the `complete` spec whose
-constructor it names, from the candidates sharing the pattern's bare name — a `NonEmpty`
-list now, since the call site only builds `cands` when it's non-empty (`nonEmpty`, `:71`),
-so `branchFor` itself needs no "this is never empty" comment or partial `head`.
-Specs with a `where` must also match: `locateContainer` checks that the reported `case` is
-the one in `changeRouteTo`. `branchFor` then renders the spec's body with `pattern` (written
-the way that module refers to the constructor, e.g. `Route.Settings` vs `Settings`, by
-`qualifyPattern`) and `site`. `applyBranches` (`:139`) inserts the branches bottom-up within
-each file, so earlier line numbers stay valid, and leaves the inserted edit's `editAnchor` as
-`Nothing` — a compiler-found branch has no anchor to report, so there is nothing for a re-run
-to leak into JSON (below). Then the loop checks again.
+The loop narrows a reported pattern's candidates with `supportVisible` (`:71`): for Elm, by
+module import (`visibleAt`); for GHC, by the edit's `Type.Ctor` qualifier appearing as a
+word in the reported type (`Maybe T`, `(T, Bool)`). A pattern that names one of the run's
+constructors but has no visible candidate becomes a warning (`addHidden`), never a silent
+skip. For each missing pattern, `branchFor` (`Complete.hs:107`) picks the `complete`
+spec whose constructor it names, from the candidates sharing the pattern's bare name — a
+`NonEmpty` list, since the call site only builds `cands` when it's non-empty (`nonEmpty`,
+`:72`), so `branchFor` itself needs no "this is never empty" comment or partial `head`. Specs
+with a `where` must also match: `locateContainer` checks that the reported `case` is the one
+named. A `complete` edit with no body is filtered out before `whereMatches` even runs (`:112`,
+`isJust (completeBody s)`), so it never supplies text for a chosen branch — only ever a todo.
+`branchFor` then renders the chosen spec's body with `pattern`, written the way the site
+should by `supportPattern` (Elm qualifies it; GHC's names are already in scope at the site),
+and `site`. `applyBranches` (`:147`) inserts the branches bottom-up within each file, so
+earlier line numbers stay valid, and leaves the inserted edit's `editAnchor` as `Nothing` — a
+compiler-found branch has no anchor to report, so there is nothing for a re-run to leak into
+JSON (below).
+
+When a round has nothing left to add, `addUnplaced` (`:94`) turns any `reportUnplaced` site
+that needs one of this plan's constructors into a plan warning — never a todo, since there is
+nowhere to place a branch — naming the file, the function and the pattern. Otherwise the loop
+checks again.
+
+`insertBranch` (`Complete.hs:162`) places the new line after the `case`'s last line, indented
+like its other alternatives, and copies their *spacing*: a blank line before the new branch
+only if one already separates the case's last two alternatives (Elm's usual style), none if
+they sit flush against each other (ordinary Haskell), and a blank line when there is only one
+alternative to copy the spacing from.
 
 With a logging shim in front of `elm`, this command runs `elm make` three times:
 
@@ -697,10 +725,13 @@ don't compile, and `Main` imports the new page. That's why the loop exists. It a
 explains the order at the end of the output: the `update` branch (edit 9) was found in
 round 1, and the `view` and `changeRouteTo` branches were found together in round 2 and
 applied bottom-up (line 108, then line 59). The loop gives up after `maxRounds = 5`
-(`:31`), or when a round reports a site it already filled (`:73`). If the compiler reports
+(`:31`), or when a round reports a site it already filled (`:74`). If the compiler reports
 one of the plan's constructors missing from a `case` that no matching spec's `where`
-names, that site gets the adapter's placeholder branch (`Debug.todo`) and is listed as a
-todo. Missing patterns that don't mention any of the plan's constructors are ignored.
+names, that site gets the adapter's placeholder branch (`Debug.todo`, or GHC's `error "…"`)
+and is listed as a todo; a `complete` edit with no body at all (`olifant-dev/error-case`)
+gets this for every site, since it has no spec a `where` could ever match. Missing patterns
+that don't mention any of the plan's constructors are ignored, and GHC's function-equation
+sites that do are the plan warnings from `addUnplaced` above, never todos.
 
 **Phase 3: regions, `refreshRegions`** (`src/Olifant/Generation/Regions.hs:29`). This phase
 re-renders every owned region against the files as the plan leaves them. The Elm pack
@@ -787,13 +818,11 @@ not a dumped Haskell value (below).
 
 ## Rough spots
 
-These are things in the code today that are worth knowing when you work near them. None of
-them is urgent.
-
-- **Elm knowledge inside the generic engine.** `Generation/Complete.hs` imports
-  `Olifant.Language.Elm` (`:26`) and branches on `langQualify lang == Just "elm"` (`:70`,
-  `:108`). `Language/Check.hs:55` dispatches on the report format `"elm-json"`. A second
-  compiled language will need these behind the adapter.
+This section is where things worth knowing about, but not urgent, go when you work near
+them. There are none right now: step 2c (compiler support, above) closed the one that was
+here — `Generation/Complete.hs` importing `Olifant.Language.Elm` and branching on
+`langQualify lang == Just "elm"` — by moving the Elm-specific behaviour behind
+`CompilerSupport`, the same way GHC's now sits.
 
 ## Where to go next
 

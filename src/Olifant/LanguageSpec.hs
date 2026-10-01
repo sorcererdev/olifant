@@ -9,13 +9,18 @@ import Data.Text qualified as T
 import Data.ByteString qualified as BS
 import Data.List (nub)
 import Data.Text.IO qualified as TIO
-import Olifant.Language.Elm (enclosingFunction, parseElmReport, qualifyPattern, visibleAt)
-import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
+import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
+import Olifant.Anchor (RenderedAnchor (..), locIndent, locLine, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
 import System.FilePath ((</>))
 import Olifant.Template (Value (..))
+import Control.Monad (forM_)
+import Olifant.Language.Diagnostics (CompilerSupport (..))
+import Olifant.Language.Support (supportFor)
+import Data.Text.Encoding qualified as TE
+import Olifant.Language.Ghc (parseGhcReport, typeOf)
 import Test.Hspec
 
 elmToml :: Text
@@ -26,7 +31,6 @@ elmToml =
     , "grammar = { source = \"grammar/elm\" }"
     , "placeholder = 'Debug.todo \"{= message =}\"'"
     , "branch = \"{= pattern =} ->\\n    {= body =}\""
-    , "qualify = \"elm\""
     , "[check]"
     , "command = [\"elm\", \"make\", \"{= files =}\", \"--report=json\", \"--output=/dev/null\"]"
     , "context = [\"elm.json\"]"
@@ -51,6 +55,12 @@ spec = do
       fmap langGrammar (parseLanguage "rust" "/p" "files = [\"**/*.rs\"]\ncomment = \"//\"\ngrammar = \"rust\"\n") `shouldBe` Right (BuiltInGrammar "rust")
     it "rejects unknown keys" $
       parseLanguage "x" "/p" "files = []\ncomment = \"#\"\ngrammar = \"x\"\ncolour = 1\n" `shouldSatisfy` either ("colour" `T.isInfixOf`) (const False)
+    it "refuses the retired `qualify` key, saying what replaced it" $
+      parseLanguage "x" "/p" "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\nqualify = \"elm\"\n"
+        `shouldSatisfy` either ("the [check] format decides" `T.isInfixOf`) (const False)
+    it "refuses a check format with no compiler support, listing the known ones" $
+      parseLanguage "x" "/p" "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[check]\ncommand = [\"x\"]\nformat = \"cobol-json\"\n"
+        `shouldSatisfy` either (\e -> "unknown format `cobol-json`" `T.isInfixOf` e && "elm-json" `T.isInfixOf` e) (const False)
     it "renders a target's rule with the phrase's parameters" $ do
       let Right lang = parseLanguage "elm" "/p" elmToml
           [t] = langTargets lang
@@ -107,6 +117,9 @@ spec = do
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "end of data goes after the last constructor (haskell adapter)" $ withHaskell $ \syn lang file ->
+      fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of data SampleError"] file)
+        `shouldReturn` Right (6, "  ")
     it "end of struct goes after the last field" $ withRust $ \syn lang file ->
       at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub refund_invoice: RefundInvoice," + 1)
     it "end of impl goes after the last method" $ withRust $ \syn lang file ->
@@ -115,21 +128,74 @@ spec = do
       at syn lang file "end of literal in new" `shouldReturn` Right (lineOf file "refund_invoice: RefundInvoice {}," + 1)
     it "end of crate imports goes after the last imported item" $ withRust $ \syn lang file ->
       at syn lang file "end of crate imports" `shouldReturn` Right (lineOf file "refund_invoice::{RefundInvoice" + 1)
+  describe "compiler support" $ do
+    it "maps the elm-json format to Elm's support" $
+      fmap supportFormat (supportFor "elm-json") `shouldBe` Just "elm-json"
+    it "has no support for an unknown format" $
+      fmap supportFormat (supportFor "cobol-json") `shouldBe` Nothing
+    it "keeps the language-neutral modules free of Elm" $
+      forM_ ["src/Olifant/Generation/Complete.hs", "src/Olifant/Language/Check.hs"] $ \f -> do
+        src <- TIO.readFile f
+        (f, "Olifant.Language.Elm" `T.isInfixOf` src) `shouldBe` (f, False)
+  describe "GHC support (fixtures captured from GHC 9.10.3)" $ do
+    let real = BS.readFile "src/Olifant/Language/testdata/ghc-62161.jsonl"
+    it "reads one pattern per line, the full type, and only case alternatives as sites (review C1, C2, I1)" $ do
+      Right r <- parseGhcReport <$> real
+      [(missingPatterns m, missingType m) | m <- reportMissing r]
+        `shouldBe` [ (["SampleBroken _ _", "SampleLocked _"], Just "SampleError")
+                   , (["((SampleLocked _), _)"], Just "(SampleError, Bool)")
+                   , (["Just (SampleLocked _)"], Just "Maybe SampleError")
+                   ]
+      map (fst . missingCase) (reportMissing r) `shouldBe` [8, 12, 17]
+    it "puts equations, lambdas and pattern bindings in reportUnplaced, described (review I1)" $ do
+      Right r <- parseGhcReport <$> real
+      [(missingPatterns m, d) | (m, d) <- reportUnplaced r]
+        `shouldBe` [ (["SampleLocked _"], "an equation for `label`")
+                   , (["SampleBroken _ _", "SampleLocked _"], "a lambda abstraction")
+                   , (["SampleBroken _ _", "SampleLocked _"], "a pattern binding")
+                   ]
+    it "reads a missing-pattern site even when -Werror makes it an error (review I2)" $ do
+      Right r <- parseGhcReport <$> BS.readFile "src/Olifant/Language/testdata/ghc-62161-werror.jsonl"
+      (map missingPatterns (reportMissing r), reportBroken r) `shouldBe` ([["SampleBroken _ _", "SampleLocked _"]], [])
+    it "drops GHC's truncation marker" $
+      fmap (map missingPatterns . reportMissing) (parseGhcReport (TE.encodeUtf8 ("{\"span\":{\"file\":\"src/A.hs\",\"start\":{\"line\":2,\"column\":1},\"end\":{\"line\":4,\"column\":1}},\"severity\":\"Warning\",\"code\":62161,\"message\":[\"Pattern match(es) are non-exhaustive\\nIn a case alternative:\\n    Patterns of type `T' not matched:\\n        A\\n        B\\n        ...\"]}")))
+        `shouldBe` Right [["A", "B"]]
+    it "reports errors as broken files and ignores other warnings" $ do
+      let err = "{\"span\":{\"file\":\"src/B.hs\",\"start\":{\"line\":1,\"column\":1},\"end\":{\"line\":1,\"column\":2}},\"severity\":\"Error\",\"code\":88464,\"message\":[\"Variable not in scope: x\"]}"
+          other = "{\"span\":{\"file\":\"src/C.hs\",\"start\":{\"line\":1,\"column\":1},\"end\":{\"line\":1,\"column\":2}},\"severity\":\"Warning\",\"code\":40910,\"message\":[\"Defined but not used\"]}"
+      parseGhcReport (TE.encodeUtf8 (err <> "\n" <> other)) `shouldBe` Right (CheckReport [] [("src/B.hs", "Variable not in scope: x")] [])
+    it "reads the type with ASCII or unicode quotes (Review Focus 3)" $ do
+      typeOf "Patterns of type \8216CatalogError\8217 not matched: PackLocked _" `shouldBe` Just "CatalogError"
+      typeOf "Patterns of type `Olifant.Catalog.CatalogError' not matched: PackLocked _" `shouldBe` Just "Olifant.Catalog.CatalogError"
+    it "is visible where the type appears anywhere in GHC's type: tuples, Maybe, qualified (review C2)" $ do
+      let Just g = supportFor "ghc-json"
+          at ty = MissingPatterns "src/A.hs" (4, 8) ["x"] (Just ty)
+      supportVisible g (at "(SampleError, Bool)") "" "SampleError.SampleLocked" `shouldBe` True
+      supportVisible g (at "Maybe SampleError") "" "SampleError.SampleLocked" `shouldBe` True
+      supportVisible g (at "Olifant.Catalog.CatalogError") "" "CatalogError.PackLocked" `shouldBe` True
+      supportVisible g (at "SampleErrorish") "" "SampleError.SampleLocked" `shouldBe` False
+      supportVisible g (at "RegionError") "" "SampleError.SampleLocked" `shouldBe` False
+      supportVisible g (at "RegionError") "" "SampleLocked" `shouldBe` True
+      supportPattern g "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
+    it "asks GHC not to truncate pattern lists (review M2)" $ do
+      src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+      src `shouldSatisfy` T.isInfixOf "-fmax-uncovered-patterns="
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"
       parseElmReport report
         `shouldBe` Right
           ( CheckReport
-              [ MissingPatterns "/tmp/elmcheck/src/Page/SamplePage.elm" (30, 32) ["SetName _"]
-              , MissingPatterns "/tmp/elmcheck/src/Route.elm" (29, 34) ["Settings"]
+              [ missing "/tmp/elmcheck/src/Page/SamplePage.elm" (30, 32) ["SetName _"]
+              , missing "/tmp/elmcheck/src/Route.elm" (29, 34) ["Settings"]
               ]
               []
+              []
           )
-    it "is empty for a clean compile" $ parseElmReport "" `shouldBe` Right (CheckReport [] [])
+    it "is empty for a clean compile" $ parseElmReport "" `shouldBe` Right (CheckReport [] [] [])
     it "lists files with other problems as broken (review)" $
       parseElmReport "{\"type\":\"compile-errors\",\"errors\":[{\"path\":\"/x/src/A.elm\",\"name\":\"A\",\"problems\":[{\"title\":\"NAMING ERROR\",\"region\":{\"start\":{\"line\":1,\"column\":0},\"end\":{\"line\":1,\"column\":3}},\"message\":[\"x\"]}]}]}"
-        `shouldBe` Right (CheckReport [] [("/x/src/A.elm", "NAMING ERROR")])
+        `shouldBe` Right (CheckReport [] [("/x/src/A.elm", "NAMING ERROR")] [])
     it "reports a non-compile error as a failure" $
       parseElmReport "{\"type\":\"error\",\"path\":\"elm.json\",\"title\":\"BAD JSON\",\"message\":[\"oops\"]}" `shouldSatisfy` either ("BAD JSON" `T.isInfixOf`) (const False)
   describe "qualifyPattern" $ do
@@ -152,9 +218,9 @@ spec = do
       visibleAt mainElm "Route.Settings" `shouldBe` True
       visibleAt mainElm "Main.Settings" `shouldBe` True
       visibleAt route "Settings" `shouldBe` True
-  describe "enclosingFunction" $
+  describe "declarationAt" $
     it "finds the top-level declaration above a line" $
-      enclosingFunction "toPath : Route -> String\ntoPath route =\n    case route of\n        Home ->\n" 2 `shouldBe` "toPath"
+      declarationAt "toPath : Route -> String\ntoPath route =\n    case route of\n        Home ->\n" 2 `shouldBe` "toPath"
   describe "processChecker (real elm)" $ do
     it "reports the missing branch in a page's update" $
       findExecutable "elm" >>= \case
@@ -188,6 +254,18 @@ withRust k =
       tmp <- getTemporaryDirectory
       let Right lang = parseLanguage "rust" "packs/rust-htmx" src
       file <- TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
+
+-- | The olifant-dev pack's Haskell adapter on the fixture's SampleErrors.hs, or pending.
+withHaskell :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withHaskell k =
+  findExecutable "ast-grep" >>= \case
+    Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
+    Just _ -> do
+      src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+      tmp <- getTemporaryDirectory
+      let Right lang = parseLanguage "haskell" "packs/olifant-dev" src
+      file <- TIO.readFile "packs/olifant-dev/fixtures/app/src/Olifant/SampleErrors.hs"
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
 withAstGrep :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation

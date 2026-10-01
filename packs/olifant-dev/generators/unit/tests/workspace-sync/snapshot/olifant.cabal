@@ -4,9 +4,13 @@ version:            0.1.0.0
 
 library
   hs-source-dirs:  src
+  build-depends:      base
+  default-language:   GHC2021
+  default-extensions: LambdaCase
   exposed-modules:
     -- olifant:region library-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Naming
+    Olifant.SampleErrors
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
     Olifant.WorkspaceSync
@@ -20,6 +24,7 @@ test-suite spec
     -- olifant:region test-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.SampleErrors
     Olifant.SampleUnit
     Olifant.SampleUnit.SampleDetail
     Olifant.SampleUnitSpec

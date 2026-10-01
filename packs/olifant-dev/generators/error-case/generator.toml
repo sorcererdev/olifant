@@ -1,0 +1,38 @@
+description = "Add a constructor to a sum type; GHC finds every case that needs a branch (left as todos)"
+language = "haskell"
+version = 1
+examples = [
+  "olifant gen olifant-dev/error-case --set path=src/Olifant/Catalog.hs --set type=catalog_error --set name=pack_locked --set fields=Text",
+]
+
+[inputs.path]
+type = "text"
+prompt = "The module that defines the type (e.g. src/Olifant/Catalog.hs)"
+
+[inputs.type]
+type = "ident"
+prompt = "The sum type (e.g. catalog_error for CatalogError)"
+
+[inputs.name]
+type = "ident"
+prompt = "The new constructor (e.g. pack_locked for PackLocked)"
+
+[inputs.fields]
+type = "text"
+optional = true
+prompt = "Its fields, as Haskell types (e.g. Text FilePath)"
+
+[derive]
+T = "{= type|pascal =}"
+C = "{= name|pascal =}"
+
+[[edits]]
+insert = "{= path =}"
+at     = "end of data {= T =}"
+text   = "| {= C =}{= if fields =} {= fields =}{= end =}"
+
+# No body: every site GHC reports gets a todo branch, listed in the plan,
+# for a person (or, later, a model) to fill. GHC names the type, so `T.C`
+# keeps other types' cases out.
+[[edits]]
+complete = "{= T =}.{= C =}"
