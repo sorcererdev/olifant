@@ -63,10 +63,10 @@ library
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
-    Olifant.Language.Process
     Olifant.Language.Rule
     Olifant.Language.Syntax
     Olifant.Naming
+    Olifant.Process
     Olifant.Query
     Olifant.Region
     Olifant.Template
@@ -128,12 +128,12 @@ test-suite spec
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
-    Olifant.Language.Process
     Olifant.Language.Rule
     Olifant.Language.Syntax
     Olifant.LanguageSpec
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.Process
     Olifant.Query
     Olifant.QuerySpec
     Olifant.Region

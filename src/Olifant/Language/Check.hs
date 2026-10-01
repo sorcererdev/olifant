@@ -23,7 +23,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), Language (..), matchesGlob)
 import Olifant.Language.Elm (parseElmReport)
-import Olifant.Language.Process (runBytes)
+import Olifant.Process (runBytes)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, findExecutable)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, takeDirectory, (</>))

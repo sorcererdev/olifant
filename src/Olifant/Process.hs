@@ -2,7 +2,7 @@
 -- Nothing here throws: a tool that cannot start, exits before reading its
 -- input, or breaks a pipe is reported as 'Left', so callers can turn it into
 -- a miss or a check failure instead of crashing Olifant.
-module Olifant.Language.Process (runBytes) where
+module Olifant.Process (runBytes) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)

@@ -18,6 +18,7 @@ import Olifant.Anchor (Located (..), Spacing (..), insertLines, locateContainer)
 import Olifant.Generation.Compose (StepPath, showStepPath)
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (CompleteSpec (..))
+import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language
 import Olifant.Language.Elm (enclosingFunction, qualifyPattern, visibleAt)
@@ -44,14 +45,13 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
           (es, cs, ws', current') <- loop lang step mine disk 1 S.empty (firstNumber + length edits) files current []
           pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
 
-    ignored = ["elm-stuff", "node_modules", ".git", "dist-newstyle", "target"] :: [FilePath]
 
     -- Everything the check needs: the adapter's sources and context files,
     -- as they will be after the positional edits.
     gather lang current = do
       paths <- listFiles ws "."
       let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
-          wanted p = not (any (`elem` ignored) (splitDirectories p)) && any (`matchesGlob` p) globs
+          wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
       read' <- traverse (\p -> (p,) <$> readText ws p) (filter wanted paths)
       let disk = M.fromList [(p, t) | (p, Just t) <- read']
       pure (disk, M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, wanted p]) disk)

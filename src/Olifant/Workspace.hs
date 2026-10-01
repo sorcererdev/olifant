@@ -3,6 +3,7 @@
 module Olifant.Workspace
   ( Workspace (..)
   , PathState (..)
+  , pruned
   , memoryWorkspace
   , diskWorkspace
   , within
@@ -19,7 +20,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8', encodeUtf8)
-import Olifant.Language.Process (runBytes)
+import Olifant.Process (runBytes)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (addTrailingPathSeparator, isAbsolute, joinPath, splitDirectories, takeDirectory, (</>))
