@@ -8,6 +8,30 @@ chapter builds three, from the quickest kind to the most structural, in an Elm s
 scripts/try-pack.sh elm /tmp/olifant-gen && cd /tmp/olifant-gen
 ```
 
+## Start from a skeleton
+
+`olifant new NAME` writes `.olifant/generators/NAME/generator.toml` with the parts every
+generator has (a description, the language, one `ident` input, a `[derive]`d PascalCase
+name) and the three kinds of edit as commented examples to adapt. It loads as written, so
+`olifant list` shows it at once:
+
+```
+$ olifant new route
+created .olifant/generators/route/generator.toml
+fill in description and [[edits]]; `olifant anchors elm` lists placement phrases, `olifant where FILE "PHRASE"` tests one, `olifant gen route --set name=example --plan` previews
+```
+
+With more than one language adapter, pass `--language`. `olifant schema` prints the whole
+format as a JSON Schema (every key, what it takes, the filters), built from the same key
+lists the loader checks, so the two cannot disagree.
+
+When a key is wrong, the error says what was probably meant: `path` on an edit ("the file
+is the value of `insert`"), `content` ("did you mean `text`?"), `required` on an input
+("inputs are required unless `optional = true`"), a typo like `att` ("did you mean
+`at`?"), `[edits]` with single brackets, or a filter written `pascalCase(name)` or
+`name|capitalize` (both point at `{= name|pascal =}`). These are the mistakes models made
+most when writing generators (token experiment v9).
+
 ## The quickest generator: copy a real file (an exemplar)
 
 Most conventions start life as a file someone already wrote. Write one by hand, and make
