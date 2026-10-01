@@ -1,0 +1,52 @@
+description = "web-htmx resource handlers for a singular resource (e.g. /workers/:worker_id, not /workers)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/web-htmx-resource-singular --set resource=worker --set resource_plural=workers",
+]
+
+[inputs.resource]
+type = "ident"
+prompt = "The resource's name (singular, e.g. worker)"
+
+[inputs.resource_plural]
+type = "ident"
+prompt = "The plural name (e.g. workers) — used for the redirect route"
+
+[derive]
+r = "{= resource|snake =}"
+R = "{= resource|constant =}"
+
+[requires]
+exists = ["web-htmx/src/lib.rs", "web-htmx/src/resources.rs", "web-htmx/src/routes.rs"]
+hint = "Run this from the workspace root of a rust-htmx-axum-template app."
+
+[[edits]]
+create   = "web-htmx/src/resources/{= r =}.rs"
+template = "resource.rs.dt"
+
+[[edits]]
+insert = "web-htmx/src/resources.rs"
+at     = ["after last line matching ^pub mod ", "end of file"]
+text   = "pub mod {= r =};"
+
+# lib.rs: after the template's hook comments when present, else by structure.
+[[edits]]
+insert = "web-htmx/src/lib.rs"
+at     = ["after marker //##PLOP USE RESOURCE HOOK##", "after last line matching ^use "]
+text   = "use resources::{= r =}::{= r =}_routes;"
+
+[[edits]]
+insert = "web-htmx/src/lib.rs"
+at     = ["after marker //##PLOP MERGE ROUTE HOOK##", "after first line matching \\.with_state\\("]
+text   = ".merge({= r =}_routes(state.clone()))"
+
+# routes.rs: the four routes the handlers use, as todo!()s to fill in.
+[[edits]]
+insert = "web-htmx/src/routes.rs"
+at     = "end of file"
+text   = """
+pub const {= R =}: &str = todo!("Add route here");
+pub fn {= r =}() -> String { todo!("Return hydrated route here") }
+pub const {= R =}_EDIT_FORM: &str = todo!("Add route here");
+pub fn {= r =}_edit_form() -> String { todo!("Return hydrated route here") }"""
