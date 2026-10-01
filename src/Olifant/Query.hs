@@ -224,13 +224,16 @@ renderQuery env = \case
 -- | `each` fields for a node's text: the first capture group of each regex
 -- (the whole match if it has none; empty text if it does not match).
 eachFields :: [(Text, Text)] -> Text -> Record
-eachFields each nodeText = M.fromList [(name, VText (capture re)) | (name, re) <- each]
-  where
-    capture re = case makeRegexM (T.unpack re) :: Maybe Regex of
-      Nothing -> ""
-      Just rx
-        | not (matchTest rx str) -> ""
-        | otherwise ->
-            let (_, whole, _, groups) = match rx str :: (String, String, String, [String])
-             in T.pack (case groups of (g : _) -> g; [] -> whole)
-    str = T.unpack nodeText
+eachFields each =
+  -- Compiled once per query, not once per record.
+  let compiled = [(name, makeRegexM (T.unpack re) :: Maybe Regex) | (name, re) <- each]
+   in \nodeText ->
+        let str = T.unpack nodeText
+            capture = \case
+              Nothing -> ""
+              Just rx
+                | not (matchTest rx str) -> ""
+                | otherwise ->
+                    let (_, whole, _, groups) = match rx str :: (String, String, String, [String])
+                     in T.pack (case groups of (g : _) -> g; [] -> whole)
+         in M.fromList [(name, VText (capture rx)) | (name, rx) <- compiled]

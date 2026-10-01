@@ -96,8 +96,10 @@ plan leaves it, with the new `| Profile`, so the list is right in the same run.
   the vocabulary is the one `at` uses (`olifant anchors elm` lists it), and `olifant where`
   tests it. A file without the target gives no records, so a misspelt *name*
   (`type Rout`) gives an empty list rather than an error. A misspelt target *kind* is an
-  error ("unknown target `typo Route` for elm (targets: …)"), and so is a target that
-  appears twice in one file.
+  error even when no file matches ("unknown target `typo Route` in any language adapter
+  (targets: …)"), and so is a target that appears twice in one file. Files the glob
+  matches that have no language adapter (`src/*` catching `elm.json`) are skipped; a file
+  named outright must have one.
 - **`ast = { … }`** is a raw ast-grep rule, for nodes no target covers. Every matching node
   is a record:
 
@@ -147,7 +149,8 @@ route-names (1 edit, 0 conflicts)
 
 `routes` is a list like any other: templates, `for_each` and `[[uses]]` can use it. Any
 query works here (`glob`, `command`, `items_of`, `ast`). Queries run after inputs and
-`[derive]`, so their strings can use them (`files = "{= service_dir =}/src/{= cmd =}.rs"`).
+`[derive]`, so their strings can use them (`files = "{= service_dir =}/src/{= cmd =}.rs"`),
+but not each other's records. A query named like an input or derived value is an error.
 A query that fails stops the generator with `query_failed` (exit 1).
 
 Two limits. Generator queries read the files on disk, so in a chain of steps they do not

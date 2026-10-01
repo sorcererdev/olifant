@@ -28,6 +28,9 @@ parseGenerator gid src = do
   uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
   examples <- fromMaybe [] <$> optional "examples" (list text) top
   queries <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryFromTree v)) . M.toList) =<< optional "query" table top
+  case [k | (k, _) <- queries, k `elem` map inputName inputs ++ map fst derived] of
+    k : _ -> Left ("`query." <> k <> "`: `" <> k <> "` is already an input or derived value; name the query differently")
+    [] -> Right ()
   pure (Generator gid description language version inputs derived requires edits uses examples queries)
 
 tmpl :: Text -> Either Text Template
@@ -112,6 +115,7 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
       _ -> Left "an insert needs exactly one of `at` (preferred) or `anchor`"
     src <- case M.lookup "fragment" t of
       Nothing -> sourceFrom False t
+      Just _ | any (`M.member` t) ["text", "template"] -> Left "an insert needs exactly one of `template`, `text` or `fragment`"
       Just v -> inKey "fragment" $ do
         f <- table v
         onlyKeys ["file", "items_of", "matching"] f
@@ -129,11 +133,12 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
 
 sourceFrom :: Bool -> Table -> Either Text SourceRef
 sourceFrom allowExemplar t = case (M.lookup "template" t, M.lookup "exemplar" t, M.lookup "text" t) of
-  (Just v, Nothing, Nothing) -> TemplateFile . T.unpack <$> inKey "template" (text v)
   (Nothing, Just v, Nothing) | allowExemplar -> do
     ref <- inKey "exemplar" (text v)
     binds <- required "bind" (table >=> bindsFrom) t
     pure (ExemplarFile ref binds)
+  _ | M.member "bind" t -> Left "`bind` renames an exemplar's (or fragment's) names; this edit has neither"
+  (Just v, Nothing, Nothing) -> TemplateFile . T.unpack <$> inKey "template" (text v)
   (Nothing, Nothing, Just v) -> InlineText <$> inKey "text" (text v >>= tmpl)
   _
     | allowExemplar -> Left "a create needs exactly one of `template`, `exemplar` or `text`"

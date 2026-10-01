@@ -14,7 +14,7 @@ import Numeric (showHex)
 import Olifant.Language.Adapter
 import Olifant.Language.Process (runBytes)
 import Olifant.Language.Syntax
-import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, makeAbsolute)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, getFileSize, getModificationTime, makeAbsolute)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Info (os)
@@ -51,8 +51,12 @@ prepare cache lang = case langGrammar lang of
   BuiltInGrammar _ -> createDirectoryIfMissing True cache >> pure (Right cache)
   GrammarSource src0 -> do
     src <- makeAbsolute src0
-    parser <- BS.readFile (src </> "parser.c")
-    let key = T.unpack (langName lang) <> "-" <> showHex (fnv parser) ""
+    -- Keyed on parser.c's size and modification time: a stat per query
+    -- rather than hashing a grammar that can be megabytes (every AST query
+    -- runs this once or twice per file).
+    size <- getFileSize (src </> "parser.c")
+    stamp <- getModificationTime (src </> "parser.c")
+    let key = T.unpack (langName lang) <> "-" <> showHex (fnv (BS.pack (map (fromIntegral . fromEnum) (show (size, stamp) <> src)))) ""
         lib = cache </> "grammars" </> key <> (if os == "darwin" then ".dylib" else ".so")
         dir = cache </> "sg" </> key
     built <- doesFileExist lib
@@ -60,9 +64,14 @@ prepare cache lang = case langGrammar lang of
     case compiled of
       Left f -> pure (Left f)
       Right () -> do
-        createDirectoryIfMissing True dir
-        writeFile (dir </> "sgconfig.yml") $
-          "ruleDirs: []\ncustomLanguages:\n  " <> T.unpack (langName lang) <> ":\n    libraryPath: " <> lib <> "\n    extensions: [" <> T.unpack (langName lang) <> "]\n"
+        let config = dir </> "sgconfig.yml"
+        present <- doesFileExist config
+        if present
+          then pure ()
+          else do
+            createDirectoryIfMissing True dir
+            writeFile config $
+              "ruleDirs: []\ncustomLanguages:\n  " <> T.unpack (langName lang) <> ":\n    libraryPath: " <> lib <> "\n    extensions: [" <> T.unpack (langName lang) <> "]\n"
         pure (Right dir)
   where
     compile src lib =

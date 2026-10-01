@@ -394,7 +394,10 @@ bind     = { page = "sample_page" }
 - The item's text is dedented and then renamed like an exemplar: every case form of each
   `bind` value (`sample_page`, `SamplePage`, `samplePage`, …) becomes the input.
 - `file = "fixture:…"` reads from the pack's fixture; a plain path reads the project's own
-  file, so a project generator can copy "a branch like the ones already there".
+  file, so a project generator can copy "a branch like the ones already there". Either way
+  the path must stay inside (no absolute paths, no `..`).
+- A fragment replaces `text`/`template`: an insert with both is a load error, and so is
+  `bind` on an edit with neither an exemplar nor a fragment.
 
 With `--set page=settings` the branch comes out as:
 

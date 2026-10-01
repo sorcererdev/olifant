@@ -129,7 +129,11 @@ The branch still goes before the catch-all `( _, _ )`, which is not an item. The
 - A container with one item has nothing to copy, so nothing is added.
 - If your text already starts (or ends) with the blank line, it is not doubled.
 
-`before` and `after` insert the text exactly as written. For those, TOML is the snag:
+Indentation works the same way: Olifant removes the text's common indentation and
+indents it like the spot, so a branch written at its real column (`"""\n        Just
+Route.About ->\n            …"""`) and one written flush left come out the same.
+
+`before` and `after` add no blank lines of their own. For those, TOML is the snag:
 it drops the newline right after an opening `"""`, so a leading blank line needs an empty
 line after the `"""`:
 

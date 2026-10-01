@@ -12,7 +12,7 @@ import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Text (Text)
-import Olifant.Anchor (Located (..), Miss, RenderedAnchor, insertLines, presentAt)
+import Olifant.Anchor (Located (..), Miss, RenderedAnchor, insertLines, insertedText, presentAt)
 import Olifant.Generation.Compose (PlanItem (..))
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
@@ -71,7 +71,7 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
                   | presentAt loc snippet old -> (current, (planned path n p (Skipped AlreadyPresent)) {editAnchor = Just (locUsed loc)}, Nothing)
                   | otherwise ->
                       let (line, updated) = insertLines loc snippet old
-                       in (M.insert p (Just updated) current, (planned path n p (WillInsert line snippet)) {editAnchor = Just (locUsed loc)}, Nothing)
+                       in (M.insert p (Just updated) current, (planned path n p (WillInsert line (insertedText (locSpacing loc) snippet))) {editAnchor = Just (locUsed loc)}, Nothing)
       RenderedComplete _ -> pure (current, planned path n "" Conflicted, Nothing)
       where
         existing p = M.findWithDefault Nothing p current

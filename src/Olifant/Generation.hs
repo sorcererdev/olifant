@@ -99,13 +99,15 @@ generate ws resolve tools steps now mode =
     -- template on a re-run, so the create reports `target_exists`. If
     -- planning those files from scratch reproduces them exactly, the run is
     -- a no-op for them, not a conflict (spec §5.4).
-    -- `[query.NAME]`: render each query with the generator's values, run it
-    -- over the project as it is on disk, and bind the records as a list.
+    -- `[query.NAME]`: render each query with the generator's inputs and
+    -- derived values (never another query's records, so their order does not
+    -- matter), run it over the project as it is on disk, and bind the records
+    -- as a list.
     bindQueries env queries = do
       paths <- listFiles ws "."
       let one acc (name, q) = case acc of
             Left why -> pure (Left why)
-            Right e -> case renderQuery e q of
+            Right e -> case renderQuery env q of
               Left err -> pure (Left ("query `" <> name <> "`: " <> describeTemplateError err))
               Right q' -> fmap (\rs -> M.insert name (VList (map VRecord rs)) e) . first (\why -> "query `" <> name <> "`: " <> why) <$> runQuery (toolQueries tools) paths (readText ws) q'
       foldM one (Right env) queries

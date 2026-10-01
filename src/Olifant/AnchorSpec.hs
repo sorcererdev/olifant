@@ -10,13 +10,13 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 
 import Data.Text qualified as T
-import Hedgehog (Gen, forAll, tripping)
+import Hedgehog (Gen, forAll, tripping, (===))
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..))
-import Olifant.Template (Value (..))
+import Olifant.Template (Value (..), parseTemplate)
 import Test.Hspec
 import Test.Hspec.Hedgehog (hedgehog)
 
@@ -130,12 +130,28 @@ resolveSpec = do
     it "is an error when the target appears twice in a file" $
       runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
         `shouldSatisfy` either ("src/A.elm" `T.isInfixOf`) (const False)
+    it "rejects an unknown target kind even when the glob matches no file" $
+      runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "nowhere/*.elm" (ItemsOf "typo in update") []) (M.keys files) reader)
+        `shouldSatisfy` either (\e -> "unknown target `typo in update`" `T.isPrefixOf` e) (const False)
+    it "skips files without a language adapter when the glob has a wildcard, but not a named file" $ do
+      let files' = M.insert "src/data.json" "{}" files
+          reader' p = Identity (M.lookup p files')
+      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/*" (ItemsOf "case in update") []) (M.keys files') reader'))
+        `shouldBe` Right 0
+      runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/data.json" (ItemsOf "case in update") []) (M.keys files') reader')
+        `shouldSatisfy` either ("no language adapter for src/data.json" `T.isInfixOf`) (const False)
+    it "names the query when a raw rule's template fails" $ do
+      let Right tpl = parseTemplate "{= nope =}"
+      runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("regex", RText tpl)])) []) (M.keys files) reader)
+        `shouldSatisfy` either ("ast src/A.elm (rule)" `T.isInfixOf`) (const False)
     it "drops the CR of a CRLF file from text and each fields" $
       fmap (map (\r -> (M.lookup "text" r, M.lookup "rhs" r))) (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 5) "A ->\r\n    a"]))) [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("kind", RLit "x")])) [("rhs", "->(.*)")]) (M.keys files) reader))
         `shouldBe` Right [(Just (VText "A ->\n    a"), Just (VText ""))]
   describe "spacing copied from neighbouring items" $ do
     it "end of puts a blank line before the text when the last two items are separated by one" $
       fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right BlankBefore
+    it "start of puts a blank line after the text when the first two items are separated by one" $
+      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "start of case in update"] source)) `shouldBe` Right BlankAfter
     it "copies nothing from a one-item container (Review Focus 4)" $ do
       let one = Syntax $ \_ rule _ -> Identity . Right $
             if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …"] else [Match (2, 4) (4, 20) "case"]
@@ -143,6 +159,32 @@ resolveSpec = do
     it "insertLines adds the blank line unless the text already has it" $ do
       insertLines (Located 1 "" "" "x" BlankBefore) "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
       insertLines (Located 1 "" "" "x" BlankBefore) "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
-  describe "insertLines" $
+  describe "insertLines" $ do
     it "indents non-blank lines and reports the 1-based line" $
       insertLines (Located 1 "  " "" "x" NoSpacing) "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
+    it "removes the text's common indentation first, so text written at its absolute column is not doubled" $
+      insertLines (Located 1 "  " "" "x" NoSpacing) "\n    a ->\n        b" "one\ntwo\n" `shouldBe` (2, "one\n\n  a ->\n      b\ntwo\n")
+    it "keeps tab indentation relative" $
+      insertLines (Located 1 "\t" "" "x" NoSpacing) "\t\ta\n\t\t\tb" "one\n" `shouldBe` (2, "one\n\ta\n\t\tb\n")
+  describe "insertedText" $ do
+    it "does not depend on how far the whole text is indented" $ hedgehog $ do
+      ls <- forAll (Gen.list (Range.linear 1 6) (Gen.text (Range.linear 0 10) (Gen.element ("ab (){}=-> " :: String))))
+      k <- forAll (Gen.int (Range.linear 0 12))
+      let t = T.intercalate "\n" ls
+          shifted = T.intercalate "\n" [if T.null (T.strip l) then l else T.replicate k " " <> l | l <- ls]
+      insertedText NoSpacing shifted === insertedText NoSpacing t
+    it "keeps every line, and leaves the least indented one at column 0" $ hedgehog $ do
+      t <- forAll (Gen.text (Range.linear 0 40) (Gen.element ("ab \n\t{}" :: String)))
+      let out = T.splitOn "\n" (insertedText NoSpacing t)
+          body = maybe t id (T.stripSuffix "\n" t)
+          lead l = T.length (T.takeWhile (`elem` (" \t" :: String)) l)
+      length out === length (T.splitOn "\n" body)
+      case [lead l | l <- out, not (T.null (T.strip l))] of
+        [] -> pure ()
+        ns -> minimum ns === 0
+    it "is the text as written, dedented, with the blank line spacing adds (what the plan shows)" $ do
+      insertedText BlankBefore "    a\n      b" `shouldBe` "\na\n  b"
+      insertedText BlankAfter "a" `shouldBe` "a\n"
+      insertedText NoSpacing "a\n" `shouldBe` "a"
+    it "start of puts the blank line after (copied from the first two items)" $
+      insertedText BlankAfter "\nx" `shouldBe` "\nx\n"

@@ -19,7 +19,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), noQueries)
 import Olifant.Region
-import Olifant.Template (Template, parseTemplate)
+import Olifant.Template (Template, Value (..), parseTemplate)
 import Data.ByteString qualified as BS
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.FilePath ((</>))
@@ -83,6 +83,15 @@ createSpec = describe "generate (create edits)" $ do
             , "[[edits]]", "create = \"index.txt\"", "text = \"{= for m in mods =}{= m.stem =}\\n{= end =}\"" ]
     (_, files) <- run [("src/core/A.hs", ""), ("src/core/B.hs", ""), ("src/other/C.hs", "")] gen [("name", "core")] Apply
     M.lookup "index.txt" files `shouldBe` Just "A\nB\n"
+  it "stops with QueryFailed when a generator query fails" $ do
+    let gen = generatorFrom . (header <>) . T.unlines $ ["[query.types]", "files = \"a.x\"", "items_of = \"type T\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
+    (result, files) <- run [("a.x", "")] gen [("name", "x")] Apply
+    either (\case QueryFailed _ why -> "query `types`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
+    M.keys files `shouldBe` ["a.x"]
+  it "renders every query with inputs and derived values only, so query order does not matter" $ do
+    let gen = generatorFrom . (header <>) . T.unlines $ ["[query.a]", "glob = \"*.hs\"", "[query.b]", "glob = \"{= a =}\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
+    (result, _) <- run [("A.hs", "")] gen [("name", "x")] Apply
+    either (\case QueryFailed _ why -> "undefined variable `a`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
   it "skips a create when `unless` finds a match, on disk or created earlier in the plan" $ do
     let migration =
           generatorFrom . (header <>) . T.unlines $
@@ -156,8 +165,9 @@ createSpec = describe "generate (create edits)" $ do
 
 insertSpec :: Spec
 insertSpec = describe "generate (marker inserts)" $ do
-  let insertGen =
-        generatorFrom . T.unlines $
+  let insertGen = generatorFrom insertToml
+      insertToml =
+        T.unlines
           [ "description = \"d\""
           , "language = \"rust\""
           , "[inputs.cmd]"
@@ -178,7 +188,10 @@ insertSpec = describe "generate (marker inserts)" $ do
     M.lookup "svc/lib.rs" files `shouldBe` Just "pub mod a;\npub mod refund_invoice;\n// olifant:modules\n"
     M.lookup "svc/service.rs" files
       `shouldBe` Just "impl S {\n    pub fn a(&self) {}\n\n    pub fn refund_invoice(&self) {\n        todo!()\n    }\n    // olifant:delegates\n}\n"
-    map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}\n"]
+    map editAction (planEdits plan) `shouldBe` [WillInsert 2 "pub mod refund_invoice;", WillInsert 3 "\npub fn refund_invoice(&self) {\n    todo!()\n}"]
+  it "shows in the plan the text as written: dedented, final newline dropped" $ do
+    (Right plan, _) <- run [("svc/lib.rs", lib), ("svc/service.rs", service)] (generatorFrom (T.replace "text = \"pub mod" "text = \"        pub mod" insertToml)) [("cmd", "refund_invoice")] PlanOnly
+    take 1 (map editAction (planEdits plan)) `shouldBe` [WillInsert 2 "pub mod refund_invoice;"]
   it "keeps earlier inserts in order (the marker stays last)" $ do
     (ws, snapshot) <- memoryWorkspace [("svc/lib.rs", lib), ("svc/service.rs", service)]
     _ <- generate ws noResolve noTools [Step insertGen (M.fromList [("cmd", "b_b")])] now Apply
@@ -274,6 +287,18 @@ composeSpec = describe "generate (composition)" $ do
     (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings"), ("msgs", "toggle_dark_mode, reset")])]
     M.lookup "src/Settings.txt" files `shouldBe` Just "page Settings\n| ToggleDarkMode\n| Reset\n-- msgs\n"
     map editStep (planEdits plan) `shouldBe` [["page"], ["page", "msg[1]"], ["page", "msg[2]"]]
+  it "runs [[uses]] once per record of a generator query" $ do
+    let fromPages =
+          generatorNamed "all" . T.unlines $
+            [ "description = \"all\"", "language = \"x\""
+            , "[query.pages]", "glob = \"pages/*.txt\""
+            , "[[uses]]", "generator = \"page\"", "for_each = \"pages\""
+            , "with = { page = \"{= item.stem =}\" }"
+            ]
+    (ws, snapshot) <- memoryWorkspace [("pages/about.txt", ""), ("pages/contact_us.txt", "")]
+    Right _ <- generate ws resolve noTools [Step fromPages M.empty] now Apply
+    files <- snapshot
+    [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
   it "treats an empty for_each list as no steps" $ do
     (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings")])]
     M.keys files `shouldBe` ["src/Settings.txt"]
@@ -553,6 +578,17 @@ regionSpec = describe "generate (owned regions)" $ do
     out `shouldSatisfy` ("    Olifant.A\n    Olifant.B\n    -- olifant:end mods" `T.isInfixOf`)
     Right again <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
     planWrites again `shouldBe` M.empty
+  it "re-runs an AST query for a later region after an earlier one rewrote the file it reads" $ do
+    let Right n = parseTemplate "{= n =}"
+        q = AstQueryQ (AstQuery "f.txt" (ItemsOf "type T") [])
+        lineCount = Queries (\_ -> pure (Left "no")) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt"))
+        region name = RegionDef name "f.txt" q (ItemTemplate n) False (Just "--") Nothing Nothing
+        both = (noTools :: Tools IO) {toolRegions = [region "a", region "b"], toolQueries = lineCount}
+    (ws, snap) <- memoryWorkspace [("f.txt", "-- olifant:region a\n-- olifant:end a\n-- olifant:region b\n-- olifant:end b\n")]
+    Right _ <- generate ws noResolve both [Step unit (M.fromList [("name", "b")])] now Apply
+    Just out <- M.lookup "f.txt" <$> snap
+    out `shouldSatisfy` ("\n4\n-- olifant:end a\n" `T.isInfixOf`)
+    out `shouldSatisfy` ("\n5\n-- olifant:end b\n" `T.isInfixOf`)
   it "stays fast with many files outside the region's glob (review #1)" $ do
     (ws, _) <- memoryWorkspace (("x.cabal", cabal) : [("node_modules/pkg" <> show i <> "/index.js", "") | i <- [1 :: Int .. 30000]])
     result <- timeout 5000000 (generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply)
