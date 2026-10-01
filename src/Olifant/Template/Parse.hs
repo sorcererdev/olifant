@@ -22,12 +22,27 @@ data Tag = TIf Expr | TElif Expr | TElse | TFor Text Expr | TEnd
 
 parseTemplate :: Text -> Either TemplateError Template
 parseTemplate src = first hint $ do
+  mustache
   pieces <- lexTemplate src
   (segs, stop, _) <- block pieces
   case stop of
     Nothing -> Right (Template src segs)
     Just (line, tag) -> Left (SyntaxError line ("unexpected `" <> tagKeyword tag <> "`"))
   where
+    -- `{{ name }}` with no `{=` anywhere is another template language's
+    -- syntax (Jinja, Handlebars, Mustache), which would otherwise be copied
+    -- through as plain text, silently. Rust's `{{}}` escapes stay legal.
+    mustache = case [(n, T.strip inner) | (n, l) <- zip [1 :: Int ..] (T.lines src), inner <- tagsIn l, isExpr (T.strip inner)] of
+      (n, e) : _ | not ("{=" `T.isInfixOf` src) -> Left (SyntaxError n ("`{{ " <> e <> " }}` is not a template tag here: Olifant writes {= " <> e <> " =}"))
+      _ -> Right ()
+    tagsIn l = case T.breakOn "{{" l of
+      (_, "") -> []
+      (_, rest) -> case T.breakOn "}}" (T.drop 2 rest) of
+        (_, "") -> []
+        (inner, after) -> inner : tagsIn (T.drop 2 after)
+    isExpr e = case T.uncons e of
+      Just (c, _) -> (isAsciiLower c || isAsciiUpper c || c == '_') && T.all (\x -> isAlphaNum x || x `elem` ("_.| " :: String)) e
+      Nothing -> False
     -- Filters as function calls (`pascalCase(name)`) or after a colon
     -- (`name:pascal`) are the usual guesses; say how they are written.
     hint = \case

@@ -61,6 +61,14 @@ spec = do
     it "says filters are written after a bar, not called" $ do
       err "{= pascalCase(name) =}" `shouldSatisfy` T.isInfixOf "name|pascal"
       err "{= name:pascal =}" `shouldSatisfy` T.isInfixOf "name|pascal"
+  describe "mustache text (v9: a model wrote {{ name|pascal }})" $ do
+    let err src = either describeTemplateError (const "") (parseTemplate src)
+    it "refuses {{ name }} when the template has no {= tag, saying how Olifant writes it" $ do
+      err "| {{ name|pascal }}" `shouldSatisfy` T.isInfixOf "{= name|pascal =}"
+      err "{{input.name}}" `shouldSatisfy` T.isInfixOf "{= input.name =}"
+    it "accepts literal braces: Rust's {{}}, and text that also has real tags" $ do
+      parseTemplate "format!(\"{{}}\", x)" `shouldSatisfy` either (const False) (const True)
+      parseTemplate "{{ x }} and {= y =}" `shouldSatisfy` either (const False) (const True)
   describe "holes" $
     it "are refused until step 3, with the line number" $
       parseTemplate "a\nb {= ? body: block | x =}" `shouldBe` Left (HolesNotYetSupported 2)
