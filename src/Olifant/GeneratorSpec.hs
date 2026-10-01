@@ -182,6 +182,11 @@ envSpec = do
           rec n a = VRecord (M.fromList [("name", nameV n), ("arg", VText a)])
       fmap (M.lookup "msgs") (buildEnv g (M.fromList [("msgs", "set_pair:(Int, String), set_rec:{ a : Int }, plain, got:Dict String (List Int)")]) now)
         `shouldBe` Right (Just (VList [rec "set_pair" "(Int, String)", rec "set_rec" "{ a : Int }", rec "plain" "", rec "got" "Dict String (List Int)"]))
+    it "refuses an empty value for a required list (an optional one may be empty)" $ do
+      let toml opt = "description = \"d\"\nlanguage = \"x\"\n[inputs.msgs]\ntype = \"list\"\nof = \"ident\"\n" <> (if opt then "optional = true\n" else "")
+          run opt v = buildEnv (either (error . T.unpack) id (load (toml opt))) (M.fromList [("msgs", v)]) now
+      either (\case InputProblems ps -> map problemKey ps; _ -> []) (const []) (run False " , ") `shouldBe` ["invalid:msgs"]
+      fmap (M.lookup "msgs") (run True "") `shouldBe` Right (Just (VList []))
     it "gives optional lists an empty default" $
       fmap (M.lookup "fields") (env [("name", "post")]) `shouldBe` Right (Just (VList []))
     it "reports missing, invalid and unknown inputs all at once" $
