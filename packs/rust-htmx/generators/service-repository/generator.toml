@@ -58,12 +58,11 @@ template = "diesel-records.rs.dt"
 create   = "{= diesel =}/src/diesel_{= aggregate|snake =}_repository.rs"
 template = "diesel-repository.rs.dt"
 
+# Both members in one insert: two inserts at the same line would not be
+# recognised as already present on a re-run (each looks right beside the hook).
 [[edits]]
 insert = "Cargo.toml"
 at     = ["after marker ##PLOP NEW PACKAGE HOOK##", "after first line matching ^members = \\["]
-text   = "\"{= in_memory =}\","
-
-[[edits]]
-insert = "Cargo.toml"
-at     = ["after marker ##PLOP NEW PACKAGE HOOK##", "after first line matching ^members = \\["]
-text   = "\"{= diesel =}\","
+text   = """
+"{= in_memory =}",
+"{= diesel =}","""

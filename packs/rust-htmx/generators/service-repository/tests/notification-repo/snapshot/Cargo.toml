@@ -3,8 +3,8 @@ resolver = "2"
 
 members = [
           ##PLOP NEW PACKAGE HOOK##
-          "notifications/adapters/diesel-email-template-repository",
           "notifications/adapters/in-memory-email-template-repository",
+          "notifications/adapters/diesel-email-template-repository",
           "main",
           "web-client",
           "web-htmx",
