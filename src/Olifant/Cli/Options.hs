@@ -30,7 +30,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode
+data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text)
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -93,6 +93,8 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "anchors" (AnchorsCmd <$> strArgument (metavar "LANGUAGE")) "List the `at` targets a language supports"
             <> cmd "where" (WhereCmd <$> strArgument (metavar "FILE") <*> strArgument (metavar "PHRASE")) "Show where an `at` phrase would put text in a file"
             <> cmd "sync" (SyncCmd <$> syncP) "Refresh owned regions (--check: report drift and write nothing; --init REGION: create a region's fences)"
+            <> cmd "new" (NewCmd <$> strArgument (metavar "NAME") <*> optional (strOption (long "language" <> metavar "LANGUAGE" <> help "The language adapter (needed when the project has more than one)"))) "Write a skeleton project generator at .olifant/generators/NAME/generator.toml"
+            <> cmd "schema" (pure SchemaCmd) "Print the generator.toml format as a JSON Schema"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
     cmd name p desc = command name (info (Options <$> formatP <*> p) (progDesc desc))

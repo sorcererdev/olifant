@@ -19,6 +19,7 @@ import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyR
 import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
+import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
 import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), processCommand)
@@ -72,6 +73,49 @@ projectRoot ws home start = go start
             _ | takeDirectory dir == dir -> pure start
               | otherwise -> go (takeDirectory dir)
 
+-- | Where to look when a generator.toml does not load.
+formatHint :: Text
+formatHint = "`olifant schema` prints the generator.toml format; `olifant new NAME` writes a skeleton that loads"
+
+-- | A generator that loads as written: one ident input, a derived PascalCase
+-- name, and the three kinds of edit as commented examples to adapt.
+skeletonGenerator :: Text -> Text -> Text
+skeletonGenerator name lang =
+  T.unlines
+    [ "# Run with: olifant gen " <> name <> " --set name=example   (--plan to preview)"
+    , "# Format: `olifant schema`. Phrases for `at`: `olifant anchors " <> lang <> "`; test one: `olifant where FILE \"PHRASE\"`."
+    , "description = \"One line saying what this adds\""
+    , "language = \"" <> lang <> "\""
+    , "version = 1"
+    , "examples = [\"olifant gen " <> name <> " --set name=example\"]"
+    , ""
+    , "[inputs.name]"
+    , "type = \"ident\""
+    , "prompt = \"The name, snake_case (e.g. contact_us)\""
+    , ""
+    , "[derive]"
+    , "P = \"{= name|pascal =}\""
+    , ""
+    , "# Each edit is one [[edits]] table (double brackets). Uncomment and adapt."
+    , "# Template values: {= name =}, {= P =}; filters after a bar: {= name|kebab =}."
+    , "#"
+    , "# [[edits]]                          # a new file"
+    , "# create = \"src/{= P =}.txt\""
+    , "# text   = \"{= P =}\\n\""
+    , "#"
+    , "# [[edits]]                          # text into an existing file"
+    , "# insert = \"src/Main.txt\""
+    , "# at     = \"end of type Route\""
+    , "# text   = \"| {= P =}\""
+    , "#"
+    , "# [[edits]]                          # case branches the compiler asks for"
+    , "# complete = \"Route.{= P =}\""
+    , "# where    = \"case in changeRouteTo\""
+    , "# text     = \"\"\""
+    , "# {= pattern =} ->"
+    , "#     ( model, Cmd.none )\"\"\""
+    ]
+
 -- | @cwd@ is where Olifant was run: file arguments (`where FILE`, `--steps
 -- FILE`) are relative to it, while generators work in the project root.
 runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
@@ -89,6 +133,26 @@ runCommand rt cwd fmt cat = \case
         else pure ok
     emit rt fmt (listJson detail (subsOf cat) entries broken) (listHuman detail (subsOf cat) entries broken)
     pure ExitSuccess
+  SchemaCmd -> do
+    emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")
+    pure ExitSuccess
+  NewCmd name langFlag -> do
+    let path = ".olifant" </> "generators" </> T.unpack name </> "generator.toml"
+        ws = within (rtProjectDir rt) (rtRoot rt)
+        language = case (langFlag, map langName (catalogLanguages cat)) of
+          (Just l, _) -> Right l
+          (Nothing, [l]) -> Right l
+          (Nothing, ls) -> Left ("pass --language (" <> (if null ls then "no language adapter is configured" else "adapters: " <> T.intercalate ", " ls) <> ")")
+    exists <- fileExists ws path
+    case language of
+      Left why -> failWith rt fmt 2 "usage" why Nothing []
+      Right _ | exists -> failWith rt fmt 1 "already_exists" (T.pack path <> " already exists") (Just ("edit it, or pick another name; `olifant show " <> name <> "` shows what it does")) []
+      Right lang -> do
+        writeText ws path (skeletonGenerator name lang)
+        emit rt fmt (object ["created" .= path, "next" .= nextSteps lang]) ("created " <> T.pack path <> "\n" <> nextSteps lang <> "\n")
+        pure ExitSuccess
+    where
+      nextSteps lang = "fill in description and [[edits]]; `olifant anchors " <> lang <> "` lists placement phrases, `olifant where FILE \"PHRASE\"` tests one, `olifant gen " <> name <> " --set name=example --plan` previews"
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
     Right e0 ->
@@ -195,7 +259,7 @@ catalogFailureAt rt fmt step err = case err of
   PackMissing {} -> failWith' 1 "config_invalid" msg Nothing []
   PackNotConfigured pack _ ->
     failWith' 3 "pack_not_configured" msg (Just (pack <> " = { path = \"/path/to/" <> pack <> "\" }")) ["pack" .= pack]
-  GeneratorInvalid {} -> failWith' 1 "generator_invalid" msg Nothing []
+  GeneratorInvalid {} -> failWith' 1 "generator_invalid" msg (Just formatHint) []
   SourceInvalid {} -> failWith' 1 "template_invalid" msg Nothing []
   where
     msg = maybe "" (<> ": ") step <> describeCatalogError err

@@ -331,6 +331,29 @@ runCliSpec = describe "runCli" $ do
     (code, out, _, _) <- runWith "" files False ["list"]
     code `shouldBe` ExitFailure 1
     jsonAt ["error", "code"] out `shouldBe` Just (String "config_invalid")
+  it "prints the generator.toml schema as JSON" $ do
+    (code, out, _, _) <- runWith "" project False ["schema"]
+    code `shouldBe` ExitSuccess
+    jsonAt ["title"] out `shouldBe` Just (String "generator.toml")
+  it "new writes a skeleton generator that loads, and refuses to overwrite" $ do
+    (code, _, _, files) <- runWith "" project False ["new", "route", "--language", "elm"]
+    code `shouldBe` ExitSuccess
+    let Just skeleton = M.lookup "/proj/.olifant/generators/route/generator.toml" files
+    skeleton `shouldSatisfy` T.isInfixOf "language = \"elm\""
+    skeleton `shouldSatisfy` T.isInfixOf "[[edits]]"
+    (_, listed, _, _) <- runWith "" (M.toList files) True ["list"]
+    listed `shouldNotSatisfy` T.isInfixOf "INVALID"
+    listed `shouldSatisfy` T.isInfixOf "route"
+    (again, _, _, _) <- runWith "" (M.toList files) False ["new", "route", "--language", "elm"]
+    again `shouldBe` ExitFailure 1
+  it "new needs --language when the project has no single language adapter" $ do
+    (code, out, _, _) <- runWith "" project False ["new", "route"]
+    code `shouldBe` ExitFailure 2
+    fmap (\case String s -> "--language" `T.isInfixOf` s; _ -> False) (jsonAt ["error", "message"] out) `shouldBe` Just True
+  it "points an invalid generator's error at schema and new" $ do
+    let broken = project ++ [("/proj/.olifant/generators/bad/generator.toml", "description = \"b\"\nlanguage = \"x\"\npath = \"x\"\n")]
+    (_, out, _, _) <- runWith "" broken False ["gen", "bad"]
+    fmap (\case String s -> "olifant schema" `T.isInfixOf` s && "olifant new" `T.isInfixOf` s; _ -> False) (jsonAt ["error", "hint"] out) `shouldBe` Just True
   it "accepts --flag=value forms" $ do
     (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess

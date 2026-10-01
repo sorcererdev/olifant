@@ -1,4 +1,13 @@
-module Olifant.Generator.Load (parseGenerator) where
+module Olifant.Generator.Load
+  ( parseGenerator
+  , topKeys
+  , inputKeys
+  , createKeys
+  , insertKeys
+  , completeKeys
+  , requiresKeys
+  , useKeys
+  ) where
 
 import Control.Monad ((>=>))
 import Data.Bifunctor (first)
@@ -38,12 +47,14 @@ parseGenerator gid src = do
   pure (Generator gid description language version inputs derived requires edits uses examples queries)
 
 -- | The keys each table accepts (also the source of `olifant schema`).
-topKeys, inputKeys, createKeys, insertKeys, completeKeys :: [Text]
+topKeys, inputKeys, createKeys, insertKeys, completeKeys, requiresKeys, useKeys :: [Text]
 topKeys = ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
 completeKeys = ["complete", "where", "template", "text"]
+requiresKeys = ["exists", "hint"]
+useKeys = ["generator", "for_each", "with"]
 
 -- | What a misplaced key usually means (measured: the keys models invent).
 topAdvice, inputAdvice, editAdvice :: [(Text, Text)]
@@ -132,7 +143,7 @@ deriveFrom tbl = traverse (\(k, v) -> inKey ("derive." <> k) ((,) k <$> (text v 
 
 requiresFrom :: Table -> Either Text Requires
 requiresFrom t = do
-  onlyKeys ["exists", "hint"] t
+  onlyKeys requiresKeys t
   exists <- fromMaybe [] <$> optional "exists" (list (text >=> tmpl)) t
   hint <- optional "hint" (text >=> tmpl) t
   pure (Requires exists hint)
@@ -235,7 +246,7 @@ onExistsFrom = \case
 
 useFrom :: Table -> Either Text UseStep
 useFrom t = do
-  onlyKeys ["generator", "for_each", "with"] t
+  onlyKeys useKeys t
   ref <- required "generator" text t
   forEach <- optional "for_each" text t
   with <- fromMaybe [] <$> optional "with" (table >=> withFrom) t

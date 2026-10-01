@@ -13,6 +13,12 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Generator
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), templateSource)
+import Data.Aeson qualified as A
+import Data.Aeson.Key qualified as K
+import Data.Aeson.KeyMap qualified as KM
+import Data.List (sort)
+import Olifant.Generator.Load (completeKeys, createKeys, inputKeys, insertKeys, topKeys)
+import Olifant.Generator.Schema (generatorSchema)
 import Test.Hspec
 
 modelToml :: Text
@@ -113,6 +119,16 @@ parseSpec = describe "parseGenerator" $ do
   it "needs exactly one of `at` or `anchor`" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
       `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
+  describe "olifant schema" $ do
+    let at path v = foldl (\acc k -> acc >>= \case A.Object o -> KM.lookup (K.fromText k) o; _ -> Nothing) (Just v) path
+        keysOf = \case Just (A.Object o) -> sort (map K.toText (KM.keys o)); _ -> []
+    it "describes exactly the keys the loader accepts, table by table" $ do
+      keysOf (at ["properties"] generatorSchema) `shouldBe` sort topKeys
+      keysOf (at ["properties", "inputs", "additionalProperties", "properties"] generatorSchema) `shouldBe` sort inputKeys
+      let edits = case at ["properties", "edits", "items", "oneOf"] generatorSchema of
+            Just (A.Array xs) -> [keysOf (at ["properties"] x) | x <- foldr (:) [] xs]
+            _ -> []
+      edits `shouldBe` map sort [createKeys, insertKeys, completeKeys]
   describe "hints for the mistakes models make (v9)" $ do
     let top extra = T.unlines (["description = \"d\"", "language = \"x\""] ++ extra)
         err src = either id (const "") (load src)
