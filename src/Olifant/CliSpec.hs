@@ -48,7 +48,10 @@ fixedNow :: UTCTime
 fixedNow = UTCTime (fromGregorian 2026 9 27) (secondsToDiffTime 55800)
 
 runWith :: Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runWith stdinText files tty args = do
+runWith = runIn "/proj"
+
+runIn :: FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runIn dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -56,7 +59,7 @@ runWith stdinText files tty args = do
     runCli
       Runtime
         { rtRoot = root
-        , rtProjectDir = "/proj"
+        , rtProjectDir = dir
         , rtUserConfigDir = Nothing
         , rtHomeDir = Nothing
         , rtReadStdin = pure stdinText
@@ -311,6 +314,11 @@ runCliSpec = describe "runCli" $ do
         continuation = takeWhile (\l -> not (T.null (T.strip l)) && not ("Tip:" `T.isPrefixOf` l)) after
     continuation `shouldNotBe` []
     continuation `shouldSatisfy` all ("        " `T.isPrefixOf`)
+  it "finds the project from a subdirectory; file arguments stay relative to where it ran" $ do
+    let files = project ++ [("/proj/app/models/steps.json", "[{\"gen\": \"model\", \"set\": {\"name\": \"post\"}}]"), ("/proj/app/models/keep.txt", "")]
+    (code, _, _, written) <- runIn "/proj/app/models" "" files False ["gen", "--steps", "steps.json", "--now", "2030-01-02T03:04:05Z"]
+    code `shouldBe` ExitSuccess
+    M.member "/proj/db/20300102030405_create_posts.rb" written `shouldBe` True
   it "accepts --flag=value forms" $ do
     (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess

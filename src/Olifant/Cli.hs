@@ -24,8 +24,8 @@ import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), U
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Template (describeTemplateError)
-import Olifant.Workspace (Workspace (..), isSafeRelative, within)
-import System.FilePath ((</>))
+import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
+import System.FilePath (takeDirectory, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -50,14 +50,33 @@ runCli rt args = case parseOptions args of
     | otherwise -> rtErr rt text >> pure (ExitFailure 2)
   Right opts -> do
     let fmt = fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)
-    openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt)) >>= \case
-      Left err -> catalogFailure rt fmt err
-      Right cat -> runCommand rt fmt cat (optCommand opts)
+        cwd = rtProjectDir rt
+    root <- projectRoot (rtRoot rt) (rtHomeDir rt) cwd
+    let rt' = rt {rtProjectDir = root}
+    openProjectCatalog (rtRoot rt') (CatalogPaths root (rtUserConfigDir rt') (rtHomeDir rt')) >>= \case
+      Left err -> catalogFailure rt' fmt err
+      Right cat -> runCommand rt' cwd fmt cat (optCommand opts)
   where
     wantsJson = "--json" `elem` args || (not (rtStdoutIsTty rt) && "--human" `notElem` args)
 
-runCommand :: Runtime -> Format -> Catalog -> Command -> IO ExitCode
-runCommand rt fmt cat = \case
+-- | The project is the nearest directory, from where Olifant runs upwards,
+-- that has a `.olifant` directory; with none, where it runs. The search
+-- stops below the home directory (user config is ~/.config/olifant).
+projectRoot :: Monad m => Workspace m -> Maybe FilePath -> FilePath -> m FilePath
+projectRoot ws home start = go start
+  where
+    go dir
+      | Just dir == home = pure start
+      | otherwise =
+          inspectPath ws (dir </> ".olifant") >>= \case
+            Directory -> pure dir
+            _ | takeDirectory dir == dir -> pure start
+              | otherwise -> go (takeDirectory dir)
+
+-- | @cwd@ is where Olifant was run: file arguments (`where FILE`, `--steps
+-- FILE`) are relative to it, while generators work in the project root.
+runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
+runCommand rt cwd fmt cat = \case
   ListCmd detail -> do
     let broken = catalogBroken cat
     -- --detail prints inputs, so choices_from must be live, as in `show`.
@@ -80,7 +99,7 @@ runCommand rt fmt cat = \case
   WhereCmd file phrase -> case parsePhrase phrase of
     Left err -> usageIn rt fmt err
     Right _ ->
-      readText (rtRoot rt) (rtProjectDir rt </> file) >>= \case
+      readText (rtRoot rt) (cwd </> file) >>= \case
         Nothing -> failWith rt fmt 3 "file_not_found" ("cannot read " <> T.pack file) Nothing []
         Just content ->
           resolveLayers (rtSyntax rt) (languageFor (catalogLanguages cat) file) [PhraseAnchor phrase] content >>= \case
@@ -101,7 +120,7 @@ runCommand rt fmt cat = \case
     specs <- case genStepsFile g of
       Nothing -> pure (Right (Right (genSteps g)))
       Just f -> do
-        raw <- if f == "-" then Just <$> rtReadStdin rt else readText (rtRoot rt) (rtProjectDir rt </> f)
+        raw <- if f == "-" then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> f)
         pure $ case raw of
           Nothing -> Left f
           Just text -> Right (first (\e -> "--steps: " <> T.pack e) (eitherDecodeStrict (TE.encodeUtf8 text)))
