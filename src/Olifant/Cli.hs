@@ -177,16 +177,16 @@ catalogFailureAt rt fmt step err = case err of
     failWith' code c m h extra = failWith rt fmt code c m h (extra ++ maybe [] (\st -> ["step" .= st]) step)
 
 generationFailure :: Runtime -> Format -> GenerationError -> IO ExitCode
-generationFailure rt fmt = \case
-  InvalidInputs path e@(InputProblems ps) -> failWith rt fmt 4 "invalid_inputs" (inStep path (describeEnvError e)) Nothing (inputProblemFields ps ++ ["step" .= showStepPath path])
-  InvalidInputs path e -> failWith rt fmt 1 "generator_invalid" (inStep path (describeEnvError e)) Nothing []
-  TemplateFailed path e -> failWith rt fmt 1 "template_failed" (inStep path (describeTemplateError e)) Nothing []
-  UnknownGenerator path ref why -> failWith rt fmt 3 "generator_not_found" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
-  InvalidGenerator path ref why -> failWith rt fmt 1 "generator_invalid" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
-  QueryFailed path why -> failWith rt fmt 1 "query_failed" (inStep path why) Nothing []
-  CompositionCycle path -> failWith rt fmt 1 "composition_cycle" ("generators use each other in a cycle: " <> showStepPath path) Nothing []
+generationFailure rt fmt err = case err of
+  InvalidInputs path (InputProblems ps) -> failWith rt fmt 4 "invalid_inputs" msg Nothing (inputProblemFields ps ++ ["step" .= showStepPath path])
+  InvalidInputs {} -> failWith rt fmt 1 "generator_invalid" msg Nothing []
+  TemplateFailed {} -> failWith rt fmt 1 "template_failed" msg Nothing []
+  UnknownGenerator {} -> failWith rt fmt 3 "generator_not_found" msg Nothing []
+  InvalidGenerator {} -> failWith rt fmt 1 "generator_invalid" msg Nothing []
+  QueryFailed {} -> failWith rt fmt 1 "query_failed" msg Nothing []
+  CompositionCycle {} -> failWith rt fmt 1 "composition_cycle" msg Nothing []
   where
-    inStep path msg = showStepPath path <> ": " <> msg
+    msg = describeGenerationError err
 
 -- | Resolve `choices_from` inputs against the project (spec §4.1); the
 -- project is listed only when a generator needs it.

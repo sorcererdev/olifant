@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Run the test suite before any merge into main completes.
-# Skip with `git merge --no-verify` (use sparingly).
+# Skip with `git merge --no-verify` (use sparingly). Fast-forward merges skip
+# this hook, so main merges with --no-ff (git config branch.main.mergeoptions --no-ff).
 set -euo pipefail
 
 branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
 [ "$branch" = "main" ] || exit 0
 
 export PATH="$HOME/.ghcup/bin:$PATH"
+# A pack case whose tools are missing must fail here, not pass as pending.
+export OLIFANT_REQUIRE_TOOLS=1
 echo "pre-merge-commit: running cabal test before merging into main..." >&2
 if ! cabal test --test-show-details=failures >&2; then
   echo "pre-merge-commit: tests failed; merge aborted (fix, then run \`git merge --continue\`)." >&2

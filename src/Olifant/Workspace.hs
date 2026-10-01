@@ -22,6 +22,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8', encodeUtf8)
 import Olifant.Process (runBytes)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
+import System.Directory qualified as Dir
 import System.Exit (ExitCode (..))
 import System.FilePath (addTrailingPathSeparator, isAbsolute, joinPath, splitDirectories, takeDirectory, (</>))
 
@@ -31,6 +32,8 @@ data Workspace m = Workspace
   , fileExists :: FilePath -> m Bool
   , listFiles :: FilePath -> m [FilePath]
   , inspectPath :: FilePath -> m PathState
+  , removeFile :: FilePath -> m ()
+  -- ^ Delete a file if it exists (blessing snapshots; generation never deletes).
   }
 
 -- | What is at a path. 'Unreadable' means a file exists but is not UTF-8
@@ -61,6 +64,7 @@ memoryWorkspace initial = do
                 Nothing
                   | any (prefix `isPrefixOf`) (M.keys files) -> Directory
                   | otherwise -> Absent
+          , removeFile = \p -> modifyIORef' ref (M.delete (normalisePath p))
           }
   pure (ws, readIORef ref)
 
@@ -89,6 +93,10 @@ diskWorkspace root =
         if isFile
           then either (const Unreadable) Readable . decodeUtf8' <$> BS.readFile full
           else pure (if isDir then Directory else Absent)
+    , removeFile = \p -> do
+        let full = root </> p
+        exists <- doesFileExist full
+        if exists then Dir.removeFile full else pure ()
     }
   where
     -- Inside a git work tree, the project is what git says it is: tracked and
@@ -127,6 +135,7 @@ within dir ws =
     , fileExists = fileExists ws . inside
     , listFiles = listFiles ws . inside
     , inspectPath = inspectPath ws . inside
+    , removeFile = removeFile ws . inside
     }
   where
     inside p = normalisePath (dir </> p)

@@ -4,6 +4,7 @@
 module Olifant.Generation
   ( Mode (..)
   , GenerationError (..)
+  , describeGenerationError
   , Step (..)
   , Resolve
   , ResolveFailure (..)
@@ -35,7 +36,7 @@ import Olifant.Anchor (resolveLayers)
 import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
-import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..))
+import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), describeEnvError)
 import Olifant.Language (languageFor)
 import Olifant.Query (renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
@@ -53,6 +54,18 @@ data GenerationError
   | CompositionCycle StepPath
   | QueryFailed StepPath Text
   deriving stock (Eq, Show)
+
+-- | The message for a 'GenerationError', naming the step it happened in.
+describeGenerationError :: GenerationError -> Text
+describeGenerationError = \case
+  InvalidInputs path e -> inStep path (describeEnvError e)
+  TemplateFailed path e -> inStep path (describeTemplateError e)
+  UnknownGenerator path ref why -> inStep path ("`" <> ref <> "`: " <> why)
+  InvalidGenerator path ref why -> inStep path ("`" <> ref <> "`: " <> why)
+  QueryFailed path why -> inStep path why
+  CompositionCycle path -> "generators use each other in a cycle: " <> showStepPath path
+  where
+    inStep path msg = showStepPath path <> ": " <> msg
 
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
 generate ws resolve tools steps now mode =
