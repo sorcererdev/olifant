@@ -151,6 +151,9 @@ parseSpec = describe "parseGenerator" $ do
       err (top ["[[edits]]", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "insert = \""
     it "explains `derive` written as an array" $
       err (top ["derive = [\"x\"]"]) `shouldSatisfy` T.isInfixOf "[derive]"
+  it "refuses a bodiless complete edit with a `where`, which could never apply" $
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "complete = \"T.C\"", "where = \"case in f\""])
+      `shouldSatisfy` either ("`where` chooses a body" `T.isInfixOf`) (const False)
   it "loads a complete edit without a body (todos everywhere)" $
     fmap (map (\case Complete _ _ b -> maybe "none" (const "some") b; _ -> "other" :: Text) . genEdits)
       (load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "complete = \"T.C\""]))
