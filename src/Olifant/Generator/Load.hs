@@ -2,6 +2,7 @@ module Olifant.Generator.Load (parseGenerator) where
 
 import Control.Monad ((>=>))
 import Data.Bifunctor (first)
+import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -21,7 +22,10 @@ parseGenerator gid src = do
   description <- required "description" text top
   language <- required "language" text top
   version <- maybe 1 fromInteger <$> optional "version" int top
-  inputs <- optional "inputs" table top >>= maybe (Right []) inputsFrom
+  inputs0 <- optional "inputs" table top >>= maybe (Right []) inputsFrom
+  -- In the order the author wrote them, which `show` and prompts follow.
+  let declared = keyOrder src ["inputs"]
+      inputs = sortOn (\i -> length (takeWhile (/= inputName i) declared)) inputs0
   derived <- optional "derive" table top >>= maybe (Right []) deriveFrom
   requires <- optional "requires" (table >=> requiresFrom) top
   edits <- fromMaybe [] <$> optional "edits" (list (table >=> editFrom)) top

@@ -56,8 +56,8 @@ parseSpec = describe "parseGenerator" $ do
   it "reads inputs, including ordered record fields" $
     fmap (map (\i -> (inputName i, inputType i, inputOptional i)) . genInputs) (load modelToml)
       `shouldBe` Right
-        [ ("fields", ListInput (RecordItems [FieldSpec "name" IdentS Nothing, FieldSpec "type" (EnumS ["string", "text", "references"]) (Just "string")]), True)
-        , ("name", ScalarInput IdentS, False)
+        [ ("name", ScalarInput IdentS, False)
+        , ("fields", ListInput (RecordItems [FieldSpec "name" IdentS Nothing, FieldSpec "type" (EnumS ["string", "text", "references"]) (Just "string")]), True)
         ]
   it "reads derived values as templates" $
     fmap (map (fmap templateSource) . genDerived) (load modelToml)
@@ -113,6 +113,9 @@ parseSpec = describe "parseGenerator" $ do
   it "needs exactly one of `at` or `anchor`" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
       `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
+  it "keeps inputs in the order they are declared" $ do
+    let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.zeta]", "type = \"ident\"", "[inputs.alpha]", "type = \"text\"", "[inputs.mid]", "type = \"text\""]
+    fmap (map inputName . genInputs) (load src) `shouldBe` Right ["zeta", "alpha", "mid"]
   it "refuses a query named like an input or derived value" $ do
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.pages]", "type = \"text\"", "[query.pages]", "glob = \"*\""])
       `shouldSatisfy` either ("`query.pages`" `T.isInfixOf`) (const False)

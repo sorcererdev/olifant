@@ -4,6 +4,7 @@ module Olifant.Toml
   ( Tree (..)
   , Table
   , parseToml
+  , keyOrder
   , required
   , optional
   , inKey
@@ -18,6 +19,7 @@ module Olifant.Toml
 
 import Control.Monad (zipWithM)
 import Data.Bifunctor (first)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -44,6 +46,18 @@ parseToml src = case Toml.parse src of
       Toml.List' _ xs -> TList (map fromValue xs)
       Toml.Table' _ t -> TTable (fromTable t)
       other -> TOther (T.pack (Toml.valueType other))
+
+-- | The keys of the table at @path@ in the order they appear in the source
+-- ('Table' is a map, so it forgets). Empty if the path is not a table.
+keyOrder :: Text -> [Text] -> [Text]
+keyOrder src path = case Toml.parse src of
+  Left _ -> []
+  Right tbl -> go path tbl
+  where
+    go [] (Toml.MkTable m) = map fst (sortOn (Toml.posIndex . fst . snd) (M.toList m))
+    go (k : ks) (Toml.MkTable m) = case M.lookup k m of
+      Just (_, Toml.Table' _ inner) -> go ks inner
+      _ -> []
 
 inKey :: Text -> Either Text a -> Either Text a
 inKey k = first (\e -> "`" <> k <> "`: " <> e)
