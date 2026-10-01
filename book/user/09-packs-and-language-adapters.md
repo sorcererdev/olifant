@@ -203,8 +203,9 @@ format  = "ghc-json"
 ```
 
 `repl`, not `build`: with `-fno-code`, `cabal build` always exits 1 at its link step, while
-`repl` exits 0 once type-checking succeeds (a compile error still arrives as a JSON
-diagnostic). `-fdiagnostics-as-json` and `-Wincomplete-patterns` are both needed; GHC's
+`repl` exits 0 after type-checking, even when the code has errors (a compile error arrives
+as a JSON diagnostic, which is how Olifant sees it; only a broken setup, such as an
+unresolvable dependency, makes it exit non-zero). `-fdiagnostics-as-json` and `-Wincomplete-patterns` are both needed; GHC's
 warning 62161 is what carries the missing patterns. A `complete` edit for this adapter
 names its constructor `Type.Ctor` rather than Elm's `Module.Ctor` — chapter 4 covers what
 that changes.

@@ -74,7 +74,8 @@ GHC's `-Wincomplete-patterns` reports the same shape of problem — a `case` mis
 constructors — through `-fdiagnostics-as-json`. Olifant's check command for a cabal project
 is `cabal repl -v0 lib:NAME --repl-options=-fno-code --repl-options=-fdiagnostics-as-json
 --repl-options=-Wincomplete-patterns`, not `cabal build`: with `-fno-code`, `build` always
-exits 1 at its link step, while `repl` exits 0 once type-checking succeeds. About 3 seconds
+exits 1 at its link step, while `repl` exits 0 after type-checking, even when the code has
+errors: those arrive as JSON diagnostics, which is how Olifant sees them. About 3 seconds
 a round on Olifant itself.
 
 GHC names the scrutinee's type, so a `complete` edit names its constructor `Type.Ctor`
