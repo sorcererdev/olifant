@@ -6,7 +6,6 @@ placeholder = 'Debug.todo "{= message =}"'
 branch = """
 {= pattern =} ->
     {= body =}"""
-qualify = "elm"
 
 [check]
 command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]

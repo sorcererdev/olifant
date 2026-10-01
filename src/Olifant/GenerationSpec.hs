@@ -435,7 +435,7 @@ elmLang :: Language
 elmLang = l
   where
     Right l = parseLanguage "elm" "/p" $ T.unlines
-      [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\"", "qualify = \"elm\""
+      [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
       , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
       , "[check]", "command = [\"true\"]", "format = \"elm-json\"" ]
 
@@ -490,7 +490,7 @@ completeSpec = describe "generate (complete edits)" $ do
           , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
           , "[[edits]]", "complete = \"Settings\"", "where = \"case in view\"", "text = \"Settings _ ->\\n    3\"" ]
         Right withTargets = parseLanguage "elm" "/p" $ T.unlines
-          [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\"", "qualify = \"elm\""
+          [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
           , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
           , "[check]", "command = [\"true\"]", "format = \"elm-json\""
           , "[targets.case_in]", "phrase = \"case in FUNCTION\"", "container = { kind = \"case_of_expr\", regex = \"{= FUNCTION =}\" }", "items = { kind = \"case_of_branch\" }", "example = \"end of case in update\"" ]

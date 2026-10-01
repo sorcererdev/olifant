@@ -29,7 +29,6 @@ elmToml =
     , "grammar = { source = \"grammar/elm\" }"
     , "placeholder = 'Debug.todo \"{= message =}\"'"
     , "branch = \"{= pattern =} ->\\n    {= body =}\""
-    , "qualify = \"elm\""
     , "[check]"
     , "command = [\"elm\", \"make\", \"{= files =}\", \"--report=json\", \"--output=/dev/null\"]"
     , "context = [\"elm.json\"]"
@@ -54,6 +53,12 @@ spec = do
       fmap langGrammar (parseLanguage "rust" "/p" "files = [\"**/*.rs\"]\ncomment = \"//\"\ngrammar = \"rust\"\n") `shouldBe` Right (BuiltInGrammar "rust")
     it "rejects unknown keys" $
       parseLanguage "x" "/p" "files = []\ncomment = \"#\"\ngrammar = \"x\"\ncolour = 1\n" `shouldSatisfy` either ("colour" `T.isInfixOf`) (const False)
+    it "refuses the retired `qualify` key, saying what replaced it" $
+      parseLanguage "x" "/p" "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\nqualify = \"elm\"\n"
+        `shouldSatisfy` either ("the [check] format decides" `T.isInfixOf`) (const False)
+    it "refuses a check format with no compiler support, listing the known ones" $
+      parseLanguage "x" "/p" "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[check]\ncommand = [\"x\"]\nformat = \"cobol-json\"\n"
+        `shouldSatisfy` either (\e -> "unknown format `cobol-json`" `T.isInfixOf` e && "elm-json" `T.isInfixOf` e) (const False)
     it "renders a target's rule with the phrase's parameters" $ do
       let Right lang = parseLanguage "elm" "/p" elmToml
           [t] = langTargets lang

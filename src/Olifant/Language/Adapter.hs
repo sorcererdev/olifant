@@ -21,6 +21,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.Rule
+import Olifant.Language.Support (knownFormats)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Toml
 import System.FilePath ((</>))
@@ -34,7 +35,6 @@ data Language = Language
   , langPlaceholder :: Maybe Template
   , langBranch :: Maybe Template
   , langCheck :: Maybe CheckDef
-  , langQualify :: Maybe Text
   }
   deriving stock (Show)
 
@@ -50,7 +50,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeys ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "qualify"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -58,8 +58,7 @@ parseLanguage name packRoot src = do
   placeholder <- optional "placeholder" (text >=> tmpl) top
   branch <- optional "branch" (text >=> tmpl) top
   check <- optional "check" (table >=> checkFrom) top
-  qualify <- optional "qualify" text top
-  pure (Language name files comment grammar targets placeholder branch check qualify)
+  pure (Language name files comment grammar targets placeholder branch check)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
@@ -75,7 +74,11 @@ parseLanguage name packRoot src = do
         <*> required "example" text t
     checkFrom t = do
       onlyKeys ["command", "context", "format"] t
-      CheckDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> required "format" text t
+      format <- required "format" text t
+      if format `elem` knownFormats
+        then Right ()
+        else Left ("`format`: unknown format `" <> format <> "`; expected one of " <> T.intercalate ", " knownFormats)
+      CheckDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
 
 targetPhrase :: TargetDef -> Text
 targetPhrase = T.unwords . targetShape
