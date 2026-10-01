@@ -185,8 +185,10 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
     foundBy = maybe "" (\x -> ", compiler: " <> siteFunction x <> (if siteTodo x then ", todo" else ""))
     lineCount c = let n = length (T.lines c) in T.pack (show n) <> (if n == 1 then " line" else " lines")
+    -- The text of each edit, for reviewing a --plan. Not after an applied
+    -- run, and not when conflicts mean nothing would be written anyway.
     details
-      | applied = ""
+      | applied || hasConflicts plan = ""
       | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ _ p a _ _ <- planEdits plan, Just c0 <- [contentOf a], let c = if "\n" `T.isSuffixOf` c0 then c0 else c0 <> "\n"]
     contentOf = \case
       WillCreate c -> Just c

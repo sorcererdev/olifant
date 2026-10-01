@@ -210,6 +210,11 @@ runCliSpec = describe "runCli" $ do
     M.lookup "/proj/app/models/post.rb" files `shouldBe` Just "mine\n"
     M.size files `shouldBe` length project + 1
     fmap (\case Array xs -> length xs; _ -> 0) (jsonAt ["conflicts"] out) `shouldBe` Just 1
+  it "prints no edit contents when conflicts mean nothing is written" $ do
+    let existing = ("/proj/app/models/post.rb", "mine\n")
+    (_, out, _, _) <- runWith "" (existing : project) True ["gen", "model", "--set", "name=post"]
+    out `shouldSatisfy` T.isInfixOf "nothing written"
+    out `shouldNotSatisfy` T.isInfixOf "\n--- "
   it "exits 3 with a pack_not_configured hint for pack/generator of an unknown pack" $ do
     (code, out, _, _) <- runWith "" project False ["gen", "elm/page"]
     code `shouldBe` ExitFailure 3
