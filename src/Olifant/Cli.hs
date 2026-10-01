@@ -20,10 +20,9 @@ import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generation
-import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
-import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
 import System.FilePath (takeDirectory, (</>))
 import System.Exit (ExitCode (..))
@@ -78,18 +77,24 @@ projectRoot ws home start = go start
 runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt cwd fmt cat = \case
   ListCmd detail -> do
-    let broken = catalogBroken cat
+    -- Sources and fixed targets are checked here, so a broken generator shows
+    -- as INVALID before anyone runs it.
+    checked <- traverse (\e -> (e,) <$> checkEntry (rtRoot rt) (rtSyntax rt) cat e) (catalogEntries cat)
+    let broken = catalogBroken cat ++ [(entryId e, entryDir e </> "generator.toml", why) | (e, Just why) <- checked]
+        ok = [e | (e, Nothing) <- checked]
     -- --detail prints inputs, so choices_from must be live, as in `show`.
     entries <-
       if detail
-        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat (entryDefinition e)) (catalogEntries cat)
-        else pure (catalogEntries cat)
+        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat (entryDefinition e)) ok
+        else pure ok
     emit rt fmt (listJson detail (subsOf cat) entries broken) (listHuman detail (subsOf cat) entries broken)
     pure ExitSuccess
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
     Right e0 ->
-      resolveChoicesFor rt cat (entryDefinition e0) >>= \case
+      checkEntry (rtRoot rt) (rtSyntax rt) cat e0 >>= \case
+       Just why -> failWith rt fmt 1 "generator_invalid" (generatorIdText (entryId e0) <> ": " <> why) Nothing []
+       Nothing -> resolveChoicesFor rt cat (entryDefinition e0) >>= \case
         Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
         Right d -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
@@ -187,6 +192,7 @@ catalogFailureAt rt fmt step err = case err of
   GeneratorAmbiguous {} -> failWith' 2 "generator_ambiguous" msg (Just "use the full pack/name") []
   SourceMissing {} -> failWith' 3 "template_not_found" msg Nothing []
   ConfigInvalid {} -> failWith' 1 "config_invalid" msg Nothing []
+  PackMissing {} -> failWith' 1 "config_invalid" msg Nothing []
   PackNotConfigured pack _ ->
     failWith' 3 "pack_not_configured" msg (Just (pack <> " = { path = \"/path/to/" <> pack <> "\" }")) ["pack" .= pack]
   GeneratorInvalid {} -> failWith' 1 "generator_invalid" msg Nothing []

@@ -16,6 +16,7 @@ module Olifant.Catalog
   , openPackCatalog
   , findEntry
   , loadGenerator
+  , checkEntry
   , resolver
   , resolveEntry
   , packOfEntry
@@ -26,15 +27,16 @@ import Data.Functor ((<&>))
 import Data.Either (lefts, rights)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generator
-import Olifant.Anchor (itemsOfTarget)
-import Olifant.Language (Language, Match (..), Syntax, languageFor, parseLanguage)
+import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
+import Olifant.Language (Language (..), Match (..), Syntax, languageFor, matchShape, parseLanguage)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
-import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
+import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, freeVariables, parseTemplate, templateSource)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, normalisePath)
 import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
@@ -245,6 +247,28 @@ loadGenerator root syntax cat entry = sequenceA <$> traverse resolve (entryDefin
         inside rel base
           | isSafeRelative (T.unpack rel) = Right (base </> T.unpack rel)
           | otherwise = Left (SourceInvalid gid (T.unpack ref) "the path is outside the fixture or project (use a relative path without `..`)")
+
+-- | What `list` and `show` report as INVALID beyond a parse error: sources
+-- that do not load (a missing template, a broken exemplar or fragment), and
+-- a fixed `at` target the file's language adapter does not have. Targets
+-- with variables are left to run time.
+checkEntry :: Monad m => Workspace m -> Syntax m -> Catalog -> CatalogEntry -> m (Maybe Text)
+checkEntry root syntax cat entry =
+  loadGenerator root syntax cat entry >>= \case
+    Left err -> pure (Just (describeCatalogError err))
+    Right _ -> listToMaybe . catMaybes <$> traverse targetProblem (concatMap fixedTargets (genEdits (entryDefinition entry)))
+  where
+    fixedTargets = \case
+      Insert path anchors _ _ -> [(templateSource path, templateSource t) | AtPhrase t <- anchors, S.null (freeVariables t)]
+      _ -> []
+    targetProblem (path, phrase) = case (parsePhrase phrase, languageFor (catalogLanguages cat) (T.unpack path)) of
+      (Right (Phrase pos (NamedTarget ws)), Just lang)
+        | not (any (\t -> isJust (matchShape t ws)) (langTargets lang)) ->
+            -- An unknown target fails before any syntax query: this only builds the message.
+            itemsOfTarget syntax lang (positionWords pos) ws "" <&> \case
+              Left (why, _) -> Just ("`" <> phrase <> "` in " <> path <> ": " <> why)
+              Right _ -> Nothing
+      _ -> pure Nothing
 
 -- | Which catalog entry a [[uses]] ref names. Inside a pack, a bare name
 -- means that pack's generator first (spec §7); otherwise the usual lookup.

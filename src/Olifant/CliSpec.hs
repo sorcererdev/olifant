@@ -310,8 +310,8 @@ runCliSpec = describe "runCli" $ do
   it "indents a multi-line load error under its generator in list" $ do
     let broken = project ++ [("/proj/.olifant/generators/broken/generator.toml", "description = \"b\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"x\"\ntext = \"{= if =}\"\n")]
     (_, out, _, _) <- runWith "" broken True ["list"]
-    let after = drop 1 (dropWhile (not . T.isInfixOf "INVALID") (T.lines out))
-        continuation = takeWhile (\l -> not (T.null (T.strip l)) && not ("Tip:" `T.isPrefixOf` l)) after
+    let rest = drop 1 (dropWhile (not . T.isInfixOf "INVALID") (T.lines out))
+        continuation = takeWhile (\l -> not (T.null (T.strip l)) && not ("Tip:" `T.isPrefixOf` l)) rest
     continuation `shouldNotBe` []
     continuation `shouldSatisfy` all ("        " `T.isPrefixOf`)
   it "finds the project from a subdirectory; file arguments stay relative to where it ran" $ do
@@ -319,6 +319,18 @@ runCliSpec = describe "runCli" $ do
     (code, _, _, written) <- runIn "/proj/app/models" "" files False ["gen", "--steps", "steps.json", "--now", "2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess
     M.member "/proj/db/20300102030405_create_posts.rb" written `shouldBe` True
+  it "marks a generator whose template is missing INVALID in list, and show refuses it" $ do
+    let broken = project ++ [("/proj/.olifant/generators/bad/generator.toml", "description = \"b\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"x\"\ntemplate = \"missing.dt\"\n")]
+    (_, listed, _, _) <- runWith "" broken True ["list"]
+    listed `shouldSatisfy` T.isInfixOf "INVALID"
+    listed `shouldSatisfy` T.isInfixOf "missing.dt"
+    (code, _, _, _) <- runWith "" broken False ["show", "bad"]
+    code `shouldBe` ExitFailure 1
+  it "reports a configured pack path that does not exist as config_invalid (exit 1)" $ do
+    let files = ("/proj/.olifant/config.toml", "[packs]\ntypo = { path = \"/nowhere/typo\" }\n") : filter ((/= "/proj/.olifant/config.toml") . fst) project
+    (code, out, _, _) <- runWith "" files False ["list"]
+    code `shouldBe` ExitFailure 1
+    jsonAt ["error", "code"] out `shouldBe` Just (String "config_invalid")
   it "accepts --flag=value forms" $ do
     (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess

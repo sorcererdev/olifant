@@ -20,7 +20,6 @@ import Olifant.Generation
 import Olifant.Generator (withChoices)
 import Olifant.Anchor (astQueries)
 import Data.Bifunctor (first)
-import Olifant.Generator (ResolveFailure (..))
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Syntax)
 import Olifant.Toml qualified as Toml

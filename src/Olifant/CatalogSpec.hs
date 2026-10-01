@@ -115,6 +115,21 @@ spec = describe "catalog" $ do
     Right cat <- openProjectCatalog root (CatalogPaths "/proj" Nothing Nothing)
     map (\r -> (regionName r, regionFile r)) (catalogRegions cat) `shouldBe` [("mods", "b.cabal"), ("pages", "Pages.elm")]
     catalogBrokenRegions cat `shouldBe` []
+  describe "checkEntry (what list and show report as INVALID)" $ do
+    let lang = "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.type]\nphrase = \"type NAME\"\ncontainer = { kind = \"t\" }\nitems = { kind = \"v\" }\nexample = \"end of type Msg\"\n"
+        insertGen at = "description = \"d\"\nlanguage = \"x\"\n[inputs.p]\ntype = \"ident\"\n[[edits]]\ninsert = \"src/{= p =}.x\"\nat = \"" <> at <> "\"\ntext = \"| X\"\n"
+        check gen = do
+          (root, _) <- memoryWorkspace [("/packs/p/languages/x.toml", lang), ("/packs/p/generators/g/generator.toml", gen)]
+          Right cat <- openPackCatalog root [("p", "/packs/p")]
+          let Right entry = findEntry cat "p/g"
+          checkEntry root noSyntax cat entry
+    it "reports a missing template file" $
+      check "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a.x\"\ntemplate = \"nope.x.dt\"\n" >>= (`shouldSatisfy` maybe False ("nope.x.dt" `T.isInfixOf`))
+    it "reports a fixed `at` target the file's adapter does not have, with a suggestion" $
+      check (insertGen "end of typo Msg") >>= (`shouldSatisfy` maybe False (\e -> "unknown target `typo Msg`" `T.isInfixOf` e && "end of type Msg" `T.isInfixOf` e))
+    it "accepts known targets, and leaves targets with variables to run time" $ do
+      check (insertGen "end of type Msg") `shouldReturn` Nothing
+      check (insertGen "end of typo {= p =}") `shouldReturn` Nothing
   it "is an error when a configured pack path does not exist" $ do
     (root, _) <- memoryWorkspace [("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"x\"\n")]
     r <- openPackCatalog root [("p", "/packs/p"), ("q", "/packs/typo")]
