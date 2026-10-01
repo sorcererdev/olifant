@@ -1,0 +1,68 @@
+description = "Create a repository for a service: the port trait, an in-memory adapter and a Diesel adapter"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/service-repository --set service=billing --set aggregate=invoice",
+]
+
+[inputs.service]
+type = "enum"
+choices_from = { glob = "*/*-service", value = "{= dir =}" }   # billing/billing-service → billing
+prompt = "The service that owns the aggregate"
+
+[inputs.aggregate]
+type = "ident"
+prompt = "The aggregate the repository stores (e.g. invoice)"
+
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+in_memory = "{= service|kebab =}/adapters/in-memory-{= aggregate|kebab =}-repository"
+diesel = "{= service|kebab =}/adapters/diesel-{= aggregate|kebab =}-repository"
+
+[requires]
+exists = ["{= service_dir =}/src/ports.rs", "Cargo.toml"]
+hint = "Create the service first: olifant gen rust-htmx/service-skeleton --set service={= service =}"
+
+# The port: a trait in the service.
+[[edits]]
+create   = "{= service_dir =}/src/ports/{= aggregate|snake =}_repository.rs"
+template = "port.rs.dt"
+
+[[edits]]
+insert = "{= service_dir =}/src/ports.rs"
+at     = ["after last line matching ^pub mod ", "end of file"]
+text   = "pub mod {= aggregate|snake =}_repository;"
+
+# The adapters: workspace crates beside the service.
+[[edits]]
+create   = "{= in_memory =}/Cargo.toml"
+template = "in-memory-Cargo.toml.dt"
+
+[[edits]]
+create   = "{= in_memory =}/src/lib.rs"
+template = "in-memory-lib.rs.dt"
+
+[[edits]]
+create   = "{= diesel =}/Cargo.toml"
+template = "diesel-Cargo.toml.dt"
+
+[[edits]]
+create   = "{= diesel =}/src/lib.rs"
+template = "diesel-lib.rs.dt"
+
+[[edits]]
+create   = "{= diesel =}/src/records.rs"
+template = "diesel-records.rs.dt"
+
+[[edits]]
+create   = "{= diesel =}/src/diesel_{= aggregate|snake =}_repository.rs"
+template = "diesel-repository.rs.dt"
+
+# Both members in one insert: two inserts at the same line would not be
+# recognised as already present on a re-run (each looks right beside the hook).
+[[edits]]
+insert = "Cargo.toml"
+at     = ["after marker ##PLOP NEW PACKAGE HOOK##", "after first line matching ^members = \\["]
+text   = """
+"{= in_memory =}",
+"{= diesel =}","""

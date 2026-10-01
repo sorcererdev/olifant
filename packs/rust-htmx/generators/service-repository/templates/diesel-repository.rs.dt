@@ -1,0 +1,40 @@
+use async_trait::async_trait;
+use db::db::PgPool;
+use db::schema::*;
+use diesel::prelude::*;
+use diesel::OptionalExtension;
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::RunQueryDsl;
+
+use {= service|snake =}_service::ports::{= aggregate|snake =}_repository::{RepositoryFailure, {= aggregate|pascal =}Repository};
+use {= service|snake =}_service::models::{= aggregate|pascal =};
+use crate::records::*;
+
+#[derive(Clone)]
+pub struct Diesel{= aggregate|pascal =}Repository {
+    pub pg_pool: PgPool,
+}
+
+#[async_trait]
+impl {= aggregate|pascal =}Repository for Diesel{= aggregate|pascal =}Repository {
+    async fn get_{= aggregate|snake =}(&self, id: String) -> Result<Option<{= aggregate|pascal =}>, RepositoryFailure> {
+        let conn = &mut self
+            .pg_pool
+            .get()
+            .await
+            .map_err(|_| RepositoryFailure::FailedToGetConnectionFromPool)?;
+
+        todo!("Fetch record and map to domain model")
+
+    }
+
+    async fn save(&self, {= aggregate|snake =}: {= aggregate|pascal =}) -> Result<(), RepositoryFailure> {
+        let conn = &mut self
+            .pg_pool
+            .get()
+            .await
+            .map_err(|_| RepositoryFailure::FailedToGetConnectionFromPool)?;
+        
+        todo!("Save record to database")
+    }
+}

@@ -29,7 +29,9 @@ When a key is wrong, the error says what was probably meant: `path` on an edit (
 is the value of `insert`"), `content` ("did you mean `text`?"), `required` on an input
 ("inputs are required unless `optional = true`"), a typo like `att` ("did you mean
 `at`?"), `[edits]` with single brackets, or a filter written `pascalCase(name)` or
-`name|capitalize` (both point at `{= name|pascal =}`). These are the mistakes models made
+`name|capitalize` (both point at `{= name|pascal =}`), or `{{ name|pascal }}` written in
+another template language (a template with `{{ … }}` and no `{=` tag is refused rather than
+copied through as text). These are the mistakes models made
 most when writing generators (token experiment v9).
 
 ## The quickest generator: copy a real file (an exemplar)

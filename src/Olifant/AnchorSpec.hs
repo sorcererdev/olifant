@@ -159,6 +159,17 @@ resolveSpec = do
     it "insertLines adds the blank line unless the text already has it" $ do
       insertLines (Located 1 "" "" "x" BlankBefore) "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
       insertLines (Located 1 "" "" "x" BlankBefore) "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
+  describe "start of file / end of file (any file, no adapter needed)" $ do
+    let at p c = fmap locLine (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor p] c))
+    it "end of file is after the last line; start of file is line 0" $ do
+      at "end of file" "a\nb\n" `shouldBe` Right 2
+      at "end of file" "a\nb" `shouldBe` Right 2
+      at "start of file" "a\nb\n" `shouldBe` Right 0
+    it "works on an empty file" $ do
+      at "end of file" "" `shouldBe` Right 0
+      fmap (\l -> snd (insertLines l "pub mod x;" "")) (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor "end of file"] "")) `shouldBe` Right "pub mod x;\n"
+    it "counts the whole file for 'already present', so re-runs are no-ops" $
+      fmap (\l -> presentAt l "pub mod x;" "pub mod x;\npub mod y;\n") (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor "end of file"] "pub mod x;\npub mod y;\n")) `shouldBe` Right True
   describe "insertLines" $ do
     it "indents non-blank lines and reports the 1-based line" $
       insertLines (Located 1 "  " "" "x" NoSpacing) "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")

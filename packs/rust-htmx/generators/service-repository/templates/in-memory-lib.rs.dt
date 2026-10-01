@@ -1,0 +1,42 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use tokio::sync::RwLock;
+use {= service|snake =}_service::models::{= aggregate|pascal =};
+use {= service|snake =}_service::ports::{= aggregate|snake =}_repository::{RepositoryFailure, {= aggregate|pascal =}Repository};
+
+#[derive(Clone, Debug)]
+pub struct InMemory{= aggregate|pascal =}Repository {
+    pub {= aggregate|snake =}s: Arc<RwLock<Vec<{= aggregate|pascal =}>>>,
+}
+
+impl InMemory{= aggregate|pascal =}Repository {
+    pub fn empty() -> Self {
+        Self {
+            {= aggregate|snake =}s: Arc::new(RwLock::new(vec![])),
+        }
+    }
+
+    pub fn with({= aggregate|snake =}s: Vec<{= aggregate|pascal =}>) -> Self {
+        Self {
+            {= aggregate|snake =}s: Arc::new(RwLock::new({= aggregate|snake =}s)),
+        }
+    }
+}
+
+#[async_trait]
+impl {= aggregate|pascal =}Repository for InMemory{= aggregate|pascal =}Repository {
+    async fn get_{= aggregate|snake =}(&self, id: String) -> Result<Option<{= aggregate|pascal =}>, RepositoryFailure> {
+        let {= aggregate|snake =}s = self.{= aggregate|snake =}s.read().await;
+        Ok({= aggregate|snake =}s.iter().find(|w| w.id == id).map(|w| w.to_owned()))
+    }
+
+    async fn save(&self, {= aggregate|snake =}: {= aggregate|pascal =}) -> Result<(), RepositoryFailure> {
+        let mut {= aggregate|snake =}s = self.{= aggregate|snake =}s.write().await;
+
+        {= aggregate|snake =}s.retain(|w| w.id != {= aggregate|snake =}.id);
+        {= aggregate|snake =}s.push({= aggregate|snake =}.to_owned());
+
+        Ok(())
+    }
+}

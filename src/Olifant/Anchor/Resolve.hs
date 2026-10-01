@@ -68,6 +68,11 @@ resolveOne syntax lang anchor content = case anchor of
     Left err -> pure (Left (miss err))
     Right (Phrase pos (MarkerTarget m)) -> pure (markerAt pos m)
     Right (Phrase pos (LineTarget which re)) -> pure (lineAt pos which re)
+    -- `start of file` / `end of file`: built in, for any file (even empty);
+    -- the whole file is the region, so a re-run finds its own line.
+    Right (Phrase pos (NamedTarget ["file"])) ->
+      let lastLine = length ls - (if lineAt' (length ls - 1) == "" then 1 else 0)
+       in pure (Right (located (if pos `elem` [StartOf, Before] then 0 else lastLine) "" content))
     Right (Phrase pos (NamedTarget ws)) -> case lang of
       Nothing -> pure (Left (miss "no language adapter for this file (add languages/<name>.toml to a pack)"))
       Just l -> named l pos ws

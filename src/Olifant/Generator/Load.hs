@@ -180,7 +180,9 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
     wher <- optional "where" (text >=> targetTemplate) t
     -- No text or template: leave a todo at every site (spec §5.6).
     src <- if any (`M.member` t) ["text", "template"] then Just <$> sourceFrom False t else pure Nothing
-    pure (Complete ctor wher src)
+    case (wher, src) of
+      (Just _, Nothing) -> Left "`where` chooses a body for one kind of case, but this edit has no `text` or `template`; add one, or drop `where` to leave todos everywhere"
+      _ -> pure (Complete ctor wher src)
   _ -> Left "each edit needs exactly one of `create`, `insert` or `complete`: create = \"path/{= name =}.ext\" (a new file), insert = \"src/Main.elm\" with at = \"end of …\" (text into a file), or complete = \"Module.{= Ctor =}\" (case branches the compiler asks for)"
 
 sourceFrom :: Bool -> Table -> Either Text SourceRef
