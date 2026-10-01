@@ -1,0 +1,19 @@
+# Haskell: ast-grep's built-in grammar; checks with GHC's JSON diagnostics
+# through `cabal repl` (spec §5.6): type-checks the library (-fno-code)
+# without linking, so a clean check exits 0.
+files = ["**/*.hs"]
+comment = "--"
+grammar = "haskell"
+placeholder = 'error "{= message =}"'
+branch = "{= pattern =} -> {= body =}"
+
+[targets.data]
+phrase = "data NAME"
+container = { kind = "data_constructors", inside = { kind = "data_type", regex = "^data {= NAME =}\\b" } }
+items = { kind = "data_constructor" }
+example = "end of data CatalogError"
+
+[check]
+command = ["cabal", "repl", "-v0", "lib:olifant", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns"]
+context = ["*.cabal", "cabal.project"]
+format = "ghc-json"

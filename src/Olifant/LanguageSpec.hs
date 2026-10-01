@@ -10,7 +10,7 @@ import Data.ByteString qualified as BS
 import Data.List (nub)
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
-import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
+import Olifant.Anchor (RenderedAnchor (..), locIndent, locLine, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
@@ -117,6 +117,9 @@ spec = do
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "end of data goes after the last constructor (haskell adapter)" $ withHaskell $ \syn lang file ->
+      fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of data SampleError"] file)
+        `shouldReturn` Right (6, "  ")
     it "end of struct goes after the last field" $ withRust $ \syn lang file ->
       at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub refund_invoice: RefundInvoice," + 1)
     it "end of impl goes after the last method" $ withRust $ \syn lang file ->
@@ -236,6 +239,18 @@ withRust k =
       tmp <- getTemporaryDirectory
       let Right lang = parseLanguage "rust" "packs/rust-htmx" src
       file <- TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
+
+-- | The olifant-dev pack's Haskell adapter on the fixture's SampleErrors.hs, or pending.
+withHaskell :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withHaskell k =
+  findExecutable "ast-grep" >>= \case
+    Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
+    Just _ -> do
+      src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+      tmp <- getTemporaryDirectory
+      let Right lang = parseLanguage "haskell" "packs/olifant-dev" src
+      file <- TIO.readFile "packs/olifant-dev/fixtures/app/src/Olifant/SampleErrors.hs"
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
 withAstGrep :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
