@@ -1,0 +1,19 @@
+use async_trait::async_trait;
+use thiserror::Error;
+
+use crate::models::{= aggregate|pascal =};
+
+#[async_trait]
+pub trait {= aggregate|pascal =}Repository: Send + Sync + 'static {
+    async fn get_{= aggregate|snake =}(&self, id: String) -> Result<Option<{= aggregate|pascal =}>, RepositoryFailure>;
+
+    async fn save(&self, {= aggregate|snake =}: {= aggregate|pascal =}) -> Result<(), RepositoryFailure>;
+}
+
+#[derive(Error, Debug, PartialEq)]
+pub enum RepositoryFailure {
+    #[error("Failed to get connection from pool")]
+    FailedToGetConnectionFromPool,
+    #[error("Something went wrong")]
+    Unknown(String),
+}
