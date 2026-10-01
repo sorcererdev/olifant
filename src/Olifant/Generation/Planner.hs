@@ -39,20 +39,21 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
         pure $ case [p | p <- required, isNothing (M.findWithDefault Nothing p current), p `S.notMember` onDisk] of
           [] -> acc
           missing -> (current, edits, RequirementUnmet path missing hint : conflicts, n)
+      -- `complete` edits are planned later, by the check loop.
       PlanEdit _ (RenderedComplete _) -> pure acc
       PlanEdit path edit
         | Just g <- renderedUnless edit, Just hit <- matchUnless g current ->
             pure (current, planned path n' (fromMaybe "" (renderedPath edit)) (Skipped (UnlessMatched hit)) : edits, conflicts, n')
-        | otherwise ->
-            decideEdit path n' edit current <&> \(current', new, conflict) ->
-              (current', new : edits, maybe conflicts (: conflicts) conflict, n')
+      PlanEdit path (RenderedCreate p content onExists _) -> pure (record n' (decideCreate path n' p content onExists current))
+      PlanEdit path (RenderedInsert p anchors snippet _) -> record n' <$> decideInsert path n' p anchors snippet current
+      where
+        record m (current', new, conflict) = (current', new : edits, maybe conflicts (: conflicts) conflict, m)
     -- `unless` sees files on disk and files this plan has created so far.
     matchUnless g current =
       listToMaybe (sort (nub [p | p <- diskPaths ++ [q | (q, Just _) <- M.toList current], matchesGlob g (p :: FilePath)]))
-    decideEdit path n edit current = case edit of
-      RenderedCreate p content onExists _
-        | Just problem <- unwritable p -> pure (current, planned path n p Conflicted, Just problem)
-        | otherwise -> pure $ case existing p of
+    decideCreate path n p content onExists current
+      | Just problem <- unwritable n p = (current, planned path n p Conflicted, Just problem)
+      | otherwise = case M.findWithDefault Nothing p current of
             Nothing -> (M.insert p (Just content) current, planned path n p (WillCreate content), Nothing)
             Just old
               | old == content -> (current, planned path n p (Skipped UnchangedContent), Nothing)
@@ -60,9 +61,9 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
                   ErrorIfExists -> (current, planned path n p Conflicted, Just (TargetExists n p))
                   SkipIfExists -> (current, planned path n p (Skipped AlreadyExists), Nothing)
                   OverwriteIfExists -> (M.insert p (Just content) current, planned path n p (WillOverwrite content), Nothing)
-      RenderedInsert p anchors snippet _
-        | Just problem <- unwritable p -> pure (current, planned path n p Conflicted, Just problem)
-        | otherwise -> case existing p of
+    decideInsert path n p anchors snippet current
+      | Just problem <- unwritable n p = pure (current, planned path n p Conflicted, Just problem)
+      | otherwise = case M.findWithDefault Nothing p current of
             Nothing -> pure (current, planned path n p Conflicted, Just (InsertTargetMissing n p))
             Just old ->
               locate p anchors old <&> \case
@@ -72,10 +73,7 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
                   | otherwise ->
                       let (line, updated) = insertLines loc snippet old
                        in (M.insert p (Just updated) current, (planned path n p (WillInsert line (insertedText (locSpacing loc) snippet))) {editAnchor = Just (locUsed loc)}, Nothing)
-      RenderedComplete _ -> pure (current, planned path n "" Conflicted, Nothing)
-      where
-        existing p = M.findWithDefault Nothing p current
-        unwritable p
-          | not (isSafeRelative p) = Just (UnsafePath n p)
-          | Just why <- M.lookup p blocked = Just (TargetUnusable n p why)
-          | otherwise = Nothing
+    unwritable n p
+      | not (isSafeRelative p) = Just (UnsafePath n p)
+      | Just why <- M.lookup p blocked = Just (TargetUnusable n p why)
+      | otherwise = Nothing
