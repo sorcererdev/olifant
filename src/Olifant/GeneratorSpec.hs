@@ -113,6 +113,28 @@ parseSpec = describe "parseGenerator" $ do
   it "needs exactly one of `at` or `anchor`" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
       `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
+  describe "hints for the mistakes models make (v9)" $ do
+    let top extra = T.unlines (["description = \"d\"", "language = \"x\""] ++ extra)
+        err src = either id (const "") (load src)
+    it "explains a generator name or id key" $
+      err (top ["name = \"route\""]) `shouldSatisfy` T.isInfixOf "named by its directory"
+    it "points `path` and `content` on an edit at `insert`/`create` and `text`" $ do
+      let e = err (top ["[[edits]]", "insert = \"a.x\"", "at = \"end of type T\"", "path = \"a.x\"", "content = \"x\""])
+      e `shouldSatisfy` T.isInfixOf "`content`: did you mean `text`?"
+      e `shouldSatisfy` T.isInfixOf "`path`: the file is the value of `insert`"
+    it "points `description` and `required` on an input at `prompt` and `optional`" $ do
+      let e = err (top ["[inputs.name]", "type = \"ident\"", "description = \"d\"", "required = true"])
+      e `shouldSatisfy` T.isInfixOf "`description`: did you mean `prompt`?"
+      e `shouldSatisfy` T.isInfixOf "required unless `optional = true`"
+    it "suggests the nearest key for a typo" $
+      err (top ["[[edits]]", "insert = \"a.x\"", "att = \"end of type T\"", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "`att`: did you mean `at`?"
+    it "explains `insert` written as a table, and [edits] written as one table" $ do
+      err (top ["[[edits]]", "insert = { file = \"a.x\" }", "at = \"end of type T\"", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "insert = \"src/Main.elm\""
+      err (top ["[edits]", "insert = \"a.x\""]) `shouldSatisfy` T.isInfixOf "[[edits]]"
+    it "shows the three edit forms when an edit has none of them" $
+      err (top ["[[edits]]", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "insert = \""
+    it "explains `derive` written as an array" $
+      err (top ["derive = [\"x\"]"]) `shouldSatisfy` T.isInfixOf "[derive]"
   it "keeps inputs in the order they are declared" $ do
     let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.zeta]", "type = \"ident\"", "[inputs.alpha]", "type = \"text\"", "[inputs.mid]", "type = \"text\""]
     fmap (map inputName . genInputs) (load src) `shouldBe` Right ["zeta", "alpha", "mid"]

@@ -53,6 +53,14 @@ spec = do
     it "rejects unclosed tags" $
       parseTemplate "{= x" `shouldSatisfy` isSyntaxError
 
+  describe "hints for invented syntax (v9)" $ do
+    let err src = either describeTemplateError (const "") (parseTemplate src)
+    it "suggests the filter a made-up one means" $ do
+      err "{= name|capitalize =}" `shouldSatisfy` T.isInfixOf "did you mean `pascal`"
+      err "{= name|kebabcase =}" `shouldSatisfy` T.isInfixOf "did you mean `kebab`"
+    it "says filters are written after a bar, not called" $ do
+      err "{= pascalCase(name) =}" `shouldSatisfy` T.isInfixOf "name|pascal"
+      err "{= name:pascal =}" `shouldSatisfy` T.isInfixOf "name|pascal"
   describe "holes" $
     it "are refused until step 3, with the line number" $
       parseTemplate "a\nb {= ? body: block | x =}" `shouldBe` Left (HolesNotYetSupported 2)

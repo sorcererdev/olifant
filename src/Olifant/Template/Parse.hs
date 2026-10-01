@@ -4,10 +4,12 @@ module Olifant.Template.Parse (parseTemplate) where
 
 import Data.Bifunctor (first)
 import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Void (Void)
 import Olifant.Naming (allCases, caseName)
+import Olifant.Suggest (closest)
 import Olifant.Template.Error
 import Olifant.Template.Syntax
 import Text.Megaparsec
@@ -19,12 +21,53 @@ data Piece = TLit Text | TOut Int Text | TTag Int Text
 data Tag = TIf Expr | TElif Expr | TElse | TFor Text Expr | TEnd
 
 parseTemplate :: Text -> Either TemplateError Template
-parseTemplate src = do
+parseTemplate src = first hint $ do
   pieces <- lexTemplate src
   (segs, stop, _) <- block pieces
   case stop of
     Nothing -> Right (Template src segs)
     Just (line, tag) -> Left (SyntaxError line ("unexpected `" <> tagKeyword tag <> "`"))
+  where
+    -- Filters as function calls (`pascalCase(name)`) or after a colon
+    -- (`name:pascal`) are the usual guesses; say how they are written.
+    hint = \case
+      SyntaxError line msg
+        | Just (f, v) <- callLike src -> SyntaxError line (msg <> "\nfilters are written after a bar: {= " <> v <> "|" <> f <> " =}")
+      other -> other
+
+-- | The first @{= f(x) =}@ or @{= x:f =}@ in a template, as (filter, value),
+-- with the filter name mapped to a real one when it is a known alias.
+callLike :: Text -> Maybe (Text, Text)
+callLike src = case [e | piece <- drop 1 (T.splitOn "{=" src), let e = T.strip (fst (T.breakOn "=}" piece))] of
+  es -> case [r | e <- es, Just r <- [call e, colon e]] of
+    r : _ -> Just r
+    [] -> Nothing
+  where
+    call e = case T.breakOn "(" e of
+      (f, rest) | not (T.null rest), T.isSuffixOf ")" rest, isWord f -> Just (filterFor f, T.strip (T.dropEnd 1 (T.drop 1 rest)))
+      _ -> Nothing
+    colon e = case T.splitOn ":" e of
+      [v, f] | isWord (T.strip v), isWord (T.strip f) -> Just (filterFor (T.strip f), T.strip v)
+      _ -> Nothing
+    isWord w = not (T.null w) && T.all (\c -> isAlphaNum c || c == '_') w
+    filterFor f = fromMaybe f (suggestFilter f)
+
+-- | The real filter a made-up name probably means: a known alias
+-- (`capitalize` → `pascal`) or the nearest filter by spelling.
+suggestFilter :: Text -> Maybe Text
+suggestFilter f = case lookup (T.toLower (T.filter (/= '_') f)) aliases of
+  Just real -> Just real
+  Nothing -> closest f knownFilters
+  where
+    aliases =
+      [ ("capitalize", "pascal"), ("capitalized", "pascal"), ("ucfirst", "pascal"), ("pascalcase", "pascal"), ("classify", "pascal")
+      , ("camelcase", "camel"), ("camelize", "camel")
+      , ("kebabcase", "kebab"), ("dasherize", "kebab"), ("slug", "kebab"), ("slugify", "kebab")
+      , ("snakecase", "snake"), ("underscore", "snake"), ("lower", "snake"), ("lowercase", "snake")
+      , ("upper", "constant"), ("uppercase", "constant"), ("screamingsnake", "constant")
+      , ("titleize", "title"), ("titlecase", "title")
+      , ("pluralize", "plural"), ("singularize", "singular")
+      ]
 
 -- Lexing ------------------------------------------------------------------
 
@@ -181,7 +224,7 @@ expr = chainLeft andExpr (BinOp Or <$ keyword "or")
       pure (foldl Filter base fs)
     filterName = do
       n <- identifier
-      if n `elem` knownFilters then pure n else fail ("unknown filter `" <> T.unpack n <> "`")
+      if n `elem` knownFilters then pure n else fail ("unknown filter `" <> T.unpack n <> "`" <> maybe "" (\c -> "; did you mean `" <> T.unpack c <> "`?") (suggestFilter n))
     atom =
       choice
         [ StrLit <$> lexeme (quoted '"' <|> quoted '\'')

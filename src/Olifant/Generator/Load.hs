@@ -18,17 +18,17 @@ import Olifant.Toml
 parseGenerator :: GeneratorId -> Text -> Either Text GeneratorDef
 parseGenerator gid src = do
   top <- parseToml src
-  onlyKeys ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query"] top
+  onlyKeysWith topAdvice topKeys top
   description <- required "description" text top
   language <- required "language" text top
   version <- maybe 1 fromInteger <$> optional "version" int top
-  inputs0 <- optional "inputs" table top >>= maybe (Right []) inputsFrom
+  inputs0 <- optional "inputs" (shaped "[inputs.NAME] tables, one per input" table) top >>= maybe (Right []) inputsFrom
   -- In the order the author wrote them, which `show` and prompts follow.
   let declared = keyOrder src ["inputs"]
       inputs = sortOn (\i -> length (takeWhile (/= inputName i) declared)) inputs0
-  derived <- optional "derive" table top >>= maybe (Right []) deriveFrom
+  derived <- optional "derive" (shaped "a [derive] table of NAME = \"{= … =}\" lines" table) top >>= maybe (Right []) deriveFrom
   requires <- optional "requires" (table >=> requiresFrom) top
-  edits <- fromMaybe [] <$> optional "edits" (list (table >=> editFrom)) top
+  edits <- fromMaybe [] <$> optional "edits" (shaped "[[edits]] (double brackets: an array of tables, one per edit)" (list (table >=> editFrom))) top
   uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
   examples <- fromMaybe [] <$> optional "examples" (list text) top
   queries <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryFromTree v)) . M.toList) =<< optional "query" table top
@@ -36,6 +36,42 @@ parseGenerator gid src = do
     k : _ -> Left ("`query." <> k <> "`: `" <> k <> "` is already an input or derived value; name the query differently")
     [] -> Right ()
   pure (Generator gid description language version inputs derived requires edits uses examples queries)
+
+-- | The keys each table accepts (also the source of `olifant schema`).
+topKeys, inputKeys, createKeys, insertKeys, completeKeys :: [Text]
+topKeys = ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query"]
+inputKeys = ["type", "optional", "default", "prompt", "choices", "choices_from", "of"]
+createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
+insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
+completeKeys = ["complete", "where", "template", "text"]
+
+-- | What a misplaced key usually means (measured: the keys models invent).
+topAdvice, inputAdvice, editAdvice :: [(Text, Text)]
+topAdvice =
+  [ (k, "a generator is named by its directory (.olifant/generators/NAME/generator.toml), not a key") | k <- ["name", "id", "generator"] ]
+    ++ [ ("edit", "edits are [[edits]] tables"), ("steps", "run other generators with [[uses]]"), ("templates", "templates live in the generator's templates/ directory; name one with `template` on an edit") ]
+inputAdvice =
+  [ ("description", "did you mean `prompt`?")
+  , ("required", "inputs are required unless `optional = true`")
+  , ("name", "the input's name is its table name: [inputs.NAME]")
+  , ("derive", "derived values go in a top-level [derive] table")
+  , ("values", "did you mean `choices`?")
+  ]
+editAdvice =
+  [ (k, "the file is the value of `insert` (or `create`): insert = \"src/Main.elm\"") | k <- ["path", "file", "target"] ]
+    ++ [ (k, "did you mean `text`?") | k <- ["content", "contents", "body", "code"] ]
+    ++ [ (k, "say where with `at`: at = \"end of type Route\" (`olifant anchors LANGUAGE` lists the phrases)") | k <- ["position", "location", "after", "before"] ]
+    ++ [ ("description", "edits take no description") ]
+
+-- | A string for a file path, explaining the usual mistake of a table.
+pathText :: Text -> Tree -> Either Text Text
+pathText key = \case
+  TText t -> Right t
+  other -> Left ("expected the file path as a string (" <> key <> " = \"src/Main.elm\"), got " <> describeTree other <> "; the text to add goes in `text`")
+
+-- | A decoder whose wrong-shape error also says what the right shape is.
+shaped :: Text -> (Tree -> Either Text a) -> Tree -> Either Text a
+shaped want f v = first (\e -> e <> "; write " <> want) (f v)
 
 tmpl :: Text -> Either Text Template
 tmpl = first describeTemplateError . parseTemplate
@@ -45,7 +81,7 @@ inputsFrom tbl = traverse (\(k, v) -> inKey ("inputs." <> k) (table v >>= inputF
 
 inputFrom :: Text -> Table -> Either Text InputSpec
 inputFrom name t = do
-  onlyKeys ["type", "optional", "default", "prompt", "choices", "choices_from", "of"] t
+  onlyKeysWith inputAdvice inputKeys t
   ty <- required "type" text t
   itype <- case ty of
     "list" -> ListInput <$> required "of" listItemFrom t
@@ -104,15 +140,15 @@ requiresFrom t = do
 editFrom :: Table -> Either Text (EditWith SourceRef)
 editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
   ["create"] -> do
-    onlyKeys ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"] t
-    target <- required "create" (text >=> tmpl) t
+    onlyKeysWith editAdvice createKeys t
+    target <- required "create" (pathText "create" >=> tmpl) t
     src <- sourceFrom True t
     onExists <- fromMaybe ErrorIfExists <$> optional "on_exists" (text >=> onExistsFrom) t
     unlessG <- unlessFrom t
     pure (Create target src onExists unlessG)
   ["insert"] -> do
-    onlyKeys ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"] t
-    target <- required "insert" (text >=> tmpl) t
+    onlyKeysWith editAdvice insertKeys t
+    target <- required "insert" (pathText "insert" >=> tmpl) t
     anchors <- case (M.lookup "at" t, M.lookup "anchor" t) of
       (Just v, Nothing) -> inKey "at" (atFrom v)
       (Nothing, Just v) -> inKey "anchor" (table v >>= markerAlias)
@@ -128,12 +164,12 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
     unlessG <- unlessFrom t
     pure (Insert target anchors src unlessG)
   ["complete"] -> do
-    onlyKeys ["complete", "where", "template", "text"] t
+    onlyKeysWith editAdvice completeKeys t
     ctor <- required "complete" (text >=> tmpl) t
     wher <- optional "where" (text >=> targetTemplate) t
     src <- sourceFrom False t
     pure (Complete ctor wher src)
-  _ -> Left "each edit needs exactly one of `create`, `insert` or `complete`"
+  _ -> Left "each edit needs exactly one of `create`, `insert` or `complete`: create = \"path/{= name =}.ext\" (a new file), insert = \"src/Main.elm\" with at = \"end of …\" (text into a file), or complete = \"Module.{= Ctor =}\" (case branches the compiler asks for)"
 
 sourceFrom :: Bool -> Table -> Either Text SourceRef
 sourceFrom allowExemplar t = case (M.lookup "template" t, M.lookup "exemplar" t, M.lookup "text" t) of

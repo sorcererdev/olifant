@@ -14,6 +14,7 @@ module Olifant.Toml
   , list
   , table
   , onlyKeys
+  , onlyKeysWith
   , describeTree
   ) where
 
@@ -24,6 +25,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Suggest (closest)
 import Toml qualified
 
 data Tree = TText Text | TInt Integer | TBool Bool | TList [Tree] | TTable Table | TOther Text
@@ -94,12 +96,20 @@ table = \case
   other -> Left ("expected a table, got " <> describeTree other)
 
 onlyKeys :: [Text] -> Table -> Either Text ()
-onlyKeys allowed t = case filter (`notElem` allowed) (M.keys t) of
+onlyKeys = onlyKeysWith []
+
+-- | Like 'onlyKeys', with advice for keys people (and models) commonly write
+-- by mistake; any other unknown key gets the nearest allowed one, if close.
+onlyKeysWith :: [(Text, Text)] -> [Text] -> Table -> Either Text ()
+onlyKeysWith advice allowed t = case filter (`notElem` allowed) (M.keys t) of
   [] -> Right ()
   unknown ->
-    Left ("unknown key(s) " <> T.intercalate ", " (map tick unknown) <> "; expected one of " <> T.intercalate ", " (map tick allowed))
+    Left ("unknown key(s) " <> T.intercalate ", " (map explain unknown) <> "; expected one of " <> T.intercalate ", " (map tick allowed))
   where
     tick k = "`" <> k <> "`"
+    explain k = case lookup k advice of
+      Just why -> tick k <> ": " <> why
+      Nothing -> tick k <> maybe "" (\c -> ": did you mean " <> tick c <> "?") (closest k allowed)
 
 describeTree :: Tree -> Text
 describeTree = \case
