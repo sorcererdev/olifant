@@ -64,6 +64,7 @@ library
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
+    Olifant.Language.Ghc
     Olifant.Language.Rule
     Olifant.Language.Support
     Olifant.Language.Syntax
@@ -132,6 +133,7 @@ test-suite spec
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
+    Olifant.Language.Ghc
     Olifant.Language.Rule
     Olifant.Language.Support
     Olifant.Language.Syntax

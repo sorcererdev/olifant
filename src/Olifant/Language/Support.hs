@@ -4,9 +4,10 @@ module Olifant.Language.Support (supportFor, knownFormats) where
 import Data.Text (Text)
 import Olifant.Language.Diagnostics (CompilerSupport (..))
 import Olifant.Language.Elm (elmSupport)
+import Olifant.Language.Ghc (ghcSupport)
 
 supports :: [CompilerSupport]
-supports = [elmSupport]
+supports = [elmSupport, ghcSupport]
 
 supportFor :: Text -> Maybe CompilerSupport
 supportFor f = case [s | s <- supports, supportFormat s == f] of
