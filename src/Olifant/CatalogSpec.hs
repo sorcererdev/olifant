@@ -115,6 +115,10 @@ spec = describe "catalog" $ do
     Right cat <- openProjectCatalog root (CatalogPaths "/proj" Nothing Nothing)
     map (\r -> (regionName r, regionFile r)) (catalogRegions cat) `shouldBe` [("mods", "b.cabal"), ("pages", "Pages.elm")]
     catalogBrokenRegions cat `shouldBe` []
+  it "is an error when a configured pack path does not exist" $ do
+    (root, _) <- memoryWorkspace [("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"x\"\n")]
+    r <- openPackCatalog root [("p", "/packs/p"), ("q", "/packs/typo")]
+    either describeCatalogError (const "") r `shouldSatisfy` ("pack `q`" `T.isInfixOf`)
   it "keeps a broken regions.toml aside" $ do
     (root, _) <- memoryWorkspace [("/packs/p/regions.toml", "[regions.x]\nfile = 1\n"), ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"x\"\n")]
     Right cat <- openPackCatalog root [("p", "/packs/p")]

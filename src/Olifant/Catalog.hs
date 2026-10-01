@@ -37,7 +37,7 @@ import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, parseTemplate)
 import Olifant.Toml qualified as Toml
-import Olifant.Workspace (Workspace (..), isSafeRelative, normalisePath)
+import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, normalisePath)
 import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 
 data CatalogEntry = CatalogEntry
@@ -76,6 +76,7 @@ data CatalogPaths = CatalogPaths
 
 data CatalogError
   = ConfigInvalid FilePath Text
+  | PackMissing Text FilePath
   | PackNotConfigured Text Text -- ^ pack, requested generator
   | GeneratorInvalid FilePath Text
   | GeneratorNotFound Text [GeneratorId]
@@ -87,6 +88,7 @@ data CatalogError
 describeCatalogError :: CatalogError -> Text
 describeCatalogError = \case
   ConfigInvalid p e -> T.pack p <> ": " <> e
+  PackMissing name p -> "pack `" <> name <> "`: " <> T.pack p <> " is not a directory (check its path under [packs])"
   PackNotConfigured pack r ->
     "no generator named `" <> r <> "`: no pack named `" <> pack
       <> "` is configured (add it under [packs] in .olifant/config.toml for this project, or ~/.config/olifant/config.toml for every project)"
@@ -135,15 +137,22 @@ packsFromConfig src = do
 
 openCatalogAt :: Monad m => Workspace m -> Maybe FilePath -> [(Text, FilePath)] -> m (Either CatalogError Catalog)
 openCatalogAt root localDir packs = do
+  states <- traverse (\(name, r) -> (name,r,) <$> inspectPath root r) packs
+  case [(name, r) | (name, r, st) <- states, st /= Directory] of
+    (name, r) : _ -> pure (Left (PackMissing name r))
+    [] -> Right <$> openAt root localDir packs
+
+openAt :: Monad m => Workspace m -> Maybe FilePath -> [(Text, FilePath)] -> m Catalog
+openAt root localDir packs = do
   local <- maybe (pure []) (discover Nothing Nothing) localDir
   fromPacks <- concat <$> traverse (\(name, r) -> discover (Just name) (Just r) (r </> "generators")) packs
   let loaded = local ++ fromPacks
-  langs <- concat <$> traverse (uncurry languagesIn) packs
+  langs <- concat <$> traverse (languagesIn . snd) packs
   regions <- traverse (regionsIn root . snd) packs
   let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] []
-  pure (Right (foldl (flip addRegions) base regions))
+  pure (foldl (flip addRegions) base regions)
   where
-    languagesIn _ r = do
+    languagesIn r = do
       let dir = r </> "languages"
       files <- listFiles root dir
       traverse

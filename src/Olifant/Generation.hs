@@ -95,10 +95,6 @@ generate ws resolve tools steps now mode =
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
   where
-    -- A file this plan creates and then edits no longer matches its
-    -- template on a re-run, so the create reports `target_exists`. If
-    -- planning those files from scratch reproduces them exactly, the run is
-    -- a no-op for them, not a conflict (spec §5.4).
     -- `[query.NAME]`: render each query with the generator's inputs and
     -- derived values (never another query's records, so their order does not
     -- matter), run it over the project as it is on disk, and bind the records

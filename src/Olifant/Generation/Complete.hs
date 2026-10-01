@@ -144,7 +144,7 @@ applyBranches n branches files0 = (reverse edits, final)
     step (acc, files) (i, b) =
       let file = missingFile (brSite b)
           (line, updated) = insertBranch (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
-          edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) (Just ("compiler: missing " <> sitePattern (brInfo b))) (Just (brInfo b))
+          edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) Nothing (Just (brInfo b))
        in (edit : acc, M.insert file updated files)
 
 insertBranch :: (Int, Int) -> Text -> Text -> (Int, Text)
