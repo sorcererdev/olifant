@@ -27,7 +27,7 @@ data RenderedEdit
 data CompleteSpec = CompleteSpec
   { completeConstructor :: Text
   , completeWhere :: Maybe Text
-  , completeBody :: Template
+  , completeBody :: Maybe Template
   , completeEnv :: Env
   , completeLanguage :: Text
   }

@@ -151,6 +151,10 @@ parseSpec = describe "parseGenerator" $ do
       err (top ["[[edits]]", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "insert = \""
     it "explains `derive` written as an array" $
       err (top ["derive = [\"x\"]"]) `shouldSatisfy` T.isInfixOf "[derive]"
+  it "loads a complete edit without a body (todos everywhere)" $
+    fmap (map (\case Complete _ _ b -> maybe "none" (const "some") b; _ -> "other" :: Text) . genEdits)
+      (load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "complete = \"T.C\""]))
+      `shouldBe` Right ["none"]
   it "keeps inputs in the order they are declared" $ do
     let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.zeta]", "type = \"ident\"", "[inputs.alpha]", "type = \"text\"", "[inputs.mid]", "type = \"text\""]
     fmap (map inputName . genInputs) (load src) `shouldBe` Right ["zeta", "alpha", "mid"]

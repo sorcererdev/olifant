@@ -108,15 +108,16 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       let file = missingFile d
           content = M.findWithDefault "" file files
           fn = supportFunction support content (fst (missingCase d))
-      matching <- filterM (whereMatches lang content d . snd) (NE.toList cands)
+      -- A bodiless edit never supplies a branch: its sites get todos.
+      matching <- filterM (whereMatches lang content d . snd) [c | c@(_, s) <- NE.toList cands, isJust (completeBody s)]
       let chosen = listToMaybe matching
           (step, spec) = fromMaybe (NE.head cands) chosen
           ctors = nub (map (completeConstructor . snd) (NE.toList cands))
           pat = supportPattern support content (completeConstructor spec) p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
-            Just _ -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) (completeBody spec))
-            Nothing -> todoBranch lang pat fn
+            Just (_, s) | Just body <- completeBody s -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) body)
+            _ -> todoBranch lang pat fn
       -- Elm prints constructors unqualified, so with no `where` to decide,
       -- two edits sharing a bare name cannot be told apart: never guess.
       pure $
@@ -153,13 +154,23 @@ applyBranches n branches files0 = (reverse edits, final)
           edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) Nothing (Just (brInfo b))
        in (edit : acc, M.insert file updated files)
 
+-- | Add a branch after the case's last line, indented like its alternatives
+-- and spaced like them: a blank line before it only if one precedes the
+-- last alternative (Elm's style), none if they are adjacent (Haskell's).
+-- With a single alternative there is nothing to copy: a blank line.
 insertBranch :: (Int, Int) -> Text -> Text -> (Int, Text)
 insertBranch (caseStart, caseEnd) branch content =
   let ls = T.lines content
-      indent = case [l | l <- drop (caseStart + 1) ls, not (T.null (T.strip l))] of
+      body = zip [0 :: Int ..] ls
+      inCase = [(i, l) | (i, l) <- body, i > caseStart, i <= caseEnd]
+      indent = case [l | (_, l) <- inCase, not (T.null (T.strip l))] of
         (l : _) -> T.takeWhile (\c -> c == ' ' || c == '\t') l
         [] -> "    "
-   in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing) ("\n" <> branch) content
+      alternatives = [i | (i, l) <- inCase, not (T.null (T.strip l)), T.takeWhile (\c -> c == ' ' || c == '\t') l == indent]
+      blankBefore = case reverse alternatives of
+        (lastAlt : _ : _) -> lastAlt > 0 && T.null (T.strip (ls !! (lastAlt - 1)))
+        _ -> True
+   in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing) ((if blankBefore then "\n" else "") <> branch) content
 
 bareName :: Text -> Text
 bareName = snd . T.breakOnEnd "."

@@ -178,7 +178,8 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
     onlyKeysWith editAdvice completeKeys t
     ctor <- required "complete" (text >=> tmpl) t
     wher <- optional "where" (text >=> targetTemplate) t
-    src <- sourceFrom False t
+    -- No text or template: leave a todo at every site (spec §5.6).
+    src <- if any (`M.member` t) ["text", "template"] then Just <$> sourceFrom False t else pure Nothing
     pure (Complete ctor wher src)
   _ -> Left "each edit needs exactly one of `create`, `insert` or `complete`: create = \"path/{= name =}.ext\" (a new file), insert = \"src/Main.elm\" with at = \"end of …\" (text into a file), or complete = \"Module.{= Ctor =}\" (case branches the compiler asks for)"
 

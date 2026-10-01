@@ -460,6 +460,19 @@ completeSpec = describe "generate (complete edits)" $ do
     Right plan <- generate ws noResolve (basicTools noSyntax unplaced [elmLang]) [Step gen (M.fromList [("name", "reset")])] now Apply
     planWarnings plan `shouldSatisfy` any (\w -> "src/A.elm" `T.isInfixOf` w && "reset" `T.isInfixOf` w && "Reset" `T.isInfixOf` w)
     planConflicts plan `shouldBe` []
+  it "copies the spacing between the case's alternatives: none when they are adjacent" $ do
+    let tight = "module Page.A exposing (..)\n\nupdate msg model =\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n        Other ->\n            ( model, Cmd.none )\n"
+    (Right _, files) <- go [("src/A.elm", tight)] [[missing "src/A.elm" (3, 7) ["Reset"]]]
+    M.lookup "src/A.elm" files `shouldBe` Just (tight <> "        Reset ->\n            ( model, Cmd.none )\n")
+  it "leaves todo branches at every site when the complete edit has no body" $ do
+    let bodiless = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"" ]
+    ref <- newIORef [[missing "src/A.elm" (3, 5) ["Reset"]]]
+    (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (basicTools noSyntax (scriptedChecker ref) [elmLang]) [Step bodiless (M.fromList [("name", "reset")])] now Apply
+    fmap (fmap siteTodo . editSite) (planEdits plan) `shouldBe` [Just True]
+    (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just (page <> "\n        Reset ->\n            Debug.todo \"olifant: update Reset\"\n")
   it "leaves a placeholder todo where no `where` matches" $ do
     let gen' = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
