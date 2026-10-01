@@ -63,6 +63,8 @@ targets work in any file, even one with no adapter:
 
 - `after last line matching ^import Page\.` (a POSIX regular expression per line)
 - `before marker -- TODO: routes` (an exact comment line, if you have one)
+- `start of file` / `end of file` (works on an empty file too; the whole file counts for
+  "already there", so re-running is a no-op)
 
 Mistakes are caught with a suggestion:
 

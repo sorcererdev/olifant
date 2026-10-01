@@ -130,6 +130,7 @@ spec = describe "catalog" $ do
     it "accepts known targets, and leaves targets with variables to run time" $ do
       check (insertGen "end of type Msg") `shouldReturn` Nothing
       check (insertGen "end of typo {= p =}") `shouldReturn` Nothing
+      check (insertGen "end of file") `shouldReturn` Nothing
   it "is an error when a configured pack path does not exist" $ do
     (root, _) <- memoryWorkspace [("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"x\"\n")]
     r <- openPackCatalog root [("p", "/packs/p"), ("q", "/packs/typo")]

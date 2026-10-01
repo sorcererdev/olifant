@@ -263,7 +263,7 @@ checkEntry root syntax cat entry =
       _ -> []
     targetProblem (path, phrase) = case (parsePhrase phrase, languageFor (catalogLanguages cat) (T.unpack path)) of
       (Right (Phrase pos (NamedTarget ws)), Just lang)
-        | not (any (\t -> isJust (matchShape t ws)) (langTargets lang)) ->
+        | ws /= ["file"], not (any (\t -> isJust (matchShape t ws)) (langTargets lang)) ->
             -- An unknown target fails before any syntax query: this only builds the message.
             itemsOfTarget syntax lang (positionWords pos) ws "" <&> \case
               Left (why, _) -> Just ("`" <> phrase <> "` in " <> path <> ": " <> why)
