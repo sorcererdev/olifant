@@ -9,6 +9,7 @@ module Olifant.Generator.Definition
   , AnchorSpec (..)
   , SourceRef (..)
   , UseStep (..)
+  , ResolveFailure (..)
   , InputSpec (..)
   , InputType (..)
   , Scalar (..)
@@ -104,4 +105,10 @@ data ListItem = ScalarItems Scalar | RecordItems [FieldSpec]
   deriving stock (Eq, Show)
 
 data FieldSpec = FieldSpec {fieldName :: Text, fieldType :: Scalar, fieldDefault :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | Why a generator ref (a [[uses]] entry, a step) did not resolve: it names
+-- nothing, or it names a generator whose definition is broken (a different
+-- exit code, spec §11.3).
+data ResolveFailure = ResolveNotFound Text | ResolveInvalid Text
   deriving stock (Eq, Show)

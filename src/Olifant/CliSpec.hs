@@ -48,7 +48,10 @@ fixedNow :: UTCTime
 fixedNow = UTCTime (fromGregorian 2026 9 27) (secondsToDiffTime 55800)
 
 runWith :: Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runWith stdinText files tty args = do
+runWith = runIn "/proj"
+
+runIn :: FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runIn dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -56,7 +59,7 @@ runWith stdinText files tty args = do
     runCli
       Runtime
         { rtRoot = root
-        , rtProjectDir = "/proj"
+        , rtProjectDir = dir
         , rtUserConfigDir = Nothing
         , rtHomeDir = Nothing
         , rtReadStdin = pure stdinText
@@ -210,6 +213,11 @@ runCliSpec = describe "runCli" $ do
     M.lookup "/proj/app/models/post.rb" files `shouldBe` Just "mine\n"
     M.size files `shouldBe` length project + 1
     fmap (\case Array xs -> length xs; _ -> 0) (jsonAt ["conflicts"] out) `shouldBe` Just 1
+  it "prints no edit contents when conflicts mean nothing is written" $ do
+    let existing = ("/proj/app/models/post.rb", "mine\n")
+    (_, out, _, _) <- runWith "" (existing : project) True ["gen", "model", "--set", "name=post"]
+    out `shouldSatisfy` T.isInfixOf "nothing written"
+    out `shouldNotSatisfy` T.isInfixOf "\n--- "
   it "exits 3 with a pack_not_configured hint for pack/generator of an unknown pack" $ do
     (code, out, _, _) <- runWith "" project False ["gen", "elm/page"]
     code `shouldBe` ExitFailure 3
@@ -299,6 +307,53 @@ runCliSpec = describe "runCli" $ do
     jsonAt ["source"] json `shouldBe` Just (String "/proj/.olifant/generators/route/generator.toml")
     (_, model, _, _) <- runWith "" project True ["show", "model"]
     model `shouldNotSatisfy` T.isInfixOf "{= pattern =}"
+  it "indents a multi-line load error under its generator in list" $ do
+    let broken = project ++ [("/proj/.olifant/generators/broken/generator.toml", "description = \"b\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"x\"\ntext = \"{= if =}\"\n")]
+    (_, out, _, _) <- runWith "" broken True ["list"]
+    let rest = drop 1 (dropWhile (not . T.isInfixOf "INVALID") (T.lines out))
+        continuation = takeWhile (\l -> not (T.null (T.strip l)) && not ("Tip:" `T.isPrefixOf` l)) rest
+    continuation `shouldNotBe` []
+    continuation `shouldSatisfy` all ("        " `T.isPrefixOf`)
+  it "finds the project from a subdirectory; file arguments stay relative to where it ran" $ do
+    let files = project ++ [("/proj/app/models/steps.json", "[{\"gen\": \"model\", \"set\": {\"name\": \"post\"}}]"), ("/proj/app/models/keep.txt", "")]
+    (code, _, _, written) <- runIn "/proj/app/models" "" files False ["gen", "--steps", "steps.json", "--now", "2030-01-02T03:04:05Z"]
+    code `shouldBe` ExitSuccess
+    M.member "/proj/db/20300102030405_create_posts.rb" written `shouldBe` True
+  it "marks a generator whose template is missing INVALID in list, and show refuses it" $ do
+    let broken = project ++ [("/proj/.olifant/generators/bad/generator.toml", "description = \"b\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"x\"\ntemplate = \"missing.dt\"\n")]
+    (_, listed, _, _) <- runWith "" broken True ["list"]
+    listed `shouldSatisfy` T.isInfixOf "INVALID"
+    listed `shouldSatisfy` T.isInfixOf "missing.dt"
+    (code, _, _, _) <- runWith "" broken False ["show", "bad"]
+    code `shouldBe` ExitFailure 1
+  it "reports a configured pack path that does not exist as config_invalid (exit 1)" $ do
+    let files = ("/proj/.olifant/config.toml", "[packs]\ntypo = { path = \"/nowhere/typo\" }\n") : filter ((/= "/proj/.olifant/config.toml") . fst) project
+    (code, out, _, _) <- runWith "" files False ["list"]
+    code `shouldBe` ExitFailure 1
+    jsonAt ["error", "code"] out `shouldBe` Just (String "config_invalid")
+  it "prints the generator.toml schema as JSON" $ do
+    (code, out, _, _) <- runWith "" project False ["schema"]
+    code `shouldBe` ExitSuccess
+    jsonAt ["title"] out `shouldBe` Just (String "generator.toml")
+  it "new writes a skeleton generator that loads, and refuses to overwrite" $ do
+    (code, _, _, files) <- runWith "" project False ["new", "route", "--language", "elm"]
+    code `shouldBe` ExitSuccess
+    let Just skeleton = M.lookup "/proj/.olifant/generators/route/generator.toml" files
+    skeleton `shouldSatisfy` T.isInfixOf "language = \"elm\""
+    skeleton `shouldSatisfy` T.isInfixOf "[[edits]]"
+    (_, listed, _, _) <- runWith "" (M.toList files) True ["list"]
+    listed `shouldNotSatisfy` T.isInfixOf "INVALID"
+    listed `shouldSatisfy` T.isInfixOf "route"
+    (again, _, _, _) <- runWith "" (M.toList files) False ["new", "route", "--language", "elm"]
+    again `shouldBe` ExitFailure 1
+  it "new needs --language when the project has no single language adapter" $ do
+    (code, out, _, _) <- runWith "" project False ["new", "route"]
+    code `shouldBe` ExitFailure 2
+    fmap (\case String s -> "--language" `T.isInfixOf` s; _ -> False) (jsonAt ["error", "message"] out) `shouldBe` Just True
+  it "points an invalid generator's error at schema and new" $ do
+    let broken = project ++ [("/proj/.olifant/generators/bad/generator.toml", "description = \"b\"\nlanguage = \"x\"\npath = \"x\"\n")]
+    (_, out, _, _) <- runWith "" broken False ["gen", "bad"]
+    fmap (\case String s -> "olifant schema" `T.isInfixOf` s && "olifant new" `T.isInfixOf` s; _ -> False) (jsonAt ["error", "hint"] out) `shouldBe` Just True
   it "accepts --flag=value forms" $ do
     (code, _, _, files) <- runWith "" project False ["gen", "model", "--set=name=post", "--now=2030-01-02T03:04:05Z"]
     code `shouldBe` ExitSuccess

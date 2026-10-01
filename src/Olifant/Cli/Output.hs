@@ -60,10 +60,12 @@ listHuman detail subs es broken
   | otherwise =
       T.unlines $
         [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
-          ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> err | (gid, _, err) <- broken]
+          ++ [T.justifyLeft width ' ' (idText gid) <> "  INVALID: " <> hang err | (gid, _, err) <- broken]
           ++ ["", "Tip: " <> compositionTip]
   where
     width = maximum (0 : map (T.length . idText . entryId) es ++ [T.length (idText gid) | (gid, _, _) <- broken])
+    -- A multi-line error (a parser's caret diagram) stays under its generator.
+    hang err = T.intercalate "\n" (case T.lines err of (l : ls) -> l : map (T.replicate (width + 4) " " <>) ls; [] -> [])
 
 inputsJson :: GeneratorDef -> [Value]
 inputsJson d = [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] | i <- genInputs d]
@@ -183,8 +185,10 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
     foundBy = maybe "" (\x -> ", compiler: " <> siteFunction x <> (if siteTodo x then ", todo" else ""))
     lineCount c = let n = length (T.lines c) in T.pack (show n) <> (if n == 1 then " line" else " lines")
+    -- The text of each edit, for reviewing a --plan. Not after an applied
+    -- run, and not when conflicts mean nothing would be written anyway.
     details
-      | applied = ""
+      | applied || hasConflicts plan = ""
       | otherwise = T.concat ["\n--- " <> T.pack p <> "\n" <> c | PlannedEdit _ _ p a _ _ <- planEdits plan, Just c0 <- [contentOf a], let c = if "\n" `T.isSuffixOf` c0 then c0 else c0 <> "\n"]
     contentOf = \case
       WillCreate c -> Just c

@@ -19,7 +19,8 @@ import Olifant.Catalog
 import Olifant.Generation
 import Olifant.Generator (withChoices)
 import Olifant.Anchor (astQueries)
-import Olifant.Query (Queries (..), noQueries)
+import Data.Bifunctor (first)
+import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Syntax)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
@@ -65,15 +66,23 @@ runCase root syntax checker bless pc = do
                 fixturePaths <- listFiles root fixtureDir
                 fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
                 (ws, _) <- memoryWorkspace fixture
-                let queries = noQueries {queryAst = astQueries syntax (catalogLanguages cat)}
-                withChoices queries fixturePaths (readText ws) gen0 >>= \case
+                -- Commands run in the fixture on disk (the case's own copy is
+                -- in memory), like a project's commands run in the project.
+                let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat)}
+                    choices = withChoices queries fixturePaths (readText ws)
+                    -- [[uses]] generators get their choices from the fixture too.
+                    resolve pack ref =
+                      resolver root syntax cat pack ref >>= \case
+                        Left err -> pure (Left err)
+                        Right g -> first ResolveInvalid <$> choices g
+                choices gen0 >>= \case
                  Left why -> pure (CaseFailed [why])
                  Right gen -> do
                    let tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
-                   firstRun <- generate ws (resolver root syntax cat) tools [Step gen sets] now Apply
-                   secondRun <- generate ws (resolver root syntax cat) tools [Step gen sets] now Apply
+                   firstRun <- generate ws resolve tools [Step gen sets] now Apply
+                   secondRun <- generate ws resolve tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of
-                     (Left err, _) -> pure (CaseFailed [T.pack (show err)])
+                     (Left err, _) -> pure (CaseFailed [describeGenerationError err])
                      (Right plan, _)
                        | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
                        | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
@@ -81,7 +90,7 @@ runCase root syntax checker bless pc = do
                        snapshotProblems <- checkSnapshot (planWrites plan)
                        let rerunProblems = case again of
                              Right p | not (M.null (planWrites p)) -> ["re-running changed: " <> T.intercalate ", " (map T.pack (M.keys (planWrites p)))]
-                             Left err -> ["re-running failed: " <> T.pack (show err)]
+                             Left err -> ["re-running failed: " <> describeGenerationError err]
                              _ -> []
                        pure (if null (snapshotProblems ++ rerunProblems) then CasePassed else CaseFailed (snapshotProblems ++ rerunProblems))
   where
@@ -89,6 +98,8 @@ runCase root syntax checker bless pc = do
     checkSnapshot :: Map FilePath Text -> IO [Text]
     checkSnapshot written
       | bless = do
+          stale <- filter (`M.notMember` written) <$> listFiles root snapshotDir
+          forM_ stale $ \p -> removeFile root (snapshotDir </> p)
           forM_ (M.toList written) $ \(p, c) -> writeText root (snapshotDir </> p) c
           pure []
       | otherwise = do

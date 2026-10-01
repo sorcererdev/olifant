@@ -8,6 +8,30 @@ chapter builds three, from the quickest kind to the most structural, in an Elm s
 scripts/try-pack.sh elm /tmp/olifant-gen && cd /tmp/olifant-gen
 ```
 
+## Start from a skeleton
+
+`olifant new NAME` writes `.olifant/generators/NAME/generator.toml` with the parts every
+generator has (a description, the language, one `ident` input, a `[derive]`d PascalCase
+name) and the three kinds of edit as commented examples to adapt. It loads as written, so
+`olifant list` shows it at once:
+
+```
+$ olifant new route
+created .olifant/generators/route/generator.toml
+fill in description and [[edits]]; `olifant anchors elm` lists placement phrases, `olifant where FILE "PHRASE"` tests one, `olifant gen route --set name=example --plan` previews
+```
+
+With more than one language adapter, pass `--language`. `olifant schema` prints the whole
+format as a JSON Schema (every key, what it takes, the filters), built from the same key
+lists the loader checks, so the two cannot disagree.
+
+When a key is wrong, the error says what was probably meant: `path` on an edit ("the file
+is the value of `insert`"), `content` ("did you mean `text`?"), `required` on an input
+("inputs are required unless `optional = true`"), a typo like `att` ("did you mean
+`at`?"), `[edits]` with single brackets, or a filter written `pascalCase(name)` or
+`name|capitalize` (both point at `{= name|pascal =}`). These are the mistakes models made
+most when writing generators (token experiment v9).
+
 ## The quickest generator: copy a real file (an exemplar)
 
 Most conventions start life as a file someone already wrote. Write one by hand, and make
@@ -84,7 +108,8 @@ Rules for exemplars:
   is. If two bindings would produce the same text (say `user_card` and `user_cards`), the
   load fails with "comes from more than one binding".
 - The exemplar is copied literally apart from those names, so `{=` in it is just text.
-- A broken exemplar shows up when you run the generator, not in `olifant list`.
+- A broken exemplar (missing file, or an example value that is not two words) shows up in
+  `olifant list` as `INVALID`, and `show` refuses the generator — not only when you run it.
 
 When the file needs to vary by more than a name (a list of fields, an optional section), move
 to a template.
@@ -288,9 +313,10 @@ so `got_scores:Dict String Int` or `pair:(Int, String)` stay whole. A field can 
 `enum` with its own `choices` and `default` (`rails/model` does this for column types). In a
 template, read fields with a dot: `{= item.name =}`, `{= f.type =}`.
 
-A required list still accepts an empty value: `--set fields=` is an empty list, not a
-missing input, and the `record` template above would render `type alias X =` followed by a
-bare `}`. If an empty list makes no sense, guard the template (`{= if fields =}…{= end =}`).
+A required list refuses an empty value: `--set fields=` fails invalid inputs, "needs at
+least one item (it is not optional)". An optional list may be empty (`--set tags=` is an
+empty list, `{= if tags =}` sees it as false); make a list optional if an empty one makes
+sense for the template.
 
 ## Derived values: `[derive]`
 
@@ -368,10 +394,19 @@ first that resolves wins (the JSON says which, in `anchor_used`). Two other form
 
 Test a phrase before you write it into a generator: `olifant where src/Main.elm "end of
 record Model"` shows the spot or says why not (for `Page/Home.elm`, whose `Model` is `{}`:
-"has no items to insert beside"). A phrase with no `{= … =}` in it has its shape checked
-when the generator loads (a missing or misspelt `end of` fails at once), but the target name
-is only checked against the language adapter when the edit runs, so `end of cases in update`
-is a conflict at run time, not a load error.
+"has no items to insert beside"). A phrase with no `{= … =}` in it has both its shape and its
+target name checked against the language adapter when the generator loads — `list` marks it
+`INVALID` and `show`/`gen` refuse it — so a typo like `end of typo Msg` is caught before
+anyone runs the generator, with a suggestion:
+
+```
+$ olifant show badtarget
+error: badtarget: `end of typo Msg` in src/Page/{= page|pascal =}.elm: unknown target `typo Msg` for elm; did you mean `end of type Msg`? (targets: case in FUNCTION, imports, list in FUNCTION, record NAME, type NAME)
+```
+
+A phrase with a `{= … =}` in it — the target name itself varies, like `end of cases in
+{= page =}` — cannot be checked until the value is known, so it stays a conflict at run
+time.
 
 ### Fragments: insert text copied from a real file
 
@@ -410,12 +445,12 @@ Only the bound names change. In a fragment of `( GotProfileMsg subMsg, Profile p
 bound on `got_profile_msg` alone, `Profile page` stays `Profile page`, so bind every name
 that varies.
 
-A `matching` that fits several items is an error when the generator runs (as with exemplars,
-`list` and `show` do not check it):
+A `matching` that fits several items is caught as soon as the generator loads — `list` marks
+it `INVALID`, and `show` and `gen` all refuse it the same way:
 
 ```
-$ olifant gen msg --set msg=x --plan
-error: msg: …/src/Main.elm: fragment `case in update` matching `Got` matched 4 items (expected 1)
+$ olifant gen fragtest --set page=x --plan
+error: fragtest: …/src/Main.elm: fragment `case in update` matching `Got` matched 2 items (expected 1)
 ```
 
 The blank line before the new branch is not in the fragment: `end of` copies the spacing
@@ -625,9 +660,9 @@ needs an empty line after the `"""`. `complete` edits add their separator themse
 
 ## Rough edges
 
-- `show` lists inputs in alphabetical order, not file order (TOML tables are read as maps;
-  `olifant anchors` sorts an adapter's targets the same way). Edits keep their order.
-- `olifant list` prints only the first line of a multi-line load error (`record  INVALID:
-  \`derive.Name\`: line 1: 1:11:`); `olifant gen record` or `show` prints all of it.
-- Undefined variables and broken exemplars are found when the generator runs, not when it
-  loads.
+- `olifant anchors` still sorts an adapter's targets alphabetically (unlike a generator's
+  own inputs, which `show` now lists in the order they are declared). Edits keep their order
+  too.
+- Undefined variables in a template are found only when the generator runs, not when it
+  loads — a `{= nope =}` with no such input or derived value is "undefined variable
+  `nope`" at `gen` time, not an `INVALID` in `list`.

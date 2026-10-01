@@ -34,12 +34,13 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Glob (globPrefix, matchesGlob)
-import Olifant.Language.Process (runBytes)
+import Olifant.Process (runBytes)
 import Olifant.Naming (parseName)
 import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
 import Olifant.Template (Env, TemplateError, Value (..), parseTemplate, render)
 import Text.Regex.TDFA (Regex, makeRegexM, match, matchTest)
 import Olifant.Toml
+import Olifant.Workspace (pruned)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, isAbsolute, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory, (</>))
@@ -104,8 +105,9 @@ describeQuery = \case
   GlobQuery g _ -> "glob " <> g
   CommandQuery argv _ _ -> "command " <> T.unwords argv
 
+-- | What queries never see: the directories no listing walks, plus Olifant's own.
 ignoredDirs :: [FilePath]
-ignoredDirs = ["elm-stuff", "node_modules", ".git", "dist-newstyle", "target", ".olifant"]
+ignoredDirs = pruned ++ [".olifant"]
 
 globRecords :: Text -> [Text] -> [FilePath] -> [Record]
 globRecords g excludes paths =

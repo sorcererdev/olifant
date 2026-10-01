@@ -12,7 +12,7 @@ import Data.Text.Encoding.Error (lenientDecode)
 import Data.Word (Word64)
 import Numeric (showHex)
 import Olifant.Language.Adapter
-import Olifant.Language.Process (runBytes)
+import Olifant.Process (runBytes)
 import Olifant.Language.Syntax
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, getFileSize, getModificationTime, makeAbsolute)
 import System.Exit (ExitCode (..))

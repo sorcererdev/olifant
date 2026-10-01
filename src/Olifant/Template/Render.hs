@@ -15,7 +15,7 @@ import Olifant.Template.Value
 render :: Env -> Template -> Either TemplateError Text
 render env = renderSegments env . templateSegments
 
--- | Like 'render', but a template that is exactly one @{{ expr }}@ keeps the
+-- | Like 'render', but a template that is exactly one @{= expr =}@ keeps the
 -- expression's value (so derived values can be bools, names or lists).
 evaluate :: Env -> Template -> Either TemplateError Value
 evaluate env t = case templateSegments t of

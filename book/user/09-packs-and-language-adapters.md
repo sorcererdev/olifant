@@ -70,13 +70,33 @@ error: no generator named `elm/page`: no pack named `elm` is configured (add it 
 hint: elm = { path = "/path/to/elm" }
 ```
 
-### Rough edges
+### The project root
 
-- **Olifant does not look for the project root.** The project is the current directory. Run
-  it from `src/` and it finds no `.olifant/config.toml`, so `olifant list` shows only
-  user-config packs (or nothing), with no warning.
-- **A pack path that does not exist is silent.** `elm = { path = "../nowhere" }` gives an
-  empty `list` and "no generator named `elm/page`", not "no such pack directory".
+Olifant walks up from wherever it runs to the nearest directory with a `.olifant/`, and treats
+that as the project. Run it from a subdirectory and it still finds the project's config and
+generators:
+
+```
+$ cd src/Page && olifant list
+elm/msg   A new Msg for an Elm page: the variant plus an update branch returning ( model, Cmd.none )
+elm/page  A page in the Elm architecture (Model/Msg/init/update/view), wired into Main and Route like elm-spa-example
+```
+
+The search stops below your home directory, so it never wanders into `~/.config/olifant/`'s
+territory by accident. With no `.olifant/` anywhere above it, Olifant uses the directory it
+ran from, same as always.
+
+File arguments (`where FILE`, `--steps FILE`) stay relative to where you ran Olifant, not to
+the project root it found — `olifant where ../lib.rs "end of mods"` from a subdirectory reads
+that path relative to the subdirectory.
+
+A pack path that does not exist is an error (exit 1, code `config_invalid`), naming the pack
+and the path:
+
+```
+$ olifant list
+error: pack `elm`: /private/tmp/claude-501/nowhere is not a directory (check its path under [packs])
+```
 
 ## Names
 

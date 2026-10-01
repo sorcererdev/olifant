@@ -13,6 +13,12 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Generator
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), templateSource)
+import Data.Aeson qualified as A
+import Data.Aeson.Key qualified as K
+import Data.Aeson.KeyMap qualified as KM
+import Data.List (sort)
+import Olifant.Generator.Load (completeKeys, createKeys, inputKeys, insertKeys, topKeys)
+import Olifant.Generator.Schema (generatorSchema)
 import Test.Hspec
 
 modelToml :: Text
@@ -56,8 +62,8 @@ parseSpec = describe "parseGenerator" $ do
   it "reads inputs, including ordered record fields" $
     fmap (map (\i -> (inputName i, inputType i, inputOptional i)) . genInputs) (load modelToml)
       `shouldBe` Right
-        [ ("fields", ListInput (RecordItems [FieldSpec "name" IdentS Nothing, FieldSpec "type" (EnumS ["string", "text", "references"]) (Just "string")]), True)
-        , ("name", ScalarInput IdentS, False)
+        [ ("name", ScalarInput IdentS, False)
+        , ("fields", ListInput (RecordItems [FieldSpec "name" IdentS Nothing, FieldSpec "type" (EnumS ["string", "text", "references"]) (Just "string")]), True)
         ]
   it "reads derived values as templates" $
     fmap (map (fmap templateSource) . genDerived) (load modelToml)
@@ -113,6 +119,41 @@ parseSpec = describe "parseGenerator" $ do
   it "needs exactly one of `at` or `anchor`" $
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a\"", "text = \"x\""])
       `shouldSatisfy` either ("`at`" `T.isInfixOf`) (const False)
+  describe "olifant schema" $ do
+    let at path v = foldl (\acc k -> acc >>= \case A.Object o -> KM.lookup (K.fromText k) o; _ -> Nothing) (Just v) path
+        keysOf = \case Just (A.Object o) -> sort (map K.toText (KM.keys o)); _ -> []
+    it "describes exactly the keys the loader accepts, table by table" $ do
+      keysOf (at ["properties"] generatorSchema) `shouldBe` sort topKeys
+      keysOf (at ["properties", "inputs", "additionalProperties", "properties"] generatorSchema) `shouldBe` sort inputKeys
+      let edits = case at ["properties", "edits", "items", "oneOf"] generatorSchema of
+            Just (A.Array xs) -> [keysOf (at ["properties"] x) | x <- foldr (:) [] xs]
+            _ -> []
+      edits `shouldBe` map sort [createKeys, insertKeys, completeKeys]
+  describe "hints for the mistakes models make (v9)" $ do
+    let top extra = T.unlines (["description = \"d\"", "language = \"x\""] ++ extra)
+        err src = either id (const "") (load src)
+    it "explains a generator name or id key" $
+      err (top ["name = \"route\""]) `shouldSatisfy` T.isInfixOf "named by its directory"
+    it "points `path` and `content` on an edit at `insert`/`create` and `text`" $ do
+      let e = err (top ["[[edits]]", "insert = \"a.x\"", "at = \"end of type T\"", "path = \"a.x\"", "content = \"x\""])
+      e `shouldSatisfy` T.isInfixOf "`content`: did you mean `text`?"
+      e `shouldSatisfy` T.isInfixOf "`path`: the file is the value of `insert`"
+    it "points `description` and `required` on an input at `prompt` and `optional`" $ do
+      let e = err (top ["[inputs.name]", "type = \"ident\"", "description = \"d\"", "required = true"])
+      e `shouldSatisfy` T.isInfixOf "`description`: did you mean `prompt`?"
+      e `shouldSatisfy` T.isInfixOf "required unless `optional = true`"
+    it "suggests the nearest key for a typo" $
+      err (top ["[[edits]]", "insert = \"a.x\"", "att = \"end of type T\"", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "`att`: did you mean `at`?"
+    it "explains `insert` written as a table, and [edits] written as one table" $ do
+      err (top ["[[edits]]", "insert = { file = \"a.x\" }", "at = \"end of type T\"", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "insert = \"src/Main.elm\""
+      err (top ["[edits]", "insert = \"a.x\""]) `shouldSatisfy` T.isInfixOf "[[edits]]"
+    it "shows the three edit forms when an edit has none of them" $
+      err (top ["[[edits]]", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "insert = \""
+    it "explains `derive` written as an array" $
+      err (top ["derive = [\"x\"]"]) `shouldSatisfy` T.isInfixOf "[derive]"
+  it "keeps inputs in the order they are declared" $ do
+    let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.zeta]", "type = \"ident\"", "[inputs.alpha]", "type = \"text\"", "[inputs.mid]", "type = \"text\""]
+    fmap (map inputName . genInputs) (load src) `shouldBe` Right ["zeta", "alpha", "mid"]
   it "refuses a query named like an input or derived value" $ do
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.pages]", "type = \"text\"", "[query.pages]", "glob = \"*\""])
       `shouldSatisfy` either ("`query.pages`" `T.isInfixOf`) (const False)
@@ -182,6 +223,11 @@ envSpec = do
           rec n a = VRecord (M.fromList [("name", nameV n), ("arg", VText a)])
       fmap (M.lookup "msgs") (buildEnv g (M.fromList [("msgs", "set_pair:(Int, String), set_rec:{ a : Int }, plain, got:Dict String (List Int)")]) now)
         `shouldBe` Right (Just (VList [rec "set_pair" "(Int, String)", rec "set_rec" "{ a : Int }", rec "plain" "", rec "got" "Dict String (List Int)"]))
+    it "refuses an empty value for a required list (an optional one may be empty)" $ do
+      let toml opt = "description = \"d\"\nlanguage = \"x\"\n[inputs.msgs]\ntype = \"list\"\nof = \"ident\"\n" <> (if opt then "optional = true\n" else "")
+          run opt v = buildEnv (either (error . T.unpack) id (load (toml opt))) (M.fromList [("msgs", v)]) now
+      either (\case InputProblems ps -> map problemKey ps; _ -> []) (const []) (run False " , ") `shouldBe` ["invalid:msgs"]
+      fmap (M.lookup "msgs") (run True "") `shouldBe` Right (Just (VList []))
     it "gives optional lists an empty default" $
       fmap (M.lookup "fields") (env [("name", "post")]) `shouldBe` Right (Just (VList []))
     it "reports missing, invalid and unknown inputs all at once" $

@@ -234,7 +234,7 @@ presentAt loc snippet content =
     window = T.intercalate "\n" (take (2 * k) (drop (max 0 (locLine loc - k)) ls))
 
 -- | Whitespace-insensitive "is this snippet already in the region?", on
--- whole tokens (spec §5.4). Moved from Generation.Marker.
+-- whole tokens (spec §5.4).
 alreadyPresent :: Text -> Text -> Bool
 alreadyPresent snippet content = T.null needle || any bounded (T.breakOnAll needle haystack)
   where

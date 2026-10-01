@@ -2,7 +2,7 @@
 -- Nothing here throws: a tool that cannot start, exits before reading its
 -- input, or breaks a pipe is reported as 'Left', so callers can turn it into
 -- a miss or a check failure instead of crashing Olifant.
-module Olifant.Language.Process (runBytes) where
+module Olifant.Process (runBytes) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
@@ -35,8 +35,13 @@ runBytes exe args dir input = do
     code <- waitForProcess ph
     pure $ case (out, err) of
       (Right o, Right e) -> Right (code, o, e)
-      (Left x, _) -> Left (T.pack (displayException x))
-      (_, Left x) -> Left (T.pack (displayException x))
+      (Left x, _) -> Left (firstLine (displayException x))
+      (_, Left x) -> Left (firstLine (displayException x))
   pure $ case result of
-    Left (x :: SomeException) -> Left (T.pack exe <> ": " <> T.pack (displayException x))
+    Left (x :: SomeException) -> Left (T.pack exe <> ": " <> firstLine (displayException x))
     Right r -> r
+
+-- | An exception's message without GHC's call-stack backtrace, which is noise
+-- in a user-facing error.
+firstLine :: String -> Text
+firstLine = T.strip . T.pack . takeWhile (/= '\n')

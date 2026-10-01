@@ -9,7 +9,9 @@ import Data.Char (isAlphaNum)
 import Data.List (find, nub, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.List.NonEmpty (nonEmpty)
+import Data.List.NonEmpty qualified as NE
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -18,6 +20,7 @@ import Olifant.Anchor (Located (..), Spacing (..), insertLines, locateContainer)
 import Olifant.Generation.Compose (StepPath, showStepPath)
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (CompleteSpec (..))
+import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language
 import Olifant.Language.Elm (enclosingFunction, qualifyPattern, visibleAt)
@@ -44,14 +47,13 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
           (es, cs, ws', current') <- loop lang step mine disk 1 S.empty (firstNumber + length edits) files current []
           pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
 
-    ignored = ["elm-stuff", "node_modules", ".git", "dist-newstyle", "target"] :: [FilePath]
 
     -- Everything the check needs: the adapter's sources and context files,
     -- as they will be after the positional edits.
     gather lang current = do
       paths <- listFiles ws "."
       let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
-          wanted p = not (any (`elem` ignored) (splitDirectories p)) && any (`matchesGlob` p) globs
+          wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
       read' <- traverse (\p -> (p,) <$> readText ws p) (filter wanted paths)
       let disk = M.fromList [(p, t) | (p, Just t) <- read']
       pure (disk, M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, wanted p]) disk)
@@ -66,7 +68,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   -- Candidates share the pattern's bare name and could appear
                   -- at the site at all (a Route module never sees Main's).
                   visible d c = langQualify lang /= Just "elm" || visibleAt (M.findWithDefault "" (missingFile d) files) (completeConstructor c)
-                  wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, let cands = [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c], not (null cands)]
+                  wanted = [(d, p, cands) | d <- diags, p <- missingPatterns d, Just cands <- [nonEmpty [s | s@(_, c) <- mine, mentions (completeConstructor c) p, visible d c]]]
                   key (d, p, _) = (missingFile d, fst (missingCase d), p)
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
                 ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
@@ -99,10 +101,10 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       let file = missingFile d
           content = M.findWithDefault "" file files
           fn = enclosingFunction content (fst (missingCase d))
-      matching <- filterM (whereMatches lang content d . snd) cands
+      matching <- filterM (whereMatches lang content d . snd) (NE.toList cands)
       let chosen = listToMaybe matching
-          (step, spec) = maybe (head' cands) id chosen
-          ctors = nub (map (completeConstructor . snd) cands)
+          (step, spec) = fromMaybe (NE.head cands) chosen
+          ctors = nub (map (completeConstructor . snd) (NE.toList cands))
           pat = if langQualify lang == Just "elm" then qualifyPattern content (completeConstructor spec) p else p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
@@ -114,9 +116,6 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
         if isNothing chosen && length ctors > 1
           then Left (p <> " in " <> fn <> " (" <> T.pack file <> ") could be any of " <> T.intercalate ", " ctors <> "; add a `complete` edit with `where = \"case in " <> fn <> "\"`, or give the case a catch-all")
           else Branch step d (Site file fn pat (isNothing chosen)) <$> text
-      where
-        head' (x : _) = x
-        head' [] = error "branchFor: candidates are never empty"
 
     whereMatches lang content d spec = case T.words <$> completeWhere spec of
       Nothing -> pure True
@@ -144,7 +143,7 @@ applyBranches n branches files0 = (reverse edits, final)
     step (acc, files) (i, b) =
       let file = missingFile (brSite b)
           (line, updated) = insertBranch (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
-          edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) (Just ("compiler: missing " <> sitePattern (brInfo b))) (Just (brInfo b))
+          edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) Nothing (Just (brInfo b))
        in (edit : acc, M.insert file updated files)
 
 insertBranch :: (Int, Int) -> Text -> Text -> (Int, Text)

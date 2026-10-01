@@ -19,13 +19,13 @@ import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyR
 import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
+import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), describeEnvError, generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
-import Olifant.Template (describeTemplateError)
-import Olifant.Workspace (Workspace (..), isSafeRelative, within)
-import System.FilePath ((</>))
+import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
+import System.FilePath (takeDirectory, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -50,27 +50,115 @@ runCli rt args = case parseOptions args of
     | otherwise -> rtErr rt text >> pure (ExitFailure 2)
   Right opts -> do
     let fmt = fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)
-    openProjectCatalog (rtRoot rt) (CatalogPaths (rtProjectDir rt) (rtUserConfigDir rt) (rtHomeDir rt)) >>= \case
-      Left err -> catalogFailure rt fmt err
-      Right cat -> runCommand rt fmt cat (optCommand opts)
+        cwd = rtProjectDir rt
+    root <- projectRoot (rtRoot rt) (rtHomeDir rt) cwd
+    let rt' = rt {rtProjectDir = root}
+    openProjectCatalog (rtRoot rt') (CatalogPaths root (rtUserConfigDir rt') (rtHomeDir rt')) >>= \case
+      Left err -> catalogFailure rt' fmt err
+      Right cat -> runCommand rt' cwd fmt cat (optCommand opts)
   where
     wantsJson = "--json" `elem` args || (not (rtStdoutIsTty rt) && "--human" `notElem` args)
 
-runCommand :: Runtime -> Format -> Catalog -> Command -> IO ExitCode
-runCommand rt fmt cat = \case
+-- | The project is the nearest directory, from where Olifant runs upwards,
+-- that has a `.olifant` directory; with none, where it runs. The search
+-- stops below the home directory (user config is ~/.config/olifant).
+projectRoot :: Monad m => Workspace m -> Maybe FilePath -> FilePath -> m FilePath
+projectRoot ws home start = go start
+  where
+    go dir
+      | Just dir == home = pure start
+      | otherwise =
+          inspectPath ws (dir </> ".olifant") >>= \case
+            Directory -> pure dir
+            _ | takeDirectory dir == dir -> pure start
+              | otherwise -> go (takeDirectory dir)
+
+-- | Where to look when a generator.toml does not load.
+formatHint :: Text
+formatHint = "`olifant schema` prints the generator.toml format; `olifant new NAME` writes a skeleton that loads"
+
+-- | A generator that loads as written: one ident input, a derived PascalCase
+-- name, and the three kinds of edit as commented examples to adapt.
+skeletonGenerator :: Text -> Text -> Text
+skeletonGenerator name lang =
+  T.unlines
+    [ "# Run with: olifant gen " <> name <> " --set name=example   (--plan to preview)"
+    , "# Format: `olifant schema`. Phrases for `at`: `olifant anchors " <> lang <> "`; test one: `olifant where FILE \"PHRASE\"`."
+    , "description = \"One line saying what this adds\""
+    , "language = \"" <> lang <> "\""
+    , "version = 1"
+    , "examples = [\"olifant gen " <> name <> " --set name=example\"]"
+    , ""
+    , "[inputs.name]"
+    , "type = \"ident\""
+    , "prompt = \"The name, snake_case (e.g. contact_us)\""
+    , ""
+    , "[derive]"
+    , "P = \"{= name|pascal =}\""
+    , ""
+    , "# Each edit is one [[edits]] table (double brackets). Uncomment and adapt."
+    , "# Template values: {= name =}, {= P =}; filters after a bar: {= name|kebab =}."
+    , "#"
+    , "# [[edits]]                          # a new file"
+    , "# create = \"src/{= P =}.txt\""
+    , "# text   = \"{= P =}\\n\""
+    , "#"
+    , "# [[edits]]                          # text into an existing file"
+    , "# insert = \"src/Main.txt\""
+    , "# at     = \"end of type Route\""
+    , "# text   = \"| {= P =}\""
+    , "#"
+    , "# [[edits]]                          # case branches the compiler asks for"
+    , "# complete = \"Route.{= P =}\""
+    , "# where    = \"case in changeRouteTo\""
+    , "# text     = \"\"\""
+    , "# {= pattern =} ->"
+    , "#     ( model, Cmd.none )\"\"\""
+    ]
+
+-- | @cwd@ is where Olifant was run: file arguments (`where FILE`, `--steps
+-- FILE`) are relative to it, while generators work in the project root.
+runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
+runCommand rt cwd fmt cat = \case
   ListCmd detail -> do
-    let broken = catalogBroken cat
+    -- Sources and fixed targets are checked here, so a broken generator shows
+    -- as INVALID before anyone runs it.
+    checked <- traverse (\e -> (e,) <$> checkEntry (rtRoot rt) (rtSyntax rt) cat e) (catalogEntries cat)
+    let broken = catalogBroken cat ++ [(entryId e, entryDir e </> "generator.toml", why) | (e, Just why) <- checked]
+        ok = [e | (e, Nothing) <- checked]
     -- --detail prints inputs, so choices_from must be live, as in `show`.
     entries <-
       if detail
-        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat (entryDefinition e)) (catalogEntries cat)
-        else pure (catalogEntries cat)
+        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat (entryDefinition e)) ok
+        else pure ok
     emit rt fmt (listJson detail (subsOf cat) entries broken) (listHuman detail (subsOf cat) entries broken)
     pure ExitSuccess
+  SchemaCmd -> do
+    emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")
+    pure ExitSuccess
+  NewCmd name langFlag -> do
+    let path = ".olifant" </> "generators" </> T.unpack name </> "generator.toml"
+        ws = within (rtProjectDir rt) (rtRoot rt)
+        language = case (langFlag, map langName (catalogLanguages cat)) of
+          (Just l, _) -> Right l
+          (Nothing, [l]) -> Right l
+          (Nothing, ls) -> Left ("pass --language (" <> (if null ls then "no language adapter is configured" else "adapters: " <> T.intercalate ", " ls) <> ")")
+    exists <- fileExists ws path
+    case language of
+      Left why -> failWith rt fmt 2 "usage" why Nothing []
+      Right _ | exists -> failWith rt fmt 1 "already_exists" (T.pack path <> " already exists") (Just ("edit it, or pick another name; `olifant show " <> name <> "` shows what it does")) []
+      Right lang -> do
+        writeText ws path (skeletonGenerator name lang)
+        emit rt fmt (object ["created" .= path, "next" .= nextSteps lang]) ("created " <> T.pack path <> "\n" <> nextSteps lang <> "\n")
+        pure ExitSuccess
+    where
+      nextSteps lang = "fill in description and [[edits]]; `olifant anchors " <> lang <> "` lists placement phrases, `olifant where FILE \"PHRASE\"` tests one, `olifant gen " <> name <> " --set name=example --plan` previews"
   ShowCmd ref -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
     Right e0 ->
-      resolveChoicesFor rt cat (entryDefinition e0) >>= \case
+      checkEntry (rtRoot rt) (rtSyntax rt) cat e0 >>= \case
+       Just why -> failWith rt fmt 1 "generator_invalid" (generatorIdText (entryId e0) <> ": " <> why) Nothing []
+       Nothing -> resolveChoicesFor rt cat (entryDefinition e0) >>= \case
         Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
         Right d -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
@@ -80,7 +168,7 @@ runCommand rt fmt cat = \case
   WhereCmd file phrase -> case parsePhrase phrase of
     Left err -> usageIn rt fmt err
     Right _ ->
-      readText (rtRoot rt) (rtProjectDir rt </> file) >>= \case
+      readText (rtRoot rt) (cwd </> file) >>= \case
         Nothing -> failWith rt fmt 3 "file_not_found" ("cannot read " <> T.pack file) Nothing []
         Just content ->
           resolveLayers (rtSyntax rt) (languageFor (catalogLanguages cat) file) [PhraseAnchor phrase] content >>= \case
@@ -101,7 +189,7 @@ runCommand rt fmt cat = \case
     specs <- case genStepsFile g of
       Nothing -> pure (Right (Right (genSteps g)))
       Just f -> do
-        raw <- if f == "-" then Just <$> rtReadStdin rt else readText (rtRoot rt) (rtProjectDir rt </> f)
+        raw <- if f == "-" then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> f)
         pure $ case raw of
           Nothing -> Left f
           Just text -> Right (first (\e -> "--steps: " <> T.pack e) (eitherDecodeStrict (TE.encodeUtf8 text)))
@@ -168,25 +256,26 @@ catalogFailureAt rt fmt step err = case err of
   GeneratorAmbiguous {} -> failWith' 2 "generator_ambiguous" msg (Just "use the full pack/name") []
   SourceMissing {} -> failWith' 3 "template_not_found" msg Nothing []
   ConfigInvalid {} -> failWith' 1 "config_invalid" msg Nothing []
+  PackMissing {} -> failWith' 1 "config_invalid" msg Nothing []
   PackNotConfigured pack _ ->
     failWith' 3 "pack_not_configured" msg (Just (pack <> " = { path = \"/path/to/" <> pack <> "\" }")) ["pack" .= pack]
-  GeneratorInvalid {} -> failWith' 1 "generator_invalid" msg Nothing []
+  GeneratorInvalid {} -> failWith' 1 "generator_invalid" msg (Just formatHint) []
   SourceInvalid {} -> failWith' 1 "template_invalid" msg Nothing []
   where
     msg = maybe "" (<> ": ") step <> describeCatalogError err
     failWith' code c m h extra = failWith rt fmt code c m h (extra ++ maybe [] (\st -> ["step" .= st]) step)
 
 generationFailure :: Runtime -> Format -> GenerationError -> IO ExitCode
-generationFailure rt fmt = \case
-  InvalidInputs path e@(InputProblems ps) -> failWith rt fmt 4 "invalid_inputs" (inStep path (describeEnvError e)) Nothing (inputProblemFields ps ++ ["step" .= showStepPath path])
-  InvalidInputs path e -> failWith rt fmt 1 "generator_invalid" (inStep path (describeEnvError e)) Nothing []
-  TemplateFailed path e -> failWith rt fmt 1 "template_failed" (inStep path (describeTemplateError e)) Nothing []
-  UnknownGenerator path ref why -> failWith rt fmt 3 "generator_not_found" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
-  InvalidGenerator path ref why -> failWith rt fmt 1 "generator_invalid" (inStep path ("`" <> ref <> "`: " <> why)) Nothing []
-  QueryFailed path why -> failWith rt fmt 1 "query_failed" (inStep path why) Nothing []
-  CompositionCycle path -> failWith rt fmt 1 "composition_cycle" ("generators use each other in a cycle: " <> showStepPath path) Nothing []
+generationFailure rt fmt err = case err of
+  InvalidInputs path (InputProblems ps) -> failWith rt fmt 4 "invalid_inputs" msg Nothing (inputProblemFields ps ++ ["step" .= showStepPath path])
+  InvalidInputs {} -> failWith rt fmt 1 "generator_invalid" msg Nothing []
+  TemplateFailed {} -> failWith rt fmt 1 "template_failed" msg Nothing []
+  UnknownGenerator {} -> failWith rt fmt 3 "generator_not_found" msg Nothing []
+  InvalidGenerator {} -> failWith rt fmt 1 "generator_invalid" msg Nothing []
+  QueryFailed {} -> failWith rt fmt 1 "query_failed" msg Nothing []
+  CompositionCycle {} -> failWith rt fmt 1 "composition_cycle" msg Nothing []
   where
-    inStep path msg = showStepPath path <> ": " <> msg
+    msg = describeGenerationError err
 
 -- | Resolve `choices_from` inputs against the project (spec §4.1); the
 -- project is listed only when a generator needs it.

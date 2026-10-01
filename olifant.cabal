@@ -55,6 +55,7 @@ library
     Olifant.Generator.Definition
     Olifant.Generator.Inputs
     Olifant.Generator.Load
+    Olifant.Generator.Schema
     Olifant.GeneratorTesting
     Olifant.Glob
     Olifant.Language
@@ -63,12 +64,13 @@ library
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
-    Olifant.Language.Process
     Olifant.Language.Rule
     Olifant.Language.Syntax
     Olifant.Naming
+    Olifant.Process
     Olifant.Query
     Olifant.Region
+    Olifant.Suggest
     Olifant.Template
     Olifant.Template.Error
     Olifant.Template.Exemplar
@@ -117,6 +119,7 @@ test-suite spec
     Olifant.Generator.Definition
     Olifant.Generator.Inputs
     Olifant.Generator.Load
+    Olifant.Generator.Schema
     Olifant.GeneratorSpec
     Olifant.GeneratorTesting
     Olifant.GeneratorTestingSpec
@@ -128,16 +131,17 @@ test-suite spec
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
-    Olifant.Language.Process
     Olifant.Language.Rule
     Olifant.Language.Syntax
     Olifant.LanguageSpec
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.Process
     Olifant.Query
     Olifant.QuerySpec
     Olifant.Region
     Olifant.RegionSpec
+    Olifant.Suggest
     Olifant.Template
     Olifant.Template.Error
     Olifant.Template.Exemplar

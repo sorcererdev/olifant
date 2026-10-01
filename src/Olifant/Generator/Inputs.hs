@@ -44,7 +44,9 @@ buildEnv gen sets now = do
 
 resolveInput :: Map Text Text -> InputSpec -> Either InputProblem (Text, Value)
 resolveInput sets spec = case maybe (inputDefault spec) Just (M.lookup name sets) of
-  Just raw -> bimap (InvalidInput name) (name,) (parseValue (inputType spec) raw)
+  Just raw -> case parseValue (inputType spec) raw of
+    Right (VList []) | not (inputOptional spec) -> Left (InvalidInput name "needs at least one item (it is not optional)")
+    parsed -> bimap (InvalidInput name) (name,) parsed
   Nothing
     | inputOptional spec -> Right (name, emptyValue (inputType spec))
     | otherwise -> Left (MissingInput spec)

@@ -4,6 +4,7 @@
 module Olifant.Generation
   ( Mode (..)
   , GenerationError (..)
+  , describeGenerationError
   , Step (..)
   , Resolve
   , ResolveFailure (..)
@@ -35,7 +36,7 @@ import Olifant.Anchor (resolveLayers)
 import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
-import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..))
+import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), describeEnvError)
 import Olifant.Language (languageFor)
 import Olifant.Query (renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
@@ -53,6 +54,18 @@ data GenerationError
   | CompositionCycle StepPath
   | QueryFailed StepPath Text
   deriving stock (Eq, Show)
+
+-- | The message for a 'GenerationError', naming the step it happened in.
+describeGenerationError :: GenerationError -> Text
+describeGenerationError = \case
+  InvalidInputs path e -> inStep path (describeEnvError e)
+  TemplateFailed path e -> inStep path (describeTemplateError e)
+  UnknownGenerator path ref why -> inStep path ("`" <> ref <> "`: " <> why)
+  InvalidGenerator path ref why -> inStep path ("`" <> ref <> "`: " <> why)
+  QueryFailed path why -> inStep path why
+  CompositionCycle path -> "generators use each other in a cycle: " <> showStepPath path
+  where
+    inStep path msg = showStepPath path <> ": " <> msg
 
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
 generate ws resolve tools steps now mode =
@@ -95,10 +108,6 @@ generate ws resolve tools steps now mode =
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
   where
-    -- A file this plan creates and then edits no longer matches its
-    -- template on a re-run, so the create reports `target_exists`. If
-    -- planning those files from scratch reproduces them exactly, the run is
-    -- a no-op for them, not a conflict (spec §5.4).
     -- `[query.NAME]`: render each query with the generator's inputs and
     -- derived values (never another query's records, so their order does not
     -- matter), run it over the project as it is on disk, and bind the records

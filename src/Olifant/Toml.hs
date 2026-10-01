@@ -4,6 +4,7 @@ module Olifant.Toml
   ( Tree (..)
   , Table
   , parseToml
+  , keyOrder
   , required
   , optional
   , inKey
@@ -13,15 +14,18 @@ module Olifant.Toml
   , list
   , table
   , onlyKeys
+  , onlyKeysWith
   , describeTree
   ) where
 
 import Control.Monad (zipWithM)
 import Data.Bifunctor (first)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Suggest (closest)
 import Toml qualified
 
 data Tree = TText Text | TInt Integer | TBool Bool | TList [Tree] | TTable Table | TOther Text
@@ -44,6 +48,18 @@ parseToml src = case Toml.parse src of
       Toml.List' _ xs -> TList (map fromValue xs)
       Toml.Table' _ t -> TTable (fromTable t)
       other -> TOther (T.pack (Toml.valueType other))
+
+-- | The keys of the table at @path@ in the order they appear in the source
+-- ('Table' is a map, so it forgets). Empty if the path is not a table.
+keyOrder :: Text -> [Text] -> [Text]
+keyOrder src path = case Toml.parse src of
+  Left _ -> []
+  Right tbl -> go path tbl
+  where
+    go [] (Toml.MkTable m) = map fst (sortOn (Toml.posIndex . fst . snd) (M.toList m))
+    go (k : ks) (Toml.MkTable m) = case M.lookup k m of
+      Just (_, Toml.Table' _ inner) -> go ks inner
+      _ -> []
 
 inKey :: Text -> Either Text a -> Either Text a
 inKey k = first (\e -> "`" <> k <> "`: " <> e)
@@ -80,12 +96,20 @@ table = \case
   other -> Left ("expected a table, got " <> describeTree other)
 
 onlyKeys :: [Text] -> Table -> Either Text ()
-onlyKeys allowed t = case filter (`notElem` allowed) (M.keys t) of
+onlyKeys = onlyKeysWith []
+
+-- | Like 'onlyKeys', with advice for keys people (and models) commonly write
+-- by mistake; any other unknown key gets the nearest allowed one, if close.
+onlyKeysWith :: [(Text, Text)] -> [Text] -> Table -> Either Text ()
+onlyKeysWith advice allowed t = case filter (`notElem` allowed) (M.keys t) of
   [] -> Right ()
   unknown ->
-    Left ("unknown key(s) " <> T.intercalate ", " (map tick unknown) <> "; expected one of " <> T.intercalate ", " (map tick allowed))
+    Left ("unknown key(s) " <> T.intercalate ", " (map explain unknown) <> "; expected one of " <> T.intercalate ", " (map tick allowed))
   where
     tick k = "`" <> k <> "`"
+    explain k = case lookup k advice of
+      Just why -> tick k <> ": " <> why
+      Nothing -> tick k <> maybe "" (\c -> ": did you mean " <> tick c <> "?") (closest k allowed)
 
 describeTree :: Tree -> Text
 describeTree = \case

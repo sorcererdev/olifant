@@ -562,6 +562,8 @@ completeSpec = describe "generate (complete edits)" $ do
     (again, twice) <- runTwice (M.toList once)
     planConflicts again `shouldBe` []
     twice `shouldBe` once
+    -- The compiler's label is not an anchor, and must not leak as one (JSON anchor_used).
+    [a | e <- planEdits again, Just a <- [editAnchor e], "compiler:" `T.isPrefixOf` a] `shouldBe` []
 
 regionSpec :: Spec
 regionSpec = describe "generate (owned regions)" $ do
