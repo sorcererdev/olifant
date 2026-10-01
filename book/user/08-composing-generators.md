@@ -247,8 +247,9 @@ something and choose it in the next step:
 
 ```
 $ olifant gen rust-htmx/service-skeleton --set service=payments + rust-htmx/service-command --set service=payments --set command_name=charge_card --human
-rust-htmx/service-skeleton + rust-htmx/service-command (…)
+rust-htmx/service-skeleton + rust-htmx/service-command (12 edits, 0 conflicts)
   + payments/payments-service/Cargo.toml (12 lines)  [rust-htmx/service-skeleton (step 1)]
+  + payments/payments-service/src/lib.rs (4 lines)  [rust-htmx/service-skeleton (step 1)]
   …
 ```
 
