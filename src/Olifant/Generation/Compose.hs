@@ -36,11 +36,6 @@ data Step = Step {stepGenerator :: Generator, stepSets :: Map Text Text}
 -- generator doing the using (bare names resolve there first), and the ref.
 type Resolve m = Maybe Text -> Text -> m (Either ResolveFailure Generator)
 
--- | Why a [[uses]] ref did not resolve: it names nothing, or it names a
--- generator whose definition is broken (a different exit code, spec §11.3).
-data ResolveFailure = ResolveNotFound Text | ResolveInvalid Text
-  deriving stock (Eq, Show)
-
 noResolve :: Applicative m => Resolve m
 noResolve _ ref = pure (Left (ResolveNotFound ("cannot resolve `" <> ref <> "`: no generator catalog available")))
 

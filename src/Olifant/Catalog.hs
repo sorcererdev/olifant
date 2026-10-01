@@ -29,7 +29,6 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Generation.Compose (ResolveFailure (..))
 import Olifant.Generator
 import Olifant.Anchor (itemsOfTarget)
 import Olifant.Language (Language, Match (..), Syntax, languageFor, parseLanguage)
