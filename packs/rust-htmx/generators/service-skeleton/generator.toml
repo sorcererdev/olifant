@@ -1,0 +1,47 @@
+description = "Create the skeleton of a new service (a workspace crate with service, models and ports)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/service-skeleton --set service=billing",
+]
+
+[inputs.service]
+type = "ident"
+prompt = "The service's name (e.g. billing, user_accounts)"
+
+# kebab-case for both directories, as the workspace member and service-command
+# expect (the plop template used snake_case for the outer one: a bug for
+# multi-word names).
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+
+[requires]
+exists = ["Cargo.toml"]
+hint = "Run this from the workspace root (the directory with the root Cargo.toml)."
+
+[[edits]]
+create   = "{= service_dir =}/Cargo.toml"
+template = "Cargo.toml.dt"
+
+[[edits]]
+create   = "{= service_dir =}/src/lib.rs"
+template = "lib.rs.dt"
+
+[[edits]]
+create   = "{= service_dir =}/src/models.rs"
+template = "models.rs.dt"
+
+[[edits]]
+create   = "{= service_dir =}/src/ports.rs"
+template = "ports.rs.dt"
+
+[[edits]]
+create   = "{= service_dir =}/src/service.rs"
+template = "service.rs.dt"
+
+# The workspace member: after the template's hook comment, or right after
+# `members = [` in a workspace without it.
+[[edits]]
+insert = "Cargo.toml"
+at     = ["after marker ##PLOP NEW PACKAGE HOOK##", "after first line matching ^members = \\["]
+text   = "\"{= service_dir =}\","
