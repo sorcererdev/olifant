@@ -16,7 +16,7 @@ prompt = "The service's name (e.g. billing, user_accounts)"
 service_dir = "{= service|kebab =}/{= service|kebab =}-service"
 
 [requires]
-exists = ["Cargo.toml"]
+exists = ["Cargo.toml", "main/src/main.rs", "main/Cargo.toml"]
 hint = "Run this from the workspace root (the directory with the root Cargo.toml)."
 
 [[edits]]
@@ -45,3 +45,15 @@ template = "service.rs.dt"
 insert = "Cargo.toml"
 at     = ["after marker ##PLOP NEW PACKAGE HOOK##", "after first line matching ^members = \\["]
 text   = "\"{= service_dir =}\","
+
+# main constructs the service (spec §7.1), so command-dependency has a call to
+# wire into; main depends on the service's crate.
+[[edits]]
+insert = "main/src/main.rs"
+at     = "after first line matching let env = load_environment\\(\\);"
+text   = "let {= service|snake =}_service = {= service|snake =}_service::service::{= service|pascal =}Service::new();"
+
+[[edits]]
+insert = "main/Cargo.toml"
+at     = ["after first line matching ^\\[dependencies\\]", "end of file"]
+text   = "{= service|kebab =}-service = { path = \"../{= service_dir =}\" }"

@@ -54,7 +54,9 @@ planned st n p a = PlannedEdit st n p a Nothing Nothing
 data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | WillRefresh Text Int Int Text | Skipped SkipReason | Conflicted
   deriving stock (Eq, Show)
 
-data SkipReason = AlreadyExists | AlreadyPresent | UnchangedContent | UnlessMatched FilePath
+-- | 'UnlessMatched': `unless.exists` found this file; 'UnlessFound': a line
+-- (1-based) of the edit's own target matched `unless.matches`.
+data SkipReason = AlreadyExists | AlreadyPresent | UnchangedContent | UnlessMatched FilePath | UnlessFound FilePath Int
   deriving stock (Eq, Show)
 
 data Conflict

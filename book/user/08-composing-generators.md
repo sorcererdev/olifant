@@ -262,6 +262,235 @@ One limit: choices read files that earlier steps *create*; text that earlier ste
 into existing files is not placed until planning, so a command or AST choice over such a file
 sees it as it is on disk.
 
+## A dependency workflow: `command-dependency` and `wire-command`
+
+Adding a dependency to a Rust command touches five places across three files (spec §7.1).
+`command-dependency` is the building block that covers all of them for one dependency;
+`wire-command` is a composite built on it — it queries a command struct's fields (chapter 6)
+and runs `command-dependency` once per field with `for_each`, which is why it belongs in this
+chapter rather than chapter 7.
+
+```sh
+scripts/try-pack.sh rust-htmx /tmp/olifant-deps && cd /tmp/olifant-deps
+```
+
+**First dependency: everything opens.** `notifications-service`'s `send_email` command has no
+dependencies yet, so `NotificationsService::new()` takes nothing and its one call site passes
+nothing either — both empty, one-line containers:
+
+```
+$ olifant gen rust-htmx/command-dependency --set service=notifications --set command=send_email --set dependency=email_template_repository --human
+rust-htmx/command-dependency (7 edits, 0 conflicts)
+  ~ notifications/notifications-service/src/send_email.rs (+1 line at line 13)
+  ~ notifications/notifications-service/src/send_email.rs (+2 lines at line 4)
+  ~ notifications/notifications-service/src/service.rs (+2 lines at line 7)
+  ~ notifications/notifications-service/src/service.rs (+1 line at line 19)
+  ~ notifications/notifications-service/src/service.rs (+1 line at line 25)
+  ~ main/src/main.rs (+1 line at line 25)
+  ~ main/src/main.rs (+1 line at line 27)
+```
+
+The imports go at `end of uses` (with `start of file` as the fallback for a file that has
+none): after the file's last top-level `use`, whole, so after the multi-line `use crate::{ …
+};` block rather than inside it. The `use`s in these files are separated by blank lines, so
+the new one gets a blank line too, which is why each import is `+2 lines`. `service.rs`'s
+`new()` opens, splitting its line, and the struct literal inside it (spread over lines
+already, but with no field of its own) gets its field added before the closing `}`:
+
+```diff
+ use crate::{
+     //##PLOP INSERT COMMAND IMPORTS HOOK##
+     send_email::{SendEmail, SendEmailInput, SendEmailOutput},
+ };
+ 
++use crate::ports::email_template_repository::EmailTemplateRepository;
++
+ #[derive(Clone)]
+ pub struct NotificationsService {
+ …
+ impl NotificationsService {
+-    pub fn new() -> Self {
++    pub fn new(
++        email_template_repository: Arc<dyn EmailTemplateRepository>,
++    ) -> Self {
+         Self {
+             //##PLOP INSERT COMMAND INSTANTIATION HOOK##
+             send_email: SendEmail {
+               // Add any dependencies for the command here. They should be passed into this function and supplied by main.rs.
++              email_template_repository: email_template_repository.clone(),
+             },
+         }
+     }
+```
+
+The field lands at the comment's indentation, 14 spaces. That is the fixture's own (odd)
+indentation, copied; it is not something the generator chose.
+
+`main.rs`'s call site opens the same way, and gets the one creative line first. Choosing the
+adapter — what actually implements `EmailTemplateRepository` — is the one genuinely creative
+part of this whole workflow, and it stays a `todo!()` for now (a typed hole, not yet built):
+
+```diff
+-    let notifications_service = notifications_service::service::NotificationsService::new();
++    let email_template_repository: Arc<dyn notifications_service::ports::email_template_repository::EmailTemplateRepository> = todo!("an adapter for EmailTemplateRepository");
++    let notifications_service = notifications_service::service::NotificationsService::new(
++        email_template_repository.clone(),
++    );
+```
+
+**Second dependency: shared plumbing is skipped.** `billing-service`'s `new()` already takes
+`invoice_repository` for `refund_invoice`; giving the same port to `void_invoice` reuses it
+instead of adding a second parameter:
+
+```
+$ olifant gen rust-htmx/command-dependency --set service=billing --set command=void_invoice --set dependency=invoice_repository --human
+rust-htmx/command-dependency (7 edits, 0 conflicts)
+  ~ billing/billing-service/src/void_invoice.rs (+1 line at line 7)
+  ~ billing/billing-service/src/void_invoice.rs (+2 lines at line 4)
+  = billing/billing-service/src/service.rs (skipped: unless: line 2 of billing/billing-service/src/service.rs matches)
+  = billing/billing-service/src/service.rs (skipped: already present)
+  ~ billing/billing-service/src/service.rs (+1 line at line 26)
+  = main/src/main.rs (skipped: unless: line 21 of main/src/main.rs matches)
+  = main/src/main.rs (skipped: already present)
+```
+
+Two of the three `service.rs` edits are skipped — the `use` (line 2 already imports
+`invoice_repository::InvoiceRepository`) and the `new` parameter, both there because
+`refund_invoice` already depends on `invoice_repository` — and both `main.rs` edits are
+skipped too (line 21 already binds `let invoice_repository`), so `main.rs` is untouched: no
+second `todo!()`, no second argument. Only `VoidInvoice`'s own, still-empty literal opens:
+
+```diff
+-            void_invoice: VoidInvoice {},
++            void_invoice: VoidInvoice {
++                invoice_repository: invoice_repository.clone(),
++            },
+```
+
+Two kinds of skip are at work. `already present` is the anchor's own check: the text is at
+the spot it would go, or just beside it ([chapter 3](03-anchors.md)). `unless: line N of
+PATH matches` is `command-dependency`'s `unless = { matches = … }` on the import, field and
+`let` edits ([chapter 6](06-queries-and-choices.md)): the name is anywhere in the file,
+however it is spelled. The anchor check alone is not enough. Give `refund_invoice` a
+*different* dependency first:
+
+```
+$ olifant gen rust-htmx/command-dependency --set service=billing --set command=refund_invoice --set dependency=email_sender
+```
+
+and `main.rs` now has `let email_sender: … = todo!(…);` between `let invoice_repository`
+and `let billing_service`, so `invoice_repository`'s `let` is no longer beside the spot a new
+one would go. With the `unless` lines taken out of a copy of the generator, the
+`void_invoice` run adds it again:
+
+```diff
+     let invoice_repository: Arc<dyn billing_service::ports::invoice_repository::InvoiceRepository> = todo!("an adapter for InvoiceRepository");
+     let email_sender: Arc<dyn billing_service::ports::email_sender::EmailSender> = todo!("an adapter for EmailSender");
++    let invoice_repository: Arc<dyn billing_service::ports::invoice_repository::InvoiceRepository> = todo!("an adapter for InvoiceRepository");
+     let billing_service = billing_service::service::BillingService::new(
+```
+
+With the pack's generator, the plan is the one above except that the literal is further
+down (`+1 line at line 30`): the `use` is skipped by line 2 and the `let` by line 21, as
+before.
+
+So: one `use`, one parameter, one `let` and one argument per *service*, however many of its
+commands end up sharing the port, and in whatever order the dependencies were added.
+
+**Reconcile: `wire-command` on a hand-edited command.** `cancel_invoice.rs` already has a field
+added by hand, `email_sender`, that nothing has wired yet:
+
+```rust
+pub struct CancelInvoice {
+    pub email_sender: Arc<dyn EmailSender>,
+}
+```
+
+`wire-command` reads the struct's fields and runs `command-dependency` for each:
+
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice --human
+rust-htmx/wire-command (7 edits, 0 conflicts)
+  = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 9 of billing/billing-service/src/cancel_invoice.rs matches)
+  = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 5 of billing/billing-service/src/cancel_invoice.rs matches)
+  ~ billing/billing-service/src/service.rs (+2 lines at line 9)
+  ~ billing/billing-service/src/service.rs (+1 line at line 22)
+  ~ billing/billing-service/src/service.rs (+1 line at line 30)
+  ~ main/src/main.rs (+1 line at line 22)
+  ~ main/src/main.rs (+1 line at line 25)
+```
+
+`cancel_invoice.rs` itself needed nothing (the field and its `use` are already there by hand,
+on lines 9 and 5); `service.rs` and `main.rs` get the usual plumbing and a second `todo!()`:
+
+```diff
+ use crate::{
+     refund_invoice::{RefundInvoice, RefundInvoiceInput, RefundInvoiceOutput},
+     void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
+     cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
+ };
+ 
++use crate::ports::email_sender::EmailSender;
++
+ #[derive(Clone)]
+ …
+     pub fn new(
+         invoice_repository: Arc<dyn InvoiceRepository>,
++        email_sender: Arc<dyn EmailSender>,
+     ) -> Self {
+ …
+-            cancel_invoice: CancelInvoice {},
++            cancel_invoice: CancelInvoice {
++                email_sender: email_sender.clone(),
++            },
+```
+
+```diff
+     let invoice_repository: Arc<dyn billing_service::ports::invoice_repository::InvoiceRepository> = todo!("an adapter for InvoiceRepository");
++    let email_sender: Arc<dyn billing_service::ports::email_sender::EmailSender> = todo!("an adapter for EmailSender");
+     let billing_service = billing_service::service::BillingService::new(
+         invoice_repository.clone(),
++        email_sender.clone(),
+     );
+```
+
+A field spelled differently by hand (`Arc<dyn EmailSender + Send + Sync>`) or imported in a
+group (`use crate::ports::{email_sender::EmailSender, …};`) is recognised the same way; the
+worked example is in [chapter 6](06-queries-and-choices.md).
+
+**Idempotent.** Running the same `wire-command` again changes nothing:
+
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice --human
+rust-htmx/wire-command (7 edits, 0 conflicts)
+  = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 9 of billing/billing-service/src/cancel_invoice.rs matches)
+  = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 5 of billing/billing-service/src/cancel_invoice.rs matches)
+  = billing/billing-service/src/service.rs (skipped: unless: line 10 of billing/billing-service/src/service.rs matches)
+  = billing/billing-service/src/service.rs (skipped: already present)
+  = billing/billing-service/src/service.rs (skipped: already present)
+  = main/src/main.rs (skipped: unless: line 22 of main/src/main.rs matches)
+  = main/src/main.rs (skipped: already present)
+```
+
+All seven edits are skipped: the struct's fields are the whole input, and they haven't
+changed. It stays that way after the creative part is done. Replace the `todo!()` with a real
+adapter:
+
+```diff
+-    let email_sender: Arc<dyn billing_service::ports::email_sender::EmailSender> = todo!("an adapter for EmailSender");
++    let email_sender = Arc::new(SmtpEmailSender::new(&env));
+```
+
+and run `wire-command` again: the plan is the same seven skips, line for line, and nothing is
+written. The `let` edit's `unless` matches any `let email_sender =` or `let email_sender:`
+(line 22 still), so the generator does not add a second `let` holding a `todo!()` that would
+shadow the adapter you chose. (Without it, it would: the anchor check compares text, and
+`Arc::new(SmtpEmailSender::new(&env))` is not the `todo!()` the generator writes. A copy of
+`command-dependency` with its `unless` lines removed adds the `todo!()` line right below the
+adapter.) This is the loop a hand-added field is meant to close: add the
+field, run `wire-command`, get the rest for free, and the only thing you ever have to think
+about is what adapter the `todo!()` should become.
+
 ## Cycles
 
 A generator that (directly or not) uses itself is refused before anything is planned, even

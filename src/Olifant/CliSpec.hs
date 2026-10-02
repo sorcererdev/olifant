@@ -338,7 +338,7 @@ runCliSpec = describe "runCli" $ do
   it "new writes a skeleton generator that loads, and refuses to overwrite" $ do
     (code, _, _, files) <- runWith "" project False ["new", "route", "--language", "elm"]
     code `shouldBe` ExitSuccess
-    let Just skeleton = M.lookup "/proj/.olifant/generators/route/generator.toml" files
+    skeleton <- maybe (fail "new wrote no generator.toml") pure (M.lookup "/proj/.olifant/generators/route/generator.toml" files)
     skeleton `shouldSatisfy` T.isInfixOf "language = \"elm\""
     skeleton `shouldSatisfy` T.isInfixOf "[[edits]]"
     (_, listed, _, _) <- runWith "" (M.toList files) True ["list"]

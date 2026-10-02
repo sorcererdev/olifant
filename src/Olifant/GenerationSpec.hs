@@ -103,6 +103,18 @@ createSpec = describe "generate (create edits)" $ do
     Right plan <- generate ws noResolve noTools [Step migration (M.fromList [("name", "post")])] (UTCTime (fromGregorian 2026 9 28) 0) Apply
     map editAction (planEdits plan) `shouldBe` [Skipped (UnlessMatched "db/migrate/20260927000000_create_posts.rb")]
     (M.keys <$> snap) `shouldReturn` ["db/migrate/20260927000000_create_posts.rb"]
+  it "skips an insert when `unless matches` finds a line in its target, on disk or added earlier in the plan" $ do
+    let letA =
+          generatorFrom . (header <>) . T.unlines $
+            [ "[[edits]]", "insert = \"main.rs\"", "at = \"end of file\"", "text = \"let a = todo!();\""
+            , "unless = { matches = \"^ *let (mut )?{= name =}[:= ]\" }"
+            , "[[edits]]", "insert = \"main.rs\"", "at = \"start of file\"", "text = \"let a: A = todo!();\""
+            , "unless = { matches = \"^ *let (mut )?{= name =}[:= ]\" }" ]
+    (_, once) <- run [("main.rs", "fn main() {}\n")] letA [("name", "a")] Apply
+    M.lookup "main.rs" once `shouldBe` Just "fn main() {}\nlet a = todo!();\n"
+    (ws, _) <- memoryWorkspace [("main.rs", "    let mut a = Real::new();\n")]
+    Right plan <- generate ws noResolve noTools [Step letA (M.fromList [("name", "a")])] (UTCTime (fromGregorian 2026 9 28) 0) Apply
+    map editAction (planEdits plan) `shouldBe` [Skipped (UnlessFound "main.rs" 1), Skipped (UnlessFound "main.rs" 1)]
   it "re-running a create that later edits changed is a no-op (fix pass)" $ do
     let grow =
           generatorFrom . (header <>) . T.unlines $
@@ -316,10 +328,10 @@ composeSpec = describe "generate (composition)" $ do
             , "[inputs.service]", "type = \"ident\""
             , "[[edits]]", "create = \"{= service =}/{= service =}-service/lib.rs\"", "text = \"x\\n\""
             , "[[uses]]", "generator = \"command\"", "with = { service = \"{= service =}-service\" }" ]
-        resolve = resolveTo [("command", command)]
+        resolveChain = resolveTo [("command", command)]
         runChain files steps = do
           (ws, snapshot) <- memoryWorkspace files
-          r <- generate ws resolve noTools steps now Apply
+          r <- generate ws resolveChain noTools steps now Apply
           (r,) <$> snapshot
     it "lets a step choose a service an earlier step of the chain creates" $ do
       (r, files) <- runChain [("billing/billing-service/lib.rs", "")] [Step skeleton (M.fromList [("service", "payments")]), Step command (M.fromList [("service", "payments-service")])]

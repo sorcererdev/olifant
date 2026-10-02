@@ -16,13 +16,29 @@ Olifant.GeneratorTesting
     elm/msg/reset [✔]
     elm/page/counter [✔]
     elm/page/settings-with-msgs [✔]
+    olifant-dev/error-case/sample-locked [✔]
     olifant-dev/generator/rails-controller [✔]
     olifant-dev/internal-module/marker-rules [✔]
     olifant-dev/unit/workspace-sync [✔]
     rails/model/post [✔]
     redwood/cell/blog-post [✔]
     redwood/cell/blog-posts [✔]
+    rust-htmx/command-dependency/adapter-chosen [✔]
+    rust-htmx/command-dependency/first-dependency [✔]
+    rust-htmx/command-dependency/grouped-use [✔]
+    rust-htmx/command-dependency/second-dependency [✔]
+    rust-htmx/command-dependency/shared-after-another [✔]
+    rust-htmx/command-dependency/shared-dependency [✔]
     rust-htmx/service-command/cancel-subscription [✔]
+    rust-htmx/service-command/fresh-service [✔]
+    rust-htmx/service-repository/notification-repo [✔]
+    rust-htmx/service-skeleton/user-accounts [✔]
+    rust-htmx/web-htmx-component/status-badge [✔]
+    rust-htmx/web-htmx-resource-plural/workers [✔]
+    rust-htmx/web-htmx-resource-singular/worker [✔]
+    rust-htmx/wire-command/cancel-invoice [✔]
+    rust-htmx/wire-command/hand-spelling [✔]
+    rust-htmx/wire-command/mixed-fields [✔]
   elm pack output compiles
     elm/msg/got-articles [✔]
     elm/msg/increment-by [✔]
@@ -30,18 +46,19 @@ Olifant.GeneratorTesting
     elm/page/counter [✔]
     elm/page/settings-with-msgs [✔]
 
-Finished in 7.6868 seconds
-22 examples, 0 failures
+Finished in 17.0072 seconds
+38 examples, 0 failures
 ```
 
 (Four `Olifant.Catalog` tests whose names also contain "packs" ran too and are left out
-above; they make up the 22.)
+above; they make up the 38.)
 
 ## A test case
 
 ```
 packs/<pack>/generators/<generator>/tests/<case>/
   inputs.toml
+  given/               optional: files laid over the fixture, for this case only
   snapshot/            the files the run should write, at their project paths
 ```
 
@@ -64,12 +81,46 @@ The snapshot holds only the files the run creates or changes. The got-articles c
 snapshot is one file, `snapshot/src/Page/Home.elm`, the fixture's `Home.elm` after the
 message was added.
 
+`given/` is for a case that needs a different starting point from the pack's fixture: the
+state a re-run, an earlier generator or a hand edit leaves. Its files, at their project
+paths, replace the fixture's file of the same path or add a new one, for that case only.
+`command-dependency`'s `grouped-use` case has one file in `given/`: the fixture's
+`void_invoice.rs` with a multi-line `use crate::{` / `refund_invoice::RefundInvoice,` / `};`
+block added as its last `use`. The case adds `email_sender` to `void_invoice`, and its
+snapshot pins the import after the block, not inside it:
+
+```
+$ diff given/billing/billing-service/src/void_invoice.rs snapshot/billing/billing-service/src/void_invoice.rs
+8a9,10
+> use crate::ports::email_sender::EmailSender;
+> 
+10c12,14
+< pub struct VoidInvoice {}
+---
+> pub struct VoidInvoice {
+>     pub email_sender: Arc<dyn EmailSender>,
+> }
+```
+
+(run in `packs/rust-htmx/generators/command-dependency/tests/grouped-use/`; line 7 of the
+given file is the block's `};`). The other cases with a `given/`:
+
+| case | `given/` holds |
+|---|---|
+| `command-dependency/shared-after-another` | `service.rs`, `void_invoice.rs` and `main.rs` after `email_sender` was added to `void_invoice`; the case then adds `invoice_repository`, which `refund_invoice` already shares |
+| `command-dependency/adapter-chosen` | `main.rs` with `invoice_repository`'s `todo!()` replaced by `Arc::new(InMemoryInvoiceRepository::default())` |
+| `wire-command/mixed-fields` | a `void_invoice.rs` with two hand-added fields |
+| `wire-command/hand-spelling` | a `cancel_invoice.rs` with a grouped `use crate::ports::{…}` and a field typed `Arc<dyn InvoiceRepository + Send + Sync>` |
+
+The snapshot is compared against what the run writes, as always; a `given/` file the run
+leaves alone does not need to be in the snapshot.
+
 ## What a case checks
 
 `runCase` in `src/Olifant/GeneratorTesting.hs`:
 
-1. Loads the fixture app (`fixtures/app/`) into an in-memory workspace; nothing on disk is
-   touched.
+1. Loads the fixture app (`fixtures/app/`), with the case's `given/` files laid over it, into
+   an in-memory workspace; nothing on disk is touched.
 2. Runs the generator with the case's inputs, applied. Owned regions from the pack's
    `regions.toml` are refreshed too, as in a real `gen`.
 3. **Conflicts fail the case**, listing each one; unless *every* conflict is only a missing
@@ -81,7 +132,7 @@ message was added.
    reproduce its own file.
 
 For the Elm pack there is one more group, **"elm pack output compiles"**: for each Elm case,
-the fixture with the snapshot laid over it is compiled with the adapter's `[check]` command,
+the fixture with the case's `given/` and then the snapshot laid over it is compiled with the adapter's `[check]` command,
 and must compile cleanly. Structure-placed code that is in the right place but syntactically
 wrong fails here.
 
@@ -248,7 +299,8 @@ missing `ast-grep` or `elm` fails instead of quietly skipping those cases.
 - **Command queries run in the fixture directory on disk.** A `choices_from` or region
   `query` with a `command` runs for real, rooted at the case's `fixtures/app/` — like a
   project's own command queries run rooted at the project. The case's in-memory copy of the
-  fixture is what gets written to and compared; the command only reads what is on disk.
+  fixture is what gets written to and compared; the command only reads what is on disk. A
+  case's `given/` files are in memory only, so a command does not see them.
 - **`choices_from` in a `[[uses]]` generator is resolved from the fixture too.** A case for a
   composite whose `[[uses]]` target has a `choices_from` input works the same as it does from
   the CLI.
@@ -257,7 +309,7 @@ missing `ast-grep` or `elm` fails instead of quietly skipping those cases.
   `nope`", not `CaseFailed ["TemplateFailed …"]`.
 - **One fixture per pack.** Every case of every generator runs against the same
   `fixtures/app/`. A case that needs a different starting point (a page that already has
-  messages) needs the fixture to contain it.
+  messages) adds the changed files under its own `given/`, not to the fixture.
 
 ## Trying a pack by hand: `scripts/try-pack.sh`
 

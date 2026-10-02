@@ -257,6 +257,19 @@ useFrom t = do
   where
     withFrom tbl = traverse (\(k, v) -> inKey k ((k,) <$> (text v >>= tmpl))) (M.toList tbl)
 
--- | `unless = { exists = "<glob>" }` (spec §5).
-unlessFrom :: Table -> Either Text (Maybe Template)
-unlessFrom = optional "unless" (table >=> \u -> onlyKeys ["exists"] u >> required "exists" (text >=> tmpl) u)
+-- | `unless = { exists = "<glob>" }` or `{ matches = "<regex>" }` (spec §5).
+-- The regex is checked with each `{= … =}` standing in for a plain name.
+unlessFrom :: Table -> Either Text (Maybe (Unless Template))
+unlessFrom = optional "unless" $ table >=> \u -> do
+  onlyKeys ["exists", "matches"] u
+  exists <- optional "exists" text u
+  matches <- optional "matches" text u
+  case (exists, matches) of
+    (Just g, Nothing) -> UnlessExists <$> tmpl g
+    (Nothing, Just re) -> UnlessMatches <$> inKey "matches" (posixRegex (placeholdersAsNames re) >> tmpl re)
+    _ -> Left "write exactly one of `exists` (a glob) or `matches` (a regular expression)"
+  where
+    placeholdersAsNames re = case T.breakOn "{=" re of
+      (before, rest)
+        | T.null rest -> re
+        | otherwise -> before <> "x" <> placeholdersAsNames (T.drop 2 (snd (T.breakOn "=}" rest)))

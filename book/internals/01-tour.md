@@ -74,9 +74,11 @@ edit those lists by hand. The pre-merge hook runs `olifant sync --check`, so a s
 can't reach `main`.
 
 **`packs/`** holds real packs, and they are part of the test suite.
-`src/Olifant/GeneratorTestingSpec.hs:50` finds every `packs/*/generators/*/tests/*/inputs.toml`,
+`src/Olifant/GeneratorTestingSpec.hs:99` finds every `packs/*/generators/*/tests/*/inputs.toml`,
 runs that generator against the pack's `fixtures/app`, and compares the result with the
-case's `snapshot/`. **`packs/olifant-dev`** is the pack Olifant uses on its own source. Its
+case's `snapshot/`. A case may also have a `given/` directory, whose files replace or add to
+the fixture for that case only (`runCase`, `src/Olifant/GeneratorTesting.hs:68-70`: `given`
+wins the `M.union`); command queries still run in the fixture directory on disk. **`packs/olifant-dev`** is the pack Olifant uses on its own source. Its
 `unit` generator creates `src/Olifant/X.hs` plus `src/Olifant/XSpec.hs`, and its
 `internal-module` generator creates `src/Olifant/X/Y.hs`.
 
@@ -112,7 +114,7 @@ From the bottom up:
 | **Process** | Run an external program with byte stdin/stdout/stderr; never throws | `Process.hs`: `runBytes` | none |
 | **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `pruned`, `diskWorkspace`, `memoryWorkspace`, `within`, `normalisePath`, `isSafeRelative` | Process (to run `git`) |
 | **Query** | Facts from the repo as records (globs, commands printing JSON, or AST queries selecting nodes), and the **Queries** port | `Query.hs`: `Query`, `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `noQueries`, `processCommand` | Glob, Language (`Rule`), Naming, Process, Template, Toml |
-| **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Language, Query, Template |
+| **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Opening`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `placedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Language, Query, Template |
 | **Generator** | A generator definition: the types, loading `generator.toml`, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve) and `Inputs`, plus `parseGenerator`, `withChoices`, `needsChoices` | Anchor, Language, Naming, Query, Template, Toml |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions` | Anchor, Generator, Glob, Language, Query, Region, Template, Workspace |
@@ -172,7 +174,7 @@ app/Main             → Cli, Language, Language.AstGrep, Workspace
 
 `Anchor` importing `Query` is the one edge worth pausing on: an `at` target and an `ast`
 query both end up asking the same question ("what are this container's items?"), so
-`itemsOfTarget` (`Anchor/Resolve.hs:153`) is shared, and `Anchor.Items.astQueries` builds
+`itemsOfTarget` (`Anchor/Resolve.hs:190`) is shared, and `Anchor.Items.astQueries` builds
 `Record`s (`Query`'s type) from what it finds. `Query` itself has no idea `Anchor` exists.
 
 One thing to notice:
@@ -255,7 +257,7 @@ reach outside Olifant's memory, so they travel together in one port.
 |---|---|---|---|
 | `Workspace m` | `Workspace.hs:29` | `diskWorkspace` (`Workspace.hs:72`): reads and writes under a root; lists files with `git ls-files` when inside a git work tree, otherwise walks the tree. `within dir` (`:131`) views a workspace from a subdirectory | `memoryWorkspace` (`Workspace.hs:45`): a `Map` in an `IORef`, which also hands back an action that reads the final map, so tests can assert on "the disk" |
 | `Syntax m` | `Language/Syntax.hs:15` | `astGrepSyntax` (`Language/AstGrep.hs:33`): runs `ast-grep scan --stdin --inline-rules … --json=compact`; compiles a pack's vendored grammar with `cc` into the cache on first use | `noSyntax` (`Language/Syntax.hs:17`) always says "ast-grep is not installed"; `fakeSyntax :: Syntax Identity` in `AnchorSpec.hs:58` returns canned matches |
-| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, and parses the report through the `CompilerSupport` its `format` names (`elm-json`, `ghc-json`) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:427`) replays a list of reports, one per round |
+| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, and parses the report through the `CompilerSupport` its `format` names (`elm-json`, `ghc-json`) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:472`) replays a list of reports, one per round |
 | `Queries m` | `Query.hs:138` | `processCommand dir` (`Query.hs:152`): runs a program (a bare name from `PATH`, or a project path like `bin/list`) in the project dir, for `queryCommand`; `astQueries syntax langs` (`Anchor/Items.hs:17`): evaluates an `ast` query's target over every matching file, for `queryAst` | `noQueries` (`Query.hs:145`); `QuerySpec.hs:39`'s `fake out = noQueries {queryCommand = …}` overrides one field and leaves `queryAst` as the no-op |
 
 The ports are bundled at two levels. `Tools m` (`src/Olifant/Generation/Tools.hs:10`) holds
@@ -296,9 +298,9 @@ the test says exactly what it assumes. `scriptedChecker` returns "missing `Reset
 the same thing again, which is how `completeEdits` is tested to stop instead of adding the
 same branch forever. `fakeSyntax` returns a nested match, which is how the "direct children
 only" rule in anchor resolution is tested. The real adapters are still tested, but
-separately: `LanguageSpec.hs:158` runs real `elm make`, `LanguageSpec.hs:191` real
+separately: `LanguageSpec.hs:241` runs real `elm make`, `LanguageSpec.hs:92` real
 `ast-grep`, and the pack snapshot tests run both. Those tests become *pending*, not failed,
-when the tool isn't installed (`conflictToolMissing`, `src/Olifant/Generation/Plan.hs:91`).
+when the tool isn't installed (`conflictToolMissing`, `src/Olifant/Generation/Plan.hs:93`).
 
 ## One `gen`, end to end
 
@@ -392,10 +394,10 @@ no generators. Once every pack checks out, `openAt` (`:146`) goes through each o
 
 - `discover` (`:168`) lists the files and keeps `generators/<name>/generator.toml`, exactly
   two levels deep. `load` (`:172`) parses each one with `parseGenerator`
-  (`src/Olifant/Generator/Load.hs:18`) into a `GeneratorDef`. `[inputs.*]` is a TOML table,
+  (`src/Olifant/Generator/Load.hs:27`) into a `GeneratorDef`. `[inputs.*]` is a TOML table,
   which `Toml.parseToml` reads into a `Map` that forgets the order keys were written in — so
   `parseGenerator` separately asks `Toml.keyOrder src ["inputs"]` (`Toml.hs:52`) for that
-  order straight from the parse tree, and sorts `genInputs` by it (`Load.hs:26-28`). That is
+  order straight from the parse tree, and sorts `genInputs` by it (`Load.hs:36-37`). That is
   the only reason `show` and a generator's prompts list inputs in declaration order rather
   than whatever order the `Map` happens to iterate in.
 - `languagesIn` (`Catalog.hs:156`) parses `languages/*.toml` into `Language` values with
@@ -451,7 +453,7 @@ Read from the inside out:
      applied to `page`.
    - `FragmentFile ref target matching binds` (spec §4.3) is an exemplar cut out of a bigger
      file instead of read whole. It reads the same kind of file reference as `ExemplarFile`,
-     finds the `target`'s items with `itemsOfTarget` (`Anchor/Resolve.hs:153`, the same
+     finds the `target`'s items with `itemsOfTarget` (`Anchor/Resolve.hs:190`, the same
      function `end of`/`start of` anchors and `items_of` AST queries use), requires exactly
      one of them to match the regex `matching`, dedents it by the node's starting column
      (`dedent`, `Catalog.hs:229`, since only its first line sits at that column in the
@@ -501,7 +503,7 @@ The arguments, in order:
 - the time (`--now` or the clock)
 - `Apply`
 
-### 4. `generate`: from steps to a plan (`src/Olifant/Generation.hs:70`)
+### 4. `generate`: from steps to a plan (`src/Olifant/Generation.hs:69`)
 
 ```haskell
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
@@ -537,7 +539,7 @@ expand resolve bindQ now ancestors path gen sets = do
 - **`bindQ`** binds the generator's own `[query.NAME]` queries (`genQueries`, spec §4.5) into
   the environment, if it has any (`elm/page` doesn't, so this step is skipped here).
   `BindQueries m` (`Compose.hs:52`) is another dependency-inverted function, like `Resolve
-  m`: `Cli`/`GeneratorTesting` pass in `generate`'s real `bindQueries` (`Generation.hs:115`),
+  m`: `Cli`/`GeneratorTesting` pass in `generate`'s real `bindQueries` (`Generation.hs:122`),
   which renders each query's text against the environment so far (`renderQuery`,
   `Query.hs:206`) and runs it over the project's files (`runQuery`, `Query.hs:174`), reading
   through the same plan-aware view every phase uses. A query's records are bound as a
@@ -566,21 +568,21 @@ PlanRequire ["elm/page","elm/msg[1]"] ["src/Page/Settings.elm"] …
 PlanEdit    ["elm/page","elm/msg[1]"] (1 insert, 1 complete)
 ```
 
-#### 4b. Look at the files the plan touches (`Generation.hs:75`)
+#### 4b. Look at the files the plan touches (`Generation.hs:74`)
 
-`generate` collects every target path and required path and calls `inspectTarget` (`:77`)
+`generate` collects every target path and required path and calls `inspectTarget` (`:76`)
 on each one. The result is a map, `originals :: Map FilePath (Maybe Text)`, where `Nothing`
 means absent. A second map, `blocked`, holds paths that can't be written: a directory, a
 file that isn't UTF-8, or a path whose parent is a file. The project's full file list is
-fetched only if some edit has an `unless` glob (`:83`).
+fetched only if some edit has an `unless = { exists = … }` glob (`:82`).
 
 From here on, "the files" means that map. Each phase takes the current contents and returns
 new contents. Nothing touches the disk until the very end.
 
-#### 4c. The phases (`Generation.hs:86`)
+#### 4c. The phases (`Generation.hs:85`)
 
 ```haskell
--- src/Olifant/Generation.hs:86
+-- src/Olifant/Generation.hs:85
           phases originals' = do
             (positional, pc, afterPositional, next) <- decideItems locate diskPaths items originals' blocked onDisk
             (compiled, cc, ws', afterComplete) <- completeEdits tools ws completes next afterPositional
@@ -591,9 +593,9 @@ new contents. Nothing touches the disk until the very end.
 Each phase returns its edits, its conflicts, and the contents after it, and the next phase
 starts from those contents. `ws'` here is the list of warnings, not a workspace.
 
-**Phase 1: positional edits, `decideItems`** (`src/Olifant/Generation/Planner.hs:33`). A
+**Phase 1: positional edits, `decideItems`** (`src/Olifant/Generation/Planner.hs:35`). A
 `foldM` over the items threads `(current, edits, conflicts, n)` through, dispatching each
-`PlanEdit` to one of two sibling functions, `decideCreate` or `decideInsert` (`:54`, `:64`) —
+`PlanEdit` to one of two sibling functions, `decideCreate` or `decideInsert` (`:61`, `:71`) —
 split out so neither has to pattern-match a branch it can never reach:
 
 - A `PlanRequire` checks its paths against `current`. `elm/msg` requires
@@ -607,7 +609,7 @@ split out so neither has to pattern-match a branch it can never reach:
   file's language:
 
   ```haskell
-  -- src/Olifant/Generation/Planner.hs:64
+  -- src/Olifant/Generation/Planner.hs:71
     decideInsert path n p anchors snippet current
       | Just problem <- unwritable n p = pure (current, planned path n p Conflicted, Just problem)
       | otherwise = case M.findWithDefault Nothing p current of
@@ -619,29 +621,63 @@ split out so neither has to pattern-match a branch it can never reach:
                   | presentAt loc snippet old -> (current, (planned path n p (Skipped AlreadyPresent)) {editAnchor = Just (locUsed loc)}, Nothing)
                   | otherwise ->
                       let (line, updated) = insertLines loc snippet old
-                       in (M.insert p (Just updated) current, (planned path n p (WillInsert line (insertedText (locSpacing loc) snippet))) {editAnchor = Just (locUsed loc)}, Nothing)
+                       in (M.insert p (Just updated) current, (planned path n p (WillInsert line (placedText loc snippet))) {editAnchor = Just (locUsed loc)}, Nothing)
   ```
 
-- `RenderedComplete` items are skipped here (`:43`) and left for phase 2.
+- `RenderedComplete` items are skipped here (`:45`) and left for phase 2.
+- Before either function, an edit with an `unless` is checked (`:47`; the guard is read in
+  [chapter 2](02-haskell-for-this-codebase.md#guards-where-let)). `matchUnless` (`:55`) is a
+  `case` on `Unless` (`Generator/Definition.hs:81`): `UnlessExists` globs the project's paths
+  plus the files `current` has created, and becomes `Skipped (UnlessMatched path)`;
+  `UnlessMatches` compiles the rendered regex with `regex-tdfa` and runs it over each line
+  of the edit's own target *as `current` has it*, so text an earlier edit or step inserted
+  counts, and becomes `Skipped (UnlessFound path line)` (`Plan.hs:59`), which `skipReason`
+  (`Cli/Output.hs:207`) prints as `unless: line N of PATH matches`. A target that does not
+  exist yet, or a regex that no longer compiles once rendered, is no match. The regex was
+  already checked at load time, with each `{= … =}` standing in for a plain name
+  (`unlessFrom`, `Generator/Load.hs:262`).
 
-**Anchors, `resolveLayers`** (`src/Olifant/Anchor/Resolve.hs:48`), tries the edit's anchors in
-order and returns the first that resolves, or every miss. `resolveOne` (`:57`) parses the
+**Anchors, `resolveLayers`** (`src/Olifant/Anchor/Resolve.hs:60`), tries the edit's anchors in
+order and returns the first that resolves, or every miss. `resolveOne` (`:69`) parses the
 phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on the target:
 
 - `after last line matching ^import Page\.` is a **line target**. It's resolved in Haskell
-  with `regex-tdfa` (`lineAt`, `Resolve.hs:111`), with no ast-grep call.
-- `end of type Page` is a **named target**, `["type", "Page"]`. `named` (`Resolve.hs:124`)
-  hands it to `itemsOfTarget` (`:153`), a top-level function shared with two other callers:
+  with `regex-tdfa` (`lineAt`, `Resolve.hs:128`), with no ast-grep call.
+- `end of type Page` is a **named target**, `["type", "Page"]`. `named` (`Resolve.hs:141`)
+  hands it to `itemsOfTarget` (`:190`), a top-level function shared with two other callers:
   a fragment exemplar's `items_of` (`Catalog.loadGenerator`, above) and an `ast` query's
   `items_of` (`Anchor.Items.astQueries`). `itemsOfTarget` matches the target against the Elm
   adapter's targets (`packs/elm/languages/elm.toml`); the shape `type NAME` fits and binds
   `NAME = Page`. It renders that target's `container` rule (`{ kind = "type_declaration",
   regex = "^type Page\b" }`) and asks the **Syntax port** for matches (`querySyntax`,
-  `:163`). Exactly one match is required. Then it asks for the `items` (`union_variant`)
-  *inside* that container (`:172`). Back in `resolveOne`'s `where`, `place` (`:129`) picks
+  `:200`). Exactly one match is required. Then it asks for the `items` (`union_variant`)
+  *inside* that container (`:209`). Back in `resolveOne`'s `where`, `place` (`:146`) picks
   the line after the last item, indented like it — and sets `locSpacing`: if the container's
   existing items are separated by a blank line, `place` copies that spacing onto the new one
   (`BlankAfter` for `start of`, `BlankBefore` for `end of`; spec §5.2).
+- **An empty container.** `place` has a third case, for `end of`/`start of` against a target
+  whose `items` come back `[]` (spec §7.1). It opens the container only when it is bracketed
+  (`()`, `{}`, `[]`; anything else, a whole file say, misses with "has no items to insert
+  beside") and blank or comment-only: every line between the brackets, stripped, is empty or
+  starts with the adapter's `comment` (`:167`). Anything else inside — `Svc::new(true)` when
+  `boolean_literal` is not one of the target's `items`, `{ ..Default::default() }` — would be
+  deleted or mis-joined, so it misses with "has content that is not one of the target's items
+  (add its kind to the target's `items`)" (`:168`). Opening returns a `Located` with
+  `locOpen = Just o`, where `data Opening = OpenLine Int Int Int | OpenLines` (`:48`);
+  `locOpen` is `Nothing` for every other case, so `insertLines` (`:231`) knows only these need
+  special handling. On one line (the container's start and end share a line —
+  `Service::new()`, `RefundInvoice {}`), `OpenLine line from to` carries the bracket columns,
+  and `insertLines` splits that line in three: up to the opening bracket, the new text at one
+  level past the container's own indentation (`langIndent`, the adapter's `indent` key,
+  `Language/Adapter.hs:38`), then the closing bracket onwards, at the line's own indentation
+  — so `-> Self {` after a Rust parameter list, or a trailing `;` after a call's arguments,
+  survives on the closing line. Spread over several lines already (`OpenLines`), `place`
+  looks for a non-blank (comment) line inside and uses its indentation, so a template's
+  commented-out hint in a struct literal is where the real field lands; with nothing inside
+  at all, it falls back to the same one-level-in indentation as the one-line case. Either way
+  the text becomes the container's *first* item, so `placedText` (`:249`) passes it through
+  `firstItem` (`:252`), which drops one leading `,`: Elm's `oneOf []` given `, Parser.map …`
+  becomes `oneOf [` / `Parser.map …` / `]`.
 
 Each `querySyntax` call against the real adapter is one `ast-grep` process fed the file on
 stdin (`src/Olifant/Language/AstGrep.hs:34`). The Elm pack vendors its tree-sitter grammar,
@@ -650,13 +686,21 @@ so the first ever call compiles `packs/elm/languages/grammar/elm/parser.c` with 
 path, size and modification time (`prepare`): a `stat` per query, since hashing a
 megabyte-sized grammar on every call cost a third of an AST query's time.
 
-`presentAt` (`Resolve.hs:214`) makes re-runs idempotent: if the snippet's tokens already sit
+`presentAt` (`Resolve.hs:283`) makes re-runs idempotent: if the snippet's tokens already sit
 in the target region, or just next to the insertion line, the insert is `Skipped
-AlreadyPresent`. `insertLines` does the actual splice, keeping the file's line endings.
-The lines it adds come from `insertedText`: the snippet less its common indentation (so a
-snippet written at its absolute column is not indented twice), plus, per `locSpacing`, a
-blank line if one isn't already there. The plan's `WillInsert` holds that same text, so
-what `--plan` shows is what is written, apart from the site's indentation.
+AlreadyPresent`. It tries the snippet and its `firstItem` both, so text whose leading `,` was
+dropped when it opened a container is still found on the next run. Lines starting with the
+adapter's comment (`locComment`, set from `langComment`) are dropped from the region, the
+window and the snippet before comparing, so a template's commented-out example of the field
+is not "present"; a snippet that is only comments is compared whole. It looks no further than
+the region and that window; text that is in the file by name but elsewhere is what
+`unless = { matches = … }` is for (above). `insertLines` does the actual splice, keeping the
+file's line endings — whole lines around `locLine` normally, or, for `OpenLine`, the
+three-way split above. The lines it adds come from `placedText`: the snippet (less a leading
+`,` when the site opens a container) passed to `insertedText`, which removes its common
+indentation (so a snippet written at its absolute column is not indented twice) and adds,
+per `locSpacing`, a blank line if one isn't already there. The plan's `WillInsert` holds that
+same text, so what `--plan` shows is what is written, apart from the site's indentation.
 
 **Phase 2: `complete` edits, the check loop** (`src/Olifant/Generation/Complete.hs:38`).
 `perLanguage` (`:40`) first turns the adapter's `[check] format` into a `CompilerSupport`
@@ -741,7 +785,7 @@ re-renders every owned region against the files as the plan leaves them. The Elm
 declares no regions, so `toolRegions` is empty and the phase returns immediately (`:31`). In
 this repository the phase is where `olifant.cabal`'s module lists are refreshed.
 
-#### 4d. The re-run second pass (`Generation.hs:91`)
+#### 4d. The re-run second pass (`Generation.hs:90`)
 
 Run the same command a second time. The page's `create` now finds `src/Page/Settings.elm`
 on disk, but with different content from its template, because `elm/msg` changed the file
@@ -766,10 +810,10 @@ That's 9 edits, not 11: in the second pass the compiler finds nothing missing in
 so the two `Main` branches never appear. A re-run costs two full passes, including the
 compiler.
 
-#### 4e. Writes (`Generation.hs:105`)
+#### 4e. Writes (`Generation.hs:104`)
 
 ```haskell
--- src/Olifant/Generation.hs:105
+-- src/Olifant/Generation.hs:104
       let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts warnings writes
       when (mode == Apply && not (hasConflicts plan)) $
@@ -812,9 +856,9 @@ one printed is computed.
   because a conflicted edit never has a `WillCreate`/`WillInsert`/etc. action to hold
   content in the first place (`editAction` is `Conflicted`).
 
-Errors that stop generation before there is a plan (`GenerationError`, `Generation.hs:49`)
+Errors that stop generation before there is a plan (`GenerationError`, `Generation.hs:48`)
 go through `generationFailure` (`Cli.hs:204`), which calls `describeGenerationError`
-(`Generation.hs:59`, naming the step the error happened in) and picks the exit code: 4 for
+(`Generation.hs:58`, naming the step the error happened in) and picks the exit code: 4 for
 inputs, 3 for an unknown generator, 1 for a broken one. `GeneratorTesting.runCase` calls the
 same function when a case fails, so a pack test's failure message is the CLI's own sentence,
 not a dumped Haskell value (below).

@@ -182,7 +182,7 @@ insertBranch (caseStart, caseEnd) branch content =
       blankBefore = case reverse alternatives of
         (lastAlt : _ : _) -> lastAlt > 0 && T.null (T.strip (ls !! (lastAlt - 1)))
         _ -> True
-   in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing) ((if blankBefore then "\n" else "") <> branch) content
+   in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing Nothing "") ((if blankBefore then "\n" else "") <> branch) content
 
 bareName :: Text -> Text
 bareName = snd . T.breakOnEnd "."

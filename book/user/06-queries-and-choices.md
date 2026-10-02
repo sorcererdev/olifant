@@ -184,7 +184,14 @@ the error says so ("the query glob */*-service found nothing"), so an empty proj
 a mystery. For agents this matters: the valid values are in `show`, so there is no need to
 list directories first.
 
-## `unless`: skip an edit when a file exists
+## `unless`: skip an edit when a file exists, or a line matches
+
+`unless` takes exactly one of two keys: `exists` (a glob over the project's files) or
+`matches` (a regular expression over the lines of the edit's own target). Writing both, or
+neither, is refused when the generator loads ("write exactly one of `exists` (a glob) or
+`matches` (a regular expression)"). `unless` works on `create` and `insert` edits.
+
+### `exists`
 
 Rails refuses two migrations that create the same table. `rails/model` guards against a
 re-run with a different time:
@@ -204,4 +211,98 @@ rails/model (4 edits, 0 conflicts)
 ```
 
 The glob is rendered first, and it sees files on disk as well as files created earlier in
-the same run. `unless` works on `create` and `insert` edits.
+the same run.
+
+### `matches`
+
+An insert already skips itself when its text is at the spot it would go, or just beside it
+("Already there", [chapter 3](03-anchors.md)). That check looks only at the anchor's region
+and a small window around the site. Text that is already in the file *by name*, but
+somewhere else or spelled differently, is not found, and used to be added a second time:
+
+- an import already present inside a grouped `use crate::ports::{a::A, b::B};`;
+- a field written by hand as `Arc<dyn X + Send + Sync>` where the generator writes
+  `Arc<dyn X>`;
+- a `let x = Arc::new(Real…)` that replaced the `let x: … = todo!(…)` the generator wrote.
+
+`unless = { matches = "REGEX" }` skips the edit when **any line** of the edit's own target
+file matches. `command-dependency` (rust-htmx) puts one on each edit that names the
+dependency:
+
+```toml
+# packs/rust-htmx/generators/command-dependency/generator.toml (excerpt)
+[[edits]]
+insert = "{= service_dir =}/src/{= cmd =}.rs"
+at     = "end of struct {= Cmd =}"
+text   = "pub {= d =}: Arc<dyn {= D =}>,"
+unless = { matches = "^[[:space:]]*pub {= d =}[[:space:]]*:" }
+
+[[edits]]
+insert = "{= service_dir =}/src/{= cmd =}.rs"
+at     = ["end of uses", "start of file"]
+text   = "use crate::ports::{= d =}::{= D =};"
+unless = { matches = "{= d =}::{= D =}([^[:alnum:]_]|$)" }
+
+[[edits]]
+insert = "main/src/main.rs"
+at     = "before first line matching ^[[:space:]]*let (mut )?{= svc =} = "
+text   = "let {= d =}: Arc<dyn {= svc =}::ports::{= d =}::{= D =}> = todo!(\"an adapter for {= D =}\");"
+unless = { matches = "^[[:space:]]*let (mut )?{= d =}[[:space:]]*[:=]" }
+```
+
+The field is "there" if any line declares `pub email_sender:`, whatever its type; the import
+if `email_sender::EmailSender` appears anywhere, grouped or not; the `let` if any line binds
+`email_sender`, whether to a `todo!()` or a real adapter. With a hand-written command whose
+import is grouped and whose second field has extra bounds:
+
+```rust
+use crate::ports::{email_sender::EmailSender, invoice_repository::InvoiceRepository};
+
+#[derive(Clone)]
+pub struct CancelInvoice {
+    pub email_sender: Arc<dyn EmailSender>,
+    pub invoice_repository: Arc<dyn InvoiceRepository + Send + Sync>,
+}
+```
+
+`wire-command` ([chapter 8](08-composing-generators.md)) leaves the file alone, and says
+which line stopped each edit (the excerpt keeps the second dependency's run):
+
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice
+rust-htmx/wire-command (14 edits, 0 conflicts)
+  …
+  = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 10 of billing/billing-service/src/cancel_invoice.rs matches)  [rust-htmx/wire-command › rust-htmx/command-dependency[2]]
+  = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 5 of billing/billing-service/src/cancel_invoice.rs matches)  [rust-htmx/wire-command › rust-htmx/command-dependency[2]]
+  = billing/billing-service/src/service.rs (skipped: unless: line 2 of billing/billing-service/src/service.rs matches)  [rust-htmx/wire-command › rust-htmx/command-dependency[2]]
+  = billing/billing-service/src/service.rs (skipped: already present)  [rust-htmx/wire-command › rust-htmx/command-dependency[2]]
+  ~ billing/billing-service/src/service.rs (+1 line at line 31)  [rust-htmx/wire-command › rust-htmx/command-dependency[2]]
+  = main/src/main.rs (skipped: unless: line 21 of main/src/main.rs matches)  [rust-htmx/wire-command › rust-htmx/command-dependency[2]]
+  = main/src/main.rs (skipped: already present)  [rust-htmx/wire-command › rust-htmx/command-dependency[2]]
+```
+
+The details:
+
+- **The file as the plan has it so far.** The target is read with every earlier edit and
+  step of this run applied, so a line an earlier edit added counts, not only what is on
+  disk. A second step that would add the same `let` is skipped.
+- **The regex is POSIX extended** (the same dialect as `first line matching`), matched
+  against each line on its own; `^` and `$` are the line's ends. `{= … =}` placeholders are
+  allowed and are rendered first; the regex is checked when the generator loads, with each
+  placeholder standing in for a plain name. Perl classes are refused with a hint:
+
+  ```
+  error: …/generator.toml: `edits`: [1] `unless`: `matches`: `let\s+x` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \s or \w); …
+  ```
+
+- **Rendered values are not escaped.** A placeholder's value goes into the regex as is.
+  Identifiers (`ident` inputs and their case filters) are safe; free text with `.` or `(` in
+  it is not.
+- **Comments count.** `unless.matches` reads every line, a commented-out one included, so
+  write the regex so a comment cannot match. `command-dependency`'s import regex starts
+  `^[^/]*`: the template's hint `// use crate::ports::worksite_repository::WorksiteRepository;`
+  has a `/` before the name, so a real `worksite_repository` dependency still gets its
+  import. (An anchor's own "already present" check leaves comment lines out by itself; see
+  [chapter 3](03-anchors.md).)
+- **The plan says which line.** `skipped: unless: line N of PATH matches`, 1-based, in the
+  file as the plan had it at that point; in JSON the same text is the edit's `reason`.

@@ -71,7 +71,7 @@ generatorSchema =
       "fragment" -> desc "object" "One item of a real file's target: { file, items_of, matching } (needs bind)."
       "bind" -> desc "object" "For exemplars and fragments: { input = \"name_in_the_file\" }."
       "on_exists" -> object ["enum" .= (["error", "skip", "overwrite"] :: [Text])]
-      "unless" -> desc "object" "{ exists = \"glob\" }: skip the edit when a file matches."
+      "unless" -> desc "object" "{ exists = \"glob\" }: skip the edit when a file matches; { matches = \"regex\" }: skip it when a line of its own file matches (already there by name)."
       "anchor" -> desc "object" "Older spelling of at = \"before marker …\"; use at."
       _ -> object []
     requiresProp = \case

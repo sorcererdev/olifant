@@ -1,0 +1,27 @@
+description = "Wire a command's dependencies after you add fields to its struct by hand (spec §7.1: reconcile)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice",
+]
+
+[inputs.service]
+type = "enum"
+choices_from = { glob = "*/*-service", value = "{= dir =}" }
+
+[inputs.command]
+type = "enum"
+choices_from = { glob = "*/*-service/src/*.rs", exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"], value = "{= stem =}" }
+
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+
+[query.deps]
+files    = "{= service_dir =}/src/{= command|snake =}.rs"
+items_of = "struct {= command|pascal =}"
+each     = { name = "^pub ([a-z_0-9]+):" }
+
+[[uses]]
+generator = "command-dependency"
+for_each  = "deps"
+with      = { service = "{= service =}", command = "{= command =}", dependency = "{= item.name =}" }

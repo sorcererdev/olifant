@@ -362,7 +362,7 @@ phrases are templates too.
 create    = "src/Data/{= Name =}.elm"
 template  = "record.elm.dt"     # or: text = "…", or: exemplar = "…" + bind = {…}
 on_exists = "error"             # error (default) | skip | overwrite
-unless    = { exists = "db/migrate/*_create_{= table =}.rb" }
+unless    = { exists = "db/migrate/*_create_{= table =}.rb" }   # or: { matches = "REGEX" }
 ```
 
 If the file already exists with exactly the generated content, the edit is skipped
@@ -371,8 +371,9 @@ If the file already exists with exactly the generated content, the edit is skipp
 `overwrite` replaces it (`~ path (overwritten, N lines)`). Prefer `error`: it is what keeps
 hand edits safe.
 
-`unless` skips the edit when its glob matches a file on disk or one created earlier in the
-plan (chapter 6).
+`unless` takes exactly one key. `exists` skips the edit when its glob matches a file on
+disk or one created earlier in the plan; `matches` skips it when any line of the edit's own
+target, as the plan has it so far, matches a POSIX extended regex (chapter 6).
 
 ### `insert`
 
@@ -381,7 +382,7 @@ plan (chapter 6).
 insert = "src/Main.elm"
 at     = "end of type Page"            # or a list of phrases, tried in order
 text   = "| {= P =} {= P =}.Model"     # or: template = "…"
-unless = { exists = "…" }
+unless = { matches = "^[[:space:]]*\\| {= P =}( |$)" }   # or: { exists = "…" }
 ```
 
 `at` is covered in [chapter 3](03-anchors.md): a phrase, or a list of phrases where the
@@ -395,8 +396,8 @@ first that resolves wins (the JSON says which, in `anchor_used`). Two other form
   need it twice, add a target to the language adapter instead ([chapter 9](09-packs-and-language-adapters.md)).
 
 Test a phrase before you write it into a generator: `olifant where src/Main.elm "end of
-record Model"` shows the spot or says why not (for `Page/Home.elm`, whose `Model` is `{}`:
-"has no items to insert beside"). A phrase with no `{= … =}` in it has both its shape and its
+record Model"` shows the spot or says why not (for `Page/Home.elm`, whose `Model` is `{}`,
+it opens the record instead of refusing — [chapter 3](03-anchors.md)). A phrase with no `{= … =}` in it has both its shape and its
 target name checked against the language adapter when the generator loads — `list` marks it
 `INVALID` and `show`/`gen` refuse it — so a typo like `end of typo Msg` is caught before
 anyone runs the generator, with a suggestion:

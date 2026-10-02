@@ -9,6 +9,8 @@ module Olifant.Anchor.Resolve
   , itemsOfTarget
   , insertLines
   , insertedText
+  , placedText
+  , Opening (..)
   , alreadyPresent
   , presentAt
   , describeMisses
@@ -18,7 +20,7 @@ import Data.Aeson (object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Char (isAlphaNum)
 import Data.Functor ((<&>))
-import Data.List (maximumBy, minimumBy, sortOn)
+import Data.List (maximumBy, minimumBy, nub, sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Ord (comparing)
@@ -33,8 +35,17 @@ data RenderedAnchor = PhraseAnchor Text | RuleAnchor Aeson.Value Position
   deriving stock (Eq, Show)
 
 -- | 'locSpacing': a blank line to add around the new text, copied from the
--- spacing between the target's neighbouring items (spec §5.2).
-data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing}
+-- spacing between the target's neighbouring items (spec §5.2). 'locOpen':
+-- an empty container on one line, @(line, from, to)@ its columns, which the
+-- insert opens (`()` → `(` / text / `)`) instead of adding whole lines.
+data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing, locOpen :: Maybe Opening, locComment :: Text}
+  deriving stock (Eq, Show)
+
+-- | How an empty container is opened: 'OpenLine' splits its one line at
+-- @(line, from, to)@, the bracket columns; 'OpenLines' inserts before the
+-- closing line of a container spread over lines. Either way the text becomes
+-- the first item, so a leading separator is dropped ('placedText').
+data Opening = OpenLine Int Int Int | OpenLines
   deriving stock (Eq, Show)
 
 data Spacing = NoSpacing | BlankBefore | BlankAfter
@@ -85,7 +96,7 @@ resolveOne syntax lang anchor content = case anchor of
     ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
     indentAt i = T.takeWhile (\c -> c == ' ' || c == '\t') (if i < length ls then ls !! i else "")
     regionOf a b = T.intercalate "\n" (take (b - a + 1) (drop a ls))
-    located line indent region = Located line indent region used NoSpacing
+    located line indent region = Located line indent region used NoSpacing Nothing (maybe "" langComment lang)
     count = T.pack . show . length
     around m pos =
       let (s, e) = (fst (matchStart m), fst (matchEnd m))
@@ -131,14 +142,34 @@ resolveOne syntax lang anchor content = case anchor of
       itemsOfTarget syntax l (positionWords pos) ws content <&> \case
         Left (why, tool) -> Left (Miss used why tool)
         Right Nothing -> Left (miss "not found")
-        Right (Just (c, items)) -> place pos c items
-    place pos c items =
+        Right (Just (c, items)) -> place l pos c items
+    place l pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce
+          body = T.strip (matchText c)
+          bracketed =
+            maybe False (\(o, _) -> o `elem` ("([{" :: String)) (T.uncons body)
+              && maybe False (\(_, z) -> z `elem` (")]}" :: String)) (T.unsnoc body)
+              && (cs == ce || maybe False ((`elem` (")]}" :: String)) . fst) (T.uncons (T.strip (lineAt' ce))))
        in case (pos, items) of
             (Before, _) -> wholeLine "the target's start" (startsLine (matchStart c)) (located cs (indentAt cs) region)
             (After, _) -> wholeLine "the target's end" (endsLine (matchEnd c)) (located (ce + 1) (indentAt cs) region)
-            (_, []) -> Left (miss "has no items to insert beside")
+            -- An empty container is opened (spec §7.1): on one line, the line
+            -- is split around it; spread over lines, the text goes before its
+            -- closing line, indented like what is inside, or one level in.
+            (_, [])
+              -- Only a bracketed container (`()`, `{}`, `[]`) is opened; any
+              -- other empty target (a whole file, say) is still refused.
+              | not bracketed -> Left (miss "has no items to insert beside")
+              -- "Empty" means no items matched; anything else inside (`true`,
+              -- `..Default::default()`) would be lost or mis-joined, so only
+              -- blank or comment-only containers are opened.
+              | not (all (\x -> T.null x || langComment l `T.isPrefixOf` x) (map T.strip (T.lines (T.drop 1 (T.dropEnd 1 body))))) ->
+                  Left (miss "has content that is not one of the target's items (add its kind to the target's `items`)")
+              | cs == ce -> Right ((located cs (indentAt cs <> langIndent l) region) {locOpen = Just (OpenLine cs (snd (matchStart c)) (snd (matchEnd c)))})
+              | otherwise ->
+                  let inside = [indentAt i | i <- [cs + 1 .. ce - 1], not (T.null (T.strip (lineAt' i)))]
+                   in Right ((located ce (case inside of (i : _) -> i; [] -> indentAt cs <> langIndent l) region) {locOpen = Just OpenLines})
             (StartOf, _) ->
               let f = minimumBy (comparing matchStart) items
                   spacing = case sortOn matchStart items of
@@ -201,9 +232,27 @@ insertLines :: Located -> Text -> Text -> (Int, Text)
 insertLines loc snippet content =
   let newline = if "\r\n" `T.isInfixOf` content then "\r\n" else "\n"
       ls = T.splitOn newline content
-      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- T.splitOn "\n" (insertedText (locSpacing loc) snippet)]
+      new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- T.splitOn "\n" (placedText loc snippet)]
       i = min (locLine loc) (length ls)
-   in (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
+   in case locOpen loc of
+        -- Split the container's line: up to the opening bracket, the text,
+        -- then the closing bracket onwards at the line's own indentation.
+        Just (OpenLine l from to) | l < length ls ->
+          let line = ls !! l
+              base = T.takeWhile (\c -> c == ' ' || c == '\t') line
+           in (l + 2, T.intercalate newline (take l ls ++ [T.take (from + 1) line] ++ new ++ [base <> T.drop (to - 1) line] ++ drop (l + 1) ls))
+        _ -> (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
+
+-- | 'insertedText' at a located site: when the site opens an empty
+-- container the text is its first item, so a leading `,` is dropped (a
+-- generator written for lists with leading commas, Elm's style).
+placedText :: Located -> Text -> Text
+placedText loc snippet = insertedText (locSpacing loc) (maybe snippet (const (firstItem snippet)) (locOpen loc))
+
+firstItem :: Text -> Text
+firstItem snippet =
+  let (lead, rest) = T.span (`elem` (" \t\n" :: String)) snippet
+   in maybe snippet (\r -> lead <> T.stripStart r) (T.stripPrefix "," rest)
 
 -- | The lines an insert adds, before the site's indentation: the text less
 -- its common indentation (so text written at its absolute column is not
@@ -229,11 +278,21 @@ insertedText spacing snippet =
 -- | Is the snippet already where this anchor would put it? Checks the
 -- anchor's region (a container or marker block) and the snippet-sized window
 -- on each side of the insertion line: a previous `after` run left the text
--- just below it, a previous `before` run just above (spec §5.4).
+-- just below it, a previous `before` run just above (spec §5.4). Commented-out
+-- lines (a template's example hint) are left out of both.
 presentAt :: Located -> Text -> Text -> Bool
 presentAt loc snippet content =
-  alreadyPresent snippet (locRegion loc) || alreadyPresent snippet window
+  any present (nub [snippet, firstItem snippet])
   where
+    -- A commented-out copy (a template's example hint) is not the text, so
+    -- comment lines are compared on neither side (unless the text is only
+    -- comments).
+    present t
+      | T.null (T.strip (uncommented t)) = alreadyPresent t (locRegion loc) || alreadyPresent t window
+      | otherwise = alreadyPresent (uncommented t) (uncommented (locRegion loc)) || alreadyPresent (uncommented t) (uncommented window)
+    uncommented
+      | T.null (locComment loc) = id
+      | otherwise = T.intercalate "\n" . filter (not . (locComment loc `T.isPrefixOf`) . T.stripStart) . T.splitOn "\n"
     ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
     k = max 1 (length (T.lines snippet))
     window = T.intercalate "\n" (take (2 * k) (drop (max 0 (locLine loc - k)) ls))

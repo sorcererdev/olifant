@@ -93,10 +93,102 @@ Use this when a structural target needs a tool (below) that might not be install
 - **Exactly one.** A target must match once. If `update` had two top-level `case`s,
   `case in update` would be ambiguous and the edit a conflict.
 - **Already there.** If the text is already at that spot (or just beside it), the edit is
-  skipped, so re-runs are no-ops.
+  skipped, so re-runs are no-ops. Only the target and a few lines around the spot are
+  checked: for text that may already be elsewhere in the file, or spelled differently, add
+  `unless = { matches = "REGEX" }` ([chapter 6](06-queries-and-choices.md)). Commented-out
+  lines (using the adapter's `comment`) are left out on both sides, so a template's hint
+  such as `// pub worksite_repository: Arc<dyn WorksiteRepository>,` does not count as the
+  field being there.
 - **Tools.** Language targets need `ast-grep` (and a C compiler, the first time, to build
   the Elm grammar). Without them the edit misses with "ast-grep is not installed (brew
   install ast-grep)" and the next fallback is tried. Line and marker targets need nothing.
+
+## Opening an empty container
+
+`end of`/`start of` put the new line beside an existing item. A container with none — an
+Elm page's `Model` before its first field, a Rust `new()` before its first parameter —
+used to refuse. Now Olifant opens it instead. Only a bracketed container (`()`, `{}`, `[]`)
+is opened; any other empty target (a whole file, say) still refuses with "has no items to
+insert beside" (use `end of file` there).
+
+On one line, the line is split around the brackets, and the new text lands one level
+inside — a notch deeper than the container's own indentation:
+
+```toml
+[[edits]]
+insert = "src/Page/Home.elm"
+at     = "end of record Model"
+text   = "count : Int"
+```
+
+```diff
+ type alias Model =
+-    {}
++    {
++        count : Int
++    }
+```
+
+Whatever followed the brackets on that line stays on the closing line — a Rust parameter
+list keeps its `-> Self {`, a call's arguments keep a trailing `;`:
+
+```diff
+-    pub fn new() -> Self {
++    pub fn new(
++        email_template_repository: Arc<dyn EmailTemplateRepository>,
++    ) -> Self {
+```
+
+A container already spread over several lines, with only comments inside, gets the text
+before its closing line, at the comments' indentation — so a commented-out hint in a
+template is also where the real field lands:
+
+```diff
+ pub struct SendEmail {
+     // Put infra dependencies in this struct
+     // Below is an example of a repo dependency
+     // pub worksite_repository: Arc<dyn WorksiteRepository>,
++    pub email_template_repository: Arc<dyn EmailTemplateRepository>,
+ }
+```
+
+With nothing inside at all, not even a comment, the text goes one level past the
+container's own indentation, same as the one-line case.
+
+"One level" is the adapter's `indent` key (`indent = "    "`, the default, in
+`languages/<name>.toml`); set it to match a language's own convention.
+
+"Empty" means *blank or comment-only*, where a comment is a line starting with the adapter's
+`comment` (`//` for Rust, `--` for Elm). A container with no items but something else inside
+(an argument whose kind is not in the target's `items`) is refused, not opened, because
+opening it would delete that text or join the new item onto it badly. With `main.rs`'s call
+edited to `NotificationsService::new(true)` (a `boolean_literal` is not one of the call
+target's items):
+
+```
+$ olifant where main/src/main.rs "end of call notifications_service::service::NotificationsService::new in main"
+error: `end of call notifications_service::service::NotificationsService::new in main`: has content that is not one of the target's items (add its kind to the target's `items`)
+hint: `olifant anchors <language>` lists the targets
+```
+
+The fix is in the adapter: add the kind to the target's `items`
+([chapter 9](09-packs-and-language-adapters.md)). A block comment counts as content too:
+`new(/* deps */)` is refused the same way, because only lines that start with `comment` are
+skipped.
+
+When a container is opened, the text becomes its *first* item, so a leading `,` is dropped.
+`elm/page` adds a route as `, Parser.map {= P =} (s "{= page|kebab =}")`, because Elm writes
+lists with leading commas. Against a `Route.elm` whose parser is `oneOf []`:
+
+```diff
+-    oneOf []
++    oneOf [
++        Parser.map Settings (s "settings")
++    ]
+```
+
+The "already there" check tries the text both with and without that `,`, so running the
+same `elm/page` again skips the edit (`skipped: already present`).
 
 ## Spacing
 

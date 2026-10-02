@@ -52,6 +52,16 @@ spec = do
           T.unlines msgs `shouldSatisfy` T.isInfixOf "undefined variable `nope`"
           T.unlines msgs `shouldNotSatisfy` T.isInfixOf "TemplateFailed"
         other -> expectationFailure ("expected a failure, got " <> show other)
+    it "lays a case's `given/` files over the fixture, for that case only" $ do
+      let gen = "description = \"g\"\nlanguage = \"x\"\n[[edits]]\ninsert = \"README\"\nat = \"end of file\"\ntext = \"added\"\n"
+          files =
+            [ ("/packs/p/generators/g/generator.toml", gen)
+            , ("/packs/p/fixtures/app/README", "fixture\n")
+            , ("/packs/p/generators/g/tests/basic/inputs.toml", "now = \"2026-09-27T15:30:00Z\"\n")
+            , ("/packs/p/generators/g/tests/basic/given/README", "given\n")
+            , ("/packs/p/generators/g/tests/basic/snapshot/README", "given\nadded\n")
+            ]
+      runTiny files `shouldReturn` CasePassed
     it "blessing removes snapshot files the case no longer generates" $ do
       (root, snap) <- memoryWorkspace (tinyPack "old\n" ++ [("/packs/p/generators/g/tests/basic/snapshot/out/stale.txt", "x\n")])
       [c] <- discoverCases root "/packs"
@@ -109,8 +119,9 @@ spec = do
           Nothing -> missingTool strict "elm is not installed"
           Just _ -> do
             fixture <- readTree "packs/elm/fixtures/app"
+            given <- readTree (caseDir c </> "given")
             snapshot <- readTree (caseDir c </> "snapshot")
-            compileClean elm (M.union snapshot fixture) `shouldReturn` Right ()
+            compileClean elm (M.unions [snapshot, given, fixture]) `shouldReturn` Right ()
   where
     -- Pending locally; a failure where tools are required (the pre-merge hook
     -- sets OLIFANT_REQUIRE_TOOLS=1), so a missing tool cannot look green.

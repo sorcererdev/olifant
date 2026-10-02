@@ -6,6 +6,7 @@ module Olifant.Generator.Definition
   , Requires (..)
   , EditWith (..)
   , OnExists (..)
+  , Unless (..)
   , AnchorSpec (..)
   , SourceRef (..)
   , UseStep (..)
@@ -62,9 +63,9 @@ data Requires = Requires {requiresExists :: [Template], requiresHint :: Maybe Te
   deriving stock (Show)
 
 data EditWith src
-  = -- | 'editUnless': a glob; the edit is skipped when it matches a file (spec §5).
-    Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists, editUnless :: Maybe Template}
-  | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src, editUnless :: Maybe Template}
+  = -- | 'editUnless': when the edit is skipped (spec §5).
+    Create {editTarget :: Template, editSource :: src, editOnExists :: OnExists, editUnless :: Maybe (Unless Template)}
+  | Insert {editTarget :: Template, editAt :: [AnchorSpec], editSource :: src, editUnless :: Maybe (Unless Template)}
   | -- | Add a branch for 'editConstructor' to every case the compiler reports (spec §5.6).
     -- With no body, every site gets a todo branch.
     Complete {editConstructor :: Template, editWhere :: Maybe Template, editBody :: Maybe src}
@@ -72,6 +73,13 @@ data EditWith src
 
 data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists
   deriving stock (Eq, Show)
+
+-- | `unless = { exists = "<glob>" }`: a project file matches the glob;
+-- `unless = { matches = "<regex>" }`: a line of the edit's own target matches,
+-- as this plan has it so far. The second is how an edit knows its text is
+-- already there by name, wherever it is (spec §5.4).
+data Unless t = UnlessExists t | UnlessMatches t
+  deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 -- | Where an insert goes: a phrase (rendered, then parsed) or a raw ast-grep rule.
 data AnchorSpec = AtPhrase Template | AtRule Rule Position

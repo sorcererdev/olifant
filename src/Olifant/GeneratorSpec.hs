@@ -142,6 +142,10 @@ parseSpec = describe "parseGenerator" $ do
       let e = err (top ["[inputs.name]", "type = \"ident\"", "description = \"d\"", "required = true"])
       e `shouldSatisfy` T.isInfixOf "`description`: did you mean `prompt`?"
       e `shouldSatisfy` T.isInfixOf "required unless `optional = true`"
+    it "takes exactly one of `exists` and `matches` in `unless`, and checks the regex" $ do
+      let unless u = err (top ["[[edits]]", "insert = \"a.x\"", "at = \"end of file\"", "text = \"x\"", "unless = " <> u])
+      unless "{ exists = \"a\", matches = \"b\" }" `shouldSatisfy` T.isInfixOf "exactly one of `exists`"
+      unless "{ matches = \"let \\\\s+{= name =}\" }" `shouldSatisfy` T.isInfixOf "[[:space:]]"
     it "suggests the nearest key for a typo" $
       err (top ["[[edits]]", "insert = \"a.x\"", "att = \"end of type T\"", "text = \"x\""]) `shouldSatisfy` T.isInfixOf "`att`: did you mean `at`?"
     it "explains `insert` written as a table, and [edits] written as one table" $ do

@@ -121,16 +121,60 @@ $ olifant anchors rust
 rust: at = "<start of|end of|before|after> <target>"
 
 targets:
-  crate imports           e.g. end of crate imports
-  impl NAME               e.g. end of impl BillingService
-  literal in FUNCTION     e.g. end of literal in new
-  struct NAME             e.g. end of struct BillingService
+  call NAME in FUNCTION     e.g. end of call BillingService::new in main
+  crate imports             e.g. end of crate imports
+  impl NAME                 e.g. end of impl BillingService
+  literal in FUNCTION       e.g. end of literal in new
+  literal NAME in FUNCTION  e.g. end of literal RefundInvoice in new
+  parameters in FUNCTION    e.g. end of parameters in new
+  struct NAME               e.g. end of struct BillingService
+  uses                      e.g. end of uses
 
 built in (any file):
   before|after marker TEXT
   before|after first line matching REGEX
   before|after last line matching REGEX
+  start of|end of file
 ```
+
+Three of these exist to wire a command's dependencies (spec §7.1, chapter 8): `parameters in
+FUNCTION` is a function's parameter list; `literal NAME in FUNCTION` is the struct literal
+named `NAME` inside `FUNCTION` (`SendEmail` inside `new`, as opposed to `literal in FUNCTION`,
+which is whichever one literal sits there); `call NAME in FUNCTION` is the arguments of a call
+to `NAME` inside `FUNCTION` (`BillingService::new` inside `main`). All three can target an
+empty `()`/`{}` — see "Opening an empty container" in [chapter 3](03-anchors.md).
+
+`uses` is a file's top-level `use` declarations (container `source_file`, items
+`use_declaration`). `end of uses` goes after the last one, whole, so a new import lands after
+a multi-line `use crate::{ … };` block and never inside it. A line pattern cannot see the
+block: `after last line matching ^use ` lands just after `use crate::{`, inside it:
+
+```
+$ olifant where billing/billing-service/src/service.rs "after last line matching ^use "
+billing/billing-service/src/service.rs:5
+    use crate::ports::invoice_repository::InvoiceRepository;
+    
+    use crate::{
+  ▶ (inserted here)
+        refund_invoice::{RefundInvoice, RefundInvoiceInput, RefundInvoiceOutput},
+        void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
+        cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
+
+$ olifant where billing/billing-service/src/service.rs "end of uses"
+billing/billing-service/src/service.rs:9
+        void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
+        cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
+    };
+  ▶ (inserted here)
+    
+    #[derive(Clone)]
+    pub struct BillingService {
+```
+
+A file is not a bracketed container, so one with no `use` at all is not opened; the phrase
+misses (`end of uses` in `billing-service/src/lib.rs`, which only has `pub mod`s: "has no
+items to insert beside"). Give `start of file` as the fallback, as
+`command-dependency` does: `at = ["end of uses", "start of file"]`.
 
 Adapters come only from configured packs. In a project that only configures `rust-htmx`,
 `olifant anchors elm` says "no language adapter named `elm`", and `.elm` files get only the
@@ -148,6 +192,7 @@ grammar     = "rust"                              # a grammar ast-grep has built
 # grammar   = { source = "grammar/elm" }          # …or C sources vendored in the pack
 placeholder = 'todo!("{= message =}")'            # the body of a todo branch
 branch      = "{= pattern =} => {= body =},"      # how a case branch is written
+indent      = "    "                              # one level of indentation, for opening an empty container (shown: the default)
 
 [check]                                           # optional: enables `complete` edits
 command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]
@@ -167,6 +212,7 @@ example   = "end of struct BillingService"
 | `comment` | region fences in this language's files (chapter 5) |
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
+| `indent` | one level of indentation; default four spaces. Used only when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)) |
 | `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files. `format` picks a *compiler support* record — the code that reads that compiler's report, decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm) and `ghc-json` (GHC) |
 | `[targets.*]` | the `at` targets (below) |
 
@@ -283,21 +329,31 @@ $ olifant anchors rust
   mods                    e.g. end of mods
 …
 $ olifant where billing/billing-service/src/lib.rs "end of mods"
-billing/billing-service/src/lib.rs:3
+billing/billing-service/src/lib.rs:6
     pub mod refund_invoice;
     pub mod service;
+    pub mod void_invoice;
   ▶ (inserted here)
 
 $ olifant where billing/billing-service/src/lib.rs "start of mods"
 billing/billing-service/src/lib.rs:1
   ▶ (inserted here)
+    pub mod cancel_invoice;
+    pub mod ports;
     pub mod refund_invoice;
-    pub mod service;
+```
 
+`service.rs` has no `mod_item` at all, so `end of mods` has nothing to go beside, and Olifant
+refuses rather than guess:
+
+```
 $ olifant where billing/billing-service/src/service.rs "end of mods"
 error: `end of mods`: has no items to insert beside
 hint: `olifant anchors <language>` lists the targets
 ```
+
+Only a bracketed container (`()`, `{}`, `[]`) is opened when empty ([chapter 3](03-anchors.md));
+a whole file is not one. For a file that may be empty, use the built-in `end of file`.
 
 A wrong kind is reported by ast-grep, through Olifant:
 
@@ -308,9 +364,13 @@ error: `end of mods`: ast-grep failed: Error: Cannot parse rule INLINE_RULES
 ╰▻ Kind `mod_itm` is invalid.
 ```
 
-Check the cases that should *not* match as carefully as the ones that should: a file with no
-items, a nested container, a catch-all branch. `where` exits 5 when the phrase does not
-resolve, so it is easy to script.
+Check the cases that should *not* match as carefully as the ones that should: a nested
+container, a catch-all branch, and — since an empty bracketed container now opens instead
+of refusing — a container with no items, where "resolves" no longer means "is a sane place
+to insert". A container that has something inside that is not one of `items` is refused
+("has content that is not one of the target's items"); that is usually a sign the target's
+`items` is missing a kind. `where` exits 5 when the phrase does not resolve at all, so a genuinely wrong
+target is still easy to script against.
 
 When the target works, commit it to the pack with a generator test that uses it
 ([chapter 10](10-testing-generators.md)); the adapter's own unit tests are in
