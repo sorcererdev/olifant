@@ -5,10 +5,8 @@ members = [
           ##PLOP NEW PACKAGE HOOK##
           "notifications/adapters/in-memory-delivery-log-repository",
           "notifications/adapters/diesel-delivery-log-repository",
-          "main",
-          "web-client",
-          "web-htmx",
-          "web-macros",
+          "billing/billing-service",
+          "notifications/notifications-service",
 ]
 
 [workspace.dependencies]

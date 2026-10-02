@@ -15,14 +15,7 @@ import Olifant.Workspace (Workspace (..))
 import System.Directory (findExecutable)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (getTemporaryDirectory)
-import System.FilePath (splitDirectories, takeDirectory, takeFileName, (</>))
-import System.Directory (createDirectoryIfMissing)
-import System.Environment (getEnvironment)
-import System.Exit (ExitCode (..))
-import System.IO.Temp (withSystemTempDirectory)
-import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
-import Data.List (isSuffixOf)
-import Data.Containers.ListUtils (nubOrd)
+import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
 import Test.Hspec
@@ -167,16 +160,17 @@ spec = do
   describe "rust pack output compiles" $ do
     cases <- runIO (discoverCases (diskWorkspace ".") "packs")
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
-    tmp <- runIO getTemporaryDirectory
+    rustSrc <- runIO (TIO.readFile "packs/rust-htmx/languages/rust.toml")
+    let Right rust = parseLanguage "rust" "packs/rust-htmx" rustSrc
     forM_ [c | c <- cases, casePack c == "rust-htmx"] $ \c ->
       it (T.unpack (caseName c)) $
         findExecutable "cargo" >>= \case
           Nothing -> missingTool strict "cargo is not installed (brew install rustup; rustup default stable)"
-          Just cargo -> do
+          Just _ -> do
             fixture <- readTree "packs/rust-htmx/fixtures/app"
             given <- readTree (caseDir c </> "given")
             snapshot <- readTree (caseDir c </> "snapshot")
-            cargoCheck cargo (tmp </> "olifant-test-cache" </> "cargo-target") (M.unions [snapshot, given, fixture]) `shouldReturn` Right ()
+            compileClean rust (M.unions [snapshot, given, fixture]) `shouldReturn` Right ()
   where
     -- Pending locally; a failure where tools are required (the pre-merge hook
     -- sets OLIFANT_REQUIRE_TOOLS=1), so a missing tool cannot look green.
@@ -185,21 +179,3 @@ spec = do
       let ws = diskWorkspace "."
       paths <- filter (\p -> takeWhile (/= '/') p /= "elm-stuff") <$> listFiles ws dir
       M.fromList <$> traverse (\p -> (p,) . maybe "" id <$> readText ws (dir </> p)) paths
-
--- | `cargo check` every @*/*-service@ crate in @files@, as one workspace.
-cargoCheck :: FilePath -> FilePath -> M.Map FilePath Text -> IO (Either Text ())
-cargoCheck cargo target files = withSystemTempDirectory "olifant-cargo" $ \dir -> do
-  let crate p = case splitDirectories p of
-        (a : b : "src" : _) | "-service" `isSuffixOf` b -> Just (a </> b)
-        _ -> Nothing
-      crates = nubOrd [k | Just k <- map crate (M.keys files)]
-      manifest k = "[package]\nname = \"" <> T.pack (takeFileName k) <> "\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nthiserror = \"1\"\nasync-trait = \"0.1\"\n"
-      write p t = createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
-  forM_ [(p, t) | (p, t) <- M.toList files, maybe False (const True) (crate p)] (uncurry write)
-  forM_ crates $ \k -> write (k </> "Cargo.toml") (manifest k)
-  write "Cargo.toml" ("[workspace]\nresolver = \"2\"\nmembers = [" <> T.intercalate ", " ["\"" <> T.pack k <> "\"" | k <- crates] <> "]\n")
-  env <- getEnvironment
-  (code, _, err) <- readCreateProcessWithExitCode ((proc cargo ["check", "--quiet", "--message-format=short"]) {cwd = Just dir, env = Just (("CARGO_TARGET_DIR", target) : env)}) ""
-  pure $ case code of
-    ExitSuccess -> Right ()
-    ExitFailure _ -> Left (T.unlines [l | l <- T.lines (T.pack err), "error" `T.isInfixOf` l])

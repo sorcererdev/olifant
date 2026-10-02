@@ -38,6 +38,8 @@ data CompilerSupport = CompilerSupport
   -- ^ the diagnostic, site source, constructor: can it appear here?
   , supportFunction :: Text -> Int -> Text
   -- ^ site source, 0-based line: the enclosing top-level declaration
+  , supportReadsStdout :: Bool
+  -- ^ the report is on stdout (cargo), not stderr (elm, GHC)
   }
 
 -- | The declaration a 0-based line belongs to: the first word of the nearest

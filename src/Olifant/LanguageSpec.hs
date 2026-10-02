@@ -20,6 +20,7 @@ import Olifant.Template (Value (..))
 import Control.Monad (forM_)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
+import Olifant.Language.Rustc (rustcSupport)
 import Olifant.Cli.Output (anchorsHuman)
 import Test.Hspec
 
@@ -154,6 +155,15 @@ spec = do
       forM_ ["src/Olifant/Generation/Complete.hs", "src/Olifant/Language/Check.hs"] $ \f -> do
         src <- TIO.readFile f
         (f, "Olifant.Language.Elm" `T.isInfixOf` src) `shouldBe` (f, False)
+  describe "rustc-json" $ do
+    it "reads errors as broken files, relative to the check directory" $
+      fmap reportBroken (supportParse rustcSupport "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"code\":{\"code\":\"E0063\"},\"message\":\"missing field `email_sender` in initializer of `CancelInvoice`\",\"spans\":[{\"file_name\":\"billing/billing-service/src/service.rs\",\"line_start\":26,\"line_end\":26,\"is_primary\":true}],\"children\":[]}}\n{\"reason\":\"build-finished\",\"success\":false}\n")
+        `shouldBe` Right [("billing/billing-service/src/service.rs", "missing field `email_sender` in initializer of `CancelInvoice`")]
+    it "is a known format" $ fmap supportFormat (supportFor "rustc-json") `shouldBe` Just "rustc-json"
+  describe "check commands" $
+    it "expands {= cache =} to an existing per-language cache directory" $ do
+      let Right lang = parseLanguage "cachey" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"--\"", "grammar = \"x\"", "[check]", "command = [\"sh\", \"-c\", \"test -d \\\"$0\\\"\", \"{= cache =}\"]", "format = \"rustc-json\""])
+      compileClean lang (M.fromList [("a.x", "")]) `shouldReturn` Right ()
   describe "GHC support (fixtures captured from GHC 9.10.3)" $ do
     let real = BS.readFile "src/Olifant/Language/testdata/ghc-62161.jsonl"
     it "reads one pattern per line, the full type, and only case alternatives as sites (review C1, C2, I1)" $ do

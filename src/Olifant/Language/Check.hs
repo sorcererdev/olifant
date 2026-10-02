@@ -24,7 +24,7 @@ import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), Language (..), matchesGlob)
 import Olifant.Language.Support (supportFor)
 import Olifant.Process (runBytes)
-import System.Directory (canonicalizePath, createDirectoryIfMissing, findExecutable)
+import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -51,9 +51,9 @@ processChecker = Checker $ \lang files -> case langCheck lang of
   Just check ->
     runIn lang check files <&> \case
       Left f -> Left f
-      Right (code, err, dir) -> case supportFor (checkFormat check) of
+      Right (code, out, err, dir) -> case supportFor (checkFormat check) of
         Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
-        Just support -> case supportParse support err of
+        Just support -> case supportParse support (if supportReadsStdout support then out else err) of
           Left why -> Left (CheckFailed why)
           Right (CheckReport [] [] [])
             | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
@@ -67,11 +67,19 @@ compileClean lang files = case langCheck lang of
   Just check ->
     runIn lang check files <&> \case
       Left f -> Left (describeCheckFailure f)
-      Right (ExitSuccess, _, _) -> Right ()
-      Right (ExitFailure _, err, _) -> Left (T.take 2000 (TE.decodeUtf8With lenientDecode err))
+      Right (ExitSuccess, _, _, _) -> Right ()
+      -- The support's broken files when it reads any (cargo's JSON), else stderr.
+      Right (ExitFailure _, out, err, _) -> Left $ case supportFor (checkFormat check) of
+        Just support
+          | Right report <- supportParse support (if supportReadsStdout support then out else err)
+          , not (null (reportBroken report)) ->
+              T.unlines [T.pack f <> ": " <> t | (f, t) <- reportBroken report]
+        _ -> T.take 2000 (TE.decodeUtf8With lenientDecode err)
 
--- | The argument @{= files =}@ expands to the sources the adapter's globs select.
-runIn :: Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, FilePath))
+-- | The argument @{= files =}@ expands to the sources the adapter's globs
+-- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
+-- directory that outlives the scratch copy (cargo's `--target-dir`).
+runIn :: Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
 runIn lang check files = case checkCommand check of
   [] -> pure (Left (CheckFailed "empty check command"))
   (exe : args) ->
@@ -82,12 +90,16 @@ runIn lang check files = case checkCommand check of
         forM_ (M.toList files) $ \(p, t) -> do
           createDirectoryIfMissing True (takeDirectory (tmp </> p))
           BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
+        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
+        createDirectoryIfMissing True cache
         let sources = sort [p | p <- M.keys files, any (`matchesGlob` p) (langFiles lang)]
-            expand a = if T.strip a == "{= files =}" then sources else [T.unpack a]
+            expand a
+              | T.strip a == "{= files =}" = sources
+              | otherwise = [T.unpack (T.replace "{= cache =}" (T.pack cache) a)]
         ran <- runBytes path (concatMap expand args) (Just tmp) ""
         pure $ case ran of
           Left why -> Left (CheckFailed why)
-          Right (code, _, err) -> Right (code, err, tmp)
+          Right (code, out, err) -> Right (code, out, err, tmp)
 
 -- | GHC already prints relative paths; makeRelative leaves those unchanged.
 relativeTo :: FilePath -> CheckReport -> CheckReport

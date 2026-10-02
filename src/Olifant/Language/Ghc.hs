@@ -27,6 +27,7 @@ ghcSupport =
         (_, Nothing) -> True
         ((withDot, _), Just ty) -> snd (T.breakOnEnd "." (T.dropEnd 1 withDot)) `elem` typeNames ty
     , supportFunction = declarationAt
+    , supportReadsStdout = False
     }
 
 data Diag = Diag {dFile :: FilePath, dStart :: Int, dEnd :: Int, dSeverity :: Text, dCode :: Maybe Int, dMessage :: Text}
