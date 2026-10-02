@@ -22,7 +22,7 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (ChoiceView (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
@@ -135,7 +135,9 @@ runCommand rt cwd fmt cat = \case
       if detail
         then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat M.empty (entryDefinition e)) ok
         else pure ok
-    emit rt fmt (listJson detail (subsOf cat) entries broken) (listHuman detail (subsOf cat) entries broken)
+    viewList <- if detail then traverse (\e -> (entryId e,) . either (const M.empty) M.fromList <$> choiceViewsFor rt cat M.empty (entryDefinition e)) ok else pure []
+    let views e = M.findWithDefault M.empty (entryId e) (M.fromList viewList)
+    emit rt fmt (listJson detail (subsOf cat) views entries broken) (listHuman detail (subsOf cat) views entries broken)
     pure ExitSuccess
   SchemaCmd -> do
     emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")
@@ -157,14 +159,19 @@ runCommand rt cwd fmt cat = \case
         pure ExitSuccess
     where
       nextSteps lang = "fill in description and [[edits]]; `olifant anchors " <> lang <> "` lists placement phrases, `olifant where FILE \"PHRASE\"` tests one, `olifant gen " <> name <> " --set name=example --plan` previews"
-  ShowCmd ref -> case findEntry cat ref of
+  ShowCmd ref setList -> case findEntry cat ref of
     Left err -> catalogFailure rt fmt err
     Right e0 ->
       checkEntry (rtRoot rt) (rtSyntax rt) cat e0 >>= \case
        Just why -> failWith rt fmt 1 "generator_invalid" (generatorIdText (entryId e0) <> ": " <> why) Nothing []
-       Nothing -> resolveChoicesFor rt cat M.empty (entryDefinition e0) >>= \case
-        Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
-        Right d -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
+       Nothing -> do
+        let sets = M.fromList setList
+        resolved <- resolveChoicesFor rt cat sets (entryDefinition e0)
+        views <- choiceViewsFor rt cat sets (entryDefinition e0)
+        case (resolved, views) of
+          (Left why, _) -> failWith rt fmt 1 "generator_invalid" why Nothing []
+          (_, Left why) -> failWith rt fmt 1 "generator_invalid" why Nothing []
+          (Right d, Right vs) -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (M.fromList vs) (subsOf cat e) e) (showHuman (M.fromList vs) (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
     Nothing ->
       failWith rt fmt 3 "language_not_found" ("no language adapter named `" <> name <> "`" <> T.concat ["; " <> T.pack path <> " failed to load: " <> why | (path, why) <- catalogBrokenLanguages cat, takeBaseName path == T.unpack name]) (Just "packs define languages in languages/<name>.toml") ["available" .= map langName (catalogLanguages cat)]
@@ -291,6 +298,15 @@ resolveChoicesFor rt cat sets gen
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
       first failureWhy <$> withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets gen
+
+-- | `show`'s view of each enum's choices (spec §4.1); the project is listed
+-- only when a generator has a `one_of`.
+choiceViewsFor :: Runtime -> Catalog -> Map Text Text -> GeneratorWith s -> IO (Either Text [(Text, ChoiceView)])
+choiceViewsFor rt cat sets gen
+  | not (needsChoices gen) = pure (Right [(inputName i, Flat cs) | i@InputSpec {inputType = ScalarInput (EnumS cs)} <- genInputs gen])
+  | otherwise = do
+      paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
+      first failureWhy <$> choiceViews (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.

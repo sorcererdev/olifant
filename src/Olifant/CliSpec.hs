@@ -157,6 +157,26 @@ runCliSpec = describe "runCli" $ do
     (code, out, _, _) <- runWith "" (svc : ("/proj/billing/billing-service/Cargo.toml", "") : project) True ["show", "svc"]
     code `shouldBe` ExitSuccess
     out `shouldSatisfy` ("--set service=<enum(billing)>" `T.isInfixOf`)
+  it "groups dependent choices under each earlier value, and narrows with --set (spec §4.1)" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[inputs.service]", "type = \"enum\"", "one_of = \"services\""
+          , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+          , "[derive]", "service_dir = \"{= service =}/{= service =}-service\""
+          , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
+          , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\"" ]
+        files = ("/proj/.olifant/generators/wire/generator.toml", gen) : ("/proj/billing/billing-service/ports/email_sender.rs", "") : ("/proj/billing/billing-service/ports/invoice_repository.rs", "") : ("/proj/notifications/notifications-service/lib.rs", "") : project
+    (code, human, _, _) <- runWith "" files True ["show", "wire"]
+    code `shouldBe` ExitSuccess
+    human `shouldSatisfy` T.isInfixOf "--set dependency=<enum, depends on service>"
+    human `shouldSatisfy` T.isInfixOf "service=billing:        email_sender | invoice_repository"
+    human `shouldSatisfy` T.isInfixOf "service=notifications:  (none)"
+    (_, json, _, _) <- runWith "" files False ["show", "wire"]
+    json `shouldSatisfy` T.isInfixOf "\"choices_by\":{\"billing\":[\"email_sender\",\"invoice_repository\"],\"notifications\":[]}"
+    json `shouldSatisfy` T.isInfixOf "\"depends_on\":[\"service\"]"
+    (_, narrowed, _, _) <- runWith "" files False ["show", "wire", "--set", "service=billing"]
+    narrowed `shouldSatisfy` T.isInfixOf "\"choices\":[\"email_sender\",\"invoice_repository\"]"
+    narrowed `shouldNotSatisfy` T.isInfixOf "choices_by"
   it "suggests `gen` when the first word looks like a generator" $ do
     (code, _, err, _) <- runWith "" project True ["elm/page", "--set", "page=settings"]
     code `shouldBe` ExitFailure 2

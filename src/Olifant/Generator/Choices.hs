@@ -1,6 +1,6 @@
 -- | `one_of` (spec §4.1): resolve enum inputs whose choices come from a
 -- query over the project, before inputs are parsed.
-module Olifant.Generator.Choices (withChoices, needsChoices) where
+module Olifant.Generator.Choices (withChoices, needsChoices, ChoiceView (..), choiceViews, maxGroups) where
 
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
@@ -50,3 +50,40 @@ withChoices queries paths readFile' sets gen0 = foldM step (Right gen0) (map inp
 -- | Does any input still need its `one_of` resolved?
 needsChoices :: GeneratorWith s -> Bool
 needsChoices gen = not (null [() | InputSpec {inputType = ScalarInput (EnumOf _ _ Unresolved)} <- genInputs gen])
+
+-- | What `show` prints for an enum (spec §4.1): its choices; one group per
+-- combination of the inputs it depends on; or only what it depends on.
+data ChoiceView = Flat [Text] | Grouped [Text] [([(Text, Text)], [Text])] | DependsOn [Text]
+  deriving stock (Eq, Show)
+
+-- | Views for every enum input: flat when its choices resolve with @sets@;
+-- otherwise grouped by the enums it depends on (at most 'maxGroups' groups),
+-- or 'DependsOn' when one of those is not an enum or there are too many.
+choiceViews :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Map Text Text -> GeneratorWith s -> m (Either QueryFailure [(Text, ChoiceView)])
+choiceViews queries paths readFile' sets gen0 =
+  withChoices queries paths readFile' sets gen0 >>= \case
+    Left f -> pure (Left f)
+    Right gen -> Right . concat <$> traverse (view gen) (genInputs gen)
+  where
+    view gen spec = case inputType spec of
+      ScalarInput (EnumS cs) -> pure [(inputName spec, Flat cs)]
+      ScalarInput (EnumOf _ _ (Resolved cs _)) -> pure [(inputName spec, Flat cs)]
+      ScalarInput (EnumOf _ _ (NeedsInputs ns)) -> case traverse (flatChoices gen) ns of
+        Just lists | product (map length lists) <= maxGroups -> do
+          let combos = sequence [[(n, c) | c <- cs] | (n, cs) <- zip ns lists]
+          groups <- traverse (\combo -> (combo,) <$> choicesWith (M.union (M.fromList combo) sets) (inputName spec)) combos
+          pure [(inputName spec, Grouped ns groups)]
+        _ -> pure [(inputName spec, DependsOn ns)]
+      _ -> pure []
+    flatChoices gen n = case [inputType s | s <- genInputs gen, inputName s == n] of
+      [ScalarInput (EnumS cs)] -> Just cs
+      [ScalarInput (EnumOf _ _ (Resolved cs _))] -> Just cs
+      _ -> Nothing
+    choicesWith sets' name =
+      withChoices queries paths readFile' sets' gen0 <&> \case
+        Right g | [ScalarInput (EnumOf _ _ (Resolved cs _))] <- [inputType s | s <- genInputs g, inputName s == name] -> cs
+        _ -> []
+
+-- | The most groups `show` lists for one input (spec §4.1).
+maxGroups :: Int
+maxGroups = 30

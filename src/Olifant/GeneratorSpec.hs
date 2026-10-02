@@ -18,6 +18,9 @@ import Data.List (sort)
 import Olifant.Generator.Load (completeKeys, createKeys, inputKeys, insertKeys, topKeys)
 import Olifant.Generator.Schema (generatorSchema)
 import Test.Hspec
+import Data.Bifunctor (first)
+import Data.Functor.Identity (runIdentity)
+import Olifant.Query (QueryFailure (..), noQueries)
 import Data.List (isInfixOf)
 
 modelToml :: Text
@@ -202,6 +205,29 @@ parseSpec = describe "parseGenerator" $ do
       , "[derive]", "service_dir = \"{= service|kebab =}\""
       , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\"" ])
       `shouldSatisfy` either ("`[query.ports]` uses `service`, which is declared after `dependency`" `T.isInfixOf`) (const False)
+  describe "choiceViews (spec §4.1)" $ do
+    let src = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[inputs.service]", "type = \"enum\"", "one_of = \"services\""
+          , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+          , "[derive]", "service_dir = \"{= service =}/{= service =}-service\""
+          , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
+          , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\"" ]
+        paths = ["billing/billing-service/ports/email_sender.rs", "billing/billing-service/ports/invoice_repository.rs", "notifications/notifications-service/lib.rs"]
+        views sets = let Right g = load src in first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) (M.fromList sets) g))
+    it "(a) groups a dependent input under each value of the input it uses; an empty group stays (Review Focus 2)" $
+      views [] `shouldBe` Right
+        [ ("service", Flat ["billing", "notifications"])
+        , ("dependency", Grouped ["service"] [([("service", "billing")], ["email_sender", "invoice_repository"]), ([("service", "notifications")], [])]) ]
+    it "(b) narrows to a flat list with --set" $
+      fmap (lookup "dependency") (views [("service", "billing")]) `shouldBe` Right (Just (Flat ["email_sender", "invoice_repository"]))
+    it "(c) does not enumerate when an input it uses is not an enum (Review Focus 5)" $ do
+      let Right g = load (T.unlines
+            [ "description = \"d\"", "language = \"x\""
+            , "[inputs.service]", "type = \"ident\""
+            , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+            , "[query.ports]", "glob = \"{= service =}/ports/*.rs\"" ])
+      fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty g))) `shouldBe` Right (Just (DependsOn ["service"]))
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft
   it "reports template syntax errors with the key" $ do
