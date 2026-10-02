@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use thiserror::Error;
+
 use crate::ports::invoice_repository::InvoiceRepository;
 
 #[derive(Clone)]

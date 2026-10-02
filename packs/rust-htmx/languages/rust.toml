@@ -30,6 +30,15 @@ container = { kind = "use_list", inside = { kind = "use_declaration", regex = "^
 items = { any = [{ kind = "scoped_use_list" }, { kind = "scoped_identifier" }, { kind = "identifier" }, { kind = "use_as_clause" }, { kind = "use_wildcard" }, { kind = "self" }] }
 example = "end of crate imports"
 
+# A file's top-level `use` declarations: `end of uses` goes after the last
+# one, whole (a multi-line `use crate::{ … };` included). A file with none is
+# not opened: give `start of file` as the fallback.
+[targets.uses]
+phrase = "uses"
+container = { kind = "source_file" }
+items = { kind = "use_declaration" }
+example = "end of uses"
+
 # Wiring dependencies (spec §7.1): a function's parameters, a struct literal
 # by name, a call's arguments. Empty ones are opened (`()`, `{}`).
 [targets.parameters_in]

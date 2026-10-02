@@ -23,7 +23,6 @@ import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.List (nub)
 import Data.Map.Strict qualified as M
-import Data.Maybe (isJust)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -36,7 +35,7 @@ import Olifant.Anchor (resolveLayers)
 import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
-import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), describeEnvError, needsChoices, withChoices)
+import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
 import Olifant.Language (languageFor)
 import Olifant.Query (renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
@@ -80,7 +79,7 @@ generate ws resolve tools steps now mode =
           blocked = M.fromList [(p, why) | (p, Left why) <- inspected, p `elem` targets]
           ids = [generatorIdText (genId (stepGenerator s)) | s <- steps]
       -- `unless` globs need the project's paths; list them only when used.
-      diskPaths <- if any (isJust . renderedUnless) [e | PlanEdit _ e <- items] then listFiles ws "." else pure []
+      diskPaths <- if any (\case Just (UnlessExists _) -> True; _ -> False) [renderedUnless e | PlanEdit _ e <- items] then listFiles ws "." else pure []
       let completes = [(p, c) | PlanEdit p (RenderedComplete c) <- items]
           -- Both phases (spec §5.6): positional edits, then compiler-found branches.
           phases originals' = do

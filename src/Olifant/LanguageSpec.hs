@@ -18,8 +18,6 @@ import System.Directory (findExecutable, getTemporaryDirectory)
 import System.FilePath ((</>))
 import Olifant.Template (Value (..))
 import Control.Monad (forM_)
-import Olifant.Language.Diagnostics (CompilerSupport (..))
-import Olifant.Language.Support (supportFor)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
 import Olifant.Cli.Output (anchorsHuman)

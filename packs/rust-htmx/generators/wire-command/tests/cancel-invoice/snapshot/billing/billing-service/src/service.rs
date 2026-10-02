@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use crate::ports::email_sender::EmailSender;
 use crate::ports::invoice_repository::InvoiceRepository;
 
 use crate::{
@@ -7,6 +6,8 @@ use crate::{
     void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
     cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
 };
+
+use crate::ports::email_sender::EmailSender;
 
 #[derive(Clone)]
 pub struct BillingService {

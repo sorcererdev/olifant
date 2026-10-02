@@ -1,10 +1,11 @@
 use std::sync::Arc;
-use crate::ports::email_template_repository::EmailTemplateRepository;
 
 use crate::{
     //##PLOP INSERT COMMAND IMPORTS HOOK##
     send_email::{SendEmail, SendEmailInput, SendEmailOutput},
 };
+
+use crate::ports::email_template_repository::EmailTemplateRepository;
 
 #[derive(Clone)]
 pub struct NotificationsService {

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::ports::invoice_repository::InvoiceRepository;
+
 use crate::ports::email_sender::EmailSender;
 
 #[derive(Clone)]

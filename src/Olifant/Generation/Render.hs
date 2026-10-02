@@ -11,16 +11,16 @@ module Olifant.Generation.Render
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Anchor (RenderedAnchor (..))
-import Olifant.Generator (AnchorSpec (..), EditWith (..), OnExists (..))
+import Olifant.Generator (AnchorSpec (..), EditWith (..), OnExists (..), Unless (..))
 import Olifant.Language (renderRule)
 import Olifant.Template (Env, Template, TemplateError, render)
 import Olifant.Workspace (normalisePath)
 
 data RenderedEdit
-  = -- | path, content, on_exists, unless-glob
-    RenderedCreate FilePath Text OnExists (Maybe Text)
-  | -- | path, anchors (tried in order), snippet
-    RenderedInsert FilePath [RenderedAnchor] Text (Maybe Text)
+  = -- | path, content, on_exists, unless
+    RenderedCreate FilePath Text OnExists (Maybe (Unless Text))
+  | -- | path, anchors (tried in order), snippet, unless
+    RenderedInsert FilePath [RenderedAnchor] Text (Maybe (Unless Text))
   | -- | resolved after a check (spec §5.6); the body is rendered per site
     RenderedComplete CompleteSpec
 
@@ -42,8 +42,8 @@ renderedPath = \case
 -- for `complete` edits).
 renderEdits :: Text -> Env -> [EditWith Template] -> Either TemplateError [RenderedEdit]
 renderEdits language env = traverse $ \case
-  Create target src onExists u -> RenderedCreate <$> path target <*> render env src <*> pure onExists <*> traverse (render env) u
-  Insert target anchors src u -> RenderedInsert <$> path target <*> traverse anchor anchors <*> render env src <*> traverse (render env) u
+  Create target src onExists u -> RenderedCreate <$> path target <*> render env src <*> pure onExists <*> traverse (traverse (render env)) u
+  Insert target anchors src u -> RenderedInsert <$> path target <*> traverse anchor anchors <*> render env src <*> traverse (traverse (render env)) u
   Complete ctor wher body -> (\c w -> RenderedComplete (CompleteSpec c w body env language)) <$> render env ctor <*> traverse (render env) wher
   where
     path t = normalisePath . T.unpack <$> render env t
@@ -51,7 +51,7 @@ renderEdits language env = traverse $ \case
       AtPhrase t -> PhraseAnchor <$> render env t
       AtRule r pos -> (`RuleAnchor` pos) <$> renderRule env r
 
-renderedUnless :: RenderedEdit -> Maybe Text
+renderedUnless :: RenderedEdit -> Maybe (Unless Text)
 renderedUnless = \case
   RenderedCreate _ _ _ u -> u
   RenderedInsert _ _ _ u -> u

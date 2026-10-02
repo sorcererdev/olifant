@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use thiserror::Error;
+
 use crate::ports::email_template_repository::EmailTemplateRepository;
 
 // Example repo dependency

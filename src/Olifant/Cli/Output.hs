@@ -204,6 +204,7 @@ skipReason = \case
   AlreadyPresent -> "already present"
   UnchangedContent -> "unchanged"
   UnlessMatched p -> "unless: " <> T.pack p <> " exists"
+  UnlessFound p n -> "unless: line " <> T.pack (show n) <> " of " <> T.pack p <> " matches"
 
 conflictCode :: Conflict -> Text
 conflictCode = \case

@@ -63,7 +63,11 @@ runCase root syntax checker bless pc = do
                 let fixtureDir = casePackRoot pc </> "fixtures" </> "app"
                 fixturePaths <- listFiles root fixtureDir
                 fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
-                (ws, _) <- memoryWorkspace fixture
+                -- A case's `given/` files replace or add to the fixture, for
+                -- this case only: the state a re-run or a hand edit leaves.
+                givenPaths <- listFiles root (caseDir pc </> "given")
+                given <- forM givenPaths $ \p -> (p,) . fromMaybe "" <$> readText root (caseDir pc </> "given" </> p)
+                (ws, _) <- memoryWorkspace (M.toList (M.fromList given `M.union` M.fromList fixture))
                 -- Commands run in the fixture on disk (the case's own copy is
                 -- in memory), like a project's commands run in the project.
                 -- choices_from (here and in [[uses]] generators) is resolved by
