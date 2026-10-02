@@ -1,0 +1,51 @@
+description = "Add a failure to a command's Failure enum, and an arm to every match on it (spec §5.6)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=already_refunded --set message=\"The invoice was already refunded\"",
+]
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service the command belongs to"
+
+[inputs.command]
+type   = "enum"
+one_of = "commands"
+prompt = "The command that can fail this way"
+
+[inputs.failure]
+type   = "ident"
+prompt = "The failure, as a name (already_refunded)"
+
+[inputs.message]
+type   = "text"
+prompt = "The error message (thiserror's #[error])"
+
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+Failure = "{= command|pascal =}Failure"
+
+# Every service: folders like billing/billing-service. The choice is the
+# parent folder's name (billing).
+[query.services]
+glob  = "*/*-service"
+value = "parent folder"
+
+# The chosen service's commands: its src/*.rs files, less the service's own modules.
+[query.commands]
+glob    = "{= service_dir =}/src/*.rs"
+exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
+value   = "file name"
+
+[[edits]]
+insert = "{= service_dir =}/src/{= command|snake =}.rs"
+at     = "end of enum {= Failure =}"
+text   = """
+#[error("{= message =}")]
+{= failure|pascal =},"""
+
+# Every match on the enum gets an arm; with no body, a todo!() names the site.
+[[edits]]
+complete = "{= Failure =}::{= failure|pascal =}"

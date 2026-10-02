@@ -18,6 +18,12 @@ container = { kind = "field_declaration_list", inside = { kind = "struct_item", 
 items = { kind = "field_declaration" }
 example = "end of struct BillingService"
 
+[targets.enum]
+phrase = "enum NAME"
+container = { kind = "enum_variant_list", inside = { kind = "enum_item", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { kind = "enum_variant" }
+example = "end of enum RefundInvoiceFailure"
+
 [targets.impl]
 phrase = "impl NAME"
 container = { kind = "declaration_list", inside = { kind = "impl_item", has = { field = "type", regex = "^{= NAME =}$" } } }

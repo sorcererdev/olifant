@@ -182,7 +182,9 @@ insertBranch sep (caseStart, caseEnd) branch content0 =
       alternatives = [i | (i, l) <- inCase, not (T.null (T.strip l)), T.takeWhile (\c -> c == ' ' || c == '\t') l == indent]
       blankBefore = case reverse alternatives of
         (lastAlt : _ : _) -> lastAlt > 0 && T.null (T.strip (ls !! (lastAlt - 1)))
-        _ -> True
+        -- One arm: nothing to copy. Elm's style is a blank line; Rust's
+        -- comma-separated arms sit together.
+        _ -> T.null sep
    in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing Nothing "") ((if blankBefore then "\n" else "") <> branch) content
   where
     -- Rust arms are comma-separated: give the last arm its comma unless it

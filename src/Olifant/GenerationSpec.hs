@@ -319,6 +319,9 @@ composeSpec = describe "generate (composition)" $ do
     it "leaves a block last arm as it is" $
       insertBranch "," (0, 3) "B => todo!()," "match f {\n    A => {\n        1\n    }\n}\n"
         `shouldBe` (5, "match f {\n    A => {\n        1\n    }\n    B => todo!(),\n}\n")
+    it "adds no blank line after a single arm in a comma-separated language" $
+      insertBranch "," (0, 1) "B => todo!()," "match f {\n    A => 1,\n}\n"
+        `shouldBe` (3, "match f {\n    A => 1,\n    B => todo!(),\n}\n")
     it "adds no separator when the language has none" $
       insertBranch "" (0, 2) "B -> 2" "case x of\n    A -> 1\n    C -> 3\n"
         `shouldBe` (4, "case x of\n    A -> 1\n    C -> 3\n    B -> 2\n")
