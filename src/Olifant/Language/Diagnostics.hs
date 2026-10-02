@@ -6,6 +6,7 @@ module Olifant.Language.Diagnostics
   , CheckReport (..)
   , CompilerSupport (..)
   , declarationAt
+  , typeNames
   ) where
 
 import Data.ByteString (ByteString)
@@ -38,6 +39,9 @@ data CompilerSupport = CompilerSupport
   -- ^ the diagnostic, site source, constructor: can it appear here?
   , supportFunction :: Text -> Int -> Text
   -- ^ site source, 0-based line: the enclosing top-level declaration
+  , supportArmSeparator :: Text
+  -- ^ appended to the last alternative before a new one, unless it already
+  -- ends with it or ends a block (`,` in Rust; nothing in Elm and Haskell)
   , supportReadsStdout :: Bool
   -- ^ the report is on stdout (cargo), not stderr (elm, GHC)
   }
@@ -50,3 +54,8 @@ declarationAt content line =
   case [l | l <- reverse (take (line + 1) (T.lines content)), Just (c, _) <- [T.uncons l], not (isSpace c), not ("--" `T.isPrefixOf` l)] of
     (l : _) -> T.takeWhile (\c -> isAlphaNum c || c == '_' || c == '\'') l
     [] -> "?"
+
+-- | The type names in a printed type, unqualified: `Maybe (M.T, Bool)` →
+-- Maybe, T, Bool; `&Failure` → Failure.
+typeNames :: Text -> [Text]
+typeNames = map (snd . T.breakOnEnd ".") . filter (not . T.null) . T.split (\c -> not (isAlphaNum c || c == '_' || c == '.' || c == '\''))

@@ -14,6 +14,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
+import Olifant.Generation.Complete (insertBranch)
 import Olifant.Generator
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Olifant.Language
@@ -311,6 +312,16 @@ composeSpec = describe "generate (composition)" $ do
     Right _ <- generate ws resolve noTools [Step fromPages M.empty] now Apply
     files <- snapshot
     [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
+  describe "insertBranch (spec §5.6)" $ do
+    it "adds the separator to a last arm that lacks it (Review Focus 4)" $
+      insertBranch "," (0, 2) "B => todo!()," "match f {\n    A => 1,\n    C => 2\n}\n"
+        `shouldBe` (4, "match f {\n    A => 1,\n    C => 2,\n    B => todo!(),\n}\n")
+    it "leaves a block last arm as it is" $
+      insertBranch "," (0, 3) "B => todo!()," "match f {\n    A => {\n        1\n    }\n}\n"
+        `shouldBe` (5, "match f {\n    A => {\n        1\n    }\n    B => todo!(),\n}\n")
+    it "adds no separator when the language has none" $
+      insertBranch "" (0, 2) "B -> 2" "case x of\n    A -> 1\n    C -> 3\n"
+        `shouldBe` (4, "case x of\n    A -> 1\n    C -> 3\n    B -> 2\n")
   describe "dependent choices (spec §4.1)" $ do
     let wiring = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"x\""
