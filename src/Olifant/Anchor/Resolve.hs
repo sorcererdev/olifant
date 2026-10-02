@@ -38,7 +38,7 @@ data RenderedAnchor = PhraseAnchor Text | RuleAnchor Aeson.Value Position
 -- spacing between the target's neighbouring items (spec §5.2). 'locOpen':
 -- an empty container on one line, @(line, from, to)@ its columns, which the
 -- insert opens (`()` → `(` / text / `)`) instead of adding whole lines.
-data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing, locOpen :: Maybe Opening}
+data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing, locOpen :: Maybe Opening, locComment :: Text}
   deriving stock (Eq, Show)
 
 -- | How an empty container is opened: 'OpenLine' splits its one line at
@@ -96,7 +96,7 @@ resolveOne syntax lang anchor content = case anchor of
     ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
     indentAt i = T.takeWhile (\c -> c == ' ' || c == '\t') (if i < length ls then ls !! i else "")
     regionOf a b = T.intercalate "\n" (take (b - a + 1) (drop a ls))
-    located line indent region = Located line indent region used NoSpacing Nothing
+    located line indent region = Located line indent region used NoSpacing Nothing (maybe "" langComment lang)
     count = T.pack . show . length
     around m pos =
       let (s, e) = (fst (matchStart m), fst (matchEnd m))
@@ -278,11 +278,21 @@ insertedText spacing snippet =
 -- | Is the snippet already where this anchor would put it? Checks the
 -- anchor's region (a container or marker block) and the snippet-sized window
 -- on each side of the insertion line: a previous `after` run left the text
--- just below it, a previous `before` run just above (spec §5.4).
+-- just below it, a previous `before` run just above (spec §5.4). Commented-out
+-- lines (a template's example hint) are left out of both.
 presentAt :: Located -> Text -> Text -> Bool
 presentAt loc snippet content =
-  any (\t -> alreadyPresent t (locRegion loc) || alreadyPresent t window) (nub [snippet, firstItem snippet])
+  any present (nub [snippet, firstItem snippet])
   where
+    -- A commented-out copy (a template's example hint) is not the text, so
+    -- comment lines are compared on neither side (unless the text is only
+    -- comments).
+    present t
+      | T.null (T.strip (uncommented t)) = alreadyPresent t (locRegion loc) || alreadyPresent t window
+      | otherwise = alreadyPresent (uncommented t) (uncommented (locRegion loc)) || alreadyPresent (uncommented t) (uncommented window)
+    uncommented
+      | T.null (locComment loc) = id
+      | otherwise = T.intercalate "\n" . filter (not . (locComment loc `T.isPrefixOf`) . T.stripStart) . T.splitOn "\n"
     ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
     k = max 1 (length (T.lines snippet))
     window = T.intercalate "\n" (take (2 * k) (drop (max 0 (locLine loc - k)) ls))

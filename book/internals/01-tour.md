@@ -686,10 +686,13 @@ so the first ever call compiles `packs/elm/languages/grammar/elm/parser.c` with 
 path, size and modification time (`prepare`): a `stat` per query, since hashing a
 megabyte-sized grammar on every call cost a third of an AST query's time.
 
-`presentAt` (`Resolve.hs:282`) makes re-runs idempotent: if the snippet's tokens already sit
+`presentAt` (`Resolve.hs:283`) makes re-runs idempotent: if the snippet's tokens already sit
 in the target region, or just next to the insertion line, the insert is `Skipped
 AlreadyPresent`. It tries the snippet and its `firstItem` both, so text whose leading `,` was
-dropped when it opened a container is still found on the next run. It looks no further than
+dropped when it opened a container is still found on the next run. Lines starting with the
+adapter's comment (`locComment`, set from `langComment`) are dropped from the region, the
+window and the snippet before comparing, so a template's commented-out example of the field
+is not "present"; a snippet that is only comments is compared whole. It looks no further than
 the region and that window; text that is in the file by name but elsewhere is what
 `unless = { matches = … }` is for (above). `insertLines` does the actual splice, keeping the
 file's line endings — whole lines around `locLine` normally, or, for `OpenLine`, the

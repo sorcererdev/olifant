@@ -298,10 +298,11 @@ The details:
 - **Rendered values are not escaped.** A placeholder's value goes into the regex as is.
   Identifiers (`ident` inputs and their case filters) are safe; free text with `.` or `(` in
   it is not.
-- **Comments count.** Any line can match, a commented-out one included. Anchor the regex
-  (`^[[:space:]]*pub …`) when a comment could spell the same name. `command-dependency`'s
-  import regex is not anchored, so the commented-out hint in the fixture's `send_email.rs`,
-  `// use crate::ports::worksite_repository::WorksiteRepository;`, would stop a
-  `worksite_repository` import (`skipped: unless: line 6 of …/send_email.rs matches`).
+- **Comments count.** `unless.matches` reads every line, a commented-out one included, so
+  write the regex so a comment cannot match. `command-dependency`'s import regex starts
+  `^[^/]*`: the template's hint `// use crate::ports::worksite_repository::WorksiteRepository;`
+  has a `/` before the name, so a real `worksite_repository` dependency still gets its
+  import. (An anchor's own "already present" check leaves comment lines out by itself; see
+  [chapter 3](03-anchors.md).)
 - **The plan says which line.** `skipped: unless: line N of PATH matches`, 1-based, in the
   file as the plan had it at that point; in JSON the same text is the edit's `reason`.

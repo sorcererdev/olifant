@@ -95,7 +95,10 @@ Use this when a structural target needs a tool (below) that might not be install
 - **Already there.** If the text is already at that spot (or just beside it), the edit is
   skipped, so re-runs are no-ops. Only the target and a few lines around the spot are
   checked: for text that may already be elsewhere in the file, or spelled differently, add
-  `unless = { matches = "REGEX" }` ([chapter 6](06-queries-and-choices.md)).
+  `unless = { matches = "REGEX" }` ([chapter 6](06-queries-and-choices.md)). Commented-out
+  lines (using the adapter's `comment`) are left out on both sides, so a template's hint
+  such as `// pub worksite_repository: Arc<dyn WorksiteRepository>,` does not count as the
+  field being there.
 - **Tools.** Language targets need `ast-grep` (and a C compiler, the first time, to build
   the Elm grammar). Without them the edit misses with "ast-grep is not installed (brew
   install ast-grep)" and the next fallback is tried. Line and marker targets need nothing.

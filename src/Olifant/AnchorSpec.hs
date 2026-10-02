@@ -157,8 +157,8 @@ resolveSpec = do
             if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …"] else [Match (2, 4) (4, 20) "case"]
       fmap locSpacing (runIdentity (resolveLayers one (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right NoSpacing
     it "insertLines adds the blank line unless the text already has it" $ do
-      insertLines (Located 1 "" "" "x" BlankBefore Nothing) "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
-      insertLines (Located 1 "" "" "x" BlankBefore Nothing) "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
+      insertLines (Located 1 "" "" "x" BlankBefore Nothing "") "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
+      insertLines (Located 1 "" "" "x" BlankBefore Nothing "") "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
   describe "opening an empty container (spec §7.1)" $ do
     let emptyAt c = Syntax $ \_ rule _ -> Identity . Right $
           if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [] else [c]
@@ -183,6 +183,16 @@ resolveSpec = do
     it "drops a leading separator from the text when it opens a container: the text is the first item" $
       apply (Match (0, 10) (0, 12) "[]") "end of case in update" ", Parser.map A" "    oneOf []\n"
         `shouldBe` Right "    oneOf [\n        Parser.map A\n    ]\n"
+    it "does not count a commented-out copy of the snippet as present" $ do
+      let src = "S {\n    -- x: X,\n    y: Y,\n}\n"
+          withItem = Syntax $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (2, 4) (2, 9) "y: Y,"] else [Match (0, 2) (3, 1) "{\n    -- x: X,\n    y: Y,\n}"]
+      fmap (\l -> presentAt l "x: X," src) (resolveIn withItem "end of case in update" src) `shouldBe` Right False
+    it "still finds text that carries its own comment lines" $ do
+      let src = "S {\n    y: Y,\n    -- note\n    x: X,\n}\n"
+          withItem = Syntax $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (1, 4) (1, 9) "y: Y,", Match (3, 4) (3, 9) "x: X,"] else [Match (0, 2) (4, 1) "{\n    y: Y,\n    -- note\n    x: X,\n}"]
+      fmap (\l -> presentAt l "-- note\nx: X," src) (resolveIn withItem "end of case in update" src) `shouldBe` Right True
     it "finds the snippet already there once the container has it (Review Focus 3)" $ do
       let opened = "pub fn new(\n    x: X,\n) -> Self {\n"
           withItem = Syntax $ \_ rule _ -> Identity . Right $
@@ -201,11 +211,11 @@ resolveSpec = do
       fmap (\l -> presentAt l "pub mod x;" "pub mod x;\npub mod y;\n") (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor "end of file"] "pub mod x;\npub mod y;\n")) `shouldBe` Right True
   describe "insertLines" $ do
     it "indents non-blank lines and reports the 1-based line" $
-      insertLines (Located 1 "  " "" "x" NoSpacing Nothing) "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
+      insertLines (Located 1 "  " "" "x" NoSpacing Nothing "") "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")
     it "removes the text's common indentation first, so text written at its absolute column is not doubled" $
-      insertLines (Located 1 "  " "" "x" NoSpacing Nothing) "\n    a ->\n        b" "one\ntwo\n" `shouldBe` (2, "one\n\n  a ->\n      b\ntwo\n")
+      insertLines (Located 1 "  " "" "x" NoSpacing Nothing "") "\n    a ->\n        b" "one\ntwo\n" `shouldBe` (2, "one\n\n  a ->\n      b\ntwo\n")
     it "keeps tab indentation relative" $
-      insertLines (Located 1 "\t" "" "x" NoSpacing Nothing) "\t\ta\n\t\t\tb" "one\n" `shouldBe` (2, "one\n\ta\n\t\tb\n")
+      insertLines (Located 1 "\t" "" "x" NoSpacing Nothing "") "\t\ta\n\t\t\tb" "one\n" `shouldBe` (2, "one\n\ta\n\t\tb\n")
   describe "insertedText" $ do
     it "does not depend on how far the whole text is indented" $ hedgehog $ do
       ls <- forAll (Gen.list (Range.linear 1 6) (Gen.text (Range.linear 0 10) (Gen.element ("ab (){}=-> " :: String))))

@@ -36,7 +36,8 @@ hint = "The port must exist (olifant gen rust-htmx/service-repository …) and m
 # Each edit is skipped when its text is already there by name, however it is
 # spelled or wherever it sits (`unless.matches`): a field or import added by
 # hand, an import grouped as `use crate::ports::{a::A, b::B}`, a let whose
-# todo!() has become a real adapter.
+# todo!() has become a real adapter. Commented-out lines (the command
+# template's `// use crate::ports::worksite_repository::…` hint) do not count.
 
 # 1-2: the command
 [[edits]]
@@ -49,14 +50,14 @@ unless = { matches = "^[[:space:]]*pub {= d =}[[:space:]]*:" }
 insert = "{= service_dir =}/src/{= cmd =}.rs"
 at     = ["end of uses", "start of file"]
 text   = "use crate::ports::{= d =}::{= D =};"
-unless = { matches = "{= d =}::{= D =}([^[:alnum:]_]|$)" }
+unless = { matches = "^[^/]*{= d =}::{= D =}([^[:alnum:]_]|$)" }
 
 # 3-5: the service
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
 at     = ["end of uses", "start of file"]
 text   = "use crate::ports::{= d =}::{= D =};"
-unless = { matches = "{= d =}::{= D =}([^[:alnum:]_]|$)" }
+unless = { matches = "^[^/]*{= d =}::{= D =}([^[:alnum:]_]|$)" }
 
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
