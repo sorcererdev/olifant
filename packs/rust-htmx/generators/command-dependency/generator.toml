@@ -1,0 +1,72 @@
+description = "Add one dependency (a port) to a command: the command, the service's new() and main.rs (spec §7.1)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/command-dependency --set service=billing --set command=refund_invoice --set dependency=invoice_repository",
+]
+
+[inputs.service]
+type = "enum"
+choices_from = { glob = "*/*-service", value = "{= dir =}" }
+prompt = "The service the command belongs to"
+
+[inputs.command]
+type = "enum"
+choices_from = { glob = "*/*-service/src/*.rs", exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"], value = "{= stem =}" }
+prompt = "The command (use case) that needs the dependency"
+
+[inputs.dependency]
+type = "enum"
+choices_from = { glob = "*/*-service/src/ports/*.rs", value = "{= stem =}" }
+prompt = "The port it depends on (a file in the service's ports/)"
+
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+svc = "{= service|snake =}_service"
+Svc = "{= service|pascal =}Service"
+cmd = "{= command|snake =}"
+Cmd = "{= command|pascal =}"
+d = "{= dependency|snake =}"
+D = "{= dependency|pascal =}"
+
+[requires]
+exists = ["{= service_dir =}/src/{= cmd =}.rs", "{= service_dir =}/src/ports/{= d =}.rs", "main/src/main.rs"]
+hint = "The port must exist (olifant gen rust-htmx/service-repository …) and main.rs must construct the service (service-skeleton does)."
+
+# 1-2: the command
+[[edits]]
+insert = "{= service_dir =}/src/{= cmd =}.rs"
+at     = "end of struct {= Cmd =}"
+text   = "pub {= d =}: Arc<dyn {= D =}>,"
+
+[[edits]]
+insert = "{= service_dir =}/src/{= cmd =}.rs"
+at     = ["after last line matching ^use ", "start of file"]
+text   = "use crate::ports::{= d =}::{= D =};"
+
+# 3-5: the service
+[[edits]]
+insert = "{= service_dir =}/src/service.rs"
+at     = ["after first line matching ^use std::sync::Arc;", "start of file"]
+text   = "use crate::ports::{= d =}::{= D =};"
+
+[[edits]]
+insert = "{= service_dir =}/src/service.rs"
+at     = "end of parameters in new"
+text   = "{= d =}: Arc<dyn {= D =}>,"
+
+[[edits]]
+insert = "{= service_dir =}/src/service.rs"
+at     = "end of literal {= Cmd =} in new"
+text   = "{= d =}: {= d =}.clone(),"
+
+# 6-7: main.rs (choosing the adapter is the creative part: a todo!)
+[[edits]]
+insert = "main/src/main.rs"
+at     = "before first line matching let {= svc =} = "
+text   = "let {= d =}: Arc<dyn {= svc =}::ports::{= d =}::{= D =}> = todo!(\"an adapter for {= D =}\");"
+
+[[edits]]
+insert = "main/src/main.rs"
+at     = "end of call {= svc =}::service::{= Svc =}::new in main"
+text   = "{= d =}.clone(),"
