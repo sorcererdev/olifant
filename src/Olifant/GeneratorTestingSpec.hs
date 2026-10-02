@@ -6,6 +6,8 @@ import Control.Monad (forM_)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.GeneratorTesting
+import Olifant.Generation (Mode (..), Step (..), describeGenerationError, generate)
+import Data.Time (UTCTime (..), fromGregorian)
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
 import Olifant.Language (Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
@@ -128,6 +130,20 @@ spec = do
         runCase (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) processChecker bless c >>= \case
           CaseSkipped why -> missingTool strict (T.unpack why)
           other -> other `shouldBe` CasePassed
+
+  describe "rust-htmx dependent choices" $
+    it "wire-command refuses a field that is not one of the service's ports, naming the service" $ do
+      tmp <- getTemporaryDirectory
+      let given = "packs/rust-htmx/generators/wire-command/tests/cancel-invoice/given/billing/billing-service/src/cancel_invoice.rs"
+          root = diskWorkspace "."
+      src <- TIO.readFile given
+      let withClock = T.replace "pub email_sender: Arc<dyn EmailSender>," "pub email_sender: Arc<dyn EmailSender>,\n    pub clock: Arc<dyn Clock>," src
+      prepared <- preparePack root (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/rust-htmx" "rust-htmx" "wire-command" [("billing/billing-service/src/cancel_invoice.rs", withClock)]
+      case prepared of
+        Left why -> expectationFailure (T.unpack why)
+        Right (ws, tools, resolve, gen) -> do
+          result <- generate ws resolve tools [Step gen (M.fromList [("service", "billing"), ("command", "cancel_invoice")])] (UTCTime (fromGregorian 2026 10 2) 0) PlanOnly
+          either describeGenerationError (const "") result `shouldSatisfy` T.isInfixOf "expected one of email_sender, invoice_repository (the ports of service=billing); got `clock`"
 
   -- Structure-placed code must still build: fixture + each Elm case's output.
   describe "elm pack output compiles" $ do

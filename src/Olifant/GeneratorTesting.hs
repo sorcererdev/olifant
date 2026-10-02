@@ -5,6 +5,7 @@ module Olifant.GeneratorTesting
   , CaseResult (..)
   , discoverCases
   , runCase
+  , preparePack
   ) where
 
 import Control.Monad (forM, forM_)
@@ -17,6 +18,7 @@ import Data.Time (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
+import Olifant.Generator (Generator)
 import Olifant.Anchor (astQueries)
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Syntax)
@@ -51,32 +53,14 @@ runCase root syntax checker bless pc = do
   caseInputs <- readText root (caseDir pc </> "inputs.toml")
   case caseInputs >>= either (const Nothing) Just . parseCase of
     Nothing -> pure (CaseFailed ["cannot read " <> T.pack (caseDir pc </> "inputs.toml") <> " (needs `now` and an [inputs] table of strings)"])
-    Just (now, sets) ->
-      openPackCatalog root [(casePack pc, casePackRoot pc)] >>= \case
-        Left err -> pure (CaseFailed [describeCatalogError err])
-        Right cat -> case findEntry cat (casePack pc <> "/" <> caseGenerator pc) of
-          Left err -> pure (CaseFailed [describeCatalogError err])
-          Right entry ->
-            loadGenerator root syntax cat entry >>= \case
-              Left err -> pure (CaseFailed [describeCatalogError err])
-              Right gen0 -> do
-                let fixtureDir = casePackRoot pc </> "fixtures" </> "app"
-                fixturePaths <- listFiles root fixtureDir
-                fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
-                -- A case's `given/` files replace or add to the fixture, for
-                -- this case only: the state a re-run or a hand edit leaves.
-                givenPaths <- listFiles root (caseDir pc </> "given")
-                given <- forM givenPaths $ \p -> (p,) . fromMaybe "" <$> readText root (caseDir pc </> "given" </> p)
-                (ws, _) <- memoryWorkspace (M.toList (M.fromList given `M.union` M.fromList fixture))
-                -- Commands run in the fixture on disk (the case's own copy is
-                -- in memory), like a project's commands run in the project.
-                -- choices_from (here and in [[uses]] generators) is resolved by
-                -- generate against the fixture and the plan so far.
-                let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat)}
-                    resolve = resolver root syntax cat
-                    gen = gen0
-                 in do
-                   let tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
+    Just (now, sets) -> do
+        -- A case's `given/` files replace or add to the fixture, for this
+        -- case only: the state a re-run or a hand edit leaves.
+        givenPaths <- listFiles root (caseDir pc </> "given")
+        given <- forM givenPaths $ \p -> (p,) . fromMaybe "" <$> readText root (caseDir pc </> "given" </> p)
+        preparePack root syntax checker (casePackRoot pc) (casePack pc) (caseGenerator pc) given >>= \case
+          Left why -> pure (CaseFailed [why])
+          Right (ws, tools, resolve, gen) -> do
                    firstRun <- generate ws resolve tools [Step gen sets] now Apply
                    secondRun <- generate ws resolve tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of
@@ -114,6 +98,29 @@ runCase root syntax checker bless pc = do
        in case [(n, a, b) | (n, a, b) <- zip3 [1 .. width] (T.lines e <> repeat "<eof>") (T.lines w <> repeat "<eof>"), a /= b] of
             ((n, a, b) : _) -> "  line " <> T.pack (show n) <> "\n  expected: " <> a <> "\n  actual:   " <> b
             [] -> "  (trailing whitespace differs)"
+
+-- | A pack's generator ready to run against its fixture (in memory), with
+-- @overlay@ files laid over it: the workspace, tools, resolver and generator.
+-- Commands run in the fixture on disk, like a project's commands run in the
+-- project; `one_of` (here and in [[uses]] generators) is resolved by
+-- 'generate' against the fixture and the plan so far.
+preparePack :: Workspace IO -> Syntax IO -> Checker IO -> FilePath -> Text -> Text -> [(FilePath, Text)] -> IO (Either Text (Workspace IO, Tools IO, Resolve IO, Generator))
+preparePack root syntax checker packRoot pack generator overlay =
+  openPackCatalog root [(pack, packRoot)] >>= \case
+    Left err -> pure (Left (describeCatalogError err))
+    Right cat -> case findEntry cat (pack <> "/" <> generator) of
+      Left err -> pure (Left (describeCatalogError err))
+      Right entry ->
+        loadGenerator root syntax cat entry >>= \case
+          Left err -> pure (Left (describeCatalogError err))
+          Right gen -> do
+            let fixtureDir = packRoot </> "fixtures" </> "app"
+            fixturePaths <- listFiles root fixtureDir
+            fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
+            (ws, _) <- memoryWorkspace (M.toList (M.fromList overlay `M.union` M.fromList fixture))
+            let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat)}
+                tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
+            pure (Right (ws, tools, resolver root syntax cat, gen))
 
 parseCase :: Text -> Either Text (UTCTime, Map Text Text)
 parseCase src = do
