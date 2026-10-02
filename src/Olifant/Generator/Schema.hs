@@ -40,15 +40,16 @@ generatorSchema =
           ]
       "uses" -> object ["type" .= str "array", "description" .= str "[[uses]]: run other generators as part of this one.", "items" .= object ["type" .= str "object", "additionalProperties" .= False, "required" .= (["generator"] :: [Text]), "properties" .= props useKeys useProp]]
       "examples" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"], "description" .= str "Real commands, printed by show (agents copy them)."]
-      "query" -> object ["type" .= str "object", "description" .= str "[query.NAME]: bind NAME to records from a glob, command or AST query (see the user book, chapter 6).", "additionalProperties" .= object ["type" .= str "object"]]
+      "query" -> object ["type" .= str "object", "description" .= str "[query.NAME]: bind NAME to records from a glob, command or AST query; value = \"file name\" | \"parent folder\" | \"path\" | a field | a template, for an enum that is one_of it (see the user book, chapter 6).", "additionalProperties" .= object ["type" .= str "object"]]
       _ -> object []
     inputProp = \case
-      "type" -> object ["enum" .= (["ident", "text", "bool", "enum", "list"] :: [Text]), "description" .= str "ident: a name (case filters work); text; bool; enum (needs choices or choices_from); list (needs of)."]
+      "type" -> object ["enum" .= (["ident", "text", "bool", "enum", "list"] :: [Text]), "description" .= str "ident: a name (case filters work); text; bool; enum (needs choices or one_of); list (needs of)."]
       "optional" -> desc "boolean" "Default false: the input is required."
       "default" -> object ["description" .= str "A default value (makes --set optional)."]
       "prompt" -> desc "string" "Help text shown by show."
       "choices" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"]]
-      "choices_from" -> desc "object" "A query whose records are the choices, e.g. { glob = \"src/Page/*.elm\", value = \"{= stem =}\" }."
+      "one_of" -> desc "string" "The name of a [query.NAME] whose records are the choices; the query's value (file name | parent folder | path | a field | a {= … =} template) picks each choice. The query may use inputs declared above this one."
+      "choices_from" -> desc "object" "Retired: use one_of and a [query.NAME]."
       "of" -> object ["description" .= str "List items: a scalar type name, or an array of { name, type } fields."]
       _ -> object []
     edit kind keys =

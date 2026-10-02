@@ -91,10 +91,10 @@ spec = do
       files <- snap
       M.member "/packs/p/generators/g/tests/basic/snapshot/out/stale.txt" files `shouldBe` False
       M.lookup "/packs/p/generators/g/tests/basic/snapshot/out/blog_post.txt" files `shouldBe` Just "hello BlogPost\n"
-    it "resolves choices_from in a [[uses]] generator, from the fixture" $ do
+    it "resolves one_of in a [[uses]] generator, from the fixture" $ do
       let files =
             [ ("/packs/p/generators/outer/generator.toml", "description = \"o\"\nlanguage = \"x\"\n[inputs.svc]\ntype = \"text\"\n[[uses]]\ngenerator = \"inner\"\nwith = { svc = \"{= svc =}\" }\n")
-            , ("/packs/p/generators/inner/generator.toml", "description = \"i\"\nlanguage = \"x\"\n[inputs.svc]\ntype = \"enum\"\nchoices_from = { glob = \"svc/*\", value = \"{= stem =}\" }\n[[edits]]\ncreate = \"out.txt\"\ntext = \"{= svc =}\\n\"\n")
+            , ("/packs/p/generators/inner/generator.toml", "description = \"i\"\nlanguage = \"x\"\n[inputs.svc]\ntype = \"enum\"\none_of = \"svcs\"\n[query.svcs]\nglob = \"svc/*\"\n[[edits]]\ncreate = \"out.txt\"\ntext = \"{= svc =}\\n\"\n")
             , ("/packs/p/fixtures/app/svc/billing", "")
             , ("/packs/p/generators/outer/tests/basic/inputs.toml", "now = \"2026-09-27T15:30:00Z\"\n[inputs]\nsvc = \"billing\"\n")
             , ("/packs/p/generators/outer/tests/basic/snapshot/out.txt", "billing\n")
@@ -108,7 +108,7 @@ spec = do
       let dir = tmp </> "olifant-command-case"
           ws = diskWorkspace "/"
       forM_
-        [ ("p/generators/g/generator.toml", "description = \"g\"\nlanguage = \"x\"\n[inputs.svc]\ntype = \"enum\"\nchoices_from = { command = [\"cat\", \"svcs.json\"], value = \"{= name =}\" }\n[[edits]]\ncreate = \"out.txt\"\ntext = \"{= svc =}\\n\"\n")
+        [ ("p/generators/g/generator.toml", "description = \"g\"\nlanguage = \"x\"\n[inputs.svc]\ntype = \"enum\"\none_of = \"svcs\"\n[query.svcs]\ncommand = [\"cat\", \"svcs.json\"]\nvalue = \"name\"\n[[edits]]\ncreate = \"out.txt\"\ntext = \"{= svc =}\\n\"\n")
         , ("p/fixtures/app/svcs.json", "[{\"name\": \"billing\"}]")
         , ("p/generators/g/tests/basic/inputs.toml", "now = \"2026-09-27T15:30:00Z\"\n[inputs]\nsvc = \"billing\"\n")
         , ("p/generators/g/tests/basic/snapshot/out.txt", "billing\n")

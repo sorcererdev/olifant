@@ -14,6 +14,9 @@ module Olifant.Query
   , posixRegex
   , Queries (..)
   , QueryFailure (..)
+  , ChoiceValue (..)
+  , choiceValue
+  , queryVariables
   , failed
   , noQueries
   , processCommand
@@ -40,13 +43,13 @@ import Olifant.Glob (globPrefix, matchesGlob)
 import Olifant.Process (runBytes)
 import Olifant.Naming (parseName)
 import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
-import Olifant.Template (Env, TemplateError, Value (..), parseTemplate, render)
+import Olifant.Template (Env, Template, TemplateError, Value (..), freeVariables, parseTemplate, render)
 import Text.Regex.TDFA (Regex, makeRegexM, match, matchTest)
 import Olifant.Toml
 import Olifant.Workspace (pruned)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
-import System.FilePath (dropExtension, isAbsolute, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory, (</>))
+import System.FilePath (dropExtension, isAbsolute, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 
 data Query = GlobQuery Text [Text] | CommandQuery [Text] (Maybe Text) (Maybe Text) | AstQueryQ AstQuery
   deriving stock (Eq, Show)
@@ -135,6 +138,38 @@ globRecords g excludes paths =
             , ("rel", VText (T.pack rel))
             , ("dotted", VText (T.intercalate "." (map T.pack (splitDirectories rel))))
             ]
+
+-- | Which part of a record an enum's choice is (spec §4.1 `value`): words over
+-- the record's `path`, a field, or a template.
+data ChoiceValue = FileName | ParentFolder | PathValue | FieldValue Text | ValueTemplate Template
+  deriving stock (Eq, Show)
+
+-- | A choice from one record.
+choiceValue :: ChoiceValue -> Record -> Either TemplateError Text
+choiceValue cv r = case cv of
+  FileName -> Right (T.pack (takeBaseName path))
+  ParentFolder -> Right (T.pack (takeFileName (takeDirectory path)))
+  PathValue -> Right (T.pack path)
+  FieldValue f -> Right (maybe "" plain (M.lookup f r))
+  ValueTemplate t -> render r t
+  where
+    path = maybe "" (T.unpack . plain) (M.lookup "path" r)
+    plain = \case
+      VText t -> t
+      VInt i -> T.pack (show i)
+      VBool b -> if b then "true" else "false"
+      _ -> ""
+
+-- | Every variable a query's templates use (spec §4.1: a query serving an
+-- input may use only the inputs above it). Unparsable text contributes none;
+-- rendering reports it.
+queryVariables :: Query -> S.Set Text
+queryVariables = \case
+  GlobQuery g ex -> vars (g : ex)
+  CommandQuery argv _ _ -> vars argv
+  AstQueryQ (AstQuery files sel _) -> vars (files : [t | ItemsOf t <- [sel]])
+  where
+    vars ts = S.unions [either (const S.empty) freeVariables (parseTemplate t) | t <- ts]
 
 -- | Why a query failed, and whether only a tool is missing (ast-grep, a
 -- command's program): such failures are pending in pack tests (spec §4.5).

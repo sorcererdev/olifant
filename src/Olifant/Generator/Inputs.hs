@@ -4,6 +4,8 @@ module Olifant.Generator.Inputs
   , buildEnv
   , describeEnvError
   , describeInputType
+  , inputsUsed
+  , showContext
   ) where
 
 import Control.Monad (foldM, unless, zipWithM)
@@ -19,7 +21,6 @@ import Data.Time (UTCTime)
 import Olifant.Generator.Definition
 import Olifant.Anchor (closest)
 import Olifant.Naming (nameWords, parseName)
-import Olifant.Query (describeQuery)
 import Olifant.Template (Env, Template, TemplateError, Value (..), describeTemplateError, evaluate, freeVariables)
 
 data InputProblem = MissingInput InputSpec | InvalidInput Text Text | UnknownInput Text
@@ -82,14 +83,16 @@ parseScalar s raw = case s of
     "false" -> Right (VBool False)
     _ -> Left ("expected true or false, got `" <> raw <> "`")
   EnumS choices -> oneOf choices
-  EnumQ q _ resolved -> case resolved of
-    Nothing -> Left "its choices were not resolved (an Olifant bug)"
-    Just [] -> Left ("the query " <> describeQuery q <> " found nothing, so there is nothing to choose")
-    Just choices -> oneOf choices
+  EnumOf q _ choices -> case choices of
+    Unresolved -> Left "its choices were not resolved (an Olifant bug)"
+    NeedsInputs ns -> Left ("its choices depend on " <> T.intercalate ", " ["`" <> n <> "`" | n <- ns] <> "; set " <> (if length ns == 1 then "it" else "them") <> " first")
+    Resolved [] ctx -> Left ("the query `" <> q <> "` found nothing" <> (if null ctx then "" else " for " <> showContext ctx) <> ", so there is nothing to choose")
+    Resolved cs ctx -> oneOfIn (if null ctx then "" else " (the " <> q <> " of " <> showContext ctx <> ")") cs
   where
-    oneOf choices
+    oneOf = oneOfIn ""
+    oneOfIn suffix choices
       | raw `elem` choices = Right (VText raw)
-      | otherwise = Left ("expected one of " <> T.intercalate ", " choices <> "; got `" <> raw <> "`" <> maybe "" (\c -> " (did you mean " <> c <> "?)") (closest raw choices))
+      | otherwise = Left ("expected one of " <> T.intercalate ", " choices <> suffix <> "; got `" <> raw <> "`" <> maybe "" (\c -> " (did you mean " <> c <> "?)") (closest raw choices))
     chunks = T.words raw
     firstChunk = case chunks of
       (c : _) -> c
@@ -173,5 +176,19 @@ describeInputType = \case
       TextS -> "text"
       BoolS -> "bool"
       EnumS cs -> "enum(" <> T.intercalate "|" cs <> ")"
-      EnumQ _ _ (Just cs) -> "enum(" <> T.intercalate "|" cs <> ")"
-      EnumQ q _ Nothing -> "enum(from " <> describeQuery q <> ")"
+      EnumOf _ _ (Resolved cs _) -> "enum(" <> T.intercalate "|" cs <> ")"
+      EnumOf _ _ (NeedsInputs ns) -> "enum, depends on " <> T.intercalate ", " ns
+      EnumOf q _ Unresolved -> "enum(one of query " <> q <> ")"
+
+-- | The inputs (and derived values) a set of variables reaches, through
+-- derived values (spec §4.1).
+inputsUsed :: [(Text, Template)] -> S.Set Text -> S.Set Text
+inputsUsed derived = go S.empty
+  where
+    go seen vs =
+      let new = vs `S.difference` seen
+       in if S.null new then seen else go (seen `S.union` new) (S.unions [freeVariables t | (k, t) <- derived, k `S.member` new])
+
+-- | `service=billing, kind=x`: the values a dependent query used.
+showContext :: [(Text, Text)] -> Text
+showContext = T.intercalate ", " . map (\(k, v) -> k <> "=" <> v)

@@ -311,7 +311,7 @@ composeSpec = describe "generate (composition)" $ do
     Right _ <- generate ws resolve noTools [Step fromPages M.empty] now Apply
     files <- snapshot
     [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
-  describe "choices_from in a chain (spec §4.1: a later step can choose what an earlier one creates)" $ do
+  describe "one_of in a chain (spec §4.1: a later step can choose what an earlier one creates)" $ do
     let skeleton =
           generatorNamed "skeleton" . T.unlines $
             [ "description = \"s\"", "language = \"x\""
@@ -320,7 +320,7 @@ composeSpec = describe "generate (composition)" $ do
         command =
           generatorNamed "command" . T.unlines $
             [ "description = \"c\"", "language = \"x\""
-            , "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\", value = \"{= stem =}\" }"
+            , "[inputs.service]", "type = \"enum\"", "one_of = \"services\"", "[query.services]", "glob = \"*/*-service\""
             , "[[edits]]", "create = \"{= service =}.txt\"", "text = \"cmd\\n\"" ]
         withSkeleton =
           generatorNamed "with-skeleton" . T.unlines $
