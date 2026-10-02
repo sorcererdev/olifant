@@ -299,6 +299,39 @@ composeSpec = describe "generate (composition)" $ do
     Right _ <- generate ws resolve noTools [Step fromPages M.empty] now Apply
     files <- snapshot
     [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
+  describe "choices_from in a chain (spec §4.1: a later step can choose what an earlier one creates)" $ do
+    let skeleton =
+          generatorNamed "skeleton" . T.unlines $
+            [ "description = \"s\"", "language = \"x\""
+            , "[inputs.service]", "type = \"ident\""
+            , "[[edits]]", "create = \"{= service =}/{= service =}-service/lib.rs\"", "text = \"// {= service =}\\n\"" ]
+        command =
+          generatorNamed "command" . T.unlines $
+            [ "description = \"c\"", "language = \"x\""
+            , "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\", value = \"{= stem =}\" }"
+            , "[[edits]]", "create = \"{= service =}.txt\"", "text = \"cmd\\n\"" ]
+        withSkeleton =
+          generatorNamed "with-skeleton" . T.unlines $
+            [ "description = \"w\"", "language = \"x\""
+            , "[inputs.service]", "type = \"ident\""
+            , "[[edits]]", "create = \"{= service =}/{= service =}-service/lib.rs\"", "text = \"x\\n\""
+            , "[[uses]]", "generator = \"command\"", "with = { service = \"{= service =}-service\" }" ]
+        resolve = resolveTo [("command", command)]
+        runChain files steps = do
+          (ws, snapshot) <- memoryWorkspace files
+          r <- generate ws resolve noTools steps now Apply
+          (r,) <$> snapshot
+    it "lets a step choose a service an earlier step of the chain creates" $ do
+      (r, files) <- runChain [("billing/billing-service/lib.rs", "")] [Step skeleton (M.fromList [("service", "payments")]), Step command (M.fromList [("service", "payments-service")])]
+      either (Left . describeGenerationError) (const (Right ())) r `shouldBe` Right ()
+      M.member "payments-service.txt" files `shouldBe` True
+    it "lets a [[uses]] step choose what its parent's own edits create" $ do
+      (r, files) <- runChain [] [Step withSkeleton (M.fromList [("service", "orders")])]
+      either (Left . describeGenerationError) (const (Right ())) r `shouldBe` Right ()
+      M.member "orders-service.txt" files `shouldBe` True
+    it "still refuses a value in neither the project nor the plan" $ do
+      (r, _) <- runChain [("billing/billing-service/lib.rs", "")] [Step command (M.fromList [("service", "nowhere-service")])]
+      either describeGenerationError (const "") r `shouldSatisfy` T.isInfixOf "expected one of billing-service"
   it "treats an empty for_each list as no steps" $ do
     (Right plan, files) <- gen1 [Step pageGen (M.fromList [("page", "settings")])]
     M.keys files `shouldBe` ["src/Settings.txt"]

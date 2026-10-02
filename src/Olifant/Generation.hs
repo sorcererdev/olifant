@@ -36,7 +36,7 @@ import Olifant.Anchor (resolveLayers)
 import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
-import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), describeEnvError)
+import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), describeEnvError, needsChoices, withChoices)
 import Olifant.Language (languageFor)
 import Olifant.Query (renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
@@ -69,7 +69,7 @@ describeGenerationError = \case
 
 generate :: Monad m => Workspace m -> Resolve m -> Tools m -> [Step] -> UTCTime -> Mode -> m (Either GenerationError Plan)
 generate ws resolve tools steps now mode =
-  expandSteps resolve bindQueries now steps >>= \case
+  expandSteps resolve bindQueries choose now steps >>= \case
     Left err -> pure (Left (fromComposition err))
     Right items -> do
       let targets = nub [p | PlanEdit _ e <- items, Just p <- [renderedPath e]]
@@ -108,6 +108,14 @@ generate ws resolve tools steps now mode =
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
   where
+    -- `choices_from` (spec §4.1), per step: the project's files plus what the
+    -- run has created so far, read from the plan first. The project is
+    -- listed only when a generator has such an input.
+    choose prior gen
+      | not (needsChoices gen) = pure (Right gen)
+      | otherwise = do
+          disk <- listFiles ws "."
+          withChoices (toolQueries tools) (nub (disk ++ map fst prior)) (\p -> maybe (readText ws p) (pure . Just) (lookup p prior)) gen
     -- `[query.NAME]`: render each query with the generator's inputs and
     -- derived values (never another query's records, so their order does not
     -- matter), run it over the project as it is on disk, and bind the records

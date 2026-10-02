@@ -10,10 +10,11 @@ module Olifant.Generation.Compose
   , PlanItem (..)
   , expandSteps
   , BindQueries
+  , Choose
   , showStepPath
   ) where
 
-import Control.Monad (when, zipWithM)
+import Control.Monad (foldM, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE)
 import Data.Bifunctor (first)
@@ -22,7 +23,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
-import Olifant.Generation.Render (RenderedEdit, renderEdits)
+import Olifant.Generation.Render (RenderedEdit (..), renderEdits)
 import Olifant.Query (Query)
 import Olifant.Generator
 import Olifant.Template (Env, TemplateError (..), Value (..), render)
@@ -51,6 +52,11 @@ data CompositionError
 -- | Bind a generator's `[query.NAME]` lists into its environment (spec §4.5).
 type BindQueries m = Env -> [(Text, Query)] -> m (Either Text Env)
 
+-- | Resolve a generator's `choices_from` enums (spec §4.1), given the files
+-- the run has created so far (path, planned contents): a later step can
+-- choose what an earlier step creates.
+type Choose m = [(FilePath, Text)] -> Generator -> m (Either Text Generator)
+
 data PlanItem
   = PlanRequire StepPath [FilePath] (Maybe Text)
   | PlanEdit StepPath RenderedEdit
@@ -58,33 +64,41 @@ data PlanItem
 showStepPath :: StepPath -> Text
 showStepPath = T.intercalate " › "
 
-expandSteps :: Monad m => Resolve m -> BindQueries m -> UTCTime -> [Step] -> m (Either CompositionError [PlanItem])
-expandSteps resolve bindQ now steps = runExceptT (concat <$> zipWithM top [1 :: Int ..] steps)
+expandSteps :: Monad m => Resolve m -> BindQueries m -> Choose m -> UTCTime -> [Step] -> m (Either CompositionError [PlanItem])
+expandSteps resolve bindQ choose now steps = runExceptT (foldM top [] (zip [1 :: Int ..] steps))
   where
-    top i (Step gen sets) = expand resolve bindQ now [] [label gen i] gen sets
+    -- Steps in order, each seeing the files the earlier ones create.
+    top acc (i, Step gen sets) = (acc ++) <$> expand resolve bindQ choose now (created acc) [] [label gen i] gen sets
     label gen i
       | length steps > 1 = idText gen <> " (step " <> T.pack (show i) <> ")"
       | otherwise = idText gen
 
-expand :: Monad m => Resolve m -> BindQueries m -> UTCTime -> [GeneratorId] -> StepPath -> Generator -> Map Text Text -> ExceptT CompositionError m [PlanItem]
-expand resolve bindQ now ancestors path gen sets = do
-  when (genId gen `elem` ancestors) $ throwE (StepCycle path)
-  checkCycles resolve (genId gen : ancestors) path gen
+-- | The files a run's items create, with their planned contents.
+created :: [PlanItem] -> [(FilePath, Text)]
+created items = [(p, c) | PlanEdit _ (RenderedCreate p c _ _) <- items]
+
+expand :: Monad m => Resolve m -> BindQueries m -> Choose m -> UTCTime -> [(FilePath, Text)] -> [GeneratorId] -> StepPath -> Generator -> Map Text Text -> ExceptT CompositionError m [PlanItem]
+expand resolve bindQ choose now prior ancestors path gen0 sets = do
+  when (genId gen0 `elem` ancestors) $ throwE (StepCycle path)
+  checkCycles resolve (genId gen0 : ancestors) path gen0
+  gen <- ExceptT (first (StepQuery path) <$> choose prior gen0)
   env0 <- except (first (StepInputs path) (buildEnv gen sets now))
   env <- if null (genQueries gen) then pure env0 else ExceptT (first (StepQuery path) <$> bindQ env0 (genQueries gen))
   rendered <- except (first (StepTemplate path) (renderEdits (genLanguage gen) env (genEdits gen)))
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
-  nested <- concat <$> zipWithM (expandUse env) [1 :: Int ..] (genUses gen)
-  pure ([PlanRequire path required hint | not (null required)] ++ map (PlanEdit path) rendered ++ nested)
+  let own = map (PlanEdit path) rendered
+  -- Each use sees what the run, this generator and earlier uses create.
+  nested <- foldM (\acc (k, u) -> (acc ++) <$> expandUse env (prior ++ created (own ++ acc)) k u) [] (zip [1 :: Int ..] (genUses gen))
+  pure ([PlanRequire path required hint | not (null required)] ++ own ++ nested)
   where
-    repeated u = length (filter ((== useGenerator u) . useGenerator) (genUses gen)) > 1
-    expandUse env k u = do
+    repeated u = length (filter ((== useGenerator u) . useGenerator) (genUses gen0)) > 1
+    expandUse env seen k u = do
       childSets <- except (first (StepTemplate path) (renderUse env u))
-      child <- ExceptT (first (failure (useGenerator u)) <$> resolve (packOf (genId gen)) (useGenerator u))
-      concat
-        <$> traverse
-          (\(i, s) -> expand resolve bindQ now (genId gen : ancestors) (path ++ [label child k u i]) child s)
-          childSets
+      child <- ExceptT (first (failure (useGenerator u)) <$> resolve (packOf (genId gen0)) (useGenerator u))
+      foldM
+        (\acc (i, s) -> (acc ++) <$> expand resolve bindQ choose now (seen ++ created acc) (genId gen0 : ancestors) (path ++ [label child k u i]) child s)
+        []
+        childSets
 
     label child k u i =
       idText child

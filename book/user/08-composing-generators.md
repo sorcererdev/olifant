@@ -239,20 +239,28 @@ error: section › elm/page: invalid inputs: missing `page` (ident)
 When a generator uses the same generator twice in its `[[uses]]`, the path says which use:
 `… › elm/msg (use 2)[1]`.
 
-### Rough edge: `choices_from` sees only the disk
+### `choices_from` sees the steps before it
 
-The chapter 7 `alias` takes `page` as an enum whose choices come from `src/Page/*.elm`. Used
-from `section`, it fails, because the page `section` just planned is not on disk yet:
+An enum whose choices come from the project (chapter 6) is resolved when its step comes up,
+against the project *and* the files the run has created so far. So a chain can create
+something and choose it in the next step:
 
 ```
-$ olifant gen section --set page=help --set aliases=faq --json
-{"error":{"code":"invalid_inputs","hint":"","invalid":[{"name":"page","reason":"expected one of Home, SamplePage; got `Help`"}],"message":"section › alias[1]: invalid inputs: `page`: expected one of Home, SamplePage; got `Help`","missing":[],"step":"section › alias[1]","unknown":[]}}
+$ olifant gen rust-htmx/service-skeleton --set service=payments + rust-htmx/service-command --set service=payments --set command_name=charge_card --human
+rust-htmx/service-skeleton + rust-htmx/service-command (12 edits, 0 conflicts)
+  + payments/payments-service/Cargo.toml (12 lines)  [rust-htmx/service-skeleton (step 1)]
+  + payments/payments-service/src/lib.rs (4 lines)  [rust-htmx/service-skeleton (step 1)]
+  …
 ```
 
-`requires` and `unless` see the plan so far; `choices_from` is resolved before planning
-starts, against the project as it is. Until that changes, a generator meant to be used after
-a step that creates its choice should take a plain `ident` and check with `[requires]`
-instead.
+`service-command`'s `service` choices come from `*/*-service`; `payments` is one because step
+1 creates `payments/payments-service/…`. The same holds inside a composite: a `[[uses]]`
+step sees what its parent's own edits, and the uses before it, create. A value that is in
+neither the project nor the plan is still refused with the list of choices.
+
+One limit: choices read files that earlier steps *create*; text that earlier steps *insert*
+into existing files is not placed until planning, so a command or AST choice over such a file
+sees it as it is on disk.
 
 ## Cycles
 
