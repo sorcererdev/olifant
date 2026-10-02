@@ -168,14 +168,21 @@ resolveSpec = do
       apply (Match (0, 10) (0, 12) "()") "end of case in update" "x: X," "pub fn new() -> Self {\n"
         `shouldBe` Right "pub fn new(\n    x: X,\n) -> Self {\n"
     it "inserts into a container spread over lines, at its comment's indentation (Review Focus 2)" $
-      apply (Match (0, 14) (2, 5) "{\n        // deps\n    }") "end of case in update" "y: Y," "    Inv { a } {\n        // deps\n    }\n"
-        `shouldBe` Right "    Inv { a } {\n        // deps\n        y: Y,\n    }\n"
+      apply (Match (0, 14) (2, 5) "{\n        -- deps\n    }") "end of case in update" "y: Y," "    Inv { a } {\n        -- deps\n    }\n"
+        `shouldBe` Right "    Inv { a } {\n        -- deps\n        y: Y,\n    }\n"
     it "uses the container's indentation plus one level when nothing is inside" $
       apply (Match (0, 6) (1, 5) "{\n    }") "start of case in update" "z: Z," "    S {\n    }\n"
         `shouldBe` Right "    S {\n        z: Z,\n    }\n"
     it "opens only bracketed containers: a whole-file container with no items is still refused" $
       apply (Match (0, 0) (2, 9) "use a;\n\nfn b() {}") "end of case in update" "mod c;" "use a;\n\nfn b() {}\n"
         `shouldSatisfy` either (const True) (const False)
+    it "refuses a container whose content is not one of its items, rather than delete it" $ do
+      let refused r = either (\m -> "not one of the target's items" `T.isInfixOf` describeMisses m) (const False) r
+      apply (Match (0, 24) (0, 30) "(true)") "end of case in update" "x.clone()," "    let n = Svc::new(true);\n" `shouldSatisfy` refused
+      apply (Match (0, 12) (2, 5) "{\n        ..Default::default()\n    }") "end of case in update" "y: Y," "    let v = V {\n        ..Default::default()\n    };\n" `shouldSatisfy` refused
+    it "drops a leading separator from the text when it opens a container: the text is the first item" $
+      apply (Match (0, 10) (0, 12) "[]") "end of case in update" ", Parser.map A" "    oneOf []\n"
+        `shouldBe` Right "    oneOf [\n        Parser.map A\n    ]\n"
     it "finds the snippet already there once the container has it (Review Focus 3)" $ do
       let opened = "pub fn new(\n    x: X,\n) -> Self {\n"
           withItem = Syntax $ \_ rule _ -> Identity . Right $
