@@ -26,7 +26,9 @@ impl BillingService {
             },
             void_invoice: VoidInvoice {},
             cancel_invoice: CancelInvoice {},
-            cancel_subscription: CancelSubscription {},
+            cancel_subscription: CancelSubscription {
+                // Add any dependencies for the command here. They should be passed into this function and supplied by main.rs.
+            },
         }
     }
 

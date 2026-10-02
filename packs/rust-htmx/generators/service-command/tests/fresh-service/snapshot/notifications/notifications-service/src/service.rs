@@ -21,7 +21,9 @@ impl NotificationsService {
             send_email: SendEmail {
               // Add any dependencies for the command here. They should be passed into this function and supplied by main.rs.
             },
-            schedule_digest: ScheduleDigest {},
+            schedule_digest: ScheduleDigest {
+                // Add any dependencies for the command here. They should be passed into this function and supplied by main.rs.
+            },
         }
     }
     //##PLOP INSERT DELEGATE HOOK##

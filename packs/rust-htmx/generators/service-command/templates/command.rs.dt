@@ -1,0 +1,36 @@
+use std::sync::Arc;
+
+use thiserror::Error;
+
+// Example repo dependency
+// use crate::ports::worksite_repository::WorksiteRepository;
+
+#[derive(Clone)]
+pub struct {= command_name|pascal =} {
+    // Put infra dependencies in this struct
+    // Below is an example of a repo dependency
+    // pub worksite_repository: Arc<dyn WorksiteRepository>,
+}
+
+#[derive(Clone, Debug)]
+pub struct {= command_name|pascal =}Input {
+    // Put input fields here
+    pub id: String
+}
+
+// Change the return type, if needed
+pub type {= command_name|pascal =}Output = Result<(), {= command_name|pascal =}Failure>;
+
+impl {= command_name|pascal =} {
+    pub async fn {= command_name|snake =}(&self, input: {= command_name|pascal =}Input) -> {= command_name|pascal =}Output {
+        todo!("Implement {= command_name|snake =}")
+    }
+}
+
+#[derive(Error, Debug, PartialEq)]
+pub enum {= command_name|pascal =}Failure {
+    #[error("Worksite does not exist")]
+    NotFound,
+    #[error("Something went wrong")]
+    Unknown(String),
+}

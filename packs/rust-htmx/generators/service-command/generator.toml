@@ -22,10 +22,10 @@ cmd = "{= command_name|snake =}"
 exists = ["{= service_dir =}/src/service.rs"]
 hint = "Create the service first: olifant gen rust-htmx/service-skeleton --set service={= service =}"
 
+# The template's own command (plop-templates/service-command), converted.
 [[edits]]
 create   = "{= service_dir =}/src/{= cmd =}.rs"
-exemplar = "fixture:billing/billing-service/src/refund_invoice.rs"
-bind     = { command_name = "refund_invoice" }
+template = "command.rs.dt"
 
 [[edits]]
 insert = "{= service_dir =}/src/lib.rs"
@@ -48,7 +48,10 @@ text   = "pub {= cmd =}: {= Cmd =},"
 [[edits]]
 insert = "{= service_dir =}/src/service.rs"
 at     = ["end of literal in new", "after marker //##PLOP INSERT COMMAND INSTANTIATION HOOK##"]
-text   = "{= cmd =}: {= Cmd =} {},"
+text   = """
+{= cmd =}: {= Cmd =} {
+    // Add any dependencies for the command here. They should be passed into this function and supplied by main.rs.
+},"""
 
 [[edits]]
 insert   = "{= service_dir =}/src/service.rs"
