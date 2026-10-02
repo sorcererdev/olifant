@@ -132,13 +132,13 @@ spec = do
     it "end of call … NotificationsService::new in main opens the empty argument list" $ withRustFile "main/src/main.rs" $ \syn lang file ->
       fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call notifications_service::service::NotificationsService::new in main"] file) >>= (`shouldSatisfy` either (const False) isJust)
     it "end of struct goes after the last field" $ withRust $ \syn lang file ->
-      at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub refund_invoice: RefundInvoice," + 1)
+      at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub cancel_invoice: CancelInvoice," + 1)
     it "end of impl goes after the last method" $ withRust $ \syn lang file ->
-      at syn lang file "end of impl BillingService" `shouldReturn` Right (lineOf file "self.refund_invoice.refund_invoice(input).await" + 2)
+      at syn lang file "end of impl BillingService" `shouldReturn` Right (lineOf file "self.cancel_invoice.cancel_invoice(input).await" + 2)
     it "end of literal in new goes after the last initializer" $ withRust $ \syn lang file ->
-      at syn lang file "end of literal in new" `shouldReturn` Right (lineOf file "refund_invoice: RefundInvoice {}," + 1)
+      at syn lang file "end of literal in new" `shouldReturn` Right (lineOf file "cancel_invoice: CancelInvoice {}," + 1)
     it "end of crate imports goes after the last imported item" $ withRust $ \syn lang file ->
-      at syn lang file "end of crate imports" `shouldReturn` Right (lineOf file "refund_invoice::{RefundInvoice" + 1)
+      at syn lang file "end of crate imports" `shouldReturn` Right (lineOf file "cancel_invoice::{CancelInvoice" + 1)
   describe "compiler support" $ do
     it "maps the elm-json format to Elm's support" $
       fmap supportFormat (supportFor "elm-json") `shouldBe` Just "elm-json"
