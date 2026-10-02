@@ -128,6 +128,7 @@ targets:
   literal NAME in FUNCTION  e.g. end of literal RefundInvoice in new
   parameters in FUNCTION    e.g. end of parameters in new
   struct NAME               e.g. end of struct BillingService
+  uses                      e.g. end of uses
 
 built in (any file):
   before|after marker TEXT
@@ -142,6 +143,38 @@ named `NAME` inside `FUNCTION` (`SendEmail` inside `new`, as opposed to `literal
 which is whichever one literal sits there); `call NAME in FUNCTION` is the arguments of a call
 to `NAME` inside `FUNCTION` (`BillingService::new` inside `main`). All three can target an
 empty `()`/`{}` — see "Opening an empty container" in [chapter 3](03-anchors.md).
+
+`uses` is a file's top-level `use` declarations (container `source_file`, items
+`use_declaration`). `end of uses` goes after the last one, whole, so a new import lands after
+a multi-line `use crate::{ … };` block and never inside it. A line pattern cannot see the
+block: `after last line matching ^use ` lands just after `use crate::{`, inside it:
+
+```
+$ olifant where billing/billing-service/src/service.rs "after last line matching ^use "
+billing/billing-service/src/service.rs:5
+    use crate::ports::invoice_repository::InvoiceRepository;
+    
+    use crate::{
+  ▶ (inserted here)
+        refund_invoice::{RefundInvoice, RefundInvoiceInput, RefundInvoiceOutput},
+        void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
+        cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
+
+$ olifant where billing/billing-service/src/service.rs "end of uses"
+billing/billing-service/src/service.rs:9
+        void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
+        cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
+    };
+  ▶ (inserted here)
+    
+    #[derive(Clone)]
+    pub struct BillingService {
+```
+
+A file is not a bracketed container, so one with no `use` at all is not opened; the phrase
+misses (`end of uses` in `billing-service/src/lib.rs`, which only has `pub mod`s: "has no
+items to insert beside"). Give `start of file` as the fallback, as
+`command-dependency` does: `at = ["end of uses", "start of file"]`.
 
 Adapters come only from configured packs. In a project that only configures `rust-htmx`,
 `olifant anchors elm` says "no language adapter named `elm`", and `.elm` files get only the
@@ -332,9 +365,11 @@ error: `end of mods`: ast-grep failed: Error: Cannot parse rule INLINE_RULES
 ```
 
 Check the cases that should *not* match as carefully as the ones that should: a nested
-container, a catch-all branch, and — since an empty container now opens instead of
-refusing — a file with no items, where "resolves" no longer means "is a sane place to
-insert". `where` exits 5 when the phrase does not resolve at all, so a genuinely wrong
+container, a catch-all branch, and — since an empty bracketed container now opens instead
+of refusing — a container with no items, where "resolves" no longer means "is a sane place
+to insert". A container that has something inside that is not one of `items` is refused
+("has content that is not one of the target's items"); that is usually a sign the target's
+`items` is missing a kind. `where` exits 5 when the phrase does not resolve at all, so a genuinely wrong
 target is still easy to script against.
 
 When the target works, commit it to the pack with a generator test that uses it

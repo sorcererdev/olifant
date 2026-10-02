@@ -362,7 +362,7 @@ phrases are templates too.
 create    = "src/Data/{= Name =}.elm"
 template  = "record.elm.dt"     # or: text = "…", or: exemplar = "…" + bind = {…}
 on_exists = "error"             # error (default) | skip | overwrite
-unless    = { exists = "db/migrate/*_create_{= table =}.rb" }
+unless    = { exists = "db/migrate/*_create_{= table =}.rb" }   # or: { matches = "REGEX" }
 ```
 
 If the file already exists with exactly the generated content, the edit is skipped
@@ -371,8 +371,9 @@ If the file already exists with exactly the generated content, the edit is skipp
 `overwrite` replaces it (`~ path (overwritten, N lines)`). Prefer `error`: it is what keeps
 hand edits safe.
 
-`unless` skips the edit when its glob matches a file on disk or one created earlier in the
-plan (chapter 6).
+`unless` takes exactly one key. `exists` skips the edit when its glob matches a file on
+disk or one created earlier in the plan; `matches` skips it when any line of the edit's own
+target, as the plan has it so far, matches a POSIX extended regex (chapter 6).
 
 ### `insert`
 
@@ -381,7 +382,7 @@ plan (chapter 6).
 insert = "src/Main.elm"
 at     = "end of type Page"            # or a list of phrases, tried in order
 text   = "| {= P =} {= P =}.Model"     # or: template = "…"
-unless = { exists = "…" }
+unless = { matches = "^[[:space:]]*\\| {= P =}( |$)" }   # or: { exists = "…" }
 ```
 
 `at` is covered in [chapter 3](03-anchors.md): a phrase, or a list of phrases where the
