@@ -173,6 +173,9 @@ resolveSpec = do
     it "uses the container's indentation plus one level when nothing is inside" $
       apply (Match (0, 6) (1, 5) "{\n    }") "start of case in update" "z: Z," "    S {\n    }\n"
         `shouldBe` Right "    S {\n        z: Z,\n    }\n"
+    it "opens only bracketed containers: a whole-file container with no items is still refused" $
+      apply (Match (0, 0) (2, 9) "use a;\n\nfn b() {}") "end of case in update" "mod c;" "use a;\n\nfn b() {}\n"
+        `shouldSatisfy` either (const True) (const False)
     it "finds the snippet already there once the container has it (Review Focus 3)" $ do
       let opened = "pub fn new(\n    x: X,\n) -> Self {\n"
           withItem = Syntax $ \_ rule _ -> Identity . Right $

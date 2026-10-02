@@ -137,6 +137,11 @@ resolveOne syntax lang anchor content = case anchor of
     place l pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce
+          body = T.strip (matchText c)
+          bracketed =
+            maybe False (\(o, _) -> o `elem` ("([{" :: String)) (T.uncons body)
+              && maybe False (\(_, z) -> z `elem` (")]}" :: String)) (T.unsnoc body)
+              && (cs == ce || maybe False ((`elem` (")]}" :: String)) . fst) (T.uncons (T.strip (lineAt' ce))))
        in case (pos, items) of
             (Before, _) -> wholeLine "the target's start" (startsLine (matchStart c)) (located cs (indentAt cs) region)
             (After, _) -> wholeLine "the target's end" (endsLine (matchEnd c)) (located (ce + 1) (indentAt cs) region)
@@ -144,6 +149,9 @@ resolveOne syntax lang anchor content = case anchor of
             -- is split around it; spread over lines, the text goes before its
             -- closing line, indented like what is inside, or one level in.
             (_, [])
+              -- Only a bracketed container (`()`, `{}`, `[]`) is opened; any
+              -- other empty target (a whole file, say) is still refused.
+              | not bracketed -> Left (miss "has no items to insert beside")
               | cs == ce -> Right ((located cs (indentAt cs <> langIndent l) region) {locOpen = Just (cs, snd (matchStart c), snd (matchEnd c))})
               | otherwise ->
                   let inside = [indentAt i | i <- [cs + 1 .. ce - 1], not (T.null (T.strip (lineAt' i)))]

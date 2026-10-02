@@ -395,8 +395,8 @@ first that resolves wins (the JSON says which, in `anchor_used`). Two other form
   need it twice, add a target to the language adapter instead ([chapter 9](09-packs-and-language-adapters.md)).
 
 Test a phrase before you write it into a generator: `olifant where src/Main.elm "end of
-record Model"` shows the spot or says why not (for `Page/Home.elm`, whose `Model` is `{}`:
-"has no items to insert beside"). A phrase with no `{= … =}` in it has both its shape and its
+record Model"` shows the spot or says why not (for `Page/Home.elm`, whose `Model` is `{}`,
+it opens the record instead of refusing — [chapter 3](03-anchors.md)). A phrase with no `{= … =}` in it has both its shape and its
 target name checked against the language adapter when the generator loads — `list` marks it
 `INVALID` and `show`/`gen` refuse it — so a typo like `end of typo Msg` is caught before
 anyone runs the generator, with a suggestion:

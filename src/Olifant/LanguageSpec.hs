@@ -22,6 +22,7 @@ import Olifant.Language.Diagnostics (CompilerSupport (..))
 import Olifant.Language.Support (supportFor)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
+import Olifant.Cli.Output (anchorsHuman)
 import Test.Hspec
 
 elmToml :: Text
@@ -131,6 +132,13 @@ spec = do
       at syn lang file "end of call billing_service::service::BillingService::new in main" `shouldReturn` Right (lineOf file "invoice_repository.clone()," + 1)
     it "end of call … NotificationsService::new in main opens the empty argument list" $ withRustFile "main/src/main.rs" $ \syn lang file ->
       fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call notifications_service::service::NotificationsService::new in main"] file) >>= (`shouldSatisfy` either (const False) isJust)
+    it "anchors lines up every target's example, however long the phrase" $ do
+      src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
+      let Right lang = parseLanguage "rust" "packs/rust-htmx" src
+          rows = [l | l <- T.lines (anchorsHuman lang), "e.g. " `T.isInfixOf` l]
+      rows `shouldSatisfy` all (\l -> "  e.g. " `T.isInfixOf` l)
+      length (nub [T.length (fst (T.breakOn "e.g. " l)) | l <- rows]) `shouldBe` 1
+      anchorsHuman lang `shouldSatisfy` T.isInfixOf "start of|end of file"
     it "end of struct goes after the last field" $ withRust $ \syn lang file ->
       at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub cancel_invoice: CancelInvoice," + 1)
     it "end of impl goes after the last method" $ withRust $ \syn lang file ->

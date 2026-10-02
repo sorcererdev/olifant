@@ -236,7 +236,7 @@ anchorText = \case
   AtRule _ pos -> "ast rule (" <> positionWords pos <> ")"
 
 builtinForms :: [Text]
-builtinForms = ["before|after marker TEXT", "before|after first line matching REGEX", "before|after last line matching REGEX"]
+builtinForms = ["before|after marker TEXT", "before|after first line matching REGEX", "before|after last line matching REGEX", "start of|end of file"]
 
 anchorsJson :: Language -> Value
 anchorsJson lang =
@@ -251,9 +251,11 @@ anchorsHuman :: Language -> Text
 anchorsHuman lang =
   T.unlines $
     [langName lang <> ": at = \"<start of|end of|before|after> <target>\"", "", "targets:"]
-      ++ ["  " <> T.justifyLeft 24 ' ' (targetPhrase t) <> "e.g. " <> targetExample t | t <- langTargets lang]
+      ++ ["  " <> T.justifyLeft width ' ' (targetPhrase t) <> "e.g. " <> targetExample t | t <- langTargets lang]
       ++ ["", "built in (any file):"]
       ++ map ("  " <>) builtinForms
+  where
+    width = maximum (0 : map (T.length . targetPhrase) (langTargets lang)) + 2
 
 -- | Up to three lines either side of where text would go.
 whereContext :: Located -> Text -> ([Text], [Text])

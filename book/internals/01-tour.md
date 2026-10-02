@@ -172,7 +172,7 @@ app/Main             → Cli, Language, Language.AstGrep, Workspace
 
 `Anchor` importing `Query` is the one edge worth pausing on: an `at` target and an `ast`
 query both end up asking the same question ("what are this container's items?"), so
-`itemsOfTarget` (`Anchor/Resolve.hs:153`) is shared, and `Anchor.Items.astQueries` builds
+`itemsOfTarget` (`Anchor/Resolve.hs:168`) is shared, and `Anchor.Items.astQueries` builds
 `Record`s (`Query`'s type) from what it finds. `Query` itself has no idea `Anchor` exists.
 
 One thing to notice:
@@ -451,7 +451,7 @@ Read from the inside out:
      applied to `page`.
    - `FragmentFile ref target matching binds` (spec §4.3) is an exemplar cut out of a bigger
      file instead of read whole. It reads the same kind of file reference as `ExemplarFile`,
-     finds the `target`'s items with `itemsOfTarget` (`Anchor/Resolve.hs:153`, the same
+     finds the `target`'s items with `itemsOfTarget` (`Anchor/Resolve.hs:168`, the same
      function `end of`/`start of` anchors and `items_of` AST queries use), requires exactly
      one of them to match the regex `matching`, dedents it by the node's starting column
      (`dedent`, `Catalog.hs:229`, since only its first line sits at that column in the
@@ -624,24 +624,37 @@ split out so neither has to pattern-match a branch it can never reach:
 
 - `RenderedComplete` items are skipped here (`:43`) and left for phase 2.
 
-**Anchors, `resolveLayers`** (`src/Olifant/Anchor/Resolve.hs:48`), tries the edit's anchors in
-order and returns the first that resolves, or every miss. `resolveOne` (`:57`) parses the
+**Anchors, `resolveLayers`** (`src/Olifant/Anchor/Resolve.hs:51`), tries the edit's anchors in
+order and returns the first that resolves, or every miss. `resolveOne` (`:60`) parses the
 phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on the target:
 
 - `after last line matching ^import Page\.` is a **line target**. It's resolved in Haskell
-  with `regex-tdfa` (`lineAt`, `Resolve.hs:111`), with no ast-grep call.
-- `end of type Page` is a **named target**, `["type", "Page"]`. `named` (`Resolve.hs:124`)
-  hands it to `itemsOfTarget` (`:153`), a top-level function shared with two other callers:
+  with `regex-tdfa` (`lineAt`, `Resolve.hs:119`), with no ast-grep call.
+- `end of type Page` is a **named target**, `["type", "Page"]`. `named` (`Resolve.hs:132`)
+  hands it to `itemsOfTarget` (`:168`), a top-level function shared with two other callers:
   a fragment exemplar's `items_of` (`Catalog.loadGenerator`, above) and an `ast` query's
   `items_of` (`Anchor.Items.astQueries`). `itemsOfTarget` matches the target against the Elm
   adapter's targets (`packs/elm/languages/elm.toml`); the shape `type NAME` fits and binds
   `NAME = Page`. It renders that target's `container` rule (`{ kind = "type_declaration",
   regex = "^type Page\b" }`) and asks the **Syntax port** for matches (`querySyntax`,
-  `:163`). Exactly one match is required. Then it asks for the `items` (`union_variant`)
-  *inside* that container (`:172`). Back in `resolveOne`'s `where`, `place` (`:129`) picks
+  `:178`). Exactly one match is required. Then it asks for the `items` (`union_variant`)
+  *inside* that container (`:187`). Back in `resolveOne`'s `where`, `place` (`:137`) picks
   the line after the last item, indented like it — and sets `locSpacing`: if the container's
   existing items are separated by a blank line, `place` copies that spacing onto the new one
   (`BlankAfter` for `start of`, `BlankBefore` for `end of`; spec §5.2).
+- **An empty container.** `place` has a third case, for `end of`/`start of` against a target
+  whose `items` come back `[]` (spec §7.1): instead of missing, it opens the container, and
+  returns a `Located` with `locOpen` set — `Nothing` for every other case, so `insertLines`
+  (`:209`) knows only this one needs special handling. On one line (the container's start and
+  end share a line — `Service::new()`, `RefundInvoice {}`), `locOpen` carries the bracket
+  columns, and `insertLines` splits that line in three: up to the opening bracket, the new
+  text at one level past the container's own indentation (`langIndent`, the adapter's
+  `indent` key, `Language/Adapter.hs:38`), then the closing bracket onwards, at the line's
+  own indentation — so `-> Self {` after a Rust parameter list, or a trailing `;` after a
+  call's arguments, survives on the closing line. Spread over several lines already, `place`
+  looks for a non-blank (comment) line inside and uses its indentation, so a template's
+  commented-out hint in a struct literal is where the real field lands; with nothing inside
+  at all, it falls back to the same one-level-in indentation as the one-line case.
 
 Each `querySyntax` call against the real adapter is one `ast-grep` process fed the file on
 stdin (`src/Olifant/Language/AstGrep.hs:34`). The Elm pack vendors its tree-sitter grammar,
@@ -650,9 +663,10 @@ so the first ever call compiles `packs/elm/languages/grammar/elm/parser.c` with 
 path, size and modification time (`prepare`): a `stat` per query, since hashing a
 megabyte-sized grammar on every call cost a third of an AST query's time.
 
-`presentAt` (`Resolve.hs:214`) makes re-runs idempotent: if the snippet's tokens already sit
+`presentAt` (`Resolve.hs:249`) makes re-runs idempotent: if the snippet's tokens already sit
 in the target region, or just next to the insertion line, the insert is `Skipped
-AlreadyPresent`. `insertLines` does the actual splice, keeping the file's line endings.
+AlreadyPresent`. `insertLines` does the actual splice, keeping the file's line endings —
+whole lines around `locLine` normally, or, when `locOpen` is set, the three-way split above.
 The lines it adds come from `insertedText`: the snippet less its common indentation (so a
 snippet written at its absolute column is not indented twice), plus, per `locSpacing`, a
 blank line if one isn't already there. The plan's `WillInsert` holds that same text, so

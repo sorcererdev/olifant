@@ -98,6 +98,61 @@ Use this when a structural target needs a tool (below) that might not be install
   the Elm grammar). Without them the edit misses with "ast-grep is not installed (brew
   install ast-grep)" and the next fallback is tried. Line and marker targets need nothing.
 
+## Opening an empty container
+
+`end of`/`start of` put the new line beside an existing item. A container with none — an
+Elm page's `Model` before its first field, a Rust `new()` before its first parameter —
+used to refuse. Now Olifant opens it instead. Only a bracketed container (`()`, `{}`, `[]`)
+is opened; any other empty target (a whole file, say) still refuses with "has no items to
+insert beside" (use `end of file` there).
+
+On one line, the line is split around the brackets, and the new text lands one level
+inside — a notch deeper than the container's own indentation:
+
+```toml
+[[edits]]
+insert = "src/Page/Home.elm"
+at     = "end of record Model"
+text   = "count : Int"
+```
+
+```diff
+ type alias Model =
+-    {}
++    {
++        count : Int
++    }
+```
+
+Whatever followed the brackets on that line stays on the closing line — a Rust parameter
+list keeps its `-> Self {`, a call's arguments keep a trailing `;`:
+
+```diff
+-    pub fn new() -> Self {
++    pub fn new(
++        email_template_repository: Arc<dyn EmailTemplateRepository>,
++    ) -> Self {
+```
+
+A container already spread over several lines, with only comments inside, gets the text
+before its closing line, at the comments' indentation — so a commented-out hint in a
+template is also where the real field lands:
+
+```diff
+ pub struct SendEmail {
+     // Put infra dependencies in this struct
+     // Below is an example of a repo dependency
+     // pub worksite_repository: Arc<dyn WorksiteRepository>,
++    pub email_template_repository: Arc<dyn EmailTemplateRepository>,
+ }
+```
+
+With nothing inside at all, not even a comment, the text goes one level past the
+container's own indentation, same as the one-line case.
+
+"One level" is the adapter's `indent` key (`indent = "    "`, the default, in
+`languages/<name>.toml`); set it to match a language's own convention.
+
 ## Spacing
 
 `end of` and `start of` copy the spacing of the items already there. In `update`, the
