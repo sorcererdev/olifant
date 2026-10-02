@@ -22,7 +22,7 @@ import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
 import Olifant.Generator (EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), generatorIdText, needsChoices, withChoices)
-import Olifant.Query (Queries (..), processCommand)
+import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
 import System.FilePath (takeBaseName, takeDirectory, (</>))
@@ -289,7 +289,7 @@ resolveChoicesFor rt cat gen
   | not (needsChoices gen) = pure (Right gen)
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) gen
+      first failureWhy <$> withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.

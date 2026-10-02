@@ -5,6 +5,7 @@ module Olifant.Generation
   ( Mode (..)
   , GenerationError (..)
   , describeGenerationError
+  , generationToolMissing
   , Step (..)
   , Resolve
   , ResolveFailure (..)
@@ -37,7 +38,7 @@ import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
 import Olifant.Language (languageFor)
-import Olifant.Query (renderQuery, runQuery)
+import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative)
 import System.FilePath (takeDirectory)
@@ -51,8 +52,14 @@ data GenerationError
   | UnknownGenerator StepPath Text Text
   | InvalidGenerator StepPath Text Text
   | CompositionCycle StepPath
-  | QueryFailed StepPath Text
+  | QueryFailed StepPath QueryFailure
   deriving stock (Eq, Show)
+
+-- | A generation error caused only by a missing tool (pack tests skip it).
+generationToolMissing :: GenerationError -> Bool
+generationToolMissing = \case
+  QueryFailed _ f -> failureToolMissing f
+  _ -> False
 
 -- | The message for a 'GenerationError', naming the step it happened in.
 describeGenerationError :: GenerationError -> Text
@@ -61,7 +68,7 @@ describeGenerationError = \case
   TemplateFailed path e -> inStep path (describeTemplateError e)
   UnknownGenerator path ref why -> inStep path ("`" <> ref <> "`: " <> why)
   InvalidGenerator path ref why -> inStep path ("`" <> ref <> "`: " <> why)
-  QueryFailed path why -> inStep path why
+  QueryFailed path f -> inStep path (failureWhy f)
   CompositionCycle path -> "generators use each other in a cycle: " <> showStepPath path
   where
     inStep path msg = showStepPath path <> ": " <> msg
@@ -124,8 +131,8 @@ generate ws resolve tools steps now mode =
       let one acc (name, q) = case acc of
             Left why -> pure (Left why)
             Right e -> case renderQuery env q of
-              Left err -> pure (Left ("query `" <> name <> "`: " <> describeTemplateError err))
-              Right q' -> fmap (\rs -> M.insert name (VList (map VRecord rs)) e) . first (\why -> "query `" <> name <> "`: " <> why) <$> runQuery (toolQueries tools) paths (readText ws) q'
+              Left err -> pure (Left (failed ("query `" <> name <> "`: " <> describeTemplateError err)))
+              Right q' -> fmap (\rs -> M.insert name (VList (map VRecord rs)) e) . first (\f -> f {failureWhy = "query `" <> name <> "`: " <> failureWhy f}) <$> runQuery (toolQueries tools) paths (readText ws) q'
       foldM one (Right env) queries
     locate p anchors content = resolveLayers (toolSyntax tools) (languageFor (toolLanguages tools) p) anchors content
     fromComposition = \case

@@ -9,7 +9,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Anchor.Resolve (itemsOfTarget)
 import Olifant.Language
-import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Record, describeQuery, eachFields)
+import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), QueryFailure (..), Record, describeQuery, eachFields, failed)
 import Olifant.Template (Value (..), describeTemplateError)
 
 -- | Evaluate an AST query over the files among @paths@ that its `files` glob
@@ -17,12 +17,12 @@ import Olifant.Template (Value (..), describeTemplateError)
 -- (checked once, whether or not any file matches) or an ambiguous one is an
 -- error. A file with no language adapter is skipped when the glob has a
 -- wildcard, and an error when the glob names it.
-astQueries :: Monad m => Syntax m -> [Language] -> AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either Text [Record])
+astQueries :: Monad m => Syntax m -> [Language] -> AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either QueryFailure [Record])
 astQueries syntax langs q paths readFile' = case (astSelect q, rawRule) of
   (ItemsOf target, _)
     | not (any (\l -> any (\t -> isJust (matchShape t (T.words target))) (langTargets l)) langs) ->
-        pure (Left ("unknown target `" <> target <> "` in any language adapter (targets: " <> T.intercalate ", " (nub [targetPhrase t | l <- langs, t <- langTargets l]) <> ")"))
-  (RawRule _, Just (Left err)) -> pure (Left (describeQuery (AstQueryQ q) <> ": " <> describeTemplateError err))
+        pure (Left (failed ("unknown target `" <> target <> "` in any language adapter (targets: " <> T.intercalate ", " (nub [targetPhrase t | l <- langs, t <- langTargets l]) <> ")")))
+  (RawRule _, Just (Left err)) -> pure (Left (failed (describeQuery (AstQueryQ q) <> ": " <> describeTemplateError err)))
   _ -> fmap concat . sequence <$> traverse one (sort [p | p <- paths, matchesGlob (astFiles q) p])
   where
     rawRule = case astSelect q of
@@ -33,18 +33,18 @@ astQueries syntax langs q paths readFile' = case (astSelect q, rawRule) of
       case languageFor langs path of
         Nothing
           | wildcard -> pure (Right [])
-          | otherwise -> pure (Left ("no language adapter for " <> T.pack path))
+          | otherwise -> pure (Left (failed ("no language adapter for " <> T.pack path)))
         Just lang ->
           readFile' path >>= \case
-            Nothing -> pure (Left ("cannot read " <> T.pack path))
+            Nothing -> pure (Left (failed ("cannot read " <> T.pack path)))
             Just content -> fmap (map (record path)) <$> nodes path lang content
     nodes path lang content = case (astSelect q, rawRule) of
       (ItemsOf target, _) ->
         itemsOfTarget syntax lang "items of" (T.words target) content >>= \case
-          Left (why, _) -> pure (Left (T.pack path <> ": `" <> target <> "`: " <> why))
+          Left (why, tool) -> pure (Left (QueryFailure (T.pack path <> ": `" <> target <> "`: " <> why) tool))
           Right Nothing -> pure (Right [])
           Right (Just (_, items)) -> pure (Right items)
-      (_, Just (Right value)) -> either (\f -> Left (T.pack path <> ": " <> describeSyntaxFailure f)) Right <$> querySyntax syntax lang value content
+      (_, Just (Right value)) -> either (\f -> Left (QueryFailure (T.pack path <> ": " <> describeSyntaxFailure f) (case f of SyntaxToolMissing _ -> True; SyntaxFailed _ -> False))) Right <$> querySyntax syntax lang value content
       (_, _) -> pure (Right [])
     fields = eachFields (astEach q)
     -- A CRLF file's node text keeps its CRs; records never do.

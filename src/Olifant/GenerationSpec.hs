@@ -17,7 +17,7 @@ import Olifant.Generation
 import Olifant.Generator
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Olifant.Language
-import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), noQueries)
+import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), QueryFailure (..), failed, noQueries)
 import Olifant.Region
 import Olifant.Template (Template, Value (..), parseTemplate)
 import Data.ByteString qualified as BS
@@ -86,12 +86,12 @@ createSpec = describe "generate (create edits)" $ do
   it "stops with QueryFailed when a generator query fails" $ do
     let gen = generatorFrom . (header <>) . T.unlines $ ["[query.types]", "files = \"a.x\"", "items_of = \"type T\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
     (result, files) <- run [("a.x", "")] gen [("name", "x")] Apply
-    either (\case QueryFailed _ why -> "query `types`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
+    either (\case QueryFailed _ f -> "query `types`" `T.isInfixOf` failureWhy f; _ -> False) (const False) result `shouldBe` True
     M.keys files `shouldBe` ["a.x"]
   it "renders every query with inputs and derived values only, so query order does not matter" $ do
     let gen = generatorFrom . (header <>) . T.unlines $ ["[query.a]", "glob = \"*.hs\"", "[query.b]", "glob = \"{= a =}\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
     (result, _) <- run [("A.hs", "")] gen [("name", "x")] Apply
-    either (\case QueryFailed _ why -> "undefined variable `a`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
+    either (\case QueryFailed _ f -> "undefined variable `a`" `T.isInfixOf` failureWhy f; _ -> False) (const False) result `shouldBe` True
   it "skips a create when `unless` finds a match, on disk or created earlier in the plan" $ do
     let migration =
           generatorFrom . (header <>) . T.unlines $
@@ -656,7 +656,7 @@ regionSpec = describe "generate (owned regions)" $ do
   it "re-runs an AST query for a later region after an earlier one rewrote the file it reads" $ do
     let Right n = parseTemplate "{= n =}"
         q = AstQueryQ (AstQuery "f.txt" (ItemsOf "type T") [])
-        lineCount = Queries (\_ -> pure (Left "no")) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt"))
+        lineCount = Queries (\_ -> pure (Left (failed "no"))) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt"))
         region name = RegionDef name "f.txt" q (ItemTemplate n) False (Just "--") Nothing Nothing
         both = (noTools :: Tools IO) {toolRegions = [region "a", region "b"], toolQueries = lineCount}
     (ws, snap) <- memoryWorkspace [("f.txt", "-- olifant:region a\n-- olifant:end a\n-- olifant:region b\n-- olifant:end b\n")]

@@ -8,7 +8,7 @@ import Data.Text qualified as T
 import Olifant.GeneratorTesting
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
-import Olifant.Language (compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Language (Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (findExecutable)
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -69,6 +69,21 @@ spec = do
             , ("/packs/p/generators/g/tests/basic/snapshot/README", "given\nadded\n")
             ]
       runTiny files `shouldReturn` CasePassed
+    it "leaves a case pending when a query's tool is missing" $ do
+      let gen = "description = \"g\"\nlanguage = \"x\"\n[query.items]\nfiles = \"a.x\"\nitems_of = \"type T\"\n[[edits]]\ncreate = \"b\"\ntext = \"b\"\n"
+          lang = "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.type]\nphrase = \"type NAME\"\ncontainer = { kind = \"t\" }\nitems = { kind = \"i\" }\nexample = \"end of type T\"\n"
+          files =
+            [ ("/packs/p/generators/g/generator.toml", gen)
+            , ("/packs/p/languages/x.toml", lang)
+            , ("/packs/p/fixtures/app/a.x", "x\n")
+            , ("/packs/p/generators/g/tests/basic/inputs.toml", "now = \"2026-09-27T15:30:00Z\"\n")
+            ]
+          missingAstGrep = Syntax (\_ _ _ -> pure (Left (SyntaxToolMissing "ast-grep is not installed")))
+      (root, _) <- memoryWorkspace files
+      [c] <- discoverCases root "/packs"
+      runCase root missingAstGrep noChecker False c >>= \case
+        CaseSkipped why -> why `shouldSatisfy` T.isInfixOf "ast-grep is not installed"
+        other -> expectationFailure ("expected pending, got " <> show other)
     it "blessing removes snapshot files the case no longer generates" $ do
       (root, snap) <- memoryWorkspace (tinyPack "old\n" ++ [("/packs/p/generators/g/tests/basic/snapshot/out/stale.txt", "x\n")])
       [c] <- discoverCases root "/packs"

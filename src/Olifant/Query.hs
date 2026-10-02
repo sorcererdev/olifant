@@ -13,12 +13,15 @@ module Olifant.Query
   , eachFields
   , posixRegex
   , Queries (..)
+  , QueryFailure (..)
+  , failed
   , noQueries
   , processCommand
   , runQuery
   ) where
 
 import Data.Aeson qualified as Aeson
+import Data.Bifunctor (first)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
@@ -133,33 +136,41 @@ globRecords g excludes paths =
             , ("dotted", VText (T.intercalate "." (map T.pack (splitDirectories rel))))
             ]
 
+-- | Why a query failed, and whether only a tool is missing (ast-grep, a
+-- command's program): such failures are pending in pack tests (spec §4.5).
+data QueryFailure = QueryFailure {failureWhy :: Text, failureToolMissing :: Bool}
+  deriving stock (Eq, Show)
+
+failed :: Text -> QueryFailure
+failed why = QueryFailure why False
+
 -- | The ports that answer queries: running a command (stdout, or why it
 -- failed), and evaluating an AST query over a list of paths.
 data Queries m = Queries
-  { queryCommand :: [Text] -> m (Either Text ByteString)
+  { queryCommand :: [Text] -> m (Either QueryFailure ByteString)
   , -- | an AST query over some paths, reading files through the given view
     -- (a plan's contents first, then disk)
-    queryAst :: AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either Text [Record])
+    queryAst :: AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either QueryFailure [Record])
   }
 
 noQueries :: Applicative m => Queries m
 noQueries =
   Queries
-    { queryCommand = \argv -> pure (Left ("commands are not available here (" <> T.unwords argv <> ")"))
-    , queryAst = \q _ _ -> pure (Left ("AST queries are not available here (" <> describeQuery (AstQueryQ q) <> ")"))
+    { queryCommand = \argv -> pure (Left (failed ("commands are not available here (" <> T.unwords argv <> ")")))
+    , queryAst = \q _ _ -> pure (Left (failed ("AST queries are not available here (" <> describeQuery (AstQueryQ q) <> ")")))
     }
 
-processCommand :: FilePath -> [Text] -> IO (Either Text ByteString)
+processCommand :: FilePath -> [Text] -> IO (Either QueryFailure ByteString)
 processCommand dir = \case
-  [] -> pure (Left "empty command")
+  [] -> pure (Left (failed "empty command"))
   (exe : args) ->
     locateIn dir (T.unpack exe) >>= \case
-      Nothing -> pure (Left ("`" <> exe <> "` is not installed"))
+      Nothing -> pure (Left (QueryFailure ("`" <> exe <> "` is not installed") True))
       Just path ->
         runBytes path (map T.unpack args) (Just dir) "" >>= \case
-          Left why -> pure (Left why)
+          Left why -> pure (Left (failed why))
           Right (ExitSuccess, out, _) -> pure (Right out)
-          Right (ExitFailure c, _, err) -> pure (Left ("exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8With lenientDecode err)))
+          Right (ExitFailure c, _, err) -> pure (Left (failed ("exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8With lenientDecode err))))
 
 -- | A program with a `/` (`bin/list`, `./scripts/x`) is the project's own,
 -- resolved against the project directory; a bare name is looked up on PATH.
@@ -171,14 +182,14 @@ locateIn dir exe
       pure (if ok then Just path else Nothing)
   | otherwise = findExecutable exe
 
-runQuery :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Query -> m (Either Text [Record])
+runQuery :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Query -> m (Either QueryFailure [Record])
 runQuery queries paths readFile' q = case q of
   GlobQuery g excludes -> pure (Right (globRecords g excludes paths))
   AstQueryQ ast -> queryAst queries ast paths readFile'
   CommandQuery argv select sortKey ->
     queryCommand queries argv >>= \case
-      Left why -> pure (Left (describeQuery q <> " failed: " <> why))
-      Right out -> pure $ case Aeson.eitherDecodeStrict out of
+      Left f -> pure (Left f {failureWhy = describeQuery q <> " failed: " <> failureWhy f})
+      Right out -> pure . first failed $ case Aeson.eitherDecodeStrict out of
         Left err -> Left (describeQuery q <> " did not print JSON: " <> T.pack err)
         Right v -> do
           arr <- case (select, v) of

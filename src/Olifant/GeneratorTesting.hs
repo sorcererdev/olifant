@@ -80,7 +80,9 @@ runCase root syntax checker bless pc = do
                    firstRun <- generate ws resolve tools [Step gen sets] now Apply
                    secondRun <- generate ws resolve tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of
-                     (Left err, _) -> pure (CaseFailed [describeGenerationError err])
+                     (Left err, _)
+                       | generationToolMissing err -> pure (CaseSkipped (describeGenerationError err))
+                       | otherwise -> pure (CaseFailed [describeGenerationError err])
                      (Right plan, _)
                        | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
                        | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))

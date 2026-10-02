@@ -8,12 +8,13 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as S
+import Data.Bifunctor (first)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generation.Plan
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language (Language (..), languageFor)
-import Olifant.Query (Query (..), Record, runQuery)
+import Olifant.Query (Query (..), QueryFailure (..), Record, runQuery)
 import Olifant.Region
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), isSafeRelative)
@@ -71,9 +72,9 @@ refreshRegions mode tools ws firstNumber current0
     cachedQuery universe view cache q = case (q, lookup q (cache :: Cache)) of
       (CommandQuery {}, Just r) -> pure (r, cache)
       (CommandQuery {}, Nothing) -> do
-        r <- runQuery (toolQueries tools) universe view q
+        r <- first failureWhy <$> runQuery (toolQueries tools) universe view q
         pure (r, (q, r) : cache)
-      _ -> (,cache) <$> runQuery (toolQueries tools) universe view q
+      _ -> (,cache) . first failureWhy <$> runQuery (toolQueries tools) universe view q
 
 -- | The lines currently inside a region (stripped), for counting what changed.
 oldBody :: RegionDef -> Text -> Text -> [Text]

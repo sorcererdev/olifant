@@ -24,7 +24,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Render (RenderedEdit (..), renderEdits)
-import Olifant.Query (Query)
+import Olifant.Query (Query, QueryFailure)
 import Olifant.Generator
 import Olifant.Template (Env, TemplateError (..), Value (..), render)
 import Olifant.Workspace (normalisePath)
@@ -46,16 +46,16 @@ data CompositionError
   | StepUnknown StepPath Text Text
   | StepInvalid StepPath Text Text
   | StepCycle StepPath
-  | StepQuery StepPath Text
+  | StepQuery StepPath QueryFailure
   deriving stock (Eq, Show)
 
 -- | Bind a generator's `[query.NAME]` lists into its environment (spec §4.5).
-type BindQueries m = Env -> [(Text, Query)] -> m (Either Text Env)
+type BindQueries m = Env -> [(Text, Query)] -> m (Either QueryFailure Env)
 
 -- | Resolve a generator's `choices_from` enums (spec §4.1), given the files
 -- the run has created so far (path, planned contents): a later step can
 -- choose what an earlier step creates.
-type Choose m = [(FilePath, Text)] -> Generator -> m (Either Text Generator)
+type Choose m = [(FilePath, Text)] -> Generator -> m (Either QueryFailure Generator)
 
 data PlanItem
   = PlanRequire StepPath [FilePath] (Maybe Text)
