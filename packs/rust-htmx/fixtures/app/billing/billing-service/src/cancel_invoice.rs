@@ -2,12 +2,8 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::ports::email_sender::EmailSender;
-
 #[derive(Clone)]
-pub struct CancelInvoice {
-    pub email_sender: Arc<dyn EmailSender>,
-}
+pub struct CancelInvoice {}
 
 #[derive(Clone, Debug)]
 pub struct CancelInvoiceInput {}

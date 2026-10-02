@@ -74,11 +74,29 @@ edit those lists by hand. The pre-merge hook runs `olifant sync --check`, so a s
 can't reach `main`.
 
 **`packs/`** holds real packs, and they are part of the test suite.
-`src/Olifant/GeneratorTestingSpec.hs:99` finds every `packs/*/generators/*/tests/*/inputs.toml`,
+`src/Olifant/GeneratorTestingSpec.hs:105` finds every `packs/*/generators/*/tests/*/inputs.toml`,
 runs that generator against the pack's `fixtures/app`, and compares the result with the
 case's `snapshot/`. A case may also have a `given/` directory, whose files replace or add to
 the fixture for that case only (`runCase`, `src/Olifant/GeneratorTesting.hs:68-70`: `given`
-wins the `M.union`); command queries still run in the fixture directory on disk. **`packs/olifant-dev`** is the pack Olifant uses on its own source. Its
+wins the `M.union`); command queries still run in the fixture directory on disk.
+
+Two more groups in the same spec check that pack output builds, on the fixture with the
+case's `given/` and `snapshot/` laid over it (`M.unions [snapshot, given, fixture]`).
+**"elm pack output compiles"** (`:118`) hands each Elm case's tree to `compileClean`
+(`Language/Check.hs:64`), which runs the Elm adapter's `[check]` command and wants exit 0.
+**"rust pack output compiles"** (`:136`) does the same for each rust-htmx case through
+`cargoCheck` (`:159`), defined in the spec itself, because the Rust adapter has no `[check]`
+yet. It copies only the `*/*-service` crates, writes each a minimal `Cargo.toml` (edition
+2021, `thiserror` and `async-trait`) plus a workspace manifest naming them all, and runs
+`cargo check --quiet --message-format=short` with `CARGO_TARGET_DIR` set to
+`olifant-test-cache/cargo-target` in the temp directory, so builds are cached across cases
+and runs. `main.rs` (axum, diesel), `web-htmx` and adapter crates are not checked. A missing
+`elm` or `cargo` goes through `missingTool` (`:152`): `pendingWith` locally,
+`expectationFailure` under `OLIFANT_REQUIRE_TOOLS=1`. Because every case is checked against
+it, the rust-htmx fixture itself compiles, and a case that needs an unwired hand edit (an
+`email_sender` field typed into `cancel_invoice.rs`) carries it in `given/`.
+
+**`packs/olifant-dev`** is the pack Olifant uses on its own source. Its
 `unit` generator creates `src/Olifant/X.hs` plus `src/Olifant/XSpec.hs`, and its
 `internal-module` generator creates `src/Olifant/X/Y.hs`.
 
@@ -90,7 +108,9 @@ wins the `M.union`); command queries still run in the fixture directory on disk.
 
 **`.githooks/`** (enable with `git config core.hooksPath .githooks`):
 - `post-commit` and `post-merge` reinstall `olifant` when you are on `main`.
-- `pre-merge-commit` runs `cabal test` and `olifant sync --check` before a merge into `main`
+- `pre-merge-commit` runs `cabal test` (with `OLIFANT_REQUIRE_TOOLS=1`, and
+  `~/.ghcup/bin` and `/opt/homebrew/opt/rustup/bin` on `PATH`, so a missing `ast-grep`,
+  `elm` or `cargo` fails the merge) and `olifant sync --check` before a merge into `main`
   completes.
 
 ## The units
@@ -299,8 +319,8 @@ the same thing again, which is how `completeEdits` is tested to stop instead of 
 same branch forever. `fakeSyntax` returns a nested match, which is how the "direct children
 only" rule in anchor resolution is tested. The real adapters are still tested, but
 separately: `LanguageSpec.hs:241` runs real `elm make`, `LanguageSpec.hs:92` real
-`ast-grep`, and the pack snapshot tests run both. Those tests become *pending*, not failed,
-when the tool isn't installed (`conflictToolMissing`, `src/Olifant/Generation/Plan.hs:93`).
+`ast-grep`, and the pack snapshot tests run both (plus real `cargo check` on rust-htmx
+output). Those tests become *pending*, not failed, when the tool isn't installed (`conflictToolMissing`, `src/Olifant/Generation/Plan.hs:93`).
 
 ## One `gen`, end to end
 

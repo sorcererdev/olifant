@@ -20,7 +20,7 @@ in_memory = "{= service|kebab =}/adapters/in-memory-{= aggregate|kebab =}-reposi
 diesel = "{= service|kebab =}/adapters/diesel-{= aggregate|kebab =}-repository"
 
 [requires]
-exists = ["{= service_dir =}/src/ports.rs", "Cargo.toml"]
+exists = ["{= service_dir =}/src/ports.rs", "{= service_dir =}/src/models.rs", "Cargo.toml"]
 hint = "Create the service first: olifant gen rust-htmx/service-skeleton --set service={= service =}"
 
 # The port: a trait in the service.
@@ -32,6 +32,18 @@ template = "port.rs.dt"
 insert = "{= service_dir =}/src/ports.rs"
 at     = ["after last line matching ^pub mod ", "end of file"]
 text   = "pub mod {= aggregate|snake =}_repository;"
+
+# The aggregate the port stores, as a stub (the plop template imports it but
+# never creates it). Skipped when models.rs already has a type of that name.
+[[edits]]
+insert = "{= service_dir =}/src/models.rs"
+at     = "end of file"
+text   = """
+#[derive(Clone, Debug, PartialEq)]
+pub struct {= aggregate|pascal =} {
+    pub id: String,
+}"""
+unless = { matches = "^[[:space:]]*pub (struct|enum|type) {= aggregate|pascal =}([^[:alnum:]_]|$)" }
 
 # The adapters: workspace crates beside the service.
 [[edits]]

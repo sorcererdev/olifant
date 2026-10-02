@@ -7,7 +7,7 @@ set -euo pipefail
 branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
 [ "$branch" = "main" ] || exit 0
 
-export PATH="$HOME/.ghcup/bin:$PATH"
+export PATH="$HOME/.ghcup/bin:/opt/homebrew/opt/rustup/bin:$PATH"
 # A pack case whose tools are missing must fail here, not pass as pending.
 export OLIFANT_REQUIRE_TOOLS=1
 echo "pre-merge-commit: running cabal test before merging into main..." >&2
