@@ -247,7 +247,7 @@ something and choose it in the next step:
 
 ```
 $ olifant gen rust-htmx/service-skeleton --set service=payments + rust-htmx/service-command --set service=payments --set command_name=charge_card --human
-rust-htmx/service-skeleton + rust-htmx/service-command (12 edits, 0 conflicts)
+rust-htmx/service-skeleton + rust-htmx/service-command (14 edits, 0 conflicts)
   + payments/payments-service/Cargo.toml (12 lines)  [rust-htmx/service-skeleton (step 1)]
   + payments/payments-service/src/lib.rs (4 lines)  [rust-htmx/service-skeleton (step 1)]
   …
@@ -397,13 +397,35 @@ before.
 So: one `use`, one parameter, one `let` and one argument per *service*, however many of its
 commands end up sharing the port, and in whatever order the dependencies were added.
 
-**Reconcile: `wire-command` on a hand-edited command.** `cancel_invoice.rs` already has a field
-added by hand, `email_sender`, that nothing has wired yet:
+**Reconcile: `wire-command` on a hand-edited command.** `cancel_invoice` has no dependencies
+yet: `CancelInvoice {}` is empty, and `wire-command` on it has nothing to do:
 
-```rust
-pub struct CancelInvoice {
-    pub email_sender: Arc<dyn EmailSender>,
-}
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice --human
+rust-htmx/wire-command (0 edits, 0 conflicts)
+```
+
+Instead of running `command-dependency`, add the field the way you would without Olifant:
+type it, and its import, into `cancel_invoice.rs` by hand:
+
+```diff
+ use thiserror::Error;
+ 
++use crate::ports::email_sender::EmailSender;
++
+ #[derive(Clone)]
+-pub struct CancelInvoice {}
++pub struct CancelInvoice {
++    pub email_sender: Arc<dyn EmailSender>,
++}
+```
+
+Now the service does not build, because `service.rs` still says `CancelInvoice {}`. A
+`cargo check` of `billing-service` (with the minimal manifest the test suite uses; [chapter
+10](10-testing-generators.md)) stops at:
+
+```
+src/service.rs:28:29: error[E0063]: missing field `email_sender` in initializer of `CancelInvoice`: missing `email_sender`
 ```
 
 `wire-command` reads the struct's fields and runs `command-dependency` for each:
@@ -415,13 +437,13 @@ rust-htmx/wire-command (7 edits, 0 conflicts)
   = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 5 of billing/billing-service/src/cancel_invoice.rs matches)
   ~ billing/billing-service/src/service.rs (+2 lines at line 9)
   ~ billing/billing-service/src/service.rs (+1 line at line 22)
-  ~ billing/billing-service/src/service.rs (+1 line at line 30)
+  ~ billing/billing-service/src/service.rs (+1 line at line 32)
   ~ main/src/main.rs (+1 line at line 22)
   ~ main/src/main.rs (+1 line at line 25)
 ```
 
-`cancel_invoice.rs` itself needed nothing (the field and its `use` are already there by hand,
-on lines 9 and 5); `service.rs` and `main.rs` get the usual plumbing and a second `todo!()`:
+`cancel_invoice.rs` itself needs nothing (the field and its `use` you typed are on lines 9
+and 5); `service.rs` and `main.rs` get the usual plumbing and a second `todo!()`:
 
 ```diff
  use crate::{
@@ -439,6 +461,9 @@ on lines 9 and 5); `service.rs` and `main.rs` get the usual plumbing and a secon
 +        email_sender: Arc<dyn EmailSender>,
      ) -> Self {
  …
+             void_invoice: VoidInvoice {
+                 invoice_repository: invoice_repository.clone(),
+             },
 -            cancel_invoice: CancelInvoice {},
 +            cancel_invoice: CancelInvoice {
 +                email_sender: email_sender.clone(),
@@ -454,7 +479,8 @@ on lines 9 and 5); `service.rs` and `main.rs` get the usual plumbing and a secon
      );
 ```
 
-A field spelled differently by hand (`Arc<dyn EmailSender + Send + Sync>`) or imported in a
+The same `cargo check` of `billing-service` now passes. A field spelled differently by hand
+(`Arc<dyn EmailSender + Send + Sync>`) or imported in a
 group (`use crate::ports::{email_sender::EmailSender, …};`) is recognised the same way; the
 worked example is in [chapter 6](06-queries-and-choices.md).
 

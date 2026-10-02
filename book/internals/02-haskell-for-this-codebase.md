@@ -837,7 +837,7 @@ spec = do
 - **hspec** gives `describe`, `it`, and assertions: `shouldBe` (`assert_eq!`),
   `shouldSatisfy x p` (`assert!(p(x))`), `shouldReturn` (run an `IO`, compare its result),
   `expectationFailure` (`panic!` with a message), and `pendingWith` (skip with a reason).
-  The pack tests use `pendingWith` when `elm` or `ast-grep` isn't installed.
+  The pack tests use `pendingWith` when `elm`, `ast-grep` or `cargo` isn't installed.
 - **hspec-discover** finds the specs. `src/TestDriver.hs` is a single line, `{-# OPTIONS_GHC
   -F -pgmF hspec-discover #-}`, which runs a preprocessor that generates a `main` calling
   every `*Spec` module's `spec` wrapped in `describe "<module minus Spec>"`. That's why
@@ -871,7 +871,7 @@ PATH="$HOME/.ghcup/bin:$HOME/.local/bin:$PATH"`, which the scripts also do):
 
 ```sh
 cabal build                                           # library + executable (+ tests: cabal.project has tests: True)
-cabal test                                            # the whole suite, including every pack's snapshot tests
+cabal test                                            # the whole suite: every pack's snapshot tests, and the Elm and Rust compile checks
 cabal test --test-show-details=direct \
            --test-options='--match "Olifant.Naming"'  # one unit, with each example printed
 OLIFANT_BLESS=1 cabal test                            # rewrite pack snapshots from current output

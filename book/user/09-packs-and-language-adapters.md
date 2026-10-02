@@ -329,7 +329,7 @@ $ olifant anchors rust
   mods                    e.g. end of mods
 …
 $ olifant where billing/billing-service/src/lib.rs "end of mods"
-billing/billing-service/src/lib.rs:6
+billing/billing-service/src/lib.rs:7
     pub mod refund_invoice;
     pub mod service;
     pub mod void_invoice;
@@ -339,8 +339,8 @@ $ olifant where billing/billing-service/src/lib.rs "start of mods"
 billing/billing-service/src/lib.rs:1
   ▶ (inserted here)
     pub mod cancel_invoice;
+    pub mod models;
     pub mod ports;
-    pub mod refund_invoice;
 ```
 
 `service.rs` has no `mod_item` at all, so `end of mods` has nothing to go beside, and Olifant

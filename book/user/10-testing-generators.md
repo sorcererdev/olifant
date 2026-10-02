@@ -6,7 +6,7 @@ wrote with a recorded **snapshot**. Every pack case in this repository runs as p
 
 ```
 $ export PATH="$HOME/.ghcup/bin:$PATH"
-$ cabal test --test-show-details=direct --test-options='--match "packs" --match "elm pack output compiles"'
+$ cabal test --test-show-details=direct --test-options='--match "packs" --match "elm pack output compiles" --match "rust pack output compiles"'
 …
 Olifant.GeneratorTesting
   packs
@@ -24,6 +24,7 @@ Olifant.GeneratorTesting
     redwood/cell/blog-post [✔]
     redwood/cell/blog-posts [✔]
     rust-htmx/command-dependency/adapter-chosen [✔]
+    rust-htmx/command-dependency/commented-hint [✔]
     rust-htmx/command-dependency/first-dependency [✔]
     rust-htmx/command-dependency/grouped-use [✔]
     rust-htmx/command-dependency/second-dependency [✔]
@@ -45,13 +46,31 @@ Olifant.GeneratorTesting
     elm/msg/reset [✔]
     elm/page/counter [✔]
     elm/page/settings-with-msgs [✔]
+  rust pack output compiles
+    rust-htmx/command-dependency/adapter-chosen [✔]
+    rust-htmx/command-dependency/commented-hint [✔]
+    rust-htmx/command-dependency/first-dependency [✔]
+    rust-htmx/command-dependency/grouped-use [✔]
+    rust-htmx/command-dependency/second-dependency [✔]
+    rust-htmx/command-dependency/shared-after-another [✔]
+    rust-htmx/command-dependency/shared-dependency [✔]
+    rust-htmx/service-command/cancel-subscription [✔]
+    rust-htmx/service-command/fresh-service [✔]
+    rust-htmx/service-repository/notification-repo [✔]
+    rust-htmx/service-skeleton/user-accounts [✔]
+    rust-htmx/web-htmx-component/status-badge [✔]
+    rust-htmx/web-htmx-resource-plural/workers [✔]
+    rust-htmx/web-htmx-resource-singular/worker [✔]
+    rust-htmx/wire-command/cancel-invoice [✔]
+    rust-htmx/wire-command/hand-spelling [✔]
+    rust-htmx/wire-command/mixed-fields [✔]
 
-Finished in 17.0072 seconds
-38 examples, 0 failures
+Finished in 21.3370 seconds
+56 examples, 0 failures
 ```
 
 (Four `Olifant.Catalog` tests whose names also contain "packs" ran too and are left out
-above; they make up the 38.)
+above; they make up the 56.)
 
 ## A test case
 
@@ -107,8 +126,10 @@ given file is the block's `};`). The other cases with a `given/`:
 
 | case | `given/` holds |
 |---|---|
+| `command-dependency/commented-hint` | `notifications-service`'s `ports.rs` with a `worksite_repository` port added, so the dependency the template's commented-out hint names exists and the output compiles |
 | `command-dependency/shared-after-another` | `service.rs`, `void_invoice.rs` and `main.rs` after `email_sender` was added to `void_invoice`; the case then adds `invoice_repository`, which `refund_invoice` already shares |
 | `command-dependency/adapter-chosen` | `main.rs` with `invoice_repository`'s `todo!()` replaced by `Arc::new(InMemoryInvoiceRepository::default())` |
+| `wire-command/cancel-invoice` | the fixture's empty `cancel_invoice.rs` with an `email_sender` field and its `use` typed in by hand, not yet wired |
 | `wire-command/mixed-fields` | a `void_invoice.rs` with two hand-added fields |
 | `wire-command/hand-spelling` | a `cancel_invoice.rs` with a grouped `use crate::ports::{…}` and a field typed `Arc<dyn InvoiceRepository + Send + Sync>` |
 
@@ -135,6 +156,60 @@ For the Elm pack there is one more group, **"elm pack output compiles"**: for ea
 the fixture with the case's `given/` and then the snapshot laid over it is compiled with the adapter's `[check]` command,
 and must compile cleanly. Structure-placed code that is in the right place but syntactically
 wrong fails here.
+
+The rust-htmx pack has a group like it, **"rust pack output compiles"** (`cargoCheck` in
+`src/Olifant/GeneratorTestingSpec.hs`). For each rust-htmx case it lays out the fixture, the
+case's `given/` and the snapshot the same way, then runs `cargo check` on every
+`*/*-service` crate in the result, as one workspace. The crates get minimal manifests written
+by the test (edition 2021, depending only on `thiserror` and `async-trait`), not the
+fixture's own `Cargo.toml`s: the check is about the Rust the generators write, not the
+template's workspace dependencies. A missing import, a struct literal missing a field, or a
+port that names a type nobody defines fails here even when the snapshot matches. It does not
+cover `main/src/main.rs` (axum, diesel), the `web-htmx` crate, or the adapter crates
+`service-repository` writes beside a service (`notifications/adapters/…`).
+
+`CARGO_TARGET_DIR` is `olifant-test-cache/cargo-target` in the system temp directory, shared
+by every case and every run, so runs after the first take seconds. The first run needs
+network access to fetch the two crates.
+
+Two things follow from the check. The pack's fixture compiles on its own, and so does every
+`given/`: a starting point the fixture lacks, such as a field typed in by hand but not yet
+wired, goes in the case's `given/` (`wire-command/cancel-invoice` above), not in the shared
+fixture. And a generator's output has to compile, which is why `service-repository` differs
+from the plop template it was ported from: the template's port imports `crate::models::X`
+but never creates `X`. The pack's generator appends a stub to the service's `models.rs`
+(and `models.rs` is in its `[requires]`):
+
+```
+$ olifant gen rust-htmx/service-repository --set service=notifications --set aggregate=delivery_log --human
+rust-htmx/service-repository (10 edits, 0 conflicts)
+  + notifications/notifications-service/src/ports/delivery_log_repository.rs (19 lines)
+  ~ notifications/notifications-service/src/ports.rs (+1 line at line 3)
+  ~ notifications/notifications-service/src/models.rs (+4 lines at line 1)
+  …
+$ git diff -- notifications/notifications-service/src/models.rs
+…
+@@ -0,0 +1,4 @@
++#[derive(Clone, Debug, PartialEq)]
++pub struct DeliveryLog {
++    pub id: String,
++}
+```
+
+The edit has `unless = { matches = "^[[:space:]]*pub (struct|enum|type) DeliveryLog…" }`
+(the name rendered from `aggregate`; [chapter 6](06-queries-and-choices.md)), so a
+`models.rs` that already declares the type keeps its own:
+
+```
+$ olifant gen rust-htmx/service-repository --set service=notifications --set aggregate=delivery_log --plan --human
+Plan: rust-htmx/service-repository (10 edits, 0 conflicts)
+  + notifications/notifications-service/src/ports/delivery_log_repository.rs (19 lines)
+  ~ notifications/notifications-service/src/ports.rs (+1 line at line 3)
+  = notifications/notifications-service/src/models.rs (skipped: unless: line 1 of notifications/notifications-service/src/models.rs matches)
+  …
+```
+
+(run with `pub struct DeliveryLog {` on line 1 of `models.rs`).
 
 ## Writing a new generator, test first
 
@@ -270,6 +345,25 @@ Finished in 0.0383 seconds
 "0 failures" there is not a pass. On a machine or CI runner without the tools, look for
 `pending` in the summary.
 
+The Rust compile check needs `cargo`; without it (here `ast-grep` is on the PATH, rustup's
+`cargo` is not) the pack case runs and the compile check is pending, with the install hint:
+
+```
+$ PATH="$HOME/.ghcup/bin:/opt/homebrew/bin:/usr/bin:/bin" cabal test --test-show-details=direct --test-options='--match "wire-command/cancel-invoice"'
+Olifant.GeneratorTesting
+  packs
+    rust-htmx/wire-command/cancel-invoice [✔]
+  rust pack output compiles
+    rust-htmx/wire-command/cancel-invoice [‐]
+      # PENDING: cargo is not installed (brew install rustup; rustup default stable)
+
+Finished in 0.1090 seconds
+2 examples, 0 failures, 1 pending
+```
+
+Homebrew's `rustup` is keg-only: its `cargo` is in `/opt/homebrew/opt/rustup/bin`, which is
+not on the PATH unless you put it there.
+
 Set `OLIFANT_REQUIRE_TOOLS=1` where the tools are supposed to be there (CI, the pre-merge
 hook) and a missing tool fails the case instead of letting it pass as pending:
 
@@ -291,8 +385,12 @@ Failures:
 2 examples, 2 failures
 ```
 
+The same run of the Rust case with `OLIFANT_REQUIRE_TOOLS=1` fails with `required tool
+missing: cargo is not installed (brew install rustup; rustup default stable)`.
+
 The pre-merge hook sets `OLIFANT_REQUIRE_TOOLS=1`, so a merge into `main` on a machine
-missing `ast-grep` or `elm` fails instead of quietly skipping those cases.
+missing `ast-grep`, `elm` or `cargo` fails instead of quietly skipping those cases. The hook
+puts `~/.ghcup/bin` and `/opt/homebrew/opt/rustup/bin` on its PATH.
 
 ## Other limits of pack tests
 
@@ -345,11 +443,11 @@ in the owner's clone; a fresh clone needs it):
 
 | hook | on `main` only | does |
 |---|---|---|
-| `pre-merge-commit` | yes | runs `cabal test` with `OLIFANT_REQUIRE_TOOLS=1` (a missing `ast-grep` or `elm` fails instead of pending), then `olifant sync --check` (via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
+| `pre-merge-commit` | yes | runs `cabal test` with `OLIFANT_REQUIRE_TOOLS=1` (a missing `ast-grep`, `elm` or `cargo` fails instead of pending), then `olifant sync --check` (via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
 | `post-commit` | yes | runs `scripts/install-olifant.sh`, so `~/.local/bin/olifant` is always built from `main`; never blocks the commit |
 | `post-merge` | yes | the same install, after a merge into `main` |
 
-So pack snapshots, the Elm "compiles" check, and the cabal module lists (chapter 5) are all
+So pack snapshots, the Elm and Rust "compiles" checks, and the cabal module lists (chapter 5) are all
 enforced at the point a branch lands on `main`.
 
 Git only runs `pre-merge-commit` when a merge creates a merge commit; a fast-forward merge

@@ -241,7 +241,7 @@ unless = { matches = "^[[:space:]]*pub {= d =}[[:space:]]*:" }
 insert = "{= service_dir =}/src/{= cmd =}.rs"
 at     = ["end of uses", "start of file"]
 text   = "use crate::ports::{= d =}::{= D =};"
-unless = { matches = "{= d =}::{= D =}([^[:alnum:]_]|$)" }
+unless = { matches = "^[^/]*{= d =}::{= D =}([^[:alnum:]_]|$)" }
 
 [[edits]]
 insert = "main/src/main.rs"
