@@ -1,4 +1,4 @@
 now = "2026-10-01T12:00:00Z"
 [inputs]
 service = "notifications"
-command_name = "send_email"
+command_name = "schedule_digest"

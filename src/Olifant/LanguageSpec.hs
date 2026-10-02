@@ -8,9 +8,10 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.ByteString qualified as BS
 import Data.List (nub)
+import Data.Maybe (isJust)
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
-import Olifant.Anchor (RenderedAnchor (..), locIndent, locLine, resolveLayers)
+import Olifant.Anchor (RenderedAnchor (..), locIndent, locLine, locOpen, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
@@ -120,6 +121,16 @@ spec = do
     it "end of data goes after the last constructor (haskell adapter)" $ withHaskell $ \syn lang file ->
       fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of data SampleError"] file)
         `shouldReturn` Right (6, "  ")
+    it "end of parameters in new goes after the last parameter" $ withRustFile "billing/billing-service/src/service.rs" $ \syn lang file ->
+      at syn lang file "end of parameters in new" `shouldReturn` Right (lineOf file "invoice_repository: Arc<dyn InvoiceRepository>," + 1)
+    it "end of literal VoidInvoice in new opens the empty literal" $ withRustFile "billing/billing-service/src/service.rs" $ \syn lang file ->
+      fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of literal VoidInvoice in new"] file) >>= (`shouldSatisfy` either (const False) isJust)
+    it "end of literal RefundInvoice in new goes after its last field" $ withRustFile "billing/billing-service/src/service.rs" $ \syn lang file ->
+      at syn lang file "end of literal RefundInvoice in new" `shouldReturn` Right (lineOf file "invoice_repository: invoice_repository.clone()," + 1)
+    it "end of call … BillingService::new in main goes after the last argument" $ withRustFile "main/src/main.rs" $ \syn lang file ->
+      at syn lang file "end of call billing_service::service::BillingService::new in main" `shouldReturn` Right (lineOf file "invoice_repository.clone()," + 1)
+    it "end of call … NotificationsService::new in main opens the empty argument list" $ withRustFile "main/src/main.rs" $ \syn lang file ->
+      fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call notifications_service::service::NotificationsService::new in main"] file) >>= (`shouldSatisfy` either (const False) isJust)
     it "end of struct goes after the last field" $ withRust $ \syn lang file ->
       at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub refund_invoice: RefundInvoice," + 1)
     it "end of impl goes after the last method" $ withRust $ \syn lang file ->
@@ -266,6 +277,18 @@ withHaskell k =
       tmp <- getTemporaryDirectory
       let Right lang = parseLanguage "haskell" "packs/olifant-dev" src
       file <- TIO.readFile "packs/olifant-dev/fixtures/app/src/Olifant/SampleErrors.hs"
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
+
+-- | The rust-htmx pack's adapter on one of its fixture's files, or pending.
+withRustFile :: FilePath -> (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withRustFile rel k =
+  findExecutable "ast-grep" >>= \case
+    Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
+    Just _ -> do
+      src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
+      tmp <- getTemporaryDirectory
+      let Right lang = parseLanguage "rust" "packs/rust-htmx" src
+      file <- TIO.readFile ("packs/rust-htmx/fixtures/app" </> rel)
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
 withAstGrep :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation

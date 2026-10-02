@@ -29,3 +29,24 @@ container = { kind = "use_list", inside = { kind = "use_declaration", regex = "^
 # ast-grep needs a kind: everything a use list can hold.
 items = { any = [{ kind = "scoped_use_list" }, { kind = "scoped_identifier" }, { kind = "identifier" }, { kind = "use_as_clause" }, { kind = "use_wildcard" }, { kind = "self" }] }
 example = "end of crate imports"
+
+# Wiring dependencies (spec §7.1): a function's parameters, a struct literal
+# by name, a call's arguments. Empty ones are opened (`()`, `{}`).
+[targets.parameters_in]
+phrase = "parameters in FUNCTION"
+container = { kind = "parameters", inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" } } }
+items = { any = [{ kind = "parameter" }, { kind = "self_parameter" }] }
+example = "end of parameters in new"
+
+[targets.literal_named_in]
+phrase = "literal NAME in FUNCTION"
+container = { kind = "field_initializer_list", inside = { kind = "struct_expression", has = { field = "name", regex = "^{= NAME =}$" }, inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
+items = { any = [{ kind = "field_initializer" }, { kind = "shorthand_field_initializer" }] }
+example = "end of literal RefundInvoice in new"
+
+[targets.call_in]
+phrase = "call NAME in FUNCTION"
+container = { kind = "arguments", inside = { kind = "call_expression", has = { field = "function", regex = "^{= NAME =}$" }, inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
+# ast-grep needs a kind: the expressions an argument can be.
+items = { any = [{ kind = "call_expression" }, { kind = "identifier" }, { kind = "field_expression" }, { kind = "reference_expression" }, { kind = "macro_invocation" }, { kind = "string_literal" }, { kind = "integer_literal" }, { kind = "struct_expression" }, { kind = "scoped_identifier" }, { kind = "closure_expression" }] }
+example = "end of call BillingService::new in main"

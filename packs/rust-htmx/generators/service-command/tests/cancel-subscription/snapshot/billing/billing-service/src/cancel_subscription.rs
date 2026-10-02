@@ -1,7 +1,13 @@
+use std::sync::Arc;
+
 use thiserror::Error;
 
+use crate::ports::invoice_repository::InvoiceRepository;
+
 #[derive(Clone)]
-pub struct CancelSubscription {}
+pub struct CancelSubscription {
+    pub invoice_repository: Arc<dyn InvoiceRepository>,
+}
 
 #[derive(Clone, Debug)]
 pub struct CancelSubscriptionInput {}

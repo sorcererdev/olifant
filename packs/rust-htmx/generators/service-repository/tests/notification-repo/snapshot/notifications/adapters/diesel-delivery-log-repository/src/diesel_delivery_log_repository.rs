@@ -6,18 +6,18 @@ use diesel::OptionalExtension;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::RunQueryDsl;
 
-use notifications_service::ports::email_template_repository::{RepositoryFailure, EmailTemplateRepository};
-use notifications_service::models::EmailTemplate;
+use notifications_service::ports::delivery_log_repository::{RepositoryFailure, DeliveryLogRepository};
+use notifications_service::models::DeliveryLog;
 use crate::records::*;
 
 #[derive(Clone)]
-pub struct DieselEmailTemplateRepository {
+pub struct DieselDeliveryLogRepository {
     pub pg_pool: PgPool,
 }
 
 #[async_trait]
-impl EmailTemplateRepository for DieselEmailTemplateRepository {
-    async fn get_email_template(&self, id: String) -> Result<Option<EmailTemplate>, RepositoryFailure> {
+impl DeliveryLogRepository for DieselDeliveryLogRepository {
+    async fn get_delivery_log(&self, id: String) -> Result<Option<DeliveryLog>, RepositoryFailure> {
         let conn = &mut self
             .pg_pool
             .get()
@@ -28,7 +28,7 @@ impl EmailTemplateRepository for DieselEmailTemplateRepository {
 
     }
 
-    async fn save(&self, email_template: EmailTemplate) -> Result<(), RepositoryFailure> {
+    async fn save(&self, delivery_log: DeliveryLog) -> Result<(), RepositoryFailure> {
         let conn = &mut self
             .pg_pool
             .get()
