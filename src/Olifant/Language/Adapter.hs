@@ -35,6 +35,9 @@ data Language = Language
   , langPlaceholder :: Maybe Template
   , langBranch :: Maybe Template
   , langCheck :: Maybe CheckDef
+  , langIndent :: Text
+  -- ^ one level of indentation (key `indent`, default four spaces): used when
+  -- an empty container is opened
   }
   deriving stock (Show)
 
@@ -50,7 +53,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -58,7 +61,8 @@ parseLanguage name packRoot src = do
   placeholder <- optional "placeholder" (text >=> tmpl) top
   branch <- optional "branch" (text >=> tmpl) top
   check <- optional "check" (table >=> checkFrom) top
-  pure (Language name files comment grammar targets placeholder branch check)
+  indent <- fromMaybe "    " <$> optional "indent" text top
+  pure (Language name files comment grammar targets placeholder branch check indent)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case

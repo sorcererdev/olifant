@@ -8,8 +8,8 @@ use crate::{
 #[derive(Clone)]
 pub struct NotificationsService {
     //##PLOP INSERT COMMAND HOOK##
-    pub send_email: SendEmail,
     // Add service infra dependencies here
+    pub send_email: SendEmail,
 }
 
 impl NotificationsService {

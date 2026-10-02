@@ -316,10 +316,10 @@ composeSpec = describe "generate (composition)" $ do
             , "[inputs.service]", "type = \"ident\""
             , "[[edits]]", "create = \"{= service =}/{= service =}-service/lib.rs\"", "text = \"x\\n\""
             , "[[uses]]", "generator = \"command\"", "with = { service = \"{= service =}-service\" }" ]
-        resolve = resolveTo [("command", command)]
+        resolveChain = resolveTo [("command", command)]
         runChain files steps = do
           (ws, snapshot) <- memoryWorkspace files
-          r <- generate ws resolve noTools steps now Apply
+          r <- generate ws resolveChain noTools steps now Apply
           (r,) <$> snapshot
     it "lets a step choose a service an earlier step of the chain creates" $ do
       (r, files) <- runChain [("billing/billing-service/lib.rs", "")] [Step skeleton (M.fromList [("service", "payments")]), Step command (M.fromList [("service", "payments-service")])]

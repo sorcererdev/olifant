@@ -33,8 +33,10 @@ data RenderedAnchor = PhraseAnchor Text | RuleAnchor Aeson.Value Position
   deriving stock (Eq, Show)
 
 -- | 'locSpacing': a blank line to add around the new text, copied from the
--- spacing between the target's neighbouring items (spec §5.2).
-data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing}
+-- spacing between the target's neighbouring items (spec §5.2). 'locOpen':
+-- an empty container on one line, @(line, from, to)@ its columns, which the
+-- insert opens (`()` → `(` / text / `)`) instead of adding whole lines.
+data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, locUsed :: Text, locSpacing :: Spacing, locOpen :: Maybe (Int, Int, Int)}
   deriving stock (Eq, Show)
 
 data Spacing = NoSpacing | BlankBefore | BlankAfter
@@ -85,7 +87,7 @@ resolveOne syntax lang anchor content = case anchor of
     ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
     indentAt i = T.takeWhile (\c -> c == ' ' || c == '\t') (if i < length ls then ls !! i else "")
     regionOf a b = T.intercalate "\n" (take (b - a + 1) (drop a ls))
-    located line indent region = Located line indent region used NoSpacing
+    located line indent region = Located line indent region used NoSpacing Nothing
     count = T.pack . show . length
     around m pos =
       let (s, e) = (fst (matchStart m), fst (matchEnd m))
@@ -131,14 +133,21 @@ resolveOne syntax lang anchor content = case anchor of
       itemsOfTarget syntax l (positionWords pos) ws content <&> \case
         Left (why, tool) -> Left (Miss used why tool)
         Right Nothing -> Left (miss "not found")
-        Right (Just (c, items)) -> place pos c items
-    place pos c items =
+        Right (Just (c, items)) -> place l pos c items
+    place l pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce
        in case (pos, items) of
             (Before, _) -> wholeLine "the target's start" (startsLine (matchStart c)) (located cs (indentAt cs) region)
             (After, _) -> wholeLine "the target's end" (endsLine (matchEnd c)) (located (ce + 1) (indentAt cs) region)
-            (_, []) -> Left (miss "has no items to insert beside")
+            -- An empty container is opened (spec §7.1): on one line, the line
+            -- is split around it; spread over lines, the text goes before its
+            -- closing line, indented like what is inside, or one level in.
+            (_, [])
+              | cs == ce -> Right ((located cs (indentAt cs <> langIndent l) region) {locOpen = Just (cs, snd (matchStart c), snd (matchEnd c))})
+              | otherwise ->
+                  let inside = [indentAt i | i <- [cs + 1 .. ce - 1], not (T.null (T.strip (lineAt' i)))]
+                   in Right (located ce (case inside of (i : _) -> i; [] -> indentAt cs <> langIndent l) region)
             (StartOf, _) ->
               let f = minimumBy (comparing matchStart) items
                   spacing = case sortOn matchStart items of
@@ -203,7 +212,14 @@ insertLines loc snippet content =
       ls = T.splitOn newline content
       new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- T.splitOn "\n" (insertedText (locSpacing loc) snippet)]
       i = min (locLine loc) (length ls)
-   in (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
+   in case locOpen loc of
+        -- Split the container's line: up to the opening bracket, the text,
+        -- then the closing bracket onwards at the line's own indentation.
+        Just (l, from, to) | l < length ls ->
+          let line = ls !! l
+              base = T.takeWhile (\c -> c == ' ' || c == '\t') line
+           in (l + 2, T.intercalate newline (take l ls ++ [T.take (from + 1) line] ++ new ++ [base <> T.drop (to - 1) line] ++ drop (l + 1) ls))
+        _ -> (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
 
 -- | The lines an insert adds, before the site's indentation: the text less
 -- its common indentation (so text written at its absolute column is not
