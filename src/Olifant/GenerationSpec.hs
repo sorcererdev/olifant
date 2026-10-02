@@ -311,6 +311,45 @@ composeSpec = describe "generate (composition)" $ do
     Right _ <- generate ws resolve noTools [Step fromPages M.empty] now Apply
     files <- snapshot
     [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
+  describe "dependent choices (spec §4.1)" $ do
+    let wiring = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"x\""
+          , "[inputs.service]", "type = \"enum\"", "one_of = \"services\""
+          , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+          , "[derive]", "service_dir = \"{= service =}/{= service =}-service\""
+          , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
+          , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\""
+          , "[[edits]]", "create = \"out.txt\"", "text = \"{= service =} {= dependency =}\"" ]
+        project =
+          [ ("billing/billing-service/ports/email_sender.rs", ""), ("billing/billing-service/ports/invoice_repository.rs", "")
+          , ("notifications/notifications-service/lib.rs", "") ]
+        message sets = do
+          (result, _) <- run project wiring sets Apply
+          pure (either describeGenerationError (const "") result)
+    it "(a) lists only the chosen service's ports, and names the context when the pick is wrong" $ do
+      (_, files) <- run project wiring [("service", "billing"), ("dependency", "invoice_repository")] Apply
+      M.lookup "out.txt" files `shouldBe` Just "billing invoice_repository"
+      message [("service", "billing"), ("dependency", "clock")]
+        >>= (`shouldSatisfy` T.isInfixOf "invalid inputs: `dependency`: expected one of email_sender, invoice_repository (the ports of service=billing); got `clock`")
+    it "(b) says a dependent input waits for the one it depends on, not a template error (Review Focus 1)" $
+      message [("dependency", "clock")] >>= (`shouldSatisfy` \m -> "missing `service`" `T.isInfixOf` m && "`dependency`: its choices depend on `service`" `T.isInfixOf` m)
+    it "(c) does not run the query for an invalid earlier pick (Review Focus 1)" $
+      message [("service", "nope"), ("dependency", "x")] >>= (`shouldSatisfy` \m -> "`service`: expected one of billing, notifications" `T.isInfixOf` m && not ("found nothing" `T.isInfixOf` m))
+    it "(d) names the query and context when it finds nothing (Review Focus 2)" $
+      message [("service", "notifications"), ("dependency", "x")] >>= (`shouldSatisfy` T.isInfixOf "the query `ports` found nothing for service=notifications")
+    it "(e) sees files an earlier step of the chain created (Review Focus 3)" $ do
+      let maker = generatorNamed "maker" . T.unlines $ ["description = \"m\"", "language = \"x\"", "[[edits]]", "create = \"svc/a/x.txt\"", "text = \"x\""]
+          picker = generatorNamed "picker" . T.unlines $
+            [ "description = \"p\"", "language = \"x\""
+            , "[inputs.dir]", "type = \"enum\"", "one_of = \"dirs\""
+            , "[inputs.file]", "type = \"enum\"", "one_of = \"files\""
+            , "[query.dirs]", "glob = \"svc/*\""
+            , "[query.files]", "glob = \"svc/{= dir =}/*.txt\""
+            , "[[edits]]", "create = \"picked.txt\"", "text = \"{= dir =}/{= file =}\"" ]
+      (ws, snap) <- memoryWorkspace []
+      r <- generate ws noResolve noTools [Step maker M.empty, Step picker (M.fromList [("dir", "a"), ("file", "x")])] now Apply
+      either describeGenerationError (const "ok") r `shouldBe` "ok"
+      (M.lookup "picked.txt" <$> snap) `shouldReturn` Just "a/x"
   describe "one_of in a chain (spec §4.1: a later step can choose what an earlier one creates)" $ do
     let skeleton =
           generatorNamed "skeleton" . T.unlines $

@@ -7,6 +7,7 @@ import Control.Monad (when)
 import Data.Aeson (Value, eitherDecodeStrict, object)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
+import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.List (find)
 import Data.Maybe (fromMaybe)
@@ -132,7 +133,7 @@ runCommand rt cwd fmt cat = \case
     -- --detail prints inputs, so choices_from must be live, as in `show`.
     entries <-
       if detail
-        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat (entryDefinition e)) ok
+        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat M.empty (entryDefinition e)) ok
         else pure ok
     emit rt fmt (listJson detail (subsOf cat) entries broken) (listHuman detail (subsOf cat) entries broken)
     pure ExitSuccess
@@ -161,7 +162,7 @@ runCommand rt cwd fmt cat = \case
     Right e0 ->
       checkEntry (rtRoot rt) (rtSyntax rt) cat e0 >>= \case
        Just why -> failWith rt fmt 1 "generator_invalid" (generatorIdText (entryId e0) <> ": " <> why) Nothing []
-       Nothing -> resolveChoicesFor rt cat (entryDefinition e0) >>= \case
+       Nothing -> resolveChoicesFor rt cat M.empty (entryDefinition e0) >>= \case
         Left why -> failWith rt fmt 1 "generator_invalid" why Nothing []
         Right d -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (subsOf cat e) e) (showHuman (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
@@ -284,12 +285,12 @@ generationFailure rt fmt err = case err of
 
 -- | Resolve `choices_from` inputs against the project (spec §4.1); the
 -- project is listed only when a generator needs it.
-resolveChoicesFor :: Runtime -> Catalog -> GeneratorWith s -> IO (Either Text (GeneratorWith s))
-resolveChoicesFor rt cat gen
+resolveChoicesFor :: Runtime -> Catalog -> Map Text Text -> GeneratorWith s -> IO (Either Text (GeneratorWith s))
+resolveChoicesFor rt cat sets gen
   | not (needsChoices gen) = pure (Right gen)
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      first failureWhy <$> withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) gen
+      first failureWhy <$> withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.

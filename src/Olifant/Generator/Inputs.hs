@@ -5,6 +5,7 @@ module Olifant.Generator.Inputs
   , describeEnvError
   , describeInputType
   , inputsUsed
+  , envBefore
   , showContext
   ) where
 
@@ -37,11 +38,34 @@ buildEnv gen sets now = do
       inputNames = map inputName (genInputs gen)
       unknown = [UnknownInput k | k <- M.keys sets, k `notElem` inputNames, k `notElem` derivedNames]
       resolved = map (resolveInput sets) (genInputs gen)
-      problems = unknown ++ lefts resolved
+      troubled = S.fromList [n | InvalidInput n _ <- lefts resolved]
+      -- "its choices depend on X; set it first" misleads when X was set but
+      -- is invalid: X's own problem says it all. (A missing X keeps it.)
+      waitsOnTrouble = \case
+        InvalidInput n _ | Just ns <- dependsOn n -> all (`S.member` troubled) ns
+        _ -> False
+      dependsOn n = case [c | InputSpec {inputName = m, inputType = ScalarInput (EnumOf _ _ c)} <- genInputs gen, m == n] of
+        [NeedsInputs ns] -> Just ns
+        _ -> Nothing
+      problems = unknown ++ filter (not . waitsOnTrouble) (lefts resolved)
   unless (null problems) (Left (InputProblems problems))
   let base = M.insert "now" (VTime now) (M.fromList (rights resolved))
       overrides = M.fromList [(k, v) | (k, v) <- M.toList sets, k `elem` derivedNames]
   deriveAll (genDerived gen) overrides base
+
+-- | The env a query serving input @name@ sees (spec §4.1): the inputs
+-- declared above it that parse (enums against their resolved choices), and
+-- the derived values that evaluate from them. Problems are ignored here;
+-- 'buildEnv' reports them.
+envBefore :: GeneratorWith s -> Map Text Text -> Text -> Env
+envBefore gen sets name =
+  let above = takeWhile ((/= name) . inputName) (genInputs gen)
+   in deriveSome (M.fromList (rights (map (resolveInput sets) above)))
+  where
+    deriveSome env =
+      let step e (k, t) = either (const e) (\v -> M.insert k v e) (evaluate e t)
+          next = foldl step env [d | d@(k, _) <- genDerived gen, k `M.notMember` env]
+       in if M.size next == M.size env then env else deriveSome next
 
 resolveInput :: Map Text Text -> InputSpec -> Either InputProblem (Text, Value)
 resolveInput sets spec = case maybe (inputDefault spec) Just (M.lookup name sets) of
