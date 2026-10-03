@@ -60,7 +60,8 @@ actionsAt syntax langs queries paths readFile' gens path (line, col) content =
         Nothing -> pure Nothing
         Just fromPath -> case apNode ap of
           Nothing -> Just <$> offer gid gen ap fromPath Nothing
-          Just rule -> case (languageFor langs path, renderRule M.empty rule) of
+          -- The rule may use the path's slots ({= command|pascal =}).
+          Just rule -> case (languageFor langs path, renderRule (M.fromList [(k, VText v) | (k, v) <- fromPath]) rule) of
             (Just lang, Right r) ->
               querySyntax syntax lang r content >>= \case
                 Right ms
@@ -71,7 +72,7 @@ actionsAt syntax langs queries paths readFile' gens path (line, col) content =
     size m = (fst (matchEnd m) - fst (matchStart m), snd (matchEnd m) - snd (matchStart m))
     offer gid gen ap fromPath node = do
       let fromNode = [(k, v) | Just n <- [node], (k, re) <- apBind ap, Just v <- [capture re (matchText n)]]
-          sets = M.fromList (fromPath ++ fromNode)
+          sets = M.fromList (fromPath ++ fromNode ++ [(k, T.pack path) | Just k <- [apFile ap]])
       -- Bound values must be valid choices; an invalid one is asked for.
       resolved <- withChoices queries paths readFile' sets epoch gen
       let valid k v = case resolved of

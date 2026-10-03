@@ -37,3 +37,9 @@ each     = { name = "^pub ([a-z_0-9]+):" }
 generator = "command-dependency"
 for_each  = "deps"
 with      = { service = "{= service =}", command = "{= command =}", dependency = "{= item.name =}" }
+
+# In an editor (olifant actions): on a field of the command's struct.
+[applies_at]
+path  = "{service}/*-service/src/{command}.rs"
+node  = { kind = "field_declaration", inside = { kind = "struct_item", regex = "^pub struct {= command|pascal =} ", stopBy = "end" } }
+label = "Wire {= command =}'s dependencies"

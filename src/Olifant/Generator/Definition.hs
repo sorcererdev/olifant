@@ -88,8 +88,9 @@ data Unless t = UnlessExists t | UnlessMatches t
 
 -- | Where a generator applies (spec §4.6): a path glob whose `{slot}`s bind
 -- inputs, an optional ast-grep rule the cursor must be inside, regexes over
--- that node's text for more inputs, and the label an editor shows.
-data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apLabel :: Maybe Template}
+-- that node's text for more inputs, an input that takes the file's own path,
+-- and the label an editor shows.
+data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template}
   deriving stock (Show)
 
 -- | Where an insert goes: a phrase (rendered, then parsed) or a raw ast-grep rule.

@@ -257,6 +257,9 @@ parseSpec = describe "parseGenerator" $ do
     it "refuses a path slot or bind that names no input" $ do
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either ("`{svc}` in applies_at.path is not an input" `T.isInfixOf`) (const False)
       gen ["[applies_at]", "path = \"x.rs\"", "bind = { nope = \"(a)\" }"] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
+    it "reads `file`, which must name an input" $ do
+      fmap (fmap apFile . genAppliesAt) (gen ["[applies_at]", "path = \"**/*.rs\"", "file = \"service\""]) `shouldBe` Right (Just (Just "service"))
+      gen ["[applies_at]", "path = \"x.rs\"", "file = \"nope\""] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
     it "refuses Perl classes in bind" $
       gen ["[applies_at]", "path = \"x.rs\"", "bind = { failure = \"\\\\s(\\\\w+)\" }"] `shouldSatisfy` either ("[[:space:]]" `T.isInfixOf`) (const False)
   it "rejects an edit that is both create and insert" $
