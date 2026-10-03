@@ -121,7 +121,7 @@ generate ws resolve tools steps now mode =
       | not (needsChoices gen) = pure (Right gen)
       | otherwise = do
           disk <- listFiles ws "."
-          withChoices (toolQueries tools) (nub (disk ++ map fst prior)) (\p -> maybe (readText ws p) (pure . Just) (lookup p prior)) sets gen
+          withChoices (toolQueries tools) (nub (disk ++ map fst prior)) (\p -> maybe (readText ws p) (pure . Just) (lookup p prior)) sets now gen
     -- `[query.NAME]`: render each query with the generator's inputs and
     -- derived values (never another query's records, so their order does not
     -- matter), run it over the project as it is on disk, and bind the records

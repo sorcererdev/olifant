@@ -297,7 +297,8 @@ resolveChoicesFor rt cat sets gen
   | not (needsChoices gen) = pure (Right gen)
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      first failureWhy <$> withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets gen
+      now <- rtNow rt
+      first failureWhy <$> withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets now gen
 
 -- | `show`'s view of each enum's choices (spec §4.1); the project is listed
 -- only when a generator has a `one_of`.
@@ -306,7 +307,8 @@ choiceViewsFor rt cat sets gen
   | not (needsChoices gen) = pure (Right [(inputName i, Flat cs) | i@InputSpec {inputType = ScalarInput (EnumS cs)} <- genInputs gen])
   | otherwise = do
       paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      first failureWhy <$> choiceViews (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets gen
+      now <- rtNow rt
+      first failureWhy <$> choiceViews (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets now gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.

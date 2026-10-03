@@ -12,6 +12,7 @@ import Control.Monad (foldM)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
+import Data.Time (UTCTime)
 import Olifant.Generator.Inputs (envBefore, inputsUsed, showContext)
 import Olifant.Query (Queries, QueryFailure (..), choiceValue, failed, queryVariables, renderQuery, runQuery)
 import Olifant.Template (describeTemplateError)
@@ -21,17 +22,18 @@ import Olifant.Template (describeTemplateError)
 -- built from them, and run over @paths@; choices are sorted, deduplicated,
 -- empty values dropped, and remember the context they were found in. An
 -- input whose query needs an input above it that has no value waits for it.
-withChoices :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Map Text Text -> GeneratorWith s -> m (Either QueryFailure (GeneratorWith s))
-withChoices queries paths readFile' sets gen0 = foldM step (Right gen0) (map inputName (genInputs gen0))
+withChoices :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Map Text Text -> UTCTime -> GeneratorWith s -> m (Either QueryFailure (GeneratorWith s))
+withChoices queries paths readFile' sets now gen0 = foldM step (Right gen0) (map inputName (genInputs gen0))
   where
     step (Left f) _ = pure (Left f)
     step (Right gen) name = case [s | s <- genInputs gen, inputName s == name] of
       [InputSpec {inputType = ScalarInput (EnumOf q cv Unresolved)}] -> case lookup q (genQueries gen) of
         Nothing -> pure (Left (failed ("one_of = \"" <> q <> "\": no such query")))
         Just query -> do
-          let env = envBefore gen sets name
+          let env = envBefore gen sets now name
               used = inputsUsed (genDerived gen) (queryVariables query)
-              needed = [n | n <- map inputName (genInputs gen), n `S.member` used]
+              overridden = [k | (k, _) <- genDerived gen, k `M.member` sets]
+              needed = [n | n <- map inputName (genInputs gen) ++ overridden, n `S.member` used]
               waiting = [n | n <- needed, n `M.notMember` env]
               context = [(n, raw) | n <- needed, Just raw <- [M.lookup n sets]]
               set c = gen {genInputs = [if inputName s == name then s {inputType = ScalarInput (EnumOf q cv c)} else s | s <- genInputs gen]}
@@ -53,15 +55,16 @@ needsChoices gen = not (null [() | InputSpec {inputType = ScalarInput (EnumOf _ 
 
 -- | What `show` prints for an enum (spec §4.1): its choices; one group per
 -- combination of the inputs it depends on; or only what it depends on.
-data ChoiceView = Flat [Text] | Grouped [Text] [([(Text, Text)], [Text])] | DependsOn [Text]
+-- A group whose query failed carries why (`show` must not print it as empty).
+data ChoiceView = Flat [Text] | Grouped [Text] [([(Text, Text)], Either Text [Text])] | DependsOn [Text]
   deriving stock (Eq, Show)
 
 -- | Views for every enum input: flat when its choices resolve with @sets@;
 -- otherwise grouped by the enums it depends on (at most 'maxGroups' groups),
 -- or 'DependsOn' when one of those is not an enum or there are too many.
-choiceViews :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Map Text Text -> GeneratorWith s -> m (Either QueryFailure [(Text, ChoiceView)])
-choiceViews queries paths readFile' sets gen0 =
-  withChoices queries paths readFile' sets gen0 >>= \case
+choiceViews :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> Map Text Text -> UTCTime -> GeneratorWith s -> m (Either QueryFailure [(Text, ChoiceView)])
+choiceViews queries paths readFile' sets now gen0 =
+  withChoices queries paths readFile' sets now gen0 >>= \case
     Left f -> pure (Left f)
     Right gen -> Right . concat <$> traverse (view gen) (genInputs gen)
   where
@@ -80,9 +83,10 @@ choiceViews queries paths readFile' sets gen0 =
       [ScalarInput (EnumOf _ _ (Resolved cs _))] -> Just cs
       _ -> Nothing
     choicesWith sets' name =
-      withChoices queries paths readFile' sets' gen0 <&> \case
-        Right g | [ScalarInput (EnumOf _ _ (Resolved cs _))] <- [inputType s | s <- genInputs g, inputName s == name] -> cs
-        _ -> []
+      withChoices queries paths readFile' sets' now gen0 <&> \case
+        Left f -> Left (failureWhy f)
+        Right g | [ScalarInput (EnumOf _ _ (Resolved cs _))] <- [inputType s | s <- genInputs g, inputName s == name] -> Right cs
+        Right _ -> Right []
 
 -- | The most groups `show` lists for one input (spec §4.1).
 maxGroups :: Int

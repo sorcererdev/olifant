@@ -2,7 +2,7 @@
 files = ["**/*.rs"]
 comment = "//"
 grammar = "rust"
-placeholder = 'todo!("{= message =}")'
+placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"
 
 # cargo, over the whole workspace (spec §5.6, §9). Diesel adapters need libpq

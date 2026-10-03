@@ -214,20 +214,30 @@ parseSpec = describe "parseGenerator" $ do
           , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
           , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\"" ]
         paths = ["billing/billing-service/ports/email_sender.rs", "billing/billing-service/ports/invoice_repository.rs", "notifications/notifications-service/lib.rs"]
-        views sets = let Right g = load src in first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) (M.fromList sets) g))
+        views sets = let Right g = load src in first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) (M.fromList sets) (UTCTime (fromGregorian 2026 10 2) 0) g))
     it "(a) groups a dependent input under each value of the input it uses; an empty group stays (Review Focus 2)" $
       views [] `shouldBe` Right
         [ ("service", Flat ["billing", "notifications"])
-        , ("dependency", Grouped ["service"] [([("service", "billing")], ["email_sender", "invoice_repository"]), ([("service", "notifications")], [])]) ]
+        , ("dependency", Grouped ["service"] [([("service", "billing")], Right ["email_sender", "invoice_repository"]), ([("service", "notifications")], Right [])]) ]
     it "(b) narrows to a flat list with --set" $
       fmap (lookup "dependency") (views [("service", "billing")]) `shouldBe` Right (Just (Flat ["email_sender", "invoice_repository"]))
+    it "(d) carries a group's query failure instead of showing it as empty" $ do
+      let Right g = load (T.unlines
+            [ "description = \"d\"", "language = \"x\""
+            , "[inputs.service]", "type = \"enum\"", "choices = [\"billing\"]"
+            , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+            , "[query.ports]", "command = [\"list-ports\", \"{= service =}\"]" ])
+      fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty (UTCTime (fromGregorian 2026 10 2) 0) g)))
+        `shouldSatisfy` \case
+          Right (Just (Grouped ["service"] [([("service", "billing")], Left why)])) -> "not available here" `T.isInfixOf` why
+          _ -> False
     it "(c) does not enumerate when an input it uses is not an enum (Review Focus 5)" $ do
       let Right g = load (T.unlines
             [ "description = \"d\"", "language = \"x\""
             , "[inputs.service]", "type = \"ident\""
             , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
             , "[query.ports]", "glob = \"{= service =}/ports/*.rs\"" ])
-      fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty g))) `shouldBe` Right (Just (DependsOn ["service"]))
+      fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty (UTCTime (fromGregorian 2026 10 2) 0) g))) `shouldBe` Right (Just (DependsOn ["service"]))
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft
   it "reports template syntax errors with the key" $ do

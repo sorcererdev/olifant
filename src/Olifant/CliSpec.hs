@@ -177,6 +177,17 @@ runCliSpec = describe "runCli" $ do
     (_, narrowed, _, _) <- runWith "" files False ["show", "wire", "--set", "service=billing"]
     narrowed `shouldSatisfy` T.isInfixOf "\"choices\":[\"email_sender\",\"invoice_repository\"]"
     narrowed `shouldNotSatisfy` T.isInfixOf "choices_by"
+  it "shows a group's query failure, not an empty group" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[inputs.service]", "type = \"enum\"", "choices = [\"billing\"]"
+          , "[inputs.thing]", "type = \"enum\"", "one_of = \"things\""
+          , "[query.things]", "command = [\"nosuchtool-zz\", \"{= service =}\"]" ]
+        files = ("/proj/.olifant/generators/q/generator.toml", gen) : project
+    (_, human, _, _) <- runWith "" files True ["show", "q"]
+    human `shouldSatisfy` T.isInfixOf "service=billing:  query failed:"
+    (_, json, _, _) <- runWith "" files False ["show", "q"]
+    json `shouldSatisfy` T.isInfixOf "\"errors\":{\"billing\":"
   it "suggests `gen` when the first word looks like a generator" $ do
     (code, _, err, _) <- runWith "" project True ["elm/page", "--set", "page=settings"]
     code `shouldBe` ExitFailure 2

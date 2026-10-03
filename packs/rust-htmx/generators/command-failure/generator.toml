@@ -43,7 +43,7 @@ value   = "file name"
 insert = "{= service_dir =}/src/{= command|snake =}.rs"
 at     = "end of enum {= Failure =}"
 text   = """
-#[error("{= message =}")]
+#[error("{= message|rust_string =}")]
 {= failure|pascal =},"""
 
 # Every match on the enum gets an arm; with no body, a todo!() names the site.

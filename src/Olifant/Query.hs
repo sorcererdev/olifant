@@ -42,6 +42,7 @@ import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Glob (globPrefix, matchesGlob)
 import Olifant.Process (runBytes)
 import Olifant.Naming (parseName)
+import Olifant.Naming qualified as Naming
 import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
 import Olifant.Template (Env, Template, TemplateError, Value (..), freeVariables, parseTemplate, render)
 import Text.Regex.TDFA (Regex, makeRegexM, match, matchTest)
@@ -156,6 +157,7 @@ choiceValue cv r = case cv of
     path = maybe "" (T.unpack . plain) (M.lookup "path" r)
     plain = \case
       VText t -> t
+      VName n -> Naming.render Naming.Snake n
       VInt i -> T.pack (show i)
       VBool b -> if b then "true" else "false"
       _ -> ""

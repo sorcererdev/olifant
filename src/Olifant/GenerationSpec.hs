@@ -351,6 +351,22 @@ composeSpec = describe "generate (composition)" $ do
       message [("service", "nope"), ("dependency", "x")] >>= (`shouldSatisfy` \m -> "`service`: expected one of billing, notifications" `T.isInfixOf` m && not ("found nothing" `T.isInfixOf` m))
     it "(d) names the query and context when it finds nothing (Review Focus 2)" $
       message [("service", "notifications"), ("dependency", "x")] >>= (`shouldSatisfy` T.isInfixOf "the query `ports` found nothing for service=notifications")
+    it "(f) a query may use a derived value built from `now`" $ do
+      let dated = generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"x\""
+            , "[inputs.thing]", "type = \"enum\"", "one_of = \"things\""
+            , "[derive]", "year = \"{= now|timestamp =}\""
+            , "[query.things]", "glob = \"log/*-{= year =}.txt\""
+            , "[[edits]]", "create = \"out.txt\"", "text = \"{= thing =}\"" ]
+      (r, files) <- run [("log/a-20260927000000.txt", "")] dated [("thing", "a-20260927000000")] Apply
+      either describeGenerationError (const "ok") r `shouldBe` "ok"
+      M.lookup "out.txt" files `shouldBe` Just "a-20260927000000"
+    it "(g) a --set override of a derived value is what the query uses, as the edits do" $ do
+      (r, files) <- run project wiring [("service", "notifications"), ("service_dir", "billing/billing-service"), ("dependency", "email_sender")] Apply
+      either describeGenerationError (const "ok") r `shouldBe` "ok"
+      M.lookup "out.txt" files `shouldBe` Just "notifications email_sender"
+      message [("service", "notifications"), ("service_dir", "billing/billing-service"), ("dependency", "email_template_repository")]
+        >>= (`shouldSatisfy` T.isInfixOf "expected one of email_sender, invoice_repository")
     it "(e) sees files an earlier step of the chain created (Review Focus 3)" $ do
       let maker = generatorNamed "maker" . T.unlines $ ["description = \"m\"", "language = \"x\"", "[[edits]]", "create = \"svc/a/x.txt\"", "text = \"x\""]
           picker = generatorNamed "picker" . T.unlines $

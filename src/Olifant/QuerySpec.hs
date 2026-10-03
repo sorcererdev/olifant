@@ -21,6 +21,9 @@ paths = ["src/Olifant/Anchor/Phrase.hs", "src/Olifant/Anchor.hs", "src/Olifant/A
 
 spec :: Spec
 spec = do
+  describe "choiceValue (spec §4.1)" $
+    it "reads a name field (a glob record's `name`) as its text" $
+      fmap (\r -> choiceValue (FieldValue "name") r) (take 1 (globRecords "src/*.rs" [] ["src/send_email.rs"])) `shouldBe` [Right "send_email"]
   describe "globRecords" $ do
     it "gives each match path, dir, stem, rel and dotted, sorted, skipping build dirs" $
       map (\r -> (M.lookup "path" r, M.lookup "rel" r, M.lookup "dotted" r)) (globRecords "src/**/*.hs" ["**/*Spec.hs", "src/TestDriver.hs"] paths)

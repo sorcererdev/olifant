@@ -78,7 +78,9 @@ inputsJson views d =
   where
     choiceFields = \case
       Flat cs -> ["choices" .= cs]
-      Grouped ns gs -> ["depends_on" .= ns, "choices_by" .= M.fromList [(groupKey combo, cs) | (combo, cs) <- gs]]
+      Grouped ns gs ->
+        ["depends_on" .= ns, "choices_by" .= M.fromList [(groupKey combo, cs) | (combo, Right cs) <- gs]]
+          ++ ["errors" .= M.fromList errs | let errs = [(groupKey combo, why) | (combo, Left why) <- gs], not (null errs)]
       DependsOn ns -> ["depends_on" .= ns]
     -- One input: its value (`billing`); several: `a=x, b=y`.
     groupKey = \case
@@ -91,7 +93,11 @@ choiceLines = \case
   Just (Grouped _ gs) ->
     let label combo = T.intercalate ", " [k <> "=" <> v | (k, v) <- combo] <> ":"
         width = maximum (0 : [T.length (label c) | (c, _) <- gs])
-     in ["      " <> T.justifyLeft width ' ' (label combo) <> "  " <> (if null cs then "(none)" else T.intercalate " | " cs) | (combo, cs) <- gs]
+        shown = \case
+          Left why -> "query failed: " <> why
+          Right [] -> "(none)"
+          Right cs -> T.intercalate " | " cs
+     in ["      " <> T.justifyLeft width ' ' (label combo) <> "  " <> shown r | (combo, r) <- gs]
   Just (DependsOn ns) -> ["      depends on " <> T.intercalate ", " ns <> "; set " <> (if length ns == 1 then "it" else "them") <> " to see the choices"]
   _ -> []
 

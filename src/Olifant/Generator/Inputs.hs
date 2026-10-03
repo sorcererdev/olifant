@@ -57,10 +57,12 @@ buildEnv gen sets now = do
 -- declared above it that parse (enums against their resolved choices), and
 -- the derived values that evaluate from them. Problems are ignored here;
 -- 'buildEnv' reports them.
-envBefore :: GeneratorWith s -> Map Text Text -> Text -> Env
-envBefore gen sets name =
+envBefore :: GeneratorWith s -> Map Text Text -> UTCTime -> Text -> Env
+envBefore gen sets now name =
   let above = takeWhile ((/= name) . inputName) (genInputs gen)
-   in deriveSome (M.fromList (rights (map (resolveInput sets) above)))
+      -- --set overrides of derived values win, as in 'buildEnv'.
+      overrides = M.fromList [(k, VText v) | (k, v) <- M.toList sets, k `elem` map fst (genDerived gen)]
+   in deriveSome (M.unions [overrides, M.fromList (rights (map (resolveInput sets) above)), M.singleton "now" (VTime now)])
   where
     deriveSome env =
       let step e (k, t) = either (const e) (\v -> M.insert k v e) (evaluate e t)
