@@ -14,6 +14,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
+import Olifant.Holes (HoleSite (..))
 import Olifant.Generation.Complete (insertBranch)
 import Olifant.Generator
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
@@ -22,7 +23,7 @@ import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), Q
 import Olifant.Region
 import Olifant.Template (Template, Value (..), parseTemplate)
 import Data.ByteString qualified as BS
-import Olifant.Workspace (diskWorkspace, memoryWorkspace)
+import Olifant.Workspace (Workspace (..), diskWorkspace, memoryWorkspace)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Timeout (timeout)
@@ -70,6 +71,7 @@ spec = do
   insertSpec
   atSpec
   completeSpec
+  holesSpec
   regionSpec
   unusableSpec
   composeSpec
@@ -552,6 +554,52 @@ elmLang = l
       [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
       , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
       , "[check]", "command = [\"true\"]", "format = \"elm-json\"" ]
+
+holeLang :: Language
+holeLang = l
+  where
+    Right l = parseLanguage "elm" "/p" $ T.unlines
+      [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
+      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+      , "[check]", "command = [\"true\"]", "format = \"elm-json\""
+      , "[holes.expr]", "placeholder = 'Debug.todo \"olifant: {= hole =}\"'", "wrap = \"h = {= fill =}\"" ]
+
+holesSpec :: Spec
+holesSpec = describe "holes in plans (spec §6.4)" $ do
+  let valGen = generatorFrom . T.unlines $
+        [ "description = \"d\"", "language = \"elm\""
+        , "[[edits]]", "create = \"src/V.elm\"", "text = \"v = {= ? val: expr | the value =}\\n\""
+        , "[[edits]]", "insert = \"src/V.elm\"", "at = \"end of file\"", "text = \"w = {= ? other: expr | another =}\"" ]
+      tools checker = basicTools noSyntax checker [holeLang]
+  it "(a) writes the kind's placeholder and lists the hole, unfilled without a model" $ do
+    (ws, snap) <- memoryWorkspace []
+    Right plan <- generate ws noResolve (tools noChecker) [Step valGen M.empty] now Apply
+    (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = Debug.todo \"olifant: val\"\nw = Debug.todo \"olifant: other\"\n"
+    map (\h -> (holeName (phSite h), holeLine (phSite h), phStatus h)) (planHoles plan)
+      `shouldBe` [("val", 1, HoleUnfilled "no model is configured"), ("other", 2, HoleUnfilled "no model is configured")]
+  it "(b) names a complete body's hole per site (Review Focus 5)" $ do
+    let page = "module Page.A exposing (..)\n\nupdate msg model =\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n"
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} ->\\n    {= ? body: expr | for {= pattern =} =}\"" ]
+    ref <- newIORef [[missing "src/A.elm" (3, 5) ["Reset"], missing "src/B.elm" (3, 5) ["Reset"]]]
+    (ws, _) <- memoryWorkspace [("src/A.elm", page), ("src/B.elm", page)]
+    Right plan <- generate ws noResolve (tools (scriptedChecker ref)) [Step gen (M.fromList [("name", "reset")])] now Apply
+    map (holeName . phSite) (planHoles plan) `shouldBe` ["body[src/A.elm:9]", "body[src/B.elm:9]"]
+  it "(c) refuses a kind the adapter does not declare (Review Focus 3)" $ do
+    let gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[[edits]]", "create = \"src/V.elm\"", "text = \"v = {= ? val: block | x =}\\n\"" ]
+    (ws, _) <- memoryWorkspace []
+    Right plan <- generate ws noResolve (tools noChecker) [Step gen M.empty] now Apply
+    map describeConflict (planConflicts plan) `shouldSatisfy` any (T.isInfixOf "`block` is not a hole kind of the elm adapter (kinds: expr)")
+  it "(d) re-running finds the placeholders already there (a hole matches whatever fills it)" $ do
+    (ws, _) <- memoryWorkspace []
+    Right _ <- generate ws noResolve (tools noChecker) [Step valGen M.empty] now Apply
+    Right again <- generate ws noResolve (tools noChecker) [Step valGen M.empty] now Apply
+    planWrites again `shouldBe` M.empty
+    writeText ws "src/V.elm" "v = 42\nw = 7\n"
+    Right filled <- generate ws noResolve (tools noChecker) [Step valGen M.empty] now Apply
+    planWrites filled `shouldBe` M.empty
 
 completeSpec :: Spec
 completeSpec = describe "generate (complete edits)" $ do

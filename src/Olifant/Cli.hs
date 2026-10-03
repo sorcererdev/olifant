@@ -317,7 +317,7 @@ syncRegions rt fmt rtBrokenRegions ws tools regionMode checkOnly now = do
   (edits, conflicts0, current) <- refreshRegions regionMode tools ws 1 M.empty
   let conflicts = [RegionBroken "" path ("cannot read " <> T.pack path <> ": " <> err) | (path, err) <- rtBrokenRegions] ++ conflicts0
   let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current]
-      plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes
+      plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes []
       applied = not checkOnly && not (hasConflicts plan)
   when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
   emit rt fmt (planJson applied plan) (if checkOnly then syncCheckHuman plan else planHuman applied plan)

@@ -28,6 +28,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Anchor.Phrase
 import Olifant.Language
+import Olifant.Holes (hasMarkers, splitMarkers)
 import Olifant.Template (Value (VText), describeTemplateError)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
@@ -300,8 +301,15 @@ presentAt loc snippet content =
 -- | Whitespace-insensitive "is this snippet already in the region?", on
 -- whole tokens (spec §5.4).
 alreadyPresent :: Text -> Text -> Bool
-alreadyPresent snippet content = T.null needle || any bounded (T.breakOnAll needle haystack)
+alreadyPresent snippet content
+  -- A hole matches whatever fills it: the text around it, in order.
+  | hasMarkers snippet = inOrder [n | Right x <- splitMarkers snippet, let n = normalise x, not (T.null n)] haystack
+  | otherwise = T.null needle || any bounded (T.breakOnAll needle haystack)
   where
+    inOrder [] _ = True
+    inOrder (c : cs) h = case T.breakOn c h of
+      (_, "") -> False
+      (_, rest) -> inOrder cs (T.drop (T.length c) rest)
     normalise = T.unwords . T.words
     needle = normalise snippet
     haystack = normalise content

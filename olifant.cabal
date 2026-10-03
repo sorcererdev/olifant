@@ -58,6 +58,7 @@ library
     Olifant.Generator.Schema
     Olifant.GeneratorTesting
     Olifant.Glob
+    Olifant.Holes
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep
@@ -128,6 +129,7 @@ test-suite spec
     Olifant.GeneratorTestingSpec
     Olifant.Glob
     Olifant.GlobSpec
+    Olifant.Holes
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep

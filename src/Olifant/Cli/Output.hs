@@ -27,6 +27,7 @@ import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Anchor (Located (..), positionWords)
 import Olifant.Catalog (CatalogEntry (..))
 import Olifant.Generation
+import Olifant.Holes (HoleSite (..))
 import Olifant.Generator
 import Olifant.Language (Language (..), TargetDef (..), targetPhrase)
 import Olifant.Template (templateSource)
@@ -171,6 +172,7 @@ planJson applied plan =
     , "edits" .= map editJson (planEdits plan)
     , "conflicts" .= [object ["code" .= conflictCode c, "message" .= describeConflict c] | c <- planConflicts plan]
     , "warnings" .= planWarnings plan
+    , "holes" .= map holeJson (planHoles plan)
     , "todos" .= [object ["edit" .= editId e, "file" .= siteFile s, "function" .= siteFunction s, "pattern" .= sitePattern s] | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
     ]
   where
@@ -192,9 +194,29 @@ planJson applied plan =
       Skipped r -> ["status" .= ("skipped" :: Text), "reason" .= skipReason r]
       Conflicted -> ["status" .= ("conflict" :: Text)]
 
+-- | A hole in the plan (spec §6.4): where, and whether it was filled.
+holeJson :: PlannedHole -> Value
+holeJson h =
+  let site = phSite h
+      (status, model, attempts, why) = case phStatus h of
+        HoleFilled m n -> ("filled" :: Text, Just m, Just n, Nothing)
+        HoleUnfilled w -> ("unfilled", Nothing, Nothing, Just w)
+        HoleSkipped w -> ("skipped", Nothing, Nothing, Just w)
+   in object ["name" .= holeName site, "kind" .= holeKind site, "file" .= holeFile site, "line" .= holeLine site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why]
+
 planHuman :: Bool -> Plan -> Text
-planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines ++ map ("  ? warning: " <>) (planWarnings plan)) <> details
+planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines ++ map ("  ? warning: " <>) (planWarnings plan) ++ holeLines) <> details
   where
+    holeLines
+      | null (planHoles plan) = []
+      | otherwise = "holes:" : [holeText h | h <- planHoles plan]
+    holeText h =
+      let site = phSite h
+          status = case phStatus h of
+            HoleFilled m n -> "filled by " <> m <> (if n > 1 then " (attempt " <> T.pack (show n) <> ")" else "")
+            HoleUnfilled w -> "unfilled: " <> w
+            HoleSkipped w -> "skipped: " <> w
+       in "  " <> holeName site <> " (" <> holeKind site <> ") " <> T.pack (holeFile site) <> ":" <> T.pack (show (holeLine site)) <> "  " <> status
     header =
       (if applied then "" else "Plan: ")
         <> idText (planGenerator plan)
@@ -248,6 +270,7 @@ conflictCode = \case
   UnsafePath {} -> "unsafe_path"
   RequirementUnmet {} -> "requires_unmet"
   TargetUnusable {} -> "target_unusable"
+  HoleProblem {} -> "hole_problem"
 
 errorJson :: Text -> Text -> [Pair] -> Value
 errorJson code message extra = object ["error" .= object (["code" .= code, "message" .= message] ++ extra)]

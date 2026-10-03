@@ -23,6 +23,7 @@ import Olifant.Generation.Render (CompleteSpec (..))
 import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language
+import Olifant.Holes (placeholderize)
 import Olifant.Template (Value (..), describeTemplateError, render)
 import Olifant.Workspace (Workspace (..))
 import System.FilePath (splitDirectories)
@@ -62,7 +63,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
     loop lang support step mine disk rnd seen n files current acc
       | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], [], current)
       | otherwise =
-          runCheck (toolChecker tools) lang files >>= \case
+          runCheck (toolChecker tools) lang (placeholderize (toolLanguages tools) files) >>= \case
             Left f -> pure (reverse acc, [CompleteFailed step (describeCheckFailure f) (isToolMissing f)], [], current)
             Right report -> do
               let diags = reportMissing report

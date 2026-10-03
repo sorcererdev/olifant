@@ -18,6 +18,7 @@ import Olifant.Generation.Compose (PlanItem (..))
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Glob (matchesGlob)
+import Olifant.Holes (matchesWithHoles)
 import Olifant.Generator (OnExists (..), Unless (..))
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Workspace (isSafeRelative)
@@ -63,7 +64,7 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
       | otherwise = case M.findWithDefault Nothing p current of
             Nothing -> (M.insert p (Just content) current, planned path n p (WillCreate content), Nothing)
             Just old
-              | old == content -> (current, planned path n p (Skipped UnchangedContent), Nothing)
+              | matchesWithHoles content old -> (current, planned path n p (Skipped UnchangedContent), Nothing)
               | otherwise -> case onExists of
                   ErrorIfExists -> (current, planned path n p Conflicted, Just (TargetExists n p))
                   SkipIfExists -> (current, planned path n p (Skipped AlreadyExists), Nothing)

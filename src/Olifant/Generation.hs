@@ -37,7 +37,8 @@ import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
-import Olifant.Language (languageFor)
+import Olifant.Language (Language, languageFor)
+import Olifant.Holes (matchesWithHoles, placeHoles, placeholderize)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative)
@@ -60,6 +61,21 @@ generationToolMissing :: GenerationError -> Bool
 generationToolMissing = \case
   QueryFailed _ f -> failureToolMissing f
   _ -> False
+
+-- | Plan text against a file's, a hole matching whatever fills it (re-runs).
+sameWithHoles :: Maybe (Maybe Text) -> Maybe (Maybe Text) -> Bool
+sameWithHoles (Just (Just planned)) (Just (Just actual)) = matchesWithHoles planned actual
+sameWithHoles a b = a == b
+
+-- | An edit's text as written: holes as their placeholders.
+showHoles :: [Language] -> PlannedEdit -> PlannedEdit
+showHoles langs e =
+  let shown t = M.findWithDefault t (editPath e) (placeholderize langs (M.singleton (editPath e) t))
+   in e {editAction = case editAction e of
+            WillCreate t -> WillCreate (shown t)
+            WillOverwrite t -> WillOverwrite (shown t)
+            WillInsert n t -> WillInsert n (shown t)
+            other -> other}
 
 -- | The message for a 'GenerationError', naming the step it happened in.
 describeGenerationError :: GenerationError -> Text
@@ -103,13 +119,20 @@ generate ws resolve tools steps now mode =
         -- no-op for it, not a conflict (spec §5.4).
         existing -> do
           (edits2, conflicts2, warnings2, current2) <- phases (foldr (\p -> M.insert p Nothing) originals existing)
-          let unchanged p = M.lookup p current2 == M.lookup p originals
+          let unchanged p = sameWithHoles (M.lookup p current2) (M.lookup p originals)
           pure $
             if null conflicts2 && all unchanged existing
               then ([if editPath e `elem` existing then e {editAction = Skipped UnchangedContent, editSite = Nothing} else e | e <- edits2], conflicts2, warnings2, current2)
               else firstPass
-      let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current, M.lookup p originals /= Just (Just c)]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now edits conflicts warnings writes
+      -- Holes (spec §6.4): name them, write their placeholders; a file whose
+      -- text already matches the plan, holes and all, is left as it is.
+      let changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
+          (placed, holeConflicts, holes) = case placeHoles (toolLanguages tools) changed of
+            Left problems -> (changed, map HoleProblem problems, [])
+            Right (files, hs) -> (files, [], [PlannedHole h (HoleUnfilled "no model is configured") Nothing | h <- hs])
+          writes = placed
+          shown = map (showHoles (toolLanguages tools)) edits
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shown (conflicts ++ holeConflicts) warnings writes holes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
