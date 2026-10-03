@@ -121,7 +121,7 @@ openProjectCatalog root paths = do
       pure $ case (,) <$> userModel <*> projectModel of
         Left err -> Left err
         Right (userM, projectM) ->
-          let model = fromMaybe (ModelConfig Nothing 2 []) (maybe userM Just projectM)
+          let model = fromMaybe (ModelConfig Nothing 2 120 []) (maybe userM Just projectM)
            in fmap (\c -> addRegions own c {catalogProject = Just project, catalogModel = model}) result
   where
     -- A config's `[model]`, if it has one.
@@ -167,7 +167,7 @@ openAt root localDir packs = do
   let loaded = local ++ fromPacks
   langs <- concat <$> traverse (languagesIn . snd) packs
   regions <- traverse (regionsIn root . snd) packs
-  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 [])
+  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 [])
   pure (foldl (flip addRegions) base regions)
   where
     languagesIn r = do

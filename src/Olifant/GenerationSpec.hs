@@ -650,7 +650,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     M.lookup "src/B.elm" files `shouldBe` Just "b = 2\n"
     statuses plan `shouldBe` [("a", HoleUnfilled "src/A.elm: BAD is not defined"), ("b", HoleFilled "fake" 1)]
   it "(d) survives junk: a failed reply leaves placeholders; a missing name is a failed attempt (Review Focus 2)" $ do
-    (tools, _) <- withFiller [Left "the reply is not JSON"]
+    (tools, _) <- withFiller (replicate 3 (Left "the reply is not JSON"))
     (plan, files) <- run1 tools
     M.lookup "src/A.elm" files `shouldBe` Just "a = Debug.todo \"olifant: a\"\n"
     statuses plan `shouldBe` [("a", HoleUnfilled "the reply is not JSON"), ("b", HoleUnfilled "the reply is not JSON")]
@@ -680,6 +680,32 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (plan, files) <- run1 tools
     M.lookup "src/A.elm" files `shouldBe` Just "a = Debug.todo \"olifant: a\"\n"
     statuses plan `shouldBe` [("a", HoleUnfilled "the fill reaches outside its hole (unbalanced brackets)"), ("b", HoleUnfilled "the fill is the placeholder, not code")]
+  it "(i) blames the fill that breaks another file, not the hole in that file (review I5)" $ do
+    let lim = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "create = \"src/Lim.elm\"", "text = \"limit = {= ? lim: expr | the limit =}\\n\""
+          , "[[edits]]", "create = \"src/UseLim.elm\"", "text = \"step = Lim.limit + {= ? step: expr | the step =}\\n\"" ]
+        -- UseLim breaks when Lim's limit is a string.
+        typed = Checker $ \_ files -> pure (Right (CheckReport [] [("src/UseLim.elm", "TYPE MISMATCH") | maybe False ("\"ten\"" `T.isInfixOf`) (M.lookup "src/Lim.elm" files)] []))
+    script <- newIORef (replicate 3 (Right (M.fromList [("lim", "\"ten\""), ("step", "1")])))
+    let filler = Filler (\_ -> atomicModifyIORef' script (\case [] -> ([], Left "no more"); (r : rs) -> (rs, r)))
+        tools = (basicTools parses typed [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step lim M.empty] now Apply
+    statuses plan `shouldBe` [("lim", HoleUnfilled "src/UseLim.elm: TYPE MISMATCH"), ("step", HoleFilled "fake" 1)]
+    (M.lookup "src/Lim.elm" <$> snap) `shouldReturn` Just "limit = Debug.todo \"olifant: lim\"\n"
+  it "(j) says so when a fill could not be compile-checked (review I6)" $ do
+    let missingTool = Checker $ \_ _ -> pure (Left (CheckToolMissing "elm is not installed"))
+    script <- newIORef [Right (M.fromList [("a", "1"), ("b", "2")])]
+    let filler = Filler (\_ -> atomicModifyIORef' script (\case [] -> ([], Left "no more"); (r : rs) -> (rs, r)))
+        tools = (basicTools parses missingTool [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler)}
+    (plan, _) <- run1 tools
+    planWarnings plan `shouldSatisfy` any (T.isInfixOf "not compile-checked: elm is not installed")
+  it "(k) retries a reply that could not be read (review I7)" $ do
+    (tools, calls) <- withFiller [Left "the reply is not JSON", Right (M.fromList [("a", "1"), ("b", "2")])]
+    (plan, _) <- run1 tools
+    statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 2)]
+    length <$> readIORef calls `shouldReturn` 2
   it "(f) retries a fill that does not parse as its kind" $ do
     (tools, calls) <- withFiller [Right (M.fromList [("a", "!!"), ("b", "2")]), Right (M.fromList [("a", "3")])]
     (plan, _) <- run1 tools

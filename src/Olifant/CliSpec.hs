@@ -101,7 +101,7 @@ planOutputSpec = describe "planHuman" $ do
   it "lists holes in the plan, with status (spec §6.4)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleUnfilled "no model is configured") Nothing
         p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole]
-    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
+    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
     planHuman False p `shouldSatisfy` T.isInfixOf "holes:\n  status (expr) a.rs:3  unfilled: no model is configured"
   describe "gen with holes (spec §6.4)" $ do
     let holeProject model =

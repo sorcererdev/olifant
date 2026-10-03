@@ -134,10 +134,10 @@ generate ws resolve tools steps now mode =
           shown = map (showHoles (toolLanguages tools)) edits
       -- The fill phase (spec §6.4): only with a model, and only when nothing
       -- else went wrong.
-      (writes, holes) <-
+      (writes, holes, fillWarnings) <-
         if null (conflicts ++ holeConflicts)
           then fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed holes0
-          else pure (placed, holes0)
+          else pure (placed, holes0, [])
       -- What the plan shows is what is written: fills, not placeholders.
       let filled = [(holePlaceholder (phSite h), f) | h <- holes, Just f <- [phFill h]]
           withFills t = foldl (\acc (ph, f) -> T.replace ph f acc) t filled
@@ -146,7 +146,7 @@ generate ws resolve tools steps now mode =
                                WillOverwrite t -> WillOverwrite (withFills t)
                                WillInsert n t -> WillInsert n (withFills t)
                                other -> other} | e <- shown]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) warnings writes holes
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

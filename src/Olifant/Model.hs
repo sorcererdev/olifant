@@ -23,6 +23,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BL
 import Data.Foldable (toList)
+import Data.Scientific (floatingOrInteger)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
@@ -44,7 +45,8 @@ data Backend
   | Anthropic {beModel :: Text, beKeyEnv :: Text}
   deriving stock (Eq, Show)
 
-data ModelConfig = ModelConfig {mcDefault :: Maybe Text, mcRetries :: Int, mcBackends :: [(Text, Backend)]}
+-- | 'mcTimeout': seconds a model call may take (default 120).
+data ModelConfig = ModelConfig {mcDefault :: Maybe Text, mcRetries :: Int, mcTimeout :: Int, mcBackends :: [(Text, Backend)]}
   deriving stock (Eq, Show)
 
 backendKinds :: [Text]
@@ -57,13 +59,14 @@ backendModel = beModel
 parseModelConfig :: Table -> Either Text ModelConfig
 parseModelConfig top =
   optional "model" table top >>= \case
-    Nothing -> Right (ModelConfig Nothing 2 [])
+    Nothing -> Right (ModelConfig Nothing 2 120 [])
     Just m -> inKey "model" $ do
-      onlyKeys ["default", "retries", "backends"] m
+      onlyKeys ["default", "retries", "timeout", "backends"] m
       def <- optional "default" text m
       retries <- maybe 2 fromInteger <$> optional "retries" int m
+      timeout <- maybe 120 fromInteger <$> optional "timeout" int m
       backends <- maybe (Right []) (traverse (\(k, v) -> inKey ("backends." <> k) ((k,) <$> (table >=> backend) v)) . M.toList) =<< optional "backends" table m
-      pure (ModelConfig def retries backends)
+      pure (ModelConfig def retries timeout backends)
   where
     backend t =
       required "kind" text t >>= \case
@@ -134,21 +137,38 @@ decodeFills b raw = do
       , Just (String t) <- KM.lookup "text" c ->
           Right t
     _ -> Left "the model's reply has no message"
-  fills (unfence content)
+  let reply = T.strip (dropThinking content)
+  -- The reply as it is first; then the JSON inside a fence, or its braces.
+  either (const (fills (jsonIn reply))) Right (fills reply)
   where
-    unfence t =
-      let s = T.strip t
-       in if "```" `T.isPrefixOf` s then T.strip (T.dropWhileEnd (== '`') (T.drop 1 (T.dropWhile (/= '\n') s))) else s
+    -- Small models wrap the JSON: a <think> block, prose, a ``` fence.
+    dropThinking t = case T.breakOn "</think>" t of
+      (_, "") -> t
+      (_, rest) -> T.drop (T.length "</think>") rest
+    jsonIn t = case T.breakOn "```" t of
+      (_, "") -> outerBraces t
+      (_, fenced) -> outerBraces (fst (T.breakOn "```" (T.drop 1 (T.dropWhile (/= '\n') fenced))))
+    outerBraces t = case (T.breakOn "{" t, T.breakOnEnd "}" t) of
+      ((_, fromOpen), (toClose, _)) | not (T.null fromOpen), not (T.null toClose) -> T.take (T.length fromOpen - (T.length t - T.length toClose)) fromOpen
+      _ -> t
     fills t = case eitherDecodeStrict (TE.encodeUtf8 t) of
       Right (Object o)
-        | Just (Object fs) <- KM.lookup "fills" o -> strings fs
-        | otherwise -> strings o
+        | Just (Object fs) <- KM.lookup "fills" o -> values fs
+        | otherwise -> values o
       _ -> Left ("the reply is not the JSON asked for ({\"fills\": {…}}): " <> T.take 200 t)
-    strings o = Right (M.fromList [(Key.toText k, s) | (k, String s) <- KM.toList o])
+    values o = Right (M.fromList [(Key.toText k, s) | (k, v) <- KM.toList o, Just s <- [value v]])
+    value = \case
+      String s -> Just (unfence s)
+      Number n -> Just (either (T.pack . show) (T.pack . show) (floatingOrInteger n :: Either Double Integer))
+      Bool yes -> Just (if yes then "true" else "false")
+      _ -> Nothing
+    unfence s =
+      let t = T.strip s
+       in if "```" `T.isPrefixOf` t then T.strip (T.dropWhileEnd (== '`') (T.strip (T.drop 1 (T.dropWhile (/= '\n') t)))) else s
 
 -- | A filler that posts to the backend with curl.
-curlFiller :: Backend -> Filler IO
-curlFiller b = Filler $ \req ->
+curlFiller :: Int -> Backend -> Filler IO
+curlFiller timeout b = Filler $ \req ->
   findExecutable "curl" >>= \case
     Nothing -> pure (Left "curl is not installed")
     Just curl -> case b of
@@ -162,7 +182,7 @@ curlFiller b = Filler $ \req ->
             post curl "https://api.anthropic.com/v1/messages" ["-H", "@" <> path] req
   where
     post curl url extra req = do
-      let args = ["-sS", "-X", "POST", url, "-H", "content-type: application/json", "--max-time", "600", "--data-binary", "@-"] ++ extra
+      let args = ["-sS", "-X", "POST", url, "-H", "content-type: application/json", "--max-time", show timeout, "--data-binary", "@-"] ++ extra
       runBytes curl args Nothing (BL.toStrict (encode (requestBody b req))) >>= \case
         Left why -> pure (Left why)
         Right (ExitSuccess, out, _) -> pure (decodeFills b out)

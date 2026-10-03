@@ -367,7 +367,7 @@ modelFor cat g
       Nothing -> Right Nothing
       Just name -> case lookup name (mcBackends config) of
         Nothing -> Left ("--model " <> name <> ": no such backend under [model.backends] (backends: " <> (if null (mcBackends config) then "none" else T.intercalate ", " (map fst (mcBackends config))) <> ")")
-        Just b -> Right (Just (ModelFiller (backendModel b) (mcRetries config) (curlFiller b)))
+        Just b -> Right (Just (ModelFiller (backendModel b) (mcRetries config) (curlFiller (mcTimeout config) b)))
   where
     config = catalogModel cat
 

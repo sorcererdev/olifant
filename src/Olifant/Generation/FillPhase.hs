@@ -23,41 +23,58 @@ import System.FilePath (splitDirectories)
 -- | A hole being tried: attempts so far and the previous (fill, why).
 data Try = Try {tryHole :: PlannedHole, tryAttempts :: Int, tryPrevious :: Maybe (Text, Text)}
 
-fillPhase :: Monad m => Workspace m -> Tools m -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole])
+fillPhase :: Monad m => Workspace m -> Tools m -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
 fillPhase ws tools inputs base holes = case toolFiller tools of
-  Nothing -> pure (base, holes)
-  Just _ | null holes -> pure (base, holes)
-  Just mf -> loop mf 1 M.empty [Try h 0 Nothing | h <- holes]
+  Nothing -> pure (base, holes, [])
+  Just _ | null holes -> pure (base, holes, [])
+  Just mf -> loop mf 1 M.empty [] [Try h 0 Nothing | h <- holes]
   where
-    -- accepted: hole name -> (site, fill, attempts)
-    loop mf r accepted pending = do
+    -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
+    loop mf r accepted notes pending = do
       reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs)
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
+          next accepted' notes' failed
+            | null failed || r >= 1 + max 0 (mfRetries mf) = pure (finish mf accepted' notes' failed)
+            | otherwise = loop mf (r + 1) accepted' notes' (map fst failed)
       case reply of
-        Left why -> pure (finish mf accepted [(t, why) | t <- tried])
+        -- An unreadable reply is a failed attempt, retried like any other.
+        Left why -> next accepted notes [(t, why) | t <- tried]
         Right fills -> do
           let noFill = [(t, "the model returned no fill for `" <> name t <> "`") | t <- tried, M.notMember (name t) fills]
-          let offered = [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]]
+              offered = [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]]
               escaped = [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
           parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) f
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
               candidates = [(t, f) | (t, f, True) <- parsed]
-              files = applyFills base ([(s', f') | (s', f', _) <- M.elems accepted] ++ [(site t, f) | (t, f) <- candidates])
-          broken <- checkFiles files [site t | (t, _) <- candidates]
-          let compileFailed = [(t, f, T.intercalate "; " msgs) | (t, f) <- candidates, Just msgs <- [M.lookup (holeFile (site t)) broken]]
-              good = [(t, f) | (t, f) <- candidates, M.notMember (holeFile (site t)) broken]
-              accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good
-              failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed]
-          if null failed || r >= 1 + max 0 (mfRetries mf)
-            then pure (finish mf accepted' failed)
-            else loop mf (r + 1) accepted' (map fst failed)
+              known = [(s', f') | (s', f', _) <- M.elems accepted]
+              with cs = applyFills base (known ++ [(site t, f) | (t, f) <- cs])
+          (broken, note) <- checkFiles (with candidates) [site t | (t, _) <- candidates]
+          -- All together compile: every candidate stands. Otherwise each is
+          -- checked alone beside what is already accepted, so a fill that
+          -- breaks another file is the one blamed (review I5).
+          verdicts <-
+            if M.null broken
+              then pure [(t, f, Nothing) | (t, f) <- candidates]
+              else forM candidates $ \(t, f) -> do
+                (alone, _) <- checkFiles (with [(t, f)]) [site t]
+                pure (t, f, if M.null alone then Nothing else Just (T.intercalate "; " (concat (M.elems alone))))
+          let good = [(t, f) | (t, f, Nothing) <- verdicts]
+              compileFailed = [(t, f, why) | (t, f, Just why) <- verdicts]
+          -- Each good alone may still clash together: then none of them stands.
+          (together, _) <- if M.null broken || null good then pure (M.empty, Nothing) else checkFiles (with good) [site t | (t, _) <- good]
+          let clash = if M.null together then [] else [(t, f, "this fill and another do not compile together: " <> T.intercalate "; " (concat (M.elems together))) | (t, f) <- good]
+              good' = if null clash then good else []
+              accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
+              failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash]
+          next accepted' (maybe notes (: notes) note) failed
 
-    finish mf accepted failed =
+    finish mf accepted notes failed =
       let status h = case (M.lookup (holeName (phSite h)) accepted, [why | (t, why) <- failed, name t == holeName (phSite h)]) of
             (Just (_, f, n), _) -> h {phStatus = HoleFilled (mfName mf) n, phFill = Just f}
             (_, why : _) -> h {phStatus = HoleUnfilled why}
             _ -> h
-       in (applyFills base [(s', f') | (s', f', _) <- M.elems accepted], map status holes)
+          warnings = ["holes were filled but not compile-checked: " <> n | n <- nub notes, not (M.null accepted)]
+       in (applyFills base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
 
     name = holeName . site
     site = phSite . tryHole
@@ -83,10 +100,11 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
 
     -- Broken files (with messages) among those holding these holes, by each
     -- language's check over the project as this plan has it.
+    -- Also why a check could not run (it then validates nothing: review I6).
     checkFiles files sites = do
       let names = nub [langName l | s <- sites, Just l <- [languageFor (toolLanguages tools) (holeFile s)], isJust (langCheck l)]
           langs = [l | l <- toolLanguages tools, langName l `elem` names]
-      foldM (\acc lang -> M.unionWith (++) acc <$> checkLang files lang) M.empty langs
+      foldM (\(acc, note) lang -> (\(b, n) -> (M.unionWith (++) acc b, maybe note Just n)) <$> checkLang files lang) (M.empty, Nothing) langs
     checkLang files lang = do
       paths <- listFiles ws "."
       let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
@@ -94,8 +112,8 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
       disk <- forM (filter wanted paths) (\p -> (p,) <$> readText ws p)
       let all' = M.union (M.filterWithKey (\p _ -> wanted p) files) (M.fromList [(p, t) | (p, Just t) <- disk])
       runCheck (toolChecker tools) lang all' >>= \case
-        Left _ -> pure M.empty -- the check cannot run: parse validation stands
-        Right report -> pure (M.fromListWith (flip (++)) [(p, [T.pack p <> ": " <> why]) | (p, why) <- reportBroken report])
+        Left f -> pure (M.empty, Just (describeCheckFailure f)) -- parse validation stands; the plan says so
+        Right report -> pure (M.fromListWith (flip (++)) [(p, [T.pack p <> ": " <> why]) | (p, why) <- reportBroken report], Nothing)
 
 -- | Every fill in place of its placeholder. Placeholders name their hole
 -- (adapters must use @{= hole =}@), so each is found by its text wherever
