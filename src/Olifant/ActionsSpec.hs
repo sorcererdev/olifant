@@ -120,6 +120,15 @@ spec = describe "olifant actions (spec §4.6)" $ do
       let (acts, near) = inFile (Syntax $ \_ _ _ -> Identity (Right [])) [("g", failureArms)] file "x"
       acts `shouldBe` []
       map (\n -> (nbGenerator n, nbLabel n)) near `shouldBe` [("g", "Add arms")]
+    it "(c2) nearby says what the rule looks for: `where` rendered with the path, else the rule in words" $ do
+      let none = Syntax $ \_ _ _ -> Identity (Right [])
+          own w = generator . T.unlines $
+            [ "description = \"d\"", "language = \"rust\""
+            , "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\""
+            , "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\""
+            , "node = { kind = \"field_declaration\", inside = { kind = \"struct_item\", regex = \"^pub struct {= command|pascal =} \" } }" ] ++ w
+      map nbWhy (snd (inFile none [("g", own ["where = \"on a field of the {= command|pascal =} struct\""])] file "x")) `shouldBe` ["on a field of the RefundInvoice struct"]
+      map nbWhy (snd (inFile none [("g", own [])] file "x")) `shouldBe` ["a `field_declaration` inside a `struct_item` matching /^pub struct RefundInvoice /"]
     it "(d) another path: neither" $
       inFile threeVariants [("g", failureArms)] "notes/readme.md" "x" `shouldBe` ([], [])
   describe "the rust-htmx demo generators (real ast-grep)" $ do
@@ -138,6 +147,19 @@ spec = describe "olifant actions (spec §4.6)" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]
       real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (13, 20) >>= (`shouldBe` [])
+    it "the user's miss: a field in the Input struct gives no wire-command action but a nearby reason" $ findExecutable "ast-grep" >>= \case
+      Nothing -> if strict then expectationFailure "ast-grep is required" else pendingWith "ast-grep is not installed"
+      Just _ -> do
+        tmp <- getTemporaryDirectory
+        given <- TIO.readFile cancel
+        let wrong = T.replace "pub struct CancelInvoice {\n    pub email_sender: Arc<dyn EmailSender>,\n}" "pub struct CancelInvoice {}" (T.replace "pub struct CancelInvoiceInput {}" "pub struct CancelInvoiceInput {\n    pub email_sender: Arc<dyn EmailSender>;\n}" given)
+            path = "billing/billing-service/src/cancel_invoice.rs"
+        wrong `shouldNotBe` given
+        Right (ws, tools, _, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/rust-htmx" "rust-htmx" "wire-command" [(path, wrong)]
+        paths <- listFiles ws "."
+        (acts, near) <- actionsInFile (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("rust-htmx/wire-command", g)] path wrong
+        acts `shouldBe` []
+        map nbWhy near `shouldBe` ["on a field of the CancelInvoice struct"]
     it "offers failure-arms on a Failure variant, binding the variant" $ do
       acts <- real "failure-arms" refund "billing/billing-service/src/refund_invoice.rs" (28, 7)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Add AlreadyRefunded to every match", [("command", "refund_invoice"), ("failure", "AlreadyRefunded"), ("service", "billing")], [])]

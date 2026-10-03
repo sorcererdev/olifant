@@ -43,4 +43,5 @@ text     = "{= pattern =} => {= ? status: expr | the value this match returns fo
 path  = "{service}/*-service/src/{command}.rs"
 node  = { kind = "enum_variant", inside = { kind = "enum_item", regex = "Failure", stopBy = "end" } }
 bind  = { failure = "^([A-Za-z0-9_]+)" }
+where = "on a variant of the {= command|pascal =}Failure enum"
 label = "Add {= failure =} to every match"

@@ -9,8 +9,11 @@ module Olifant.Actions
   , matchPathSlots
   , actionsAt
   , actionsInFile
+  , describeRule
   ) where
 
+import Data.Aeson qualified as J
+import Data.Aeson.KeyMap qualified as KM
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
@@ -117,12 +120,30 @@ candidates syntax langs gens path content = catMaybes <$> traverse one gens
         Just fromPath -> fmap (\c -> Just (gid, gen, ap, fromPath, c)) $ case apNode ap of
           Nothing -> pure Whole
           -- The rule may use the path's slots ({= command|pascal =}).
-          Just rule -> case (languageFor langs path, renderRule (M.fromList [(k, VText v) | (k, v) <- fromPath]) rule) of
+          Just rule -> case (languageFor langs path, renderRule env rule) of
             (Just lang, Right r) ->
               querySyntax syntax lang r content >>= \case
                 Right ms@(_ : _) -> pure (Nodes ms)
-                _ -> pure (Near "no matching node in this file")
-            _ -> pure (Near "no matching node in this file")
+                _ -> pure (Near (why ap (describeRule r)))
+            (_, r) -> pure (Near (why ap (either (const "a matching node") describeRule r)))
+          where
+            env = M.fromList [(k, VText v) | (k, v) <- fromPath]
+            why ap' fallback = fromMaybe fallback (either (const Nothing) Just . render env =<< apWhere ap')
+
+-- | An ast-grep rule in words: "a `field_declaration` inside a `struct_item`
+-- matching /^pub struct X /".
+describeRule :: J.Value -> Text
+describeRule = \case
+  J.Object o ->
+    let str k = case KM.lookup k o of
+          Just (J.String t) -> Just t
+          _ -> Nothing
+        kind = maybe "a node" (\k -> "a `" <> k <> "`") (str "kind")
+        regex = maybe "" (\r -> " matching /" <> r <> "/") (str "regex")
+        inside = maybe "" (\v -> " inside " <> describeRule v) (KM.lookup "inside" o)
+        has = maybe "" (\v -> " containing " <> describeRule v) (KM.lookup "has" o)
+     in kind <> regex <> inside <> has
+  _ -> "a matching node"
 
 -- | The label, rendered with what is bound; the description when it needs more.
 labelFor :: GeneratorWith s -> AppliesAt -> M.Map Text Text -> Text

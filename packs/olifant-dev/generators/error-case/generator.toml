@@ -44,4 +44,5 @@ path  = "src/**.hs"
 file  = "path"
 node  = { kind = "data_type" }
 bind  = { type = "^data[[:space:]]+([A-Za-z0-9_]+)" }
+where = "on a data declaration"
 label = "Add a constructor to {= type =} (GHC finds every case)"

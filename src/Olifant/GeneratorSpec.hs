@@ -258,6 +258,9 @@ parseSpec = describe "parseGenerator" $ do
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either ("`{svc}` in applies_at.path is not an input" `T.isInfixOf`) (const False)
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either (not . ("`applies_at`: `applies_at`" `T.isInfixOf`)) (const False)
       gen ["[applies_at]", "path = \"x.rs\"", "bind = { nope = \"(a)\" }"] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
+    it "reads `where`, a template" $ do
+      fmap (fmap (fmap templateSource . apWhere) . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\"", "where = \"on a field of {= service =}\""]) `shouldBe` Right (Just (Just "on a field of {= service =}"))
+      gen ["[applies_at]", "path = \"x.rs\"", "where = 3"] `shouldSatisfy` either ("where" `T.isInfixOf`) (const False)
     it "reads `file`, which must name an input" $ do
       fmap (fmap apFile . genAppliesAt) (gen ["[applies_at]", "path = \"**/*.rs\"", "file = \"service\""]) `shouldBe` Right (Just (Just "service"))
       gen ["[applies_at]", "path = \"x.rs\"", "file = \"nope\""] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
