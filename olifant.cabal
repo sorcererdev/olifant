@@ -42,9 +42,11 @@ library
     Olifant.Cli
     Olifant.Cli.Options
     Olifant.Cli.Output
+    Olifant.Fill
     Olifant.Generation
     Olifant.Generation.Complete
     Olifant.Generation.Compose
+    Olifant.Generation.FillPhase
     Olifant.Generation.Plan
     Olifant.Generation.Planner
     Olifant.Generation.Regions
@@ -109,9 +111,11 @@ test-suite spec
     Olifant.Cli.Options
     Olifant.Cli.Output
     Olifant.CliSpec
+    Olifant.Fill
     Olifant.Generation
     Olifant.Generation.Complete
     Olifant.Generation.Compose
+    Olifant.Generation.FillPhase
     Olifant.Generation.Plan
     Olifant.Generation.Planner
     Olifant.Generation.Regions

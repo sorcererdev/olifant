@@ -39,6 +39,7 @@ import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnles
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
 import Olifant.Language (Language, languageFor)
 import Olifant.Holes (matchesWithHoles, placeHoles, placeholderize)
+import Olifant.Generation.FillPhase (fillPhase)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative)
@@ -64,7 +65,7 @@ generationToolMissing = \case
 
 -- | Plan text against a file's, a hole matching whatever fills it (re-runs).
 sameWithHoles :: Maybe (Maybe Text) -> Maybe (Maybe Text) -> Bool
-sameWithHoles (Just (Just planned)) (Just (Just actual)) = matchesWithHoles planned actual
+sameWithHoles (Just (Just new)) (Just (Just actual)) = matchesWithHoles new actual
 sameWithHoles a b = a == b
 
 -- | An edit's text as written: holes as their placeholders.
@@ -127,12 +128,17 @@ generate ws resolve tools steps now mode =
       -- Holes (spec §6.4): name them, write their placeholders; a file whose
       -- text already matches the plan, holes and all, is left as it is.
       let changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
-          (placed, holeConflicts, holes) = case placeHoles (toolLanguages tools) changed of
+          (placed, holeConflicts, holes0) = case placeHoles (toolLanguages tools) changed of
             Left problems -> (changed, map HoleProblem problems, [])
             Right (files, hs) -> (files, [], [PlannedHole h (HoleUnfilled "no model is configured") Nothing | h <- hs])
-          writes = placed
           shown = map (showHoles (toolLanguages tools)) edits
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shown (conflicts ++ holeConflicts) warnings writes holes
+      -- The fill phase (spec §6.4): only with a model, and only when nothing
+      -- else went wrong.
+      (writes, holes) <-
+        if null (conflicts ++ holeConflicts)
+          then fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed holes0
+          else pure (placed, holes0)
+      let plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shown (conflicts ++ holeConflicts) warnings writes holes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

@@ -15,9 +15,10 @@ import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
 import Olifant.Holes (HoleSite (..))
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
 import Olifant.Generator
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), QueryFailure (..), failed, noQueries)
 import Olifant.Region
@@ -72,6 +73,7 @@ spec = do
   atSpec
   completeSpec
   holesSpec
+  fillSpec
   regionSpec
   unusableSpec
   composeSpec
@@ -600,6 +602,69 @@ holesSpec = describe "holes in plans (spec §6.4)" $ do
     writeText ws "src/V.elm" "v = 42\nw = 7\n"
     Right filled <- generate ws noResolve (tools noChecker) [Step valGen M.empty] now Apply
     planWrites filled `shouldBe` M.empty
+
+fillSpec :: Spec
+fillSpec = describe "the fill phase (spec §6.4)" $ do
+  let twoFiles = generatorFrom . T.unlines $
+        [ "description = \"d\"", "language = \"elm\""
+        , "[[edits]]", "create = \"src/A.elm\"", "text = \"a = {= ? a: expr | the a value =}\\n\""
+        , "[[edits]]", "create = \"src/B.elm\"", "text = \"b = {= ? b: expr | the b value =}\\n\"" ]
+      -- `!!` does not parse; a file containing BAD does not compile.
+      parses = Syntax $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "!!" | "!!" `T.isInfixOf` content])
+      compiles = Checker $ \_ files -> pure (Right (CheckReport [] [(p, "BAD is not defined") | (p, t) <- M.toList files, "BAD" `T.isInfixOf` t] []))
+      withFiller replies = do
+        calls <- newIORef []
+        script <- newIORef replies
+        let filler = Filler $ \req -> do
+              modifyIORef' calls (++ [req])
+              atomicModifyIORef' script (\case [] -> ([], Left "no more replies"); (r : rs) -> (rs, r))
+            tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler)}
+        pure (tools, calls)
+      run1 tools = do
+        (ws, snap) <- memoryWorkspace []
+        Right plan <- generate ws noResolve tools [Step twoFiles M.empty] now Apply
+        (plan,) <$> snap
+      statuses plan = [(holeName (phSite h), phStatus h) | h <- planHoles plan]
+  it "(a) fills every hole from one request" $ do
+    (tools, calls) <- withFiller [Right (M.fromList [("a", "1"), ("b", "2")])]
+    (plan, files) <- run1 tools
+    M.lookup "src/A.elm" files `shouldBe` Just "a = 1\n"
+    statuses plan `shouldBe` [("a", HoleFilled "fake" 1), ("b", HoleFilled "fake" 1)]
+    length <$> readIORef calls `shouldReturn` 1
+  it "(b) retries a fill that does not compile, with the compiler's message" $ do
+    (tools, calls) <- withFiller [Right (M.fromList [("a", "BAD"), ("b", "2")]), Right (M.fromList [("a", "7")])]
+    (plan, files) <- run1 tools
+    M.lookup "src/A.elm" files `shouldBe` Just "a = 7\n"
+    statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 1)]
+    reqs <- readIORef calls
+    map (\h -> (fhName h, fhPrevious h)) (frHoles (reqs !! 1)) `shouldBe` [("a", Just ("BAD", "src/A.elm: BAD is not defined"))]
+  it "(c) keeps the good fill and the bad hole's placeholder (Review Focus 1)" $ do
+    (tools, _) <- withFiller (replicate 3 (Right (M.fromList [("a", "BAD"), ("b", "2")])))
+    (plan, files) <- run1 tools
+    M.lookup "src/A.elm" files `shouldBe` Just "a = Debug.todo \"olifant: a\"\n"
+    M.lookup "src/B.elm" files `shouldBe` Just "b = 2\n"
+    statuses plan `shouldBe` [("a", HoleUnfilled "src/A.elm: BAD is not defined"), ("b", HoleFilled "fake" 1)]
+  it "(d) survives junk: a failed reply leaves placeholders; a missing name is a failed attempt (Review Focus 2)" $ do
+    (tools, _) <- withFiller [Left "the reply is not JSON"]
+    (plan, files) <- run1 tools
+    M.lookup "src/A.elm" files `shouldBe` Just "a = Debug.todo \"olifant: a\"\n"
+    statuses plan `shouldBe` [("a", HoleUnfilled "the reply is not JSON"), ("b", HoleUnfilled "the reply is not JSON")]
+    (tools2, _) <- withFiller (replicate 3 (Right (M.fromList [("b", "2"), ("zzz", "9")])))
+    (plan2, _) <- run1 tools2
+    statuses plan2 `shouldBe` [("a", HoleUnfilled "the model returned no fill for `a`"), ("b", HoleFilled "fake" 1)]
+  it "(e) re-running over filled holes calls no model (Review Focus 4)" $ do
+    (tools, calls) <- withFiller [Right (M.fromList [("a", "1"), ("b", "2")])]
+    (ws, _) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step twoFiles M.empty] now Apply
+    Right again <- generate ws noResolve tools [Step twoFiles M.empty] now Apply
+    planWrites again `shouldBe` M.empty
+    length <$> readIORef calls `shouldReturn` 1
+  it "(f) retries a fill that does not parse as its kind" $ do
+    (tools, calls) <- withFiller [Right (M.fromList [("a", "!!"), ("b", "2")]), Right (M.fromList [("a", "3")])]
+    (plan, _) <- run1 tools
+    statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 1)]
+    reqs <- readIORef calls
+    map (fmap snd . fhPrevious) (frHoles (reqs !! 1)) `shouldBe` [Just "does not parse as expr"]
 
 completeSpec :: Spec
 completeSpec = describe "generate (complete edits)" $ do
