@@ -73,6 +73,8 @@ elmSupport =
     , supportPattern = qualifyPattern
     , supportVisible = \_ site constructor -> visibleAt site constructor
     , supportFunction = declarationAt
+    , supportArmSeparator = ""
+    , supportReadsStdout = False
     }
 
 -- | @qualifyPattern site constructor pattern@: write the constructor (as

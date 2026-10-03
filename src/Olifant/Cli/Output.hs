@@ -40,10 +40,13 @@ idText = generatorIdText
 
 type Subs = CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
 
-listJson :: Bool -> Subs -> [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Value
-listJson detail subs es broken =
+-- | Each enum's choices as `show` prints them (spec §4.1).
+type Views = CatalogEntry -> M.Map Text ChoiceView
+
+listJson :: Bool -> Subs -> Views -> [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Value
+listJson detail subs views es broken =
   object
-    [ "generators" .= [if detail then showJson (subs e) e else summary e | e <- es]
+    [ "generators" .= [if detail then showJson (views e) (subs e) e else summary e | e <- es]
     , "invalid" .= [object ["id" .= idText gid, "path" .= p, "error" .= err] | (gid, p, err) <- broken]
     , "tip" .= compositionTip
     ]
@@ -54,9 +57,9 @@ listJson detail subs es broken =
 compositionTip :: Text
 compositionTip = "run a whole task in one call: olifant gen A --set k=v + B --set k=v (or --steps FILE with [{\"gen\": ..., \"set\": {...}}]); `olifant show GEN` lists inputs and examples"
 
-listHuman :: Bool -> Subs -> [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Text
-listHuman detail subs es broken
-  | detail = T.intercalate "\n" [showHuman (subs e) e | e <- es] <> T.unlines (["INVALID " <> idText gid <> ": " <> err | (gid, _, err) <- broken] ++ ["", "Tip: " <> compositionTip])
+listHuman :: Bool -> Subs -> Views -> [CatalogEntry] -> [(GeneratorId, FilePath, Text)] -> Text
+listHuman detail subs views es broken
+  | detail = T.intercalate "\n" [showHuman (views e) (subs e) e | e <- es] <> T.unlines (["INVALID " <> idText gid <> ": " <> err | (gid, _, err) <- broken] ++ ["", "Tip: " <> compositionTip])
   | otherwise =
       T.unlines $
         [T.justifyLeft width ' ' (idText (entryId e)) <> "  " <> genDescription (entryDefinition e) | e <- es]
@@ -67,17 +70,45 @@ listHuman detail subs es broken
     -- A multi-line error (a parser's caret diagram) stays under its generator.
     hang err = T.intercalate "\n" (case T.lines err of (l : ls) -> l : map (T.replicate (width + 4) " " <>) ls; [] -> [])
 
-inputsJson :: GeneratorDef -> [Value]
-inputsJson d = [object ["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] | i <- genInputs d]
+inputsJson :: M.Map Text ChoiceView -> GeneratorDef -> [Value]
+inputsJson views d =
+  [ object (["name" .= inputName i, "type" .= describeInputType (inputType i), "optional" .= inputOptional i, "default" .= inputDefault i, "prompt" .= inputPrompt i] ++ maybe [] choiceFields (M.lookup (inputName i) views))
+  | i <- genInputs d
+  ]
+  where
+    choiceFields = \case
+      Flat cs -> ["choices" .= cs]
+      Grouped ns gs ->
+        ["depends_on" .= ns, "choices_by" .= M.fromList [(groupKey combo, cs) | (combo, Right cs) <- gs]]
+          ++ ["errors" .= M.fromList errs | let errs = [(groupKey combo, why) | (combo, Left why) <- gs], not (null errs)]
+      DependsOn ns -> ["depends_on" .= ns]
+    -- One input: its value (`billing`); several: `a=x, b=y`.
+    groupKey = \case
+      [(_, v)] -> v
+      combo -> T.intercalate ", " [k <> "=" <> v | (k, v) <- combo]
 
-showJson :: [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Value
-showJson subs e =
+-- | A dependent input's choices, one line per group, under its prompt.
+choiceLines :: Maybe ChoiceView -> [Text]
+choiceLines = \case
+  Just (Grouped _ gs) ->
+    let label combo = T.intercalate ", " [k <> "=" <> v | (k, v) <- combo] <> ":"
+        width = maximum (0 : [T.length (label c) | (c, _) <- gs])
+        shown = \case
+          Left why -> "query failed: " <> why
+          Right [] -> "(none)"
+          Right cs -> T.intercalate " | " cs
+     in ["      " <> T.justifyLeft width ' ' (label combo) <> "  " <> shown r | (combo, r) <- gs]
+  Just (DependsOn ns) -> ["      depends on " <> T.intercalate ", " ns <> "; set " <> (if length ns == 1 then "it" else "them") <> " to see the choices"]
+  _ -> []
+
+showJson :: M.Map Text ChoiceView -> [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Value
+showJson views subs e =
   object
     [ "id" .= idText (entryId e)
     , "description" .= genDescription d
     , "language" .= genLanguage d
     , "version" .= genVersion d
-    , "inputs" .= inputsJson d
+    , "inputs" .= inputsJson views d
     , "derived" .= map fst (genDerived d)
     , "edits" .= map editJson (genEdits d)
     , "examples" .= genExamples d
@@ -88,7 +119,7 @@ showJson subs e =
               , "resolved" .= fmap (idText . entryId) sub
               , "for_each" .= useForEach u
               , "with" .= M.fromList [(k, templateSource t) | (k, t) <- useWith u]
-              , "inputs" .= maybe [] (inputsJson . entryDefinition) sub
+              , "inputs" .= maybe [] (inputsJson M.empty . entryDefinition) sub
               ]
            | (u, sub) <- subs
            ]
@@ -100,13 +131,14 @@ showJson subs e =
       Insert p anchors _ _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
       Complete c w _ -> object ["kind" .= ("complete" :: Text), "constructor" .= templateSource c, "where" .= fmap templateSource w]
 
-showHuman :: [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
-showHuman subs e =
+showHuman :: M.Map Text ChoiceView -> [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
+showHuman views subs e =
   T.unlines $
     [idText (entryId e) <> ": " <> genDescription d, "", "inputs:"]
       ++ concat
         [ ("  --set " <> inputName i <> "=<" <> describeInputType (inputType i) <> ">" <> (if inputOptional i then "  (optional)" else "") <> maybe "" (\v -> "  (default " <> v <> ")") (inputDefault i))
             : ["      " <> p | Just p <- [inputPrompt i]]
+            ++ choiceLines (M.lookup (inputName i) views)
         | i <- genInputs d
         ]
       ++ ["", "edits:"]

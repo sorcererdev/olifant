@@ -7,7 +7,7 @@ examples = [
 
 [inputs.service]
 type = "enum"
-choices_from = { glob = "*/*-service", value = "{= dir =}" }   # billing/billing-service → billing
+one_of = "services"
 prompt = "The service that owns the aggregate"
 
 [inputs.aggregate]
@@ -18,6 +18,12 @@ prompt = "The aggregate the repository stores (e.g. invoice)"
 service_dir = "{= service|kebab =}/{= service|kebab =}-service"
 in_memory = "{= service|kebab =}/adapters/in-memory-{= aggregate|kebab =}-repository"
 diesel = "{= service|kebab =}/adapters/diesel-{= aggregate|kebab =}-repository"
+
+# Every service: folders like billing/billing-service. The choice is the
+# parent folder's name (billing).
+[query.services]
+glob  = "*/*-service"
+value = "parent folder"
 
 [requires]
 exists = ["{= service_dir =}/src/ports.rs", "{= service_dir =}/src/models.rs", "Cargo.toml"]

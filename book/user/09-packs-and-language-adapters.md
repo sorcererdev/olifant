@@ -190,7 +190,7 @@ files       = ["**/*.rs"]                         # which files this adapter cov
 comment     = "//"                                # line comment, for region fences
 grammar     = "rust"                              # a grammar ast-grep has built in…
 # grammar   = { source = "grammar/elm" }          # …or C sources vendored in the pack
-placeholder = 'todo!("{= message =}")'            # the body of a todo branch
+placeholder = 'todo!("{= message|rust_string =}")'  # the body of a todo branch
 branch      = "{= pattern =} => {= body =},"      # how a case branch is written
 indent      = "    "                              # one level of indentation, for opening an empty container (shown: the default)
 
@@ -213,13 +213,13 @@ example   = "end of struct BillingService"
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used only when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)) |
-| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files. `format` picks a *compiler support* record — the code that reads that compiler's report, decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm) and `ghc-json` (GHC) |
+| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC) and `rustc-json` (cargo) |
 | `[targets.*]` | the `at` targets (below) |
 
 There used to be a `qualify` key (`qualify = "elm"`) for Elm's module rules. It is retired:
 loading an adapter that still has it is now a load error saying the `[check] format`
 decides that instead. An unknown `format` is also a load error, listing the known ones:
-`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json ``. Like any
+`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json, rustc-json ``. Like any
 broken adapter, this keeps the pack's language aside instead of failing the whole command
 (`catalogBrokenLanguages`); it bites only commands that need that language, such as `olifant
 anchors` on it or a `complete` edit whose `language` names it.
@@ -255,6 +255,54 @@ unresolvable dependency, makes it exit non-zero). `-fdiagnostics-as-json` and `-
 warning 62161 is what carries the missing patterns. A `complete` edit for this adapter
 names its constructor `Type.Ctor` rather than Elm's `Module.Ctor` — chapter 4 covers what
 that changes.
+
+### A third example: Rust
+
+`packs/rust-htmx/languages/rust.toml` checks the whole cargo workspace:
+
+```toml
+placeholder = 'todo!("{= message|rust_string =}")'
+branch = "{= pattern =} => {= body =},"
+
+# cargo, over the whole workspace (spec §5.6, §9). Diesel adapters need libpq
+# and the template's real db crate, so they are left out of the build.
+[check]
+command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}"]
+context = ["**/Cargo.toml", "Cargo.lock"]
+format  = "rustc-json"
+
+[targets.enum]
+phrase = "enum NAME"
+container = { kind = "enum_variant_list", inside = { kind = "enum_item", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { kind = "enum_variant" }
+example = "end of enum RefundInvoiceFailure"
+```
+
+- **No `{= files =}`.** cargo finds the sources itself, from the manifests, so `context`
+  copies every `Cargo.toml` (and a `Cargo.lock`, when the project has one) beside the `.rs`
+  files.
+- **`--target-dir {= cache =}`.** The scratch copy is new each round; the build directory is
+  not, so dependencies compile once per machine (`~/.cache/olifant/check/rust`).
+- **`--exclude diesel-*`.** The rust-htmx template's Diesel adapters need libpq and its real
+  `db` crate; they are left out of every check, and the in-memory adapters are compiled.
+- **`rustc-json`** reads cargo's `compiler-message` lines from stdout: error E0004 is a
+  `match` missing arms, a site `complete` extends; E0005 (a refutable `let`) is a warning;
+  any other error is a broken file. A `complete` edit names its variant `Type::Variant`.
+  [Chapter 4](04-compiler-branches-and-todos.md#rust-cargo) walks through
+  `rust-htmx/command-failure`.
+- **`enum NAME`** is the target `command-failure` inserts its variant with:
+
+  ```
+  $ olifant where billing/billing-service/src/refund_invoice.rs "end of enum RefundInvoiceFailure"
+  billing/billing-service/src/refund_invoice.rs:27
+      pub enum RefundInvoiceFailure {
+          #[error("Something went wrong")]
+          Unknown(String),
+    ▶     (inserted here)
+      }
+      
+      impl RefundInvoiceFailure {
+  ```
 
 A vendored grammar is compiled once with `cc` into `~/.cache/olifant/grammars/`, keyed by a
 hash of `parser.c`, so an updated grammar is rebuilt automatically. The first Elm run on a

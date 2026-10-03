@@ -4,10 +4,8 @@ resolver = "2"
 members = [
           ##PLOP NEW PACKAGE HOOK##
           "user-accounts/user-accounts-service",
-          "main",
-          "web-client",
-          "web-htmx",
-          "web-macros",
+          "billing/billing-service",
+          "notifications/notifications-service",
 ]
 
 [workspace.dependencies]

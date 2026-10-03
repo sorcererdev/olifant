@@ -2,8 +2,6 @@
 
 module Olifant.GeneratorSpec (spec) where
 
-import Data.Functor.Identity (runIdentity)
-import Olifant.Query (noQueries)
 
 import Data.Either (isLeft)
 import Data.Map.Strict qualified as M
@@ -20,6 +18,10 @@ import Data.List (sort)
 import Olifant.Generator.Load (completeKeys, createKeys, inputKeys, insertKeys, topKeys)
 import Olifant.Generator.Schema (generatorSchema)
 import Test.Hspec
+import Data.Bifunctor (first)
+import Data.Functor.Identity (runIdentity)
+import Olifant.Query (QueryFailure (..), noQueries)
+import Data.List (isInfixOf)
 
 modelToml :: Text
 modelToml =
@@ -180,18 +182,62 @@ parseSpec = describe "parseGenerator" $ do
       `shouldSatisfy` either ("`bind`" `T.isInfixOf`) (const False)
     load (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "create = \"a\"", "template = \"x.dt\"", "bind = { x = \"a_b\" }"])
       `shouldSatisfy` either ("`bind`" `T.isInfixOf`) (const False)
-  it "reads choices_from and resolves it from the repo (Review Focus 5)" $ do
-    let src = T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\", value = \"{= dir =}\" }"]
-        Right g = load src
-        at0 = UTCTime (fromGregorian 2026 9 29) 0
-        Right resolved = runIdentity (withChoices noQueries ["billing/billing-service", "accounts/accounts-service"] (const (pure Nothing)) g)
-    map (describeInputType . inputType) (genInputs resolved) `shouldBe` ["enum(accounts|billing)"]
-    either describeEnvError (const "") (buildEnv resolved (M.fromList [("service", "biling")]) at0) `shouldSatisfy` ("did you mean billing" `T.isInfixOf`)
-    fmap (M.lookup "service") (buildEnv resolved (M.fromList [("service", "billing")]) at0) `shouldBe` Right (Just (VText "billing"))
-  it "says so when a choices_from query finds nothing" $ do
-    let Right g = load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\" }"])
-        Right resolved = runIdentity (withChoices noQueries [] (const (pure Nothing)) g)
-    either describeEnvError (const "") (buildEnv resolved (M.fromList [("service", "x")]) (UTCTime (fromGregorian 2026 9 29) 0)) `shouldSatisfy` ("found nothing" `T.isInfixOf`)
+  it "reads one_of with a value in words" $ do
+    let Right g = load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.service]", "type = \"enum\"", "one_of = \"services\"", "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""])
+    map inputType (genInputs g) `shouldBe` [ScalarInput (EnumOf "services" ParentFolder Unresolved)]
+  it "defaults value to the file name for a glob query, and reads field names and templates" $ do
+    let enumWith v = load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.a]", "type = \"enum\"", "one_of = \"q\"", "[query.q]", "glob = \"*\""] <> v)
+        valueOf = fmap (map inputType . genInputs)
+    valueOf (enumWith "") `shouldBe` Right [ScalarInput (EnumOf "q" FileName Unresolved)]
+    valueOf (enumWith "value = \"path\"\n") `shouldBe` Right [ScalarInput (EnumOf "q" PathValue Unresolved)]
+    valueOf (enumWith "value = \"name\"\n") `shouldBe` Right [ScalarInput (EnumOf "q" (FieldValue "name") Unresolved)]
+    fmap (map (show . inputType) . genInputs) (enumWith "value = \"{= dir =}\"\n") `shouldSatisfy` either (const False) (all ("ValueTemplate" `isInfixOf`))
+  it "refuses one_of naming no query, and points choices_from at one_of" $ do
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.a]", "type = \"enum\"", "one_of = \"nope\""])
+      `shouldSatisfy` either ("no [query.nope]" `T.isInfixOf`) (const False)
+    load (T.unlines ["description = \"d\"", "language = \"x\"", "[inputs.a]", "type = \"enum\"", "choices_from = { glob = \"*\" }"])
+      `shouldSatisfy` either ("use `one_of`" `T.isInfixOf`) (const False)
+  it "refuses a query that uses an input declared after the input it serves" $
+    load (T.unlines
+      [ "description = \"d\"", "language = \"x\""
+      , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+      , "[inputs.service]", "type = \"ident\""
+      , "[derive]", "service_dir = \"{= service|kebab =}\""
+      , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\"" ])
+      `shouldSatisfy` either ("`[query.ports]` uses `service`, which is declared after `dependency`" `T.isInfixOf`) (const False)
+  describe "choiceViews (spec §4.1)" $ do
+    let src = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[inputs.service]", "type = \"enum\"", "one_of = \"services\""
+          , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+          , "[derive]", "service_dir = \"{= service =}/{= service =}-service\""
+          , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
+          , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\"" ]
+        paths = ["billing/billing-service/ports/email_sender.rs", "billing/billing-service/ports/invoice_repository.rs", "notifications/notifications-service/lib.rs"]
+        views sets = let Right g = load src in first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) (M.fromList sets) (UTCTime (fromGregorian 2026 10 2) 0) g))
+    it "(a) groups a dependent input under each value of the input it uses; an empty group stays (Review Focus 2)" $
+      views [] `shouldBe` Right
+        [ ("service", Flat ["billing", "notifications"])
+        , ("dependency", Grouped ["service"] [([("service", "billing")], Right ["email_sender", "invoice_repository"]), ([("service", "notifications")], Right [])]) ]
+    it "(b) narrows to a flat list with --set" $
+      fmap (lookup "dependency") (views [("service", "billing")]) `shouldBe` Right (Just (Flat ["email_sender", "invoice_repository"]))
+    it "(d) carries a group's query failure instead of showing it as empty" $ do
+      let Right g = load (T.unlines
+            [ "description = \"d\"", "language = \"x\""
+            , "[inputs.service]", "type = \"enum\"", "choices = [\"billing\"]"
+            , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+            , "[query.ports]", "command = [\"list-ports\", \"{= service =}\"]" ])
+      fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty (UTCTime (fromGregorian 2026 10 2) 0) g)))
+        `shouldSatisfy` \case
+          Right (Just (Grouped ["service"] [([("service", "billing")], Left why)])) -> "not available here" `T.isInfixOf` why
+          _ -> False
+    it "(c) does not enumerate when an input it uses is not an enum (Review Focus 5)" $ do
+      let Right g = load (T.unlines
+            [ "description = \"d\"", "language = \"x\""
+            , "[inputs.service]", "type = \"ident\""
+            , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+            , "[query.ports]", "glob = \"{= service =}/ports/*.rs\"" ])
+      fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty (UTCTime (fromGregorian 2026 10 2) 0) g))) `shouldBe` Right (Just (DependsOn ["service"]))
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft
   it "reports template syntax errors with the key" $ do

@@ -14,10 +14,11 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
+import Olifant.Generation.Complete (insertBranch)
 import Olifant.Generator
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Olifant.Language
-import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), noQueries)
+import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), QueryFailure (..), failed, noQueries)
 import Olifant.Region
 import Olifant.Template (Template, Value (..), parseTemplate)
 import Data.ByteString qualified as BS
@@ -86,12 +87,12 @@ createSpec = describe "generate (create edits)" $ do
   it "stops with QueryFailed when a generator query fails" $ do
     let gen = generatorFrom . (header <>) . T.unlines $ ["[query.types]", "files = \"a.x\"", "items_of = \"type T\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
     (result, files) <- run [("a.x", "")] gen [("name", "x")] Apply
-    either (\case QueryFailed _ why -> "query `types`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
+    either (\case QueryFailed _ f -> "query `types`" `T.isInfixOf` failureWhy f; _ -> False) (const False) result `shouldBe` True
     M.keys files `shouldBe` ["a.x"]
   it "renders every query with inputs and derived values only, so query order does not matter" $ do
     let gen = generatorFrom . (header <>) . T.unlines $ ["[query.a]", "glob = \"*.hs\"", "[query.b]", "glob = \"{= a =}\"", "[[edits]]", "create = \"b\"", "text = \"b\""]
     (result, _) <- run [("A.hs", "")] gen [("name", "x")] Apply
-    either (\case QueryFailed _ why -> "undefined variable `a`" `T.isInfixOf` why; _ -> False) (const False) result `shouldBe` True
+    either (\case QueryFailed _ f -> "undefined variable `a`" `T.isInfixOf` failureWhy f; _ -> False) (const False) result `shouldBe` True
   it "skips a create when `unless` finds a match, on disk or created earlier in the plan" $ do
     let migration =
           generatorFrom . (header <>) . T.unlines $
@@ -311,7 +312,75 @@ composeSpec = describe "generate (composition)" $ do
     Right _ <- generate ws resolve noTools [Step fromPages M.empty] now Apply
     files <- snapshot
     [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
-  describe "choices_from in a chain (spec §4.1: a later step can choose what an earlier one creates)" $ do
+  describe "insertBranch (spec §5.6)" $ do
+    it "adds the separator to a last arm that lacks it (Review Focus 4)" $
+      insertBranch "," (0, 2) "B => todo!()," "match f {\n    A => 1,\n    C => 2\n}\n"
+        `shouldBe` (4, "match f {\n    A => 1,\n    C => 2,\n    B => todo!(),\n}\n")
+    it "leaves a block last arm as it is" $
+      insertBranch "," (0, 3) "B => todo!()," "match f {\n    A => {\n        1\n    }\n}\n"
+        `shouldBe` (5, "match f {\n    A => {\n        1\n    }\n    B => todo!(),\n}\n")
+    it "adds no blank line after a single arm in a comma-separated language" $
+      insertBranch "," (0, 1) "B => todo!()," "match f {\n    A => 1,\n}\n"
+        `shouldBe` (3, "match f {\n    A => 1,\n    B => todo!(),\n}\n")
+    it "adds no separator when the language has none" $
+      insertBranch "" (0, 2) "B -> 2" "case x of\n    A -> 1\n    C -> 3\n"
+        `shouldBe` (4, "case x of\n    A -> 1\n    C -> 3\n    B -> 2\n")
+  describe "dependent choices (spec §4.1)" $ do
+    let wiring = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"x\""
+          , "[inputs.service]", "type = \"enum\"", "one_of = \"services\""
+          , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
+          , "[derive]", "service_dir = \"{= service =}/{= service =}-service\""
+          , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
+          , "[query.ports]", "glob = \"{= service_dir =}/ports/*.rs\""
+          , "[[edits]]", "create = \"out.txt\"", "text = \"{= service =} {= dependency =}\"" ]
+        project =
+          [ ("billing/billing-service/ports/email_sender.rs", ""), ("billing/billing-service/ports/invoice_repository.rs", "")
+          , ("notifications/notifications-service/lib.rs", "") ]
+        message sets = do
+          (result, _) <- run project wiring sets Apply
+          pure (either describeGenerationError (const "") result)
+    it "(a) lists only the chosen service's ports, and names the context when the pick is wrong" $ do
+      (_, files) <- run project wiring [("service", "billing"), ("dependency", "invoice_repository")] Apply
+      M.lookup "out.txt" files `shouldBe` Just "billing invoice_repository"
+      message [("service", "billing"), ("dependency", "clock")]
+        >>= (`shouldSatisfy` T.isInfixOf "invalid inputs: `dependency`: expected one of email_sender, invoice_repository (the ports of service=billing); got `clock`")
+    it "(b) says a dependent input waits for the one it depends on, not a template error (Review Focus 1)" $
+      message [("dependency", "clock")] >>= (`shouldSatisfy` \m -> "missing `service`" `T.isInfixOf` m && "`dependency`: its choices depend on `service`" `T.isInfixOf` m)
+    it "(c) does not run the query for an invalid earlier pick (Review Focus 1)" $
+      message [("service", "nope"), ("dependency", "x")] >>= (`shouldSatisfy` \m -> "`service`: expected one of billing, notifications" `T.isInfixOf` m && not ("found nothing" `T.isInfixOf` m))
+    it "(d) names the query and context when it finds nothing (Review Focus 2)" $
+      message [("service", "notifications"), ("dependency", "x")] >>= (`shouldSatisfy` T.isInfixOf "the query `ports` found nothing for service=notifications")
+    it "(f) a query may use a derived value built from `now`" $ do
+      let dated = generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"x\""
+            , "[inputs.thing]", "type = \"enum\"", "one_of = \"things\""
+            , "[derive]", "year = \"{= now|timestamp =}\""
+            , "[query.things]", "glob = \"log/*-{= year =}.txt\""
+            , "[[edits]]", "create = \"out.txt\"", "text = \"{= thing =}\"" ]
+      (r, files) <- run [("log/a-20260927000000.txt", "")] dated [("thing", "a-20260927000000")] Apply
+      either describeGenerationError (const "ok") r `shouldBe` "ok"
+      M.lookup "out.txt" files `shouldBe` Just "a-20260927000000"
+    it "(g) a --set override of a derived value is what the query uses, as the edits do" $ do
+      (r, files) <- run project wiring [("service", "notifications"), ("service_dir", "billing/billing-service"), ("dependency", "email_sender")] Apply
+      either describeGenerationError (const "ok") r `shouldBe` "ok"
+      M.lookup "out.txt" files `shouldBe` Just "notifications email_sender"
+      message [("service", "notifications"), ("service_dir", "billing/billing-service"), ("dependency", "email_template_repository")]
+        >>= (`shouldSatisfy` T.isInfixOf "expected one of email_sender, invoice_repository")
+    it "(e) sees files an earlier step of the chain created (Review Focus 3)" $ do
+      let maker = generatorNamed "maker" . T.unlines $ ["description = \"m\"", "language = \"x\"", "[[edits]]", "create = \"svc/a/x.txt\"", "text = \"x\""]
+          picker = generatorNamed "picker" . T.unlines $
+            [ "description = \"p\"", "language = \"x\""
+            , "[inputs.dir]", "type = \"enum\"", "one_of = \"dirs\""
+            , "[inputs.file]", "type = \"enum\"", "one_of = \"files\""
+            , "[query.dirs]", "glob = \"svc/*\""
+            , "[query.files]", "glob = \"svc/{= dir =}/*.txt\""
+            , "[[edits]]", "create = \"picked.txt\"", "text = \"{= dir =}/{= file =}\"" ]
+      (ws, snap) <- memoryWorkspace []
+      r <- generate ws noResolve noTools [Step maker M.empty, Step picker (M.fromList [("dir", "a"), ("file", "x")])] now Apply
+      either describeGenerationError (const "ok") r `shouldBe` "ok"
+      (M.lookup "picked.txt" <$> snap) `shouldReturn` Just "a/x"
+  describe "one_of in a chain (spec §4.1: a later step can choose what an earlier one creates)" $ do
     let skeleton =
           generatorNamed "skeleton" . T.unlines $
             [ "description = \"s\"", "language = \"x\""
@@ -320,7 +389,7 @@ composeSpec = describe "generate (composition)" $ do
         command =
           generatorNamed "command" . T.unlines $
             [ "description = \"c\"", "language = \"x\""
-            , "[inputs.service]", "type = \"enum\"", "choices_from = { glob = \"*/*-service\", value = \"{= stem =}\" }"
+            , "[inputs.service]", "type = \"enum\"", "one_of = \"services\"", "[query.services]", "glob = \"*/*-service\""
             , "[[edits]]", "create = \"{= service =}.txt\"", "text = \"cmd\\n\"" ]
         withSkeleton =
           generatorNamed "with-skeleton" . T.unlines $
@@ -656,7 +725,7 @@ regionSpec = describe "generate (owned regions)" $ do
   it "re-runs an AST query for a later region after an earlier one rewrote the file it reads" $ do
     let Right n = parseTemplate "{= n =}"
         q = AstQueryQ (AstQuery "f.txt" (ItemsOf "type T") [])
-        lineCount = Queries (\_ -> pure (Left "no")) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt"))
+        lineCount = Queries (\_ -> pure (Left (failed "no"))) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt"))
         region name = RegionDef name "f.txt" q (ItemTemplate n) False (Just "--") Nothing Nothing
         both = (noTools :: Tools IO) {toolRegions = [region "a", region "b"], toolQueries = lineCount}
     (ws, snap) <- memoryWorkspace [("f.txt", "-- olifant:region a\n-- olifant:end a\n-- olifant:region b\n-- olifant:end b\n")]

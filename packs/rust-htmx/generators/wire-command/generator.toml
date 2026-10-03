@@ -7,14 +7,26 @@ examples = [
 
 [inputs.service]
 type = "enum"
-choices_from = { glob = "*/*-service", value = "{= dir =}" }
+one_of = "services"
 
 [inputs.command]
 type = "enum"
-choices_from = { glob = "*/*-service/src/*.rs", exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"], value = "{= stem =}" }
+one_of = "commands"
 
 [derive]
 service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+
+# Every service: folders like billing/billing-service. The choice is the
+# parent folder's name (billing).
+[query.services]
+glob  = "*/*-service"
+value = "parent folder"
+
+# The chosen service's commands: its src/*.rs files, less the service's own modules.
+[query.commands]
+glob    = "{= service_dir =}/src/*.rs"
+exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
+value   = "file name"
 
 [query.deps]
 files    = "{= service_dir =}/src/{= command|snake =}.rs"

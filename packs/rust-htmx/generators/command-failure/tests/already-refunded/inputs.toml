@@ -1,0 +1,6 @@
+now = "2026-10-01T12:00:00Z"
+[inputs]
+service = "billing"
+command = "refund_invoice"
+failure = "already_refunded"
+message = "The invoice was already refunded"

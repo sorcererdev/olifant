@@ -5,7 +5,7 @@
 3. [Where code goes: `at` phrases](03-anchors.md)
 4. [Branches the compiler finds, and todos](04-compiler-branches-and-todos.md)
 5. [Owned regions and `olifant sync`](05-owned-regions.md)
-6. [Queries, `choices_from` and `unless`](06-queries-and-choices.md)
+6. [Queries, `one_of` and `unless`](06-queries-and-choices.md)
 7. [Writing your own generator](07-writing-a-generator.md)
 8. [Composing generators: `+`, `--steps` and `[[uses]]`](08-composing-generators.md)
 9. [Packs and language adapters](09-packs-and-language-adapters.md)

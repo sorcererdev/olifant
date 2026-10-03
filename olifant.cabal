@@ -66,6 +66,7 @@ library
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Rule
+    Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.Naming
@@ -135,6 +136,7 @@ test-suite spec
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Rule
+    Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.LanguageSpec

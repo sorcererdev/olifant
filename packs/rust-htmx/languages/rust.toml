@@ -1,15 +1,28 @@
-# Rust: ast-grep's built-in grammar. No [check] yet (rustc JSON is step 2c).
+# Rust: ast-grep's built-in grammar.
 files = ["**/*.rs"]
 comment = "//"
 grammar = "rust"
-placeholder = 'todo!("{= message =}")'
+placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"
+
+# cargo, over the whole workspace (spec §5.6, §9). Diesel adapters need libpq
+# and the template's real db crate, so they are left out of the build.
+[check]
+command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}"]
+context = ["**/Cargo.toml", "Cargo.lock"]
+format  = "rustc-json"
 
 [targets.struct]
 phrase = "struct NAME"
 container = { kind = "field_declaration_list", inside = { kind = "struct_item", has = { field = "name", regex = "^{= NAME =}$" } } }
 items = { kind = "field_declaration" }
 example = "end of struct BillingService"
+
+[targets.enum]
+phrase = "enum NAME"
+container = { kind = "enum_variant_list", inside = { kind = "enum_item", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { kind = "enum_variant" }
+example = "end of enum RefundInvoiceFailure"
 
 [targets.impl]
 phrase = "impl NAME"

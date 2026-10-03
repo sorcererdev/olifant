@@ -46,7 +46,10 @@ examples:
 
 - **inputs** are what you pass with `--set`. An `ident` is a name in any case
   (`article_list`, `ArticleList` and `article list` are the same name); Olifant renders it
-  in whatever case each place needs.
+  in whatever case each place needs. An `enum` lists its choices, often found in your project; when
+  they depend on an input above (a service's commands), `show` lists them per value, and
+  `olifant show GEN --set service=billing` narrows them to that one
+  ([chapter 6](06-queries-and-choices.md#dependent-choices)).
 - **edits** are what it will do, with `{= … =}` placeholders filled from your inputs.
   `insert … at …` places text by structure ([chapter 3](03-anchors.md)); `complete …`
   adds `case` branches wherever the compiler asks for them ([chapter 4](04-compiler-branches-and-todos.md)).

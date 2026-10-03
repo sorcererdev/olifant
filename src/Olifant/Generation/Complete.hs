@@ -2,7 +2,7 @@
 -- language's check and add a branch to every `case` the compiler reports as
 -- missing a constructor this plan introduced. Unmatched sites get the
 -- adapter's placeholder and are reported as todos.
-module Olifant.Generation.Complete (completeEdits) where
+module Olifant.Generation.Complete (completeEdits, insertBranch) where
 
 import Control.Monad (filterM, foldM)
 import Data.Char (isAlphaNum)
@@ -83,7 +83,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                       case sequence built of
                         Left why -> pure (reverse acc, [CompleteFailed step why False], [], current)
                         Right branches -> do
-                          let (edits, files') = applyBranches n branches files
+                          let (edits, files') = applyBranches (supportArmSeparator support) n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
                           loop lang support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
 
@@ -155,14 +155,14 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
 -- | Insert every branch, bottom-up within a file so earlier line numbers stay
 -- valid. Edits are numbered in that application order, so each reported line
 -- is where the text lands when the plan's edits are replayed in order.
-applyBranches :: Int -> [Branch] -> Map FilePath Text -> ([PlannedEdit], Map FilePath Text)
-applyBranches n branches files0 = (reverse edits, final)
+applyBranches :: Text -> Int -> [Branch] -> Map FilePath Text -> ([PlannedEdit], Map FilePath Text)
+applyBranches sep n branches files0 = (reverse edits, final)
   where
     order = sortOn (\(k, b) -> (missingFile (brSite b), Down (snd (missingCase (brSite b))), Down k)) (zip [0 :: Int ..] branches)
     (edits, final) = foldl step ([], files0) (zip [n ..] (map snd order))
     step (acc, files) (i, b) =
       let file = missingFile (brSite b)
-          (line, updated) = insertBranch (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
+          (line, updated) = insertBranch sep (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
           edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) Nothing (Just (brInfo b))
        in (edit : acc, M.insert file updated files)
 
@@ -170,9 +170,10 @@ applyBranches n branches files0 = (reverse edits, final)
 -- and spaced like them: a blank line before it only if one precedes the
 -- last alternative (Elm's style), none if they are adjacent (Haskell's).
 -- With a single alternative there is nothing to copy: a blank line.
-insertBranch :: (Int, Int) -> Text -> Text -> (Int, Text)
-insertBranch (caseStart, caseEnd) branch content =
-  let ls = T.lines content
+insertBranch :: Text -> (Int, Int) -> Text -> Text -> (Int, Text)
+insertBranch sep (caseStart, caseEnd) branch content0 =
+  let content = separated content0
+      ls = T.lines content
       body = zip [0 :: Int ..] ls
       inCase = [(i, l) | (i, l) <- body, i > caseStart, i <= caseEnd]
       indent = case [l | (_, l) <- inCase, not (T.null (T.strip l))] of
@@ -181,11 +182,26 @@ insertBranch (caseStart, caseEnd) branch content =
       alternatives = [i | (i, l) <- inCase, not (T.null (T.strip l)), T.takeWhile (\c -> c == ' ' || c == '\t') l == indent]
       blankBefore = case reverse alternatives of
         (lastAlt : _ : _) -> lastAlt > 0 && T.null (T.strip (ls !! (lastAlt - 1)))
-        _ -> True
+        -- One arm: nothing to copy. Elm's style is a blank line; Rust's
+        -- comma-separated arms sit together.
+        _ -> T.null sep
    in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing Nothing "") ((if blankBefore then "\n" else "") <> branch) content
+  where
+    -- Rust arms are comma-separated: give the last arm its comma unless it
+    -- has one or ends a block (`}`).
+    separated c
+      | T.null sep = c
+      | otherwise =
+          let ls0 = T.splitOn "\n" c
+              lastArm = [i | i <- [caseEnd, caseEnd - 1 .. caseStart + 1], i < length ls0, not (T.null (T.strip (ls0 !! i)))]
+           in case lastArm of
+                (i : _)
+                  | let l = T.stripEnd (ls0 !! i), not (sep `T.isSuffixOf` l), not ("}" `T.isSuffixOf` l), not ("{" `T.isSuffixOf` l) ->
+                      T.intercalate "\n" (take i ls0 ++ [T.stripEnd (ls0 !! i) <> sep] ++ drop (i + 1) ls0)
+                _ -> c
 
 bareName :: Text -> Text
-bareName = snd . T.breakOnEnd "."
+bareName = snd . T.breakOnEnd "." . T.replace "::" "."
 
 mentions :: Text -> Text -> Bool
 mentions ctor pattern = bareName ctor `elem` T.split (\c -> not (isAlphaNum c || c == '_')) pattern

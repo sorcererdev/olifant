@@ -9,7 +9,10 @@ module Olifant.Generator.Load
   , useKeys
   ) where
 
-import Control.Monad ((>=>))
+import Control.Monad (forM_, (>=>))
+import Data.Char (isAlphaNum)
+import Data.Set qualified as S
+import Olifant.Generator.Inputs (inputsUsed)
 import Data.Bifunctor (first)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
@@ -20,7 +23,7 @@ import Olifant.Anchor (Position (..), parsePhrase)
 import Olifant.Generator.Definition
 import Olifant.Language (ruleFromTree)
 import Olifant.Naming (parseName)
-import Olifant.Query (posixRegex, queryFromTree)
+import Olifant.Query (Query (..), posixRegex, queryFromTree, queryVariables)
 import Olifant.Template (Binding (..), Template, describeTemplateError, freeVariables, parseTemplate)
 import Olifant.Toml
 
@@ -40,16 +43,48 @@ parseGenerator gid src = do
   edits <- fromMaybe [] <$> optional "edits" (shaped "[[edits]] (double brackets: an array of tables, one per edit)" (list (table >=> editFrom))) top
   uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
   examples <- fromMaybe [] <$> optional "examples" (list text) top
-  queries <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryFromTree v)) . M.toList) =<< optional "query" table top
+  withValues <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryWithValue v)) . M.toList) =<< optional "query" table top
+  let queries = [(k, q) | (k, (q, _)) <- withValues]
   case [k | (k, _) <- queries, k `elem` map inputName inputs ++ map fst derived] of
     k : _ -> Left ("`query." <> k <> "`: `" <> k <> "` is already an input or derived value; name the query differently")
     [] -> Right ()
-  pure (Generator gid description language version inputs derived requires edits uses examples queries)
+  inputs' <- traverse (fillChoice withValues) inputs
+  -- A query serving an input uses only the inputs above it (spec §4.1).
+  forM_ (zip [0 :: Int ..] inputs') $ \(i, spec) -> case inputType spec of
+    ScalarInput (EnumOf q _ _) | Just query <- lookup q queries ->
+      let above = map inputName (take i inputs')
+          used = inputsUsed derived (queryVariables query)
+       in case [n | n <- map inputName (drop i inputs'), n `S.member` used, n `notElem` above] of
+            n : _ -> Left ("`[query." <> q <> "]` uses `" <> n <> "`, which is declared after `" <> inputName spec <> "`")
+            [] -> Right ()
+    _ -> Right ()
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries)
+  where
+    queryWithValue v = do
+      t <- table v
+      q <- queryFromTree (TTable (M.delete "value" t))
+      cv <- traverse (text >=> choiceValueFrom) (M.lookup "value" t)
+      pure (q, fromMaybe (case q of GlobQuery {} -> FileName; _ -> FieldValue "name") cv)
+    fillChoice withValues spec = case inputType spec of
+      ScalarInput (EnumOf q _ c) -> case lookup q withValues of
+        Nothing -> Left ("`inputs." <> inputName spec <> "`: one_of = \"" <> q <> "\" but there is no [query." <> q <> "]")
+        Just (_, cv) -> Right spec {inputType = ScalarInput (EnumOf q cv c)}
+      _ -> Right spec
+
+-- | `value` in words (spec §4.1), a `{= … =}` template, or a field name.
+choiceValueFrom :: Text -> Either Text ChoiceValue
+choiceValueFrom v = case v of
+  "file name" -> Right FileName
+  "parent folder" -> Right ParentFolder
+  "path" -> Right PathValue
+  _ | "{=" `T.isInfixOf` v -> ValueTemplate <$> tmpl v
+    | T.all (\c -> isAlphaNum c || c == '_') v && not (T.null v) -> Right (FieldValue v)
+    | otherwise -> Left ("`value`: expected \"file name\", \"parent folder\", \"path\", a field name or a {= … =} template; got `" <> v <> "`")
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, requiresKeys, useKeys :: [Text]
 topKeys = ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query"]
-inputKeys = ["type", "optional", "default", "prompt", "choices", "choices_from", "of"]
+inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
 completeKeys = ["complete", "where", "template", "text"]
@@ -107,14 +142,12 @@ scalarFrom ty t = case ty of
   "ident" -> Right IdentS
   "text" -> Right TextS
   "bool" -> Right BoolS
-  "enum" -> case (M.lookup "choices" t, M.lookup "choices_from" t) of
-    (Just _, Nothing) -> EnumS <$> required "choices" (list text) t
-    (Nothing, Just v) -> inKey "choices_from" $ do
-      q <- table v
-      query <- queryFromTree (TTable (M.delete "value" q))
-      valueT <- maybe (tmpl "{= name =}") (text >=> tmpl) (M.lookup "value" q)
-      pure (EnumQ query valueT Nothing)
-    _ -> Left "an enum needs exactly one of `choices` or `choices_from`"
+  "enum" -> case (M.lookup "choices" t, M.lookup "one_of" t, M.lookup "choices_from" t) of
+    (_, _, Just _) -> Left "`choices_from` is retired: use `one_of` (one_of = \"NAME\") and a [query.NAME] table (spec §4.1)"
+    (Just _, Nothing, _) -> EnumS <$> required "choices" (list text) t
+    -- The value lives on the query; parseGenerator fills it in.
+    (Nothing, Just _, _) -> (\q -> EnumOf q FileName Unresolved) <$> required "one_of" text t
+    _ -> Left "an enum needs exactly one of `choices` or `one_of`"
   other -> Left ("unknown type `" <> other <> "`; expected ident, text, bool, enum or list")
 
 listItemFrom :: Tree -> Either Text ListItem

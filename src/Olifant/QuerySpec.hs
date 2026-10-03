@@ -21,6 +21,9 @@ paths = ["src/Olifant/Anchor/Phrase.hs", "src/Olifant/Anchor.hs", "src/Olifant/A
 
 spec :: Spec
 spec = do
+  describe "choiceValue (spec §4.1)" $
+    it "reads a name field (a glob record's `name`) as its text" $
+      fmap (\r -> choiceValue (FieldValue "name") r) (take 1 (globRecords "src/*.rs" [] ["src/send_email.rs"])) `shouldBe` [Right "send_email"]
   describe "globRecords" $ do
     it "gives each match path, dir, stem, rel and dotted, sorted, skipping build dirs" $
       map (\r -> (M.lookup "path" r, M.lookup "rel" r, M.lookup "dotted" r)) (globRecords "src/**/*.hs" ["**/*Spec.hs", "src/TestDriver.hs"] paths)
@@ -47,8 +50,8 @@ spec = do
     it "selects an array out of an object" $
       fmap length (runIdentity (runQuery (fake (Right "{\"packages\":[{\"name\":\"a\"}]}")) [] (const (pure Nothing)) (CommandQuery ["x"] (Just "packages") Nothing))) `shouldBe` Right 1
     it "reports invalid JSON and command failures, naming the command (Review Focus 4)" $ do
-      runIdentity (runQuery (fake (Right "not json")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("command x" `T.isInfixOf`) (const False)
-      runIdentity (runQuery (fake (Left "boom")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either ("boom" `T.isInfixOf`) (const False)
+      runIdentity (runQuery (fake (Right "not json")) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either (("command x" `T.isInfixOf`) . failureWhy) (const False)
+      runIdentity (runQuery (fake (Left (failed "boom"))) [] (const (pure Nothing)) (CommandQuery ["x"] Nothing Nothing)) `shouldSatisfy` either (("boom" `T.isInfixOf`) . failureWhy) (const False)
   describe "queryFromTree (ast)" $ do
     it "reads items_of with each fields" $
       queryFromTree (TTable (M.fromList [("files", TText "src/*.rs"), ("items_of", TText "struct Foo"), ("each", TTable (M.fromList [("name", TText "^pub ([a-z_]+):")]))]))

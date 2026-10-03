@@ -6,7 +6,6 @@ import Data.Aeson (Value, eitherDecodeStrict, withObject, (.:), (.:?))
 import Data.Aeson.Types (Parser, parseMaybe)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BC
-import Data.Char (isAlphaNum)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -27,6 +26,8 @@ ghcSupport =
         (_, Nothing) -> True
         ((withDot, _), Just ty) -> snd (T.breakOnEnd "." (T.dropEnd 1 withDot)) `elem` typeNames ty
     , supportFunction = declarationAt
+    , supportArmSeparator = ""
+    , supportReadsStdout = False
     }
 
 data Diag = Diag {dFile :: FilePath, dStart :: Int, dEnd :: Int, dSeverity :: Text, dCode :: Maybe Int, dMessage :: Text}
@@ -82,10 +83,6 @@ typeOf msg = case T.breakOn " not matched" (snd (T.breakOnEnd "Patterns of type 
     | T.null rest || T.null (T.strip ty) -> Nothing
     | otherwise -> Just (T.strip (T.filter (`notElem` ("`'\8216\8217" :: String)) ty))
 
--- | The type names in a printed type, unqualified: `Maybe (M.T, Bool)` →
--- Maybe, T, Bool.
-typeNames :: Text -> [Text]
-typeNames = map (snd . T.breakOnEnd ".") . filter (not . T.null) . T.split (\c -> not (isAlphaNum c || c == '_' || c == '.' || c == '\''))
 
 -- | Where GHC found the gap, when it is not a `case` the loop can extend:
 -- "an equation for `f`", "a lambda abstraction", "a pattern binding", ….

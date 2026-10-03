@@ -20,6 +20,7 @@ import Olifant.Template (Value (..))
 import Control.Monad (forM_)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
+import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
 import Olifant.Cli.Output (anchorsHuman)
 import Test.Hspec
 
@@ -154,6 +155,41 @@ spec = do
       forM_ ["src/Olifant/Generation/Complete.hs", "src/Olifant/Language/Check.hs"] $ \f -> do
         src <- TIO.readFile f
         (f, "Olifant.Language.Elm" `T.isInfixOf` src) `shouldBe` (f, False)
+  describe "rustc-json" $ do
+    it "reads errors as broken files, relative to the check directory" $
+      fmap reportBroken (supportParse rustcSupport "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"code\":{\"code\":\"E0063\"},\"message\":\"missing field `email_sender` in initializer of `CancelInvoice`\",\"spans\":[{\"file_name\":\"billing/billing-service/src/service.rs\",\"line_start\":26,\"line_end\":26,\"is_primary\":true}],\"children\":[]}}\n{\"reason\":\"build-finished\",\"success\":false}\n")
+        `shouldBe` Right [("billing/billing-service/src/service.rs", "missing field `email_sender` in initializer of `CancelInvoice`")]
+    it "is a known format" $ fmap supportFormat (supportFor "rustc-json") `shouldBe` Just "rustc-json"
+  describe "rustc-json sites (spec §5.6, fixtures captured from cargo 1.99)" $ do
+    report <- runIO (BS.readFile "src/Olifant/Language/testdata/rustc-e0004.jsonl")
+    let Right r = parseRustcReport report
+        site line = [m | m <- reportMissing r, fst (missingCase m) == line - 1]
+    it "reads each E0004 as a site from the scrutinee to the last arm, with patterns and type" $ do
+      map (\m -> (missingFile m, missingCase m, missingPatterns m, missingType m)) (site 11)
+        `shouldBe` [("src/lib.rs", (10, 14), ["&Failure::D"], Just "&Failure")]
+      map missingPatterns (site 4) `shouldBe` [["&Failure::Locked { .. }", "&Failure::A", "&Failure::B"]]
+      map missingCase (site 20) `shouldBe` [(19, 25)]
+    it "places both nested sites (Review Focus 4)" $
+      map missingCase (site 31 ++ site 32) `shouldBe` [(30, 35), (31, 33)]
+    it "reports a refutable let (E0005) as a site it cannot extend" $
+      map snd (reportUnplaced r) `shouldBe` ["a `let` binding"]
+    it "has no broken files: E0004/E0005 are sites, not breakage" $
+      reportBroken r `shouldBe` []
+    it "writes patterns without the reference (match ergonomics)" $
+      supportPattern rustcSupport "" "Failure::D" "&Failure::D" `shouldBe` "Failure::D"
+    it "sees Type::Variant (and Type.Variant) where that type is matched" $ do
+      let [d] = site 11
+      supportVisible rustcSupport d "" "Failure::D" `shouldBe` True
+      supportVisible rustcSupport d "" "Other::D" `shouldBe` False
+      supportVisible rustcSupport d "" "Failure.D" `shouldBe` True
+    it "names the enclosing fn" $
+      rustFunctionAt "pub fn one(f: &Failure) -> u16 {\n    match f {\n" 1 `shouldBe` "one"
+    it "appends a comma to the last arm before a new one" $
+      supportArmSeparator rustcSupport `shouldBe` ","
+  describe "check commands" $
+    it "expands {= cache =} to an existing per-language cache directory" $ do
+      let Right lang = parseLanguage "cachey" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"--\"", "grammar = \"x\"", "[check]", "command = [\"sh\", \"-c\", \"test -d \\\"$0\\\"\", \"{= cache =}\"]", "format = \"rustc-json\""])
+      compileClean lang (M.fromList [("a.x", "")]) `shouldReturn` Right ()
   describe "GHC support (fixtures captured from GHC 9.10.3)" $ do
     let real = BS.readFile "src/Olifant/Language/testdata/ghc-62161.jsonl"
     it "reads one pattern per line, the full type, and only case alternatives as sites (review C1, C2, I1)" $ do

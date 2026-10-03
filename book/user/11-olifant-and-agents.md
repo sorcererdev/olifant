@@ -75,7 +75,9 @@ Everything is built so that a task is one command:
 - composites like `elm/page --set msgs=…` do a page and all its messages;
 - `olifant list` ends with a one-line tip saying exactly that;
 - `olifant show` prints example commands, a composite's sub-generators and their inputs, and
-  live `choices_from` values;
+  live `one_of` choices: grouped by service for an input whose choices depend on the
+  service, and narrowed to one service's by `show --set service=billing`
+  ([chapter 6](06-queries-and-choices.md#dependent-choices));
 - `olifant list --detail` prints every generator's `show` at once.
 
 ## Pack skills: `SKILL.md`
@@ -161,6 +163,9 @@ convention.
 
 ### `choices_from` (v7)
 
+(The experiment predates `one_of`; the input it measured is now `one_of = "services"`, and
+`show` prints the same choices.)
+
 Rust-htmx, discovery only, task "add a command `cancel_subscription` to this app's service"
 with a rule against reading or listing project files. X: the pack as it is, so `show` prints
 `--set service=<enum(billing)>`. Y: the same pack with `service` as a plain `ident`.
@@ -199,8 +204,9 @@ For the agent's prompt:
 
 For generators and packs:
 
-- **Make inputs enumerable.** If the valid values exist in the project, use `choices_from`
-  (v7: 2.8× cheaper for Sonnet).
+- **Make inputs enumerable.** If the valid values exist in the project, use `one_of`
+  (v7: 2.8× cheaper for Sonnet), and let an input's query use the inputs above it, so the
+  choices are the ones that make sense for the service (or page, or model) already chosen.
 - Write `prompt`s with examples in them (`Page name (e.g. counter, article_list)`), and
   `examples` that are real, complete commands: agents copy them.
 - Give `[requires]` a `hint` that is a command.

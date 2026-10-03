@@ -30,7 +30,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text)
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text)
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -89,7 +89,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     commands =
       hsubparser
         ( cmd "list" (ListCmd <$> switch (long "detail" <> help "Include every generator's inputs, sub-generators and examples")) "List generators"
-            <> cmd "show" (ShowCmd <$> strArgument (metavar "GENERATOR")) "Describe a generator's inputs and edits"
+            <> cmd "show" (ShowCmd <$> strArgument (metavar "GENERATOR") <*> many (option (eitherReader (either (Left . T.unpack) Right . parseSet)) (long "set" <> metavar "K=V" <> help "Narrow dependent choices to these values"))) "Describe a generator's inputs and edits"
             <> cmd "anchors" (AnchorsCmd <$> strArgument (metavar "LANGUAGE")) "List the `at` targets a language supports"
             <> cmd "where" (WhereCmd <$> strArgument (metavar "FILE") <*> strArgument (metavar "PHRASE")) "Show where an `at` phrase would put text in a file"
             <> cmd "sync" (SyncCmd <$> syncP) "Refresh owned regions (--check: report drift and write nothing; --init REGION: create a region's fences)"

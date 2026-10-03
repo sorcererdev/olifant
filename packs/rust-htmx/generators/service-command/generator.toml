@@ -7,7 +7,7 @@ examples = [
 
 [inputs.service]
 type = "enum"
-choices_from = { glob = "*/*-service", value = "{= dir =}" }   # billing/billing-service → billing
+one_of = "services"
 prompt = "The service to add the command to"
 
 [inputs.command_name]
@@ -17,6 +17,12 @@ type = "ident"
 service_dir = "{= service|kebab =}/{= service|kebab =}-service"
 Cmd = "{= command_name|pascal =}"
 cmd = "{= command_name|snake =}"
+
+# Every service: folders like billing/billing-service. The choice is the
+# parent folder's name (billing).
+[query.services]
+glob  = "*/*-service"
+value = "parent folder"
 
 [requires]
 exists = ["{= service_dir =}/src/service.rs"]

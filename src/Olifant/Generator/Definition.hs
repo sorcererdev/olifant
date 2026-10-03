@@ -14,6 +14,8 @@ module Olifant.Generator.Definition
   , InputSpec (..)
   , InputType (..)
   , Scalar (..)
+  , ChoiceValue (..)
+  , Choices (..)
   , ListItem (..)
   , FieldSpec (..)
   ) where
@@ -21,7 +23,7 @@ module Olifant.Generator.Definition
 import Data.Text (Text)
 import Olifant.Anchor (Position)
 import Olifant.Language (Rule)
-import Olifant.Query (Query)
+import Olifant.Query (ChoiceValue (..), Query)
 import Olifant.Template (Binding, Template)
 
 newtype GeneratorId = GeneratorId {generatorIdText :: Text}
@@ -105,9 +107,14 @@ data InputSpec = InputSpec
 data InputType = ScalarInput Scalar | ListInput ListItem
   deriving stock (Eq, Show)
 
--- | 'EnumQ': `choices_from` — the query, the value template, and the choices
--- once resolved against a project ('Nothing' until then).
-data Scalar = IdentS | TextS | BoolS | EnumS [Text] | EnumQ Query Template (Maybe [Text])
+-- | 'EnumOf': `one_of` (spec §4.1) — the query's name, which part of each
+-- record is the choice, and the choices once resolved against a project.
+data Scalar = IdentS | TextS | BoolS | EnumS [Text] | EnumOf Text ChoiceValue Choices
+  deriving stock (Eq, Show)
+
+-- | 'Resolved': the choices and the (input, value) context the query used;
+-- 'NeedsInputs': inputs above it that have no value yet.
+data Choices = Unresolved | Resolved [Text] [(Text, Text)] | NeedsInputs [Text]
   deriving stock (Eq, Show)
 
 data ListItem = ScalarItems Scalar | RecordItems [FieldSpec]

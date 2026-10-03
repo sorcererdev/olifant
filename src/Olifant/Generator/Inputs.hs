@@ -4,6 +4,9 @@ module Olifant.Generator.Inputs
   , buildEnv
   , describeEnvError
   , describeInputType
+  , inputsUsed
+  , envBefore
+  , showContext
   ) where
 
 import Control.Monad (foldM, unless, zipWithM)
@@ -19,7 +22,6 @@ import Data.Time (UTCTime)
 import Olifant.Generator.Definition
 import Olifant.Anchor (closest)
 import Olifant.Naming (nameWords, parseName)
-import Olifant.Query (describeQuery)
 import Olifant.Template (Env, Template, TemplateError, Value (..), describeTemplateError, evaluate, freeVariables)
 
 data InputProblem = MissingInput InputSpec | InvalidInput Text Text | UnknownInput Text
@@ -36,11 +38,36 @@ buildEnv gen sets now = do
       inputNames = map inputName (genInputs gen)
       unknown = [UnknownInput k | k <- M.keys sets, k `notElem` inputNames, k `notElem` derivedNames]
       resolved = map (resolveInput sets) (genInputs gen)
-      problems = unknown ++ lefts resolved
+      troubled = S.fromList [n | InvalidInput n _ <- lefts resolved]
+      -- "its choices depend on X; set it first" misleads when X was set but
+      -- is invalid: X's own problem says it all. (A missing X keeps it.)
+      waitsOnTrouble = \case
+        InvalidInput n _ | Just ns <- dependsOn n -> all (`S.member` troubled) ns
+        _ -> False
+      dependsOn n = case [c | InputSpec {inputName = m, inputType = ScalarInput (EnumOf _ _ c)} <- genInputs gen, m == n] of
+        [NeedsInputs ns] -> Just ns
+        _ -> Nothing
+      problems = unknown ++ filter (not . waitsOnTrouble) (lefts resolved)
   unless (null problems) (Left (InputProblems problems))
   let base = M.insert "now" (VTime now) (M.fromList (rights resolved))
       overrides = M.fromList [(k, v) | (k, v) <- M.toList sets, k `elem` derivedNames]
   deriveAll (genDerived gen) overrides base
+
+-- | The env a query serving input @name@ sees (spec §4.1): the inputs
+-- declared above it that parse (enums against their resolved choices), and
+-- the derived values that evaluate from them. Problems are ignored here;
+-- 'buildEnv' reports them.
+envBefore :: GeneratorWith s -> Map Text Text -> UTCTime -> Text -> Env
+envBefore gen sets now name =
+  let above = takeWhile ((/= name) . inputName) (genInputs gen)
+      -- --set overrides of derived values win, as in 'buildEnv'.
+      overrides = M.fromList [(k, VText v) | (k, v) <- M.toList sets, k `elem` map fst (genDerived gen)]
+   in deriveSome (M.unions [overrides, M.fromList (rights (map (resolveInput sets) above)), M.singleton "now" (VTime now)])
+  where
+    deriveSome env =
+      let step e (k, t) = either (const e) (\v -> M.insert k v e) (evaluate e t)
+          next = foldl step env [d | d@(k, _) <- genDerived gen, k `M.notMember` env]
+       in if M.size next == M.size env then env else deriveSome next
 
 resolveInput :: Map Text Text -> InputSpec -> Either InputProblem (Text, Value)
 resolveInput sets spec = case maybe (inputDefault spec) Just (M.lookup name sets) of
@@ -82,14 +109,16 @@ parseScalar s raw = case s of
     "false" -> Right (VBool False)
     _ -> Left ("expected true or false, got `" <> raw <> "`")
   EnumS choices -> oneOf choices
-  EnumQ q _ resolved -> case resolved of
-    Nothing -> Left "its choices were not resolved (an Olifant bug)"
-    Just [] -> Left ("the query " <> describeQuery q <> " found nothing, so there is nothing to choose")
-    Just choices -> oneOf choices
+  EnumOf q _ choices -> case choices of
+    Unresolved -> Left "its choices were not resolved (an Olifant bug)"
+    NeedsInputs ns -> Left ("its choices depend on " <> T.intercalate ", " ["`" <> n <> "`" | n <- ns] <> "; set " <> (if length ns == 1 then "it" else "them") <> " first")
+    Resolved [] ctx -> Left ("the query `" <> q <> "` found nothing" <> (if null ctx then "" else " for " <> showContext ctx) <> ", so there is nothing to choose")
+    Resolved cs ctx -> oneOfIn (if null ctx then "" else " (the " <> q <> " of " <> showContext ctx <> ")") cs
   where
-    oneOf choices
+    oneOf = oneOfIn ""
+    oneOfIn suffix choices
       | raw `elem` choices = Right (VText raw)
-      | otherwise = Left ("expected one of " <> T.intercalate ", " choices <> "; got `" <> raw <> "`" <> maybe "" (\c -> " (did you mean " <> c <> "?)") (closest raw choices))
+      | otherwise = Left ("expected one of " <> T.intercalate ", " choices <> suffix <> "; got `" <> raw <> "`" <> maybe "" (\c -> " (did you mean " <> c <> "?)") (closest raw choices))
     chunks = T.words raw
     firstChunk = case chunks of
       (c : _) -> c
@@ -173,5 +202,19 @@ describeInputType = \case
       TextS -> "text"
       BoolS -> "bool"
       EnumS cs -> "enum(" <> T.intercalate "|" cs <> ")"
-      EnumQ _ _ (Just cs) -> "enum(" <> T.intercalate "|" cs <> ")"
-      EnumQ q _ Nothing -> "enum(from " <> describeQuery q <> ")"
+      EnumOf _ _ (Resolved cs _) -> "enum(" <> T.intercalate "|" cs <> ")"
+      EnumOf _ _ (NeedsInputs ns) -> "enum, depends on " <> T.intercalate ", " ns
+      EnumOf q _ Unresolved -> "enum(one of query " <> q <> ")"
+
+-- | The inputs (and derived values) a set of variables reaches, through
+-- derived values (spec §4.1).
+inputsUsed :: [(Text, Template)] -> S.Set Text -> S.Set Text
+inputsUsed derived = go S.empty
+  where
+    go seen vs =
+      let new = vs `S.difference` seen
+       in if S.null new then seen else go (seen `S.union` new) (S.unions [freeVariables t | (k, t) <- derived, k `S.member` new])
+
+-- | `service=billing, kind=x`: the values a dependent query used.
+showContext :: [(Text, Text)] -> Text
+showContext = T.intercalate ", " . map (\(k, v) -> k <> "=" <> v)

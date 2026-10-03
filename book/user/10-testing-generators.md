@@ -145,7 +145,9 @@ leaves alone does not need to be in the snapshot.
 2. Runs the generator with the case's inputs, applied. Owned regions from the pack's
    `regions.toml` are refreshed too, as in a real `gen`.
 3. **Conflicts fail the case**, listing each one; unless *every* conflict is only a missing
-   tool (no `ast-grep`, no `elm`), in which case the case is **pending**, not failed.
+   tool (no `ast-grep`, no `elm`), in which case the case is **pending**, not failed. A
+   generator that cannot run because a query's tool is missing is pending the same way
+   (below); any other error stopping the generator fails the case.
 4. **Snapshot equality**, both ways: every written file must be in the snapshot with the same
    content, and every snapshot file must have been written.
 5. **Re-run is a no-op**: the same inputs are run again on the result, and must write nothing.
@@ -157,20 +159,41 @@ the fixture with the case's `given/` and then the snapshot laid over it is compi
 and must compile cleanly. Structure-placed code that is in the right place but syntactically
 wrong fails here.
 
-The rust-htmx pack has a group like it, **"rust pack output compiles"** (`cargoCheck` in
-`src/Olifant/GeneratorTestingSpec.hs`). For each rust-htmx case it lays out the fixture, the
-case's `given/` and the snapshot the same way, then runs `cargo check` on every
-`*/*-service` crate in the result, as one workspace. The crates get minimal manifests written
-by the test (edition 2021, depending only on `thiserror` and `async-trait`), not the
-fixture's own `Cargo.toml`s: the check is about the Rust the generators write, not the
-template's workspace dependencies. A missing import, a struct literal missing a field, or a
-port that names a type nobody defines fails here even when the snapshot matches. It does not
-cover `main/src/main.rs` (axum, diesel), the `web-htmx` crate, or the adapter crates
-`service-repository` writes beside a service (`notifications/adapters/…`).
+The rust-htmx pack has a group like it, **"rust pack output compiles"**, and it works the
+same way: each rust-htmx case's fixture, `given/` and snapshot go to `compileClean` with the
+pack's own Rust adapter, so the check is the adapter's `[check]`: `cargo check --workspace
+--exclude diesel-* --message-format=json` (chapter 9). For that, the fixture is a real cargo
+workspace:
 
-`CARGO_TARGET_DIR` is `olifant-test-cache/cargo-target` in the system temp directory, shared
-by every case and every run, so runs after the first take seconds. The first run needs
-network access to fetch the two crates.
+- the root `Cargo.toml`'s `members` are the services (`billing/billing-service`,
+  `notifications/notifications-service`), below the `##PLOP NEW PACKAGE HOOK##` line that
+  `service-skeleton` and `service-repository` insert new crates at; `main` and `web-htmx`
+  (axum; the fixture holds only part of `web-htmx`) are not members;
+- every service crate has its real `Cargo.toml` (workspace dependencies: `async-trait`,
+  `thiserror`, `tokio`, `tracing`);
+- a stub `db` crate (`db/src/lib.rs` is one comment) lets the Diesel adapters' manifests
+  load. Those adapters need libpq and the template's real `db`, so the check excludes
+  `diesel-*`; the in-memory adapters `service-repository` writes are compiled.
+
+A missing import, a struct literal missing a field, a `match` missing an arm, or a port that
+names a type nobody defines fails here even when the snapshot matches. When rustc reports
+broken files, the failure lists them, one per line, with rustc's message. Here is
+`compileClean` called from `cabal repl -v0 lib:olifant` on the fixture, with a type error
+typed into `refund_invoice.rs` and a call to an undefined function into `send_email.rs`:
+
+```
+billing/billing-service/src/refund_invoice.rs: mismatched types
+notifications/notifications-service/src/send_email.rs: cannot find function `undefined_fn` in this scope
+```
+
+A `match` missing an arm is not a broken file to `rustc-json` (it is a site, chapter 4), so
+that failure shows the end of cargo's own output instead (`` error: could not compile
+`billing-service` (lib) due to 1 previous error; 2 warnings emitted ``).
+
+cargo builds into `~/.cache/olifant/check/rust` (the adapter's `{= cache =}`), shared by
+every case and every run, so after the first the whole group (19 cases) takes about 7
+seconds. The fixture has no `Cargo.lock`, so each check resolves the dependencies again,
+and the first run needs network access to fetch them.
 
 Two things follow from the check. The pack's fixture compiles on its own, and so does every
 `given/`: a starting point the fixture lacks, such as a field typed in by hand but not yet
@@ -345,6 +368,28 @@ Finished in 0.0383 seconds
 "0 failures" there is not a pass. On a machine or CI runner without the tools, look for
 `pending` in the summary.
 
+A query is treated the same way. An AST query needs `ast-grep`, and a command query its
+program; when the tool is missing the generator cannot run at all, so the case is pending
+with the query's error. `wire-command` reads the command struct's fields with an AST query
+(`deps`), so with neither `ast-grep` nor `cargo` on the PATH:
+
+```
+$ PATH="$HOME/.ghcup/bin:/usr/bin:/bin" cabal test --test-show-details=direct --test-options='--match "wire-command/cancel-invoice"'
+Olifant.GeneratorTesting
+  packs
+    rust-htmx/wire-command/cancel-invoice [‐]
+      # PENDING: rust-htmx/wire-command: query `deps`: billing/billing-service/src/cancel_invoice.rs: `struct CancelInvoice`: ast-grep is not installed (brew install ast-grep)
+  rust pack output compiles
+    rust-htmx/wire-command/cancel-invoice [‐]
+      # PENDING: cargo is not installed (brew install rustup; rustup default stable)
+
+Finished in 0.0619 seconds
+2 examples, 0 failures, 2 pending
+```
+
+Any other query failure (a command that exits non-zero, a template error) still fails the
+case.
+
 The Rust compile check needs `cargo`; without it (here `ast-grep` is on the PATH, rustup's
 `cargo` is not) the pack case runs and the compile check is pending, with the install hint:
 
@@ -385,8 +430,15 @@ Failures:
 2 examples, 2 failures
 ```
 
-The same run of the Rust case with `OLIFANT_REQUIRE_TOOLS=1` fails with `required tool
-missing: cargo is not installed (brew install rustup; rustup default stable)`.
+The same run of the Rust case with `OLIFANT_REQUIRE_TOOLS=1` fails both, the query too:
+
+```
+  1) Olifant.GeneratorTesting.packs rust-htmx/wire-command/cancel-invoice
+       required tool missing: rust-htmx/wire-command: query `deps`: billing/billing-service/src/cancel_invoice.rs: `struct CancelInvoice`: ast-grep is not installed (brew install ast-grep)
+…
+  2) Olifant.GeneratorTesting, rust pack output compiles, rust-htmx/wire-command/cancel-invoice
+       required tool missing: cargo is not installed (brew install rustup; rustup default stable)
+```
 
 The pre-merge hook sets `OLIFANT_REQUIRE_TOOLS=1`, so a merge into `main` on a machine
 missing `ast-grep`, `elm` or `cargo` fails instead of quietly skipping those cases. The hook
@@ -394,14 +446,17 @@ puts `~/.ghcup/bin` and `/opt/homebrew/opt/rustup/bin` on its PATH.
 
 ## Other limits of pack tests
 
-- **Command queries run in the fixture directory on disk.** A `choices_from` or region
+- **Command queries run in the fixture directory on disk.** A `one_of` or region
   `query` with a `command` runs for real, rooted at the case's `fixtures/app/` — like a
   project's own command queries run rooted at the project. The case's in-memory copy of the
   fixture is what gets written to and compared; the command only reads what is on disk. A
   case's `given/` files are in memory only, so a command does not see them.
-- **`choices_from` in a `[[uses]]` generator is resolved from the fixture too.** A case for a
-  composite whose `[[uses]]` target has a `choices_from` input works the same as it does from
-  the CLI.
+- **`one_of` in a `[[uses]]` generator is resolved from the fixture too.** A case for a
+  composite whose `[[uses]]` target has a `one_of` input works the same as it does from
+  the CLI, dependent choices included: `GeneratorTestingSpec` runs `wire-command` with a
+  hand-added `clock` field (through `preparePack`, the same setup `runCase` uses) and
+  expects "expected one of email_sender, invoice_repository (the ports of service=billing);
+  got `clock`".
 - **Failure messages are words, not Haskell values.** A case failure (a generation error, or
   one from re-running) prints the same sentence the CLI would, e.g. "undefined variable
   `nope`", not `CaseFailed ["TemplateFailed …"]`.

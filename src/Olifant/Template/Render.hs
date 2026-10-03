@@ -93,8 +93,20 @@ applyFilter f v = case caseFromText f of
     "parens" -> case v of
       VText t -> Right (VText (parenthesise (T.strip t)))
       other -> Left (TypeMismatch ("`parens` needs text, got " <> describeValue other))
+    -- The inside of a Rust format-string literal (`todo!("…")`,
+    -- `#[error("…")]`): backslash, quote and braces escaped.
+    "rust_string" -> case v of
+      VText t -> Right (VText (T.concatMap rustChar t))
+      VName n -> Right (VText (T.concatMap rustChar (Naming.render Naming.Snake n)))
+      other -> Left (TypeMismatch ("`rust_string` needs text, got " <> describeValue other))
     _ -> Left (TypeMismatch ("unknown filter `" <> f <> "`"))
   where
+    rustChar = \case
+      '\\' -> "\\\\"
+      '"' -> "\\\""
+      '{' -> "{{"
+      '}' -> "}}"
+      c -> T.singleton c
     asName :: Either TemplateError Name
     asName = case v of
       VName n -> Right n

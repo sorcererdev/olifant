@@ -239,11 +239,12 @@ error: section › elm/page: invalid inputs: missing `page` (ident)
 When a generator uses the same generator twice in its `[[uses]]`, the path says which use:
 `… › elm/msg (use 2)[1]`.
 
-### `choices_from` sees the steps before it
+### Choices see the steps before them
 
-An enum whose choices come from the project (chapter 6) is resolved when its step comes up,
-against the project *and* the files the run has created so far. So a chain can create
-something and choose it in the next step:
+An enum whose choices come from the project (`one_of`, chapter 6) is resolved when its step
+comes up, against the project *and* the files the run has created so far, with that step's
+own values for the inputs above it. So a chain can create something and choose it in the
+next step:
 
 ```
 $ olifant gen rust-htmx/service-skeleton --set service=payments + rust-htmx/service-command --set service=payments --set command_name=charge_card --human
@@ -254,9 +255,36 @@ rust-htmx/service-skeleton + rust-htmx/service-command (14 edits, 0 conflicts)
 ```
 
 `service-command`'s `service` choices come from `*/*-service`; `payments` is one because step
-1 creates `payments/payments-service/…`. The same holds inside a composite: a `[[uses]]`
-step sees what its parent's own edits, and the uses before it, create. A value that is in
-neither the project nor the plan is still refused with the list of choices.
+1 creates `payments/payments-service/…`. Dependent choices work the same way. Add a third
+step that gives the new command a failure ([chapter 4](04-compiler-branches-and-todos.md#rust-cargo)):
+`command-failure`'s `command` is one of the chosen service's `src/*.rs` files, and
+`payments`' `charge_card.rs` exists only in step 2's plan:
+
+```
+$ olifant gen rust-htmx/service-skeleton --set service=payments + rust-htmx/service-command --set service=payments --set command_name=charge_card + rust-htmx/command-failure --set service=payments --set command=charge_card --set failure=card_declined --set message="The card was declined" --human
+rust-htmx/service-skeleton + rust-htmx/service-command + rust-htmx/command-failure (15 edits, 0 conflicts)
+  + payments/payments-service/Cargo.toml (12 lines)  [rust-htmx/service-skeleton (step 1)]
+  …
+  + payments/payments-service/src/charge_card.rs (36 lines)  [rust-htmx/service-command (step 2)]
+  …
+  ~ payments/payments-service/src/charge_card.rs (+2 lines at line 36)  [rust-htmx/command-failure (step 3)]
+```
+
+(No `match` on `ChargeCardFailure` exists yet, so the `complete` edit has nothing to add.)
+The same holds inside a composite: a `[[uses]]` step sees what its parent's own edits, and
+the uses before it, create, and resolves its choices with the values its `with` gives it.
+So `wire-command` → `command-dependency` checks each field against *that* service's ports.
+Type a second field, `pub clock: Arc<dyn Clock>,`, into the `cancel_invoice.rs` of the
+walkthrough below (billing has no `clock` port), and the run stops before planning anything,
+exit 4:
+
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice --human
+error: rust-htmx/wire-command › rust-htmx/command-dependency[2]: invalid inputs: `dependency`: expected one of email_sender, invoice_repository (the ports of service=billing); got `clock`
+```
+
+A value that is in neither the project nor the plan is still refused with the list of
+choices.
 
 One limit: choices read files that earlier steps *create*; text that earlier steps *insert*
 into existing files is not placed until planning, so a command or AST choice over such a file
@@ -420,12 +448,15 @@ type it, and its import, into `cancel_invoice.rs` by hand:
 +}
 ```
 
-Now the service does not build, because `service.rs` still says `CancelInvoice {}`. A
-`cargo check` of `billing-service` (with the minimal manifest the test suite uses; [chapter
-10](10-testing-generators.md)) stops at:
+Now the service does not build, because `service.rs` still says `CancelInvoice {}`. The
+sandbox is a cargo workspace (the pack's fixture is one; [chapter 10](10-testing-generators.md)),
+so `cargo check` there stops at:
 
 ```
-src/service.rs:28:29: error[E0063]: missing field `email_sender` in initializer of `CancelInvoice`: missing `email_sender`
+$ cargo check --workspace --message-format=short
+…
+billing/billing-service/src/service.rs:28:29: error[E0063]: missing field `email_sender` in initializer of `CancelInvoice`: missing `email_sender`
+error: could not compile `billing-service` (lib) due to 1 previous error
 ```
 
 `wire-command` reads the struct's fields and runs `command-dependency` for each:
@@ -479,7 +510,7 @@ and 5); `service.rs` and `main.rs` get the usual plumbing and a second `todo!()`
      );
 ```
 
-The same `cargo check` of `billing-service` now passes. A field spelled differently by hand
+The same `cargo check` now passes. A field spelled differently by hand
 (`Arc<dyn EmailSender + Send + Sync>`) or imported in a
 group (`use crate::ports::{email_sender::EmailSender, …};`) is recognised the same way; the
 worked example is in [chapter 6](06-queries-and-choices.md).

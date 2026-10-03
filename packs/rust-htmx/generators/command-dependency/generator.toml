@@ -7,17 +7,17 @@ examples = [
 
 [inputs.service]
 type = "enum"
-choices_from = { glob = "*/*-service", value = "{= dir =}" }
+one_of = "services"
 prompt = "The service the command belongs to"
 
 [inputs.command]
 type = "enum"
-choices_from = { glob = "*/*-service/src/*.rs", exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"], value = "{= stem =}" }
+one_of = "commands"
 prompt = "The command (use case) that needs the dependency"
 
 [inputs.dependency]
 type = "enum"
-choices_from = { glob = "*/*-service/src/ports/*.rs", value = "{= stem =}" }
+one_of = "ports"
 prompt = "The port it depends on (a file in the service's ports/)"
 
 [derive]
@@ -28,6 +28,23 @@ cmd = "{= command|snake =}"
 Cmd = "{= command|pascal =}"
 d = "{= dependency|snake =}"
 D = "{= dependency|pascal =}"
+
+# Every service: folders like billing/billing-service. The choice is the
+# parent folder's name (billing).
+[query.services]
+glob  = "*/*-service"
+value = "parent folder"
+
+# The chosen service's commands: its src/*.rs files, less the service's own modules.
+[query.commands]
+glob    = "{= service_dir =}/src/*.rs"
+exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
+value   = "file name"
+
+# The chosen service's ports.
+[query.ports]
+glob  = "{= service_dir =}/src/ports/*.rs"
+value = "file name"
 
 [requires]
 exists = ["{= service_dir =}/src/{= cmd =}.rs", "{= service_dir =}/src/ports/{= d =}.rs", "main/src/main.rs"]
