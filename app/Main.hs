@@ -4,7 +4,11 @@ import Control.Exception (SomeException, displayException, try)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
-import Olifant.Cli (Runtime (..), runCli)
+import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
+import Olifant.Model (probeBackend)
+import Data.Maybe (fromMaybe, isJust)
+import System.Directory (findExecutable)
+import System.Environment (lookupEnv)
 import Olifant.Language (processChecker)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Workspace (diskWorkspace)
@@ -35,6 +39,12 @@ main = do
         , rtErr = TIO.hPutStr stderr
         , rtSyntax = astGrepSyntax cache
         , rtChecker = processChecker
+        , rtDoctor =
+            DoctorPorts
+              findExecutable
+              (T.pack . fromMaybe "" <$> lookupEnv "PATH")
+              probeBackend
+              (fmap isJust . lookupEnv . T.unpack)
         }
       $ args
   case result of

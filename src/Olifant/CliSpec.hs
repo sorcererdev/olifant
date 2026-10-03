@@ -73,6 +73,7 @@ runIn dir stdinText files tty args = do
         , rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax
         , rtChecker = noChecker
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
@@ -245,6 +246,18 @@ runCliSpec = describe "runCli" $ do
     out `shouldSatisfy` T.isInfixOf "\"files\":[{\"after\":\"hi\\n\",\"before\":null,\"path\":\"new/a.txt\"},{\"after\":\"first\\na\\n\",\"before\":\"first\\n\",\"path\":\"old.txt\"}]"
     (_, applied, _, _) <- runWith "" files False ["gen", "two", "--set", "name=b"]
     applied `shouldNotSatisfy` T.isInfixOf "\"files\""
+  it "olifant doctor: checks with fixes; exit 1 only on an error (spec §4.7)" $ do
+    let withCheck tool =
+          [ ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[check]\ncommand = [\"" <> tool <> "\"]\nformat = \"rustc-json\"\n")
+          ]
+    (ok, out, _, _) <- runWith "" (withCheck "xcheck") False ["doctor", "--json"]
+    ok `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "{\"detail\":\"/bin/xcheck\",\"fix\":null,\"name\":\"check tool xcheck (x)\",\"status\":\"ok\"}"
+    out `shouldSatisfy` T.isInfixOf "\"name\":\"model\",\"status\":\"warn\""
+    (bad, out2, _, _) <- runWith "" (withCheck "nope-tool") False ["doctor", "--json"]
+    bad `shouldBe` ExitFailure 1
+    out2 `shouldSatisfy` T.isInfixOf "\"name\":\"check tool nope-tool (x)\",\"status\":\"error\""
   it "lists the actions that apply at a position (spec §4.6)" $ do
     let gen = T.unlines
           [ "description = \"Wire it\"", "language = \"x\""

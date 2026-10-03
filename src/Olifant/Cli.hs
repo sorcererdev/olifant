@@ -1,9 +1,10 @@
 -- | The `olifant` command line: parses arguments, runs catalog/generation
 -- use cases, and renders JSON or human output with the spec's exit codes.
-module Olifant.Cli (Runtime (..), runCli) where
+module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli) where
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
+import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
 import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (when)
@@ -44,6 +45,7 @@ data Runtime = Runtime
   , rtErr :: Text -> IO ()
   , rtSyntax :: Syntax IO
   , rtChecker :: Checker IO
+  , rtDoctor :: DoctorPorts IO
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -165,6 +167,21 @@ runCommand rt cwd fmt cat = \case
             where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
         emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
     pure ExitSuccess
+  DoctorCmd -> do
+    checks <-
+      doctor (rtDoctor rt) $
+        DoctorInput
+          (catalogProject cat)
+          (catalogPacks cat)
+          (catalogLanguages cat)
+          [(T.pack p, why) | (p, why) <- catalogBrokenLanguages cat]
+          [(generatorIdText g, why) | (g, _, why) <- catalogBroken cat]
+          (catalogModel cat)
+    let status = \case Ok -> "ok" :: Text; Warn -> "warn"; Bad -> "error"
+        mark = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
+        json = object ["checks" .= [object ["name" .= checkName c, "status" .= status (checkStatus c), "detail" .= checkDetail c, "fix" .= checkFix c] | c <- checks]]
+    emit rt fmt json (T.unlines (concat [[mark (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c] ++ ["  fix: " <> f | Just f <- [checkFix c]] | c <- checks]))
+    pure (if any ((== Bad) . checkStatus) checks then ExitFailure 1 else ExitSuccess)
   SchemaCmd -> do
     emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")
     pure ExitSuccess

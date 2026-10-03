@@ -98,7 +98,7 @@ describeConflict = \case
   TargetExists n p -> edit n <> T.pack p <> " already exists (on_exists = \"error\")"
   InsertTargetMissing n p -> edit n <> "cannot insert into " <> T.pack p <> ": it does not exist"
   AnchorUnresolved n p misses -> edit n <> "cannot place text in " <> T.pack p <> ": " <> describeMisses misses
-  CompleteFailed step why _ -> T.intercalate " › " step <> ": cannot complete cases: " <> why
+  CompleteFailed step why tool -> T.intercalate " › " step <> ": cannot complete cases: " <> why <> (if tool then "; run `olifant doctor`" else "")
   RegionBroken _ _ why -> why
   UnsafePath n p -> edit n <> "path " <> T.pack p <> " is outside the project"
   TargetUnusable n p why -> edit n <> "cannot write " <> T.pack p <> ": " <> why

@@ -3,6 +3,8 @@
 module Olifant.Catalog
   ( Catalog
   , catalogEntries
+  , catalogProject
+  , catalogPacks
   , catalogBroken
   , catalogLanguages
   , catalogBrokenLanguages

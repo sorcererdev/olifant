@@ -14,6 +14,7 @@ module Olifant.Model
   , requestBody
   , decodeFills
   , curlFiller
+  , probeBackend
   ) where
 
 import Control.Monad ((>=>))
@@ -205,3 +206,27 @@ curlFiller timeout b = Filler $ \req ->
         Left why -> pure (Left why)
         Right (ExitSuccess, out, _) -> pure (decodeFills b out)
         Right (ExitFailure c, _, err) -> pure (Left ("curl exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8 err)))
+
+-- | Does the backend answer (`olifant doctor`)? openai-compatible: its model
+-- list within 3 s, with the model in it. Anthropic is never called (that
+-- would spend the user's key); doctor checks only that the key is set.
+probeBackend :: Backend -> IO (Either Text ())
+probeBackend = \case
+  Anthropic {} -> pure (Right ())
+  OpenAICompatible url model ->
+    findExecutable "curl" >>= \case
+      Nothing -> pure (Left "curl is not installed")
+      Just curl -> do
+        result <- runBytes curl ["-sS", "--max-time", "3", T.unpack (T.dropWhileEnd (== '/') url) <> "/models"] Nothing ""
+        pure $ case result of
+          Left why -> Left why
+          Right (ExitFailure _, _, err) -> Left (T.strip (TE.decodeUtf8Lenient err))
+          Right (ExitSuccess, out, _) -> case eitherDecodeStrict out :: Either String Value of
+            Left _ -> Left "the endpoint did not answer with a model list"
+            Right v
+              | model `elem` modelIds v -> Right ()
+              | otherwise -> Left ("the server answers but has no model `" <> model <> "` (pull it, e.g. `ollama pull " <> model <> "`)")
+  where
+    modelIds = \case
+      Object o | Just (Array xs) <- KM.lookup "data" o -> [i | Object m <- foldr (:) [] xs, Just (String i) <- [KM.lookup "id" m]]
+      _ -> []
