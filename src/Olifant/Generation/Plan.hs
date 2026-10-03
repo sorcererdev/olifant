@@ -32,6 +32,8 @@ data Plan = Plan
   , planWrites :: Map FilePath Text
   , -- | every hole this plan wrote, and whether it was filled (spec §6.4)
     planHoles :: [PlannedHole]
+  , -- | each written file's text before this plan (Nothing: a new file), for editors
+    planBefore :: Map FilePath (Maybe Text)
   }
   deriving stock (Eq, Show)
 

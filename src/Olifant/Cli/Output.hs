@@ -173,6 +173,8 @@ planJson applied plan =
     , "conflicts" .= [object ["code" .= conflictCode c, "message" .= describeConflict c] | c <- planConflicts plan]
     , "warnings" .= planWarnings plan
     , "holes" .= map holeJson (planHoles plan)
+    , -- Whole files for editors, which apply them as buffer changes.
+      "files" .= [object ["path" .= p, "before" .= M.lookup p (planBefore plan), "after" .= t] | not applied, (p, t) <- M.toAscList (planWrites plan)]
     , "todos" .= [object ["edit" .= editId e, "file" .= siteFile s, "function" .= siteFunction s, "pattern" .= sitePattern s] | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
     ]
   where

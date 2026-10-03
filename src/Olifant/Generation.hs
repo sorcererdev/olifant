@@ -19,7 +19,7 @@ module Olifant.Generation
   , module Olifant.Generation.Tools
   ) where
 
-import Control.Monad (filterM, foldM, forM_, when)
+import Control.Monad (filterM, foldM, forM_, join, when)
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.List (nub)
@@ -146,7 +146,7 @@ generate ws resolve tools steps now mode =
                                WillOverwrite t -> WillOverwrite (withFills t)
                                WillInsert n t -> WillInsert n (withFills t)
                                other -> other} | e <- shown]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes (M.fromList [(p, join (M.lookup p originals)) | p <- M.keys writes])
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

@@ -97,10 +97,10 @@ planOutputSpec = describe "planHuman" $ do
           , edit 2 "b.elm" (WillInsert 9 "Settings ->\n    1") (Just (Site "b.elm" "view" "Settings" False))
           , edit 3 "c.elm" (WillInsert 4 "T ->\n    Debug.todo \"\"") (Just (Site "c.elm" "toPath" "T" True))
           ]
-          [] [] M.empty []
+          [] [] M.empty [] M.empty
   it "lists holes in the plan, with status (spec §6.4)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleUnfilled "no model is configured") Nothing
-        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole]
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty
     TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
     planHuman False p `shouldSatisfy` T.isInfixOf "holes:\n  status (expr) a.rs:3  unfilled: no model is configured"
   describe "gen with holes (spec §6.4)" $ do
@@ -129,7 +129,7 @@ planOutputSpec = describe "planHuman" $ do
       out `shouldSatisfy` T.isInfixOf "no model is configured"
   it "shows each fill in the plan, JSON and human (review I1)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleFilled "qwen" 1) (Just "409")
-        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole]
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty
     TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"fill\":\"409\""
     planHuman False p `shouldSatisfy` T.isInfixOf "status (expr) a.rs:3  filled by qwen: 409"
   it "marks edits the compiler found, and todos (fix pass)" $ do
@@ -226,6 +226,15 @@ runCliSpec = describe "runCli" $ do
     human `shouldSatisfy` T.isInfixOf "service=billing:  query failed:"
     (_, json, _, _) <- runWith "" files False ["show", "q"]
     json `shouldSatisfy` T.isInfixOf "\"errors\":{\"billing\":"
+  it "gives each planned file's before and after, null before for a new file (for editors)" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "create = \"new/{= name =}.txt\"", "text = \"hi\\n\""
+          , "[[edits]]", "insert = \"old.txt\"", "at = \"end of file\"", "text = \"{= name =}\\n\"" ]
+        files = [("/proj/.olifant/generators/two/generator.toml", gen), ("/proj/old.txt", "first\n")]
+    (code, out, _, _) <- runWith "" files False ["gen", "two", "--set", "name=a", "--plan"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "\"files\":[{\"after\":\"hi\\n\",\"before\":null,\"path\":\"new/a.txt\"},{\"after\":\"first\\na\\n\",\"before\":\"first\\n\",\"path\":\"old.txt\"}]"
   it "lists the actions that apply at a position (spec §4.6)" $ do
     let gen = T.unlines
           [ "description = \"Wire it\"", "language = \"x\""
