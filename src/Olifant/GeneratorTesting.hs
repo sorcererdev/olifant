@@ -5,6 +5,7 @@ module Olifant.GeneratorTesting
   , CaseResult (..)
   , discoverCases
   , runCase
+  , parseCaseInputs
   , preparePack
   ) where
 
@@ -19,6 +20,8 @@ import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
 import Olifant.Generator (Generator)
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
+import Data.List (nub)
 import Olifant.Anchor (astQueries)
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Syntax)
@@ -58,9 +61,14 @@ runCase root syntax checker bless pc = do
         -- case only: the state a re-run or a hand edit leaves.
         givenPaths <- listFiles root (caseDir pc </> "given")
         given <- forM givenPaths $ \p -> (p,) . fromMaybe "" <$> readText root (caseDir pc </> "given" </> p)
+        -- `fills.toml` (spec §9): the recorded fills replay as the model,
+        -- so tests never call one.
+        recorded <- readText root (caseDir pc </> "fills.toml")
+        let replay = recorded >>= either (const Nothing) Just . parseFills
         preparePack root syntax checker (casePackRoot pc) (casePack pc) (caseGenerator pc) given >>= \case
           Left why -> pure (CaseFailed [why])
-          Right (ws, tools, resolve, gen) -> do
+          Right (ws, tools0, resolve, gen) -> do
+                   let tools = tools0 {toolFiller = (\fills -> ModelFiller "recorded" 0 (replayFiller fills)) <$> replay}
                    firstRun <- generate ws resolve tools [Step gen sets] now Apply
                    secondRun <- generate ws resolve tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of
@@ -70,6 +78,8 @@ runCase root syntax checker bless pc = do
                      (Right plan, _)
                        | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
                        | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
+                     (Right plan, _)
+                       | Just _ <- replay, unfilled@(_ : _) <- [why | PlannedHole {phStatus = HoleUnfilled why} <- planHoles plan] -> pure (CaseFailed (nub unfilled))
                      (Right plan, again) -> do
                        snapshotProblems <- checkSnapshot (planWrites plan)
                        let rerunProblems = case again of
@@ -121,6 +131,23 @@ preparePack root syntax checker packRoot pack generator overlay =
             let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat)}
                 tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
             pure (Right (ws, tools, resolver root syntax cat, gen))
+
+-- | `[fills]` in a case's `fills.toml`: hole name = recorded code.
+parseFills :: Text -> Either Text (Map Text Text)
+parseFills src = do
+  top <- Toml.parseToml src
+  fills <- fromMaybe M.empty <$> Toml.optional "fills" Toml.table top
+  traverse Toml.text fills
+
+-- | Recorded fills as a model: every hole asked for must have one.
+replayFiller :: Monad m => Map Text Text -> Filler m
+replayFiller fills = Filler $ \req -> pure $ case [fhName h | h <- frHoles req, M.notMember (fhName h) fills] of
+  [] -> Right fills
+  missing -> Left (T.intercalate "; " ["no recorded fill for `" <> n <> "` in fills.toml" | n <- missing])
+
+-- | A case's `inputs.toml`: `now` and the `[inputs]` values.
+parseCaseInputs :: Text -> Either Text (UTCTime, Map Text Text)
+parseCaseInputs = parseCase
 
 parseCase :: Text -> Either Text (UTCTime, Map Text Text)
 parseCase src = do

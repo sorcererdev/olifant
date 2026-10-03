@@ -32,7 +32,7 @@ impl RefundInvoiceFailure {
     pub fn status(&self) -> u16 {
         match self {
             RefundInvoiceFailure::Unknown(_) => 500,
-            RefundInvoiceFailure::TooLate => todo!("olifant: status RefundInvoiceFailure::TooLate"),
+            RefundInvoiceFailure::TooLate => 400,
         }
     }
 }
