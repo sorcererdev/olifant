@@ -72,6 +72,7 @@ library
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Model
     Olifant.Naming
     Olifant.Process
     Olifant.Query
@@ -146,6 +147,8 @@ test-suite spec
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.LanguageSpec
+    Olifant.Model
+    Olifant.ModelSpec
     Olifant.Naming
     Olifant.NamingSpec
     Olifant.Process

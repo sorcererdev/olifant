@@ -8,6 +8,7 @@ module Olifant.Catalog
   , catalogBrokenLanguages
   , catalogRegions
   , catalogBrokenRegions
+  , catalogModel
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
@@ -27,6 +28,7 @@ import Data.Functor ((<&>))
 import Data.Either (lefts, rights)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
+import Olifant.Model (ModelConfig (..), parseModelConfig)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -63,6 +65,8 @@ data Catalog = Catalog
   , -- | owned regions (spec §5.8): packs' then the project's; a later one replaces an earlier one of the same name
     catalogRegions :: [RegionDef]
   , catalogBrokenRegions :: [(FilePath, Text)]
+  , -- | `[model]` (spec §6.4): the project's if it has one, else the user's
+    catalogModel :: ModelConfig
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -112,8 +116,21 @@ openProjectCatalog root paths = do
       let packRoots = M.toList (M.fromList (fromUser ++ fromProject))
       result <- openCatalogAt root (Just (project </> ".olifant" </> "generators")) packRoots
       own <- regionsIn root (project </> ".olifant")
-      pure (fmap (\c -> addRegions own c {catalogProject = Just project}) result)
+      userModel <- maybe (pure (Right Nothing)) modelIn userConfig
+      projectModel <- modelIn projectConfig
+      pure $ case (,) <$> userModel <*> projectModel of
+        Left err -> Left err
+        Right (userM, projectM) ->
+          let model = fromMaybe (ModelConfig Nothing 2 []) (maybe userM Just projectM)
+           in fmap (\c -> addRegions own c {catalogProject = Just project, catalogModel = model}) result
   where
+    -- A config's `[model]`, if it has one.
+    modelIn configPath =
+      readText root configPath <&> \case
+        Nothing -> Right Nothing
+        Just src -> case Toml.parseToml src >>= \top -> if M.member "model" top then Just <$> parseModelConfig top else Right Nothing of
+          Left err -> Left (ConfigInvalid configPath err)
+          Right m -> Right m
     packsIn base configPath =
       readText root configPath <&> \case
         Nothing -> Right []
@@ -150,7 +167,7 @@ openAt root localDir packs = do
   let loaded = local ++ fromPacks
   langs <- concat <$> traverse (languagesIn . snd) packs
   regions <- traverse (regionsIn root . snd) packs
-  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] []
+  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 [])
   pure (foldl (flip addRegions) base regions)
   where
     languagesIn r = do

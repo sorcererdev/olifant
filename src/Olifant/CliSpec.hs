@@ -103,6 +103,30 @@ planOutputSpec = describe "planHuman" $ do
         p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole]
     TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
     planHuman False p `shouldSatisfy` T.isInfixOf "holes:\n  status (expr) a.rs:3  unfilled: no model is configured"
+  describe "gen with holes (spec §6.4)" $ do
+    let holeProject model =
+          [ ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n" <> model)
+          , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[holes.expr]\nplaceholder = 'todo(\"olifant: {= hole =}\")'\nwrap = \"h = {= fill =}\"\n")
+          , ("/proj/.olifant/generators/h/generator.toml", "description = \"h\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"out.x\"\ntext = \"v = {= ? val: expr | a value =}\\n\"\n")
+          ]
+        anthropic = "[model]\ndefault = \"claude\"\n[model.backends.claude]\nkind = \"anthropic\"\nmodel = \"claude-x\"\napi_key_env = \"OLIFANT_TEST_NO_SUCH_KEY\"\n"
+    it "leaves placeholders with --no-fill, even with a model configured" $ do
+      (code, out, _, files) <- runWith "" (holeProject anthropic) False ["gen", "h", "--no-fill"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/out.x" files `shouldBe` Just "v = todo(\"olifant: val\")\n"
+      out `shouldSatisfy` T.isInfixOf "\"status\":\"skipped\",\"why\":\"--no-fill\""
+    it "refuses an unknown --model, listing the backends" $ do
+      (code, out, _, _) <- runWith "" (holeProject anthropic) False ["gen", "h", "--model", "nope"]
+      code `shouldBe` ExitFailure 2
+      out `shouldSatisfy` T.isInfixOf "(backends: claude)"
+    it "reports a missing API key as the hole's reason, never crashing" $ do
+      (code, out, _, files) <- runWith "" (holeProject anthropic) False ["gen", "h"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/out.x" files `shouldBe` Just "v = todo(\"olifant: val\")\n"
+      out `shouldSatisfy` T.isInfixOf "OLIFANT_TEST_NO_SUCH_KEY is not set"
+    it "says no model is configured without [model]" $ do
+      (_, out, _, _) <- runWith "" (holeProject "") False ["gen", "h"]
+      out `shouldSatisfy` T.isInfixOf "no model is configured"
   it "marks edits the compiler found, and todos (fix pass)" $ do
     let out = planHuman True plan
     out `shouldSatisfy` ("(+2 lines at line 9, compiler: view)" `T.isInfixOf`)

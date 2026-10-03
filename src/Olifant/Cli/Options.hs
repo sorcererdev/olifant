@@ -68,6 +68,10 @@ data GenOptions = GenOptions
   , genStepsFile :: Maybe FilePath
   , genPlanOnly :: Bool
   , genNow :: Maybe UTCTime
+  , genModel :: Maybe Text
+  -- ^ `--model NAME`: which `[model.backends.NAME]` fills holes
+  , genNoFill :: Bool
+  -- ^ `--no-fill`: leave every hole as its placeholder
   }
   deriving stock (Eq, Show)
 
@@ -101,23 +105,37 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     formatP = optional (flag' Json (long "json" <> help "JSON output") <|> flag' Human (long "human" <> help "Human-readable output"))
     -- Used only to render `gen --help`; real `gen` parsing is 'parseGen'.
     genP =
-      (\target sets plan now stepsFile -> GenOptions [StepSpec target sets] stepsFile plan now)
+      (\target sets plan now stepsFile model noFill -> GenOptions [StepSpec target sets] stepsFile plan now model noFill)
         <$> strArgument (metavar "GENERATOR")
         <*> many (option (eitherReader setP) (long "set" <> metavar "KEY=VALUE" <> help "Set an input or override a derived value"))
         <*> switch (long "plan" <> help "Show what would change without writing anything")
         <*> optional (option (eitherReader timeP) (long "now" <> metavar "ISO8601" <> help "Pin the current time"))
         <*> optional (strOption (long "steps" <> metavar "FILE|-" <> help "Read the steps as JSON: [{\"gen\": ..., \"set\": {...}}]"))
+        <*> optional (strOption (long "model" <> metavar "NAME" <> help "Fill holes with [model.backends.NAME] (default: [model] default)"))
+        <*> switch (long "no-fill" <> help "Leave every hole as its placeholder")
     syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
     timeP s = maybe (Left "expected an ISO 8601 time like 2026-09-27T15:30:00Z") Right (iso8601ParseM s)
 
 -- | `gen` arguments: global flags anywhere; steps separated by a standalone "+".
 parseGen :: [String] -> Either Text Options
-parseGen = go Nothing False Nothing Nothing [] [] . concatMap splitEq
+parseGen args0 = do
+  -- `--model NAME` and `--no-fill` apply to the whole run, like --plan.
+  (model, noFill, args) <- pull Nothing False [] (concatMap splitEq args0)
+  Options fmt cmd <- go Nothing False Nothing Nothing [] [] args
+  pure $ case cmd of
+    GenCmd o -> Options fmt (GenCmd o {genModel = model, genNoFill = noFill})
+    other -> Options fmt other
   where
+    pull model noFill acc = \case
+      [] -> Right (model, noFill, reverse acc)
+      "--model" : m : xs -> pull (Just (T.pack m)) noFill acc xs
+      ["--model"] -> Left "--model needs a backend name"
+      "--no-fill" : xs -> pull model True acc xs
+      x : xs -> pull model noFill (x : acc) xs
     -- `--set=k=v` / `--now=T` / `--steps=F` are the same as the two-word forms.
     splitEq a = case break (== '=') a of
-      (opt, '=' : v) | opt `elem` ["--set", "--now", "--steps"] -> [opt, v]
+      (opt, '=' : v) | opt `elem` ["--set", "--now", "--steps", "--model"] -> [opt, v]
       _ -> [a]
     go fmt plan now stepsFile cur done = \case
       [] -> finish fmt plan now stepsFile (reverse (reverse cur : done))
@@ -139,7 +157,7 @@ parseGen = go Nothing False Nothing Nothing [] [] . concatMap splitEq
           | all null segments -> Left "missing GENERATOR: olifant gen GENERATOR [--set KEY=VALUE]... [+ GENERATOR ...]"
           | any null segments -> Left "empty step: each `+` must be followed by a generator"
           | otherwise -> traverse step segments
-      pure (Options fmt (GenCmd (GenOptions steps stepsFile plan now)))
+      pure (Options fmt (GenCmd (GenOptions steps stepsFile plan now Nothing False)))
     step (g : xs) = StepSpec (T.pack g) <$> sets xs
     step [] = Left "empty step"
     sets = \case
