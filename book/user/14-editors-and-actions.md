@@ -225,8 +225,10 @@ olifant actions --at FILE:LINE:COL [--content -]
 - **`FILE`** is relative to where you run `olifant` (or absolute); it is matched as a
   project-relative path, so `cd src && olifant actions --at Olifant/Catalog.hs:82:3` gives the
   same answer as above.
-- **`LINE` and `COL` are 1-based**, as editors show them. Anything else is a usage error
-  (exit 2): `option --at: expected FILE:LINE:COL (1-based)`.
+- **`LINE` and `COL` are 1-based**, as editors show them. `COL` counts UTF-8 bytes, as
+  Neovim's cursor and LSP's `utf-8` position encoding do: on `"Café" x`, `x` is column 9, not
+  8. A malformed position is a usage error (exit 2): `option --at: expected FILE:LINE:COL
+  (1-based)`.
 - The JSON is a list, one object per generator that applies, in catalog order:
   `generator` (its id), `label`, `sets` (the inputs bound, as `--set` would take them) and
   `missing` (the required inputs, with no default, that are still unset).

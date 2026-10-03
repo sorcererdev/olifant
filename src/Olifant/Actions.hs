@@ -11,7 +11,9 @@ import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import Data.Text (Text)
+import Data.ByteString qualified as BS
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Generator
 import Olifant.Language
@@ -53,7 +55,12 @@ actionsAt :: Monad m => Syntax m -> [Language] -> Queries m -> [FilePath] -> (Fi
 actionsAt syntax langs queries paths readFile' gens path (line, col) content =
   catMaybes <$> traverse one gens
   where
-    cursor = (line - 1, col - 1)
+    -- COL is a UTF-8 byte column (Neovim's, LSP's utf-8); ast-grep's columns
+    -- are characters, so the cursor is converted on its own line.
+    cursor = (line - 1, charColumn (drop (line - 1) (T.lines content)))
+    charColumn = \case
+      l : _ -> T.length (TE.decodeUtf8Lenient (BS.take (col - 1) (TE.encodeUtf8 l)))
+      [] -> col - 1
     one (gid, gen) = case genAppliesAt gen of
       Nothing -> pure Nothing
       Just ap -> case matchPathSlots (apPath ap) path of

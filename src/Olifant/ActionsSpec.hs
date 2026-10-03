@@ -91,6 +91,13 @@ spec = describe "olifant actions (spec §4.6)" $ do
           , "node = { kind = \"field_declaration\", inside = { kind = \"struct_item\", regex = \"struct {= command|pascal =} \" } }" ]
     _ <- actionsAt recording [rust] noQueries [] (const (pure Nothing)) [("g", own)] file (1, 1) "text"
     (T.pack . show <$> readIORef seen) >>= (`shouldSatisfy` T.isInfixOf "struct RefundInvoice ")
+  it "(i) reads COL as a UTF-8 byte column (Neovim's), not a character column (review I1)" $ do
+    -- "éé x yz": x is character 3 (0-based) but byte 5; ast-grep reports characters.
+    let content = "\233\233 x yz\n"
+        onX = Syntax $ \_ _ _ -> Identity (Right [Match (0, 3) (0, 4) "x"])
+        acts c = runIdentity (actionsAt onX [rust] noQueries [] (const (pure Nothing)) [("g", failureArms)] file (1, c) content)
+    map actGenerator (acts 6) `shouldBe` ["g"]
+    acts 4 `shouldBe` []
   it "(h) binds the file's own path to an input with `file`" $ do
     let errorCase = generator . T.unlines $
           [ "description = \"d\"", "language = \"rust\""

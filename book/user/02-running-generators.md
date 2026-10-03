@@ -199,7 +199,7 @@ $ olifant actions --at src/Olifant/Catalog.hs:82:3 --json        # in the Olifan
 ```
 
 (The first is in a rust-htmx sandbox with an `AlreadyRefunded` variant typed into the
-`RefundInvoiceFailure` enum.) `LINE` and `COL` are 1-based. `sets` are the inputs bound from
+`RefundInvoiceFailure` enum.) `LINE` and `COL` are 1-based; `COL` counts UTF-8 bytes (as Neovim does). `sets` are the inputs bound from
 the path and the code, and `missing` the required inputs still to ask for. `--content -`
 reads the file's current, possibly unsaved, text from stdin. Only generators with an
 `[applies_at]` are offered; [chapter 14](14-editors-and-actions.md) covers both, and the
