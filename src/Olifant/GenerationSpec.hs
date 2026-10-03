@@ -743,6 +743,9 @@ completeSpec = describe "generate (complete edits)" $ do
     let tools = (basicTools noSyntax (scriptedChecker ref) [elmLang]) {toolProgress = \e -> modifyIORef' events (++ [e])}
     _ <- generate ws noResolve tools [Step gen (M.fromList [("name", "reset")])] now Apply
     readIORef events >>= (`shouldSatisfy` elem (Checking "elm"))
+  it "records the previous text of a file only the compiler found (for editors' previews)" $ do
+    (Right plan, _) <- go [("src/A.elm", page)] [[missing "src/A.elm" (3, 5) ["Reset"]]]
+    M.lookup "src/A.elm" (planBefore plan) `shouldBe` Just (Just page)
   it "warns about a site it cannot extend (a function equation) that needs one of its constructors" $ do
     let unplaced = Checker $ \_ _ -> pure (Right (CheckReport [] [] [(missing "src/A.elm" (7, 9) ["Reset"], "an equation for `reset`")]))
     (ws, _) <- memoryWorkspace [("src/A.elm", page)]

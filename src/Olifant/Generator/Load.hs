@@ -74,7 +74,7 @@ parseGenerator gid src = do
 
 -- | `[applies_at]` (spec §4.6). Slots and bind names must be inputs.
 appliesAtFrom :: [Text] -> Table -> Either Text AppliesAt
-appliesAtFrom inputNames t = inKey "applies_at" $ do
+appliesAtFrom inputNames t = do
   onlyKeys ["path", "node", "bind", "file", "label"] t
   path <- required "path" text t
   case [x | x <- slots path, x `notElem` inputNames] of

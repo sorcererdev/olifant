@@ -19,7 +19,7 @@ module Olifant.Generation
   , module Olifant.Generation.Tools
   ) where
 
-import Control.Monad (filterM, foldM, forM_, join, when)
+import Control.Monad (filterM, foldM, forM_, when)
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.List (nub)
@@ -134,10 +134,14 @@ generate ws resolve tools steps now mode =
           shown = map (showHoles (toolLanguages tools)) edits
       -- The fill phase (spec §6.4): only with a model, and only when nothing
       -- else went wrong.
+      -- Each written file's previous text, for editors: compiler-found files
+      -- are named by no edit, so they are read here.
+      let previous p = maybe (readText ws p) pure (M.lookup p originals)
       (writes, holes, fillWarnings) <-
         if null (conflicts ++ holeConflicts)
           then fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed holes0
           else pure (placed, holes0, [])
+      before <- traverse (\p -> (p,) <$> previous p) (M.keys writes)
       -- What the plan shows is what is written: fills, not placeholders.
       let filled = [(holePlaceholder (phSite h), f) | h <- holes, Just f <- [phFill h]]
           withFills t = foldl (\acc (ph, f) -> T.replace ph f acc) t filled
@@ -146,7 +150,7 @@ generate ws resolve tools steps now mode =
                                WillOverwrite t -> WillOverwrite (withFills t)
                                WillInsert n t -> WillInsert n (withFills t)
                                other -> other} | e <- shown]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes (M.fromList [(p, join (M.lookup p originals)) | p <- M.keys writes])
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes (M.fromList before)
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

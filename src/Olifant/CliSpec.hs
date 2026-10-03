@@ -243,6 +243,8 @@ runCliSpec = describe "runCli" $ do
     (code, out, _, _) <- runWith "" files False ["gen", "two", "--set", "name=a", "--plan"]
     code `shouldBe` ExitSuccess
     out `shouldSatisfy` T.isInfixOf "\"files\":[{\"after\":\"hi\\n\",\"before\":null,\"path\":\"new/a.txt\"},{\"after\":\"first\\na\\n\",\"before\":\"first\\n\",\"path\":\"old.txt\"}]"
+    (_, applied, _, _) <- runWith "" files False ["gen", "two", "--set", "name=b"]
+    applied `shouldNotSatisfy` T.isInfixOf "\"files\""
   it "lists the actions that apply at a position (spec §4.6)" $ do
     let gen = T.unlines
           [ "description = \"Wire it\"", "language = \"x\""
