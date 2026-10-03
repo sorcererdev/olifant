@@ -38,7 +38,7 @@ import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
 import Olifant.Language (Language, languageFor)
-import Olifant.Holes (matchesWithHoles, placeHoles, placeholderize)
+import Olifant.Holes (HoleSite (..), matchesWithHoles, placeHoles, placeholderize)
 import Olifant.Generation.FillPhase (fillPhase)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
@@ -138,7 +138,15 @@ generate ws resolve tools steps now mode =
         if null (conflicts ++ holeConflicts)
           then fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed holes0
           else pure (placed, holes0)
-      let plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shown (conflicts ++ holeConflicts) warnings writes holes
+      -- What the plan shows is what is written: fills, not placeholders.
+      let filled = [(holePlaceholder (phSite h), f) | h <- holes, Just f <- [phFill h]]
+          withFills t = foldl (\acc (ph, f) -> T.replace ph f acc) t filled
+          shownFilled = [e {editAction = case editAction e of
+                               WillCreate t -> WillCreate (withFills t)
+                               WillOverwrite t -> WillOverwrite (withFills t)
+                               WillInsert n t -> WillInsert n (withFills t)
+                               other -> other} | e <- shown]
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) warnings writes holes
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

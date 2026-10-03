@@ -72,8 +72,11 @@ spec = do
     it "reads [holes.KIND] with a placeholder and a wrap" $ do
       let Right l = parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.expr]", "placeholder = 'todo!(\"olifant: {= hole =}\")'", "wrap = \"fn __olifant() { let _ = {= fill =}; }\""])
       map fst (langHoles l) `shouldBe` ["expr"]
+    it "refuses a placeholder that does not name its hole (review I2)" $
+      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.type]", "placeholder = '()'", "wrap = \"type T = {= fill =};\""])
+        `shouldSatisfy` either ("{= hole =}" `T.isInfixOf`) (const False)
     it "refuses a wrap without {= fill =}" $
-      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.expr]", "placeholder = 'x'", "wrap = \"fn f() {}\""])
+      parseLanguage "r" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.expr]", "placeholder = 'x({= hole =})'", "wrap = \"fn f() {}\""])
         `shouldSatisfy` either ("{= fill =}" `T.isInfixOf`) (const False)
   describe "matchShape" $ do
     it "binds parameters and requires literal words" $ do

@@ -202,7 +202,7 @@ holeJson h =
         HoleFilled m n -> ("filled" :: Text, Just m, Just n, Nothing)
         HoleUnfilled w -> ("unfilled", Nothing, Nothing, Just w)
         HoleSkipped w -> ("skipped", Nothing, Nothing, Just w)
-   in object ["name" .= holeName site, "kind" .= holeKind site, "file" .= holeFile site, "line" .= holeLine site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why]
+   in object ["name" .= holeName site, "kind" .= holeKind site, "file" .= holeFile site, "line" .= holeLine site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why, "fill" .= phFill h]
 
 planHuman :: Bool -> Plan -> Text
 planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines ++ map ("  ? warning: " <>) (planWarnings plan) ++ holeLines) <> details
@@ -213,7 +213,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
     holeText h =
       let site = phSite h
           status = case phStatus h of
-            HoleFilled m n -> "filled by " <> m <> (if n > 1 then " (attempt " <> T.pack (show n) <> ")" else "")
+            HoleFilled m n -> "filled by " <> m <> (if n > 1 then " (attempt " <> T.pack (show n) <> ")" else "") <> maybe "" (\f -> ": " <> T.intercalate " ⏎ " (T.lines f)) (phFill h)
             HoleUnfilled w -> "unfilled: " <> w
             HoleSkipped w -> "skipped: " <> w
        in "  " <> holeName site <> " (" <> holeKind site <> ") " <> T.pack (holeFile site) <> ":" <> T.pack (show (holeLine site)) <> "  " <> status

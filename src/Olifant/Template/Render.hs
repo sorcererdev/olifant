@@ -29,7 +29,8 @@ renderSegment :: Env -> Segment -> Either TemplateError Text
 renderSegment env = \case
   Lit t -> Right t
   -- A hole renders as a marker the plan turns into a placeholder (spec §6.4).
-  Hole name kind body -> (\i -> "\10214olifant-hole " <> name <> "|" <> kind <> "|" <> T.replace "\10215" "]" i <> "\10215") <$> renderSegments env body
+  -- One line always (holes are found line by line): whitespace collapsed.
+  Hole name kind body -> (\i -> "\10214olifant-hole " <> name <> "|" <> kind <> "|" <> T.unwords (T.words (T.replace "\10215" "]" i)) <> "\10215") <$> renderSegments env body
   Out e -> eval env e >>= display
   If branches els -> pick branches
     where

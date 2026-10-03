@@ -23,7 +23,7 @@ placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
 wrap = "fn __olifant() { {= fill =} }"
 
 [holes.type]
-placeholder = "()"
+placeholder = "() /* olifant: {= hole =} */"
 wrap = "type __Olifant = {= fill =};"
 
 [targets.struct]

@@ -6,11 +6,10 @@ module Olifant.Generation.FillPhase (fillPhase) where
 
 import Control.Monad (foldM, forM)
 import Data.Aeson (object, (.=))
-import Data.List (nub, sortOn)
+import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (isJust)
-import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
@@ -38,8 +37,10 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
         Left why -> pure (finish mf accepted [(t, why) | t <- tried])
         Right fills -> do
           let noFill = [(t, "the model returned no fill for `" <> name t <> "`") | t <- tried, M.notMember (name t) fills]
-          parsed <- forM [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]] $ \(t, f) -> (t,f,) <$> parses (site t) f
-          let badParse = [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
+          let offered = [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]]
+              escaped = [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
+          parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) f
+          let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
               candidates = [(t, f) | (t, f, True) <- parsed]
               files = applyFills base ([(s', f') | (s', f', _) <- M.elems accepted] ++ [(site t, f) | (t, f) <- candidates])
           broken <- checkFiles files [site t | (t, _) <- candidates]
@@ -69,7 +70,7 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
     context s =
       let ls = T.splitOn "\n" (M.findWithDefault "" (holeFile s) base)
           i = holeLine s - 1
-          marked = [if j == i then T.replace (holePlaceholder s) ("\10214" <> holeName s <> "\10215") l else l | (j, l) <- zip [0 ..] ls]
+          marked = [if j == i then T.replace (holePlaceholder s) ("\10214" <> holeName s <> "\10215") l else l | (j, l) <- zip [0 ..] ls] -- placeholders are unique (they name their hole)
        in T.intercalate "\n" (take 201 (drop (max 0 (i - 100)) marked))
 
     parses s f = case (languageFor (toolLanguages tools) (holeFile s), lookup (holeKind s) . langHoles =<< languageFor (toolLanguages tools) (holeFile s)) of
@@ -96,18 +97,37 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
         Left _ -> pure M.empty -- the check cannot run: parse validation stands
         Right report -> pure (M.fromListWith (flip (++)) [(p, [T.pack p <> ": " <> why]) | (p, why) <- reportBroken report])
 
--- | Every fill in place of its placeholder, bottom-up per file so line
--- numbers stay valid; continuation lines take the hole's indentation.
+-- | Every fill in place of its placeholder. Placeholders name their hole
+-- (adapters must use @{= hole =}@), so each is found by its text wherever
+-- earlier fills moved it; continuation lines take that line's indentation.
 applyFills :: Map FilePath Text -> [(HoleSite, Text)] -> Map FilePath Text
-applyFills base fills = foldl apply base (sortOn (\(s, _) -> (holeFile s, Down (holeLine s))) fills)
+applyFills = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) files)
   where
-    apply files (s, f) = M.adjust (fillAt s f) (holeFile s) files
-    fillAt s f t =
-      let ls = T.splitOn "\n" t
-          i = holeLine s - 1
-          indent l = T.takeWhile (`elem` (" \t" :: String)) l
-          put l =
-            let (before, after) = T.breakOn (holePlaceholder s) l
-                body = T.intercalate ("\n" <> indent l) (T.splitOn "\n" (T.strip f))
-             in if T.null after then l else before <> body <> T.drop (T.length (holePlaceholder s)) after
-       in if i < 0 || i >= length ls then t else T.intercalate "\n" (take i ls ++ [put (ls !! i)] ++ drop (i + 1) ls)
+    fillIn s f t = case T.breakOn (holePlaceholder s) t of
+      (_, "") -> t
+      (before, after) ->
+        let lineStart = snd (T.breakOnEnd "\n" before)
+            indent = T.takeWhile (`elem` (" \t" :: String)) lineStart
+            body = T.intercalate ("\n" <> indent) (T.splitOn "\n" (T.strip f))
+         in before <> body <> T.drop (T.length (holePlaceholder s)) after
+
+-- | Why a fill cannot stand in its hole before any parse: it unbalances
+-- brackets (it would close the code around it), or it is a placeholder.
+escapes :: Text -> Maybe Text
+escapes f
+  | "olifant:" `T.isInfixOf` f = Just "the fill is the placeholder, not code"
+  | not (balanced (0 :: Int) (T.unpack f)) = Just "the fill reaches outside its hole (unbalanced brackets)"
+  | otherwise = Nothing
+  where
+    balanced d = \case
+      [] -> d == 0
+      '"' : rest -> balanced d (skipString rest)
+      c : rest
+        | c `elem` ("([{" :: String) -> balanced (d + 1) rest
+        | c `elem` (")]}" :: String) -> d > 0 && balanced (d - 1) rest
+        | otherwise -> balanced d rest
+    skipString = \case
+      [] -> []
+      '\\' : _ : rest -> skipString rest
+      '"' : rest -> rest
+      _ : rest -> skipString rest

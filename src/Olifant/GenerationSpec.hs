@@ -631,6 +631,11 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     M.lookup "src/A.elm" files `shouldBe` Just "a = 1\n"
     statuses plan `shouldBe` [("a", HoleFilled "fake" 1), ("b", HoleFilled "fake" 1)]
     length <$> readIORef calls `shouldReturn` 1
+  it "(a2) shows the fills in the plan's edits, not the placeholders (review I1)" $ do
+    (tools, _) <- withFiller [Right (M.fromList [("a", "1"), ("b", "2")])]
+    (ws, _) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step twoFiles M.empty] now PlanOnly
+    [t | e <- planEdits plan, WillCreate t <- [editAction e]] `shouldBe` ["a = 1\n", "b = 2\n"]
   it "(b) retries a fill that does not compile, with the compiler's message" $ do
     (tools, calls) <- withFiller [Right (M.fromList [("a", "BAD"), ("b", "2")]), Right (M.fromList [("a", "7")])]
     (plan, files) <- run1 tools
@@ -659,6 +664,22 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     Right again <- generate ws noResolve tools [Step twoFiles M.empty] now Apply
     planWrites again `shouldBe` M.empty
     length <$> readIORef calls `shouldReturn` 1
+  it "(g) puts each fill at its own placeholder, two holes on one line, multi-line fills included (review I2)" $ do
+    let pair = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "create = \"src/P.elm\"", "text = \"p = ( {= ? x: expr | first =}, {= ? y: expr | second =} )\\n\"" ]
+    calls <- newIORef []
+    let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> pure (Right (M.fromList [("x", "if True then\n  1\nelse\n  2"), ("y", "3")]))
+        tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step pair M.empty] now Apply
+    (M.lookup "src/P.elm" <$> snap) `shouldReturn` Just "p = ( if True then\n  1\nelse\n  2, 3 )\n"
+    statuses plan `shouldBe` [("x", HoleFilled "fake" 1), ("y", HoleFilled "fake" 1)]
+  it "(h) refuses a fill that escapes its hole or is the placeholder itself (review I4)" $ do
+    (tools, _) <- withFiller (replicate 3 (Right (M.fromList [("a", "1 } evil = { 2"), ("b", "Debug.todo \"olifant: b\"")])))
+    (plan, files) <- run1 tools
+    M.lookup "src/A.elm" files `shouldBe` Just "a = Debug.todo \"olifant: a\"\n"
+    statuses plan `shouldBe` [("a", HoleUnfilled "the fill reaches outside its hole (unbalanced brackets)"), ("b", HoleUnfilled "the fill is the placeholder, not code")]
   it "(f) retries a fill that does not parse as its kind" $ do
     (tools, calls) <- withFiller [Right (M.fromList [("a", "!!"), ("b", "2")]), Right (M.fromList [("a", "3")])]
     (plan, _) <- run1 tools

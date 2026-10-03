@@ -73,6 +73,8 @@ spec = do
     it "renders a hole as a marker carrying its name, kind and rendered instruction" $
       renderWith [("p", VText "A::B")] "x => {= ? status: expr | the status for {= p =} =},"
         `shouldBe` Right "x => \10214olifant-hole status|expr|the status for A::B\10215,"
+    it "keeps a marker on one line: an instruction's newlines become spaces (review I3)" $
+      renderWith [("i", VText "reset\nand log")] "{= ? h: expr | {= i =} =}" `shouldBe` Right "\10214olifant-hole h|expr|reset and log\10215"
     it "needs a name and a kind" $
       parseTemplate "{= ? : expr | x =}" `shouldSatisfy` isSyntaxError
     it "counts the instruction's variables as the template's" $

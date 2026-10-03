@@ -19,7 +19,6 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language.Adapter (HoleKind (..), Language (..), languageFor)
 import Olifant.Template (Value (..), render)
-import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 data Marker = Marker {markerName :: Text, markerKind :: Text, markerInstruction :: Text}
   deriving stock (Eq, Show)
@@ -104,11 +103,26 @@ placeHoles langs files =
 
 -- | Does @actual@ match @planned@ where every hole may be anything (its
 -- placeholder, or whatever filled it)? Used where a plan compares its text
--- with a file's (a re-run is a no-op, spec §5.4).
+-- with a file's (a re-run is a no-op, spec §5.4). Anchored and linear: the
+-- text before the first hole must start the file, the text after the last
+-- must end it, and the pieces between appear in order.
 matchesWithHoles :: Text -> Text -> Bool
 matchesWithHoles planned actual
   | not (hasMarkers planned) = planned == actual
-  | otherwise = maybe False (`matchTest` T.unpack actual) (makeRegexM (T.unpack pattern) :: Maybe Regex)
+  | otherwise = go (merge (splitMarkers planned)) actual
   where
-    pattern = "^" <> T.concat [either (const "(.|\n)*") escape piece | piece <- splitMarkers planned] <> "$"
-    escape = T.concatMap (\c -> if c `elem` ("\\^$.|?*+()[]{}" :: String) then T.pack ['\\', c] else T.singleton c)
+    -- adjacent holes act as one
+    merge = \case
+      Left m : Left _ : rest -> merge (Left m : rest)
+      x : rest -> x : merge rest
+      [] -> []
+    go pieces rest = case pieces of
+      [] -> T.null rest
+      [Right lit] -> lit == rest
+      Right lit : more -> maybe False (go more) (T.stripPrefix lit rest)
+      [Left _] -> True
+      Left _ : [Right lit] -> lit `T.isSuffixOf` rest
+      Left _ : Right lit : more -> case T.breakOn lit rest of
+        (_, "") -> False
+        (_, found) -> go more (T.drop (T.length lit) found)
+      Left _ : more -> go more rest

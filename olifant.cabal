@@ -135,6 +135,7 @@ test-suite spec
     Olifant.Glob
     Olifant.GlobSpec
     Olifant.Holes
+    Olifant.HolesSpec
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep

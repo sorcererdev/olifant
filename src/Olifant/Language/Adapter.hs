@@ -23,7 +23,8 @@ import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.Rule
 import Olifant.Language.Support (knownFormats)
-import Olifant.Template (Template, describeTemplateError, parseTemplate)
+import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
+import Data.Set qualified as S
 import Olifant.Toml
 import System.FilePath ((</>))
 
@@ -82,6 +83,7 @@ parseLanguage name packRoot src = do
     holeKindFrom t = do
       onlyKeys ["placeholder", "wrap"] t
       ph <- required "placeholder" (text >=> tmpl) t
+      if "hole" `S.member` freeVariables ph then Right () else Left "`placeholder` must use {= hole =} (the hole's name), so every placeholder is unique"
       wrap <- required "wrap" text t
       if "{= fill =}" `T.isInfixOf` wrap
         then Right (HoleKind ph wrap)

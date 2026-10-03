@@ -127,6 +127,11 @@ planOutputSpec = describe "planHuman" $ do
     it "says no model is configured without [model]" $ do
       (_, out, _, _) <- runWith "" (holeProject "") False ["gen", "h"]
       out `shouldSatisfy` T.isInfixOf "no model is configured"
+  it "shows each fill in the plan, JSON and human (review I1)" $ do
+    let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleFilled "qwen" 1) (Just "409")
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole]
+    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"fill\":\"409\""
+    planHuman False p `shouldSatisfy` T.isInfixOf "status (expr) a.rs:3  filled by qwen: 409"
   it "marks edits the compiler found, and todos (fix pass)" $ do
     let out = planHuman True plan
     out `shouldSatisfy` ("(+2 lines at line 9, compiler: view)" `T.isInfixOf`)
