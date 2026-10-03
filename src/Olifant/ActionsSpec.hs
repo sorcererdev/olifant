@@ -104,6 +104,24 @@ spec = describe "olifant actions (spec §4.6)" $ do
           , "[inputs.path]", "type = \"text\"", "[inputs.name]", "type = \"ident\""
           , "[applies_at]", "path = \"**/*.rs\"", "file = \"path\"", "label = \"Add a case\"" ]
     map (\a -> (actSets a, actMissing a)) (at matches [("g", errorCase)] file (1, 1)) `shouldBe` [([("path", T.pack file)], ["name"])]
+  describe "--file: every place in a file (spec §4.6)" $ do
+    let inFile syn gens path content = runIdentity (actionsInFile syn [rust] noQueries [] (const (pure Nothing)) gens path content)
+        threeVariants = Syntax $ \_ _ _ -> Identity (Right [Match (3, 4) (3, 9) "Third", Match (1, 4) (1, 9) "First", Match (2, 4) (2, 10) "Second"])
+    it "(a) a generator without node applies to the whole file (no range)" $ do
+      let whole = generator . T.unlines $ ["description = \"d\"", "language = \"rust\"", "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\"", "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\"", "label = \"Whole\""]
+      fst (inFile matches [("w", whole)] file "x") `shouldBe` [FileAction (Action "w" "Whole" [("command", "refund_invoice"), ("service", "billing")] []) Nothing]
+    it "(b) one entry per matching node, in file order, each with its own binds (Review Focus 2)" $
+      map (\fa -> (lookup "failure" (actSets (faAction fa)), faRange fa)) (fst (inFile threeVariants [("g", failureArms)] file "enum E {\n    First,\n    Second,\n    Third,\n}\n"))
+        `shouldBe` [ (Just "First", Just (Range (2, 5) (2, 10))), (Just "Second", Just (Range (3, 5) (3, 11))), (Just "Third", Just (Range (4, 5) (4, 10))) ]
+    it "(b2) ranges are UTF-8 byte columns" $ do
+      let onX = Syntax $ \_ _ _ -> Identity (Right [Match (0, 2) (0, 3) "x"])
+      map faRange (fst (inFile onX [("g", failureArms)] file "\233 x\n")) `shouldBe` [Just (Range (1, 4) (1, 5))]
+    it "(c) a path match with no node is nearby, not an action" $ do
+      let (acts, near) = inFile (Syntax $ \_ _ _ -> Identity (Right [])) [("g", failureArms)] file "x"
+      acts `shouldBe` []
+      map (\n -> (nbGenerator n, nbLabel n)) near `shouldBe` [("g", "Add arms")]
+    it "(d) another path: neither" $
+      inFile threeVariants [("g", failureArms)] "notes/readme.md" "x" `shouldBe` ([], [])
   describe "the rust-htmx demo generators (real ast-grep)" $ do
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
     let real gen given path pos = findExecutable "ast-grep" >>= \case

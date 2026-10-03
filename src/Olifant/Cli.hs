@@ -4,7 +4,7 @@ module Olifant.Cli (Runtime (..), runCli) where
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
-import Olifant.Actions (Action (..), actionsAt)
+import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (when)
 import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
@@ -142,15 +142,28 @@ runCommand rt cwd fmt cat = \case
     let views e = M.findWithDefault M.empty (entryId e) (M.fromList viewList)
     emit rt fmt (listJson detail (subsOf cat) views entries broken) (listHuman detail (subsOf cat) views entries broken)
     pure ExitSuccess
-  ActionsCmd file pos fromStdin -> do
+  ActionsCmd file at fromStdin -> do
     -- Paths are relative to where olifant runs; matching uses the
     -- project-relative path.
     let project = within (rtProjectDir rt) (rtRoot rt)
         rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
     content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> file)
     paths <- listFiles project "."
-    acts <- actionsAt (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat] rel pos (fromMaybe "" content)
-    emit rt fmt (toJSON (map actionJson acts)) (T.unlines [actLabel a <> "  (" <> actGenerator a <> ")" <> (if null (actMissing a) then "" else "  asks: " <> T.intercalate ", " (actMissing a)) | a <- acts])
+    let gens = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat]
+        human a = actLabel a <> "  (" <> actGenerator a <> ")" <> (if null (actMissing a) then "" else "  asks: " <> T.intercalate ", " (actMissing a))
+    case at of
+      Just pos -> do
+        acts <- actionsAt (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel pos (fromMaybe "" content)
+        emit rt fmt (toJSON (map actionJson acts)) (T.unlines (map human acts))
+      Nothing -> do
+        (acts, near) <- actionsInFile (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel (fromMaybe "" content)
+        let rangeJson (Range (l1, c1) (l2, c2)) = object ["start" .= [l1, c1], "end" .= [l2, c2]]
+            json = object
+              [ "actions" .= [object ["generator" .= actGenerator a, "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] | FileAction a r <- acts]
+              , "nearby" .= [object ["generator" .= nbGenerator n, "label" .= nbLabel n, "why" .= nbWhy n] | n <- near]
+              ]
+            where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
+        emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
     pure ExitSuccess
   SchemaCmd -> do
     emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")

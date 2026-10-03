@@ -256,6 +256,11 @@ runCliSpec = describe "runCli" $ do
     out `shouldSatisfy` T.isInfixOf "[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}]"
     (code2, _, _, _) <- runWith "" files False ["actions", "--at", "billing/src/cancel.x"]
     code2 `shouldBe` ExitFailure 2
+    (code3, out3, _, _) <- runWith "" files False ["actions", "--file", "billing/src/cancel.x"]
+    code3 `shouldBe` ExitSuccess
+    out3 `shouldSatisfy` T.isInfixOf "{\"actions\":[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"range\":null,\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}],\"nearby\":[]}"
+    (code4, _, _, _) <- runWith "" files False ["actions"]
+    code4 `shouldBe` ExitFailure 2
   it "suggests `gen` when the first word looks like a generator" $ do
     (code, _, err, _) <- runWith "" project True ["elm/page", "--set", "page=settings"]
     code `shouldBe` ExitFailure 2

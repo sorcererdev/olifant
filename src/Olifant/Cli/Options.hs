@@ -31,7 +31,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Int, Int) Bool
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -121,8 +121,10 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
     actionsP =
-      (\(f, pos) content -> ActionsCmd f pos content)
-        <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line and column")
+      (\target content -> either (\(f, pos) -> ActionsCmd f (Just pos) content) (\f -> ActionsCmd f Nothing content) target)
+        <$> ( (Left <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line, UTF-8 byte column"))
+                <|> (Right <$> strOption (long "file" <> metavar "FILE" <> help "Every place in FILE where a generator applies, and near misses"))
+            )
         <*> (maybe False (== ("-" :: String)) <$> optional (strOption (long "content" <> metavar "-" <> help "Read the file's current text from stdin")))
     -- FILE:LINE:COL, split from the right (a path may contain colons).
     positionP s = case reverse (splitOn ':' s) of
