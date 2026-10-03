@@ -156,6 +156,7 @@ From the bottom up:
 | **Generator** | A generator definition: the types, loading `generator.toml`, resolving `one_of` choices, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve, and `Choices`) and `Inputs` (including `envBefore`, `inputsUsed`), plus `parseGenerator`, `withChoices`, `needsChoices`, `ChoiceView`, `choiceViews` | Anchor, Language, Naming, Query, Template, Toml |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Template, Workspace |
+| **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor, with the inputs the path and the code there give | `Actions.hs`: `Action`, `actionsAt`, `matchPathSlots` | Generator, Language, Query, Template |
 | **Catalog** | Finding packs and generators, checking a generator's sources and fixed `at` targets, loading one into a runnable `Generator`, and reading `[model]` | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `checkEntry`, `resolver`, `Catalog` (with `catalogModel`), `CatalogEntry` | Anchor, Generator, Language, Model, Region, Template, Toml, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `runCli`. Internals: `Cli/Options` (argument parsing), `Cli/Output` (rendering) | almost everything |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs` | Anchor, Catalog, Fill, Generation, Generator, Language, Query, Toml, Workspace |
@@ -178,7 +179,7 @@ none upwards.
   ├────────────────────────────────────────────────────────────┤
   │ Catalog                                                    │  finding and loading generators
   ├────────────────────────────────────────────────────────────┤
-  │ Generation                                                 │  the use case: steps → plan → writes
+  │ Generation                  Actions                        │  the use cases: steps → plan → writes; actions at a cursor
   ├────────────────────────────────────────────────────────────┤
   │ Generator                   Region                         │  definitions (generator.toml, regions.toml)
   ├────────────────────────────────────────────────────────────┤
@@ -211,8 +212,9 @@ Anchor               → Holes, Language, Query, Suggest, Template
 Region               → Query, Template, Toml
 Generator            → Anchor, Language, Naming, Query, Template, Toml
 Generation           → Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Template, Workspace
+Actions              → Generator, Language, Query, Template
 Catalog              → Anchor, Generator, Language, Model, Region, Template, Toml, Workspace
-Cli                  → Anchor, Catalog, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Template, Workspace
+Cli                  → Actions, Anchor, Catalog, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Template, Workspace
 GeneratorTesting     → Anchor, Catalog, Fill, Generation, Generator, Language, Query, Toml, Workspace
 app/Main             → Cli, Language, Language.AstGrep, Workspace
 ```
@@ -329,7 +331,11 @@ pending, as a missing tool is everywhere else (spec §4.5, §5.7).
 The ports are bundled at two levels. `Tools m` (`src/Olifant/Generation/Tools.hs:11`) holds
 Syntax, Checker and Queries, plus the catalog's language adapters and regions, and, since
 holes, `toolFiller :: Maybe (ModelFiller m)` (`:18`): the model that fills holes, with its
-name and retry count, or `Nothing`. It is what `generate` takes. `noTools` (`:21`) needs nothing installed. `Runtime`
+name and retry count, or `Nothing`. Its last field, `toolProgress :: ProgressEvent -> m ()`
+(`:22`), is where a generation reports what it is doing; `ProgressEvent` (`:27`) is `Checking
+language | Filling holes attempt model | Filled hole attempt | Unfilled hole why`. `basicTools`
+sets it to `const (pure ())`, so nothing reports unless the CLI asks (`gen --progress`, step 5
+below). It is what `generate` takes. `noTools` (`:30`) needs nothing installed. `Runtime`
 (`src/Olifant/Cli.hs:34`) is the CLI's port: the root workspace, the project dir, stdin, the
 clock, stdout, stderr, whether stdout is a terminal, and the Syntax and Checker adapters.
 `app/Main.hs` is the only place that builds a real one:
@@ -1128,7 +1134,13 @@ far, and its previous fill and reason). Each round:
 8. Accepted fills go into `accepted` with their attempt count (`:67`); failures get their
    `(fill, reason)` as the next `Try`'s previous (`:68`).
 
-`next` (`:36`–`:38`) stops when nothing failed or after `1 + retries` rounds, and `finish`
+**Progress** goes out through `toolProgress` at four points: `Filling` before each request
+(`:34`, with the pending holes' names, the round and `mfName`), `Filled` for each fill
+accepted in a round (`:72`), `Unfilled` for each hole still failing when the rounds run out
+(`:39`), and `Checking` before each `[check]` in `checkLang` (`:118`). The complete loop
+(`Generation/Complete.hs:66`) sends `Checking` before each of its rounds too.
+
+`next` (`:37`–`:41`) stops when nothing failed or after `1 + retries` rounds, and `finish`
 (`:71`) writes every accepted fill into the files with `applyFills` (`:121`). It marks
 those holes `HoleFilled model attempts` with their fill, marks the others `HoleUnfilled`
 with their last reason, and turns the notes into the warning "holes were filled but not
@@ -1149,18 +1161,22 @@ where the placeholder was.
 **The real filler** is in `Model.hs`. `parseModelConfig` (`:59`) reads `[model]`: `default`,
 `retries` (2), `timeout` (120 seconds) and `[model.backends.NAME]`, each a `Backend`
 (`:43`), `OpenAICompatible url model` or `Anthropic model keyEnv`. `systemPrompt` (`:77`)
-and `userPrompt` (`:86`) are the text, `requestBody` (`:105`) the JSON for each backend
-(OpenAI-style with `response_format: json_object` and `temperature: 0`; Anthropic's with
-`max_tokens: 4096`). `curlFiller` (`:170`) is the adapter: there is no HTTP library, so
-`post` (`:184`) runs `curl -sS -X POST URL … --max-time T --data-binary @-` through
+and `userPrompt` (`:89`) are the text: they ask for one `<fill name="NAME">CODE</fill>` block
+per hole, with no escaping. `requestBody` (`:108`) is the JSON for each backend (OpenAI-style
+with `temperature: 0` and no `response_format`; Anthropic's with `max_tokens: 4096`). JSON
+mode was dropped after token experiment v12, where it made a small thinking model fail
+18 of 33 calls and tagged blocks failed none (user book, chapter 12). `curlFiller` (`:188`)
+is the adapter: there is no HTTP library, so `post` (`:202`) runs `curl -sS -X POST URL … --max-time T --data-binary @-` through
 `Process.runBytes` with the body on stdin. For Anthropic it first reads the key from the
 environment variable the config names ("ANTHROPIC_API_KEY is not set" if it's missing),
 writes `x-api-key` and `anthropic-version` to a temporary header file, and passes
-`-H @file`, so the key is never on a command line. `decodeFills` (`:123`) reads either
-backend's reply shape, drops a `<think>…</think>` prefix (`dropThinking`, `:145`), and tries
-the text as JSON, then the JSON inside a ``` fence or between the outer braces. It reads
-`{"fills": {…}}` or a bare object, and takes strings (unfenced), numbers and booleans as
-code.
+`-H @file`, so the key is never on a command line. `decodeFills` (`:125`) reads either
+backend's reply shape and drops a `<think>…</think>` prefix (`dropThinking`, `:163`). Then
+`tagged` (`:151`) splits the text on `<fill name="`, takes each name up to `">` and each body
+up to `</fill>`, and trims one newline from each end of the body; blocks may sit anywhere in
+prose. Only when that finds no block does it fall back to JSON: the text as it is, then the
+JSON inside a ``` fence or between the outer braces, reading `{"fills": {…}}` or a bare
+object and taking strings (unfenced), numbers and booleans as code.
 
 **In tests**, `GeneratorTesting.runCase` reads a case's `fills.toml` (`GeneratorTesting.hs:66`)
 and sets `toolFiller` to `ModelFiller "recorded" 0 (replayFiller fills)` (`:71`).
@@ -1173,7 +1189,7 @@ the placeholders.
 
 ```haskell
 -- src/Olifant/Generation.hs:149
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes (M.fromList [(p, join (M.lookup p originals)) | p <- M.keys writes])
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
@@ -1186,16 +1202,27 @@ this line worked on in-memory text. `--plan` runs the fill phase too (it calls t
 and simply doesn't write. The `Plan` type is in `src/Olifant/Generation/Plan.hs:24`. Its
 `planEdits` are `PlannedEdit`s (`:41`), each with an `EditAction` (`:67`): `WillCreate`,
 `WillOverwrite`, `WillInsert line text`, `WillRefresh`, `Skipped reason` or `Conflicted`.
-Its last field, `planHoles` (`:34`), lists every hole with its `HoleStatus` (`:59`):
-`HoleFilled model attempts`, `HoleUnfilled why` or `HoleSkipped why`.
+`planHoles` (`:34`) lists every hole with its `HoleStatus` (`:61`):
+`HoleFilled model attempts`, `HoleUnfilled why` or `HoleSkipped why`. The last field,
+`planBefore` (`:36`), is each written file's text before the plan, `Nothing` for a new file,
+for editors (the JSON `files`, step 5). It comes from `originals` (4b) where it can; a file
+that only the compiler found, named by no edit and no `[requires]`, was never inspected, so
+`generate` reads it from the workspace (`previous`) when it builds `planBefore`.
 
 The writes happen here, before anything is printed. If rendering the output crashed, the
 files would already be written.
 
-### 5. Output and exit code (`src/Olifant/Cli.hs:229`)
+### 5. Output and exit code (`src/Olifant/Cli.hs:240`)
+
+Just before this, `runCommand` built the `Tools` for `generate` (`Cli.hs:238`) with
+`toolFiller` from `modelFor` and, with `--progress`, `toolProgress` writing each event to
+`rtErr` as one line of JSON (`progressJson`, `:408`: `{"event":"check","language"}`,
+`{"event":"fill","holes","attempt","model"}`, `{"event":"filled","hole","attempt"}`,
+`{"event":"unfilled","hole","why"}`). Without the flag it is `const (pure ())`. Because the
+events go through the `Tools` port, `GenerationSpec` can collect them in a list.
 
 ```haskell
--- src/Olifant/Cli.hs:229
+-- src/Olifant/Cli.hs:240
               Right plan0 -> do
                 let plan =
                       (if genNoFill g then noFill plan0 else plan0)
@@ -1209,31 +1236,96 @@ files would already be written.
                 pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
 ```
 
-`emit` (`:254`) prints one of two renderings. Both are built, but laziness means only the
+`emit` (`:265`) prints one of two renderings. Both are built, but laziness means only the
 one printed is computed.
 
-- **`planHuman`** (`src/Olifant/Cli/Output.hs:207`) prints the header, one line per edit
-  (`editLine`, `:233`: `+`, `~`, `=`, `!`), then the conflicts, the todos, the warnings and
-  the holes (`holeLines`, `:210`; `holeText`, `:213`: name, kind, file and line, then
+- **`planHuman`** (`src/Olifant/Cli/Output.hs:209`) prints the header, one line per edit
+  (`editLine`, `:235`: `+`, `~`, `=`, `!`), then the conflicts, the todos, the warnings and
+  the holes (`holeLines`, `:212`; `holeText`, `:215`: name, kind, file and line, then
   `filled by MODEL (attempt N): FILL`, `unfilled: WHY` or `skipped: WHY`; a multi-line fill
   is joined with ` ⏎ `).
-  In `--plan` mode it also prints the full text of each edit — `details` (`:244`) — unless
+  In `--plan` mode it also prints the full text of each edit — `details` (`:246`) — unless
   the plan `hasConflicts`, in which case nothing would be written anyway, so neither `--plan`
   nor a plain `gen` prints any edit's text. The `[step]` tag appears only when edits came
-  from more than one step path (`multiStep`, `:230`).
+  from more than one step path (`multiStep`, `:232`).
 - **`planJson`** (`:164`) produces the `plan_version: 2` object, with a `holes` array from
-  `holeJson` (`:198`): `name`, `kind`, `file`, `line`, `status`, `model`, `attempts`, `why`
+  `holeJson` (`:200`): `name`, `kind`, `file`, `line`, `status`, `model`, `attempts`, `why`
   and `fill`. Applied runs leave out file
-  contents (`content`, `:188`) — this one is keyed only on `applied`, not on conflicts,
+  contents (`content`, `:190`) — this one is keyed only on `applied`, not on conflicts,
   because a conflicted edit never has a `WillCreate`/`WillInsert`/etc. action to hold
-  content in the first place (`editAction` is `Conflicted`).
+  content in the first place (`editAction` is `Conflicted`). `files` (`:177`) follows the same
+  rule: for an unapplied plan, one `{path, before, after}` per `planWrites` entry, `before`
+  from `planBefore`; for an applied one, `[]`.
 
 Errors that stop generation before there is a plan (`GenerationError`, `Generation.hs:51`)
-go through `generationFailure` (`Cli.hs:286`), which calls `describeGenerationError`
+go through `generationFailure` (`Cli.hs:297`), which calls `describeGenerationError`
 (`Generation.hs:82`, naming the step the error happened in) and picks the exit code: 4 for
 inputs, 3 for an unknown generator, 1 for a broken one. `GeneratorTesting.runCase` calls the
 same function when a case fails, so a pack test's failure message is the CLI's own sentence,
 not a dumped Haskell value (below).
+
+## The other use case: `olifant actions`
+
+`gen` is one use case; the other is what editors call before it (user book, chapter 14):
+
+```sh
+olifant actions --at src/Olifant/Catalog.hs:82:3     # in this repo: on `data CatalogError`
+```
+
+```
+Add a constructor to CatalogError (GHC finds every case)  (olifant-dev/error-case)  asks: name
+```
+
+**Loading.** `[applies_at]` is one more optional top-level table. `parseGenerator` reads it
+last (`Generator/Load.hs:61`), after the inputs, because `appliesAtFrom` (`:76`) checks every
+name against them: each `{slot}` in `path`, each `bind` key and `file` must be an input, and
+each `bind` regex goes through `posixRegex` (the same check as fragments and `each`), so `\w`
+is a load error. `node` is parsed by `ruleFromTree` (`:83`), as an `at` rule is, and `label`
+is a template. The result is `genAppliesAt :: Maybe AppliesAt` (`Generator/Definition.hs:49`;
+`AppliesAt` at `:93`: `apPath`, `apNode`, `apBind`, `apFile`, `apLabel`). `applies_at` is in
+`topKeys`, so `olifant schema` describes it. Errors are prefixed `` `applies_at`: `` once, by
+`optional`.
+
+**The command.** `Cli/Options.hs` parses `--at FILE:LINE:COL` by splitting on `:` from the
+right (a path may contain colons) and `--content -` as a flag, into `ActionsCmd file (line,
+col) fromStdin`. `runCommand` (`Cli.hs:145`) makes the path project-relative
+(`makeRelative (rtProjectDir rt) (normalise (cwd </> file))`), reads the text from stdin
+(`rtReadStdin`) or the disk, lists the project's files for the queries, and calls
+`actionsAt` with every catalog entry's definition. Generators that fail to load aren't
+catalog entries, so they are never offered. `actionJson` (`:404`) renders each `Action` as
+`{generator, label, sets, missing}`; the human form is one line per action.
+
+**Matching** (`Actions.hs`). `actionsAt` (`:58`) takes the ports it needs as arguments: the
+`Syntax` port, the languages, the `Queries` port, the file list and a reader. For each
+generator whose `genAppliesAt` is set:
+
+1. **The path.** `matchPathSlots` (`:36`) compiles the pattern to an anchored POSIX regex:
+   `{name}` becomes `([^/]+)` and remembers `name`, `**` becomes `.*`, `*` becomes `[^/]*`,
+   and regex metacharacters are escaped. The capture groups, zipped with the names, are the
+   path's bindings. No match: not offered.
+2. **The node**, if there is one. The rule is rendered as a template over the path's
+   bindings (`renderRule`, `Language/Rule.hs:26`), which is how `wire-command`'s rule says
+   `^pub struct {= command|pascal =} `. The file's language comes from `languageFor`, and
+   `querySyntax` runs the rule over the given text (the buffer from `--content -`, or the
+   file). The matches whose range contains the cursor (converted to 0-based; `matchStart <=
+   cursor <= matchEnd`, so just past the end counts) are sorted by size, lines then columns,
+   and the smallest is the node. No such match, no language, or a rule that won't render:
+   not offered.
+3. **`offer`** (`:79`) adds the `bind`s (each regex's first non-empty capture group over the
+   node's `matchText`) and `file` (the path itself) to the path's bindings.
+4. **Choice validation.** It calls `withChoices` (`Generator/Choices.hs:25`), the same
+   resolver `gen` and `show` use, with the bindings as the sets and a fixed time. For each
+   bound input that resolved to an enum (`EnumOf … (Resolved choices _)` or `EnumS`), a
+   value not in its choices is dropped. Other types pass through: `gen` validates them.
+5. **The result.** `missing` is every required input without a default that isn't bound;
+   the label is `apLabel` rendered over the kept bindings, or the description if there is no
+   label or it fails to render (it can't see `[derive]`).
+
+`ActionsSpec.hs` tests each of these with a fake `Syntax` (path slots, innermost node,
+boundaries, the given text rather than the file, invalid choices moved to `missing`, slots in
+the rule, `file`). Its last group, "the rust-htmx demo generators (real ast-grep)", runs
+`wire-command`'s and `failure-arms`'s real `[applies_at]` through `preparePack` and ast-grep
+on their test cases' `given/` files.
 
 ## Rough spots
 

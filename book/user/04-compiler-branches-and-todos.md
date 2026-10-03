@@ -241,6 +241,12 @@ It compiles, so the generator works with no model at all; the plan lists it unde
 rather than as a todo branch, because the generator did write a body. Run it again and the
 variant is `skipped: already present`, and the compiler finds nothing to add.
 
+When you have already written the variant yourself, `rust-htmx/failure-arms` is the other
+half alone: the same `complete` edit and `status` hole, no `insert`, and no `message` input
+(`--set service=billing --set command=refund_invoice --set failure=AlreadyRefunded`). It has
+an `[applies_at]`, so an editor offers it with the cursor on the variant, every input already
+set ([chapter 14](14-editors-and-actions.md)).
+
 The message is free text inside a Rust string, so the generator writes it through the
 `rust_string` filter ([chapter 7](07-writing-a-generator.md#filters)), and the hole's
 `placeholder` does the same for its instruction, which holds the message too. The pack's `quoted-message` case uses
