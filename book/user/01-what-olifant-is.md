@@ -52,8 +52,9 @@ its `update` branch. The result compiles.
   or a small model; writing the same change by hand costs 3–5× that
   (`notes/durandal/experiments/token-ab/`).
 - **It prefers deterministic code to AI.** A generator's output is exact and repeatable.
-  AI is reserved for the small, typed gaps a template cannot know (not built yet; see the
-  spec's "holes").
+  AI is reserved for the small, typed gaps a template cannot know: typed holes, which a
+  model (local or remote) fills and the compiler checks, and which compile as placeholders
+  when there is no model ([chapter 12](12-holes-and-models.md)).
 
 ## Where things are
 

@@ -6,7 +6,7 @@ wrote with a recorded **snapshot**. Every pack case in this repository runs as p
 
 ```
 $ export PATH="$HOME/.ghcup/bin:$PATH"
-$ cabal test --test-show-details=direct --test-options='--match "packs" --match "elm pack output compiles" --match "rust pack output compiles"'
+$ cabal test --test-show-details=direct --test-options='--match "packs" --match "elm pack output compiles" --match "rust pack output compiles" --match "placeholder output compiles"'
 …
 Olifant.GeneratorTesting
   packs
@@ -14,6 +14,7 @@ Olifant.GeneratorTesting
     elm/msg/got-articles [✔]
     elm/msg/increment-by [✔]
     elm/msg/reset [✔]
+    elm/msg/with-intent [✔]
     elm/page/counter [✔]
     elm/page/settings-with-msgs [✔]
     olifant-dev/error-case/sample-locked [✔]
@@ -30,6 +31,8 @@ Olifant.GeneratorTesting
     rust-htmx/command-dependency/second-dependency [✔]
     rust-htmx/command-dependency/shared-after-another [✔]
     rust-htmx/command-dependency/shared-dependency [✔]
+    rust-htmx/command-failure/already-refunded [✔]
+    rust-htmx/command-failure/quoted-message [✔]
     rust-htmx/service-command/cancel-subscription [✔]
     rust-htmx/service-command/fresh-service [✔]
     rust-htmx/service-repository/notification-repo [✔]
@@ -44,6 +47,7 @@ Olifant.GeneratorTesting
     elm/msg/got-articles [✔]
     elm/msg/increment-by [✔]
     elm/msg/reset [✔]
+    elm/msg/with-intent [✔]
     elm/page/counter [✔]
     elm/page/settings-with-msgs [✔]
   rust pack output compiles
@@ -54,6 +58,8 @@ Olifant.GeneratorTesting
     rust-htmx/command-dependency/second-dependency [✔]
     rust-htmx/command-dependency/shared-after-another [✔]
     rust-htmx/command-dependency/shared-dependency [✔]
+    rust-htmx/command-failure/already-refunded [✔]
+    rust-htmx/command-failure/quoted-message [✔]
     rust-htmx/service-command/cancel-subscription [✔]
     rust-htmx/service-command/fresh-service [✔]
     rust-htmx/service-repository/notification-repo [✔]
@@ -64,13 +70,17 @@ Olifant.GeneratorTesting
     rust-htmx/wire-command/cancel-invoice [✔]
     rust-htmx/wire-command/hand-spelling [✔]
     rust-htmx/wire-command/mixed-fields [✔]
+  placeholder output compiles
+    elm/msg/with-intent [✔]
+    rust-htmx/command-failure/already-refunded [✔]
+    rust-htmx/command-failure/quoted-message [✔]
 
-Finished in 21.3370 seconds
-56 examples, 0 failures
+Finished in 75.4916 seconds
+65 examples, 0 failures
 ```
 
 (Four `Olifant.Catalog` tests whose names also contain "packs" ran too and are left out
-above; they make up the 56.)
+above; they make up the 65.)
 
 ## A test case
 
@@ -78,6 +88,7 @@ above; they make up the 56.)
 packs/<pack>/generators/<generator>/tests/<case>/
   inputs.toml
   given/               optional: files laid over the fixture, for this case only
+  fills.toml           optional: recorded fills for the generator's holes (chapter 12)
   snapshot/            the files the run should write, at their project paths
 ```
 
@@ -153,6 +164,9 @@ leaves alone does not need to be in the snapshot.
 5. **Re-run is a no-op**: the same inputs are run again on the result, and must write nothing.
    This is what catches an `insert` that is not idempotent, or a `create` that would not
    reproduce its own file.
+
+A case with a `fills.toml` replays it as the model in steps 2 and 5, and fails if any hole
+ends up unfilled ([below](#holes-fillstoml-and-placeholder-output)).
 
 For the Elm pack there is one more group, **"elm pack output compiles"**: for each Elm case,
 the fixture with the case's `given/` and then the snapshot laid over it is compiled with the adapter's `[check]` command,
@@ -233,6 +247,61 @@ Plan: rust-htmx/service-repository (10 edits, 0 conflicts)
 ```
 
 (run with `pub struct DeliveryLog {` on line 1 of `models.rs`).
+
+## Holes: `fills.toml` and placeholder output
+
+A generator with holes ([chapter 12](12-holes-and-models.md)) asks a model for code. A test
+must not: it would be slow, need a server, and give a different answer from one run to the
+next. So a case records the fills once, in `fills.toml`, and the test replays them:
+
+```toml
+# packs/elm/generators/msg/tests/with-intent/fills.toml
+# Recorded from qwen3-coder:30b via Ollama, 2026-10-02 (first attempt).
+[fills]
+update = "( { count = 0 }, Cmd.none )"
+```
+
+```toml
+# packs/elm/generators/msg/tests/with-intent/inputs.toml
+now = "2026-10-02T12:00:00Z"
+
+[inputs]
+page = "home"
+msg = "reset"
+intent = "reset count to 0"
+```
+
+Under `[fills]`, each key is a hole's name as the plan reports it (`update`, or
+`status[file:line]` for a repeated name) and each value is that hole's code, as a string.
+The recorded fills stand in for the model and nothing else changes: each fill must still
+parse as its kind and compile with the plan, through the adapter's real `[check]`. The case
+then fails in three ways:
+
+- a hole has no recorded fill: `no recorded fill for `update` in fills.toml`;
+- a recorded fill is rejected (it no longer parses or compiles): the reason, as the plan
+  would report it;
+- the snapshot differs, as for any case. The snapshot holds the *filled* output
+  (`with-intent`'s has `( { count = 0 }, Cmd.none )` in the `Reset` branch).
+
+The replayed model is called `recorded`, and it gets no retries: a recorded fill is right
+or the case fails. The re-run step still has to be a no-op, which it is: the filled arm is
+already there, so no hole is planned the second time.
+
+**Recording a fill.** Run the generator against the fixture with a real model (in a
+`scripts/try-pack.sh` sandbox, with the case's inputs), take each fill from the plan's
+`holes` (the `fill` field in JSON, or after `filled by MODEL:` in human output,
+[chapter 12](12-holes-and-models.md#the-plans-holes)), and write it into `fills.toml` with a
+comment saying where it came from. Then bless the snapshot. [Chapter 13](13-tutorial-holes.md#step-7-test-it-with-recorded-fills)
+does this end to end.
+
+**Placeholder output compiles.** A generator with holes must still work without a model. The
+group **"placeholder output compiles"** takes every case that has a `fills.toml`, plans it
+again with no model, checks that at least one hole is unfilled, and compiles the fixture with
+the case's `given/` and that plan's output laid over it, every hole as its adapter's
+placeholder. A placeholder that doesn't compile, such as a `todo!()` in a type position or
+a `Debug.todo` message with an unescaped quote, fails here. It uses the pack's compiler
+(`elm` for the Elm pack, `cargo` otherwise), and is pending when that compiler is missing,
+like the other compile groups.
 
 ## Writing a new generator, test first
 

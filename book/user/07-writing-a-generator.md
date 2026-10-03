@@ -484,6 +484,12 @@ See [chapter 4](04-compiler-branches-and-todos.md). The body can also use `{= si
 and `{= site.function =}`. It needs the adapter named by the generator's `language` to have a
 `[check]`.
 
+The body can hold a typed hole, so that a model writes each new arm's value:
+`rust-htmx/command-failure`'s body is `{= pattern =} => {= ? status: expr | … =},`. Each site
+the compiler finds gets its own hole, named `status[file:line]` when there is more than one
+([chapter 12](12-holes-and-models.md#where-holes-may-go)). The hole sees the site's
+`{= pattern =}` but not the payload's fields, which the compiler's pattern leaves as `_`.
+
 `text`/`template` is optional. Leave both out and every site the compiler finds gets a todo
 branch — there is no body to try, so nothing is ever matched or chosen. That is how
 `olifant-dev/error-case` works: it only adds a constructor and leaves every `case` for a
@@ -621,6 +627,7 @@ The others, from `src/Olifant/Template/Render.hs`:
 | `timestamp` | formats a time as `YYYYMMDDhhmmss` | `{= now|timestamp =}` → `20260929100000` |
 | `parens` | wraps text with spaces in parentheses, unless it is already one group | `List String` → `(List String)`, `Int` → `Int`, `(Maybe Int)` unchanged |
 | `rust_string` | escapes text for the inside of a Rust format-string literal (`todo!("…")`, `#[error("…")]`): `\` → `\\`, `"` → `\"`, `{` → `{{`, `}` → `}}` | `Too "late" for {refunds}` → `Too \"late\" for {{refunds}}` |
+| `escaped` | escapes text for the inside of an Elm or Haskell string literal: `\` → `\\`, `"` → `\"` | `say "hi" to C:\tmp` → `say \"hi\" to C:\\tmp` |
 
 `rust_string` is what the rust-htmx pack writes a free-text message with, in `command-failure`'s
 `#[error("{= message|rust_string =}")]` and in its adapter's `placeholder`
@@ -678,8 +685,40 @@ LOUD now=2026-09-29T10:00:00Z
 parens: (List String) / Int / (Maybe Int)
 ```
 
-`{=? … =}` is reserved for typed holes (the AI-filled gaps in the spec) and currently fails
-with "holes ({= ? … =}) arrive in step 3".
+`escaped` is what the Elm and Haskell adapters write a hole's instruction with, inside their
+placeholders (`Debug.todo "olifant: {= hole =}: {= instruction|escaped =}"`). A scratch
+generator, `esc`, whose one edit creates `Out.elm` from the line
+`message = "{= t|escaped =}"`:
+
+```
+$ olifant gen esc --set t='say "hi" to C:\tmp' --plan --human
+Plan: esc (1 edit, 0 conflicts)
+  + Out.elm (1 line)
+
+--- Out.elm
+message = "say \"hi\" to C:\\tmp"
+```
+
+### Holes
+
+```
+{= ? name: kind | instruction =}
+```
+
+is a **typed hole**: a gap a model fills when the generator runs, written as a placeholder
+that compiles when no model fills it. `kind` is one of the language adapter's hole kinds
+(`expr` in Elm; `expr`, `block` or `type` in Rust). The instruction may use outputs
+(`{= pattern =}`, `{= message =}`) but not `if` or `for`, and it may contain `=}` inside
+its own tags: the hole ends at the `=}` that matches its `{=`. A hole can sit inside an `if`,
+as in `elm/msg`, so it only exists when an input asks for it:
+
+```
+{= if intent =}{= ? update: expr | the update branch for {= pattern =}: {= intent =}; a ( Model, Cmd Msg ) =}{= else =}( model, Cmd.none ){= end =}
+```
+
+A hole without a `name:` and a `kind` is a load error ("a hole is `{= ? name: kind |
+instruction =}`"). [Chapter 12](12-holes-and-models.md) covers how holes are filled, and
+[chapter 13](13-tutorial-holes.md) writes a generator with one.
 
 ### A literal `{` before a tag
 
@@ -710,6 +749,8 @@ needs an empty line after the `"""`. `complete` edits add their separator themse
 - `olifant anchors` still sorts an adapter's targets alphabetically (unlike a generator's
   own inputs, which `show` now lists in the order they are declared). Edits keep their order
   too.
+- An undeclared hole kind (`{= ? x: block | … =}` in an Elm generator) is found only when
+  the generator runs, as a `hole` conflict, not when it loads.
 - Undefined variables in a template are found only when the generator runs, not when it
   loads — a `{= nope =}` with no such input or derived value is "undefined variable
   `nope`" at `gen` time, not an `INVALID` in `list`.

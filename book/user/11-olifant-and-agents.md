@@ -36,8 +36,9 @@ The fields an agent should act on:
 | field | meaning |
 |---|---|
 | `applied` | whether anything was written |
-| `conflicts[]` | `{code, message}`: why nothing was written. Codes: `target_exists`, `insert_target_missing`, `anchor_unresolved`, `complete_failed`, `requires_unmet`, `region_broken`, `unsafe_path`, `target_unusable` |
+| `conflicts[]` | `{code, message}`: why nothing was written. Codes: `target_exists`, `insert_target_missing`, `anchor_unresolved`, `complete_failed`, `requires_unmet`, `region_broken`, `unsafe_path`, `target_unusable`, `hole_problem` |
 | `todos[]` | `{edit, file, function, pattern}`: a `Debug.todo` branch the agent must replace ([chapter 4](04-compiler-branches-and-todos.md)) |
+| `holes[]` | `{name, kind, file, line, status, model, attempts, why, fill}`: a typed hole. `filled` holes need a review; an `unfilled` or `skipped` one is a placeholder (`olifant: NAME: …`) the agent should write itself ([chapter 12](12-holes-and-models.md)) |
 | `warnings[]` | the plan applied but may be incomplete (e.g. the project did not compile, so cases could not be checked) |
 | `edits[].status` | `create`, `insert`, `overwrite`, `region`, `skipped` (with `reason`), `conflict` |
 
