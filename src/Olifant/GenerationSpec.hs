@@ -5,7 +5,7 @@ module Olifant.GenerationSpec (spec) where
 import Data.Map.Strict qualified as M
 import Data.List (isInfixOf)
 import Data.ByteString.Lazy.Char8 qualified as BL
-import Data.Aeson (encode)
+import Data.Aeson (encode, object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
@@ -74,6 +74,7 @@ spec = do
   completeSpec
   holesSpec
   fillSpec
+  parseCheckSpec
   regionSpec
   unusableSpec
   composeSpec
@@ -971,3 +972,50 @@ isChecking :: ProgressEvent -> Bool
 isChecking = \case
   Checking _ -> True
   _ -> False
+
+parseCheckSpec :: Spec
+parseCheckSpec = describe "parse pre-check (spec §4.6)" $ do
+  let -- `;;` is a syntax error; the ERROR node is the `;;` itself.
+      errors = Syntax $ \_ rule content -> pure . Right $
+        if rule == object ["kind" .= ("ERROR" :: Text)]
+          then [Match (i, c) (i, c + 2) ";;" | (i, l) <- zip [0 ..] (T.lines content), Just c <- [T.length . fst <$> nonEmpty (T.breakOn ";;" l)]]
+          else []
+      nonEmpty (a, b) = if T.null b then Nothing else Just (a, b)
+      tools checker = basicTools errors checker [elmLang]
+      insertGen = generatorFrom . T.unlines $
+        [ "description = \"d\"", "language = \"elm\"", "[[edits]]", "insert = \"src/A.elm\"", "at = \"end of file\"", "text = \"y = 2\"" ]
+      warned = "src/A.elm:2 does not parse (near `;;`) — this plan may place code wrongly, and checks will fail"
+      planOver checker files gen = do
+        (ws, _) <- memoryWorkspace files
+        Right plan <- generate ws noResolve (tools checker) [Step gen M.empty] now PlanOnly
+        pure plan
+  it "(a) warns, first, about a touched file that does not parse; the plan still stands" $ do
+    plan <- planOver noChecker [("src/A.elm", "module A exposing (..)\nx = 1;;\n")] insertGen
+    take 1 (planWarnings plan) `shouldBe` [warned]
+    planConflicts plan `shouldBe` []
+    length (planEdits plan) `shouldBe` 1
+  it "(b) says nothing about a broken file the plan does not touch (Review Focus 3)" $ do
+    plan <- planOver noChecker [("src/A.elm", "module A exposing (..)\n"), ("src/B.elm", "b = 1;;\n")] insertGen
+    planWarnings plan `shouldBe` []
+  it "(c) does not pre-check a file the plan creates (Review Focus 3)" $ do
+    let createBroken = generatorFrom . T.unlines $ ["description = \"d\"", "language = \"elm\"", "[[edits]]", "create = \"src/C.elm\"", "text = \"c = 1;;\\n\""]
+    plan <- planOver noChecker [] createBroken
+    planWarnings plan `shouldBe` []
+  it "(d) checks a file only the compiler found" $ do
+    let page = "module Page.A exposing (..)\n\nupdate msg model =;;\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n"
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[[edits]]", "complete = \"Reset\"", "text = \"{= pattern =} ->\\n    ( model, Cmd.none )\"" ]
+    ref <- newIORef [[missing "src/P.elm" (3, 5) ["Reset"]]]
+    plan <- planOver (scriptedChecker ref) [("src/P.elm", page)] gen
+    take 1 (planWarnings plan) `shouldBe` ["src/P.elm:3 does not parse (near `;;`) — this plan may place code wrongly, and checks will fail"]
+  it "(e) points the compile warning for that file back at the parse warning" $ do
+    let both = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "insert = \"src/A.elm\"", "at = \"end of file\"", "text = \"y = 2\""
+          , "[[edits]]", "complete = \"Reset\"", "text = \"{= pattern =} -> 0\"" ]
+        broken = Checker $ \_ _ -> pure (Right (CheckReport [] [("src/A.elm", "unexpected ;;")] []))
+    plan <- planOver broken [("src/A.elm", "module A exposing (..)\nx = 1;;\n")] both
+    take 1 (planWarnings plan) `shouldBe` [warned]
+    -- The touched file was broken before the plan: the compiler's complaint
+    -- (a conflict here) points back at the parse warning.
+    map describeConflict (planConflicts plan) `shouldSatisfy` any (\w -> "does not compile" `T.isInfixOf` w && "(see the parse warning above)" `T.isSuffixOf` w)
