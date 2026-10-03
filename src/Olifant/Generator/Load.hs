@@ -58,7 +58,8 @@ parseGenerator gid src = do
             n : _ -> Left ("`[query." <> q <> "]` uses `" <> n <> "`, which is declared after `" <> inputName spec <> "`")
             [] -> Right ()
     _ -> Right ()
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries)
+  appliesAt <- optional "applies_at" (table >=> appliesAtFrom (map inputName inputs')) top
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt)
   where
     queryWithValue v = do
       t <- table v
@@ -70,6 +71,24 @@ parseGenerator gid src = do
         Nothing -> Left ("`inputs." <> inputName spec <> "`: one_of = \"" <> q <> "\" but there is no [query." <> q <> "]")
         Just (_, cv) -> Right spec {inputType = ScalarInput (EnumOf q cv c)}
       _ -> Right spec
+
+-- | `[applies_at]` (spec §4.6). Slots and bind names must be inputs.
+appliesAtFrom :: [Text] -> Table -> Either Text AppliesAt
+appliesAtFrom inputNames t = do
+  onlyKeys ["path", "node", "bind", "file", "label"] t
+  path <- required "path" text t
+  case [x | x <- slots path, x `notElem` inputNames] of
+    x : _ -> Left ("`{" <> x <> "}` in applies_at.path is not an input (inputs: " <> T.intercalate ", " inputNames <> ")")
+    [] -> Right ()
+  node <- traverse (inKey "node" . ruleFromTree) (M.lookup "node" t)
+  bind <- maybe (Right []) (traverse (\(k, v) -> inKey ("bind." <> k) (if k `elem` inputNames then (k,) <$> (text v >>= posixRegex) else Left ("`" <> k <> "` is not an input"))) . M.toList) =<< optional "bind" table t
+  file <- traverse (\v -> text v >>= \k -> if k `elem` inputNames then Right k else Left ("file: `" <> k <> "` is not an input")) (M.lookup "file" t)
+  label <- traverse (text >=> tmpl) (M.lookup "label" t)
+  pure (AppliesAt path node bind file label)
+  where
+    slots p = case T.breakOn "{" p of
+      (_, "") -> []
+      (_, rest) -> let (name, after) = T.breakOn "}" (T.drop 1 rest) in name : slots (T.drop 1 after)
 
 -- | `value` in words (spec §4.1), a `{= … =}` template, or a field name.
 choiceValueFrom :: Text -> Either Text ChoiceValue
@@ -83,7 +102,7 @@ choiceValueFrom v = case v of
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query"]
+topKeys = ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]

@@ -16,6 +16,7 @@ module Olifant.Cli.Output
   , inputProblemFields
   ) where
 
+import Control.Monad (join)
 import Data.Aeson (Value, encode, object, (.=))
 import Data.Aeson.Types (Pair)
 import Data.List (nub)
@@ -163,7 +164,7 @@ showHuman views subs e =
 
 planJson :: Bool -> Plan -> Value
 planJson applied plan =
-  object
+  object $
     [ "plan_version" .= (2 :: Int)
     , "generator" .= idText (planGenerator plan)
     , "applied" .= applied
@@ -175,6 +176,9 @@ planJson applied plan =
     , "holes" .= map holeJson (planHoles plan)
     , "todos" .= [object ["edit" .= editId e, "file" .= siteFile s, "function" .= siteFunction s, "pattern" .= sitePattern s] | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
     ]
+      -- Whole files for editors, which apply them as buffer changes; not on
+      -- applied runs (like content).
+      ++ ["files" .= [object ["path" .= p, "before" .= join (M.lookup p (planBefore plan)), "after" .= t] | (p, t) <- M.toAscList (planWrites plan)] | not applied]
   where
     editId e = "e" <> T.pack (show (editNumber e))
     editJson e =

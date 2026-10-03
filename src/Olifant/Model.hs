@@ -78,8 +78,11 @@ systemPrompt :: Text
 systemPrompt =
   T.unlines
     [ "You fill typed holes in generated code. Each hole is marked \10214name\10215 in its file."
-    , "Reply with JSON only: {\"fills\": {NAME: CODE}} with one entry per hole."
-    , "CODE replaces the marker exactly: only that code, valid as the hole's kind in the file's language,"
+    , "Reply with one block per hole, nothing else:"
+    , "<fill name=\"NAME\">"
+    , "CODE"
+    , "</fill>"
+    , "CODE is plain source (no escaping) and replaces the marker exactly: only that code, valid as the hole's kind in the file's language,"
     , "matching the surrounding style. No surrounding code, no explanations, no markdown."
     ]
 
@@ -89,7 +92,7 @@ userPrompt req =
     ["Generator inputs:"]
       ++ ["  " <> k <> " = " <> v | (k, v) <- frInputs req]
       ++ concatMap hole (frHoles req)
-      ++ ["", "Reply with {\"fills\": {" <> T.intercalate ", " ["\"" <> fhName h <> "\": \"…\"" | h <- frHoles req] <> "}}."]
+      ++ ["", "Reply with " <> T.intercalate " " ["<fill name=\"" <> fhName h <> "\">…</fill>" | h <- frHoles req] <> "."]
   where
     hole h =
       [ ""
@@ -108,7 +111,6 @@ requestBody b req = case b of
     object
       [ "model" .= model
       , "messages" .= [object ["role" .= ("system" :: Text), "content" .= systemPrompt], object ["role" .= ("user" :: Text), "content" .= userPrompt req]]
-      , "response_format" .= object ["type" .= ("json_object" :: Text)]
       , "temperature" .= (0 :: Int)
       ]
   Anthropic model _ ->
@@ -138,9 +140,25 @@ decodeFills b raw = do
           Right t
     _ -> Left "the model's reply has no message"
   let reply = T.strip (dropThinking content)
-  -- The reply as it is first; then the JSON inside a fence, or its braces.
-  either (const (fills (jsonIn reply))) Right (fills reply)
+  -- Tagged blocks (v12: no escaping, no JSON mode); else JSON as it is, then
+  -- the JSON inside a fence, or its braces.
+  case tagged reply of
+    fs | not (M.null fs) -> Right fs
+    _ -> either (const (fills (jsonIn reply))) Right (fills reply)
   where
+    -- `<fill name="NAME">CODE</fill>` blocks, anywhere in the reply; one
+    -- newline either side of CODE is the block's, not the code's.
+    tagged t = M.fromList
+      [ (name, trimNewline body)
+      | chunk <- drop 1 (T.splitOn "<fill name=\"" t)
+      , let (name, rest) = T.breakOn "\">" chunk
+      , not (T.null rest)
+      , let (body, close) = T.breakOn "</fill>" (T.drop 2 rest)
+      , not (T.null close)
+      ]
+    trimNewline block =
+      let b' = maybe block id (T.stripPrefix "\n" block)
+       in maybe b' id (T.stripSuffix "\n" b')
     -- Small models wrap the JSON: a <think> block, prose, a ``` fence.
     dropThinking t = case T.breakOn "</think>" t of
       (_, "") -> t

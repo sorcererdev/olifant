@@ -261,6 +261,7 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
 | `[inputs.*]`, `[derive]`, `[requires]`, `[[edits]]`, `[[uses]]` | no | below; `[[uses]]` is [chapter 8](08-composing-generators.md) |
 | `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)); an enum that is `one_of` it takes its choices from it, with `value` saying which part of each record ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) |
+| `[applies_at]` | no | where in the code the generator applies, for editors: `path` (a pattern whose `{slot}`s bind inputs), `node` (an ast-grep rule the cursor must be inside), `bind` (inputs from regexes over that node's text), `file` (an input that takes the file's path) and `label`. `olifant actions` reads it ([chapter 14](14-editors-and-actions.md#applies_at-where-a-generator-applies)) |
 
 Any other key is an error that names the key, so typos fail at load (`list` marks the
 generator `INVALID`, `gen` exits 1).
@@ -738,7 +739,9 @@ needs an empty line after the `"""`. `complete` edits add their separator themse
 - Build in a sandbox that is a git repo; after each `gen`, `git add -A && git diff --cached`
   is the real review, and `git reset --hard && git clean -fd` starts over.
 - Use `--plan` constantly: it prints every created file and every inserted snippet.
-- Probe every `at` phrase with `olifant where` before it goes in the TOML.
+- Probe every `at` phrase with `olifant where` before it goes in the TOML, and an
+  `[applies_at]` with `olifant actions --at FILE:LINE:COL` at a few cursor positions
+  ([chapter 14](14-editors-and-actions.md#tutorial-make-your-generator-an-action)).
 - Re-run the generator with the same inputs: it must be a no-op (`= … (skipped: …)`).
   Re-running with *different* inputs that would create the same file is a conflict, by design.
 - When it works, give it a test case ([chapter 10](10-testing-generators.md)), or move it into

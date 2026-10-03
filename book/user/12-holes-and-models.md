@@ -178,9 +178,10 @@ were decided together and stay consistent with each other. For each hole, the re
   body, this is how the model sees the enclosing function and the sibling arms;
 - the generator's inputs, as `name = value` lines (for a chain, every step's inputs).
 
-A short system prompt sets the rules: reply with JSON only, `{"fills": {NAME: CODE}}`, where
-each CODE is only the hole's code, valid as its kind, in the surrounding style, with no
-markdown. ([Below](#what-is-sent-to-the-model) is a real request.)
+A short system prompt sets the rules: reply with one tagged block per hole,
+`<fill name="NAME">CODE</fill>`, where each CODE is only the hole's code, as plain source with
+no escaping, valid as its kind, in the surrounding style, with no markdown.
+([Below](#what-is-sent-to-the-model) is a real request.)
 
 ### Validation: contained, parses, compiles
 
@@ -225,8 +226,8 @@ Fix it.
 shows the run.) A fill that compiles is kept. It is not sent again, and later fills are
 checked together with it.
 
-A reply Olifant can't use at all (curl failed, the server answered with an error, no JSON
-could be found in it) counts as a failed attempt for every hole in the request, and is
+A reply Olifant can't use at all (curl failed, the server answered with an error, neither a
+`<fill>` block nor JSON could be found in it) counts as a failed attempt for every hole in the request, and is
 retried the same way.
 
 `[model] retries` sets how many extra rounds there are (the default is 2, so three attempts
@@ -301,7 +302,7 @@ There are two kinds of backend:
 
 | `kind` | keys | calls |
 |---|---|---|
-| `openai-compatible` | `url`, `model` | `POST {url}/chat/completions` with the system and user messages, `"response_format": {"type": "json_object"}` and `"temperature": 0` |
+| `openai-compatible` | `url`, `model` | `POST {url}/chat/completions` with the system and user messages and `"temperature": 0` (no JSON mode, [below](#why-tagged-blocks)) |
 | `anthropic` | `model`, `api_key_env` (default `ANTHROPIC_API_KEY`) | `POST https://api.anthropic.com/v1/messages` with `max_tokens` 4096. The key is read from the environment when `gen` runs. It is never stored in config and never printed. curl gets it from a private temporary header file, not from its command line |
 
 Both are called with `curl`, which must be on your `PATH` ("curl is not installed"
@@ -336,15 +337,19 @@ text leaves your machine. If your code must not, use a local model, or `--no-fil
 the start of a real request body to Ollama:
 
 ```json
-{"model": "qwen3-coder:30b", "response_format": {"type": "json_object"}, "temperature": 0, "messages": [{"role": "system", …}, {"role": "user", …}]}
+{"messages": [{"content": "You fill typed holes in generated code. …", "role": "system"}, {"content": "Generator inputs:\n  command = refund_invoice\n…", "role": "user"}], "model": "qwen3-coder:30b", "temperature": 0}
 ```
 
-The system message, verbatim:
+(captured for `rust-htmx/failure-arms` by pointing a backend's `url` at a local server that
+logs what it receives). The system message, verbatim:
 
 ```
 You fill typed holes in generated code. Each hole is marked ⟦name⟧ in its file.
-Reply with JSON only: {"fills": {NAME: CODE}} with one entry per hole.
-CODE replaces the marker exactly: only that code, valid as the hole's kind in the file's language,
+Reply with one block per hole, nothing else:
+<fill name="NAME">
+CODE
+</fill>
+CODE is plain source (no escaping) and replaces the marker exactly: only that code, valid as the hole's kind in the file's language,
 matching the surrounding style. No surrounding code, no explanations, no markdown.
 ```
 
@@ -377,20 +382,46 @@ update msg model =
 …
 ```
 
-Reply with {"fills": {"update": "…"}}.
+Reply with <fill name="update">…</fill>.
 ````
 
-The reply was `{"fills": {"update": "( { model | count = Time.now |> Date.toMillis }, Cmd.none )"}}`.
-It doesn't compile (there is no `Time` or `Date` import, and `Time.now` is a `Task`), so it
+(The last line names every hole in the request, one block each.) The model's fill was
+`( { model | count = Time.now |> Date.toMillis }, Cmd.none )`. It doesn't compile (there is no `Time` or `Date` import, and `Time.now` is a `Task`), so it
 was retried twice and the hole stayed a `Debug.todo`. That is the right outcome: the current
 time needs a command and a second message, which is more than one expression can do. See
 [writing good instructions](#writing-good-instructions).
 
-Small models rarely answer with exactly that JSON, so the reply is read leniently: a
-`<think>…</think>` block before it is dropped; JSON inside a markdown code fence, or between
-the first `{` and the last `}` of a reply with prose around it, is found; fills at the top
-level without `"fills"` are accepted; a fill that is itself fenced is unfenced; and a number
-or boolean counts as code (`"status": 409` is the fill `409`).
+A good reply to the `failure-arms` request above is:
+
+```
+<fill name="status">
+409
+</fill>
+```
+
+The reply is read leniently. A `<think>…</think>` block before it is dropped. `<fill>`
+blocks are found anywhere in the reply, so prose around them doesn't matter, and the one
+newline after `<fill name="…">` and the one before `</fill>` belong to the block, not the
+code. Inside a block the code is taken as it is: quotes, backslashes and braces need no
+escaping.
+
+If the reply has no `<fill>` blocks, it is read as JSON, the format Olifant asked for before:
+`{"fills": {NAME: CODE}}`, or fills at the top level without `"fills"`; JSON inside a
+markdown code fence, or between the first `{` and the last `}` of a reply with prose around
+it, is found; a fill that is itself fenced is unfenced; and a number or boolean counts as
+code (`"status": 409` is the fill `409`).
+
+### Why tagged blocks
+
+Until token experiment v12, Olifant asked for JSON and turned on the server's JSON mode
+(`response_format`). v12 filled function-body holes in six tasks with four models (144 runs),
+asking for JSON in one arm and tagged blocks in the other, and ran hidden tests on the
+results. For `qwen3-coder:30b`, Haiku and Sonnet the two formats passed the same number of
+tests. For the small thinking model `qwen3:8b`, JSON mode failed 18 of 33 calls (empty
+replies after spending the 4,096-token cap thinking, and server errors in JSON mode), and
+tagged blocks failed none of 30. Code inside JSON also has to be escaped, which is one more
+thing a small model can get wrong. So requests now ask for tagged blocks with no JSON mode,
+and the JSON reader stays as a fallback.
 
 ## The plan's holes
 

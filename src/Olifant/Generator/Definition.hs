@@ -7,6 +7,7 @@ module Olifant.Generator.Definition
   , EditWith (..)
   , OnExists (..)
   , Unless (..)
+  , AppliesAt (..)
   , AnchorSpec (..)
   , SourceRef (..)
   , UseStep (..)
@@ -44,6 +45,8 @@ data GeneratorWith src = Generator
   , genExamples :: [Text] -- ^ example commands, shown by `olifant show`
   , -- | `[query.NAME]` (spec §4.5): lists bound after derived values
     genQueries :: [(Text, Query)]
+  , -- | `[applies_at]` (spec §4.6): where in the code this generator applies
+    genAppliesAt :: Maybe AppliesAt
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -82,6 +85,13 @@ data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists
 -- already there by name, wherever it is (spec §5.4).
 data Unless t = UnlessExists t | UnlessMatches t
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
+
+-- | Where a generator applies (spec §4.6): a path glob whose `{slot}`s bind
+-- inputs, an optional ast-grep rule the cursor must be inside, regexes over
+-- that node's text for more inputs, an input that takes the file's own path,
+-- and the label an editor shows.
+data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template}
+  deriving stock (Show)
 
 -- | Where an insert goes: a phrase (rendered, then parsed) or a raw ast-grep rule.
 data AnchorSpec = AtPhrase Template | AtRule Rule Position

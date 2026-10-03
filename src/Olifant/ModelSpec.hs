@@ -2,7 +2,7 @@
 
 module Olifant.ModelSpec (spec) where
 
-import Data.Aeson (encode)
+import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
@@ -28,9 +28,9 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
     parseModelConfig top `shouldSatisfy` either ("openai-compatible, anthropic" `T.isInfixOf`) (const False)
   it "defaults to no backend and 2 retries without [model]" $
     parseModelConfig M.empty `shouldBe` Right (ModelConfig Nothing 2 120 [])
-  it "asks an openai-compatible endpoint for a JSON object, with the rules and the holes" $ do
+  it "asks an openai-compatible endpoint for tagged blocks, with the rules and the holes" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") request)))
-    mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"m\"", "\"response_format\":{\"type\":\"json_object\"}", "\"role\":\"system\"", "{\\\"fills\\\": {", "status", "the HTTP status", "a.rs: BAD is not defined", "failure = too_late"]
+    mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"m\"", "\"role\":\"system\"", "<fill name=\\\"NAME\\\">", "status", "the HTTP status", "a.rs: BAD is not defined", "failure = too_late"]
   it "asks Anthropic with a system prompt and max_tokens" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (Anthropic "claude-x" "K") request)))
     mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"claude-x\"", "\"max_tokens\":", "\"system\":", "\"role\":\"user\""]
@@ -47,6 +47,16 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
     let Right top = parseToml "[model]\ntimeout = 30\n"
     fmap mcTimeout (parseModelConfig top) `shouldBe` Right 30
     fmap mcTimeout (parseModelConfig M.empty) `shouldBe` Right 120
+  it "asks for tagged blocks, not JSON mode (v12)" $ do
+    let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") request)))
+    body `shouldSatisfy` T.isInfixOf "<fill name=\\\"status\\\">"
+    body `shouldNotSatisfy` T.isInfixOf "response_format"
+  it "reads tagged fills: raw code, quotes and braces untouched (v12)" $ do
+    let reply content = BL.toStrict (encode (object ["choices" .= [object ["message" .= object ["content" .= (content :: T.Text)]]]]))
+    decodeFills (OpenAICompatible "u" "m") (reply "<fill name=\"status\">\nformat!(\"{{\\\"id\\\": {}}}\", id)\n</fill>")
+      `shouldBe` Right (M.fromList [("status", "format!(\"{{\\\"id\\\": {}}}\", id)")])
+    decodeFills (OpenAICompatible "u" "m") (reply "Sure:\n<fill name=\"a\">1</fill>\n<fill name=\"b\">\nx + 1\n</fill>")
+      `shouldBe` Right (M.fromList [("a", "1"), ("b", "x + 1")])
   it "says what was wrong with a reply that is not the agreed JSON" $ do
     decodeFills (OpenAICompatible "u" "m") "{\"choices\":[{\"message\":{\"content\":\"Sure! Here is the code.\"}}]}" `shouldSatisfy` either ("not the JSON" `T.isInfixOf`) (const False)
     decodeFills (OpenAICompatible "u" "m") "{\"error\":{\"message\":\"model not found\"}}" `shouldSatisfy` either ("model not found" `T.isInfixOf`) (const False)

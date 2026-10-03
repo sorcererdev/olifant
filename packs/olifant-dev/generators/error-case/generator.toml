@@ -36,3 +36,12 @@ text   = "| {= C =}{= if fields =} {= fields =}{= end =}"
 # keeps other types' cases out.
 [[edits]]
 complete = "{= T =}.{= C =}"
+
+# In an editor (olifant actions): on a data type's declaration. The module is
+# the file you are in; the type comes from the declaration.
+[applies_at]
+path  = "src/**.hs"
+file  = "path"
+node  = { kind = "data_type" }
+bind  = { type = "^data[[:space:]]+([A-Za-z0-9_]+)" }
+label = "Add a constructor to {= type =} (GHC finds every case)"

@@ -1,0 +1,46 @@
+description = "Add an arm for a Failure variant you just wrote to every match on its enum (spec §5.6); the arm's value is a hole"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/failure-arms --set service=billing --set command=refund_invoice --set failure=AlreadyRefunded",
+]
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service the command belongs to"
+
+[inputs.command]
+type   = "enum"
+one_of = "commands"
+prompt = "The command whose Failure enum gained a variant"
+
+[inputs.failure]
+type   = "ident"
+prompt = "The variant you added (AlreadyRefunded)"
+
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+Failure = "{= command|pascal =}Failure"
+
+[query.services]
+glob  = "*/*-service"
+value = "parent folder"
+
+[query.commands]
+glob    = "{= service_dir =}/src/*.rs"
+exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
+value   = "file name"
+
+# Every match on the enum gets an arm; its value is a hole a model fills per
+# site (spec §6.4), or a todo!() without one.
+[[edits]]
+complete = "{= Failure =}::{= failure|pascal =}"
+text     = "{= pattern =} => {= ? status: expr | the value this match returns for {= pattern =}, following the other arms =},"
+
+# In an editor (olifant actions): on a variant of a command's Failure enum.
+[applies_at]
+path  = "{service}/*-service/src/{command}.rs"
+node  = { kind = "enum_variant", inside = { kind = "enum_item", regex = "Failure", stopBy = "end" } }
+bind  = { failure = "^([A-Za-z0-9_]+)" }
+label = "Add {= failure =} to every match"

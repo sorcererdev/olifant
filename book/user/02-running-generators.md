@@ -142,7 +142,11 @@ Each edit says how it was placed:
 ```
 
 The plan also has `conflicts`, `warnings`, `todos` and `holes` arrays. An applied run leaves
-out file contents (you have the files); `--plan` includes them.
+out file contents (you have the files); `--plan` includes them, both per edit (`content`) and
+per file: `files` is `[{"path", "before", "after"}]`, each written file's whole text before
+and after the plan (`before` is `null` for a new file), which is what an editor applies as
+buffer changes ([chapter 14](14-editors-and-actions.md#plans-for-editors-files)). An
+applied run has no `files`.
 
 ## Holes and models: `--model`, `--no-fill`
 
@@ -172,6 +176,34 @@ failed), or `skipped: --no-fill`. In JSON, `holes` has `name`, `kind`, `file`, `
 Both apply to the whole run, like `--plan`. `--plan` does run the model, so it shows the
 fills it would write. [Chapter 13](13-tutorial-holes.md) is a tutorial with a local
 model.
+
+## Progress: `--progress`
+
+`--progress` writes what `gen` is doing to stderr, one JSON object per line, while it works:
+a compiler check (`{"event":"check","language":"rust"}`), a request to the model (`fill`,
+with `holes`, `attempt` and `model`), and each hole's outcome (`filled` with its `attempt`,
+or `unfilled` with `why`). Stdout is unchanged. It is for editors that show a spinner during
+model calls and checks; like `--plan`, it applies to the whole run.
+[Chapter 14](14-editors-and-actions.md#progress-gen---progress) has the table and a real run.
+
+## What applies here? `olifant actions`
+
+Editors ask which generators apply at a cursor, with the inputs the code there already
+gives:
+
+```
+$ olifant actions --at billing/billing-service/src/refund_invoice.rs:28:5 --human
+Add AlreadyRefunded to every match  (rust-htmx/failure-arms)
+$ olifant actions --at src/Olifant/Catalog.hs:82:3 --json        # in the Olifant repo
+[{"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"}}]
+```
+
+(The first is in a rust-htmx sandbox with an `AlreadyRefunded` variant typed into the
+`RefundInvoiceFailure` enum.) `LINE` and `COL` are 1-based; `COL` counts UTF-8 bytes (as Neovim does). `sets` are the inputs bound from
+the path and the code, and `missing` the required inputs still to ask for. `--content -`
+reads the file's current, possibly unsaved, text from stdin. Only generators with an
+`[applies_at]` are offered; [chapter 14](14-editors-and-actions.md) covers both, and the
+Neovim plugin that uses them.
 
 ## Running it again
 
