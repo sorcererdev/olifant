@@ -44,7 +44,7 @@ its `update` branch. The result compiles.
   `// generator: insert here` comments are needed in your app ([chapter 3](03-anchors.md)).
 - **The compiler finds places the generator didn't know about.** When a new `Route`
   variant makes some `case` incomplete, Olifant asks the Elm compiler where, and adds
-  the branch ([chapter 4](04-compiler-branches-and-todos.md)).
+  the branch (GHC and rustc work the same way) ([chapter 4](04-compiler-branches-and-todos.md)).
 - **It is built for agents as much as for people.** Output is JSON when not on a
   terminal, exit codes are stable, every error says what to do, and a whole task
   (several pages, many messages) is one command. In measurements, an agent using the

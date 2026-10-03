@@ -260,7 +260,7 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `version` | no (1) | shown in `show --json`; nothing else reads it yet |
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
 | `[inputs.*]`, `[derive]`, `[requires]`, `[[edits]]`, `[[uses]]` | no | below; `[[uses]]` is [chapter 8](08-composing-generators.md) |
-| `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)) |
+| `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)); an enum that is `one_of` it takes its choices from it, with `value` saying which part of each record ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) |
 
 Any other key is an error that names the key, so typos fail at load (`list` marks the
 generator `INVALID`, `gen` exits 1).
@@ -280,13 +280,23 @@ prompt = "Page name (e.g. counter, article_list)"   # shown by `show`
 | `ident` | a name in any case: `blog_post`, `BlogPost`, `blog post`, `blog-post` (letters, digits, `_`, `-`, space; not starting with a digit) | a name; filters give its case forms; printed bare it is snake_case |
 | `text` | anything | text |
 | `bool` | `true` / `false` (any capitalisation) | a bool |
-| `enum` | one of `choices = [...]`, or of the values found by `choices_from` (chapter 6) | text |
+| `enum` | one of `choices = [...]`, or `one_of = "NAME"`: one of the values a `[query.NAME]` finds in the project, which may depend on the inputs above it ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) | text |
 | `list` | comma-separated items, `of` one of the types above, or a record | a list |
 
 An `ident` that looks like a name followed by a type is refused, because it is almost always
 a mistake: `--set name="SetName String"` gets "looks like a name followed by other words (e.g.
 a type); pass only the name, like SetName". Enum choices are exact and case-sensitive; a near
 miss gets "did you mean".
+
+`olifant schema` describes `one_of` (and still lists `choices_from`, as retired, so a
+schema-aware editor flags it):
+
+```
+$ olifant schema --json | jq -c '.properties.inputs.additionalProperties.properties.one_of'
+{"description":"The name of a [query.NAME] whose records are the choices; the query's value (file name | parent folder | path | a field | a {= … =} template) picks each choice. The query may use inputs declared above this one.","type":"string"}
+$ olifant schema --json | jq -c '.properties.inputs.additionalProperties.properties.choices_from'
+{"description":"Retired: use one_of and a [query.NAME].","type":"object"}
+```
 
 An optional input that is not given is an empty list, `false`, empty text, or, for `ident`
 and `enum`, *nothing*: it prints as the empty string and is false in an `if`, but a filter on
@@ -482,7 +492,10 @@ person (or a model) to fill in, each one listed as a todo in the plan.
 How you write the constructor depends on the adapter: Elm's `[check] format` (`elm-json`)
 names it `Module.Ctor` (`Route.{= R =}`, visible by module import); GHC's (`ghc-json`) names
 it `Type.Ctor` (`{= T =}.{= C =}`, e.g. `CatalogError.PackLocked`, visible where that type
-appears in the type GHC reports: `T`, `Maybe T`, `(T, Bool)`).
+appears in the type GHC reports: `T`, `Maybe T`, `(T, Bool)`); rustc's (`rustc-json`) names it
+`Type::Variant` (`{= Failure =}::{= failure|pascal =}`, e.g.
+`RefundInvoiceFailure::AlreadyRefunded`; `Type.Variant` also works), visible where rustc
+reports a `match` on that type.
 
 ## Putting inserts and `complete` together
 
@@ -504,11 +517,15 @@ prompt = "Route name; the URL is its kebab-case form (start_here → /start-here
 
 [inputs.page]
 type = "enum"
-choices_from = { glob = "src/Page/*.elm", value = "{= stem =}" }
+one_of = "pages"
 prompt = "The page it shows"
 
 [derive]
 R = "{= name|pascal =}"
+
+# Every page module: src/Page/Home.elm → Home.
+[query.pages]
+glob = "src/Page/*.elm"
 
 [requires]
 exists = ["src/Route.elm", "src/Main.elm"]
@@ -559,8 +576,9 @@ alias (3 edits, 0 conflicts)
 +
 ```
 
-The app compiles. The page list came from the project (`choices_from`), and nothing in the
-generator says where `changeRouteTo` is.
+The app compiles. The page list came from the project (`one_of = "pages"`; a glob's `value`
+defaults to `"file name"`, so `src/Page/Home.elm` gives `Home`), and nothing in the generator
+says where `changeRouteTo` is.
 
 ## The template language
 
@@ -602,6 +620,22 @@ The others, from `src/Olifant/Template/Render.hs`:
 | `singular` | the reverse | `blog_posts` → `blog_post` |
 | `timestamp` | formats a time as `YYYYMMDDhhmmss` | `{= now|timestamp =}` → `20260929100000` |
 | `parens` | wraps text with spaces in parentheses, unless it is already one group | `List String` → `(List String)`, `Int` → `Int`, `(Maybe Int)` unchanged |
+| `rust_string` | escapes text for the inside of a Rust format-string literal (`todo!("…")`, `#[error("…")]`): `\` → `\\`, `"` → `\"`, `{` → `{{`, `}` → `}}` | `Too "late" for {refunds}` → `Too \"late\" for {{refunds}}` |
+
+`rust_string` is what the rust-htmx pack writes a free-text message with, in `command-failure`'s
+`#[error("{= message|rust_string =}")]` and in its adapter's `placeholder`
+(`todo!("{= message|rust_string =}")`, whose message holds a pattern that may contain `{ .. }`):
+a quote ends the string early, and a brace starts a format argument. A scratch generator,
+`rs`, whose one edit creates `out.rs` from the line `todo!("{= message|rust_string =}")`:
+
+```
+$ olifant gen rs --set message='Too "late" for {refunds}, C:\tmp' --plan --human
+Plan: rs (1 edit, 0 conflicts)
+  + out.rs (1 line)
+
+--- out.rs
+todo!("Too \"late\" for {{refunds}}, C:\\tmp")
+```
 
 Case filters also accept text that parses as a name, so `{= "blog post"|pascal =}` works.
 `plural` knows common irregulars (`person` → `people`, `index` → `indices`) and uncountables

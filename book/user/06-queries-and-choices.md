@@ -1,7 +1,7 @@
-# 6. Queries, `choices_from` and `unless`
+# 6. Queries, `one_of` and `unless`
 
 A **query** reads facts out of the project. Regions use one to know what to list; enum
-inputs use one to know their choices; a generator can bind one to a name and use it in
+inputs use one (`one_of`) to know their choices; a generator can bind one to a name and use it in
 its templates.
 
 ## Glob queries
@@ -154,35 +154,285 @@ but not each other's records. A query named like an input or derived value is an
 A query that fails stops the generator with `query_failed` (exit 1).
 
 Two limits. Generator queries read the files on disk, so in a chain of steps they do not
-see what earlier steps planned (regions do). And a generator that *creates* a list, like the
+see what earlier steps planned (regions do, and so does a query that gives an input its
+choices, below). And a generator that *creates* a list, like the
 one above, is stale as soon as a route is added; for that, the region is the better tool.
 
-## `choices_from`: inputs whose values come from the project
+## `one_of`: inputs whose values come from the project
 
-`rust-htmx/service-command` adds a command to an existing service. Instead of making you
-remember the service names, it asks the project:
+`rust-htmx/command-dependency` adds a port to a command. All three of its inputs name
+something that is already in the project: a service, one of that service's commands, one of
+that service's ports. Instead of making you remember them, each input is `one_of` a query,
+and each query sits on its own lines with a comment saying what it finds:
 
 ```toml
+# packs/rust-htmx/generators/command-dependency/generator.toml (excerpt)
 [inputs.service]
 type = "enum"
+one_of = "services"
+prompt = "The service the command belongs to"
+
+[inputs.command]
+type = "enum"
+one_of = "commands"
+prompt = "The command (use case) that needs the dependency"
+
+[inputs.dependency]
+type = "enum"
+one_of = "ports"
+prompt = "The port it depends on (a file in the service's ports/)"
+
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+…
+
+# Every service: folders like billing/billing-service. The choice is the
+# parent folder's name (billing).
+[query.services]
+glob  = "*/*-service"
+value = "parent folder"
+
+# The chosen service's commands: its src/*.rs files, less the service's own modules.
+[query.commands]
+glob    = "{= service_dir =}/src/*.rs"
+exclude = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
+value   = "file name"
+
+# The chosen service's ports.
+[query.ports]
+glob  = "{= service_dir =}/src/ports/*.rs"
+value = "file name"
+```
+
+`one_of = "NAME"` names a `[query.NAME]` in the same generator: any query works (glob,
+command, `items_of`, `ast`), and `value` says which part of each record is the choice.
+Choices are sorted, duplicates removed, empty values dropped.
+
+This replaced `choices_from`, which put the whole query inline on the input:
+
+```toml
 choices_from = { glob = "*/*-service", value = "{= dir =}" }   # billing/billing-service → billing
 ```
 
+That line needed its trailing comment, because `{= dir =}` (a record field, rendered by a
+template) does not say what it picks. In the new form the input says what it is (one of the
+services), the query says in words where the choice comes from (`"parent folder"`), the
+comment above it can be a sentence, and a query that more than one generator needs reads the
+same in each. A generator that still has `choices_from` does not load, and the error says
+what to write instead (here a project generator, `old`, with the line above):
+
 ```
-$ olifant show rust-htmx/service-command
+$ olifant show old --human
+error: …/.olifant/generators/old/generator.toml: `inputs.service`: `choices_from` is retired: use `one_of` (one_of = "NAME") and a [query.NAME] table (spec §4.1)
+hint: `olifant schema` prints the generator.toml format; `olifant new NAME` writes a skeleton that loads
+```
+
+### `value`, in words
+
+| `value` | the choice | for the match `billing/billing-service/src/ports/email_sender.rs` |
+|---|---|---|
+| `"file name"` | the name without its extension (a folder's own name); the default for a glob | `email_sender` |
+| `"parent folder"` | the name of the folder the match is in | `ports` |
+| `"path"` | the whole path | `billing/billing-service/src/ports/email_sender.rs` |
+| a field name | that field of the record; `name` is the default for AST and command queries. A glob's `name` is a name, so the choice is its snake_case form, as `{= name =}` prints it | `"name"`: `email_sender`; on `src/Page/*.elm`, `home`, `sample_page` |
+| a `{= … =}` template | the template rendered over the record (the escape hatch) | `"{= rel =}"` |
+
+So `services` (`*/*-service`, a folder) gives `billing` with `"parent folder"` and would give
+`billing-service` with `"file name"`. Anything else is refused when the generator loads:
+
+```
+error: …/generator.toml: `query.services`: `value`: expected "file name", "parent folder", "path", a field name or a {= … =} template; got `folder name`
+```
+
+and so is a `one_of` that names no query:
+
+```
+error: …/generator.toml: `inputs.service`: one_of = "service" but there is no [query.service]
+```
+
+### Dependent choices
+
+`commands` and `ports` use `service_dir`, which is derived from `service`: a billing command
+is one of billing's commands, not any service's. A query that serves an input may use the
+inputs declared **above** that input, and derived values built from them. Choices resolve
+top to bottom: `service` first, then `commands` and `ports` with that service's
+`service_dir`. `show` prints a dependent input's choices grouped by the values of the inputs
+it uses:
+
+```
+$ olifant show rust-htmx/command-dependency --human
+rust-htmx/command-dependency: Add one dependency (a port) to a command: the command, the service's new() and main.rs (spec §7.1)
+
 inputs:
-  --set command_name=<ident>
-  --set service=<enum(billing)>
-      The service to add the command to
-
-$ olifant gen rust-htmx/service-command --set service=biling --set command_name=cancel_subscription
-error: rust-htmx/service-command: invalid inputs: `service`: expected one of billing; got `biling` (did you mean billing?)
+  --set service=<enum(billing|notifications)>
+      The service the command belongs to
+  --set command=<enum, depends on service>
+      The command (use case) that needs the dependency
+      service=billing:        cancel_invoice | refund_invoice | void_invoice
+      service=notifications:  send_email
+  --set dependency=<enum, depends on service>
+      The port it depends on (a file in the service's ports/)
+      service=billing:        email_sender | invoice_repository
+      service=notifications:  email_template_repository
+…
 ```
 
-`value` is a template over each record (default `{= name =}`). If the query finds nothing,
-the error says so ("the query glob */*-service found nothing"), so an empty project is not
-a mystery. For agents this matters: the valid values are in `show`, so there is no need to
-list directories first.
+`show --set` narrows to the lists for the values you give:
+
+```
+$ olifant show rust-htmx/command-dependency --set service=billing --human
+…
+inputs:
+  --set service=<enum(billing|notifications)>
+      The service the command belongs to
+  --set command=<enum(cancel_invoice|refund_invoice|void_invoice)>
+      The command (use case) that needs the dependency
+  --set dependency=<enum(email_sender|invoice_repository)>
+      The port it depends on (a file in the service's ports/)
+…
+```
+
+In JSON (here each input on its own line, from `jq -c '.inputs[]'`), an enum whose choices
+are known has `choices`; a dependent one has `depends_on` and `choices_by`, keyed by the
+value it depends on (`a=x, b=y` when it depends on several):
+
+```
+$ olifant show rust-htmx/command-dependency --json | jq -c '.inputs[]'
+{"choices":["billing","notifications"],"default":null,"name":"service","optional":false,"prompt":"The service the command belongs to","type":"enum(billing|notifications)"}
+{"choices_by":{"billing":["cancel_invoice","refund_invoice","void_invoice"],"notifications":["send_email"]},"default":null,"depends_on":["service"],"name":"command","optional":false,"prompt":"The command (use case) that needs the dependency","type":"enum, depends on service"}
+{"choices_by":{"billing":["email_sender","invoice_repository"],"notifications":["email_template_repository"]},"default":null,"depends_on":["service"],"name":"dependency","optional":false,"prompt":"The port it depends on (a file in the service's ports/)","type":"enum, depends on service"}
+
+$ olifant show rust-htmx/command-dependency --set service=billing --json | jq -c '.inputs[]'
+{"choices":["billing","notifications"],"default":null,"name":"service","optional":false,"prompt":"The service the command belongs to","type":"enum(billing|notifications)"}
+{"choices":["cancel_invoice","refund_invoice","void_invoice"],"default":null,"name":"command","optional":false,"prompt":"The command (use case) that needs the dependency","type":"enum(cancel_invoice|refund_invoice|void_invoice)"}
+{"choices":["email_sender","invoice_repository"],"default":null,"name":"dependency","optional":false,"prompt":"The port it depends on (a file in the service's ports/)","type":"enum(email_sender|invoice_repository)"}
+```
+
+`show` lists one group per value (per combination, for several inputs) of the enums an
+input depends on, up to 30 groups. Past that, or when an input it uses is not an enum, it
+says what to set instead. A project generator whose `service` is a plain `ident` (and whose
+`commands` query has no `value`, so the file name is the choice):
+
+```
+$ olifant show by-name --human
+by-name: a command of a service named by hand
+
+inputs:
+  --set service=<ident>
+  --set command=<enum, depends on service>
+      depends on service; set it to see the choices
+…
+$ olifant show by-name --set service=notifications --human
+…
+inputs:
+  --set service=<ident>
+  --set command=<enum(send_email)>
+…
+```
+
+(JSON: `"depends_on":["service"]` and no `choices_by`.)
+
+**Errors name the context.** A value that is not one of the choices says whose choices they
+were, with the usual "did you mean"; exit code 4:
+
+```
+$ olifant gen rust-htmx/command-dependency --set service=billing --set command=refund_invoice --set dependency=clock --human
+error: rust-htmx/command-dependency: invalid inputs: `dependency`: expected one of email_sender, invoice_repository (the ports of service=billing); got `clock`
+
+$ olifant gen rust-htmx/command-dependency --set service=billing --set command=refund_invoice --set dependency=email_sendr --human
+error: rust-htmx/command-dependency: invalid inputs: `dependency`: expected one of email_sender, invoice_repository (the ports of service=billing); got `email_sendr` (did you mean email_sender?)
+```
+
+Leave out the input the choices depend on, and the dependent inputs say so instead of
+listing every service's values:
+
+```
+$ olifant gen rust-htmx/command-dependency --set command=refund_invoice --set dependency=email_sender --human
+error: rust-htmx/command-dependency: invalid inputs: missing `service` (enum(billing|notifications)); `command`: its choices depend on `service`; set it first; `dependency`: its choices depend on `service`; set it first
+```
+
+A `service` that is set but wrong (`--set service=biling`) gets only its own error
+(`` expected one of billing, notifications; got `biling` (did you mean billing?) ``): the
+inputs below it have nothing to add. A query that finds nothing is an error naming the
+query and what it was looking for, so an empty directory is not a mystery. With
+`notifications`' only port deleted:
+
+```
+$ olifant gen rust-htmx/command-dependency --set service=notifications --set command=send_email --set dependency=email_template_repository --human
+error: rust-htmx/command-dependency: invalid inputs: `dependency`: the query `ports` found nothing for service=notifications, so there is nothing to choose
+```
+
+(`show` prints that group as `service=notifications:  (none)`.) A query that fails names
+its context too, and stops the generator with exit code 1. Here `tables` is a command query
+that prints to stderr and exits 3, given `{= service =}` as an argument:
+
+```
+$ olifant gen cmdfail --set service=billing --set table=x --plan --human
+error: cmdfail: `table`: query tables (for service=billing) failed: command sh -c echo no database for $0 >&2; exit 3 billing failed: exited 3: no database for billing
+```
+
+`show` prints each failed group's reason where its choices would be, rather than an empty
+list:
+
+```
+$ olifant show cmdfail --human
+…
+  --set table=<enum, depends on service>
+      service=billing:        query failed: `table`: query tables (for service=billing) failed: command sh -c echo no database for $0 >&2; exit 3 billing failed: exited 3: no database for billing
+      service=notifications:  query failed: `table`: query tables (for service=notifications) failed: command sh -c echo no database for $0 >&2; exit 3 notifications failed: exited 3: no database for notifications
+```
+
+In JSON the reasons go in an `errors` object, keyed like `choices_by` (which keeps only the
+groups that worked):
+
+```
+$ olifant show cmdfail --json | jq -c '.inputs[1]'
+{"choices_by":{},"default":null,"depends_on":["service"],"errors":{"billing":"`table`: query tables (for service=billing) failed: command sh -c echo no database for $0 >&2; exit 3 billing failed: exited 3: no database for billing","notifications":"`table`: query tables (for service=notifications) failed: command sh -c echo no database for $0 >&2; exit 3 notifications failed: exited 3: no database for notifications"},"name":"table","optional":false,"prompt":null,"type":"enum, depends on service"}
+```
+
+**Order matters, and is checked when the generator loads.** Declare `dependency` above
+`service` and `ports` would need a value that does not exist yet:
+
+```
+error: …/generator.toml: `[query.ports]` uses `service`, which is declared after `dependency`
+```
+
+A query that serves no input (one only edits, templates or `[[uses]]` use, like
+`wire-command`'s `deps` below) sees every input, as before.
+
+**Derived values, `now` and overrides.** A derived value counts as "above" when everything it
+is built from is: `service_dir` from `service`, or a value built from `now` alone, which every
+query can use. A project generator that publishes one of the drafts stamped with the run's
+time:
+
+```toml
+[derive]
+stamp = "{= now|timestamp =}"
+
+# Drafts stamped with the run's time (--now).
+[query.drafts]
+glob  = "drafts/{= stamp =}_*.md"
+value = "file name"
+```
+
+```
+$ olifant gen publish --set draft=x --now 2026-10-02T12:00:00Z --plan --human
+error: publish: invalid inputs: `draft`: expected one of 20261002120000_intro, 20261002120000_outro; got `x`
+```
+
+(`drafts/20261001090000_old.md` is there too, and is not a choice.) A `--set` of a derived
+value overrides it for the queries as it does for the edits, and the error says so. With
+`service_dir` pointed at billing's folder, notifications' own command and port are refused:
+
+```
+$ olifant gen rust-htmx/command-dependency --set service=notifications --set service_dir=billing/billing-service --set command=send_email --set dependency=email_template_repository --plan --human
+error: rust-htmx/command-dependency: invalid inputs: `command`: expected one of cancel_invoice, refund_invoice, void_invoice (the commands of service=notifications, service_dir=billing/billing-service); got `send_email`; `dependency`: expected one of email_sender, invoice_repository (the ports of service=notifications, service_dir=billing/billing-service); got `email_template_repository`
+```
+
+For agents this matters: the valid values are in `show`, so there is no need to list
+directories first, and `show --set service=billing` gives exactly the values for the
+service at hand. In a chain of steps, each step's choices also see the files the steps
+before it create ([chapter 8](08-composing-generators.md)).
 
 ## `unless`: skip an edit when a file exists, or a line matches
 

@@ -1,10 +1,11 @@
 # 4. Branches the compiler finds, and todos
 
 Add a variant to a type and every `case` over that type is now incomplete. The compiler
-knows exactly which ones — Elm's or GHC's. Olifant uses that: a `complete` edit adds a
+knows exactly which ones — Elm's, GHC's or rustc's. Olifant uses that: a `complete` edit adds a
 branch to every `case` the compiler says is missing the new constructor. This chapter shows
 Elm first, then Haskell, which works the same way with two differences: how a constructor
-is named, and what happens with no `text`/`template` at all.
+is named, and what happens with no `text`/`template` at all, then Rust, where a `case` is a
+`match` and its branches are arms.
 
 ```toml
 [[edits]]
@@ -135,6 +136,192 @@ the new branch only when one already separates the last two alternatives, none w
 sit flush against each other (ordinary Haskell style), and a blank line when the `case` has
 only one alternative to copy the spacing from.
 
+## Rust (cargo)
+
+The rust-htmx pack's adapter checks with `cargo check --message-format=json` (format
+`rustc-json`; the `[check]` is in [chapter 9](09-packs-and-language-adapters.md#a-third-example-rust)).
+`rust-htmx/command-failure` adds a failure to a command's `…Failure` enum, and leaves the
+rest to the compiler:
+
+```toml
+# packs/rust-htmx/generators/command-failure/generator.toml (excerpt)
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+Failure = "{= command|pascal =}Failure"
+
+[[edits]]
+insert = "{= service_dir =}/src/{= command|snake =}.rs"
+at     = "end of enum {= Failure =}"
+text   = """
+#[error("{= message|rust_string =}")]
+{= failure|pascal =},"""
+
+# Every match on the enum gets an arm; with no body, a todo!() names the site.
+[[edits]]
+complete = "{= Failure =}::{= failure|pascal =}"
+```
+
+Its `service` and `command` are `one_of` queries, the same as `command-dependency`'s
+([chapter 6](06-queries-and-choices.md)). In the fixture, `refund_invoice.rs` ends with the
+command's failures and a mapping from each to an HTTP status:
+
+```rust
+#[derive(Error, Debug, PartialEq)]
+pub enum RefundInvoiceFailure {
+    #[error("Something went wrong")]
+    Unknown(String),
+}
+
+impl RefundInvoiceFailure {
+    pub fn status(&self) -> u16 {
+        match self {
+            RefundInvoiceFailure::Unknown(_) => 500,
+        }
+    }
+}
+```
+
+In a sandbox (`scripts/try-pack.sh rust-htmx /tmp/olifant-fail && cd /tmp/olifant-fail`):
+
+```
+$ olifant gen rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=already_refunded --set message="The invoice was already refunded" --plan --human
+Plan: rust-htmx/command-failure (2 edits, 0 conflicts)
+  ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 27)
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 36, compiler: status, todo)
+  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::AlreadyRefunded (left as a todo)
+
+--- billing/billing-service/src/refund_invoice.rs
+#[error("The invoice was already refunded")]
+AlreadyRefunded,
+
+--- billing/billing-service/src/refund_invoice.rs
+RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status RefundInvoiceFailure::AlreadyRefunded"),
+```
+
+Applied (the same command without `--plan`), `git add -A && git diff --cached` shows both:
+
+```diff
+@@ -24,12 +24,15 @@ impl RefundInvoice {
+ pub enum RefundInvoiceFailure {
+     #[error("Something went wrong")]
+     Unknown(String),
++    #[error("The invoice was already refunded")]
++    AlreadyRefunded,
+ }
+ 
+ impl RefundInvoiceFailure {
+     pub fn status(&self) -> u16 {
+         match self {
+             RefundInvoiceFailure::Unknown(_) => 500,
++            RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status RefundInvoiceFailure::AlreadyRefunded"),
+         }
+     }
+ }
+```
+
+and the workspace builds:
+
+```
+$ cargo check --workspace
+…
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.97s
+```
+
+The `complete` edit has no body, so `status()` gets a `todo!()` (the adapter's
+`placeholder`) and the plan lists it: which HTTP status a refund that already happened
+deserves is a decision, not boilerplate. Run it again and the variant is `skipped: already
+present`, and the compiler finds nothing to add.
+
+The message is free text inside a Rust string, so the generator writes it through the
+`rust_string` filter ([chapter 7](07-writing-a-generator.md#filters)), and the adapter's
+`placeholder` does the same for the todo's message. The pack's `quoted-message` case uses
+`--set failure=too_late --set message='Too "late" for {refunds}'`:
+
+```diff
++    #[error("Too \"late\" for {{refunds}}")]
++    TooLate,
+```
+
+which `thiserror` prints as `Too "late" for {refunds}`, and which compiles.
+
+What Olifant read is rustc's E0004. Without the `complete` edit, the same variant gives:
+
+```
+error[E0004]: non-exhaustive patterns: `&RefundInvoiceFailure::AlreadyRefunded` not covered
+  --> billing/billing-service/src/refund_invoice.rs:33:15
+   |
+33 |         match self {
+   |               ^^^^ pattern `&RefundInvoiceFailure::AlreadyRefunded` not covered
+…
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+34 ~             RefundInvoiceFailure::Unknown(_) => 500,
+35 ~             &RefundInvoiceFailure::AlreadyRefunded => todo!(),
+   |
+```
+
+- **The site** runs from the scrutinee (`self`, line 33) to the `match`'s last arm, which is
+  the line rustc's own suggestion edits (34). The new arm goes after it.
+- **The pattern** is rustc's, less the `&` it prints for a reference scrutinee (`self` is
+  `&RefundInvoiceFailure`); match ergonomics makes `RefundInvoiceFailure::AlreadyRefunded`
+  enough. Variants with fields come as rustc writes them (`Unknown(_)`, `{ .. }`).
+- **Visibility is by type name**, as with GHC: `complete = "RefundInvoiceFailure::AlreadyRefunded"`
+  (or `RefundInvoiceFailure.AlreadyRefunded`) can extend a `match` whose type rustc reports
+  as `RefundInvoiceFailure` or `&RefundInvoiceFailure`, never a `match` on another enum with
+  an `AlreadyRefunded` of its own.
+- **Commas.** Arms are separated by commas, and the last arm of a `match` may leave its
+  comma out. Before adding an arm, Olifant gives the last one its comma, unless it has one
+  or ends a block (`}`). A one-arm `match` gets no blank line before the new arm (Elm's
+  rule would add one; Rust's arms sit together).
+- **Three at a time.** rustc names at most three missing patterns ("`A`, `B`, `C` and 2
+  more not covered"). Olifant places those, checks again, and the next round names the
+  rest; nothing is guessed.
+
+The last two show up together when one run adds four failures (a chain of four steps,
+[chapter 8](08-composing-generators.md)) to a `status()` whose only arm has no comma:
+
+```
+$ olifant gen rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=already_refunded --set message="Already refunded" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=not_found --set message="No such invoice" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=not_paid --set message="Not paid yet" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=too_late --set message="Too late to refund" --human
+rust-htmx/command-failure + rust-htmx/command-failure + rust-htmx/command-failure + rust-htmx/command-failure (8 edits, 0 conflicts)
+  ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 27)  [rust-htmx/command-failure (step 1)]
+  ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 29)  [rust-htmx/command-failure (step 2)]
+  ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 31)  [rust-htmx/command-failure (step 3)]
+  ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 33)  [rust-htmx/command-failure (step 4)]
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status, todo)  [rust-htmx/command-failure (step 3)]
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status, todo)  [rust-htmx/command-failure (step 2)]
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status, todo)  [rust-htmx/command-failure (step 1)]
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 45, compiler: status, todo)  [rust-htmx/command-failure (step 4)]
+  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::NotPaid (left as a todo)
+  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::NotFound (left as a todo)
+  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::AlreadyRefunded (left as a todo)
+  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::TooLate (left as a todo)
+```
+
+```diff
+         match self {
+-            RefundInvoiceFailure::Unknown(_) => 500
++            RefundInvoiceFailure::Unknown(_) => 500,
++            RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status RefundInvoiceFailure::AlreadyRefunded"),
++            RefundInvoiceFailure::NotFound => todo!("olifant: status RefundInvoiceFailure::NotFound"),
++            RefundInvoiceFailure::NotPaid => todo!("olifant: status RefundInvoiceFailure::NotPaid"),
++            RefundInvoiceFailure::TooLate => todo!("olifant: status RefundInvoiceFailure::TooLate"),
+         }
+```
+
+The first round placed the three rustc named (all at line 42, bottom-up); the second found
+`TooLate` (line 45). It compiles.
+
+Only `match` arms are added. A refutable `let` (rustc's E0005) is a plan warning, as GHC's
+pattern bindings are. Give the fixture's `RefundInvoiceFailure` a `detail()` that binds with
+`let RefundInvoiceFailure::Unknown(detail) = self;` (irrefutable while `Unknown` is the only
+variant), and the same run warns:
+
+```
+  ? warning: rust-htmx/command-failure: billing/billing-service/src/refund_invoice.rs (line 40): a `let` binding needs a case for &RefundInvoiceFailure::AlreadyRefunded, which olifant cannot extend yet
+```
+
+Treat the `todo!()`s as must-fix, like `Debug.todo`: they compile, and panic if the arm runs.
+
 ## When Olifant refuses to guess
 
 - **Two candidates.** Elm prints constructors unqualified. If a site could belong to two
@@ -155,7 +342,11 @@ only one alternative to copy the spacing from.
 
 `elm` on your PATH, and a language adapter with a `[check]` command (the Elm pack has
 one). Without `elm` the `complete` edits are a conflict that says so. Checking costs one
-`elm make` of the project per round, a second or two for a small app.
+`elm make` of the project per round, a second or two for a small app. The same goes for
+`cabal` (GHC) and `cargo` (Rust). cargo builds into a cache directory that outlives the
+check's scratch copy (`~/.cache/olifant/check/rust`), so only the first round on a machine
+compiles the dependencies; after that the `command-failure` plan above takes well under a
+second.
 
 ## Line numbers
 
