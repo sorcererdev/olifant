@@ -4,6 +4,7 @@ version = 1
 examples = [
   "olifant gen elm/msg --set page=settings --set msg=reset",
   "olifant gen elm/msg --set page=article_list --set msg=got_articles --set arg=\"List String\"",
+  "olifant gen elm/msg --set page=home --set msg=reset --set intent=\"reset count to 0\"",
 ]
 
 [inputs.page]
@@ -19,6 +20,11 @@ type = "text"
 optional = true
 prompt = "Payload type, if any (e.g. Int, String, (Result Http.Error Article))"
 
+[inputs.intent]
+type = "text"
+optional = true
+prompt = "What the update branch should do (a model fills it in; without one, ( model, Cmd.none ))"
+
 [derive]
 Msg = "{= msg|pascal =}"
 
@@ -31,9 +37,10 @@ insert = "src/Page/{= page|pascal =}.elm"
 at     = "end of type Msg"
 text   = "| {= Msg =}{= if arg =} {= arg|parens =}{= end =}"
 
+# With an intent, the branch body is a hole a model fills (spec §6.4).
 [[edits]]
 complete = "{= Msg =}"
 where    = "case in update"
 text     = """
 {= pattern =} ->
-    ( model, Cmd.none )"""
+    {= if intent =}{= ? update: expr | the update branch for {= pattern =}: {= intent =}; a ( Model, Cmd Msg ) =}{= else =}( model, Cmd.none ){= end =}"""
