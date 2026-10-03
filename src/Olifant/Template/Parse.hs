@@ -16,7 +16,7 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer qualified as L
 
-data Piece = TLit Text | TOut Int Text | TTag Int Text
+data Piece = TLit Text | TOut Int Text | TTag Int Text | THole Int Text
 
 data Tag = TIf Expr | TElif Expr | TElse | TFor Text Expr | TEnd
 
@@ -98,14 +98,18 @@ lexTemplate = go 1 False []
       (before, opened) -> do
         let acc' = addLit trimNext before acc
             line' = line + T.count "\n" before
-        (inner, rest) <- closeWith line' (T.drop 2 opened)
+        -- A hole's instruction may hold `{= … =}`: close at the matching `=}`.
+        (inner, rest) <-
+          if "?" `T.isPrefixOf` T.stripStart (T.dropWhile (== '-') (T.drop 2 opened))
+            then closeNested line' (T.drop 2 opened)
+            else closeWith line' (T.drop 2 opened)
         let trimBefore = "-" `T.isPrefixOf` inner
             trimAfter = "-" `T.isSuffixOf` inner && T.length inner > 1
             body = T.strip (dropTrims inner)
             acc'' = if trimBefore then trimLastLit acc' else acc'
             next = go (line' + T.count "\n" inner) trimAfter
         if
-          | "?" `T.isPrefixOf` body -> Left (HolesNotYetSupported line')
+          | "?" `T.isPrefixOf` body -> next (THole line' (T.strip (T.drop 1 body)) : acc'') rest
           | isTagKeyword (T.takeWhile isIdentChar body) -> next (TTag line' body : acc'') rest
           | otherwise -> next (TOut line' body : acc'') rest
 
@@ -123,6 +127,14 @@ lexTemplate = go 1 False []
       let t' = T.stripEnd t in if T.null t' then rest else TLit t' : rest
     trimLastLit acc = acc
 
+    closeNested line t = go' (0 :: Int) "" t
+      where
+        go' depth acc s
+          | T.null s = Left (SyntaxError line "unclosed hole `{= ?`: expected `=}`")
+          | "{=" `T.isPrefixOf` s = go' (depth + 1) (acc <> "{=") (T.drop 2 s)
+          | "=}" `T.isPrefixOf` s = if depth == 0 then Right (acc, T.drop 2 s) else go' (depth - 1) (acc <> "=}") (T.drop 2 s)
+          | otherwise = let (c, s') = T.splitAt 1 s in go' depth (acc <> c) s'
+
     closeWith line t = case T.breakOn "=}" t of
       (inner, rest)
         | T.null rest -> Left (SyntaxError line "unclosed `{=`: expected `=}`")
@@ -138,6 +150,19 @@ block (tok : rest) = case tok of
   TOut line src -> do
     e <- runAt line (spaceP *> expr <* eof) src
     prepend (Out e) (block rest)
+  THole line src -> do
+    -- `name: kind | instruction` (spec §6.1); the instruction is template
+    -- text with outputs only.
+    let (decl, instr) = T.breakOn "|" src
+        (name, kind) = (T.strip (T.takeWhile (/= ':') decl), T.strip (T.drop 1 (T.dropWhile (/= ':') decl)))
+        ident w = not (T.null w) && T.all (\c -> isIdentChar c) w
+    if not (ident name) || not (ident kind) || not (":" `T.isInfixOf` decl)
+      then Left (SyntaxError line "a hole is `{= ? name: kind | instruction =}`")
+      else do
+        body <- either (\e -> Left (SyntaxError line ("in a hole's instruction: " <> describeTemplateError e))) (Right . templateSegments) (parseTemplate (T.strip (T.drop 1 instr)))
+        if any (\case Lit _ -> False; Out _ -> False; _ -> True) body
+          then Left (SyntaxError line "a hole's instruction may use {= value =} outputs only")
+          else prepend (Hole name kind body) (block rest)
   TTag line src -> do
     tag <- runAt line (spaceP *> tagP <* eof) src
     case tag of
@@ -211,7 +236,7 @@ identifier = lexeme . try $ do
   if w `elem` reserved then fail ("`" <> T.unpack w <> "` is a keyword") else pure w
 
 knownFilters :: [Text]
-knownFilters = map caseName allCases ++ ["plural", "singular", "timestamp", "parens", "rust_string"]
+knownFilters = map caseName allCases ++ ["plural", "singular", "timestamp", "parens", "rust_string", "escaped"]
 
 tagP :: Parser Tag
 tagP =

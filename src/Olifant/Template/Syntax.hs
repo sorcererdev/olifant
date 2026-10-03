@@ -20,6 +20,8 @@ data Segment
   | -- | (condition, body) branches, then the else body
     If [(Expr, [Segment])] [Segment]
   | For Text Expr [Segment]
+  | -- | a typed hole (spec §6.1): name, kind, instruction
+    Hole Text Text [Segment]
   deriving stock (Eq, Show)
 
 data Expr
@@ -43,6 +45,7 @@ freeVariables = foldMap (segmentVars S.empty) . templateSegments
     segmentVars bound = \case
       Lit _ -> S.empty
       Out e -> exprVars bound e
+      Hole _ _ body -> foldMap (segmentVars bound) body
       If branches els ->
         foldMap (\(c, body) -> exprVars bound c <> foldMap (segmentVars bound) body) branches
           <> foldMap (segmentVars bound) els

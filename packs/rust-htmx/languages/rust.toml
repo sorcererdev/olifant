@@ -12,6 +12,20 @@ command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-
 context = ["**/Cargo.toml", "Cargo.lock"]
 format  = "rustc-json"
 
+# Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
+# a fill must parse in.
+[holes.expr]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
+wrap = "fn __olifant() { let _ = {= fill =}; }"
+
+[holes.block]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
+wrap = "fn __olifant() { {= fill =} }"
+
+[holes.type]
+placeholder = "() /* olifant: {= hole =} */"
+wrap = "type __Olifant = {= fill =};"
+
 [targets.struct]
 phrase = "struct NAME"
 container = { kind = "field_declaration_list", inside = { kind = "struct_item", has = { field = "name", regex = "^{= NAME =}$" } } }

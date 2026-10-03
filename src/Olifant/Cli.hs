@@ -3,6 +3,8 @@
 module Olifant.Cli (Runtime (..), runCli) where
 
 import Control.Applicative ((<|>))
+import Olifant.Fill (ModelFiller (..))
+import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (when)
 import Data.Aeson (Value, eitherDecodeStrict, object)
 import Data.Aeson.Types (Pair, (.=))
@@ -219,11 +221,14 @@ runCommand rt cwd fmt cat = \case
             now <- maybe (rtNow rt) pure (genNow g)
             let mode = if genPlanOnly g then PlanOnly else Apply
                 steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) (projectTools rt cat) steps now mode >>= \case
+            case modelFor cat g of
+             Left why -> failWith rt fmt 2 "usage" why Nothing []
+             Right filler ->
+              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler}) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan =
-                      plan0
+                      (if genNoFill g then noFill plan0 else plan0)
                         { planWarnings =
                             planWarnings plan0
                               ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]
@@ -317,7 +322,7 @@ syncRegions rt fmt rtBrokenRegions ws tools regionMode checkOnly now = do
   (edits, conflicts0, current) <- refreshRegions regionMode tools ws 1 M.empty
   let conflicts = [RegionBroken "" path ("cannot read " <> T.pack path <> ": " <> err) | (path, err) <- rtBrokenRegions] ++ conflicts0
   let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current]
-      plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes
+      plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes []
       applied = not checkOnly && not (hasConflicts plan)
   when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
   emit rt fmt (planJson applied plan) (if checkOnly then syncCheckHuman plan else planHuman applied plan)
@@ -352,6 +357,23 @@ initRegion rt fmt ws tools def now
     file = regionFile def
     lang = languageFor (toolLanguages tools) file
     fill = syncRegions rt fmt [] ws tools {toolRegions = [def]} SkipUnset False now
+
+-- | The model that fills holes in a `gen` (spec §6.4): `--model`, else
+-- `[model] default`; none with `--no-fill` or without `[model]`.
+modelFor :: Catalog -> GenOptions -> Either Text (Maybe (ModelFiller IO))
+modelFor cat g
+  | genNoFill g = Right Nothing
+  | otherwise = case genModel g <|> mcDefault config of
+      Nothing -> Right Nothing
+      Just name -> case lookup name (mcBackends config) of
+        Nothing -> Left ("--model " <> name <> ": no such backend under [model.backends] (backends: " <> (if null (mcBackends config) then "none" else T.intercalate ", " (map fst (mcBackends config))) <> ")")
+        Just b -> Right (Just (ModelFiller (backendModel b) (mcRetries config) (curlFiller (mcTimeout config) b)))
+  where
+    config = catalogModel cat
+
+-- | `--no-fill`: holes were left on purpose.
+noFill :: Plan -> Plan
+noFill p = p {planHoles = [h {phStatus = HoleSkipped "--no-fill"} | h <- planHoles p]}
 
 -- | The tools a command in this project uses: the runtime's syntax and
 -- checker, the catalog's languages and regions, and the project's queries.

@@ -46,6 +46,8 @@ text   = """
 #[error("{= message|rust_string =}")]
 {= failure|pascal =},"""
 
-# Every match on the enum gets an arm; with no body, a todo!() names the site.
+# Every match on the enum gets an arm whose value is a hole (spec §6.4): a
+# configured model fills it per site; without one it stays a todo!().
 [[edits]]
 complete = "{= Failure =}::{= failure|pascal =}"
+text     = "{= pattern =} => {= ? status: expr | the value this match returns for {= pattern =} ({= message =}), following the other arms =},"

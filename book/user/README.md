@@ -11,3 +11,5 @@
 9. [Packs and language adapters](09-packs-and-language-adapters.md)
 10. [Testing generators: snapshots and blessing](10-testing-generators.md)
 11. [Olifant and AI agents](11-olifant-and-agents.md)
+12. [Holes and models](12-holes-and-models.md)
+13. [Tutorial: holes with a local model](13-tutorial-holes.md)

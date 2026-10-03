@@ -141,8 +141,37 @@ Each edit says how it was placed:
 {"id": "e9", "path": "src/Main.elm", "status": "insert", "line": 65, "found_by": "compiler", "site": "changeRouteTo", "todo": false}
 ```
 
-The plan also has `conflicts`, `warnings` and `todos` arrays. An applied run leaves out
-file contents (you have the files); `--plan` includes them.
+The plan also has `conflicts`, `warnings`, `todos` and `holes` arrays. An applied run leaves
+out file contents (you have the files); `--plan` includes them.
+
+## Holes and models: `--model`, `--no-fill`
+
+Some generators leave a small typed gap, a **hole**, for a model to fill: `elm/msg` does
+when you give it an `intent`. With a model configured under `[model]` in
+`.olifant/config.toml` ([chapter 12](12-holes-and-models.md)), `gen` fills it and lists it
+under `holes:`:
+
+```
+$ olifant gen elm/msg --set page=home --set msg=reset --set intent="reset count to 0" --human
+elm/msg (2 edits, 0 conflicts)
+  ~ src/Page/Home.elm (+1 line at line 25)
+  ~ src/Page/Home.elm (+2 lines at line 34, compiler: update)
+holes:
+  update (expr) src/Page/Home.elm:35  filled by qwen3-coder:30b: ( { count = 0 }, Cmd.none )
+```
+
+(run on a `Home.elm` whose `Model` is `{ count : Int }`). Each hole's line says where it is
+and how it ended: `filled by MODEL: CODE` (with `(attempt N)` after a retry), `unfilled:
+WHY` (it was left as a placeholder that compiles: no model is configured, or the model
+failed), or `skipped: --no-fill`. In JSON, `holes` has `name`, `kind`, `file`, `line`,
+`status`, `model`, `attempts`, `why` and `fill`.
+
+- `--model NAME` fills holes with `[model.backends.NAME]` instead of the default.
+- `--no-fill` leaves every hole as its placeholder, and asks no model.
+
+Both apply to the whole run, like `--plan`. `--plan` does run the model, so it shows the
+fills it would write. [Chapter 13](13-tutorial-holes.md) is a tutorial with a local
+model.
 
 ## Running it again
 

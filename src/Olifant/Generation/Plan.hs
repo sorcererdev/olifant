@@ -6,6 +6,8 @@ module Olifant.Generation.Plan
   , EditAction (..)
   , SkipReason (..)
   , Conflict (..)
+  , HoleStatus (..)
+  , PlannedHole (..)
   , hasConflicts
   , describeConflict
   , conflictToolMissing
@@ -17,6 +19,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Anchor (Miss (..), describeMisses)
 import Olifant.Generator (GeneratorId)
+import Olifant.Holes (HoleSite (..))
 
 data Plan = Plan
   { planGenerator :: GeneratorId
@@ -27,6 +30,8 @@ data Plan = Plan
   , -- | problems that did not stop the plan but mean it may be incomplete
     planWarnings :: [Text]
   , planWrites :: Map FilePath Text
+  , -- | every hole this plan wrote, and whether it was filled (spec §6.4)
+    planHoles :: [PlannedHole]
   }
   deriving stock (Eq, Show)
 
@@ -48,6 +53,14 @@ data Site = Site {siteFile :: FilePath, siteFunction :: Text, sitePattern :: Tex
 
 planned :: [Text] -> Int -> FilePath -> EditAction -> PlannedEdit
 planned st n p a = PlannedEdit st n p a Nothing Nothing
+
+-- | 'HoleFilled': by which model, after how many attempts; 'HoleUnfilled':
+-- why it keeps its placeholder; 'HoleSkipped': why it was not tried.
+data HoleStatus = HoleFilled Text Int | HoleUnfilled Text | HoleSkipped Text
+  deriving stock (Eq, Show)
+
+data PlannedHole = PlannedHole {phSite :: HoleSite, phStatus :: HoleStatus, phFill :: Maybe Text}
+  deriving stock (Eq, Show)
 
 -- | 'Conflicted': this edit produced a conflict (see 'planConflicts').
 -- | 'WillRefresh': an owned region (name, lines added, lines removed, new file content).
@@ -71,6 +84,8 @@ data Conflict
   | RequirementUnmet [Text] [FilePath] (Maybe Text)
   | -- | edit, path, why it cannot be written (a directory, non-text file, or a file where a directory must be)
     TargetUnusable Int FilePath Text
+  | -- | a hole that cannot be placed (no adapter, unknown kind)
+    HoleProblem Text
   deriving stock (Eq, Show)
 
 hasConflicts :: Plan -> Bool
@@ -85,6 +100,7 @@ describeConflict = \case
   RegionBroken _ _ why -> why
   UnsafePath n p -> edit n <> "path " <> T.pack p <> " is outside the project"
   TargetUnusable n p why -> edit n <> "cannot write " <> T.pack p <> ": " <> why
+  HoleProblem why -> "hole: " <> why
   RequirementUnmet step ps hint -> T.intercalate " › " step <> ": required files missing: " <> T.intercalate ", " (map T.pack ps) <> maybe "" (". " <>) hint
   where
     edit n = "edit " <> T.pack (show n) <> ": "

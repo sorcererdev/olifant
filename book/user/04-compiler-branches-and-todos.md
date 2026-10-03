@@ -141,7 +141,7 @@ only one alternative to copy the spacing from.
 The rust-htmx pack's adapter checks with `cargo check --message-format=json` (format
 `rustc-json`; the `[check]` is in [chapter 9](09-packs-and-language-adapters.md#a-third-example-rust)).
 `rust-htmx/command-failure` adds a failure to a command's `…Failure` enum, and leaves the
-rest to the compiler:
+rest to the compiler and, for one value per site, to a model:
 
 ```toml
 # packs/rust-htmx/generators/command-failure/generator.toml (excerpt)
@@ -156,10 +156,17 @@ text   = """
 #[error("{= message|rust_string =}")]
 {= failure|pascal =},"""
 
-# Every match on the enum gets an arm; with no body, a todo!() names the site.
+# Every match on the enum gets an arm whose value is a hole (spec §6.4): a
+# configured model fills it per site; without one it stays a todo!().
 [[edits]]
 complete = "{= Failure =}::{= failure|pascal =}"
+text     = "{= pattern =} => {= ? status: expr | the value this match returns for {= pattern =} ({= message =}), following the other arms =},"
 ```
+
+The body is `{= pattern =} => …,`, and the arm's value is a **typed hole**: which HTTP status
+a refund that already happened deserves is a decision, not boilerplate, so a model makes it
+when one is configured ([chapter 12](12-holes-and-models.md)). This section runs with no
+model; chapter 12 shows the same generator with one.
 
 Its `service` and `command` are `one_of` queries, the same as `command-dependency`'s
 ([chapter 6](06-queries-and-choices.md)). In the fixture, `refund_invoice.rs` ends with the
@@ -187,15 +194,16 @@ In a sandbox (`scripts/try-pack.sh rust-htmx /tmp/olifant-fail && cd /tmp/olifan
 $ olifant gen rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=already_refunded --set message="The invoice was already refunded" --plan --human
 Plan: rust-htmx/command-failure (2 edits, 0 conflicts)
   ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 27)
-  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 36, compiler: status, todo)
-  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::AlreadyRefunded (left as a todo)
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 36, compiler: status)
+holes:
+  status (expr) billing/billing-service/src/refund_invoice.rs:35  unfilled: no model is configured
 
 --- billing/billing-service/src/refund_invoice.rs
 #[error("The invoice was already refunded")]
 AlreadyRefunded,
 
 --- billing/billing-service/src/refund_invoice.rs
-RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status RefundInvoiceFailure::AlreadyRefunded"),
+RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status: the value this match returns for RefundInvoiceFailure::AlreadyRefunded (The invoice was already refunded), following the other arms"),
 ```
 
 Applied (the same command without `--plan`), `git add -A && git diff --cached` shows both:
@@ -213,7 +221,7 @@ Applied (the same command without `--plan`), `git add -A && git diff --cached` s
      pub fn status(&self) -> u16 {
          match self {
              RefundInvoiceFailure::Unknown(_) => 500,
-+            RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status RefundInvoiceFailure::AlreadyRefunded"),
++            RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status: the value this match returns for RefundInvoiceFailure::AlreadyRefunded (The invoice was already refunded), following the other arms"),
          }
      }
  }
@@ -227,14 +235,15 @@ $ cargo check --workspace
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.97s
 ```
 
-The `complete` edit has no body, so `status()` gets a `todo!()` (the adapter's
-`placeholder`) and the plan lists it: which HTTP status a refund that already happened
-deserves is a decision, not boilerplate. Run it again and the variant is `skipped: already
-present`, and the compiler finds nothing to add.
+The arm's value is the hole's placeholder, a `todo!()` that names the hole and carries its
+instruction (the Rust adapter's `[holes.expr]`, [chapter 9](09-packs-and-language-adapters.md#hole-kinds-holeskind)).
+It compiles, so the generator works with no model at all; the plan lists it under `holes`
+rather than as a todo branch, because the generator did write a body. Run it again and the
+variant is `skipped: already present`, and the compiler finds nothing to add.
 
 The message is free text inside a Rust string, so the generator writes it through the
-`rust_string` filter ([chapter 7](07-writing-a-generator.md#filters)), and the adapter's
-`placeholder` does the same for the todo's message. The pack's `quoted-message` case uses
+`rust_string` filter ([chapter 7](07-writing-a-generator.md#filters)), and the hole's
+`placeholder` does the same for its instruction, which holds the message too. The pack's `quoted-message` case uses
 `--set failure=too_late --set message='Too "late" for {refunds}'`:
 
 ```diff
@@ -278,38 +287,44 @@ help: ensure that all possible cases are being handled by adding a match arm wit
   rest; nothing is guessed.
 
 The last two show up together when one run adds four failures (a chain of four steps,
-[chapter 8](08-composing-generators.md)) to a `status()` whose only arm has no comma:
+[chapter 8](08-composing-generators.md)). This sandbox has a model configured, so
+`--no-fill` is what keeps every hole a placeholder:
 
 ```
-$ olifant gen rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=already_refunded --set message="Already refunded" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=not_found --set message="No such invoice" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=not_paid --set message="Not paid yet" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=too_late --set message="Too late to refund" --human
+$ olifant gen rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=already_refunded --set message="Already refunded" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=not_found --set message="No such invoice" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=not_paid --set message="Not paid yet" + rust-htmx/command-failure --set service=billing --set command=refund_invoice --set failure=too_late --set message="Too late to refund" --no-fill --human
 rust-htmx/command-failure + rust-htmx/command-failure + rust-htmx/command-failure + rust-htmx/command-failure (8 edits, 0 conflicts)
   ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 27)  [rust-htmx/command-failure (step 1)]
   ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 29)  [rust-htmx/command-failure (step 2)]
   ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 31)  [rust-htmx/command-failure (step 3)]
   ~ billing/billing-service/src/refund_invoice.rs (+2 lines at line 33)  [rust-htmx/command-failure (step 4)]
-  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status, todo)  [rust-htmx/command-failure (step 3)]
-  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status, todo)  [rust-htmx/command-failure (step 2)]
-  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status, todo)  [rust-htmx/command-failure (step 1)]
-  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 45, compiler: status, todo)  [rust-htmx/command-failure (step 4)]
-  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::NotPaid (left as a todo)
-  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::NotFound (left as a todo)
-  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::AlreadyRefunded (left as a todo)
-  ? billing/billing-service/src/refund_invoice.rs: status needs a branch for RefundInvoiceFailure::TooLate (left as a todo)
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status)  [rust-htmx/command-failure (step 3)]
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status)  [rust-htmx/command-failure (step 2)]
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 42, compiler: status)  [rust-htmx/command-failure (step 1)]
+  ~ billing/billing-service/src/refund_invoice.rs (+1 line at line 45, compiler: status)  [rust-htmx/command-failure (step 4)]
+holes:
+  status[billing/billing-service/src/refund_invoice.rs:41] (expr) billing/billing-service/src/refund_invoice.rs:41  skipped: --no-fill
+  status[billing/billing-service/src/refund_invoice.rs:42] (expr) billing/billing-service/src/refund_invoice.rs:42  skipped: --no-fill
+  status[billing/billing-service/src/refund_invoice.rs:43] (expr) billing/billing-service/src/refund_invoice.rs:43  skipped: --no-fill
+  status[billing/billing-service/src/refund_invoice.rs:44] (expr) billing/billing-service/src/refund_invoice.rs:44  skipped: --no-fill
 ```
+
+The first round placed the three rustc named (all at line 42, bottom-up); the second found
+`TooLate` (line 45). The four holes share a name, so each gets its file and line. It
+compiles. With a model configured and a `status()` whose only arm had no comma, the same
+chain gave:
 
 ```diff
          match self {
 -            RefundInvoiceFailure::Unknown(_) => 500
 +            RefundInvoiceFailure::Unknown(_) => 500,
-+            RefundInvoiceFailure::AlreadyRefunded => todo!("olifant: status RefundInvoiceFailure::AlreadyRefunded"),
-+            RefundInvoiceFailure::NotFound => todo!("olifant: status RefundInvoiceFailure::NotFound"),
-+            RefundInvoiceFailure::NotPaid => todo!("olifant: status RefundInvoiceFailure::NotPaid"),
-+            RefundInvoiceFailure::TooLate => todo!("olifant: status RefundInvoiceFailure::TooLate"),
++            RefundInvoiceFailure::AlreadyRefunded => 409,
++            RefundInvoiceFailure::NotFound => 404,
++            RefundInvoiceFailure::NotPaid => 400,
++            RefundInvoiceFailure::TooLate => 400,
          }
 ```
 
-The first round placed the three rustc named (all at line 42, bottom-up); the second found
-`TooLate` (line 45). It compiles.
+The last arm got its comma before the new arms went in.
 
 Only `match` arms are added. A refutable `let` (rustc's E0005) is a plan warning, as GHC's
 pattern bindings are. Give the fixture's `RefundInvoiceFailure` a `detail()` that binds with
@@ -321,6 +336,7 @@ variant), and the same run warns:
 ```
 
 Treat the `todo!()`s as must-fix, like `Debug.todo`: they compile, and panic if the arm runs.
+`grep -rn 'olifant:'` finds them, whether a todo branch or an unfilled hole left them.
 
 ## When Olifant refuses to guess
 

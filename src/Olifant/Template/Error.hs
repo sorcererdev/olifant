@@ -5,7 +5,6 @@ import Data.Text qualified as T
 
 data TemplateError
   = SyntaxError Int Text
-  | HolesNotYetSupported Int
   | UndefinedVariable Text
   | TypeMismatch Text
   deriving stock (Eq, Show)
@@ -13,7 +12,5 @@ data TemplateError
 describeTemplateError :: TemplateError -> Text
 describeTemplateError = \case
   SyntaxError line msg -> "line " <> T.pack (show line) <> ": " <> msg
-  HolesNotYetSupported line ->
-    "line " <> T.pack (show line) <> ": holes ({= ? … =}) arrive in step 3"
   UndefinedVariable v -> "undefined variable `" <> v <> "`"
   TypeMismatch msg -> msg

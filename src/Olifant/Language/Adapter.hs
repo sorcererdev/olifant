@@ -4,6 +4,7 @@ module Olifant.Language.Adapter
   , Grammar (..)
   , TargetDef (..)
   , CheckDef (..)
+  , HoleKind (..)
   , parseLanguage
   , matchesGlob
   , languageFor
@@ -22,7 +23,8 @@ import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.Rule
 import Olifant.Language.Support (knownFormats)
-import Olifant.Template (Template, describeTemplateError, parseTemplate)
+import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
+import Data.Set qualified as S
 import Olifant.Toml
 import System.FilePath ((</>))
 
@@ -38,7 +40,15 @@ data Language = Language
   , langIndent :: Text
   -- ^ one level of indentation (key `indent`, default four spaces): used when
   -- an empty container is opened
+  , langHoles :: [(Text, HoleKind)]
+  -- ^ `[holes.KIND]` (spec §6.3): the hole kinds this language supports
   }
+  deriving stock (Show)
+
+-- | How a hole of one kind is written unfilled ('kindPlaceholder', with
+-- @hole@ and @instruction@; it must compile) and the code a fill must parse
+-- in ('kindWrap', containing the literal @{= fill =}@).
+data HoleKind = HoleKind {kindPlaceholder :: Template, kindWrap :: Text}
   deriving stock (Show)
 
 data Grammar = BuiltInGrammar Text | GrammarSource FilePath
@@ -53,7 +63,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -62,13 +72,22 @@ parseLanguage name packRoot src = do
   branch <- optional "branch" (text >=> tmpl) top
   check <- optional "check" (table >=> checkFrom) top
   indent <- fromMaybe "    " <$> optional "indent" text top
-  pure (Language name files comment grammar targets placeholder branch check indent)
+  holes <- maybe [] M.toList <$> optional "holes" (table >=> traverse (\v -> table v >>= holeKindFrom)) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)
       TTable t -> onlyKeys ["source"] t >> GrammarSource . (\s -> packRoot </> "languages" </> T.unpack s) <$> required "source" text t
       other -> Left ("expected a built-in grammar name or { source = \"dir\" }, got " <> describeTree other)
+    holeKindFrom t = do
+      onlyKeys ["placeholder", "wrap"] t
+      ph <- required "placeholder" (text >=> tmpl) t
+      if "hole" `S.member` freeVariables ph then Right () else Left "`placeholder` must use {= hole =} (the hole's name), so every placeholder is unique"
+      wrap <- required "wrap" text t
+      if "{= fill =}" `T.isInfixOf` wrap
+        then Right (HoleKind ph wrap)
+        else Left "`wrap` must contain {= fill =}, where the fill goes"
     targetFrom t = do
       onlyKeys ["phrase", "container", "items", "example"] t
       TargetDef

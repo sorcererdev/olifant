@@ -199,6 +199,10 @@ command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]
 context = ["elm.json"]
 format  = "elm-json"
 
+[holes.expr]                                      # optional: a kind of typed hole (chapter 12)
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
+wrap        = "fn __olifant() { let _ = {= fill =}; }"
+
 [targets.struct]
 phrase    = "struct NAME"
 container = { kind = "field_declaration_list", inside = { kind = "struct_item", has = { field = "name", regex = "^{= NAME =}$" } } }
@@ -214,6 +218,7 @@ example   = "end of struct BillingService"
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used only when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)) |
 | `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC) and `rustc-json` (cargo) |
+| `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `[targets.*]` | the `at` targets (below) |
 
 There used to be a `qualify` key (`qualify = "elm"`) for Elm's module rules. It is retired:
@@ -303,6 +308,72 @@ example = "end of enum RefundInvoiceFailure"
       
       impl RefundInvoiceFailure {
   ```
+
+### Hole kinds: `[holes.KIND]`
+
+A typed hole (`{= ? name: kind | instruction =}`, [chapter 12](12-holes-and-models.md)) can
+use only the kinds its file's adapter declares. Each kind is a table with two keys, both
+required:
+
+```toml
+# packs/rust-htmx/languages/rust.toml
+# Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
+# a fill must parse in.
+[holes.expr]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
+wrap = "fn __olifant() { let _ = {= fill =}; }"
+
+[holes.block]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
+wrap = "fn __olifant() { {= fill =} }"
+
+[holes.type]
+placeholder = "() /* olifant: {= hole =} */"
+wrap = "type __Olifant = {= fill =};"
+```
+
+```toml
+# packs/elm/languages/elm.toml
+[holes.expr]
+placeholder = 'Debug.todo "olifant: {= hole =}: {= instruction|escaped =}"'
+wrap = """
+olifantHole =
+    {= fill =}
+"""
+```
+
+- **`placeholder`** is a template with two values, `hole` (the hole's name, with
+  `[file:line]` when the name repeats) and `instruction` (the rendered instruction). It is
+  what an unfilled hole is written as, so **it must compile** wherever a hole of that kind
+  can stand. **It must use `{= hole =}`**; an adapter whose placeholder doesn't fails to
+  load ("`placeholder` must use {= hole =} (the hole's name), so every placeholder is
+  unique"). Olifant finds each hole's placeholder by its text, so two holes must never share
+  one, which is why the Rust `type` placeholder carries the name in a comment. Put
+  `olifant:` before the name, as these do, so that a search finds every unfilled hole and a
+  reader knows what is missing. Escape the instruction for
+  the string it lands in: `rust_string` in Rust, `escaped` in Elm and Haskell
+  ([chapter 7](07-writing-a-generator.md#filters)).
+- **`wrap`** is plain text (not a template) containing `{= fill =}` exactly once, where the
+  fill goes. With the fill in place, it must be a whole file the adapter's grammar parses
+  with no error. That is the "parses as its kind" check: `409` passes in
+  `fn __olifant() { let _ = 409; }`, and `409; x` does not. A `wrap` without `{= fill =}`
+  is a load error for the adapter.
+
+A pack's test cases check the first rule for you: the "placeholder output compiles" group
+compiles every case that has recorded fills with its holes left unfilled
+([chapter 10](10-testing-generators.md#holes-fillstoml-and-placeholder-output)).
+
+The kinds in this repository are Rust `expr`, `block` and `type`; Elm `expr`; and Haskell
+`expr` (`placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'`,
+`wrap = "olifantHole = {= fill =}"`). Using a kind the adapter doesn't declare is a conflict
+that names the ones it has:
+
+```
+  ! hole: src/Page/Home.elm: `block` is not a hole kind of the elm adapter (kinds: expr)
+```
+
+A fill is also compiled with the plan when the adapter has a `[check]`. A language with
+holes but no `[check]` validates fills by parsing alone.
 
 A vendored grammar is compiled once with `cc` into `~/.cache/olifant/grammars/`, keyed by a
 hash of `parser.c`, so an updated grammar is rebuilt automatically. The first Elm run on a

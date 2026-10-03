@@ -42,9 +42,11 @@ library
     Olifant.Cli
     Olifant.Cli.Options
     Olifant.Cli.Output
+    Olifant.Fill
     Olifant.Generation
     Olifant.Generation.Complete
     Olifant.Generation.Compose
+    Olifant.Generation.FillPhase
     Olifant.Generation.Plan
     Olifant.Generation.Planner
     Olifant.Generation.Regions
@@ -58,6 +60,7 @@ library
     Olifant.Generator.Schema
     Olifant.GeneratorTesting
     Olifant.Glob
+    Olifant.Holes
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep
@@ -69,6 +72,7 @@ library
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Model
     Olifant.Naming
     Olifant.Process
     Olifant.Query
@@ -108,9 +112,11 @@ test-suite spec
     Olifant.Cli.Options
     Olifant.Cli.Output
     Olifant.CliSpec
+    Olifant.Fill
     Olifant.Generation
     Olifant.Generation.Complete
     Olifant.Generation.Compose
+    Olifant.Generation.FillPhase
     Olifant.Generation.Plan
     Olifant.Generation.Planner
     Olifant.Generation.Regions
@@ -128,6 +134,8 @@ test-suite spec
     Olifant.GeneratorTestingSpec
     Olifant.Glob
     Olifant.GlobSpec
+    Olifant.Holes
+    Olifant.HolesSpec
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep
@@ -140,6 +148,8 @@ test-suite spec
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.LanguageSpec
+    Olifant.Model
+    Olifant.ModelSpec
     Olifant.Naming
     Olifant.NamingSpec
     Olifant.Process

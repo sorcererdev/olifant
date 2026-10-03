@@ -12,8 +12,12 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Olifant.Cli
-import Olifant.Cli.Output (planHuman)
-import Olifant.Generation (EditAction (..), Plan (..), PlannedEdit (..), Site (..))
+import Olifant.Cli.Output (planHuman, planJson)
+import Olifant.Generation (EditAction (..), HoleStatus (..), Plan (..), PlannedEdit (..), PlannedHole (..), Site (..))
+import Olifant.Holes (HoleSite (..))
+import Data.Aeson (encode)
+import Data.Text.Lazy qualified as TL
+import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
 import Olifant.Language (noChecker, noSyntax)
 import Olifant.Workspace (memoryWorkspace)
@@ -93,7 +97,41 @@ planOutputSpec = describe "planHuman" $ do
           , edit 2 "b.elm" (WillInsert 9 "Settings ->\n    1") (Just (Site "b.elm" "view" "Settings" False))
           , edit 3 "c.elm" (WillInsert 4 "T ->\n    Debug.todo \"\"") (Just (Site "c.elm" "toPath" "T" True))
           ]
-          [] [] M.empty
+          [] [] M.empty []
+  it "lists holes in the plan, with status (spec §6.4)" $ do
+    let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleUnfilled "no model is configured") Nothing
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole]
+    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
+    planHuman False p `shouldSatisfy` T.isInfixOf "holes:\n  status (expr) a.rs:3  unfilled: no model is configured"
+  describe "gen with holes (spec §6.4)" $ do
+    let holeProject model =
+          [ ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n" <> model)
+          , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[holes.expr]\nplaceholder = 'todo(\"olifant: {= hole =}\")'\nwrap = \"h = {= fill =}\"\n")
+          , ("/proj/.olifant/generators/h/generator.toml", "description = \"h\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"out.x\"\ntext = \"v = {= ? val: expr | a value =}\\n\"\n")
+          ]
+        anthropic = "[model]\ndefault = \"claude\"\n[model.backends.claude]\nkind = \"anthropic\"\nmodel = \"claude-x\"\napi_key_env = \"OLIFANT_TEST_NO_SUCH_KEY\"\n"
+    it "leaves placeholders with --no-fill, even with a model configured" $ do
+      (code, out, _, files) <- runWith "" (holeProject anthropic) False ["gen", "h", "--no-fill"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/out.x" files `shouldBe` Just "v = todo(\"olifant: val\")\n"
+      out `shouldSatisfy` T.isInfixOf "\"status\":\"skipped\",\"why\":\"--no-fill\""
+    it "refuses an unknown --model, listing the backends" $ do
+      (code, out, _, _) <- runWith "" (holeProject anthropic) False ["gen", "h", "--model", "nope"]
+      code `shouldBe` ExitFailure 2
+      out `shouldSatisfy` T.isInfixOf "(backends: claude)"
+    it "reports a missing API key as the hole's reason, never crashing" $ do
+      (code, out, _, files) <- runWith "" (holeProject anthropic) False ["gen", "h"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/out.x" files `shouldBe` Just "v = todo(\"olifant: val\")\n"
+      out `shouldSatisfy` T.isInfixOf "OLIFANT_TEST_NO_SUCH_KEY is not set"
+    it "says no model is configured without [model]" $ do
+      (_, out, _, _) <- runWith "" (holeProject "") False ["gen", "h"]
+      out `shouldSatisfy` T.isInfixOf "no model is configured"
+  it "shows each fill in the plan, JSON and human (review I1)" $ do
+    let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleFilled "qwen" 1) (Just "409")
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole]
+    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"fill\":\"409\""
+    planHuman False p `shouldSatisfy` T.isInfixOf "status (expr) a.rs:3  filled by qwen: 409"
   it "marks edits the compiler found, and todos (fix pass)" $ do
     let out = planHuman True plan
     out `shouldSatisfy` ("(+2 lines at line 9, compiler: view)" `T.isInfixOf`)

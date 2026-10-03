@@ -356,7 +356,8 @@ indentation, copied; it is not something the generator chose.
 
 `main.rs`'s call site opens the same way, and gets the one creative line first. Choosing the
 adapter — what actually implements `EmailTemplateRepository` — is the one genuinely creative
-part of this whole workflow, and it stays a `todo!()` for now (a typed hole, not yet built):
+part of this whole workflow, and it stays a `todo!()`: `wire-command` has no typed hole for it
+yet ([chapter 12](12-holes-and-models.md)), so a person or an agent chooses the adapter:
 
 ```diff
 -    let notifications_service = notifications_service::service::NotificationsService::new();

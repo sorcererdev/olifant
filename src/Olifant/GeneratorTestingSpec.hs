@@ -2,17 +2,17 @@
 
 module Olifant.GeneratorTestingSpec (spec) where
 
-import Control.Monad (forM_)
+import Control.Monad (filterM, forM_)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.GeneratorTesting
-import Olifant.Generation (Mode (..), Step (..), describeGenerationError, generate)
+import Olifant.Generation (HoleStatus (..), Mode (..), Plan (..), PlannedHole (..), Step (..), describeGenerationError, generate)
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
 import Olifant.Language (Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
 import Olifant.Workspace (Workspace (..))
-import System.Directory (findExecutable)
+import System.Directory (doesFileExist, findExecutable)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (getTemporaryDirectory)
 import System.FilePath ((</>))
@@ -79,6 +79,21 @@ spec = do
       runCase root missingAstGrep noChecker False c >>= \case
         CaseSkipped why -> why `shouldSatisfy` T.isInfixOf "ast-grep is not installed"
         other -> expectationFailure ("expected pending, got " <> show other)
+    it "replays a case's fills.toml as the model (spec §9)" $ do
+      let gen = "description = \"g\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"out.x\"\ntext = \"v = {= ? val: expr | a value =}\\n\"\n"
+          lang = "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[holes.expr]\nplaceholder = 'todo(\"{= hole =}\")'\nwrap = \"h = {= fill =}\"\n"
+          base fills =
+            [ ("/packs/p/generators/g/generator.toml", gen)
+            , ("/packs/p/languages/x.toml", lang)
+            , ("/packs/p/fixtures/app/README", "fixture\n")
+            , ("/packs/p/generators/g/tests/basic/inputs.toml", "now = \"2026-09-27T15:30:00Z\"\n")
+            , ("/packs/p/generators/g/tests/basic/fills.toml", fills)
+            , ("/packs/p/generators/g/tests/basic/snapshot/out.x", "v = 42\n")
+            ]
+      runTiny (base "[fills]\nval = \"42\"\n") `shouldReturn` CasePassed
+      runTiny (base "[fills]\nother = \"1\"\n") >>= \case
+        CaseFailed msgs -> T.unlines msgs `shouldSatisfy` T.isInfixOf "no recorded fill for `val`"
+        other -> expectationFailure ("expected a failure, got " <> show other)
     it "blessing removes snapshot files the case no longer generates" $ do
       (root, snap) <- memoryWorkspace (tinyPack "old\n" ++ [("/packs/p/generators/g/tests/basic/snapshot/out/stale.txt", "x\n")])
       [c] <- discoverCases root "/packs"
@@ -171,6 +186,31 @@ spec = do
             given <- readTree (caseDir c </> "given")
             snapshot <- readTree (caseDir c </> "snapshot")
             compileClean rust (M.unions [snapshot, given, fixture]) `shouldReturn` Right ()
+  -- A case with recorded fills must also compile with every hole left as its
+  -- placeholder (spec §9 step 4): AI is optional.
+  describe "placeholder output compiles" $ do
+    cases <- runIO (discoverCases (diskWorkspace ".") "packs")
+    strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
+    tmp <- runIO getTemporaryDirectory
+    withFills <- runIO (filterM (\c -> doesFileExist (caseDir c </> "fills.toml")) cases)
+    forM_ withFills $ \c ->
+      it (T.unpack (caseName c)) $ do
+        let root = diskWorkspace "."
+        given <- readTree (caseDir c </> "given")
+        inputs <- TIO.readFile (caseDir c </> "inputs.toml")
+        prepared <- preparePack root (astGrepSyntax (tmp </> "olifant-test-cache")) processChecker (casePackRoot c) (casePack c) (caseGenerator c) (M.toList given)
+        case (prepared, parseCaseInputs inputs) of
+          (Left why, _) -> expectationFailure (T.unpack why)
+          (_, Left why) -> expectationFailure (T.unpack why)
+          (Right (ws, tools, resolve, gen), Right (now, sets)) -> do
+            Right plan <- generate ws resolve tools [Step gen sets] now PlanOnly
+            [() | PlannedHole {phStatus = HoleUnfilled _} <- planHoles plan] `shouldNotBe` []
+            src <- TIO.readFile (casePackRoot c </> "languages" </> (if casePack c == "elm" then "elm.toml" else "rust.toml"))
+            let Right lang = parseLanguage (if casePack c == "elm" then "elm" else "rust") (casePackRoot c) src
+            fixture <- readTree (casePackRoot c </> "fixtures" </> "app")
+            findExecutable (if casePack c == "elm" then "elm" else "cargo") >>= \case
+              Nothing -> missingTool strict "the pack's compiler is not installed"
+              Just _ -> compileClean lang (M.unions [planWrites plan, given, fixture]) `shouldReturn` Right ()
   where
     -- Pending locally; a failure where tools are required (the pre-merge hook
     -- sets OLIFANT_REQUIRE_TOOLS=1), so a missing tool cannot look green.

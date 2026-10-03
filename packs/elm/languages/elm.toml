@@ -7,6 +7,15 @@ branch = """
 {= pattern =} ->
     {= body =}"""
 
+# Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
+# a fill must parse in.
+[holes.expr]
+placeholder = 'Debug.todo "olifant: {= hole =}: {= instruction|escaped =}"'
+wrap = """
+olifantHole =
+    {= fill =}
+"""
+
 [check]
 command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]
 context = ["elm.json"]
