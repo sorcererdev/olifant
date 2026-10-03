@@ -69,10 +69,16 @@ spec = do
     it "accepts literal braces: Rust's {{}}, and text that also has real tags" $ do
       parseTemplate "format!(\"{{}}\", x)" `shouldSatisfy` either (const False) (const True)
       parseTemplate "{{ x }} and {= y =}" `shouldSatisfy` either (const False) (const True)
-  describe "holes" $
-    it "are refused until step 3, with the line number" $
-      parseTemplate "a\nb {= ? body: block | x =}" `shouldBe` Left (HolesNotYetSupported 2)
-
+  describe "holes" $ do
+    it "renders a hole as a marker carrying its name, kind and rendered instruction" $
+      renderWith [("p", VText "A::B")] "x => {= ? status: expr | the status for {= p =} =},"
+        `shouldBe` Right "x => \10214olifant-hole status|expr|the status for A::B\10215,"
+    it "needs a name and a kind" $
+      parseTemplate "{= ? : expr | x =}" `shouldSatisfy` isSyntaxError
+    it "counts the instruction's variables as the template's" $
+      fmap freeVariables (parseTemplate "{= ? h: expr | for {= p =} =}") `shouldBe` Right (S.fromList ["p"])
+    it "escaped escapes backslashes and double quotes" $
+      renderWith [("t", VText "a \"b\" \\n")] "{= t|escaped =}" `shouldBe` Right "a \\\"b\\\" \\\\n"
   describe "{= if =} and {= for =}" $ do
     it "picks the first true branch" $ do
       let src = "{= if kind == \"a\" =}A{= elif kind == \"b\" =}B{= else =}C{= end =}"

@@ -28,6 +28,8 @@ renderSegments env segs = T.concat <$> traverse (renderSegment env) segs
 renderSegment :: Env -> Segment -> Either TemplateError Text
 renderSegment env = \case
   Lit t -> Right t
+  -- A hole renders as a marker the plan turns into a placeholder (spec §6.4).
+  Hole name kind body -> (\i -> "\10214olifant-hole " <> name <> "|" <> kind <> "|" <> T.replace "\10215" "]" i <> "\10215") <$> renderSegments env body
   Out e -> eval env e >>= display
   If branches els -> pick branches
     where
@@ -95,6 +97,10 @@ applyFilter f v = case caseFromText f of
       other -> Left (TypeMismatch ("`parens` needs text, got " <> describeValue other))
     -- The inside of a Rust format-string literal (`todo!("…")`,
     -- `#[error("…")]`): backslash, quote and braces escaped.
+    -- Inside an Elm or Haskell string literal: backslash and quote escaped.
+    "escaped" -> case v of
+      VText t -> Right (VText (T.replace "\"" "\\\"" (T.replace "\\" "\\\\" t)))
+      other -> Left (TypeMismatch ("`escaped` needs text, got " <> describeValue other))
     "rust_string" -> case v of
       VText t -> Right (VText (T.concatMap rustChar t))
       VName n -> Right (VText (T.concatMap rustChar (Naming.render Naming.Snake n)))
