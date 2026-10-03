@@ -4,7 +4,7 @@
 -- left as their placeholder. Holes never block a generation.
 module Olifant.Generation.FillPhase (fillPhase) where
 
-import Control.Monad (foldM, forM)
+import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -14,7 +14,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
 import Olifant.Generation.Plan (HoleStatus (..), PlannedHole (..))
-import Olifant.Generation.Tools (Tools (..))
+import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
@@ -31,10 +31,13 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
   where
     -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
     loop mf r accepted notes pending = do
+      toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
       reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs)
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
           next accepted' notes' failed
-            | null failed || r >= 1 + max 0 (mfRetries mf) = pure (finish mf accepted' notes' failed)
+            | null failed || r >= 1 + max 0 (mfRetries mf) = do
+                forM_ failed (\(t, why) -> toolProgress tools (Unfilled (name t) why))
+                pure (finish mf accepted' notes' failed)
             | otherwise = loop mf (r + 1) accepted' notes' (map fst failed)
       case reply of
         -- An unreadable reply is a failed attempt, retried like any other.
@@ -66,6 +69,7 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
               good' = if null clash then good else []
               accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
               failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash]
+          forM_ good' (\(t, _) -> toolProgress tools (Filled (name t) (tryAttempts t)))
           next accepted' (maybe notes (: notes) note) failed
 
     finish mf accepted notes failed =
@@ -111,6 +115,7 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
           wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
       disk <- forM (filter wanted paths) (\p -> (p,) <$> readText ws p)
       let all' = M.union (M.filterWithKey (\p _ -> wanted p) files) (M.fromList [(p, t) | (p, Just t) <- disk])
+      toolProgress tools (Checking (langName lang))
       runCheck (toolChecker tools) lang all' >>= \case
         Left f -> pure (M.empty, Just (describeCheckFailure f)) -- parse validation stands; the plan says so
         Right report -> pure (M.fromListWith (flip (++)) [(p, [T.pack p <> ": " <> why]) | (p, why) <- reportBroken report], Nothing)

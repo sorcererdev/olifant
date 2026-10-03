@@ -235,7 +235,7 @@ runCommand rt cwd fmt cat = \case
             case modelFor cat g of
              Left why -> failWith rt fmt 2 "usage" why Nothing []
              Right filler ->
-              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler}) steps now mode >>= \case
+              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan =
@@ -403,3 +403,11 @@ projectQueries rt cat =
 -- | One action as editors read it (spec §4.6).
 actionJson :: Action -> Value
 actionJson a = object ["generator" .= actGenerator a, "label" .= actLabel a, "sets" .= M.fromList (actSets a), "missing" .= actMissing a]
+
+-- | A progress event as one JSON line (`gen --progress`).
+progressJson :: ProgressEvent -> Value
+progressJson = \case
+  Checking lang -> object ["event" .= ("check" :: Text), "language" .= lang]
+  Filling holes attempt model -> object ["event" .= ("fill" :: Text), "holes" .= holes, "attempt" .= attempt, "model" .= model]
+  Filled hole attempt -> object ["event" .= ("filled" :: Text), "hole" .= hole, "attempt" .= attempt]
+  Unfilled hole why -> object ["event" .= ("unfilled" :: Text), "hole" .= hole, "why" .= why]

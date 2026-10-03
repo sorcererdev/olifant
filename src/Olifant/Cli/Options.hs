@@ -73,6 +73,8 @@ data GenOptions = GenOptions
   -- ^ `--model NAME`: which `[model.backends.NAME]` fills holes
   , genNoFill :: Bool
   -- ^ `--no-fill`: leave every hole as its placeholder
+  , genProgress :: Bool
+  -- ^ `--progress`: JSON-line progress events on stderr (for editors)
   }
   deriving stock (Eq, Show)
 
@@ -107,7 +109,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     formatP = optional (flag' Json (long "json" <> help "JSON output") <|> flag' Human (long "human" <> help "Human-readable output"))
     -- Used only to render `gen --help`; real `gen` parsing is 'parseGen'.
     genP =
-      (\target sets plan now stepsFile model noFill -> GenOptions [StepSpec target sets] stepsFile plan now model noFill)
+      (\target sets plan now stepsFile model noFill progress -> GenOptions [StepSpec target sets] stepsFile plan now model noFill progress)
         <$> strArgument (metavar "GENERATOR")
         <*> many (option (eitherReader setP) (long "set" <> metavar "KEY=VALUE" <> help "Set an input or override a derived value"))
         <*> switch (long "plan" <> help "Show what would change without writing anything")
@@ -115,6 +117,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> optional (strOption (long "steps" <> metavar "FILE|-" <> help "Read the steps as JSON: [{\"gen\": ..., \"set\": {...}}]"))
         <*> optional (strOption (long "model" <> metavar "NAME" <> help "Fill holes with [model.backends.NAME] (default: [model] default)"))
         <*> switch (long "no-fill" <> help "Leave every hole as its placeholder")
+        <*> switch (long "progress" <> help "Write progress as JSON lines on stderr (checks, fill requests, fills)")
     syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
     actionsP =
@@ -133,11 +136,12 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
 -- | `gen` arguments: global flags anywhere; steps separated by a standalone "+".
 parseGen :: [String] -> Either Text Options
 parseGen args0 = do
-  -- `--model NAME` and `--no-fill` apply to the whole run, like --plan.
-  (model, noFill, args) <- pull Nothing False [] (concatMap splitEq args0)
+  -- `--model NAME`, `--no-fill` and `--progress` apply to the whole run, like --plan.
+  let progress = "--progress" `elem` args0
+  (model, noFill, args) <- pull Nothing False [] (filter (/= "--progress") (concatMap splitEq args0))
   Options fmt cmd <- go Nothing False Nothing Nothing [] [] args
   pure $ case cmd of
-    GenCmd o -> Options fmt (GenCmd o {genModel = model, genNoFill = noFill})
+    GenCmd o -> Options fmt (GenCmd o {genModel = model, genNoFill = noFill, genProgress = progress})
     other -> Options fmt other
   where
     pull model noFill acc = \case
@@ -170,7 +174,7 @@ parseGen args0 = do
           | all null segments -> Left "missing GENERATOR: olifant gen GENERATOR [--set KEY=VALUE]... [+ GENERATOR ...]"
           | any null segments -> Left "empty step: each `+` must be followed by a generator"
           | otherwise -> traverse step segments
-      pure (Options fmt (GenCmd (GenOptions steps stepsFile plan now Nothing False)))
+      pure (Options fmt (GenCmd (GenOptions steps stepsFile plan now Nothing False False)))
     step (g : xs) = StepSpec (T.pack g) <$> sets xs
     step [] = Left "empty step"
     sets = \case

@@ -706,6 +706,14 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (plan, _) <- run1 tools
     statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 2)]
     length <$> readIORef calls `shouldReturn` 2
+  it "(l) reports progress: each request, each fill, each check (for editors)" $ do
+    (tools0, _) <- withFiller [Right (M.fromList [("a", "BAD"), ("b", "2")]), Right (M.fromList [("a", "7")])]
+    events <- newIORef []
+    let tools = tools0 {toolProgress = \e -> modifyIORef' events (++ [e])}
+    _ <- run1 tools
+    seen <- readIORef events
+    [e | e <- seen, not (isChecking e)] `shouldBe` [Filling ["a", "b"] 1 "fake", Filled "b" 1, Filling ["a"] 2 "fake", Filled "a" 2]
+    [l | Checking l <- seen] `shouldSatisfy` (\ls -> not (null ls) && all (== "elm") ls)
   it "(f) retries a fill that does not parse as its kind" $ do
     (tools, calls) <- withFiller [Right (M.fromList [("a", "!!"), ("b", "2")]), Right (M.fromList [("a", "3")])]
     (plan, _) <- run1 tools
@@ -728,6 +736,13 @@ completeSpec = describe "generate (complete edits)" $ do
     (Right plan, files) <- go [("src/A.elm", page)] [[missing "src/A.elm" (3, 5) ["Reset"]]]
     M.lookup "src/A.elm" files `shouldBe` Just (page <> "\n        Reset ->\n            ( model, Cmd.none )\n")
     map editSite (planEdits plan) `shouldBe` [Just (Site "src/A.elm" "update" "Reset" False)]
+  it "reports each compiler check as progress" $ do
+    ref <- newIORef [[missing "src/A.elm" (3, 5) ["Reset"]]]
+    events <- newIORef []
+    (ws, _) <- memoryWorkspace [("src/A.elm", page)]
+    let tools = (basicTools noSyntax (scriptedChecker ref) [elmLang]) {toolProgress = \e -> modifyIORef' events (++ [e])}
+    _ <- generate ws noResolve tools [Step gen (M.fromList [("name", "reset")])] now Apply
+    readIORef events >>= (`shouldSatisfy` elem (Checking "elm"))
   it "warns about a site it cannot extend (a function equation) that needs one of its constructors" $ do
     let unplaced = Checker $ \_ _ -> pure (Right (CheckReport [] [] [(missing "src/A.elm" (7, 9) ["Reset"], "an equation for `reset`")]))
     (ws, _) <- memoryWorkspace [("src/A.elm", page)]
@@ -948,3 +963,8 @@ regionSpec = describe "generate (owned regions)" $ do
     (ws, _) <- memoryWorkspace [("x.cabal", "    -- olifant:region mods\n")]
     Right plan <- generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply
     map describeConflict (planConflicts plan) `shouldSatisfy` any ("has no end" `T.isInfixOf`)
+
+isChecking :: ProgressEvent -> Bool
+isChecking = \case
+  Checking _ -> True
+  _ -> False

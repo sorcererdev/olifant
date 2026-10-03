@@ -115,6 +115,14 @@ planOutputSpec = describe "planHuman" $ do
       code `shouldBe` ExitSuccess
       M.lookup "/proj/out.x" files `shouldBe` Just "v = todo(\"olifant: val\")\n"
       out `shouldSatisfy` T.isInfixOf "\"status\":\"skipped\",\"why\":\"--no-fill\""
+    it "writes progress as JSON lines on stderr with --progress (for editors)" $ do
+      (code, out, err, _) <- runWith "" (holeProject anthropic) False ["gen", "h", "--progress"]
+      code `shouldBe` ExitSuccess
+      err `shouldSatisfy` T.isInfixOf "{\"attempt\":1,\"event\":\"fill\",\"holes\":[\"val\"],\"model\":\"claude-x\"}\n"
+      err `shouldSatisfy` T.isInfixOf "\"event\":\"unfilled\",\"hole\":\"val\""
+      out `shouldNotSatisfy` T.isInfixOf "\"event\""
+      (_, _, quiet, _) <- runWith "" (holeProject anthropic) False ["gen", "h"]
+      quiet `shouldNotSatisfy` T.isInfixOf "\"event\""
     it "refuses an unknown --model, listing the backends" $ do
       (code, out, _, _) <- runWith "" (holeProject anthropic) False ["gen", "h", "--model", "nope"]
       code `shouldBe` ExitFailure 2
