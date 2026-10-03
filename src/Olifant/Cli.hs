@@ -4,9 +4,10 @@ module Olifant.Cli (Runtime (..), runCli) where
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
+import Olifant.Actions (Action (..), actionsAt)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (when)
-import Data.Aeson (Value, eitherDecodeStrict, object)
+import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
@@ -28,7 +29,7 @@ import Olifant.Generator (ChoiceView (..), EnvError (..), GeneratorId (..), Gene
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
-import System.FilePath (takeBaseName, takeDirectory, (</>))
+import System.FilePath (makeRelative, normalise, takeBaseName, takeDirectory, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -140,6 +141,16 @@ runCommand rt cwd fmt cat = \case
     viewList <- if detail then traverse (\e -> (entryId e,) . either (const M.empty) M.fromList <$> choiceViewsFor rt cat M.empty (entryDefinition e)) ok else pure []
     let views e = M.findWithDefault M.empty (entryId e) (M.fromList viewList)
     emit rt fmt (listJson detail (subsOf cat) views entries broken) (listHuman detail (subsOf cat) views entries broken)
+    pure ExitSuccess
+  ActionsCmd file pos fromStdin -> do
+    -- Paths are relative to where olifant runs; matching uses the
+    -- project-relative path.
+    let project = within (rtProjectDir rt) (rtRoot rt)
+        rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
+    content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> file)
+    paths <- listFiles project "."
+    acts <- actionsAt (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat] rel pos (fromMaybe "" content)
+    emit rt fmt (toJSON (map actionJson acts)) (T.unlines [actLabel a <> "  (" <> actGenerator a <> ")" <> (if null (actMissing a) then "" else "  asks: " <> T.intercalate ", " (actMissing a)) | a <- acts])
     pure ExitSuccess
   SchemaCmd -> do
     emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")
@@ -388,3 +399,7 @@ projectQueries rt cat =
     { queryCommand = processCommand (rtProjectDir rt)
     , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
     }
+
+-- | One action as editors read it (spec §4.6).
+actionJson :: Action -> Value
+actionJson a = object ["generator" .= actGenerator a, "label" .= actLabel a, "sets" .= M.fromList (actSets a), "missing" .= actMissing a]

@@ -34,6 +34,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     -- olifant:region library-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
+    Olifant.Actions
     Olifant.Anchor
     Olifant.Anchor.Items
     Olifant.Anchor.Phrase
@@ -101,6 +102,8 @@ test-suite spec
     , hspec-hedgehog  >=0.1
   other-modules:
     -- olifant:region test-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
+    Olifant.Actions
+    Olifant.ActionsSpec
     Olifant.Anchor
     Olifant.Anchor.Items
     Olifant.Anchor.Phrase

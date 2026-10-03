@@ -226,6 +226,17 @@ runCliSpec = describe "runCli" $ do
     human `shouldSatisfy` T.isInfixOf "service=billing:  query failed:"
     (_, json, _, _) <- runWith "" files False ["show", "q"]
     json `shouldSatisfy` T.isInfixOf "\"errors\":{\"billing\":"
+  it "lists the actions that apply at a position (spec §4.6)" $ do
+    let gen = T.unlines
+          [ "description = \"Wire it\"", "language = \"x\""
+          , "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\""
+          , "[applies_at]", "path = \"{service}/src/{command}.x\"", "label = \"Wire {= command =}\"" ]
+        files = ("/proj/.olifant/generators/wire/generator.toml", gen) : project
+    (code, out, _, _) <- runWith "unsaved text" files False ["actions", "--at", "billing/src/cancel.x:3:5", "--content", "-"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}]"
+    (code2, _, _, _) <- runWith "" files False ["actions", "--at", "billing/src/cancel.x"]
+    code2 `shouldBe` ExitFailure 2
   it "suggests `gen` when the first word looks like a generator" $ do
     (code, _, err, _) <- runWith "" project True ["elm/page", "--set", "page=settings"]
     code `shouldBe` ExitFailure 2

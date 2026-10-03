@@ -16,6 +16,7 @@ import Data.Aeson.Types qualified as Aeson
 import Data.Foldable (toList)
 import Data.Scientific (floatingOrInteger)
 import Data.Map.Strict qualified as M
+import Data.List (intercalate)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
@@ -30,7 +31,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text)
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Int, Int) Bool
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -99,6 +100,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "sync" (SyncCmd <$> syncP) "Refresh owned regions (--check: report drift and write nothing; --init REGION: create a region's fences)"
             <> cmd "new" (NewCmd <$> strArgument (metavar "NAME") <*> optional (strOption (long "language" <> metavar "LANGUAGE" <> help "The language adapter (needed when the project has more than one)"))) "Write a skeleton project generator at .olifant/generators/NAME/generator.toml"
             <> cmd "schema" (pure SchemaCmd) "Print the generator.toml format as a JSON Schema"
+            <> cmd "actions" (actionsP) "The generators that apply at a position (for editors): --at FILE:LINE:COL [--content -]"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
     cmd name p desc = command name (info (Options <$> formatP <*> p) (progDesc desc))
@@ -115,6 +117,17 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> switch (long "no-fill" <> help "Leave every hole as its placeholder")
     syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
+    actionsP =
+      (\(f, pos) content -> ActionsCmd f pos content)
+        <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line and column")
+        <*> (maybe False (== ("-" :: String)) <$> optional (strOption (long "content" <> metavar "-" <> help "Read the file's current text from stdin")))
+    -- FILE:LINE:COL, split from the right (a path may contain colons).
+    positionP s = case reverse (splitOn ':' s) of
+      (c : l : rest@(_ : _)) | [(col, "")] <- reads c, [(line, "")] <- reads l -> Right (intercalate ":" (reverse rest), (line, col))
+      _ -> Left "expected FILE:LINE:COL (1-based)"
+    splitOn sep xs = case break (== sep) xs of
+      (a, _ : b) -> a : splitOn sep b
+      (a, []) -> [a]
     timeP s = maybe (Left "expected an ISO 8601 time like 2026-09-27T15:30:00Z") Right (iso8601ParseM s)
 
 -- | `gen` arguments: global flags anywhere; steps separated by a standalone "+".
