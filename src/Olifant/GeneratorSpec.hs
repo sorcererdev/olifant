@@ -18,6 +18,7 @@ import Data.List (sort)
 import Olifant.Generator.Load (completeKeys, createKeys, inputKeys, insertKeys, topKeys)
 import Olifant.Generator.Schema (generatorSchema)
 import Test.Hspec
+import Data.Maybe (isJust)
 import Data.Bifunctor (first)
 import Data.Functor.Identity (runIdentity)
 import Olifant.Query (QueryFailure (..), noQueries)
@@ -238,6 +239,26 @@ parseSpec = describe "parseGenerator" $ do
             , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
             , "[query.ports]", "glob = \"{= service =}/ports/*.rs\"" ])
       fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty (UTCTime (fromGregorian 2026 10 2) 0) g))) `shouldBe` Right (Just (DependsOn ["service"]))
+  describe "[applies_at] (spec §4.6)" $ do
+    let gen extra = load (T.unlines (
+          [ "description = \"d\"", "language = \"rust\""
+          , "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\"", "[inputs.failure]", "type = \"ident\"" ] ++ extra))
+    it "reads path, node, bind and label" $ do
+      let Right g = gen
+            [ "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\""
+            , "node = { kind = \"enum_variant\", inside = { kind = \"enum_item\", regex = \"Failure\" } }"
+            , "bind = { failure = \"^[[:space:]]*([A-Za-z0-9_]+)\" }"
+            , "label = \"Add {= failure =} to every match\"" ]
+          Just a = genAppliesAt g
+      apPath a `shouldBe` "{service}/*-service/src/{command}.rs"
+      isJust (apNode a) `shouldBe` True
+      apBind a `shouldBe` [("failure", "^[[:space:]]*([A-Za-z0-9_]+)")]
+      fmap templateSource (apLabel a) `shouldBe` Just "Add {= failure =} to every match"
+    it "refuses a path slot or bind that names no input" $ do
+      gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either ("`{svc}` in applies_at.path is not an input" `T.isInfixOf`) (const False)
+      gen ["[applies_at]", "path = \"x.rs\"", "bind = { nope = \"(a)\" }"] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
+    it "refuses Perl classes in bind" $
+      gen ["[applies_at]", "path = \"x.rs\"", "bind = { failure = \"\\\\s(\\\\w+)\" }"] `shouldSatisfy` either ("[[:space:]]" `T.isInfixOf`) (const False)
   it "rejects an edit that is both create and insert" $
     load "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a\"\ninsert = \"b\"\ntext = \"t\"\n" `shouldSatisfy` isLeft
   it "reports template syntax errors with the key" $ do
