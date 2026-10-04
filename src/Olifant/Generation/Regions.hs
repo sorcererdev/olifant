@@ -1,6 +1,6 @@
 -- | The owned-region phase (spec §5.8): after a plan's edits, rewrite every
 -- region from its query, against the files as the plan leaves them.
-module Olifant.Generation.Regions (RegionMode (..), refreshRegions) where
+module Olifant.Generation.Regions (RegionMode (..), refreshRegions, regionInstances) where
 
 import Control.Monad (foldM)
 import Data.List (sortOn, (\\))
@@ -14,7 +14,9 @@ import Data.Text qualified as T
 import Olifant.Generation.Plan
 import Olifant.Generation.Tools (Tools (..))
 import Olifant.Language (Language (..), languageFor)
-import Olifant.Query (Query (..), QueryFailure (..), Record, runQuery)
+import Olifant.Glob (matchesGlob)
+import Olifant.Query (AstQuery (..), Query (..), QueryFailure (..), Record, runQuery)
+import System.FilePath (takeDirectory)
 import Olifant.Region
 import Olifant.Template (describeTemplateError)
 import Olifant.Workspace (Workspace (..), isSafeRelative)
@@ -34,7 +36,7 @@ refreshRegions mode tools ws firstNumber current0
       disk <- listFiles ws "."
       -- A set, not `nub`: projects can hold hundreds of thousands of files.
       let universe = S.toList (S.fromList (disk ++ [p | (p, Just _) <- M.toList current0]))
-      (edits, conflicts, current, _) <- foldM (step universe) ([], [], current0, []) (sortOn regionName (toolRegions tools))
+      (edits, conflicts, current, _) <- foldM (step universe) ([], [], current0, []) (sortOn (\d -> (regionName d, regionFile d)) (concatMap (regionInstances universe) (toolRegions tools)))
       pure (reverse edits, reverse conflicts, current)
   where
     step universe (edits, conflicts, current, cache) def = do
@@ -75,6 +77,24 @@ refreshRegions mode tools ws firstNumber current0
         r <- first failureWhy <$> runQuery (toolQueries tools) universe view q
         pure (r, (q, r) : cache)
       _ -> (,cache) . first failureWhy <$> runQuery (toolQueries tools) universe view q
+
+-- | A region whose `file` is a pattern is a family: one region per existing
+-- file it matches, its query's `{= dir =}` and `{= file =}` being that
+-- file's directory and path (spec §5.9).
+regionInstances :: [FilePath] -> RegionDef -> [RegionDef]
+regionInstances universe def
+  | any (`elem` ("*?[" :: String)) (regionFile def) =
+      [ def {regionFile = f, regionQuery = forFile f (regionQuery def)}
+      | f <- universe
+      , matchesGlob (T.pack (regionFile def)) f
+      ]
+  | otherwise = [def]
+  where
+    forFile f = \case
+      GlobQuery g ex -> GlobQuery (sub f g) (map (sub f) ex)
+      AstQueryQ q -> AstQueryQ q {astFiles = sub f (astFiles q)}
+      q -> q
+    sub f = T.replace "{= dir =}" (T.pack (takeDirectory f)) . T.replace "{= file =}" (T.pack f)
 
 -- | The lines currently inside a region (stripped), for counting what changed.
 oldBody :: RegionDef -> Text -> Text -> [Text]

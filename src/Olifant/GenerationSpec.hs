@@ -916,6 +916,31 @@ regionSpec = describe "generate (owned regions)" $ do
     (ws, _) <- memoryWorkspace (("x.cabal", cabal) : [("node_modules/pkg" <> show i <> "/index.js", "") | i <- [1 :: Int .. 30000]])
     result <- timeout 5000000 (generate ws noResolve tools [Step unit (M.fromList [("name", "b")])] now Apply)
     fmap (either (const False) (not . hasConflicts)) result `shouldBe` Just True
+  describe "families: one region per matching file (spec §5.9)" $ do
+    let Right modItem = parseTemplate "pub mod {= stem =};"
+        family = RegionDef "modules" "*/*-service/src/lib.rs" (GlobQuery "{= dir =}/*.rs" ["{= dir =}/lib.rs"]) (ItemTemplate modItem) False (Just "//") Nothing Nothing
+        famTools = (noTools :: Tools IO) {toolRegions = [family]}
+        lib = "// olifant:region modules\n// olifant:end modules\n"
+        files = [ ("billing/billing-service/src/lib.rs", lib), ("billing/billing-service/src/cancel.rs", ""), ("billing/billing-service/src/void.rs", "")
+                , ("mail/mail-service/src/lib.rs", lib), ("mail/mail-service/src/send.rs", "") ]
+        noop = generatorFrom (header <> "[[edits]]\ncreate = \"x/{= name =}.txt\"\ntext = \"x\"\n")
+    it "(a, b) refreshes each matching file from its own directory" $ do
+      (ws, snap) <- memoryWorkspace files
+      Right _ <- generate ws noResolve famTools [Step noop (M.fromList [("name", "n")])] now Apply
+      out <- snap
+      let body f = fmap (T.unlines . drop 1 . T.lines) (M.lookup f out)
+      body "billing/billing-service/src/lib.rs" `shouldBe` Just "pub mod cancel;\npub mod void;\n// olifant:end modules\n"
+      body "mail/mail-service/src/lib.rs" `shouldBe` Just "pub mod send;\n// olifant:end modules\n"
+      fmap (T.isInfixOf "generated from glob mail/mail-service/src/*.rs") (M.lookup "mail/mail-service/src/lib.rs" out) `shouldBe` Just True
+    it "(c) reports drift per file" $ do
+      (ws, _) <- memoryWorkspace files
+      (edits, _, _) <- refreshRegions ReportUnset famTools ws 1 M.empty
+      [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]] `shouldBe` [("billing/billing-service/src/lib.rs", "modules"), ("mail/mail-service/src/lib.rs", "modules")]
+    it "(d) a matching file without fences is not set up — never rewritten (Review Focus 3)" $ do
+      (ws, _) <- memoryWorkspace [("billing/billing-service/src/lib.rs", "pub mod cancel;\n"), ("billing/billing-service/src/cancel.rs", "")]
+      (edits, conflicts, _) <- refreshRegions ReportUnset famTools ws 1 M.empty
+      edits `shouldBe` []
+      map describeConflict conflicts `shouldSatisfy` any (\c -> "billing/billing-service/src/lib.rs" `T.isInfixOf` c && "sync --init modules" `T.isInfixOf` c)
   it "never writes a region outside the project (review #3)" $ do
     let Right t = parseTemplate "{= dotted =}"
         escape = RegionDef "esc" "../escaped.txt" (GlobQuery "src/**/*.hs" []) (ItemTemplate t) True (Just "#") Nothing Nothing
