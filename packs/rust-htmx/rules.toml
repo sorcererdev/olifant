@@ -20,15 +20,27 @@ message  = "Commands talk to ports, not the database (rust-htmx: ports & adapter
 severity = "warn"
 
 # The usual answer first: the port this service already has for that data.
+# Each fix also removes the Diesel: an import is deleted; a statement becomes
+# a hole the model rewrites through the port (its trait shown as context),
+# compile-checked — or a todo!() that compiles, without a model.
 [[rules.commands-use-ports.fixes]]
 generator = "rust-htmx/command-dependency"
 label     = "Use an existing port"
 with      = { service = "{= service =}", command = "{= stem =}" }
+context   = ["{= service|kebab =}/{= service|kebab =}-service/src/ports/{= dependency =}.rs"]
+replace   = [
+  { enclosing = ["use_declaration"], text = "" },
+  { enclosing = ["let_declaration", "expression_statement"], text = "{= ? port_call: stmt | the same as `{= finding =}` but through self.{= dependency =} (the {= dependency|pascal =} port shown in the related file) =}" },
+]
 
 [[rules.commands-use-ports.fixes]]
 generator = "rust-htmx/service-repository"
 label     = "Add a new repository port"
 with      = { service = "{= service =}" }
+replace   = [
+  { enclosing = ["use_declaration"], text = "" },
+  { enclosing = ["let_declaration", "expression_statement"], text = "{= ? port_call: stmt | the same as `{= finding =}` but through the new repository port =}" },
+]
 
 [rules.commands-no-unwrap]
 files    = "*/*-service/src/*.rs"

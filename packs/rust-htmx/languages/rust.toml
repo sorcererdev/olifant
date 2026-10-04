@@ -16,11 +16,18 @@ format  = "rustc-json"
 # a fill must parse in.
 [holes.expr]
 placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
-wrap = "fn __olifant() { let _ = {= fill =}; }"
+wrap = "fn __olifant() {\n    let _ = {= fill =}\n    ;\n}"
 
 [holes.block]
 placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
-wrap = "fn __olifant() { {= fill =} }"
+# The fill on its own lines: a trailing `// comment` can't swallow the brace.
+wrap = "fn __olifant() {\n{= fill =}\n}"
+
+# A whole statement (a rule's fix rewriting one): the placeholder ends with
+# `;` so the code after it still compiles.
+[holes.stmt]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}");'
+wrap = "fn __olifant() {\n{= fill =}\n}"
 
 [holes.type]
 placeholder = "() /* olifant: {= hole =} */"

@@ -131,7 +131,10 @@ generate ws resolve tools steps now mode =
               else firstPass
       -- Holes (spec §6.4): name them, write their placeholders; a file whose
       -- text already matches the plan, holes and all, is left as it is.
-      let changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
+      -- A file a rule's fix rewrote is changed even when its old code would
+      -- "match" the new hole (holes match any fill on re-runs).
+      let replaced = [editPath e | e <- edits, WillReplace {} <- [editAction e]]
+          changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, if p `elem` replaced then Just (Just c) /= M.lookup p originals else not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
           (placed, holeConflicts, holes0) = case placeHoles (toolLanguages tools) changed of
             Left problems -> (changed, map HoleProblem problems, [])
             Right (files, hs) -> (files, [], [PlannedHole h (HoleUnfilled "no model is configured") Nothing | h <- hs])

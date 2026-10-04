@@ -5,6 +5,8 @@ members = [
           ##PLOP NEW PACKAGE HOOK##
           "notifications/adapters/in-memory-delivery-log-repository",
           "notifications/adapters/diesel-delivery-log-repository",
+          "billing/adapters/in-memory-invoice-repository",
+          "billing/adapters/diesel-invoice-repository",
           "billing/billing-service",
           "notifications/notifications-service",
 ]

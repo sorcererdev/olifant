@@ -133,6 +133,7 @@ showJson views subs e =
       Create p _ _ _ -> object ["kind" .= ("create" :: Text), "path" .= templateSource p]
       Insert p anchors _ _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
       Complete c w _ -> object ["kind" .= ("complete" :: Text), "constructor" .= templateSource c, "where" .= fmap templateSource w]
+      Replace p (l1, l2) _ _ -> object ["kind" .= ("replace" :: Text), "path" .= templateSource p, "lines" .= [l1, l2]]
 
 showHuman :: M.Map Text ChoiceView -> [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
 showHuman views subs e =
@@ -158,6 +159,7 @@ showHuman views subs e =
       Create p _ _ _ -> "  create " <> templateSource p
       Insert p anchors _ _ -> "  insert " <> templateSource p <> " at " <> T.intercalate " | " (map anchorText anchors)
       Complete c w _ -> "  complete " <> templateSource c <> maybe "" (\x -> " in " <> templateSource x) w
+      Replace p (l1, l2) _ _ -> "  replace " <> templateSource p <> " lines " <> T.pack (show l1) <> "-" <> T.pack (show l2)
     useLines (u, sub) =
       ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
         : ("    with " <> T.unwords [k <> "=" <> templateSource t | (k, t) <- useWith u])
@@ -195,6 +197,7 @@ planJson applied plan =
       WillCreate c -> ["status" .= ("create" :: Text)] ++ content c
       WillOverwrite c -> ["status" .= ("overwrite" :: Text)] ++ content c
       WillInsert l s -> ["status" .= ("insert" :: Text), "line" .= l] ++ content s
+      WillReplace l n s -> ["status" .= ("replace" :: Text), "line" .= l, "removed" .= n] ++ content s
       WillRefresh r a d c -> ["status" .= ("region" :: Text), "region" .= r, "added" .= a, "removed" .= d] ++ content c
       Skipped r -> ["status" .= ("skipped" :: Text), "reason" .= skipReason r]
       Conflicted -> ["status" .= ("conflict" :: Text)]
@@ -239,6 +242,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillCreate c -> "  + " <> T.pack p <> " (" <> lineCount c <> ")"
       WillOverwrite c -> "  ~ " <> T.pack p <> " (overwritten, " <> lineCount c <> ")"
       WillInsert l s -> "  ~ " <> T.pack p <> " (+" <> lineCount s <> " at line " <> T.pack (show l) <> foundBy site <> ")"
+      WillReplace l n s -> "  ~ " <> T.pack p <> " (" <> (if T.null s then "−" <> T.pack (show n) <> " line" <> (if n == 1 then "" else "s") else "replaced " <> T.pack (show n) <> " line" <> (if n == 1 then "" else "s") <> " with " <> lineCount s) <> " at line " <> T.pack (show l) <> ")"
       WillRefresh r a d _ -> "  ~ " <> T.pack p <> " (region " <> r <> ": +" <> T.pack (show a) <> " −" <> T.pack (show d) <> ")"
       Skipped r -> "  = " <> T.pack p <> " (skipped: " <> skipReason r <> ")"
       Conflicted -> "  ! " <> T.pack p <> " (conflict, see below)"
@@ -253,6 +257,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
       WillCreate c -> Just c
       WillOverwrite c -> Just c
       WillInsert _ s -> Just s
+      WillReplace _ _ s -> Just s
       WillRefresh _ _ _ c -> Just c
       Skipped _ -> Nothing
       Conflicted -> Nothing

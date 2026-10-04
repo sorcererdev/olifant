@@ -20,6 +20,8 @@ data Tools m = Tools
     toolFiller :: Maybe (ModelFiller m)
   , -- | where progress goes while checking and filling (editors show it)
     toolProgress :: ProgressEvent -> m ()
+  , -- | related files shown to the model with the holes (a rule fix's context)
+    toolFillContext :: [(FilePath, Text)]
   }
 
 -- | What a long-running plan is doing: a language's check; a fill request
@@ -32,4 +34,4 @@ noTools = basicTools noSyntax noChecker []
 
 -- | Syntax, checker and languages, with no regions and no commands.
 basicTools :: Applicative m => Syntax m -> Checker m -> [Language] -> Tools m
-basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ()))
+basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) []

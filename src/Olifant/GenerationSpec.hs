@@ -75,6 +75,7 @@ spec = do
   holesSpec
   fillSpec
   parseCheckSpec
+  replaceSpec
   regionSpec
   unusableSpec
   composeSpec
@@ -1057,3 +1058,24 @@ parseCheckSpec = describe "parse pre-check (spec §4.6)" $ do
     -- The touched file was broken before the plan: the compiler's complaint
     -- (a conflict here) points back at the parse warning.
     map describeConflict (planConflicts plan) `shouldSatisfy` any (\w -> "does not compile" `T.isInfixOf` w && "(see the parse warning above)" `T.isSuffixOf` w)
+
+replaceSpec :: Spec
+replaceSpec = describe "replace edits (rule fixes, spec §5.9)" $ do
+  let tools = basicTools noSyntax noChecker [holeLang]
+      file = "src/A.elm"
+      replacing old new = replaceGenerator file (2, 2) old (either (error . show) id (parseTemplate new))
+      runReplace files gen = do
+        (ws, snap) <- memoryWorkspace files
+        Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+        (plan,) . M.lookup file <$> snap
+  it "replaces the lines with the text, holes included" $ do
+    (plan, out) <- runReplace [(file, "a\nold line\nc\n")] (replacing "old line" "  x = {= ? fixed: expr | the new value =}")
+    out `shouldBe` Just "a\n  x = Debug.todo \"olifant: fixed\"\nc\n"
+    [(l, n) | WillReplace l n _ <- map editAction (planEdits plan)] `shouldBe` [(2, 1)]
+  it "deletes the lines when the text is empty" $ do
+    (_, out) <- runReplace [(file, "a\nold line\nc\n")] (replacing "old line" "")
+    out `shouldBe` Just "a\nc\n"
+  it "refuses when the lines are no longer what the fix saw" $ do
+    (ws, _) <- memoryWorkspace [(file, "a\nsomething else\nc\n")]
+    Right plan <- generate ws noResolve tools [Step (replacing "old line" "y") M.empty] now PlanOnly
+    map describeConflict (planConflicts plan) `shouldSatisfy` any ("changed since the rule saw it" `T.isInfixOf`)

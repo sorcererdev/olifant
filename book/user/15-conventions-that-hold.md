@@ -97,6 +97,47 @@ port's kind, like `repository` or `sender`, is ignored), so the first fix arrive
 existing port: InvoiceRepository" with `dependency = "invoice_repository"` already set. With no
 clear match, the editor asks, offering this service's ports.
 
+### Fixes that remove the code they found
+
+A fix that adds the port but leaves the Diesel behind is half a fix. A fix can say what to do
+with the code its finding sits in, as `replace` cases — the first whose node encloses the
+finding wins:
+
+```toml
+replace = [
+  { enclosing = ["use_declaration"], text = "" },          # an import: delete it
+  { enclosing = ["let_declaration", "expression_statement"],
+    text = "{= ? port_call: stmt | the same as `{= finding =}` but through self.{= dependency =} =}" },
+]
+context = ["{= service|kebab =}/{= service|kebab =}-service/src/ports/{= dependency =}.rs"]
+```
+
+- `enclosing`: node kinds; the nearest one around the finding is replaced, whole lines.
+- `text`: what goes there — empty deletes the lines; it is a template over the fix's inputs and
+  `{= finding =}` (the node's code), and may hold holes ([chapter 12](12-holes-and-models.md)).
+  rust-htmx has a `stmt` hole kind for this: its placeholder ends with `;`.
+- `context`: files the model sees when it fills those holes — here the port's trait, so it calls
+  methods that exist.
+
+`olifant fix RULE --at FILE:LINE:COL [--fix N] [--plan]` runs one: the replacement first (its
+lines must still read what the rule saw, or it is a conflict: check again), then the fix's
+generator, as one plan with the usual fill phase. In a rust-htmx sandbox with
+`let invoice = invoices::table.find("inv-1").first::<Invoice>(&mut conn).ok();` typed into
+`cancel_invoice`:
+
+```
+$ olifant fix commands-use-ports --at billing/billing-service/src/cancel_invoice.rs:15:24 --human
+…
+holes:
+  port_call (stmt) billing/billing-service/src/cancel_invoice.rs:19  filled by qwen3-coder:30b (attempt 2): let invoice = self.invoice_repository.get_invoice("inv-1".to_string()).await.map_err(…)?;
+```
+
+The first attempt didn't compile (`?` couldn't turn the port's `RepositoryFailure` into
+`CancelInvoiceFailure`); the compiler's message went back with the retry. Without a model the
+line becomes `todo!("olifant: port_call: the same as `…` but through …");`, which compiles: the
+Diesel is gone either way, and the decision is visible. A statement that can't be rewritten
+(it uses something that doesn't exist) stays that placeholder.
+
 Nothing runs the fix for you. It is an offer, like an action: you review the plan and apply
 it, or not.
 

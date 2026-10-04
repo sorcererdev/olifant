@@ -323,3 +323,12 @@ whose text is already in place are skipped (`=`), and a file the run would creat
 alone when planning it from scratch reproduces it exactly, even when later steps (a
 page's messages) changed it after creation. A file that was created and then edited by
 hand still stops the run (`already exists`), so your edits are never overwritten.
+
+## Fixing a finding: `olifant fix`
+
+`olifant fix RULE --at FILE:LINE:COL [--fix N] [--plan] [--model NAME] [--no-fill] [--progress]`
+runs a rule's fix where its finding is: the code it replaces (an import deleted, a statement
+rewritten through a hole) and the fix's generator, as one plan — what an editor's "Fix: …" does
+([chapter 15](15-conventions-that-hold.md#fixes-that-remove-the-code-they-found)). `--fix N`
+picks the rule's Nth fix (1, the default, is the usual answer). No finding of that rule at that
+line is exit 3.

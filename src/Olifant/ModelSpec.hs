@@ -13,7 +13,7 @@ import Olifant.Toml (parseToml)
 import Test.Hspec
 
 request :: FillRequest
-request = FillRequest [FillHole "status" "expr" "the HTTP status" "a.rs" "x => \10214status\10215," (Just ("BAD", "a.rs: BAD is not defined"))] [("failure", "too_late")]
+request = FillRequest [FillHole "status" "expr" "the HTTP status" "a.rs" "x => \10214status\10215," (Just ("BAD", "a.rs: BAD is not defined"))] [("failure", "too_late")] []
 
 spec :: Spec
 spec = describe "Olifant.Model (spec §6.4)" $ do
@@ -31,6 +31,11 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
   it "asks an openai-compatible endpoint for tagged blocks, with the rules and the holes" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") request)))
     mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"m\"", "\"role\":\"system\"", "<fill name=\\\"NAME\\\">", "status", "the HTTP status", "a.rs: BAD is not defined", "failure = too_late"]
+  it "shows related files (a fix's context, e.g. the port's trait) to the model" $ do
+    let withContext = request {frContext = [("src/ports/invoice_repository.rs", "pub trait InvoiceRepository { async fn get(&self, id: Uuid) -> Option<Invoice>; }")]}
+        body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") withContext)))
+    body `shouldSatisfy` T.isInfixOf "Related file src/ports/invoice_repository.rs"
+    body `shouldSatisfy` T.isInfixOf "pub trait InvoiceRepository"
   it "asks Anthropic with a system prompt and max_tokens" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (Anthropic "claude-x" "K") request)))
     mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"claude-x\"", "\"max_tokens\":", "\"system\":", "\"role\":\"user\""]

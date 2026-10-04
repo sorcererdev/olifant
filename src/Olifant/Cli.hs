@@ -4,7 +4,7 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
-import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, suggestChoice)
+import Olifant.Rules (Exception (..), FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, suggestChoice)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
@@ -18,7 +18,10 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Functor ((<&>))
 import Data.List (find, sortOn)
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Olifant.Template (describeTemplateError, render)
+import Olifant.Template qualified as Tm
+import Olifant.Template.Syntax (Segment (..), Template (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -30,7 +33,7 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Generator (generatorName, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
@@ -201,20 +204,7 @@ runCommand rt cwd fmt cat = \case
         exceptionHuman e = "  " <> exRule e <> " at " <> exWhere e <> ": " <> fromMaybe "(no reason)" (exReason e) <> (if exStale e then "  [stale: suppresses nothing]" else "")
     paths <- listFiles ws "."
     now <- rtNow rt
-    -- A fix's enum inputs left open are pre-chosen when the finding's code
-    -- names exactly one choice (`invoices::table` → invoice_repository), and
-    -- the label says which (beat 4 feedback).
-    let chooseInputs (fs, exs) = (,exs) <$> traverse (\f -> (\os -> f {fFixes = os}) <$> traverse (choose f) (fFixes f)) fs
-        choose f o = case find ((== foGenerator o) . generatorIdText . entryId) (catalogEntries cat) of
-          Nothing -> pure o
-          Just e ->
-            withChoices (projectQueries rt cat) paths (readText ws) (M.fromList (foSets o)) now (entryDefinition e) <&> \case
-              Left _ -> o
-              Right g ->
-                let picks = [(inputName i, c) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i], Just c <- [suggestChoice (fText f) cs]]
-                 in case picks of
-                      (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c)}
-                      [] -> o
+    let chooseInputs = chooseFixInputs rt cat paths now
     case file of
       Just f -> do
         let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> f))
@@ -379,14 +369,50 @@ runCommand rt cwd fmt cat = \case
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
           -- choices_from is resolved inside generate, step by step, so a
           -- step can choose what an earlier step of the chain creates.
-          Right gens -> do
-            now <- maybe (rtNow rt) pure (genNow g)
-            let mode = if genPlanOnly g then PlanOnly else Apply
-                steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            case modelFor cat g of
+          Right gens -> runSteps rt fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
+  FixCmd rule file (line, _) n g -> do
+    let ws = within (rtProjectDir rt) (rtRoot rt)
+        rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
+    paths <- listFiles ws "."
+    now <- rtNow rt
+    (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (catalogRules cat) paths (readText ws) [rel] >>= chooseFixInputs rt cat paths now
+    let here = [f | f <- fs, fRule f == rule, Just ((l1, _), (l2, _)) <- [fRange f], l1 <= line, line <= l2]
+    case here of
+      [] -> failWith rt fmt 3 "finding_not_found" ("no `" <> rule <> "` finding at " <> T.pack rel <> ":" <> T.pack (show line)) (Just "run `olifant check --file` to see the findings") []
+      f : _ -> case drop (n - 1) (fFixes f) of
+        [] -> failWith rt fmt 2 "usage" ("`" <> rule <> "` offers " <> T.pack (show (length (fFixes f))) <> " fix(es); there is no fix " <> T.pack (show n)) Nothing []
+        o : _ -> case findEntry cat (foGenerator o) of
+          Left err -> catalogFailure rt fmt err
+          Right entry ->
+            loadGenerator (rtRoot rt) (rtSyntax rt) cat entry >>= \case
+              Left err -> catalogFailure rt fmt err
+              Right gen -> do
+                let sets = M.fromList (foSets o)
+                    env = M.map Tm.VText (M.insert "finding" (maybe "" rpFinding (foReplace o)) sets)
+                    defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
+                    replacement = case foReplace o of
+                      Nothing -> Right []
+                      Just rp -> do
+                        rendered <- first describeTemplateError (render env (rpText rp))
+                        let text = T.intercalate "\n" [if T.null l then l else rpIndent rp <> l | l <- T.lines rendered]
+                        pure [Step (replaceGenerator rel (rpLines rp) (rpOld rp) (Template text [Lit text])) M.empty]
+                context <- fmap catMaybes . traverse (\t -> either (const (pure Nothing)) (\p -> fmap (T.unpack p,) <$> readText ws (T.unpack p)) (render env t)) $ concatMap fdContext (take 1 defs)
+                case replacement of
+                  Left why -> failWith rt fmt 1 "fix_failed" why Nothing []
+                  -- The replacement first, while its lines are where the rule saw them.
+                  Right first' -> runSteps rt fmt cat g context (first' ++ [Step gen sets])
+
+-- | Run plan steps as `gen` does (model, fills, progress, regions,
+-- output): `gen` itself, and `fix` (a replacement, then the fix's generator,
+-- with the fix's context files shown to the model).
+runSteps :: Runtime -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
+runSteps rt fmt cat g context steps = do
+  now <- maybe (rtNow rt) pure (genNow g)
+  let mode = if genPlanOnly g then PlanOnly else Apply
+  case modelFor cat g of
              Left why -> failWith rt fmt 2 "usage" why Nothing []
              Right filler ->
-              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
+              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolFillContext = context, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan =
@@ -575,6 +601,25 @@ projectQueries rt cat =
     { queryCommand = processCommand (rtProjectDir rt)
     , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
     }
+
+-- | A fix's enum inputs left open are pre-chosen when the finding's code
+-- names exactly one choice (`invoices::table` → invoice_repository), and the
+-- label says which (beat 4 feedback).
+chooseFixInputs :: Runtime -> Catalog -> [FilePath] -> UTCTime -> ([Finding], a) -> IO ([Finding], a)
+chooseFixInputs rt cat paths now (fs, exs) = (,exs) <$> traverse (\f -> (\os -> f {fFixes = os}) <$> traverse (choose f) (fFixes f)) fs
+  where
+    ws = within (rtProjectDir rt) (rtRoot rt)
+    nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
+    choose f o = case find ((== foGenerator o) . generatorIdText . entryId) (catalogEntries cat) of
+      Nothing -> pure o
+      Just e ->
+        withChoices (projectQueries rt cat) paths (readText ws) (M.fromList (foSets o)) now (entryDefinition e) <&> \case
+          Left _ -> o
+          Right g ->
+            let picks = [(inputName i, c) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i], Just c <- [suggestChoice (fText f) cs]]
+             in case picks of
+                  (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c)}
+                  [] -> o
 
 -- | `invoice_repository` → `InvoiceRepository`.
 toPascal :: Text -> Text

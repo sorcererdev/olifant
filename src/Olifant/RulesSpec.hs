@@ -8,6 +8,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (Language, Match (..), Syntax (..), SyntaxFailure (..), parseLanguage)
 import Olifant.Rules
+import Olifant.Template (templateSource)
 import Test.Hspec
 
 rust :: Language
@@ -59,7 +60,7 @@ spec = describe "rules (spec §5.9)" $ do
   it "(a) a match rule finds its node, with message, fix and the path's slots" $ do
     let [f] = fst (run none [(cmd, "use std::sync::Arc;\nuse diesel::prelude::*;\n")] [cmd])
     (fRule f, fRange f, fSeverity f, fMessage f, fFixes f)
-      `shouldBe` ("commands-use-ports", Just ((2, 1), (2, 24)), Warn, "Commands talk to ports, not the database", [FixOffer "rust-htmx/service-repository" Nothing [("command", "cancel_invoice"), ("service", "billing")]])
+      `shouldBe` ("commands-use-ports", Just ((2, 1), (2, 24)), Warn, "Commands talk to ports, not the database", [FixOffer "rust-htmx/service-repository" Nothing [("command", "cancel_invoice"), ("service", "billing")] Nothing])
     fst (run none [("billing/billing-service/src/lib.rs", "use diesel::x;\n")] ["billing/billing-service/src/lib.rs"]) `shouldBe` []
   it "(b) a missing rule finds a file that should exist" $ do
     let port = "billing/src/ports/email_sender.rs"
@@ -98,8 +99,8 @@ spec = describe "rules (spec §5.9)" $ do
             , "[[rules.p.fixes]]", "generator = \"rust-htmx/service-repository\"", "label = \"Add a new repository port\"", "with = { service = \"{= service =}\" }" ])
           (fs, _) = runIdentity (checkFiles diesel [rust] none [r] [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
       map fFixes fs `shouldBe`
-        [ [ FixOffer "rust-htmx/command-dependency" (Just "Use an existing port") [("command", "cancel_invoice"), ("service", "billing")]
-          , FixOffer "rust-htmx/service-repository" (Just "Add a new repository port") [("service", "billing")] ] ]
+        [ [ FixOffer "rust-htmx/command-dependency" (Just "Use an existing port") [("command", "cancel_invoice"), ("service", "billing")] Nothing
+          , FixOffer "rust-htmx/service-repository" (Just "Add a new repository port") [("service", "billing")] Nothing ] ]
     it "keeps one finding where matches nest (the outermost)" $ do
       let nested = Syntax $ \_ _ _ -> Identity (Right [Match (0, 4) (0, 10) "diesel", Match (0, 0) (0, 20) "use diesel::prelude"])
           (fs, _) = runIdentity (checkFiles nested [rust] none rules [cmd] (\_ -> Identity (Just "use diesel::prelude;\n")) [cmd])
@@ -108,6 +109,30 @@ spec = describe "rules (spec §5.9)" $ do
       suggestChoice "let rows = invoices::table.filter(x);" ["email_sender", "invoice_repository"] `shouldBe` Just "invoice_repository"
       suggestChoice "diesel::insert_into(things)" ["email_sender", "invoice_repository"] `shouldBe` Nothing
       suggestChoice "invoice_emails::table" ["email_sender", "invoice_repository"] `shouldBe` Nothing
+  describe "fixes that replace the code they found (beat 4 feedback)" $ do
+    let withReplace = T.unlines
+          [ "[rules.p]", "files = \"{service}/*-service/src/*.rs\"", "message = \"m\"", "match = { kind = \"scoped_identifier\" }"
+          , "[[rules.p.fixes]]", "generator = \"g\"", "with = { service = \"{= service =}\" }"
+          , "replace = [ { enclosing = [\"use_declaration\"], text = \"\" }, { enclosing = [\"let_declaration\", \"expression_statement\"], text = \"{= ? call: stmt | do {= finding =} through a port =}\" } ]" ]
+        Right [r] = parseRules withReplace
+        -- the rule matches `diesel::x`; enclosing queries see the import or the let
+        syn = Syntax $ \_ rule content ->
+          let txt = T.pack (show rule)
+              hits = [(i, l) | (i, l) <- zip [0 ..] (T.lines content), "diesel::x" `T.isInfixOf` l]
+              col l = T.length (fst (T.breakOn "diesel::x" l))
+           in Identity . Right $
+                if "use_declaration" `T.isInfixOf` txt && not ("let_declaration" `T.isInfixOf` txt)
+                  then [Match (i, 0) (i, T.length l) (T.strip l) | (i, l) <- hits, "use " `T.isPrefixOf` T.strip l]
+                  else if "let_declaration" `T.isInfixOf` txt
+                    then [Match (i, 4) (i, T.length l) (T.strip l) | (i, l) <- hits, "let " `T.isPrefixOf` T.strip l]
+                    else [Match (i, col l) (i, col l + 9) "diesel::x" | (i, l) <- hits]
+        offersFor content = map (map foReplace . fFixes) (fst (runIdentity (checkFiles syn [rust] none [r] [cmd] (\_ -> Identity (Just content)) [cmd])))
+    it "replaces the enclosing statement (lines, old text, indent, the node's code)" $
+      map (fmap (fmap (\rp -> (rpLines rp, rpOld rp, rpIndent rp, rpFinding rp)))) (offersFor "fn f() {\n    let rows = diesel::x;\n}\n")
+        `shouldBe` [[Just ((2, 2), "    let rows = diesel::x;", "    ", "let rows = diesel::x;")]]
+    it "deletes an import: the first case whose node encloses the finding wins" $
+      map (fmap (fmap (\rp -> (rpLines rp, templateSource (rpText rp))))) (offersFor "use diesel::x;\nfn f() {}\n")
+        `shouldBe` [[Just ((1, 1), "")]]
   describe "rules that cannot run (review C2)" $ do
     it "a syntax failure is an error finding, not silence" $ do
       let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed"))

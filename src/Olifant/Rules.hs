@@ -20,12 +20,14 @@ module Olifant.Rules
   , suggestChoice
   , FixDef (..)
   , FixOffer (..)
+  , Replacement (..)
   ) where
 
 import Control.Monad ((>=>))
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
-import Data.Char (isAlphaNum)
+import Data.Aeson qualified as J
+import Data.Char (isAlphaNum, isSpace)
 import Data.Word (Word64)
 import Numeric (showHex)
 import Data.List (nub, nubBy, sortOn, (\\))
@@ -66,11 +68,19 @@ data RuleDef = RuleDef
 -- | A fix a rule offers: a generator, a label, and its inputs from the
 -- finding (`with`: templates over the path's slots and dir/stem/file;
 -- without it, the path's slots as they are).
-data FixDef = FixDef {fdGenerator :: Text, fdLabel :: Maybe Text, fdWith :: Maybe [(Text, Template)]}
+data FixDef = FixDef {fdGenerator :: Text, fdLabel :: Maybe Text, fdWith :: Maybe [(Text, Template)], fdReplace :: [([Text], Template)], fdContext :: [Template]}
   deriving stock (Show)
 
--- | A fix offered for one finding: the generator, its label, its inputs.
-data FixOffer = FixOffer {foGenerator :: Text, foLabel :: Maybe Text, foSets :: [(Text, Text)]}
+-- | A fix offered for one finding: the generator, its label, its inputs,
+-- and the code it replaces, if its rule says so.
+data FixOffer = FixOffer {foGenerator :: Text, foLabel :: Maybe Text, foSets :: [(Text, Text)], foReplace :: Maybe Replacement}
+  deriving stock (Eq, Show)
+
+-- | The code a fix replaces: whole lines (1-based, inclusive) of the node
+-- enclosing the finding, their text, the first line's indentation, the
+-- replacement (a template over the fix's inputs and `finding`, the node's
+-- code; empty deletes the lines), and the node's code.
+data Replacement = Replacement {rpLines :: (Int, Int), rpOld :: Text, rpIndent :: Text, rpText :: Template, rpFinding :: Text}
   deriving stock (Eq, Show)
 
 -- | The project's `[rules]`: severities (incl. `off`) and allowed paths
@@ -120,7 +130,7 @@ parseRules src = do
             _ -> ""
           message = message0 <> story
       severity <- maybe (Right Warn) ruleSev =<< optional "severity" text t
-      one <- maybe [] (\g -> [FixDef g Nothing Nothing]) <$> optional "fix" text t
+      one <- maybe [] (\g -> [FixDef g Nothing Nothing [] []]) <$> optional "fix" text t
       many <- maybe (Right []) (list (table >=> fixDef)) (M.lookup "fixes" t)
       check <- case (M.lookup "match" t, M.lookup "missing" t) of
         (Just m, Nothing) -> RuleMatch <$> inKey "match" (ruleFromTree m)
@@ -133,11 +143,20 @@ parseRules src = do
         x -> Right x
     tmpl t = either (Left . describeTemplateError) Right (parseTemplate t)
     fixDef f = inKey "fixes" $ do
-      onlyKeys ["generator", "label", "with"] f
+      onlyKeys ["generator", "label", "with", "replace", "context"] f
       g <- required "generator" text f
       label <- optional "label" text f
       with <- traverse (\w -> traverse (\(k, v) -> inKey ("with." <> k) ((k,) <$> (text v >>= tmpl))) (M.toList w)) =<< optional "with" table f
-      pure (FixDef g label with)
+      -- `replace`: one case or a list; the first whose node encloses the finding wins
+      cases <- case M.lookup "replace" f of
+        Nothing -> Right []
+        Just v -> inKey "replace" (either (const (pure <$> (table v >>= replaceCase))) Right (list (table >=> replaceCase) v))
+      -- files the model should see when it fills the replacement's holes
+      context <- maybe (Right []) (list (text >=> tmpl)) (M.lookup "context" f)
+      pure (FixDef g label with cases context)
+    replaceCase c = do
+      onlyKeys ["enclosing", "text"] c
+      (,) <$> required "enclosing" (list text) c <*> required "text" (text >=> tmpl) c
     -- A `missing` path knows only the file it is about (review C2).
     onlyFileVars t = case S.toList (freeVariables t) \\ ["dir", "stem", "file"] of
       [] -> Right t
@@ -216,7 +235,7 @@ checkFiles syntax langs config rules paths readFile' files = do
           querySyntax syntax l q content >>= \case
             -- One finding where matches nest: the outermost (an import and
             -- the path inside it are one finding).
-            Right ms -> pure [finding f r slots (Just (range content m)) (matchText m) | m <- outermost ms]
+            Right ms -> traverse (\m -> withReplacements content l m (pairs f slots r) (finding f r slots (Just (range content m)) (matchText m))) (outermost ms)
             Left failure -> pure [cannotRun f r (describeSyntaxFailure failure)]
         (Nothing, _) -> pure [cannotRun f r "no language adapter for this file"]
         (_, Left err) -> pure [cannotRun f r (describeTemplateError err)]
@@ -229,13 +248,33 @@ checkFiles syntax langs config rules paths readFile' files = do
     -- A rule that cannot run is an error: a gate must never pass silently
     -- because it could not look (review C2).
     cannotRun f r why = Finding "rule-failed" f Nothing Error ("rule `" <> ruleId r <> "` could not run on " <> T.pack f <> ": " <> why) [] "" (fingerprint ["rule-failed", ruleId r])
-    finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (offers f slots r) what (fingerprint [ruleId r, what])
-    offers f slots r =
+    finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (map snd (pairs f slots r)) what (fingerprint [ruleId r, what])
+    -- each fix definition with its offer (a fix whose inputs don't render is not offered)
+    pairs f slots r =
       let env = M.fromList ([(k, VText v) | (k, v) <- slots] ++ [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f))])
-       in [ FixOffer (fdGenerator d) (fdLabel d) (sortOn fst sets)
+       in [ (d, FixOffer (fdGenerator d) (fdLabel d) (sortOn fst sets) Nothing)
           | d <- ruleFixes r
           , Right sets <- [maybe (Right slots) (traverse (\(k, t) -> (k,) <$> either (Left . describeTemplateError) Right (render env t))) (fdWith d)]
           ]
+    -- Each fix that replaces code: the nearest enclosing node of the first
+    -- case that has one (an import is deleted, a statement rewritten).
+    withReplacements content lang m ps fd = do
+      offers' <- traverse (\(d, o) -> replaceFor content lang m d o) ps
+      pure fd {fFixes = offers'}
+    replaceFor content lang m d o = go (fdReplace d)
+      where
+        go [] = pure o
+        go ((kinds, t) : rest) =
+          querySyntax syntax lang (J.object ["any" J..= [J.object ["kind" J..= k] | k <- kinds]]) content >>= \case
+            Right ns
+              | n : _ <- sortOn size [x | x <- ns, matchStart x <= matchStart m, matchEnd m <= matchEnd x] ->
+                  let ls = T.lines content
+                      (l1, l2) = (fst (matchStart n) + 1, fst (matchEnd n) + 1)
+                      old = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) ls))
+                      indent = T.takeWhile isSpace (fromMaybe "" (listToMaybe (drop (l1 - 1) ls)))
+                   in pure o {foReplace = Just (Replacement (l1, l2) old indent t (matchText n))}
+            _ -> go rest
+        size x = (fst (matchEnd x) - fst (matchStart x), snd (matchEnd x) - snd (matchStart x))
     -- the outermost of nested matches, then the first on each line
     outermost ms =
       nubBy (\a b -> fst (matchStart a) == fst (matchStart b)) $

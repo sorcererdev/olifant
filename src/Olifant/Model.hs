@@ -92,6 +92,7 @@ userPrompt req =
   T.unlines $
     ["Generator inputs:"]
       ++ ["  " <> k <> " = " <> v | (k, v) <- frInputs req]
+      ++ concat [["", "Related file " <> T.pack p <> ":", "```", c, "```"] | (p, c) <- frContext req]
       ++ concatMap hole (frHoles req)
       ++ ["", "Reply with " <> T.intercalate " " ["<fill name=\"" <> fhName h <> "\">…</fill>" | h <- frHoles req] <> "."]
   where

@@ -19,9 +19,12 @@ import Data.Aeson (encode)
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
-import Olifant.Language (noChecker, noSyntax)
+import Olifant.Language (Syntax, noChecker, noSyntax)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
+import Olifant.Language.AstGrep (astGrepSyntax)
+import System.Directory (findExecutable, getTemporaryDirectory)
+import System.FilePath ((</>))
 import Test.Hspec
 
 project :: [(FilePath, Text)]
@@ -55,7 +58,16 @@ runWith :: Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text,
 runWith = runIn "/proj"
 
 runIn :: FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runIn dir stdinText files tty args = do
+runIn = runInWith noSyntax
+
+-- | With the real ast-grep (tests that need it are pending without it).
+runWithAstGrep :: Text -> [(FilePath, Text)] -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runWithAstGrep stdinText files args = do
+  tmp <- getTemporaryDirectory
+  runInWith (astGrepSyntax (tmp </> "olifant-test-cache")) "/proj" stdinText files False args
+
+runInWith :: Syntax IO -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInWith syntax dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -71,7 +83,7 @@ runIn dir stdinText files tty args = do
         , rtStdoutIsTty = tty
         , rtOut = \t -> modifyIORef' out (<> t)
         , rtErr = \t -> modifyIORef' err (<> t)
-        , rtSyntax = noSyntax
+        , rtSyntax = syntax
         , rtChecker = noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
@@ -250,6 +262,34 @@ runCliSpec = describe "runCli" $ do
   it "I6: reads changed lines from a diff, whatever git's prefix settings" $
     parseDiffHunks "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +2,3 @@\n@@ -9,2 +12 @@\n@@ -20 +30,0 @@\n+++ b/sub/y.rs\n@@ -0,0 +1,2 @@\n"
       `shouldBe` [("x.rs", [(2, 4), (12, 12)]), ("sub/y.rs", [(1, 2)])]
+  describe "olifant fix (spec §5.9, beat 4 feedback)" $ do
+    let rustPack =
+          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
+          , ("/packs/p/generators/port/generator.toml", "description = \"p\"\nlanguage = \"rust\"\n[inputs.service]\ntype = \"ident\"\n[[edits]]\ncreate = \"{= service =}/port.rs\"\ntext = \"// port\\n\"\n")
+          , ("/packs/p/rules.toml", T.unlines
+              [ "[rules.no-db]", "files = \"{service}/src/*.rs\"", "message = \"no db\""
+              , "match = { any = [ { kind = \"use_declaration\", regex = \"diesel\" }, { kind = \"scoped_identifier\", regex = \"^diesel::\" } ] }"
+              , "[[rules.no-db.fixes]]", "generator = \"p/port\"", "with = { service = \"{= service =}\" }"
+              , "replace = [ { enclosing = [\"use_declaration\"], text = \"\" }, { enclosing = [\"let_declaration\"], text = \"{= ? call: stmt | do {= finding =} through the port =}\" } ]" ])
+          , ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          , ("/proj/billing/src/a.rs", "use diesel::prelude::*;\nfn f() {\n    let rows = diesel::select(1);\n    g();\n}\n")
+          ]
+        astGrep act = findExecutable "ast-grep" >>= maybe (pendingWith "ast-grep is not installed") (const act)
+    it "deletes the import and runs the fix's generator, as one plan" $ astGrep $ do
+      (code, out, _, files) <- runWithAstGrep "" rustPack ["fix", "no-db", "--at", "billing/src/a.rs:1:5", "--plan", "--json"]
+      code `shouldBe` ExitSuccess
+      out `shouldSatisfy` T.isInfixOf "\"status\":\"replace\""
+      out `shouldSatisfy` T.isInfixOf "billing/port.rs"
+      M.lookup "/proj/billing/src/a.rs" files `shouldBe` Just "use diesel::prelude::*;\nfn f() {\n    let rows = diesel::select(1);\n    g();\n}\n"
+    it "rewrites the statement as a hole (a placeholder without a model), applied" $ astGrep $ do
+      (code, _, _, files) <- runWithAstGrep "" rustPack ["fix", "no-db", "--at", "billing/src/a.rs:3:16", "--json"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/billing/src/a.rs" files `shouldBe` Just "use diesel::prelude::*;\nfn f() {\n    todo!(\"olifant: call\");\n    g();\n}\n"
+      M.member "/proj/billing/port.rs" files `shouldBe` True
+    it "says so when there is no such finding there" $ astGrep $ do
+      (code, out, _, _) <- runWithAstGrep "" rustPack ["fix", "no-db", "--at", "billing/src/a.rs:4:5", "--json"]
+      code `shouldBe` ExitFailure 3
+      out `shouldSatisfy` T.isInfixOf "no `no-db` finding at billing/src/a.rs:4"
   describe "olifant check (spec §5.9)" $ do
     let head' = \case
           x : _ -> x
