@@ -1,0 +1,58 @@
+name = "Add Failure Arms"
+description = "A new failure of a command: add it to the command's failure union, then an arm for it in every match on the union (pyright finds them); each arm's value is a hole"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/failure-arms --set service=booking --set command=create_booking --set failure=Cancelled",
+]
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service the command belongs to"
+
+[inputs.command]
+type   = "enum"
+one_of = "commands"
+prompt = "The command whose failures gained one"
+
+[inputs.failure]
+type   = "ident"
+prompt = "The failure class you added (Cancelled)"
+
+[derive]
+Failure = "{= command|pascal =}Failure"
+command_file = "src/bistro/{= service|snake =}/{= command|snake =}.py"
+
+# Every service: a folder with a service.py.
+[query.services]
+glob  = "src/bistro/*/service.py"
+value = "parent folder"
+
+# The service's commands: its modules, less its own models, ports and service.
+[query.commands]
+glob    = "src/bistro/{= service|snake =}/*.py"
+exclude = ["**/__init__.py", "**/models.py", "**/ports.py", "**/service.py"]
+value   = "file name"
+
+# 1: the union gains the failure (unless a member line already names it).
+[[edits]]
+insert = "{= command_file =}"
+at     = "end of union {= Failure =}"
+text   = "| {= failure|pascal =}\n"
+unless = { matches = "^[[:space:]]*([|][[:space:]]*)?{= failure|pascal =}[[:space:]]*$" }
+
+# 2: every match on the union gets an arm; its value (a status, a message…)
+# is a hole a model fills per site, checked by pyright (spec §6.4).
+[[edits]]
+complete = "{= failure|pascal =}"
+text     = "case {= pattern =}:\n    return {= ? value: expr | the value this match returns for {= pattern =}, following the other arms =}"
+
+# In an editor (olifant actions): on a failure class in a command module.
+[applies_at]
+path  = "src/bistro/{service}/{command}.py"
+node  = { kind = "class_definition", inside = { kind = "decorated_definition", regex = "frozen=True" }, not = { has = { field = "name", regex = "Input$" } } }
+bind  = { failure = "^class ([A-Za-z0-9_]+)" }
+where = "on a failure class of the {= command|pascal =} command"
+suggest = true
+label = "Add {= failure =} to every match"

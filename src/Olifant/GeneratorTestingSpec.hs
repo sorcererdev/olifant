@@ -276,10 +276,15 @@ spec = do
             (tools, gen) <- atCaseCursor ws processChecker (either (const Nothing) id (parseCaseCursor inputs)) tools0 gen0
             Right plan <- generate ws resolve tools [Step gen sets] now PlanOnly
             [() | PlannedHole {phStatus = HoleUnfilled _} <- planHoles plan] `shouldNotBe` []
-            src <- TIO.readFile (casePackRoot c </> "languages" </> (if casePack c == "elm" then "elm.toml" else "rust.toml"))
-            let Right lang = parseLanguage (if casePack c == "elm" then "elm" else "rust") (casePackRoot c) src
+            -- the pack's language, and the program its check runs
+            let (langName', tool) = case casePack c of
+                  "elm" -> ("elm", "elm")
+                  "python-htmx" -> ("python", "uv")
+                  _ -> ("rust", "cargo")
+            src <- TIO.readFile (casePackRoot c </> "languages" </> (langName' <> ".toml"))
+            let Right lang = parseLanguage (T.pack langName') (casePackRoot c) src
             fixture <- readTree (casePackRoot c </> "fixtures" </> "app")
-            findExecutable (if casePack c == "elm" then "elm" else "cargo") >>= \case
+            findExecutable tool >>= \case
               Nothing -> missingTool strict "the pack's compiler is not installed"
               Just _ -> compileClean lang (M.unions [planWrites plan, given, fixture]) `shouldReturn` Right ()
   where

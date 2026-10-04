@@ -1,18 +1,17 @@
-"""Each command's failures as HTTP statuses."""
+"""Each command's failures as HTTP statuses.
 
-from bistro.booking.create_booking import (
-    CreateBookingFailure,
-    PartyTooLarge,
-    SlotTaken,
-    TableNotFound,
-)
+Failures are named through their command's module (`create_booking.SlotTaken`):
+a new failure needs no new import here.
+"""
+
+from bistro.booking import create_booking
 
 
-def create_booking_status(failure: CreateBookingFailure) -> int:
+def create_booking_status(failure: create_booking.CreateBookingFailure) -> int:
     match failure:
-        case SlotTaken():
+        case create_booking.SlotTaken():
             return 409
-        case PartyTooLarge():
+        case create_booking.PartyTooLarge():
             return 422
-        case TableNotFound():
+        case create_booking.TableNotFound():
             return 404
