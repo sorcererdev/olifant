@@ -210,7 +210,10 @@ spec = do
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
     rustSrc <- runIO (TIO.readFile "packs/rust-htmx/languages/rust.toml")
     let Right rust = parseLanguage "rust" "packs/rust-htmx" rustSrc
-    forM_ [c | c <- cases, casePack c == "rust-htmx"] $ \c ->
+    -- A snippet's case (it has a cursor, `at`) is unfinished by design: the
+    -- follow-up it raises completes it (spec §4.9), so it is not compiled alone.
+    snippetCases <- runIO (filterM (\c -> T.isInfixOf "\nat = " . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) cases)
+    forM_ [c | c <- cases, casePack c == "rust-htmx", c `notElem` snippetCases] $ \c ->
       it (T.unpack (caseName c)) $
         findExecutable "cargo" >>= \case
           Nothing -> missingTool strict "cargo is not installed (brew install rustup; rustup default stable)"

@@ -1,0 +1,28 @@
+name = "Failure variant"
+description = "A new variant for a command's Failure enum: its #[error] message and its name, as tab stops (a snippet, spec §4.9)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/failure-variant --at billing/billing-service/src/refund_invoice.rs:27:1 --plan",
+]
+
+# At the cursor; once the variant is named, failure-arms follows up with an
+# arm for it in every match (spec §4.8).
+[[edits]]
+cursor = true
+text = "#[error(\"{= ? message: text | what went wrong, for a person =}\")]\n{= ? Variant: ident | the variant, PascalCase =},"
+
+[holes.message]
+source = "yours"
+
+[holes.Variant]
+source = "yours"
+
+# Anticipated on a blank line inside a command's Failure enum.
+[applies_at]
+path    = "*/*-service/src/*.rs"
+node    = { kind = "enum_variant_list", inside = { kind = "enum_item", regex = "Failure", stopBy = "end" } }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line in a command's Failure enum"
+suggest = true
+label   = "Failure variant"
