@@ -8,6 +8,7 @@ module Olifant.Language.Check
   , describeCheckFailure
   , processChecker
   , compileClean
+  , checkProgram
   ) where
 
 import Control.Monad (forM_)
@@ -59,6 +60,16 @@ processChecker = Checker $ \lang files -> case langCheck lang of
             | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
           Right report -> Right (maybe id ($ files) (supportSpans support) (relativeTo dir report))
 
+-- | The program a check command runs: past a leading `env` and its
+-- `NAME=value` settings (`env UV_PROJECT_ENVIRONMENT=… uv run pyright` runs uv).
+checkProgram :: [Text] -> Maybe Text
+checkProgram = \case
+  "env" : rest -> case dropWhile ("=" `T.isInfixOf`) rest of
+    p : _ -> Just p
+    [] -> Nothing
+  p : _ -> Just p
+  [] -> Nothing
+
 -- | Whether the files compile cleanly (exit 0); pack tests use it to prove
 -- generated output builds.
 compileClean :: Language -> Map FilePath Text -> IO (Either Text ())
@@ -80,11 +91,15 @@ compileClean lang files = case langCheck lang of
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
 -- directory that outlives the scratch copy (cargo's `--target-dir`).
 runIn :: Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn lang check files = case checkCommand check of
-  [] -> pure (Left (CheckFailed "empty check command"))
-  (exe : args) ->
-    findExecutable (T.unpack exe) >>= \case
-      Nothing -> pure (Left (CheckToolMissing ("`" <> exe <> "` is not installed (needed to check " <> langName lang <> ")")))
+runIn lang check files = case (checkCommand check, checkProgram (checkCommand check)) of
+  ([], _) -> pure (Left (CheckFailed "empty check command"))
+  (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
+  (exe : args, Just program) ->
+    -- the program the command runs (`env VAR=… uv …` runs uv) must be installed
+    (findExecutable (T.unpack program) >>= \case
+      Nothing -> pure Nothing
+      Just _ -> findExecutable (T.unpack exe)) >>= \case
+      Nothing -> pure (Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to check " <> langName lang <> ")")))
       Just path -> withSystemTempDirectory "olifant-check" $ \tmp0 -> do
         tmp <- canonicalizePath tmp0
         forM_ (M.toList files) $ \(p, t) -> do

@@ -221,6 +221,17 @@ spec = do
       parsePyrightReport "Traceback: oops" `shouldSatisfy` either (const True) (const False)
     it "names the enclosing function: the nearest def at or above the line" $
       supportFunction pyrightSupport "def a():\n    pass\n\ndef status(f):\n    match f:\n" 4 `shouldBe` "status"
+  describe "the program a check runs" $ do
+    it "skips `env` and its VAR=value arguments" $ do
+      checkProgram ["env", "UV_PROJECT_ENVIRONMENT=/c/venv", "uv", "run", "pyright"] `shouldBe` Just "uv"
+      checkProgram ["cargo", "check"] `shouldBe` Just "cargo"
+      checkProgram ["env", "A=1"] `shouldBe` Nothing
+    it "(Review Focus 3) a missing program behind `env` is a missing tool, not a failed check" $ do
+      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"env\", \"X=1\", \"olifant-no-such-tool\"]", "format = \"pyright-json\""])
+      r <- runCheck processChecker lang (M.fromList [("a.py", "x = 1\n")])
+      case r of
+        Left (CheckToolMissing why) -> why `shouldSatisfy` T.isInfixOf "olifant-no-such-tool"
+        other -> expectationFailure (show other)
   describe "a match's extent from its indentation (Python)" $ do
     it "(a) the last line of the block under a line: blank lines don't extend it, a line back at its indentation ends it" $
       indentBlockEnd ["def f(x):", "    match x:", "        case A():", "            return 1", "", "    return 2"] 1 `shouldBe` 3
