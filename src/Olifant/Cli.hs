@@ -33,7 +33,8 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Generator (AppliesAt (..), generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
+import Olifant.Cursor (atCursor, isSnippet)
+import Olifant.Generator (AppliesAt (..), Generator, generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
@@ -370,7 +371,9 @@ runCommand rt cwd fmt cat = \case
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
           -- choices_from is resolved inside generate, step by step, so a
           -- step can choose what an earlier step of the chain creates.
-          Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
+          Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
+            Left why -> failWith rt fmt 2 "usage" why Nothing []
+            Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
   FixCmd rule file (line, _) n g -> do
     let ws = within (rtProjectDir rt) (rtRoot rt)
         rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
@@ -402,6 +405,21 @@ runCommand rt cwd fmt cat = \case
                   Left why -> failWith rt fmt 1 "fix_failed" why Nothing []
                   -- The replacement first, while its lines are where the rule saw them.
                   Right first' -> runSteps rt cwd fmt cat g context (first' ++ [Step gen sets])
+
+-- | Snippets (spec §5.3): each cursor edit becomes a replacement of the
+-- `--at` line (the overlay's text when there is one), indented to fit.
+placeCursor :: Runtime -> FilePath -> Catalog -> GenOptions -> [Generator] -> IO (Either Text [Generator])
+placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
+  (_, []) -> pure (Right gens)
+  (Nothing, s : _) -> pure (Left ("`" <> generatorIdText (genId s) <> "` is a snippet: it needs --at FILE:LINE:COL"))
+  (Just (file, line, _), _) -> do
+    let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
+        overlaid = fmap (\f -> makeRelative (rtProjectDir rt) (normalise (cwd </> f))) (genOverlay g) == Just rel
+    text <- if overlaid then Just <$> rtReadStdin rt else readText (within (rtProjectDir rt) (rtRoot rt)) rel
+    let unit = maybe "    " langIndent (languageFor (catalogLanguages cat) rel)
+    pure $ case text of
+      Nothing -> Left (T.pack rel <> " does not exist")
+      Just t -> Right [if isSnippet gen then atCursor unit rel line (T.splitOn "\n" t) gen else gen | gen <- gens]
 
 -- | Run plan steps as `gen` does (model, fills, progress, regions,
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,

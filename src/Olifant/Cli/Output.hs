@@ -134,6 +134,7 @@ showJson views subs e =
       Insert p anchors _ _ -> object ["kind" .= ("insert" :: Text), "path" .= templateSource p, "at" .= map anchorText anchors]
       Complete c w _ -> object ["kind" .= ("complete" :: Text), "constructor" .= templateSource c, "where" .= fmap templateSource w]
       Replace p (l1, l2) _ _ -> object ["kind" .= ("replace" :: Text), "path" .= templateSource p, "lines" .= [l1, l2]]
+      Cursor _ -> object ["kind" .= ("cursor" :: Text)]
 
 showHuman :: M.Map Text ChoiceView -> [(UseStep, Maybe CatalogEntry)] -> CatalogEntry -> Text
 showHuman views subs e =
@@ -160,6 +161,7 @@ showHuman views subs e =
       Insert p anchors _ _ -> "  insert " <> templateSource p <> " at " <> T.intercalate " | " (map anchorText anchors)
       Complete c w _ -> "  complete " <> templateSource c <> maybe "" (\x -> " in " <> templateSource x) w
       Replace p (l1, l2) _ _ -> "  replace " <> templateSource p <> " lines " <> T.pack (show l1) <> "-" <> T.pack (show l2)
+      Cursor _ -> "  at the cursor (a snippet: gen --at FILE:LINE:COL)"
     useLines (u, sub) =
       ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
         : ("    with " <> T.unwords [k <> "=" <> templateSource t | (k, t) <- useWith u])

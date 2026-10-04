@@ -84,6 +84,9 @@ data EditWith src
   | -- | Replace whole lines (1-based, inclusive) that must still read
     -- 'editOld' — a rule's fix (spec §5.9); not written in generator.toml.
     Replace {editTarget :: Template, editLines :: (Int, Int), editOld :: Text, editSource :: src}
+  | -- | A snippet (spec §5.3): the text goes at the caller's cursor (`gen --at`),
+    -- replacing that line; see "Olifant.Cursor".
+    Cursor {editSource :: src}
   deriving stock (Show, Functor, Foldable, Traversable)
 
 data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists

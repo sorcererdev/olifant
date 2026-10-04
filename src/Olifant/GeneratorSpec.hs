@@ -245,6 +245,14 @@ parseSpec = describe "parseGenerator" $ do
     it "derives one from the id when there is none" $ do
       fmap generatorName (parseGenerator (GeneratorId "rust-htmx/command-dependency") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Command Dependency"
       fmap generatorName (parseGenerator (GeneratorId "olifant-dev/error_case") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Error Case"
+  describe "cursor edits (snippets, spec §5.3)" $ do
+    let snippet extra = parseGenerator (GeneratorId "p/s") (T.unlines (["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"x\""] ++ extra))
+    it "reads `cursor = true` with a text or template" $
+      fmap (map (\case Cursor _ -> "cursor"; _ -> "other" :: T.Text) . genEdits) (snippet []) `shouldBe` Right ["cursor"]
+    it "(a) refuses a cursor edit beside any other edit" $
+      snippet ["[[edits]]", "create = \"a.txt\"", "text = \"y\""] `shouldSatisfy` either ("a cursor edit (a snippet) must be the generator's only edit" `T.isInfixOf`) (const False)
+    it "refuses `cursor = false`" $
+      parseGenerator (GeneratorId "p/s") (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = false", "text = \"x\""]) `shouldSatisfy` either ("cursor = true" `T.isInfixOf`) (const False)
   describe "[applies_at] (spec §4.6)" $ do
     let gen extra = load (T.unlines (
           [ "description = \"d\"", "language = \"rust\""

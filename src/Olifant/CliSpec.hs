@@ -259,6 +259,25 @@ runCliSpec = describe "runCli" $ do
     M.lookup "/proj/old.txt" onDisk `shouldBe` Just "on disk\n"
     (bad, _, _, _) <- runWith "x" files False ["gen", "two", "--set", "name=a", "--overlay", "old.txt"]
     bad `shouldBe` ExitFailure 2
+  it "(b) places a snippet at --at: replaces the cursor's line, indented to fit (spec §5.3)" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[[edits]]", "cursor = true", "text = \"#[error(\\\"m\\\")]\\nV,\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "enum E {\n    A,\n\n}\n")]
+    (code, out, err, onDisk) <- runWith "" files False ["gen", "s", "--at", "a.txt:3:1", "--plan"]
+    (code, err) `shouldBe` (ExitSuccess, "")
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"enum E {\\n    A,\\n    #[error(\\\"m\\\")]\\n    V,\\n}\\n\""
+    M.lookup "/proj/a.txt" onDisk `shouldBe` Just "enum E {\n    A,\n\n}\n"
+    -- (d) a snippet needs a cursor
+    (bad, badOut, _, _) <- runWith "" files False ["gen", "s", "--plan"]
+    bad `shouldBe` ExitFailure 2
+    badOut `shouldSatisfy` T.isInfixOf "`s` is a snippet: it needs --at FILE:LINE:COL"
+  it "plans a snippet against an unsaved buffer (--at with --overlay)" $ do
+    let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "on disk\n")]
+    (code, out, _, _) <- runWith "enum E {\n    A,\n\n}\n" files False ["gen", "s", "--at", "a.txt:3:1", "--plan", "--overlay", "a.txt"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"enum E {\\n    A,\\n    V,\\n}\\n\""
   it "gives each planned file's before and after, null before for a new file (for editors)" $ do
     let gen = T.unlines
           [ "description = \"d\"", "language = \"x\"", "[inputs.name]", "type = \"ident\""

@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Control.Exception (SomeException, displayException, try)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
@@ -26,6 +27,14 @@ main = do
   home <- getHomeDirectory
   userConfigDir <- getXdgDirectory XdgConfig "olifant"
   cache <- getXdgDirectory XdgCache "olifant"
+  -- stdin is read at most once; every reader sees the same text
+  stdinText <- newIORef Nothing
+  let readStdin = readIORef stdinText >>= \case
+        Just t -> pure t
+        Nothing -> do
+          t <- TIO.getContents
+          writeIORef stdinText (Just t)
+          pure t
   result <-
     try . runCli
       Runtime
@@ -33,7 +42,7 @@ main = do
         , rtProjectDir = cwd
         , rtUserConfigDir = Just userConfigDir
         , rtHomeDir = Just home
-        , rtReadStdin = TIO.getContents
+        , rtReadStdin = readStdin
         , rtNow = getCurrentTime
         , rtStdoutIsTty = tty
         , rtOut = TIO.putStr
