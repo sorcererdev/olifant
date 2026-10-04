@@ -1,0 +1,101 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
+module Olifant.RulesSpec (spec) where
+
+import Data.Functor.Identity (Identity (..), runIdentity)
+import Data.Map.Strict qualified as M
+import Data.Text (Text)
+import Data.Text qualified as T
+import Olifant.Language (Language, Match (..), Syntax (..), parseLanguage)
+import Olifant.Rules
+import Test.Hspec
+
+rust :: Language
+rust = l
+  where
+    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\""])
+
+usePorts :: Text
+usePorts =
+  T.unlines
+    [ "[rules.commands-use-ports]"
+    , "files    = \"{service}/*-service/src/{command}.rs\""
+    , "exclude  = [\"**/lib.rs\"]"
+    , "match    = { kind = \"use_declaration\", regex = \"diesel\" }"
+    , "message  = \"Commands talk to ports, not the database\""
+    , "severity = \"warn\""
+    , "fix      = \"rust-htmx/service-repository\""
+    , "[rules.ports-have-fakes]"
+    , "files   = \"*/src/ports/*.rs\""
+    , "missing = \"{= dir =}/../fakes/{= stem =}.rs\""
+    , "message = \"Every port has a fake\""
+    ]
+
+rules :: [RuleDef]
+rules = r
+  where
+    Right r = parseRules usePorts
+
+-- Every line containing `use diesel` is a use_declaration match (0-based).
+diesel :: Syntax Identity
+diesel = Syntax $ \_ _ content ->
+  Identity (Right [Match (i, 0) (i, T.length l) l | (i, l) <- zip [0 ..] (T.lines content), "use diesel" `T.isPrefixOf` T.stripStart l])
+
+cmd :: FilePath
+cmd = "billing/billing-service/src/cancel_invoice.rs"
+
+run :: RulesConfig -> [(FilePath, Text)] -> [FilePath] -> ([Finding], [Exception])
+run config files toCheck =
+  runIdentity (checkFiles diesel [rust] config rules (map fst files) (\p -> Identity (lookup p files)) toCheck)
+
+none :: RulesConfig
+none = RulesConfig [] []
+
+findings :: RulesConfig -> Text -> [(Text, Maybe Int, Severity)]
+findings config content = [(fRule f, fmap (fst . fst) (fRange f), fSeverity f) | f <- fst (run config [(cmd, content)] [cmd])]
+
+spec :: Spec
+spec = describe "rules (spec §5.9)" $ do
+  it "(a) a match rule finds its node, with message, fix and the path's slots" $ do
+    let [f] = fst (run none [(cmd, "use std::sync::Arc;\nuse diesel::prelude::*;\n")] [cmd])
+    (fRule f, fRange f, fSeverity f, fMessage f, fFix f, fSets f)
+      `shouldBe` ("commands-use-ports", Just ((2, 1), (2, 24)), Warn, "Commands talk to ports, not the database", Just "rust-htmx/service-repository", [("command", "cancel_invoice"), ("service", "billing")])
+    fst (run none [("billing/billing-service/src/lib.rs", "use diesel::x;\n")] ["billing/billing-service/src/lib.rs"]) `shouldBe` []
+  it "(b) a missing rule finds a file that should exist" $ do
+    let port = "billing/src/ports/email_sender.rs"
+        fake = "billing/src/fakes/email_sender.rs"
+    map fRule (fst (run none [(port, "")] [port])) `shouldBe` ["ports-have-fakes"]
+    fst (run none [(port, ""), (fake, "")] [port]) `shouldBe` []
+  it "(c) an allow comment on the line or the line above suppresses, with its reason" $ do
+    findings none "use diesel::x; // olifant:allow commands-use-ports — migration script\n" `shouldBe` []
+    let (fs, exs) = run none [(cmd, "// olifant:allow commands-use-ports — migration script\nuse diesel::x;\n")] [cmd]
+    fs `shouldBe` []
+    map (\e -> (exRule e, exReason e, exStale e)) exs `shouldBe` [("commands-use-ports", Just "migration script", False)]
+  it "(d) a file allow in the first lines suppresses the whole file" $ do
+    let (fs, exs) = run none [(cmd, "// olifant:allow-file commands-use-ports — legacy\n\nuse diesel::a;\nuse diesel::b;\n")] [cmd]
+    fs `shouldBe` []
+    map exRule exs `shouldBe` ["commands-use-ports"]
+  it "(e) an allow without a reason still suppresses, but warns (Review Focus 2)" $
+    findings none "// olifant:allow commands-use-ports\nuse diesel::x;\n" `shouldBe` [("allow-without-reason", Just 1, Warn)]
+  it "(f) an allow naming an unknown rule warns (Review Focus 2)" $
+    findings none "// olifant:allow comands-use-ports — typo\nuse diesel::x;\n" `shouldBe` [("unknown-rule", Just 1, Warn), ("commands-use-ports", Just 2, Warn)]
+  it "(g) an allow that suppresses nothing is stale (Review Focus 2)" $
+    map (\e -> (exRule e, exStale e)) (snd (run none [(cmd, "// olifant:allow commands-use-ports — old\nfn x() {}\n")] [cmd])) `shouldBe` [("commands-use-ports", True)]
+  it "(h) only a real comment for the exact rule suppresses (Review Focus 5)" $ do
+    findings none "let s = \"// olifant:allow commands-use-ports — x\";\nuse diesel::y;\n" `shouldSatisfy` any (\(r, _, _) -> r == "commands-use-ports")
+    findings none "// olifant:allow ports-have-fakes — x\nuse diesel::y;\n" `shouldSatisfy` any (\(r, _, _) -> r == "commands-use-ports")
+  it "(i) the project's [rules] set severity, turn rules off and allow paths with a reason" $ do
+    findings (RulesConfig [("commands-use-ports", Off)] []) "use diesel::x;\n" `shouldBe` []
+    findings (RulesConfig [("commands-use-ports", Error)] []) "use diesel::x;\n" `shouldBe` [("commands-use-ports", Just 1, Error)]
+    let (fs, exs) = run (RulesConfig [] [("commands-use-ports", ["billing/**"], "billing migrates later")]) [(cmd, "use diesel::x;\n")] [cmd]
+    fs `shouldBe` []
+    map exReason exs `shouldBe` [Just "billing migrates later"]
+  describe "loading" $ do
+    it "reads [rules] config: severities and allows" $
+      parseRulesConfig (M.fromList []) `shouldBe` Right (RulesConfig [] [])
+    it "refuses a rule with both match and missing, or neither, or an unknown severity" $ do
+      parseRules "[rules.x]\nfiles = \"*\"\nmessage = \"m\"\n" `shouldSatisfy` either ("match" `T.isInfixOf`) (const False)
+      parseRules "[rules.x]\nfiles = \"*\"\nmessage = \"m\"\nmatch = { kind = \"a\" }\nmissing = \"b\"\n" `shouldSatisfy` either ("match" `T.isInfixOf`) (const False)
+      parseRules "[rules.x]\nfiles = \"*\"\nmessage = \"m\"\nmatch = { kind = \"a\" }\nseverity = \"loud\"\n" `shouldSatisfy` either ("hint, warn, error" `T.isInfixOf`) (const False)
+    it "suggests the right key for a typo" $
+      parseRules "[rules.x]\nfiles = \"*\"\nmesage = \"m\"\nmatch = { kind = \"a\" }\n" `shouldSatisfy` either ("message" `T.isInfixOf`) (const False)
