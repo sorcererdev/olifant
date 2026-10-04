@@ -53,7 +53,7 @@ listJson detail subs views es broken =
     , "tip" .= compositionTip
     ]
   where
-    summary e = object ["id" .= idText (entryId e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)]
+    summary e = object ["id" .= idText (entryId e), "name" .= generatorName (entryDefinition e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)]
 
 -- | How to do a whole task in one call (agents pay per turn; spec §16).
 compositionTip :: Text
@@ -107,6 +107,7 @@ showJson :: M.Map Text ChoiceView -> [(UseStep, Maybe CatalogEntry)] -> CatalogE
 showJson views subs e =
   object
     [ "id" .= idText (entryId e)
+    , "name" .= generatorName d
     , "description" .= genDescription d
     , "language" .= genLanguage d
     , "version" .= genVersion d

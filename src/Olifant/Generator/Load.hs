@@ -59,7 +59,8 @@ parseGenerator gid src = do
             [] -> Right ()
     _ -> Right ()
   appliesAt <- optional "applies_at" (table >=> appliesAtFrom (map inputName inputs')) top
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt)
+  name <- optional "name" text top
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name)
   where
     queryWithValue v = do
       t <- table v
@@ -75,7 +76,7 @@ parseGenerator gid src = do
 -- | `[applies_at]` (spec §4.6). Slots and bind names must be inputs.
 appliesAtFrom :: [Text] -> Table -> Either Text AppliesAt
 appliesAtFrom inputNames t = do
-  onlyKeys ["path", "node", "bind", "file", "label"] t
+  onlyKeys ["path", "node", "bind", "file", "label", "where"] t
   path <- required "path" text t
   case [x | x <- slots path, x `notElem` inputNames] of
     x : _ -> Left ("`{" <> x <> "}` in applies_at.path is not an input (inputs: " <> T.intercalate ", " inputNames <> ")")
@@ -84,7 +85,8 @@ appliesAtFrom inputNames t = do
   bind <- maybe (Right []) (traverse (\(k, v) -> inKey ("bind." <> k) (if k `elem` inputNames then (k,) <$> (text v >>= posixRegex) else Left ("`" <> k <> "` is not an input"))) . M.toList) =<< optional "bind" table t
   file <- traverse (\v -> text v >>= \k -> if k `elem` inputNames then Right k else Left ("file: `" <> k <> "` is not an input")) (M.lookup "file" t)
   label <- traverse (text >=> tmpl) (M.lookup "label" t)
-  pure (AppliesAt path node bind file label)
+  where' <- traverse (inKey "where" . (text >=> tmpl)) (M.lookup "where" t)
+  pure (AppliesAt path node bind file label where')
   where
     slots p = case T.breakOn "{" p of
       (_, "") -> []
@@ -102,7 +104,7 @@ choiceValueFrom v = case v of
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at"]
+topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
@@ -113,7 +115,7 @@ useKeys = ["generator", "for_each", "with"]
 -- | What a misplaced key usually means (measured: the keys models invent).
 topAdvice, inputAdvice, editAdvice :: [(Text, Text)]
 topAdvice =
-  [ (k, "a generator is named by its directory (.olifant/generators/NAME/generator.toml), not a key") | k <- ["name", "id", "generator"] ]
+  [ (k, "a generator's id is its directory (.olifant/generators/ID/generator.toml), not a key; `name` is what editors show") | k <- ["id", "generator"] ]
     ++ [ ("edit", "edits are [[edits]] tables"), ("steps", "run other generators with [[uses]]"), ("templates", "templates live in the generator's templates/ directory; name one with `template` on an edit") ]
 inputAdvice =
   [ ("description", "did you mean `prompt`?")

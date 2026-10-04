@@ -1,6 +1,7 @@
 # 2. Running generators
 
-Four commands cover almost everything: `list`, `show`, `gen`, and `gen --plan`.
+Four commands cover almost everything: `list`, `show`, `gen`, and `gen --plan`. A fifth,
+`doctor`, says whether this machine has what they need.
 
 ## What can I run? `olifant list`
 
@@ -122,6 +123,22 @@ $ olifant elm/page --set page=x
 error: unknown command `elm/page`; did you mean `olifant gen elm/page --set page=x`?
 ```
 
+Warnings don't stop a plan. The first one to read, when there is one, is about your code, not
+the generator's: `gen` parses every existing file the plan changes, and names the first error
+in one that doesn't parse:
+
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice --plan --human
+Plan: rust-htmx/wire-command (7 edits, 0 conflicts)
+  …
+  ? warning: billing/billing-service/src/cancel_invoice.rs:7 does not parse (near `;`) — this plan may place code wrongly, and checks will fail
+```
+
+(a `;` typed after a struct field instead of `,`). It is listed before any other warning, and
+a compile error later in the same plan about that file ends with `(see the parse warning
+above)`. Fix the file and run again; [chapter
+14](14-editors-and-actions.md#code-that-does-not-parse-in-a-plan) has the details.
+
 | exit code | meaning |
 |---|---|
 | 0 | done (including "nothing to do") |
@@ -130,6 +147,15 @@ error: unknown command `elm/page`; did you mean `olifant gen elm/page --set page
 | 3 | no such generator, file or pack |
 | 4 | inputs missing or invalid (the JSON lists each one) |
 | 5 | conflict: nothing was written |
+
+When a `complete` edit cannot run its check because the compiler is not on your `PATH`, the
+conflict says so and ends with `` ; run `olifant doctor` ``:
+
+```
+! rust-htmx/failure-arms: cannot complete cases: `cargo` is not installed (needed to check rust); run `olifant doctor`
+```
+
+([Below](#is-this-machine-ready-olifant-doctor).)
 
 ## For scripts and agents: JSON
 
@@ -194,16 +220,62 @@ gives:
 ```
 $ olifant actions --at billing/billing-service/src/refund_invoice.rs:28:5 --human
 Add AlreadyRefunded to every match  (rust-htmx/failure-arms)
-$ olifant actions --at src/Olifant/Catalog.hs:82:3 --json        # in the Olifant repo
+$ olifant actions --at src/Olifant/Catalog.hs:84:3 --json        # in the Olifant repo
 [{"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"}}]
+$ olifant actions --file billing/billing-service/src/cancel_invoice.rs --human
+22:5  Add Unknown to every match  (rust-htmx/failure-arms)
+nearby: rust-htmx/wire-command — on a field of the CancelInvoice struct
 ```
 
 (The first is in a rust-htmx sandbox with an `AlreadyRefunded` variant typed into the
 `RefundInvoiceFailure` enum.) `LINE` and `COL` are 1-based; `COL` counts UTF-8 bytes (as Neovim does). `sets` are the inputs bound from
-the path and the code, and `missing` the required inputs still to ask for. `--content -`
-reads the file's current, possibly unsaved, text from stdin. Only generators with an
-`[applies_at]` are offered; [chapter 14](14-editors-and-actions.md) covers both, and the
-Neovim plugin that uses them.
+the path and the code, and `missing` the required inputs still to ask for. `--file FILE`
+answers for the whole file at once: every place a generator applies (`LINE:COL`, or a
+`range` in JSON), and, under `nearby`, the generators whose path matched but which found
+nothing to apply to yet, with what they look for. `--content -` reads the file's current,
+possibly unsaved, text from stdin. Only generators with an `[applies_at]` are offered;
+[chapter 14](14-editors-and-actions.md) covers both, and the Neovim plugin that uses them.
+
+## Is this machine ready? `olifant doctor`
+
+Generators need more than Olifant: `ast-grep` to place code, each language's compiler for
+`complete` edits, and a model for holes. `olifant doctor`, run in a project, checks each one
+and says how to fix what is missing:
+
+```
+$ olifant doctor
+✓ config — project at /tmp/demo
+✓ pack rust-htmx — loaded
+✓ language rust — loaded
+✓ ast-grep — /opt/homebrew/bin/ast-grep
+✗ check tool cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
+  fix: install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)
+✓ model — qwen3-coder:30b answers at http://localhost:11434/v1
+$ echo $?
+1
+```
+
+| check | what it looks at |
+|---|---|
+| `config` | the project root: the nearest directory with a `.olifant/`, from here upwards |
+| `pack NAME`, `language NAME` | each pack and language adapter that loaded; an adapter or generator that failed to load is an `error`, with why |
+| `ast-grep` | `ast-grep` on this process's `PATH` |
+| `check tool EXE (LANGUAGE)` | the first word of each adapter's `[check] command` (`cargo`, `elm`, `cabal`) on this process's `PATH`, which is printed when it is missing |
+| `model` | `[model]` ([chapter 12](12-holes-and-models.md#configuring-a-model)): none is a `warn`, with the snippet to add; a `default` with no such backend is an `error`. An `openai-compatible` default must list its model at `URL/models` within 3 seconds (else `warn`: `curl: (7) Failed to connect …`, or `` the server answers but has no model `NAME` ``); for `anthropic`, only that the key's environment variable is set, never its value and never a request |
+
+`✓` is ok, `!` a warning, `✗` an error, each followed by `fix:` when there is one. The exit
+code is 1 if any check is an error, 0 otherwise (warnings included). `--json` prints
+`{"checks": [{"name", "status", "detail", "fix"}]}`, with `status` one of `ok`, `warn`,
+`error` and `fix` null when there is none.
+
+"This process's `PATH`" is the point: an editor that runs `olifant` gives it the editor's
+`PATH`, which may not be your shell's. Run doctor the way the editor does: Durandal's
+`:checkhealth durandal` runs it from Neovim
+([chapter 14](14-editors-and-actions.md#troubleshooting)).
+
+A config that does not parse, or a pack that is missing, stops doctor as it stops every
+command: with the error (`error: …/.olifant/config.toml: 10:1: parse error: …`) and exit 1,
+before any check.
 
 ## Running it again
 

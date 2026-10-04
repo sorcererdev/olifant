@@ -1,3 +1,4 @@
+name = "Wire Command Dependencies"
 description = "Wire a command's dependencies after you add fields to its struct by hand (spec §7.1: reconcile)"
 language = "rust"
 version = 1
@@ -42,4 +43,5 @@ with      = { service = "{= service =}", command = "{= command =}", dependency =
 [applies_at]
 path  = "{service}/*-service/src/{command}.rs"
 node  = { kind = "field_declaration", inside = { kind = "struct_item", regex = "^pub struct {= command|pascal =} ", stopBy = "end" } }
+where = "on a field of the {= command|pascal =} struct"
 label = "Wire {= command =}'s dependencies"

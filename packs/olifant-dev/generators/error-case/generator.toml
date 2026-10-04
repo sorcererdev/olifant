@@ -1,3 +1,4 @@
+name = "Add Error Case"
 description = "Add a constructor to a sum type; GHC finds every case that needs a branch (left as todos)"
 language = "haskell"
 version = 1
@@ -44,4 +45,5 @@ path  = "src/**.hs"
 file  = "path"
 node  = { kind = "data_type" }
 bind  = { type = "^data[[:space:]]+([A-Za-z0-9_]+)" }
+where = "on a data declaration"
 label = "Add a constructor to {= type =} (GHC finds every case)"

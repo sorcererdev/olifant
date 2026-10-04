@@ -13,4 +13,4 @@
 11. [Olifant and AI agents](11-olifant-and-agents.md)
 12. [Holes and models](12-holes-and-models.md)
 13. [Tutorial: holes with a local model](13-tutorial-holes.md)
-14. [Olifant in your editor: `[applies_at]`, `olifant actions`, `files` and `--progress`](14-editors-and-actions.md)
+14. [Olifant in your editor: `[applies_at]`, `olifant actions`, hints, `files`, `--progress` and `olifant doctor`](14-editors-and-actions.md)

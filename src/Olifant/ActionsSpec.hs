@@ -104,6 +104,47 @@ spec = describe "olifant actions (spec §4.6)" $ do
           , "[inputs.path]", "type = \"text\"", "[inputs.name]", "type = \"ident\""
           , "[applies_at]", "path = \"**/*.rs\"", "file = \"path\"", "label = \"Add a case\"" ]
     map (\a -> (actSets a, actMissing a)) (at matches [("g", errorCase)] file (1, 1)) `shouldBe` [([("path", T.pack file)], ["name"])]
+  describe "--file: every place in a file (spec §4.6)" $ do
+    let inFile syn gens path content = runIdentity (actionsInFile syn [rust] noQueries [] (const (pure Nothing)) gens path content)
+        threeVariants = Syntax $ \_ _ _ -> Identity (Right [Match (3, 4) (3, 9) "Third", Match (1, 4) (1, 9) "First", Match (2, 4) (2, 10) "Second"])
+    it "(a) a generator without node applies to the whole file (no range)" $ do
+      let whole = generator . T.unlines $ ["description = \"d\"", "language = \"rust\"", "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\"", "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\"", "label = \"Whole\""]
+      fst (inFile matches [("w", whole)] file "x") `shouldBe` [FileAction (Action "w" "Whole" [("command", "refund_invoice"), ("service", "billing")] []) Nothing]
+    it "(b) one entry per matching node, in file order, each with its own binds (Review Focus 2)" $
+      map (\fa -> (lookup "failure" (actSets (faAction fa)), faRange fa)) (fst (inFile threeVariants [("g", failureArms)] file "enum E {\n    First,\n    Second,\n    Third,\n}\n"))
+        `shouldBe` [ (Just "First", Just (Range (2, 5) (2, 10))), (Just "Second", Just (Range (3, 5) (3, 11))), (Just "Third", Just (Range (4, 5) (4, 10))) ]
+    it "(b2) ranges are UTF-8 byte columns" $ do
+      let onX = Syntax $ \_ _ _ -> Identity (Right [Match (0, 2) (0, 3) "x"])
+      map faRange (fst (inFile onX [("g", failureArms)] file "\233 x\n")) `shouldBe` [Just (Range (1, 4) (1, 5))]
+    it "(c) a path match with no node is nearby, not an action" $ do
+      let (acts, near) = inFile (Syntax $ \_ _ _ -> Identity (Right [])) [("g", failureArms)] file "x"
+      acts `shouldBe` []
+      map (\n -> (nbGenerator n, nbLabel n)) near `shouldBe` [("g", "Add arms")]
+    it "(c2) nearby says what the rule looks for: `where` rendered with the path, else the rule in words" $ do
+      let none = Syntax $ \_ _ _ -> Identity (Right [])
+          own w = generator . T.unlines $
+            [ "description = \"d\"", "language = \"rust\""
+            , "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\""
+            , "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\""
+            , "node = { kind = \"field_declaration\", inside = { kind = \"struct_item\", regex = \"^pub struct {= command|pascal =} \" } }" ] ++ w
+      map nbWhy (snd (inFile none [("g", own ["where = \"on a field of the {= command|pascal =} struct\""])] file "x")) `shouldBe` ["on a field of the RefundInvoice struct"]
+      map nbWhy (snd (inFile none [("g", own [])] file "x")) `shouldBe` ["a `field_declaration` inside a `struct_item` matching /^pub struct RefundInvoice /"]
+    it "(c3) a search that failed says so, and suggests olifant doctor — not \"none yet\" (review I3)" $ do
+      let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed (brew install ast-grep)"))
+      map nbWhy (snd (inFile broken [("g", failureArms)] file "x")) `shouldSatisfy` all (\w -> "cannot search this file" `T.isInfixOf` w && "ast-grep is not installed" `T.isInfixOf` w && "olifant doctor" `T.isInfixOf` w)
+    it "(c4) no near miss when a path-bound value is not a valid choice (lib.rs is not a command) (review I4)" $ do
+      let enumGen = generator . T.unlines $
+            [ "description = \"d\"", "language = \"rust\""
+            , "[inputs.service]", "type = \"enum\"", "one_of = \"services\""
+            , "[inputs.command]", "type = \"ident\""
+            , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
+            , "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\"", "node = { kind = \"struct_item\" }" ]
+          none = Syntax $ \_ _ _ -> Identity (Right [])
+          near ps = snd (runIdentity (actionsInFile none [rust] noQueries ps (const (pure Nothing)) [("g", enumGen)] file "x"))
+      near ["shipping/shipping-service/lib.rs"] `shouldBe` []
+      map nbGenerator (near ["billing/billing-service/lib.rs"]) `shouldBe` ["g"]
+    it "(d) another path: neither" $
+      inFile threeVariants [("g", failureArms)] "notes/readme.md" "x" `shouldBe` ([], [])
   describe "the rust-htmx demo generators (real ast-grep)" $ do
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
     let real gen given path pos = findExecutable "ast-grep" >>= \case
@@ -120,6 +161,19 @@ spec = describe "olifant actions (spec §4.6)" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]
       real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (13, 20) >>= (`shouldBe` [])
+    it "the user's miss: a field in the Input struct gives no wire-command action but a nearby reason" $ findExecutable "ast-grep" >>= \case
+      Nothing -> if strict then expectationFailure "ast-grep is required" else pendingWith "ast-grep is not installed"
+      Just _ -> do
+        tmp <- getTemporaryDirectory
+        given <- TIO.readFile cancel
+        let wrong = T.replace "pub struct CancelInvoice {\n    pub email_sender: Arc<dyn EmailSender>,\n}" "pub struct CancelInvoice {}" (T.replace "pub struct CancelInvoiceInput {}" "pub struct CancelInvoiceInput {\n    pub email_sender: Arc<dyn EmailSender>;\n}" given)
+            path = "billing/billing-service/src/cancel_invoice.rs"
+        wrong `shouldNotBe` given
+        Right (ws, tools, _, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/rust-htmx" "rust-htmx" "wire-command" [(path, wrong)]
+        paths <- listFiles ws "."
+        (acts, near) <- actionsInFile (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("rust-htmx/wire-command", g)] path wrong
+        acts `shouldBe` []
+        map nbWhy near `shouldBe` ["on a field of the CancelInvoice struct"]
     it "offers failure-arms on a Failure variant, binding the variant" $ do
       acts <- real "failure-arms" refund "billing/billing-service/src/refund_invoice.rs" (28, 7)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Add AlreadyRefunded to every match", [("command", "refund_invoice"), ("failure", "AlreadyRefunded"), ("service", "billing")], [])]

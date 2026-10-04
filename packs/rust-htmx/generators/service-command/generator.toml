@@ -1,3 +1,4 @@
+name = "Add Command to Service"
 description = "Add a command (use case) to an existing service"
 language = "rust"
 version = 1

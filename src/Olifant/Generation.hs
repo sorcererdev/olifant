@@ -19,10 +19,11 @@ module Olifant.Generation
   , module Olifant.Generation.Tools
   ) where
 
-import Control.Monad (filterM, foldM, forM_, when)
+import Control.Monad (filterM, foldM, forM, forM_, when)
 import Data.Bifunctor (first)
+import Data.Aeson (object, (.=))
 import Data.Functor ((<&>))
-import Data.List (nub)
+import Data.List (nub, sortOn)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -37,7 +38,7 @@ import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
-import Olifant.Language (Language, languageFor)
+import Olifant.Language (Language, Match (..), Syntax (..), languageFor)
 import Olifant.Holes (HoleSite (..), matchesWithHoles, placeHoles, placeholderize)
 import Olifant.Generation.FillPhase (fillPhase)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
@@ -142,6 +143,29 @@ generate ws resolve tools steps now mode =
           then fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed holes0
           else pure (placed, holes0, [])
       before <- traverse (\p -> (p,) <$> previous p) (M.keys writes)
+      -- Parse pre-check (spec §4.6): a touched file that does not parse is
+      -- warned about first; placement and checks around it may go wrong.
+      -- Every existing file an edit names (even when all its edits
+      -- conflicted, review I7), and every file the compiler found.
+      let touched = M.toList (M.fromList ([(p, t) | (p, Just t) <- M.toList originals, p `elem` targets] ++ [(p, t) | (p, Just t) <- before]))
+      unparsed <- fmap concat . forM touched $ \(p, old) ->
+        case languageFor (toolLanguages tools) p of
+          Nothing -> pure []
+          Just lang ->
+            querySyntax (toolSyntax tools) lang (object ["kind" .= ("ERROR" :: Text)]) old <&> \case
+              Right ms
+                | m : _ <- sortOn matchStart ms ->
+                let near = T.take 20 (T.takeWhile (/= '\n') (matchText m))
+                 in [(p, T.pack p <> ":" <> T.pack (show (fst (matchStart m) + 1)) <> " does not parse (near `" <> near <> "`) — this plan may place code wrongly, and checks will fail")]
+              _ -> []
+      let pointBack w
+            | "does not compile" `T.isInfixOf` w, any (\(p, _) -> T.pack p `T.isInfixOf` w) unparsed = w <> " (see the parse warning above)"
+            | otherwise = w
+          -- A touched file that was already broken makes the compiler blame
+          -- the plan's code; say where the break really is.
+          pointBackConflict = \case
+            CompleteFailed st why tm -> CompleteFailed st (pointBack why) tm
+            c -> c
       -- What the plan shows is what is written: fills, not placeholders.
       let filled = [(holePlaceholder (phSite h), f) | h <- holes, Just f <- [phFill h]]
           withFills t = foldl (\acc (ph, f) -> T.replace ph f acc) t filled
@@ -150,7 +174,7 @@ generate ws resolve tools steps now mode =
                                WillOverwrite t -> WillOverwrite (withFills t)
                                WillInsert n t -> WillInsert n (withFills t)
                                other -> other} | e <- shown]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (conflicts ++ holeConflicts) (warnings ++ fillWarnings) writes holes (M.fromList before)
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings)) writes holes (M.fromList before)
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

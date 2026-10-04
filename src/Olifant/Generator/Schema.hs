@@ -40,7 +40,8 @@ generatorSchema =
           ]
       "uses" -> object ["type" .= str "array", "description" .= str "[[uses]]: run other generators as part of this one.", "items" .= object ["type" .= str "object", "additionalProperties" .= False, "required" .= (["generator"] :: [Text]), "properties" .= props useKeys useProp]]
       "examples" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"], "description" .= str "Real commands, printed by show (agents copy them)."]
-      "applies_at" -> object ["type" .= str "object", "description" .= str "Where this generator applies, for editors (olifant actions): path = \"{slot}/…\" (slots bind inputs), node = an ast-grep rule the cursor must be inside, bind = { input = \"regex\" } over that node's text, label = a template."]
+      "name" -> object ["type" .= str "string", "description" .= str "What editors show for this generator (\"Add Command Dependency\"); default: from the id."]
+      "applies_at" -> object ["type" .= str "object", "description" .= str "Where this generator applies, for editors (olifant actions): path = \"{slot}/…\" (slots bind inputs), node = an ast-grep rule the cursor must be inside, bind = { input = \"regex\" } over that node's text, label = a template, where = what the rule looks for in words (shown when nothing applies)."]
       "query" -> object ["type" .= str "object", "description" .= str "[query.NAME]: bind NAME to records from a glob, command or AST query; value = \"file name\" | \"parent folder\" | \"path\" | a field | a template, for an enum that is one_of it (see the user book, chapter 6).", "additionalProperties" .= object ["type" .= str "object"]]
       _ -> object []
     inputProp = \case

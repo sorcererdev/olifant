@@ -2,6 +2,7 @@ module Olifant.Generator.Definition
   ( GeneratorId (..)
   , GeneratorWith (..)
   , GeneratorDef
+  , generatorName
   , Generator
   , Requires (..)
   , EditWith (..)
@@ -21,7 +22,9 @@ module Olifant.Generator.Definition
   , FieldSpec (..)
   ) where
 
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Olifant.Anchor (Position)
 import Olifant.Language (Rule)
 import Olifant.Query (ChoiceValue (..), Query)
@@ -47,6 +50,8 @@ data GeneratorWith src = Generator
     genQueries :: [(Text, Query)]
   , -- | `[applies_at]` (spec §4.6): where in the code this generator applies
     genAppliesAt :: Maybe AppliesAt
+  , -- | `name`: what editors show ("Add Command Dependency"); see 'generatorName'
+    genName :: Maybe Text
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -86,11 +91,18 @@ data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists
 data Unless t = UnlessExists t | UnlessMatches t
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
+-- | The name people see: `name`, or one made from the id
+-- (`rust-htmx/command-dependency` → "Command Dependency").
+generatorName :: GeneratorWith s -> Text
+generatorName g = fromMaybe derived (genName g)
+  where
+    derived = T.unwords [T.toUpper (T.take 1 w) <> T.drop 1 w | w <- T.split (`elem` ("-_" :: String)) (snd (T.breakOnEnd "/" (generatorIdText (genId g)))), not (T.null w)]
+
 -- | Where a generator applies (spec §4.6): a path glob whose `{slot}`s bind
 -- inputs, an optional ast-grep rule the cursor must be inside, regexes over
 -- that node's text for more inputs, an input that takes the file's own path,
--- and the label an editor shows.
-data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template}
+-- the label an editor shows, and what the rule looks for, in words.
+data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template, apWhere :: Maybe Template}
   deriving stock (Show)
 
 -- | Where an insert goes: a phrase (rendered, then parsed) or a raw ast-grep rule.
