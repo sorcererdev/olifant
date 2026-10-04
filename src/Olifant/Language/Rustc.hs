@@ -31,6 +31,7 @@ rustcSupport =
     , supportFunction = rustFunctionAt
     , supportArmSeparator = ","
     , supportReadsStdout = True
+    , supportSpans = Nothing
     }
 
 data Diag = Diag

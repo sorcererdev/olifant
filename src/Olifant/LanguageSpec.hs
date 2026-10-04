@@ -203,6 +203,21 @@ spec = do
       parsePyrightReport "Traceback: oops" `shouldSatisfy` either (const True) (const False)
     it "names the enclosing function: the nearest def at or above the line" $
       supportFunction pyrightSupport "def a():\n    pass\n\ndef status(f):\n    match f:\n" 4 `shouldBe` "status"
+  describe "a match's extent from its indentation (Python)" $ do
+    it "(a) the last line of the block under a line: blank lines don't extend it, a line back at its indentation ends it" $
+      indentBlockEnd ["def f(x):", "    match x:", "        case A():", "            return 1", "", "    return 2"] 1 `shouldBe` 3
+    it "(b) a last arm whose body spans lines (nested if, a multi-line call) ends at its last line (Review Focus 2)" $ do
+      src <- TIO.readFile "src/Olifant/Language/testdata/pyright/two-matches/src/failures.py"
+      indentBlockEnd (T.splitOn "\n" src) 23 `shouldBe` 30
+      indentBlockEnd (T.splitOn "\n" src) 17 `shouldBe` 19
+    it "(c) through the checker: each pyright site spans its match to the last arm (real pyright via uvx)" $
+      findExecutable "uvx" >>= \case
+        Nothing -> pendingWith "uv is not installed (brew install uv)"
+        Just _ -> do
+          let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uvx\", \"--quiet\", \"pyright\", \"--outputjson\"]", "context = [\"pyproject.toml\"]", "format = \"pyright-json\""])
+          files <- traverse (\f -> (f,) <$> TIO.readFile ("src/Olifant/Language/testdata/pyright/two-matches/" <> f)) ["pyproject.toml", "src/failures.py"]
+          r <- runCheck processChecker py (M.fromList files)
+          fmap (map (\m -> (missingFile m, missingCase m)) . reportMissing) r `shouldBe` Right [("src/failures.py", (17, 19)), ("src/failures.py", (23, 30))]
   describe "rustc-json sites (spec §5.6, fixtures captured from cargo 1.99)" $ do
     report <- runIO (BS.readFile "src/Olifant/Language/testdata/rustc-e0004.jsonl")
     let Right r = parseRustcReport report

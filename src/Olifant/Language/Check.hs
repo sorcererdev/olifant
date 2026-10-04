@@ -57,7 +57,7 @@ processChecker = Checker $ \lang files -> case langCheck lang of
           Left why -> Left (CheckFailed why)
           Right (CheckReport [] [] [])
             | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
-          Right report -> Right (relativeTo dir report)
+          Right report -> Right (maybe id ($ files) (supportSpans support) (relativeTo dir report))
 
 -- | Whether the files compile cleanly (exit 0); pack tests use it to prove
 -- generated output builds.

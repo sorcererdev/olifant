@@ -28,6 +28,7 @@ ghcSupport =
     , supportFunction = declarationAt
     , supportArmSeparator = ""
     , supportReadsStdout = False
+    , supportSpans = Nothing
     }
 
 data Diag = Diag {dFile :: FilePath, dStart :: Int, dEnd :: Int, dSeverity :: Text, dCode :: Maybe Int, dMessage :: Text}

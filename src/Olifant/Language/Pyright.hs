@@ -10,6 +10,8 @@ import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.Char (isAlphaNum, isUpper)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language.Diagnostics
@@ -24,7 +26,17 @@ pyrightSupport =
     , supportFunction = pythonFunctionAt
     , supportArmSeparator = ""
     , supportReadsStdout = True
+    , -- pyright points at the `match` line; the arms are the block under it
+      supportSpans = Just extendSites
     }
+
+-- | Each site from its `match` line to its last arm, read from the source.
+extendSites :: Map FilePath Text -> CheckReport -> CheckReport
+extendSites files r = r {reportMissing = map extend (reportMissing r)}
+  where
+    extend m = case M.lookup (missingFile m) files of
+      Just src -> m {missingCase = (fst (missingCase m), indentBlockEnd (T.splitOn "\n" src) (fst (missingCase m)))}
+      Nothing -> m
 
 data Diag = Diag {dFile :: FilePath, dLine :: Int, dSeverity :: Text, dRule :: Maybe Text, dMessage :: Text}
 
