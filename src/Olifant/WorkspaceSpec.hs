@@ -36,6 +36,16 @@ contract = do
 
 spec :: Spec
 spec = do
+  describe "overlay (spec §4.8: plan against an unsaved buffer)" $ do
+    it "reads the overlaid file's text, delegates the rest, and lists it even if absent" $ do
+      (ws, _) <- memoryWorkspace [("a.txt", "disk"), ("b.txt", "other")]
+      let o = overlay "a.txt" "unsaved" ws
+          new = overlay "c.txt" "fresh" ws
+      readText o "a.txt" `shouldReturn` Just "unsaved"
+      readText o "b.txt" `shouldReturn` Just "other"
+      inspectPath o "a.txt" `shouldReturn` Readable "unsaved"
+      listFiles new "." >>= (`shouldSatisfy` elem "c.txt")
+      fileExists new "c.txt" `shouldReturn` True
   describe "memory adapter" $ around (\act -> memoryWorkspace [] >>= act . fst) contract
   describe "disk adapter" $ around (\act -> withSystemTempDirectory "olifant" (act . diskWorkspace)) contract
   describe "disk adapter (bytes that are not UTF-8)" $

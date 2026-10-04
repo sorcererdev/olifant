@@ -248,6 +248,17 @@ runCliSpec = describe "runCli" $ do
     human `shouldSatisfy` T.isInfixOf "service=billing:  query failed:"
     (_, json, _, _) <- runWith "" files False ["show", "q"]
     json `shouldSatisfy` T.isInfixOf "\"errors\":{\"billing\":"
+  it "plans against an unsaved buffer with --overlay, writing nothing (spec §4.8)" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "insert = \"old.txt\"", "at = \"end of file\"", "text = \"{= name =}\\n\"" ]
+        files = [("/proj/.olifant/generators/two/generator.toml", gen), ("/proj/old.txt", "on disk\n")]
+    (code, out, _, onDisk) <- runWith "unsaved\n" files False ["gen", "two", "--set", "name=a", "--plan", "--overlay", "old.txt"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"unsaved\\na\\n\",\"before\":\"unsaved\\n\""
+    M.lookup "/proj/old.txt" onDisk `shouldBe` Just "on disk\n"
+    (bad, _, _, _) <- runWith "x" files False ["gen", "two", "--set", "name=a", "--overlay", "old.txt"]
+    bad `shouldBe` ExitFailure 2
   it "gives each planned file's before and after, null before for a new file (for editors)" $ do
     let gen = T.unlines
           [ "description = \"d\"", "language = \"x\"", "[inputs.name]", "type = \"ident\""

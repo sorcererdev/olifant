@@ -36,7 +36,7 @@ import Olifant.Generation
 import Olifant.Generator (generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
-import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
+import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
 import System.FilePath (makeRelative, normalise, takeBaseName, takeDirectory, (</>))
 import System.Exit (ExitCode (..))
 
@@ -369,7 +369,7 @@ runCommand rt cwd fmt cat = \case
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
           -- choices_from is resolved inside generate, step by step, so a
           -- step can choose what an earlier step of the chain creates.
-          Right gens -> runSteps rt fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
+          Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
   FixCmd rule file (line, _) n g -> do
     let ws = within (rtProjectDir rt) (rtRoot rt)
         rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
@@ -400,19 +400,29 @@ runCommand rt cwd fmt cat = \case
                 case replacement of
                   Left why -> failWith rt fmt 1 "fix_failed" why Nothing []
                   -- The replacement first, while its lines are where the rule saw them.
-                  Right first' -> runSteps rt fmt cat g context (first' ++ [Step gen sets])
+                  Right first' -> runSteps rt cwd fmt cat g context (first' ++ [Step gen sets])
 
 -- | Run plan steps as `gen` does (model, fills, progress, regions,
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,
 -- with the fix's context files shown to the model).
-runSteps :: Runtime -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
-runSteps rt fmt cat g context steps = do
+runSteps :: Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
+runSteps rt cwd fmt cat g context steps = do
   now <- maybe (rtNow rt) pure (genNow g)
   let mode = if genPlanOnly g then PlanOnly else Apply
-  case modelFor cat g of
+      project = within (rtProjectDir rt) (rtRoot rt)
+  -- `--overlay FILE` (spec §4.8): plan against the editor's unsaved text.
+  overlaid <- case genOverlay g of
+    Nothing -> pure (Right project)
+    Just _ | not (genPlanOnly g) -> pure (Left "--overlay needs --plan (an unsaved buffer is planned, never written)")
+    Just f -> do
+      text <- rtReadStdin rt
+      pure (Right (overlay (makeRelative (rtProjectDir rt) (normalise (cwd </> f))) text project))
+  case (overlaid, modelFor cat g) of
+   (Left why, _) -> failWith rt fmt 2 "usage" why Nothing []
+   (Right ws, filler0) -> case filler0 of
              Left why -> failWith rt fmt 2 "usage" why Nothing []
              Right filler ->
-              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolFillContext = context, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
+              generate ws (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolFillContext = context, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan =

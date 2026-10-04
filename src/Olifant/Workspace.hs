@@ -7,6 +7,7 @@ module Olifant.Workspace
   , memoryWorkspace
   , diskWorkspace
   , within
+  , overlay
   , normalisePath
   , isSafeRelative
   ) where
@@ -127,6 +128,27 @@ diskWorkspace root =
           )
 
 -- | View a workspace from a subdirectory.
+-- | The workspace with one file's text replaced (an editor's unsaved
+-- buffer, spec §4.8): reads, existence and listing see it; everything
+-- else is the workspace's. Plans only; it is never written.
+overlay :: Monad m => FilePath -> Text -> Workspace m -> Workspace m
+overlay path text ws =
+  ws
+    { readText = \p -> if same p then pure (Just text) else readText ws p
+    , fileExists = \p -> if same p then pure True else fileExists ws p
+    , inspectPath = \p -> if same p then pure (Readable text) else inspectPath ws p
+    , listFiles = \dir -> do
+        fs <- listFiles ws dir
+        let prefix = case normalisePath dir of
+              "." -> ""
+              d -> d <> "/"
+            rel = drop (length prefix) target
+        pure (if prefix `isPrefixOf` target && rel `notElem` fs then fs ++ [rel] else fs)
+    }
+  where
+    target = normalisePath path
+    same p = normalisePath p == target
+
 within :: FilePath -> Workspace m -> Workspace m
 within dir ws =
   Workspace
