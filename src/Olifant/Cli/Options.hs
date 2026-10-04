@@ -75,6 +75,8 @@ data GenOptions = GenOptions
   -- ^ `--no-fill`: leave every hole as its placeholder
   , genProgress :: Bool
   -- ^ `--progress`: JSON-line progress events on stderr (for editors)
+  , genOverlay :: Maybe FilePath
+  -- ^ `--overlay FILE`: FILE's current text comes from stdin (with --plan)
   }
   deriving stock (Eq, Show)
 
@@ -112,7 +114,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     formatP = optional (flag' Json (long "json" <> help "JSON output") <|> flag' Human (long "human" <> help "Human-readable output"))
     -- Used only to render `gen --help`; real `gen` parsing is 'parseGen'.
     genP =
-      (\target sets plan now stepsFile model noFill progress -> GenOptions [StepSpec target sets] stepsFile plan now model noFill progress)
+      (\target sets plan now stepsFile model noFill progress overlayF -> GenOptions [StepSpec target sets] stepsFile plan now model noFill progress overlayF)
         <$> strArgument (metavar "GENERATOR")
         <*> many (option (eitherReader setP) (long "set" <> metavar "KEY=VALUE" <> help "Set an input or override a derived value"))
         <*> switch (long "plan" <> help "Show what would change without writing anything")
@@ -121,10 +123,11 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> optional (strOption (long "model" <> metavar "NAME" <> help "Fill holes with [model.backends.NAME] (default: [model] default)"))
         <*> switch (long "no-fill" <> help "Leave every hole as its placeholder")
         <*> switch (long "progress" <> help "Write progress as JSON lines on stderr (checks, fill requests, fills)")
+        <*> optional (strOption (long "overlay" <> metavar "FILE" <> help "With --plan: FILE's current (unsaved) text comes from stdin"))
     syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> flag' SyncPlan (long "plan" <> help "Show the refresh as a plan (whole files, for editors); write nothing") <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
     fixP =
-      (\rule (f, pos) n plan model noFill progress -> FixCmd (T.pack rule) f pos n (GenOptions [] Nothing plan Nothing (T.pack <$> model) noFill progress))
+      (\rule (f, pos) n plan model noFill progress -> FixCmd (T.pack rule) f pos n (GenOptions [] Nothing plan Nothing (T.pack <$> model) noFill progress Nothing))
         <$> strArgument (metavar "RULE")
         <*> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "Where the finding is (1-based line, UTF-8 byte column)")
         <*> option auto (long "fix" <> metavar "N" <> value 1 <> help "Which of the rule's fixes (1 = the first, the default)")
@@ -160,12 +163,17 @@ parseGen :: [String] -> Either Text Options
 parseGen args0 = do
   -- `--model NAME`, `--no-fill` and `--progress` apply to the whole run, like --plan.
   let progress = "--progress" `elem` args0
-  (model, noFill, args) <- pull Nothing False [] (filter (/= "--progress") (concatMap splitEq args0))
+      (overlayFile, rest0) = takeOverlay (filter (/= "--progress") (concatMap splitEq args0))
+  (model, noFill, args) <- pull Nothing False [] rest0
   Options fmt cmd <- go Nothing False Nothing Nothing [] [] args
   pure $ case cmd of
-    GenCmd o -> Options fmt (GenCmd o {genModel = model, genNoFill = noFill, genProgress = progress})
+    GenCmd o -> Options fmt (GenCmd o {genModel = model, genNoFill = noFill, genProgress = progress, genOverlay = overlayFile})
     other -> Options fmt other
   where
+    takeOverlay = \case
+      "--overlay" : f : xs -> let (_, rest) = takeOverlay xs in (Just f, rest)
+      x : xs -> let (o, rest) = takeOverlay xs in (o, x : rest)
+      [] -> (Nothing, [])
     pull model noFill acc = \case
       [] -> Right (model, noFill, reverse acc)
       "--model" : m : xs -> pull (Just (T.pack m)) noFill acc xs
@@ -196,7 +204,7 @@ parseGen args0 = do
           | all null segments -> Left "missing GENERATOR: olifant gen GENERATOR [--set KEY=VALUE]... [+ GENERATOR ...]"
           | any null segments -> Left "empty step: each `+` must be followed by a generator"
           | otherwise -> traverse step segments
-      pure (Options fmt (GenCmd (GenOptions steps stepsFile plan now Nothing False False)))
+      pure (Options fmt (GenCmd (GenOptions steps stepsFile plan now Nothing False False Nothing)))
     step (g : xs) = StepSpec (T.pack g) <$> sets xs
     step [] = Left "empty step"
     sets = \case

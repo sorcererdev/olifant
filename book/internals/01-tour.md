@@ -151,7 +151,7 @@ From the bottom up:
 | **Fill** | The **Filler** port: what a model is asked for typed holes, and what it answers | `Fill.hs`: `FillHole`, `FillRequest`, `Filler`, `ModelFiller` | none |
 | **Model** | `[model]` config and the real fillers: request and reply formats per backend, called with `curl` | `Model.hs`: `Backend`, `ModelConfig`, `parseModelConfig`, `backendKinds`, `backendModel`, `systemPrompt`, `userPrompt`, `requestBody`, `decodeFills`, `curlFiller`, `probeBackend` | Fill, Process, Toml |
 | **Holes** | Typed holes inside a plan's text: markers, placeholders, final names, matching a hole against anything | `Holes.hs`: `Marker`, `HoleSite`, `splitMarkers`, `hasMarkers`, `placeholderize`, `placeHoles`, `matchesWithHoles` | Language, Template |
-| **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `pruned`, `diskWorkspace`, `memoryWorkspace`, `within`, `normalisePath`, `isSafeRelative` | Process (to run `git`) |
+| **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `pruned`, `diskWorkspace`, `memoryWorkspace`, `within`, `overlay`, `normalisePath`, `isSafeRelative` | Process (to run `git`) |
 | **Query** | Facts from the repo as records (globs, commands printing JSON, or AST queries selecting nodes), the **Queries** port, and what an enum's choice is | `Query.hs`: `Query`, `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `QueryFailure`, `failed`, `noQueries`, `processCommand`, `ChoiceValue`, `choiceValue`, `queryVariables` | Glob, Language (`Rule`), Naming, Process, Template, Toml |
 | **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Opening`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `placedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Holes, Language, Query, Suggest, Template |
 | **Generator** | A generator definition: the types, loading `generator.toml`, resolving `one_of` choices, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve, and `Choices`) and `Inputs` (including `envBefore`, `inputsUsed`), plus `parseGenerator`, `withChoices`, `needsChoices`, `ChoiceView`, `choiceViews` | Anchor, Language, Naming, Query, Template, Toml |
@@ -274,7 +274,7 @@ lines a branch changed. Each is a **port**. A port is a record of functions,
 parameterised by the monad `m` it runs in:
 
 ```haskell
--- src/Olifant/Workspace.hs:29
+-- src/Olifant/Workspace.hs:30
 data Workspace m = Workspace
   { readText :: FilePath -> m (Maybe Text)
   , writeText :: FilePath -> Text -> m ()
@@ -339,7 +339,7 @@ pending, as a missing tool is everywhere else (spec §4.5, §5.7).
 
 | port | defined at | real adapter | no-op / test adapters |
 |---|---|---|---|
-| `Workspace m` | `Workspace.hs:29` | `diskWorkspace` (`Workspace.hs:72`): reads and writes under a root; lists files with `git ls-files` when inside a git work tree, otherwise walks the tree. `within dir` (`:131`) views a workspace from a subdirectory | `memoryWorkspace` (`Workspace.hs:45`): a `Map` in an `IORef`, which also hands back an action that reads the final map, so tests can assert on "the disk" |
+| `Workspace m` | `Workspace.hs:30` | `diskWorkspace` (`Workspace.hs:72`): reads and writes under a root; lists files with `git ls-files` when inside a git work tree, otherwise walks the tree. `within dir` (`:152`) views a workspace from a subdirectory. `overlay path text` (`:134`) wraps any workspace so that one file reads as `text` (an editor's unsaved buffer, `gen --overlay`): `readText`, `fileExists` and `inspectPath` see it, `listFiles` includes it even when it is not on disk, and writes and removes go to the wrapped workspace untouched | `memoryWorkspace` (`Workspace.hs:45`): a `Map` in an `IORef`, which also hands back an action that reads the final map, so tests can assert on "the disk" |
 | `Syntax m` | `Language/Syntax.hs:15` | `astGrepSyntax` (`Language/AstGrep.hs:33`): runs `ast-grep scan --stdin --inline-rules … --json=compact`; compiles a pack's vendored grammar with `cc` into the cache on first use | `noSyntax` (`Language/Syntax.hs:17`) always says "ast-grep is not installed"; `fakeSyntax :: Syntax Identity` in `AnchorSpec.hs:58` returns canned matches |
 | `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, and parses the report (stderr, or stdout when the support's `supportReadsStdout` says so, as cargo's does) through the `CompilerSupport` its `format` names (`elm-json`, `ghc-json`, `rustc-json`) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:545`) replays a list of reports, one per round |
 | `Filler m` | `Fill.hs:30` | `curlFiller timeout backend` (`Model.hs:170`): posts the request with `curl` to an OpenAI-compatible server or to Anthropic's API, and decodes the reply into fills by hole name | `replayFiller` (`GeneratorTesting.hs:143`) answers from a pack case's `fills.toml`; `withFiller` (`GenerationSpec.hs:615`) replays a list of replies, one per request, and counts the requests, so a spec can say "one request, then a retry with only the failing hole" |
@@ -670,16 +670,43 @@ on service; set it to see the choices", and `inputsJson` (`:74`) as `choices`, o
 Then the call into the core:
 
 ```haskell
--- src/Olifant/Cli.hs:222
-            let mode = if genPlanOnly g then PlanOnly else Apply
-                steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            case modelFor cat g of
-             Left why -> failWith rt fmt 2 "usage" why Nothing []
-             Right filler ->
-              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler}) steps now mode >>= \case
+-- src/Olifant/Cli.hs:373
+          Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
 ```
 
-`modelFor` (`Cli.hs:363`) picks the model: `Nothing` with `--no-fill`, otherwise the backend
+`runSteps` (`Cli.hs:409`) is shared with `olifant fix`, which passes a replacement step and
+the fix's context files. It takes `cwd` so that it can resolve `--overlay FILE` the way every
+other path argument is resolved:
+
+```haskell
+-- src/Olifant/Cli.hs:412
+  let mode = if genPlanOnly g then PlanOnly else Apply
+      project = within (rtProjectDir rt) (rtRoot rt)
+  -- `--overlay FILE` (spec §4.8): plan against the editor's unsaved text.
+  overlaid <- case genOverlay g of
+    Nothing -> pure (Right project)
+    Just _ | not (genPlanOnly g) -> pure (Left "--overlay needs --plan (an unsaved buffer is planned, never written)")
+    Just f -> do
+      text <- rtReadStdin rt
+      pure (Right (overlay (makeRelative (rtProjectDir rt) (normalise (cwd </> f))) text project))
+  case (overlaid, modelFor cat g) of
+   (Left why, _) -> failWith rt fmt 2 "usage" why Nothing []
+   (Right ws, filler0) -> case filler0 of
+             Left why -> failWith rt fmt 2 "usage" why Nothing []
+             Right filler ->
+              generate ws (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolFillContext = context, toolProgress = …}) steps now mode >>= \case
+```
+
+The overlay is the whole feature on the engine's side. `generate` takes a `Workspace`, and
+everything it does (placement, `unless`, queries, the parse pre-check, and the files handed to
+the `Checker` for `complete` edits and fills) reads through it, so swapping one file's text
+in the port is enough; no phase knows. The `--plan` guard is what makes that safe: with
+`PlanOnly`, 4h writes nothing, so the overlaid text can never reach the disk. `parseGen`
+(`Cli/Options.hs:162`) lifts `--overlay FILE` out of the arguments before the `+` split
+(`takeOverlay`), like `--model` and `--progress`, so it applies to the whole run wherever it
+appears; `fix` doesn't take it.
+
+`modelFor` (`Cli.hs:587`) picks the model: `Nothing` with `--no-fill`, otherwise the backend
 named by `--model`, else by `[model] default`, else `Nothing`. A name with no
 `[model.backends.NAME]` is the `Left`, a usage error (exit 2) listing the backends there are.
 The backend becomes a `ModelFiller` with the backend's model name (for the plan), `[model]
@@ -689,12 +716,13 @@ none (`ModelConfig Nothing 2 120 []`).
 
 The arguments, in order:
 - the workspace narrowed to the project root (`rtProjectDir rt` here, since `rt` is the `rt'`
-  `runCli` rebound — see step 2), so paths are now project-relative, regardless of `cwd`
+  `runCli` rebound — see step 2), so paths are now project-relative, regardless of `cwd`;
+  with `--overlay`, wrapped in `overlay`
 - `Catalog.resolver`, used for `[[uses]]` (a used generator's `one_of` is resolved by
   `generate`'s `choose`, like a top-level step's)
-- the `Tools`, built by `projectTools rt cat` (`Cli.hs:380`) with `toolFiller` set to the
+- the `Tools`, built by `projectTools rt cat` (`Cli.hs:604`) with `toolFiller` set to the
   model above: the real Syntax and Checker,
-  the catalog's languages and regions, and `projectQueries rt cat` (`:385`) — `queryCommand
+  the catalog's languages and regions, and `projectQueries rt cat` (`:609`) — `queryCommand
   = processCommand (rtProjectDir rt)`, `queryAst = astQueries (rtSyntax rt) (catalogLanguages
   cat)`
 - the steps
@@ -1367,9 +1395,10 @@ one printed is computed.
   the plan `hasConflicts`, in which case nothing would be written anyway, so neither `--plan`
   nor a plain `gen` prints any edit's text. The `[step]` tag appears only when edits came
   from more than one step path (`multiStep`, `:232`).
-- **`planJson`** (`:164`) produces the `plan_version: 2` object, with a `holes` array from
-  `holeJson` (`:200`): `name`, `kind`, `file`, `line`, `status`, `model`, `attempts`, `why`
-  and `fill`. Applied runs leave out file
+- **`planJson`** (`:168`) produces the `plan_version: 2` object, with a `holes` array from
+  `holeJson` (`:206`): `name`, `kind`, `file`, `line`, `placeholder` (`holePlaceholder` of
+  the `HoleSite`, the text an editor replaces with `⟨name⟩` in ghost text), `status`,
+  `model`, `attempts`, `why` and `fill`. Applied runs leave out file
   contents (`content`, `:190`) — this one is keyed only on `applied`, not on conflicts,
   because a conflicted edit never has a `WillCreate`/`WillInsert`/etc. action to hold
   content in the first place (`editAction` is `Conflicted`). `files` (`:177`) follows the same
@@ -1388,7 +1417,7 @@ not a dumped Haskell value (below).
 `gen` is one use case; the other is what editors call before it (user book, chapter 14):
 
 ```sh
-olifant actions --at src/Olifant/Catalog.hs:84:3     # in this repo: on `data CatalogError`
+olifant actions --at src/Olifant/Catalog.hs:93:3     # in this repo: on `data CatalogError`
 ```
 
 ```
@@ -1400,9 +1429,10 @@ last (`Generator/Load.hs:61`), after the inputs, because `appliesAtFrom` (`:76`)
 name against them: each `{slot}` in `path`, each `bind` key and `file` must be an input, and
 each `bind` regex goes through `posixRegex` (the same check as fragments and `each`), so `\w`
 is a load error. `node` is parsed by `ruleFromTree` (`:83`), as an `at` rule is, and `label`
-and `where` (`:87`) are templates. The result is `genAppliesAt :: Maybe AppliesAt`
-(`Generator/Definition.hs:49`; `AppliesAt` at `:93`: `apPath`, `apNode`, `apBind`, `apFile`,
-`apLabel`, `apWhere`). `applies_at` is in `topKeys`, so `olifant schema` describes it. Errors
+and `where` (`:88`) are templates, and `suggest` (`:90`) is an optional boolean, `False`
+when absent. The result is `genAppliesAt :: Maybe AppliesAt`
+(`Generator/Definition.hs:54`; `AppliesAt` at `:117`: `apPath`, `apNode`, `apBind`, `apFile`,
+`apLabel`, `apWhere`, `apSuggest`). `applies_at` is in `topKeys`, so `olifant schema` describes it. Errors
 are prefixed `` `applies_at`: `` once, by `optional`.
 
 **The command.** `Cli/Options.hs` (`actionsP`, `:124`) takes exactly one of `--at
@@ -1415,11 +1445,14 @@ files for the queries, and pairs every catalog entry's id with its definition. G
 fail to load aren't catalog entries, so they are never offered. Then it branches on the
 position:
 
-- `--at` calls `actionsAt`. `actionJson` (`:434`) renders each `Action` as `{generator,
-  label, sets, missing}`; the human form is one line per action.
-- `--file` calls `actionsInFile` and renders `{"actions": [...], "nearby": [...]}` in place
-  (`:161`): each `FileAction` with its `range` (`{start: [l, c], end: [l, c]}`, or `null`),
-  each `Nearby` as `{generator, label, why}`. The human form puts `LINE:COL  ` (or `file  `)
+- `--at` calls `actionsAt`. `actionJson` (`:679`) renders each `Action` as `{generator,
+  name, label, sets, missing, suggest}`; the human form is one line per action. `name` and
+  `suggest` are not on the `Action`: `Actions` knows nothing of display names or editors, so
+  `runCommand` looks both up by generator id in the catalog (`nameOf`, and `suggestOf`,
+  `:166`, which is `apSuggest` of the generator's `[applies_at]`) and passes them in.
+- `--file` calls `actionsInFile` and renders `{"actions": [...], "nearby": [...]}` in place:
+  each `FileAction` with its `range` (`{start: [l, c], end: [l, c]}`, or `null`) and the same
+  `name` and `suggest`, each `Nearby` as `{generator, name, label, why}`. The human form puts `LINE:COL  ` (or `file  `)
   before the `--at` line, then a `nearby: GENERATOR — WHY` line per near miss.
 
 **Matching** (`Actions.hs`). Both use cases take the ports they need as arguments (the
@@ -1496,6 +1529,22 @@ path that matches nothing. Its last group, "the rust-htmx demo generators (real 
 runs `wire-command`'s and `failure-arms`'s real `[applies_at]` through `preparePack` and
 ast-grep on their test cases' `given/` files, including the miss that motivated `nearby`: a
 field typed into `CancelInvoiceInput` gives no `wire-command` action, and a reason.
+
+### Suggestions: `suggest` and `--overlay` together
+
+Ghost text and follow-ups (user book, chapter 14; spec §4.8) need nothing new from `Actions`
+or `generate`. The editor already has the hints' `actions --file` answer; for the cursor's
+line it takes an action with `"suggest": true` and nothing `missing`, and runs that action's
+`gen` with `--plan --json --no-fill --overlay FILE`, the buffer on stdin. Whether the plan is
+ghost text or a follow-up is decided in the editor, from `files` (one contiguous insert in
+FILE near the cursor, at most 8 lines, or not), and holes are drawn from
+`holes[].placeholder`. Accepting runs the same command again without `--no-fill`. So
+Olifant's part is three small pieces: `Workspace.overlay`, the `--overlay` option in
+`runSteps`, and two fields of JSON (`suggest`, `placeholder`). `WorkspaceSpec` tests
+`overlay` (the overlaid text read, the rest delegated, a file that is not on disk listed and
+existing); `CliSpec`'s "plans against an unsaved buffer" runs `gen --plan --overlay` on a
+memory workspace and checks the plan saw the stdin text and the disk did not change, and that
+`--overlay` without `--plan` is exit 2.
 
 ## The third use case: `olifant doctor`
 
@@ -1743,6 +1792,17 @@ The editor features brought these:
   `--file billing/billing-service/src/lib.rs` reports `wire-command` "on a field of the Lib
   struct", though `lib` is not a command and `--at` on such a field would drop it into
   `missing`.
+
+Suggestions brought these:
+
+- **`actions --content -` and `gen --overlay` see different projects.** `actions` matches
+  the buffer's text, but resolves `one_of` choices against the disk (`offer` calls
+  `withChoices` without the overlay), while `gen --overlay` lists the overlaid file. A
+  command file that has never been saved has `command` in `missing` from `actions`, so the
+  editor never suggests on it, though `gen --plan --overlay` accepts `command=pay_invoice`.
+- **One overlay, one stdin.** Only one file can be overlaid, and it is read from stdin, which
+  `--steps -` also reads: the two together fail with an internal error (`<stdin>:
+  hGetBuffering: illegal operation (handle is closed)`), not a usage error.
 
 The conventions brought these:
 

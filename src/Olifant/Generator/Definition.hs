@@ -114,7 +114,7 @@ generatorName g = fromMaybe derived (genName g)
 -- inputs, an optional ast-grep rule the cursor must be inside, regexes over
 -- that node's text for more inputs, an input that takes the file's own path,
 -- the label an editor shows, and what the rule looks for, in words.
-data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template, apWhere :: Maybe Template}
+data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template, apWhere :: Maybe Template, apSuggest :: Bool}
   deriving stock (Show)
 
 -- | Where an insert goes: a phrase (rendered, then parsed) or a raw ast-grep rule.

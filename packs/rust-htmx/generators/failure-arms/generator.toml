@@ -45,4 +45,6 @@ path  = "{service}/*-service/src/{command}.rs"
 node  = { kind = "enum_variant", inside = { kind = "enum_item", regex = "Failure", stopBy = "end" } }
 bind  = { failure = "^([A-Za-z0-9_]+)" }
 where = "on a variant of the {= command|pascal =}Failure enum"
+# Offered unasked (spec §4.8): a follow-up you Tab to review, Tab to apply.
+suggest = true
 label = "Add {= failure =} to every match"

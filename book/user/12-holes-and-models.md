@@ -433,6 +433,7 @@ entry:
 | `name` | the hole's name, with `[file:line]` when the name repeats |
 | `kind` | its kind |
 | `file`, `line` | where its placeholder or fill is |
+| `placeholder` | the placeholder's text, as the adapter rendered it, whatever the status: what an editor looks for to show the hole (Durandal draws it as `⟨name⟩`, [chapter 14](14-editors-and-actions.md#ghost-text-and-follow-ups)) |
 | `status` | `filled`, `unfilled` (it has its placeholder because something failed or no model is configured) or `skipped` (`--no-fill`) |
 | `model` | the model that filled it (`null` unless filled) |
 | `attempts` | which attempt succeeded (`null` unless filled) |
@@ -442,13 +443,13 @@ entry:
 From `gen … --plan --json` with a model:
 
 ```json
-"holes": [{"attempts": 1, "file": "billing/billing-service/src/refund_invoice.rs", "fill": "409", "kind": "expr", "line": 35, "model": "qwen3-coder:30b", "name": "status", "status": "filled", "why": null}]
+"holes": [{"attempts": 1, "file": "billing/billing-service/src/refund_invoice.rs", "fill": "409", "kind": "expr", "line": 35, "model": "qwen3-coder:30b", "name": "status", "placeholder": "todo!(\"olifant: status: the value this match returns for RefundInvoiceFailure::AlreadyRefunded, following the other arms\")", "status": "filled", "why": null}]
 ```
 
 and with the `anthropic` backend and no key in the environment:
 
 ```json
-"holes": [{"attempts": null, "file": "billing/billing-service/src/refund_invoice.rs", "fill": null, "kind": "expr", "line": 35, "model": null, "name": "status", "status": "unfilled", "why": "ANTHROPIC_API_KEY is not set"}]
+"holes": [{"attempts": null, "file": "billing/billing-service/src/refund_invoice.rs", "fill": null, "kind": "expr", "line": 35, "model": null, "name": "status", "placeholder": "todo!(\"olifant: status: …\")", "status": "unfilled", "why": "ANTHROPIC_API_KEY is not set"}]
 ```
 
 The human form is one line per hole, with the fill after a colon (a fill of several lines is
