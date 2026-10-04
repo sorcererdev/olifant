@@ -195,7 +195,7 @@ holes:
 and how it ended: `filled by MODEL: CODE` (with `(attempt N)` after a retry), `unfilled:
 WHY` (it was left as a placeholder that compiles: no model is configured, or the model
 failed), or `skipped: --no-fill`. In JSON, `holes` has `name`, `kind`, `file`, `line`,
-`status`, `model`, `attempts`, `why` and `fill`.
+`placeholder`, `status`, `model`, `attempts`, `why` and `fill`.
 
 - `--model NAME` fills holes with `[model.backends.NAME]` instead of the default.
 - `--no-fill` leaves every hole as its placeholder, and asks no model.
@@ -213,6 +213,49 @@ or `unfilled` with `why`). Stdout is unchanged. It is for editors that show a sp
 model calls and checks; like `--plan`, it applies to the whole run.
 [Chapter 14](14-editors-and-actions.md#progress-gen---progress) has the table and a real run.
 
+## An unsaved buffer: `--overlay FILE`
+
+`gen` reads the disk. An editor's buffer is often ahead of it, and an editor that plans in
+the background, while you type, should not save your file to find out what a generator
+would do. `--overlay FILE` plans against FILE's current text, read from stdin, instead of
+the disk's. In an Elm sandbox with the `msg-branch` generator of [chapter
+14](14-editors-and-actions.md#tutorial-make-your-generator-an-action), and an `Increment`
+variant typed into `type Msg` but not saved:
+
+```
+$ sed 's/    | Reset/    | Reset\n    | Increment/' src/Page/Home.elm \
+    | olifant gen msg-branch --set page=Home --set msg=Increment --plan --human --no-fill --overlay src/Page/Home.elm
+Plan: msg-branch (1 edit, 0 conflicts)
+  ~ src/Page/Home.elm (+2 lines at line 35, compiler: update)
+
+--- src/Page/Home.elm
+Increment ->
+    ( model, Cmd.none )
+```
+
+The same command without `--overlay` plans against the saved file, where there is no
+`Increment` yet, so there is nothing to add: `msg-branch (0 edits, 0 conflicts)`.
+
+- **Everything sees the overlay**: placement, `unless`, queries (in rust-htmx, a command
+  file you have never saved is already one of the service's `commands`), the compiler
+  checks of `complete` edits and of fills, and the parse pre-check. Every other file is
+  read from the disk.
+- **It never writes.** `--overlay` needs `--plan`; without it the command is a usage error,
+  exit 2:
+
+  ```
+  $ olifant gen msg-branch --set page=Home --set msg=Increment --overlay src/Page/Home.elm --human
+  error: --overlay needs --plan (an unsaved buffer is planned, never written)
+  ```
+
+- **`files` starts from the buffer.** The overlaid file's `before` is the text you sent,
+  so an editor applies `after` to the buffer it read, and can tell if it changed since.
+- One file per run. `FILE` is relative to where you run `olifant` (or absolute), as for
+  `olifant actions`. Like `--plan` and `--progress`, it applies to the whole run.
+
+This is how Durandal plans ghost text and follow-ups without saving
+([chapter 14](14-editors-and-actions.md#ghost-text-and-follow-ups)).
+
 ## What applies here? `olifant actions`
 
 Editors ask which generators apply at a cursor, with the inputs the code there already
@@ -221,8 +264,8 @@ gives:
 ```
 $ olifant actions --at billing/billing-service/src/refund_invoice.rs:28:5 --human
 Add AlreadyRefunded to every match  (rust-htmx/failure-arms)
-$ olifant actions --at src/Olifant/Catalog.hs:84:3 --json        # in the Olifant repo
-[{"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"}}]
+$ olifant actions --at src/Olifant/Catalog.hs:93:3 --json        # in the Olifant repo
+[{"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"name":"Add Error Case","sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"},"suggest":false}]
 $ olifant actions --file billing/billing-service/src/cancel_invoice.rs --human
 22:5  Add Unknown to every match  (rust-htmx/failure-arms)
 nearby: rust-htmx/wire-command — on a field of the CancelInvoice struct
@@ -230,7 +273,9 @@ nearby: rust-htmx/wire-command — on a field of the CancelInvoice struct
 
 (The first is in a rust-htmx sandbox with an `AlreadyRefunded` variant typed into the
 `RefundInvoiceFailure` enum.) `LINE` and `COL` are 1-based; `COL` counts UTF-8 bytes (as Neovim does). `sets` are the inputs bound from
-the path and the code, and `missing` the required inputs still to ask for. `--file FILE`
+the path and the code, `missing` the required inputs still to ask for, `name` the
+generator's display name, and `suggest` whether an editor may offer it unasked
+([chapter 14](14-editors-and-actions.md#ghost-text-and-follow-ups)). `--file FILE`
 answers for the whole file at once: every place a generator applies (`LINE:COL`, or a
 `range` in JSON), and, under `nearby`, the generators whose path matched but which found
 nothing to apply to yet, with what they look for. `--content -` reads the file's current,

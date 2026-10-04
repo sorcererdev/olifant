@@ -2,7 +2,7 @@
 
 How Olifant works, so you can change it. Chapters 1 and 2 are written; the rest are planned.
 
-1. [A tour of the codebase](01-tour.md): the units, ports and adapters, one `gen` call end to end (with region families), `olifant actions`, `olifant doctor`, and the conventions: the `Rules` unit, `olifant check` (baseline, `--changed-since` and the git port) and `sync --plan`
+1. [A tour of the codebase](01-tour.md): the units, ports and adapters, one `gen` call end to end (with region families and `--overlay`), `olifant actions` and suggestions, `olifant doctor`, and the conventions: the `Rules` unit, `olifant check` (baseline, `--changed-since` and the git port) and `sync --plan`
 2. [The Haskell you'll meet here, for a Rust programmer](02-haskell-for-this-codebase.md)
 3. The template engine: `{= … =}`, filters, exemplars (planned)
 4. From generator to plan: `Compose` and `Planner` (planned)
