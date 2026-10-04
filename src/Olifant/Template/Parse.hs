@@ -236,7 +236,7 @@ identifier = lexeme . try $ do
   if w `elem` reserved then fail ("`" <> T.unpack w <> "` is a keyword") else pure w
 
 knownFilters :: [Text]
-knownFilters = map caseName allCases ++ ["plural", "singular", "timestamp", "parens", "rust_string", "escaped"]
+knownFilters = map caseName allCases ++ ["plural", "singular", "timestamp", "parens", "rust_string", "python_string", "escaped"]
 
 tagP :: Parser Tag
 tagP =

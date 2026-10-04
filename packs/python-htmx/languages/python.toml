@@ -1,0 +1,71 @@
+# Python: ast-grep's built-in grammar; checks with pyright (strict, from the
+# project's pyproject.toml) through uv, its venv in Olifant's cache.
+files = ["**/*.py"]
+comment = "#"
+grammar = "python"
+indent = "    "
+placeholder = 'raise NotImplementedError("{= message|python_string =}")'
+branch = "case {= pattern =}:\n    {= body =}"
+
+[check]
+command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
+context = ["pyproject.toml", "uv.lock"]
+format  = "pyright-json"
+
+# Hole kinds (spec §6.3). An expression placeholder is a value of type Never
+# (it fits any type under pyright strict, needs no import) that raises with
+# the hole's message if it is ever run.
+[holes.expr]
+placeholder = '(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}"))'
+wrap = "def __olifant():\n    return {= fill =}"
+
+[holes.stmt]
+placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}")'
+wrap = "def __olifant():\n{= fill =}"
+
+[holes.block]
+placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}")'
+wrap = "def __olifant():\n{= fill =}"
+
+# Tab stops in snippets (spec §4.9): a name, or text inside a string.
+[holes.ident]
+placeholder = "{= hole =}"
+wrap = "class {= fill =}: ..."
+
+[holes.text]
+placeholder = "{= hole =}"
+wrap = "__olifant = \"{= fill =}\""
+
+# A failure union, one member per line (`type F = (\n    A\n    | B\n)`):
+# `end of union F` adds a line after the last member.
+[targets.union]
+phrase = "union NAME"
+container = { kind = "parenthesized_expression", inside = { kind = "type_alias_statement", has = { field = "left", regex = "^{= NAME =}$" }, stopBy = "end" } }
+# The whole union is the one item (`A | B | C`, or a lone `A`): `end of`
+# goes after its last line, at its indentation.
+items = { any = [{ kind = "binary_operator" }, { kind = "identifier" }] }
+example = "end of union CreateBookingFailure"
+
+[targets.class]
+phrase = "class NAME"
+container = { kind = "block", inside = { kind = "class_definition", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { any = [{ kind = "function_definition" }, { kind = "decorated_definition" }, { kind = "expression_statement" }, { kind = "class_definition" }, { kind = "pass_statement" }] }
+example = "end of class BookingService"
+
+[targets.function]
+phrase = "function NAME"
+container = { kind = "block", inside = { kind = "function_definition", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { any = [{ kind = "expression_statement" }, { kind = "return_statement" }, { kind = "if_statement" }, { kind = "match_statement" }, { kind = "for_statement" }, { kind = "while_statement" }, { kind = "with_statement" }, { kind = "try_statement" }, { kind = "raise_statement" }, { kind = "pass_statement" }, { kind = "function_definition" }, { kind = "decorated_definition" }] }
+example = "end of function create_app"
+
+[targets.match_on]
+phrase = "match on NAME"
+container = { kind = "block", inside = { kind = "match_statement", has = { field = "subject", regex = "^{= NAME =}$" } } }
+items = { kind = "case_clause" }
+example = "end of match on failure"
+
+[targets.imports]
+phrase = "imports"
+container = { kind = "module" }
+items = { any = [{ kind = "import_statement" }, { kind = "import_from_statement" }, { kind = "future_import_statement" }] }
+example = "end of imports"

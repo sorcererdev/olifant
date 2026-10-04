@@ -152,6 +152,9 @@ spec = do
   describe "rust_string" $
     it "escapes text for the inside of a Rust format-string literal" $
       renderWith [("t", VText "Rec { .. } \"late\" \\n")] "{= t|rust_string =}" `shouldBe` Right "Rec {{ .. }} \\\"late\\\" \\\\n"
+  describe "python_string" $
+    it "escapes text for the inside of a double-quoted Python string" $
+      renderWith [("t", VText "the \"late\" fee\nC:\\x")] "{= t|python_string =}" `shouldBe` Right "the \\\"late\\\" fee\\nC:\\\\x"
   describe "parens" $
     it "wraps multi-word text in parentheses unless it already is one group" $
       map (\t -> renderWith [("t", VText t)] "{= t|parens =}") ["Int", "List String", "(List String)", "(a) (b)", "  Maybe Int ", "List\tString"]

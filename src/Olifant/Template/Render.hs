@@ -106,8 +106,18 @@ applyFilter f v = case caseFromText f of
       VText t -> Right (VText (T.concatMap rustChar t))
       VName n -> Right (VText (T.concatMap rustChar (Naming.render Naming.Snake n)))
       other -> Left (TypeMismatch ("`rust_string` needs text, got " <> describeValue other))
+    -- Inside a double-quoted Python string: backslash, quote and newline escaped.
+    "python_string" -> case v of
+      VText t -> Right (VText (T.concatMap pythonChar t))
+      VName n -> Right (VText (T.concatMap pythonChar (Naming.render Naming.Snake n)))
+      other -> Left (TypeMismatch ("`python_string` needs text, got " <> describeValue other))
     _ -> Left (TypeMismatch ("unknown filter `" <> f <> "`"))
   where
+    pythonChar = \case
+      '\\' -> "\\\\"
+      '"' -> "\\\""
+      '\n' -> "\\n"
+      c -> T.singleton c
     rustChar = \case
       '\\' -> "\\\\"
       '"' -> "\\\""

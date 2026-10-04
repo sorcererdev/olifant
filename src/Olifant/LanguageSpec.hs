@@ -126,6 +126,24 @@ spec = do
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
+  describe "the Python adapter (python-htmx)" $ do
+    let at syn lang file p = fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
+        lineOf needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines pythonModule))
+    it "(b) loads: hole kinds, a four-space indent, pyright-json" $ withPython $ \_ lang _ -> do
+      map fst (langHoles lang) `shouldMatchList` ["expr", "stmt", "block", "ident", "text"]
+      langIndent lang `shouldBe` "    "
+      fmap checkFormat (langCheck lang) `shouldBe` Just "pyright-json"
+    it "(c) end of union NAME goes after its last member, at its indentation" $ withPython $ \syn lang file ->
+      at syn lang file "end of union CreateBookingFailure" `shouldReturn` Right (lineOf "| PartyTooLarge" + 1, "    ")
+    it "(c) end of class NAME goes after the class's last statement" $ withPython $ \syn lang file ->
+      at syn lang file "end of class BookingService" `shouldReturn` Right (lineOf "return 1" + 1, "    ")
+    it "(c) end of function NAME goes after its last statement" $ withPython $ \syn lang file ->
+      at syn lang file "end of function status" `shouldReturn` Right (lineOf "return 422" + 1, "    ")
+    it "(c) end of match on NAME goes after the last case, whole" $ withPython $ \syn lang file ->
+      at syn lang file "end of match on f" `shouldReturn` Right (lineOf "return 422" + 1, "        ")
+    it "(c) end of imports goes after the last import" $ withPython $ \syn lang file ->
+      at syn lang file "end of imports" `shouldReturn` Right (lineOf "from dataclasses import dataclass" + 1, "")
+
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
@@ -380,6 +398,52 @@ withHaskell k =
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
 -- | The rust-htmx pack's adapter on one of its fixture's files, or pending.
+-- | A module with each Python target in it.
+pythonModule :: Text
+pythonModule =
+  T.unlines
+    [ "import fx"
+    , "from dataclasses import dataclass"
+    , ""
+    , ""
+    , "@dataclass(frozen=True)"
+    , "class SlotTaken:"
+    , "    reason: str"
+    , ""
+    , ""
+    , "type CreateBookingFailure = ("
+    , "    SlotTaken"
+    , "    | PartyTooLarge"
+    , ")"
+    , ""
+    , ""
+    , "class BookingService:"
+    , "    def __init__(self) -> None:"
+    , "        self.x = 1"
+    , ""
+    , "    def run(self) -> int:"
+    , "        return 1"
+    , ""
+    , ""
+    , "def status(f: CreateBookingFailure) -> int:"
+    , "    match f:"
+    , "        case SlotTaken():"
+    , "            return 409"
+    , "        case PartyTooLarge():"
+    , "            return 422"
+    ]
+
+-- | The python-htmx pack's adapter on 'pythonModule', or pending.
+withPython :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withPython k =
+  findExecutable "ast-grep" >>= \case
+    Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
+    Just _ -> do
+      src <- TIO.readFile "packs/python-htmx/languages/python.toml"
+      tmp <- getTemporaryDirectory
+      let Right lang = parseLanguage "python" "packs/python-htmx" src
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) lang pythonModule
+
 withRustFile :: FilePath -> (Syntax IO -> Language -> Text -> Expectation) -> Expectation
 withRustFile rel k =
   findExecutable "ast-grep" >>= \case
