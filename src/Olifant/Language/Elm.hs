@@ -70,7 +70,7 @@ elmSupport =
   CompilerSupport
     { supportFormat = "elm-json"
     , supportParse = parseElmReport
-    , supportPattern = qualifyPattern
+    , supportPattern = const qualifyPattern
     , supportVisible = \_ site constructor -> visibleAt site constructor
     , supportFunction = declarationAt
     , supportArmSeparator = ""

@@ -23,6 +23,7 @@ import Olifant.Generation.Render (CompleteSpec (..))
 import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Language
+import Data.Functor ((<&>))
 import Olifant.Holes (placeholderize)
 import Olifant.Template (Value (..), describeTemplateError, render)
 import Olifant.Workspace (Workspace (..))
@@ -79,7 +80,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
                 ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
                 []
-                  | null wanted -> pure (addHidden hidden (addUnplaced (reportUnplaced report) (finish (reportBroken report))))
+                  | null wanted -> addHidden hidden . addUnplaced (reportUnplaced report) <$> finishChecked lang (reportBroken report)
                   | otherwise -> do
                       built <- traverse (branchFor lang support files) wanted
                       case sequence built of
@@ -109,13 +110,25 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   <> " cannot appear there, so olifant did not extend it"
            in (es, cs, ws' ++ map warn hidden, cur)
         siteText m = T.pack (missingFile m) <> " (line " <> T.pack (show (fst (missingCase m) + 1)) <> ")"
-        finish broken =
-          let changed f = M.lookup f disk /= M.lookup f files
-              ours = [b | b@(f, _) <- broken, changed f]
+        -- An error a changed file had before this run is not ours (python
+        -- review I1: pyright reports missing cases beside other errors):
+        -- only then is the unchanged project checked, for its errors.
+        finishChecked lang' broken
+          | null [() | (f, _) <- broken, changed f] = pure (finish broken [])
+          | otherwise =
+              runCheck (toolChecker tools) lang' (placeholderize (toolLanguages tools) disk) <&> \case
+                Right before -> finish broken (reportBroken before)
+                Left _ -> finish broken []
+        changed f = M.lookup f disk /= M.lookup f files
+        finish broken already =
+          let ours = [b | b@(f, _) <- broken, changed f, b `notElem` already]
               describe bs = T.intercalate ", " (nub [T.pack f <> " (" <> t <> ")" | (f, t) <- bs])
            in case (ours, broken) of
                 (_ : _, _) -> (reverse acc, [CompleteFailed step ("the generated code does not compile: " <> describe ours) False], [], current)
-                ([], _ : _) -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
+                ([], _ : _)
+                  -- branches were added and checked; the errors are older
+                  | not (null acc) -> (reverse acc, [], [showStepPath step <> ": the project already had errors before this plan (not from it): " <> describe broken], current)
+                  | otherwise -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
                 ([], []) -> (reverse acc, [], [], current)
 
     branchFor lang support files (d, p, cands) = do
@@ -127,7 +140,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       let chosen = listToMaybe matching
           (step, spec) = fromMaybe (NE.head cands) chosen
           ctors = nub (map (completeConstructor . snd) (NE.toList cands))
-          pat = supportPattern support content (completeConstructor spec) p
+          pat = supportPattern support d content (completeConstructor spec) p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
             Just (_, s) | Just body <- completeBody s -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) body)

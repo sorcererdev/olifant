@@ -1,5 +1,5 @@
 name = "Add Failure Arms"
-description = "A new failure of a command: add it to the command's failure union, then an arm for it in every match on the union (pyright finds them); each arm's value is a hole"
+description = "A new failure of a command: add it to the command's failure union, then an arm for it in every match on the union (pyright finds them); each arm's body is a hole"
 language = "python"
 version = 1
 examples = [
@@ -42,11 +42,12 @@ at     = "end of union {= Failure =}"
 text   = "| {= failure|pascal =}\n"
 unless = { matches = "^[[:space:]]*([|][[:space:]]*)?{= failure|pascal =}[[:space:]]*$" }
 
-# 2: every match on the union gets an arm; its value (a status, a message…)
-# is a hole a model fills per site, checked by pyright (spec §6.4).
+# 2: every match on the union gets an arm. Its body is a hole the model fills
+# per site, the way the other arms are written (`return 409`, `level = "warn"`:
+# never a `return` the site does not use), checked by pyright (spec §6.4).
 [[edits]]
 complete = "{= failure|pascal =}"
-text     = "case {= pattern =}:\n    return {= ? value: expr | the value this match returns for {= pattern =}, following the other arms =}"
+text     = "case {= pattern =}:\n    {= ? body: block | the body of this arm for {= pattern =}, written the way the other arms of this match are (return a value only if they do) =}"
 
 # In an editor (olifant actions): on a failure class in a command module.
 [applies_at]

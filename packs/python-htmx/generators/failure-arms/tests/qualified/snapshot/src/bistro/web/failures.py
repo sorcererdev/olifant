@@ -12,4 +12,4 @@ def create_booking_status(failure: cb.CreateBookingFailure) -> int:
         case cb.TableNotFound():
             return 404
         case cb.Cancelled():
-            return 503
+            return 400

@@ -33,4 +33,4 @@ def create_booking_message(failure: create_booking.CreateBookingFailure) -> str:
         case create_booking.TableNotFound():
             return "We could not find that table"
         case create_booking.Cancelled():
-            return "Your booking was cancelled"
+            return "We could not create your booking"

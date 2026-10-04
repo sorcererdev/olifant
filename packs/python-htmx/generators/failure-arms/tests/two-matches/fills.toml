@@ -1,4 +1,4 @@
 # Recorded from qwen3-coder:30b via Ollama (2026-10-04): one status, one message.
 [fills]
-"value[src/bistro/web/failures.py:19]" = "400"
-"value[src/bistro/web/failures.py:36]" = "\"Your booking was cancelled\""
+"body[src/bistro/web/failures.py:19]" = "return 400"
+"body[src/bistro/web/failures.py:36]" = "return \"We could not create your booking\""

@@ -448,15 +448,16 @@ placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
             pure (Left ("--at " <> T.pack rel <> ":" <> T.pack (show line) <> ": line " <> T.pack (show line) <> " is outside " <> T.pack rel <> " (lines 1–" <> T.pack (show n) <> ")"))
         | otherwise -> do
             let ls = T.splitOn "\n" t
-            Right <$> traverse (place ls lang unit rel line) gens
+            sequence <$> traverse (place ls lang unit rel line) gens
   where
     -- a snippet anticipated `after` a node takes that node's indentation
     place ls lang unit rel line gen
-      | not (isSnippet gen) = pure gen
-      | Just after <- afterRule =<< apAfter =<< genAppliesAt gen, Just l <- lang = do
-          ind <- afterIndent (rtSyntax rt) l after ls line
-          pure (atCursorIndented (fromMaybe (cursorIndent unit ls line) ind) rel line ls gen)
-      | otherwise = pure (atCursor unit rel line ls gen)
+      | not (isSnippet gen) = pure (Right gen)
+      | Just after <- afterRule =<< apAfter =<< genAppliesAt gen, Just l <- lang =
+          afterIndent (rtSyntax rt) l after ls line <&> \case
+            Left why -> Left ("cannot place `" <> generatorIdText (genId gen) <> "`: " <> why <> " (run `olifant doctor`)")
+            Right ind -> Right (atCursorIndented (fromMaybe (cursorIndent unit ls line) ind) rel line ls gen)
+      | otherwise = pure (Right (atCursor unit rel line ls gen))
 
 -- | Run plan steps as `gen` does (model, fills, progress, regions,
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,

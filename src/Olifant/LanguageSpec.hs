@@ -209,8 +209,13 @@ spec = do
       (sites r, map fst (reportBroken r)) `shouldBe` ([], ["src/broken.py"])
     it "(d) a pattern is written as the site spells the others: qualified when they are (Review Focus 1)" $ do
       site <- TIO.readFile "src/Olifant/Language/testdata/pyright/qualified/src/web.py"
-      supportPattern pyrightSupport site "PartyTooLarge" "PartyTooLarge()" `shouldBe` "fx.PartyTooLarge()"
-      supportPattern pyrightSupport "match f:\n    case SlotTaken():\n" "PartyTooLarge" "PartyTooLarge()" `shouldBe` "PartyTooLarge()"
+      supportPattern pyrightSupport (missing "src/web.py" (4, 6) []) site "PartyTooLarge" "PartyTooLarge()" `shouldBe` "fx.PartyTooLarge()"
+      supportPattern pyrightSupport (missing "a.py" (0, 1) []) "match f:\n    case SlotTaken():\n" "PartyTooLarge" "PartyTooLarge()" `shouldBe` "PartyTooLarge()"
+    it "(python review I2) the qualifier is the site's own match's, not the first in the file" $ do
+      let file = T.unlines
+            [ "def is_ok(r):", "    match r:", "        case result.Ok():", "            return True", ""
+            , "def status(f):", "    match f:", "        case create_booking.SlotTaken():", "            return 409" ]
+      supportPattern pyrightSupport (missing "a.py" (6, 8) []) file "Cancelled" "Cancelled()" `shouldBe` "create_booking.Cancelled()"
     it "(e) a clean run is an empty report" $
       (parsePyrightReport <$> sample "clean") `shouldReturn` Right (CheckReport [] [] [])
     it "(f) two matches lacking the same case are two sites" $ do
@@ -231,6 +236,13 @@ spec = do
       r <- runCheck processChecker lang (M.fromList [("a.py", "x = 1\n")])
       case r of
         Left (CheckToolMissing why) -> why `shouldSatisfy` T.isInfixOf "olifant-no-such-tool"
+        other -> expectationFailure (show other)
+  describe "a check whose report cannot be read (python review I4)" $
+    it "says what the tool printed on stderr (uv offline, no lockfile)" $ do
+      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", \"echo 'error: No `uv.lock` found; run uv lock' >&2; exit 2\"]", "format = \"pyright-json\""])
+      r <- runCheck processChecker lang (M.fromList [("a.py", "x = 1\n")])
+      case r of
+        Left f -> describeCheckFailure f `shouldSatisfy` T.isInfixOf "No `uv.lock` found"
         other -> expectationFailure (show other)
   describe "a match's extent from its indentation (Python)" $ do
     it "(a) the last line of the block under a line: blank lines don't extend it, a line back at its indentation ends it" $
@@ -263,7 +275,7 @@ spec = do
     it "has no broken files: E0004/E0005 are sites, not breakage" $
       reportBroken r `shouldBe` []
     it "writes patterns without the reference (match ergonomics)" $
-      supportPattern rustcSupport "" "Failure::D" "&Failure::D" `shouldBe` "Failure::D"
+      supportPattern rustcSupport (missing "a.rs" (0, 0) []) "" "Failure::D" "&Failure::D" `shouldBe` "Failure::D"
     it "sees Type::Variant (and Type.Variant) where that type is matched" $ do
       let [d] = site 11
       supportVisible rustcSupport d "" "Failure::D" `shouldBe` True
@@ -316,7 +328,7 @@ spec = do
       supportVisible g (at "SampleErrorish") "" "SampleError.SampleLocked" `shouldBe` False
       supportVisible g (at "RegionError") "" "SampleError.SampleLocked" `shouldBe` False
       supportVisible g (at "RegionError") "" "SampleLocked" `shouldBe` True
-      supportPattern g "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
+      supportPattern g (missing "a.hs" (0, 0) []) "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
     it "asks GHC not to truncate pattern lists (review M2)" $ do
       src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
       src `shouldSatisfy` T.isInfixOf "-fmax-uncovered-patterns="

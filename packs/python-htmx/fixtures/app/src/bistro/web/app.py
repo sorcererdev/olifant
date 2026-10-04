@@ -23,10 +23,10 @@ def create_app(service: BookingService) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def day_page(request: Request, day: date | None = None) -> HTMLResponse:
-        shown = day or date.today()
-        bookings = {(b.table_id, b.slot.start): b for b in service.bookings.bookings_on(shown)}
+        schedule = service.get_day_schedule.handle(day or date.today())
+        bookings = {(b.table_id, b.slot.start): b for b in schedule.bookings}
         return TEMPLATES.TemplateResponse(
-            request, "day.html", {"day": shown, "tables": service.bookings.tables(), "slots": SLOTS, "bookings": bookings}
+            request, "day.html", {"day": schedule.day, "tables": schedule.tables, "slots": SLOTS, "bookings": bookings}
         )
 
     @app.post("/bookings", response_class=HTMLResponse)

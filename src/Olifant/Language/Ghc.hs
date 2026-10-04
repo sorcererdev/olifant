@@ -20,7 +20,7 @@ ghcSupport =
   CompilerSupport
     { supportFormat = "ghc-json"
     , supportParse = parseGhcReport
-    , supportPattern = \_ _ p -> p
+    , supportPattern = \_ _ _ p -> p
     , supportVisible = \d _ constructor -> case (T.breakOnEnd "." constructor, missingType d) of
         (("", _), _) -> True
         (_, Nothing) -> True

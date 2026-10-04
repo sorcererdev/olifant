@@ -590,6 +590,21 @@ holesSpec = describe "holes in plans (spec §6.4)" $ do
     (ws, _) <- memoryWorkspace [("src/A.elm", page), ("src/B.elm", page)]
     Right plan <- generate ws noResolve (tools (scriptedChecker ref)) [Step gen (M.fromList [("name", "reset")])] now Apply
     map (holeName . phSite) (planHoles plan) `shouldBe` ["body[src/A.elm:9]", "body[src/B.elm:9]"]
+  it "(python review I1) an error already in the file is not the generated code's: the branch stands" $ do
+    let page = "module Page.A exposing (..)\n\nbad = OLD_ERROR\n\nupdate msg model =\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n"
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} ->\\n    ( model, Cmd.none )\"" ]
+    ref <- newIORef [[missing "src/A.elm" (5, 7) ["Reset"]]]
+    let checker = Checker $ \_ files -> do
+          ms <- atomicModifyIORef' ref (\case [] -> ([], []); (r : rs) -> (rs, r))
+          pure (Right (CheckReport ms [(p, "OLD_ERROR is not defined") | (p, t) <- M.toList files, "OLD_ERROR" `T.isInfixOf` t] []))
+    (ws, _) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (tools checker) [Step gen (M.fromList [("name", "reset")])] now PlanOnly
+    map describeConflict (planConflicts plan) `shouldBe` []
+    M.lookup "src/A.elm" (planWrites plan) `shouldSatisfy` maybe False ("Reset ->" `T.isInfixOf`)
+    -- said as it is: the cases were completed; the error was there before
+    planWarnings plan `shouldSatisfy` any (\w -> "already had errors before this plan" `T.isInfixOf` w && "OLD_ERROR" `T.isInfixOf` w)
   it "(c) refuses a kind the adapter does not declare (Review Focus 3)" $ do
     let gen = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"elm\"", "[[edits]]", "create = \"src/V.elm\"", "text = \"v = {= ? val: block | x =}\\n\"" ]
@@ -633,6 +648,17 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     M.lookup "src/A.elm" files `shouldBe` Just "a = 1\n"
     statuses plan `shouldBe` [("a", HoleFilled "fake" 1), ("b", HoleFilled "fake" 1)]
     length <$> readIORef calls `shouldReturn` 1
+  it "(python review I1) a fill in a file with an error already there is judged by what it adds" $ do
+    let withOld = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "create = \"src/A.elm\"", "text = \"x = OLD_ERROR\\na = {= ? a: expr | the a value =}\\n\"" ]
+        oldOrBad = Checker $ \_ files -> pure (Right (CheckReport [] ([(p, "OLD_ERROR is not defined") | (p, t) <- M.toList files, "OLD_ERROR" `T.isInfixOf` t] ++ [(p, "BAD is not defined") | (p, t) <- M.toList files, "BAD" `T.isInfixOf` t]) []))
+    script <- newIORef [Right (M.fromList [("a", "1")])]
+    let filler = Filler $ \_ -> atomicModifyIORef' script (\case [] -> ([], Left "no more replies"); (r : rs) -> (rs, r))
+        tools = (basicTools parses oldOrBad [holeLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, _) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step withOld M.empty] now PlanOnly
+    statuses plan `shouldBe` [("a", HoleFilled "fake" 1)]
   it "(a2) shows the fills in the plan's edits, not the placeholders (review I1)" $ do
     (tools, _) <- withFiller [Right (M.fromList [("a", "1"), ("b", "2")])]
     (ws, _) <- memoryWorkspace []
@@ -841,7 +867,9 @@ completeSpec = describe "generate (complete edits)" $ do
           , "[[edits]]", "insert = \"src/A.elm\"", "at = \"after first line matching ^module\"", "text = \"oops\""
           , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} -> 1\"" ]
     (ws, snapshot) <- memoryWorkspace [("src/A.elm", page)]
-    Right plan <- generate ws noResolve (basicTools noSyntax (brokenChecker [("src/A.elm", "SYNTAX PROBLEM")]) [elmLang]) [Step broken (M.fromList [("name", "reset")])] now Apply
+    -- the file breaks with the plan's `oops`, not before it
+    let oops = Checker $ \_ files -> pure (Right (CheckReport [] [("src/A.elm", "SYNTAX PROBLEM") | maybe False ("oops" `T.isInfixOf`) (M.lookup "src/A.elm" files)] []))
+    Right plan <- generate ws noResolve (basicTools noSyntax oops [elmLang]) [Step broken (M.fromList [("name", "reset")])] now Apply
     map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "src/A.elm" `T.isInfixOf` c && "SYNTAX PROBLEM" `T.isInfixOf` c)
     (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just page
   it "narrows candidates to constructors visible at the site (Route cannot see Main)" $ do
@@ -1055,9 +1083,11 @@ parseCheckSpec = describe "parse pre-check (spec §4.6)" $ do
         broken = Checker $ \_ _ -> pure (Right (CheckReport [] [("src/A.elm", "unexpected ;;")] []))
     plan <- planOver broken [("src/A.elm", "module A exposing (..)\nx = 1;;\n")] both
     take 1 (planWarnings plan) `shouldBe` [warned]
-    -- The touched file was broken before the plan: the compiler's complaint
-    -- (a conflict here) points back at the parse warning.
-    map describeConflict (planConflicts plan) `shouldSatisfy` any (\w -> "does not compile" `T.isInfixOf` w && "(see the parse warning above)" `T.isSuffixOf` w)
+    -- The touched file was broken before the plan: not the plan's doing
+    -- (python review I1), so a warning that the cases could not be checked,
+    -- pointing back at the parse warning — never a guess, never a block.
+    map describeConflict (planConflicts plan) `shouldBe` []
+    planWarnings plan `shouldSatisfy` any (\w -> "could not check for missing cases" `T.isInfixOf` w && "(see the parse warning above)" `T.isSuffixOf` w)
 
 replaceSpec :: Spec
 replaceSpec = describe "replace edits (rule fixes, spec §5.9)" $ do

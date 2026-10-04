@@ -19,7 +19,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Aeson (Value)
-import Olifant.Language (Language, Match (..), Rule, Syntax, querySyntax, renderRule)
+import Olifant.Language (Language, Match (..), Rule, Syntax, describeSyntaxFailure, querySyntax, renderRule)
 import Olifant.Generator.Definition (EditWith (..), Generator, GeneratorWith (..))
 import Olifant.Template.Syntax (Segment (..), Template (..))
 
@@ -75,13 +75,15 @@ atCursorIndented ind path n ls g = g {genEdits = map place (genEdits g)}
 -- | For a snippet anticipated `after` a node: that node's indentation (the
 -- line above may be deeper — a Python class's last field), when line @n@
 -- (1-based) follows one with only blank lines between.
-afterIndent :: Monad m => Syntax m -> Language -> Value -> [Text] -> Int -> m (Maybe Text)
+-- A failed search is an error, never "follows nothing": that would indent
+-- the snippet like the line above (python review).
+afterIndent :: Monad m => Syntax m -> Language -> Value -> [Text] -> Int -> m (Either Text (Maybe Text))
 afterIndent syntax lang rule ls n =
   querySyntax syntax lang rule (T.intercalate "\n" ls) <&> \case
-    Right ms -> case sortOn (Down . fst . matchEnd) [m | m <- ms, follows m] of
+    Right ms -> Right $ case sortOn (Down . fst . matchEnd) [m | m <- ms, follows m] of
       m : _ -> Just (T.takeWhile (\c -> c == ' ' || c == '\t') (fromMaybe "" (listToMaybe (drop (fst (matchStart m)) ls))))
       [] -> Nothing
-    Left _ -> Nothing
+    Left failure -> Left (describeSyntaxFailure failure)
   where
     follows m =
       let end = fst (matchEnd m)

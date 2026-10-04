@@ -35,8 +35,9 @@ data CheckReport = CheckReport {reportMissing :: [MissingPatterns], reportBroken
 data CompilerSupport = CompilerSupport
   { supportFormat :: Text
   , supportParse :: ByteString -> Either Text CheckReport
-  , supportPattern :: Text -> Text -> Text -> Text
-  -- ^ site source, constructor as the edit names it, reported pattern: the pattern as the site writes it
+  , supportPattern :: MissingPatterns -> Text -> Text -> Text -> Text
+  -- ^ the site, its file's source, constructor as the edit names it, reported
+  -- pattern: the pattern as the site writes it
   , supportVisible :: MissingPatterns -> Text -> Text -> Bool
   -- ^ the diagnostic, site source, constructor: can it appear here?
   , supportFunction :: Text -> Int -> Text

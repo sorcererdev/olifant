@@ -21,7 +21,8 @@ pyrightSupport =
   CompilerSupport
     { supportFormat = "pyright-json"
     , supportParse = parsePyrightReport
-    , supportPattern = \site _ p -> qualifyLike site p
+    -- qualified as the site's own `case`s are (python review I2)
+    , supportPattern = \d content _ p -> qualifyLike (siteLines d content) p
     , supportVisible = \_ _ _ -> True
     , supportFunction = pythonFunctionAt
     , supportArmSeparator = ""
@@ -70,6 +71,12 @@ unhandled msg = case T.breakOn "Unhandled type: \"" (T.replace "\160" " " msg) o
 -- arguments dropped (`Ok[int]` → `Ok()`).
 pythonPattern :: Text -> Text
 pythonPattern t = T.takeWhile (/= '[') (T.strip t) <> "()"
+
+-- | The lines of a site's `match`, from its first to its last arm.
+siteLines :: MissingPatterns -> Text -> Text
+siteLines d content =
+  let (start, end) = missingCase d
+   in T.unlines (take (end - start + 1) (drop start (T.lines content)))
 
 -- | Written as the site writes the others: `case fx.SlotTaken():` there makes
 -- `PartyTooLarge()` → `fx.PartyTooLarge()`.

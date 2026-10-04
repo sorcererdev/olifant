@@ -23,7 +23,7 @@ rustcSupport =
   CompilerSupport
     { supportFormat = "rustc-json"
     , supportParse = parseRustcReport
-    , supportPattern = \_ _ p -> fromMaybe p (T.stripPrefix "&mut " p <|> T.stripPrefix "&" p)
+    , supportPattern = \_ _ _ p -> fromMaybe p (T.stripPrefix "&mut " p <|> T.stripPrefix "&" p)
     , supportVisible = \d _ constructor -> case (qualifier constructor, missingType d) of
         (Nothing, _) -> True
         (_, Nothing) -> True

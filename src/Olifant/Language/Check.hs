@@ -55,7 +55,10 @@ processChecker = Checker $ \lang files -> case langCheck lang of
       Right (code, out, err, dir) -> case supportFor (checkFormat check) of
         Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
         Just support -> case supportParse support (if supportReadsStdout support then out else err) of
-          Left why -> Left (CheckFailed why)
+          -- what the tool said is the reason (uv offline, no lockfile: python review I4)
+          Left why
+            | code /= ExitSuccess, not (BS.null err) -> Left (CheckFailed (why <> "; it said: " <> T.strip (T.take 1000 (TE.decodeUtf8With lenientDecode err))))
+            | otherwise -> Left (CheckFailed why)
           Right (CheckReport [] [] [])
             | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
           Right report -> Right (maybe id ($ files) (supportSpans support) (relativeTo dir report))
