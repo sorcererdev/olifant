@@ -10,7 +10,7 @@ import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
 import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, completionsAt, matchPathSlots)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
-import Control.Monad (join, when)
+import Control.Monad (when)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Snippet (Snippet, snippetOf)
 import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
@@ -484,12 +484,11 @@ snippetAtCursor rt cwd g plan = do
   (file, line, _) <- genAt g
   let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
   text <- maybe (M.lookup rel (planWrites plan)) Just (M.lookup rel (planMarked plan))
-  before <- join (M.lookup rel (planBefore plan))
-  let count t = length (T.splitOn "\n" t)
-      k = count text - count before + 1
-      lines' = take k (drop (line - 1) (T.splitOn "\n" text))
+  -- as many lines as the replacement of the cursor's line has
+  k <- listToMaybe [max 1 (length (T.lines new)) | e <- planEdits plan, editPath e == rel, WillReplace l _ new <- [editAction e], l == line]
+  let lines' = take k (drop (line - 1) (T.splitOn "\n" text))
       fills = [(T.takeWhile (/= '[') (holeName (phSite h)), f) | h <- planHoles plan, holeFile (phSite h) == rel, Just f <- [phFill h]]
-  if k < 1 then Nothing else Just (snippetOf rel line (T.intercalate "\n" lines') (`lookup` fills))
+  Just (snippetOf rel line (T.intercalate "\n" lines') (`lookup` fills))
 
 -- | A usage-level failure inside a command: JSON on stdout in JSON mode.
 usageIn :: Runtime -> Format -> Text -> IO ExitCode

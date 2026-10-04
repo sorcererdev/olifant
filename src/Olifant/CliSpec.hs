@@ -295,6 +295,12 @@ runCliSpec = describe "runCli" $ do
     (bad, badOut, _, _) <- runWith "" typo False ["gen", "s", "--at", "a.x:3:1", "--plan", "--json"]
     bad `shouldNotBe` ExitSuccess
     badOut `shouldSatisfy` T.isInfixOf "[holes.mesage]: no hole called mesage in this generator's templates"
+  it "a snippet's lines are the replacement's, whether or not the buffer ends with a newline" $ do
+    let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"a\\nb\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "x\n")]
+    (code, out, _, _) <- runWith "top\n  it \"" files False ["gen", "s", "--at", "a.txt:2:7", "--plan", "--json", "--overlay", "a.txt"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "\"snippet\":{\"body\":\"  a\\n  b$0\",\"file\":\"a.txt\",\"ghost\":[\"  a\",\"  b\"],\"line\":2}"
   it "plans a snippet against an unsaved buffer (--at with --overlay)" $ do
     let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
         files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "on disk\n")]
