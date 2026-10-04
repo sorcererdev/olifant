@@ -11,6 +11,9 @@ module Olifant.Catalog
   , catalogRegions
   , catalogBrokenRegions
   , catalogModel
+  , catalogRules
+  , catalogBrokenRules
+  , catalogRulesConfig
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
@@ -40,6 +43,7 @@ import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, pos
 import Olifant.Language (Language (..), Match (..), Syntax, languageFor, matchShape, parseLanguage)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
+import Olifant.Rules (RuleDef (..), RulesConfig (..), parseRules, parseRulesConfig)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, freeVariables, parseTemplate, templateSource)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, normalisePath)
@@ -69,6 +73,11 @@ data Catalog = Catalog
   , catalogBrokenRegions :: [(FilePath, Text)]
   , -- | `[model]` (spec §6.4): the project's if it has one, else the user's
     catalogModel :: ModelConfig
+  , -- | rules (spec §5.9): packs' then the project's; a later one replaces an earlier one with its id
+    catalogRules :: [RuleDef]
+  , catalogBrokenRules :: [(FilePath, Text)]
+  , -- | the project's `[rules]`: severities and allowed paths
+    catalogRulesConfig :: RulesConfig
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -118,13 +127,17 @@ openProjectCatalog root paths = do
       let packRoots = M.toList (M.fromList (fromUser ++ fromProject))
       result <- openCatalogAt root (Just (project </> ".olifant" </> "generators")) packRoots
       own <- regionsIn root (project </> ".olifant")
+      ownRules <- rulesIn root (project </> ".olifant")
+      rulesConfig <- readText root projectConfig <&> \case
+        Nothing -> Right (RulesConfig [] [])
+        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= parseRulesConfig)
       userModel <- maybe (pure (Right Nothing)) modelIn userConfig
       projectModel <- modelIn projectConfig
-      pure $ case (,) <$> userModel <*> projectModel of
+      pure $ case (,,) <$> userModel <*> projectModel <*> rulesConfig of
         Left err -> Left err
-        Right (userM, projectM) ->
+        Right (userM, projectM, rc) ->
           let model = fromMaybe (ModelConfig Nothing 2 120 []) (maybe userM Just projectM)
-           in fmap (\c -> addRegions own c {catalogProject = Just project, catalogModel = model}) result
+           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc}))) result
   where
     -- A config's `[model]`, if it has one.
     modelIn configPath =
@@ -169,8 +182,9 @@ openAt root localDir packs = do
   let loaded = local ++ fromPacks
   langs <- concat <$> traverse (languagesIn . snd) packs
   regions <- traverse (regionsIn root . snd) packs
-  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 [])
-  pure (foldl (flip addRegions) base regions)
+  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] [])
+  rules <- traverse (rulesIn root . snd) packs
+  pure (foldl (flip addRules) (foldl (flip addRegions) base regions) rules)
   where
     languagesIn r = do
       let dir = r </> "languages"
@@ -331,6 +345,30 @@ regionsIn root dir = do
       readText root (dir </> f) <&> \case
         Nothing -> Left ("missing template " <> T.pack f)
         Just t -> first describeTemplateError (parseTemplate t)
+
+-- | Read `rules.toml` in a directory (a pack root, or a project's `.olifant`).
+rulesIn :: Monad m => Workspace m -> FilePath -> m (Either (FilePath, Text) [RuleDef])
+rulesIn root dir = do
+  let path = dir </> "rules.toml"
+  readText root path <&> \case
+    Nothing -> Right []
+    Just src -> first (path,) (parseRules src)
+
+-- | Add rules (or a broken file); a rule replaces an earlier one with its id.
+addRules :: Either (FilePath, Text) [RuleDef] -> Catalog -> Catalog
+addRules found cat = case found of
+  Left broken -> cat {catalogBrokenRules = catalogBrokenRules cat ++ [broken]}
+  Right defs -> cat {catalogRules = [r | r <- catalogRules cat, ruleId r `notElem` map ruleId defs] ++ defs}
+
+-- | A rule's fix must name a generator; one that does not is broken.
+checkFixes :: Catalog -> Catalog
+checkFixes cat =
+  let ids = map (generatorIdText . entryId) (catalogEntries cat)
+      bad = [r | r <- catalogRules cat, Just f <- [ruleFix r], f `notElem` ids]
+   in cat
+        { catalogRules = [r | r <- catalogRules cat, ruleId r `notElem` map ruleId bad]
+        , catalogBrokenRules = catalogBrokenRules cat ++ [("rules.toml", "rule `" <> ruleId r <> "`: fix names no generator `" <> fromMaybe "" (ruleFix r) <> "`") | r <- bad]
+        }
 
 -- | Add regions (or a broken file); a region replaces an earlier one with its name.
 addRegions :: Either (FilePath, Text) [RegionDef] -> Catalog -> Catalog

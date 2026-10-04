@@ -19,6 +19,7 @@ import System.Directory (getTemporaryDirectory)
 import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
+import Olifant.Rules (Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
 import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
@@ -140,6 +141,19 @@ spec = do
           CaseSkipped why -> missingTool strict (T.unpack why)
           other -> other `shouldBe` CasePassed
 
+  describe "rust-htmx rules (spec §5.9)" $
+    it "flags diesel in a command (with the repository fix) and unwrap as a hint" $ do
+      tmp <- getTemporaryDirectory
+      rulesSrc <- TIO.readFile "packs/rust-htmx/rules.toml"
+      langSrc <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
+      let Right rules = parseRules rulesSrc
+          Right rust = parseLanguage "rust" "packs/rust-htmx" langSrc
+          path = "billing/billing-service/src/cancel_invoice.rs"
+          code = "use std::sync::Arc;\nuse diesel::prelude::*;\n\nfn f() { let x = g().unwrap(); }\n"
+      (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+      [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, fFix f, fSets f) | f <- fs]
+        `shouldBe` [ ("commands-use-ports", Just 2, Warn, Just "rust-htmx/service-repository", [("command", "cancel_invoice"), ("service", "billing")])
+                   , ("commands-no-unwrap", Just 4, Hint, Nothing, []) ]
   describe "rust-htmx regions (spec §5.9)" $
     it "a command file created by hand gets its `pub mod` line; ports.rs lists the ports" $ do
       tmp <- getTemporaryDirectory

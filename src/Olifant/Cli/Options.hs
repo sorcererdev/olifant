@@ -31,7 +31,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -102,6 +102,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "sync" (SyncCmd <$> syncP) "Refresh owned regions (--check: report drift and write nothing; --init REGION: create a region's fences)"
             <> cmd "new" (NewCmd <$> strArgument (metavar "NAME") <*> optional (strOption (long "language" <> metavar "LANGUAGE" <> help "The language adapter (needed when the project has more than one)"))) "Write a skeleton project generator at .olifant/generators/NAME/generator.toml"
             <> cmd "schema" (pure SchemaCmd) "Print the generator.toml format as a JSON Schema"
+            <> cmd "check" checkP "Check the conventions: regions up to date and rules kept (exit 1 on drift or an error); --file FILE [--content -] for one file; --report lists rules and exceptions"
             <> cmd "doctor" (pure DoctorCmd) "Check what generators need here (tools on this PATH, packs, the model) and how to fix it"
             <> cmd "actions" (actionsP) "The generators that apply at a position (for editors): --at FILE:LINE:COL [--content -]"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
@@ -121,6 +122,11 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> switch (long "progress" <> help "Write progress as JSON lines on stderr (checks, fill requests, fills)")
     syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> flag' SyncPlan (long "plan" <> help "Show the refresh as a plan (whole files, for editors); write nothing") <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
+    checkP =
+      CheckCmd
+        <$> switch (long "report" <> help "Also list every rule's severity and every exception (allow comments, [rules] allows), stale ones too")
+        <*> optional (strOption (long "file" <> metavar "FILE" <> help "Only this file's rule findings (for editors)"))
+        <*> (maybe False (== ("-" :: String)) <$> optional (strOption (long "content" <> metavar "-" <> help "Read the file's current text from stdin")))
     actionsP =
       (\target content -> either (\(f, pos) -> ActionsCmd f (Just pos) content) (\f -> ActionsCmd f Nothing content) target)
         <$> ( (Left <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line, UTF-8 byte column"))

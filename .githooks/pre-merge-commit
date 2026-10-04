@@ -16,9 +16,10 @@ if ! cabal test --test-show-details=failures >&2; then
   exit 1
 fi
 
-# Owned regions (spec §5.8) must match the files: e.g. the cabal module lists.
-echo "pre-merge-commit: checking owned regions (olifant sync --check)..." >&2
-if ! cabal run -v0 olifant -- sync --check --human >&2; then
-  echo "pre-merge-commit: a region drifted or is broken; run \`olifant sync\` and commit, then \`git merge --continue\`." >&2
+# The conventions must hold (spec §5.9): owned regions match the files (e.g.
+# the cabal module lists) and no rule finding is an error.
+echo "pre-merge-commit: checking conventions (olifant check)..." >&2
+if ! cabal run -v0 olifant -- check --human >&2; then
+  echo "pre-merge-commit: conventions do not hold; run \`olifant sync\` for regions, fix or allow (with a reason) any rule errors, commit, then \`git merge --continue\`." >&2
   exit 1
 fi

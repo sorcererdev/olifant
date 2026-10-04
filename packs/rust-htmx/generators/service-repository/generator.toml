@@ -1,3 +1,4 @@
+name = "Add Repository Port"
 description = "Create a repository for a service: the port trait, an in-memory adapter and a Diesel adapter"
 language = "rust"
 version = 1

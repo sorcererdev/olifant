@@ -4,8 +4,10 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli) where
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
+import Olifant.Rules (Exception (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles)
+import Olifant.Rules qualified as R
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
-import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile)
+import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, matchPathSlots)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (when)
 import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
@@ -14,7 +16,7 @@ import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.List (find)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -168,6 +170,47 @@ runCommand rt cwd fmt cat = \case
             where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
         emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
     pure ExitSuccess
+  CheckCmd report file fromStdin -> do
+    let ws = within (rtProjectDir rt) (rtRoot rt)
+        rules = catalogRules cat
+        nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
+        sevText = \case R.Hint -> "hint" :: Text; R.Warn -> "warn"; R.Error -> "error"; R.Off -> "off"
+        findingJson f =
+          object
+            [ "rule" .= fRule f, "file" .= fFile f, "severity" .= sevText (fSeverity f), "message" .= fMessage f
+            , "range" .= fmap (\((l1, c1), (l2, c2)) -> object ["start" .= [l1, c1], "end" .= [l2, c2]]) (fRange f)
+            , "fix" .= fFix f, "fix_name" .= fmap nameOf (fFix f), "sets" .= M.fromList (fSets f) ]
+        exceptionJson e = object ["rule" .= exRule e, "where" .= exWhere e, "reason" .= exReason e, "stale" .= exStale e]
+        reportJson = ["rules" .= [object ["id" .= ruleId r, "severity" .= sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat))))] | report, r <- rules] | report]
+        mark = \case R.Error -> "✗" :: Text; R.Warn -> "!"; _ -> "·"
+        findingHuman f = mark (fSeverity f) <> " " <> T.pack (fFile f) <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> "  " <> fRule f <> " — " <> fMessage f <> maybe "" (\x -> "  (fix: " <> nameOf x <> ")") (fFix f)
+        exceptionHuman e = "  " <> exRule e <> " at " <> exWhere e <> ": " <> fromMaybe "(no reason)" (exReason e) <> (if exStale e then "  [stale: suppresses nothing]" else "")
+    paths <- listFiles ws "."
+    case file of
+      Just f -> do
+        let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> f))
+        content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> f)
+        (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (\p -> if p == rel then pure content else readText ws p) [rel]
+        emit rt fmt (object (["findings" .= map findingJson fs, "exceptions" .= map exceptionJson exs] ++ reportJson)) (T.unlines (map findingHuman fs))
+        pure ExitSuccess
+      Nothing -> do
+        (edits, conflicts, _) <- refreshRegions ReportUnset (projectTools rt cat) ws 1 M.empty
+        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
+        (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked
+        let drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
+            regionsJson = [object ["file" .= p, "region" .= r, "status" .= ("drift" :: Text)] | (p, r) <- drift] ++ [object ["status" .= ("broken" :: Text), "message" .= describeConflict c] | c <- conflicts]
+            broken = [T.pack p <> ": " <> why | (p, why) <- catalogBrokenRules cat]
+            failed = not (null drift) || not (null conflicts) || not (null broken) || any ((== R.Error) . fSeverity) fs
+            human =
+              T.unlines $
+                ["region " <> r <> " out of date in " <> T.pack p <> " (run olifant sync)" | (p, r) <- drift]
+                  ++ map describeConflict conflicts
+                  ++ ["✗ " <> b | b <- broken]
+                  ++ map findingHuman fs
+                  ++ (if report then "exceptions:" : map exceptionHuman exs else [])
+                  ++ [if failed then "check failed" else "conventions hold (" <> T.pack (show (length fs)) <> " finding" <> (if length fs == 1 then "" else "s") <> ", none blocking)"]
+        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map findingJson fs, "exceptions" .= map exceptionJson exs, "errors" .= broken] ++ reportJson)) human
+        pure (if failed then ExitFailure 1 else ExitSuccess)
   DoctorCmd -> do
     checks <-
       doctor (rtDoctor rt) $
