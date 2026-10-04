@@ -135,8 +135,8 @@ parseSpec = describe "parseGenerator" $ do
   describe "hints for the mistakes models make (v9)" $ do
     let top extra = T.unlines (["description = \"d\"", "language = \"x\""] ++ extra)
         err src = either id (const "") (load src)
-    it "explains a generator name or id key" $
-      err (top ["name = \"route\""]) `shouldSatisfy` T.isInfixOf "named by its directory"
+    it "explains an id key (the id is the directory; `name` is for display)" $
+      err (top ["id = \"route\""]) `shouldSatisfy` T.isInfixOf "id is its directory"
     it "points `path` and `content` on an edit at `insert`/`create` and `text`" $ do
       let e = err (top ["[[edits]]", "insert = \"a.x\"", "at = \"end of type T\"", "path = \"a.x\"", "content = \"x\""])
       e `shouldSatisfy` T.isInfixOf "`content`: did you mean `text`?"
@@ -239,6 +239,12 @@ parseSpec = describe "parseGenerator" $ do
             , "[inputs.dependency]", "type = \"enum\"", "one_of = \"ports\""
             , "[query.ports]", "glob = \"{= service =}/ports/*.rs\"" ])
       fmap (lookup "dependency") (first failureWhy (runIdentity (choiceViews noQueries paths (const (pure Nothing)) M.empty (UTCTime (fromGregorian 2026 10 2) 0) g))) `shouldBe` Right (Just (DependsOn ["service"]))
+  describe "name (what editors show)" $ do
+    it "reads `name`" $
+      fmap generatorName (parseGenerator (GeneratorId "p/command-dependency") "description = \"d\"\nlanguage = \"x\"\nname = \"Add Command Dependency\"\n") `shouldBe` Right "Add Command Dependency"
+    it "derives one from the id when there is none" $ do
+      fmap generatorName (parseGenerator (GeneratorId "rust-htmx/command-dependency") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Command Dependency"
+      fmap generatorName (parseGenerator (GeneratorId "olifant-dev/error_case") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Error Case"
   describe "[applies_at] (spec §4.6)" $ do
     let gen extra = load (T.unlines (
           [ "description = \"d\"", "language = \"rust\""

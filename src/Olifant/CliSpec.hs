@@ -258,6 +258,11 @@ runCliSpec = describe "runCli" $ do
     (bad, out2, _, _) <- runWith "" (withCheck "nope-tool") False ["doctor", "--json"]
     bad `shouldBe` ExitFailure 1
     out2 `shouldSatisfy` T.isInfixOf "\"name\":\"check tool nope-tool (x)\",\"status\":\"error\""
+  it "lists and shows each generator's display name" $ do
+    (_, listed, _, _) <- runWith "" project False ["list", "--json"]
+    listed `shouldSatisfy` T.isInfixOf "\"name\":\"Model\""
+    (_, shown, _, _) <- runWith "" project False ["show", "model", "--json"]
+    shown `shouldSatisfy` T.isInfixOf "\"name\":\"Model\""
   it "lists the actions that apply at a position (spec §4.6)" $ do
     let gen = T.unlines
           [ "description = \"Wire it\"", "language = \"x\""
@@ -266,12 +271,12 @@ runCliSpec = describe "runCli" $ do
         files = ("/proj/.olifant/generators/wire/generator.toml", gen) : project
     (code, out, _, _) <- runWith "unsaved text" files False ["actions", "--at", "billing/src/cancel.x:3:5", "--content", "-"]
     code `shouldBe` ExitSuccess
-    out `shouldSatisfy` T.isInfixOf "[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}]"
+    out `shouldSatisfy` T.isInfixOf "[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}]"
     (code2, _, _, _) <- runWith "" files False ["actions", "--at", "billing/src/cancel.x"]
     code2 `shouldBe` ExitFailure 2
     (code3, out3, _, _) <- runWith "" files False ["actions", "--file", "billing/src/cancel.x"]
     code3 `shouldBe` ExitSuccess
-    out3 `shouldSatisfy` T.isInfixOf "{\"actions\":[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"range\":null,\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}],\"nearby\":[]}"
+    out3 `shouldSatisfy` T.isInfixOf "{\"actions\":[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"range\":null,\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}],\"nearby\":[]}"
     (code4, _, _, _) <- runWith "" files False ["actions"]
     code4 `shouldBe` ExitFailure 2
   it "suggests `gen` when the first word looks like a generator" $ do

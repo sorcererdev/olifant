@@ -26,7 +26,7 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Generator (ChoiceView (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (generatorName, ChoiceView (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
@@ -152,17 +152,18 @@ runCommand rt cwd fmt cat = \case
     content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> file)
     paths <- listFiles project "."
     let gens = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat]
+        nameOf gid = maybe gid generatorName (lookup gid gens)
         human a = actLabel a <> "  (" <> actGenerator a <> ")" <> (if null (actMissing a) then "" else "  asks: " <> T.intercalate ", " (actMissing a))
     case at of
       Just pos -> do
         acts <- actionsAt (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel pos (fromMaybe "" content)
-        emit rt fmt (toJSON (map actionJson acts)) (T.unlines (map human acts))
+        emit rt fmt (toJSON (map (actionJson nameOf) acts)) (T.unlines (map human acts))
       Nothing -> do
         (acts, near) <- actionsInFile (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel (fromMaybe "" content)
         let rangeJson (Range (l1, c1) (l2, c2)) = object ["start" .= [l1, c1], "end" .= [l2, c2]]
             json = object
-              [ "actions" .= [object ["generator" .= actGenerator a, "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] | FileAction a r <- acts]
-              , "nearby" .= [object ["generator" .= nbGenerator n, "label" .= nbLabel n, "why" .= nbWhy n] | n <- near]
+              [ "actions" .= [object ["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] | FileAction a r <- acts]
+              , "nearby" .= [object ["generator" .= nbGenerator n, "name" .= nameOf (nbGenerator n), "label" .= nbLabel n, "why" .= nbWhy n] | n <- near]
               ]
             where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
         emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
@@ -431,8 +432,8 @@ projectQueries rt cat =
     }
 
 -- | One action as editors read it (spec §4.6).
-actionJson :: Action -> Value
-actionJson a = object ["generator" .= actGenerator a, "label" .= actLabel a, "sets" .= M.fromList (actSets a), "missing" .= actMissing a]
+actionJson :: (Text -> Text) -> Action -> Value
+actionJson nameOf a = object ["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "label" .= actLabel a, "sets" .= M.fromList (actSets a), "missing" .= actMissing a]
 
 -- | A progress event as one JSON line (`gen --progress`).
 progressJson :: ProgressEvent -> Value

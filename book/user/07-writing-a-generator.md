@@ -255,6 +255,7 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 
 | key | required | what it does |
 |---|---|---|
+| `name` | no | what editors show ("Add Command Dependency"); without it, made from the id (`command-dependency` → "Command Dependency"). The id is still the directory name |
 | `description` | yes | one line, shown by `list` and `show` |
 | `language` | yes | names the language adapter whose `[check]` runs this generator's `complete` edits (chapter 4); otherwise informational |
 | `version` | no (1) | shown in `show --json`; nothing else reads it yet |

@@ -1,3 +1,4 @@
+name = "Wire Command Dependencies"
 description = "Wire a command's dependencies after you add fields to its struct by hand (spec §7.1: reconcile)"
 language = "rust"
 version = 1

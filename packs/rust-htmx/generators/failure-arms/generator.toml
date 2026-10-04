@@ -1,3 +1,4 @@
+name = "Add Failure Arms"
 description = "Add an arm for a Failure variant you just wrote to every match on its enum (spec §5.6); the arm's value is a hole"
 language = "rust"
 version = 1

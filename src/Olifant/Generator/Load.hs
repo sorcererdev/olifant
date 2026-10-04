@@ -59,7 +59,8 @@ parseGenerator gid src = do
             [] -> Right ()
     _ -> Right ()
   appliesAt <- optional "applies_at" (table >=> appliesAtFrom (map inputName inputs')) top
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt)
+  name <- optional "name" text top
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name)
   where
     queryWithValue v = do
       t <- table v
@@ -103,7 +104,7 @@ choiceValueFrom v = case v of
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at"]
+topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
@@ -114,7 +115,7 @@ useKeys = ["generator", "for_each", "with"]
 -- | What a misplaced key usually means (measured: the keys models invent).
 topAdvice, inputAdvice, editAdvice :: [(Text, Text)]
 topAdvice =
-  [ (k, "a generator is named by its directory (.olifant/generators/NAME/generator.toml), not a key") | k <- ["name", "id", "generator"] ]
+  [ (k, "a generator's id is its directory (.olifant/generators/ID/generator.toml), not a key; `name` is what editors show") | k <- ["id", "generator"] ]
     ++ [ ("edit", "edits are [[edits]] tables"), ("steps", "run other generators with [[uses]]"), ("templates", "templates live in the generator's templates/ directory; name one with `template` on an edit") ]
 inputAdvice =
   [ ("description", "did you mean `prompt`?")

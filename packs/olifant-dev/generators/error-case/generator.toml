@@ -1,3 +1,4 @@
+name = "Add Error Case"
 description = "Add a constructor to a sum type; GHC finds every case that needs a branch (left as todos)"
 language = "haskell"
 version = 1
