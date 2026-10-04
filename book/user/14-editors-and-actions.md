@@ -3,13 +3,17 @@
 Engineers meet Olifant through **Durandal**, the editor side of the product. Olifant is the
 conventions engine underneath it. The first editor is Neovim, with the `durandal.nvim`
 plugin. It runs `olifant` for everything, so this chapter covers both halves: what the
-plugin does, and the three things Olifant gives an editor:
+plugin does, and what Olifant gives an editor:
 
-- **`[applies_at]`** in a `generator.toml`: where in the code a generator applies, and which
-  of its inputs the code there already gives;
+- **`[applies_at]`** in a `generator.toml`: where in the code a generator applies, which
+  of its inputs the code there already gives, and (`where`) what it looks for, in words;
 - **`olifant actions --at FILE:LINE:COL`**: the generators that apply at a cursor;
+- **`olifant actions --file FILE`**: every place in a file where one applies, and the
+  generators that could apply but found nothing yet;
 - a plan an editor can apply as buffer edits (**`files`**), and progress while it is built
-  (**`gen --progress`**).
+  (**`gen --progress`**), with a warning first when a file it touches does not parse;
+- **`olifant doctor`**: what generators need on this machine, and how to fix what is missing
+  ([Troubleshooting](#troubleshooting)).
 
 ## What Durandal does
 
@@ -27,6 +31,8 @@ you press `<CR>`. The change goes in as ordinary buffer edits, so `u` undoes it.
 |---|---|---|
 | `<leader>ma` | `:DurandalActions` | generators that apply at the cursor (`olifant actions`) |
 | `<leader>mg` | `:DurandalGenerate` | any generator, inputs from a picker (`olifant show`) |
+| | `:DurandalHints [toggle\|on\|off]` | the ⚡ hints ([below](#hints-on-the-cursor-line)); no argument toggles |
+| | `:checkhealth durandal` | Neovim, `nui.nvim`, `olifant`, then `olifant doctor` ([Troubleshooting](#troubleshooting)) |
 
 In the preview, `j`/`k` move between files, `<Tab>` switches to the diff, `<CR>` applies and
 `q`/`<Esc>` cancels. A plan with conflicts shows why, and cannot be applied. While a model is
@@ -34,15 +40,83 @@ filling holes, a spinner says so (that is `--progress`, [below](#progress-gen---
 
 The plugin's README (in the `durandal.nvim` repository) has the install steps and a
 three-beat demo on the rust-htmx fixture. It needs Neovim 0.11+, `nui.nvim`, and `olifant`
-and `ast-grep` on your `PATH`.
+and `ast-grep` on your `PATH` — Neovim's `PATH`, which is not always your shell's
+([Troubleshooting](#troubleshooting)).
 
 Two things the plugin does that Olifant doesn't:
 
 - **It saves modified buffers in the project before it plans.** `gen` reads the disk.
   (`olifant actions` can read an unsaved buffer, [below](#unsaved-text---content--).)
-- **It logs** which actions it offered and which you picked, to
+- **It logs** which actions it hinted and offered, and which you picked and applied, to
   `~/.cache/durandal/actions.jsonl`, on your machine only, so that where generators apply can
   be tuned. Olifant logs nothing.
+
+### Hints on the cursor line
+
+When a generator applies on the line the cursor is on (anywhere in a node that spans several
+lines), a dim hint appears at the end of it:
+
+```
+    Unknown(String), ⚡ Add Unknown to every match
+```
+
+`+N` follows the label when N more apply on that line. The hint is only ever on the cursor
+line, never on the rest of the file, and never for a generator whose `[applies_at]` has no
+`node`: one that applies to the whole file would hint on every line, so it is in the
+`<leader>ma` menu only.
+
+The hints come from one `olifant actions --file` call per buffer
+([below](#every-place-in-a-file---file)), sent the buffer's unsaved text, not from a call per
+cursor move. Durandal makes that call when you enter the buffer and when you save it, and
+after a change once the buffer has been quiet for 300 ms (a change in normal mode, or leaving
+insert mode). Moving the cursor only redraws. If a call fails, the last good hints stay.
+
+Turn them off for the session with `:DurandalHints off` (`on` and `toggle` as you'd expect),
+or for good in the setup:
+
+```lua
+opts = { hints = false },
+```
+
+The hint's highlight group is `DurandalHint`, linked to `Comment`; link it to something else
+to make it louder.
+
+### When nothing applies
+
+`<leader>ma` where nothing applies says why, from the same `--file` answer:
+
+- **Something applies elsewhere in the file.** A menu titled "Nothing at the cursor. In this
+  file:" lists each place, as `⚡ Add Unknown to every match — line 22`. Picking one moves
+  the cursor there and goes on as if you had asked there.
+- **Nothing applies anywhere in the file, but a generator could.** Each generator whose path
+  matched says what it is waiting for, from its `where`
+  ([below](#near-misses-where-and-nearby)). In a new `pay_invoice.rs` with only its struct
+  typed so far:
+
+  ```
+  rust-htmx/failure-arms applies on a variant of the PayInvoiceFailure enum — none yet
+  rust-htmx/wire-command applies on a field of the PayInvoice struct — none yet
+  ```
+
+- **No generator's path matches the file**: `No Olifant generators apply to Cargo.toml`.
+
+The second kind shows only when the first doesn't. In `cancel_invoice.rs`, which always has
+its `Unknown` variant, a miss lists that variant's line, not what `wire-command` is waiting
+for.
+
+### Code that does not parse
+
+You are often mid-edit when you ask for an action. If a file the plan touches does not parse
+(a `;` where a struct field wants `,`), the preview's notes start with Olifant's warning
+([below](#code-that-does-not-parse-in-a-plan)), before holes and other warnings:
+
+```
+⚠ billing/billing-service/src/cancel_invoice.rs:7 does not parse (near `;`) — this plan may place code wrongly, and checks will fail
+```
+
+and its title ends with `gd go to the error`. `gd` closes the preview and puts the cursor on
+that line, so you can fix the code and ask again. The warning alone doesn't stop you
+applying the plan: it is a warning, not a conflict.
 
 ## The demo, from the command line
 
@@ -128,6 +202,7 @@ Here is `failure-arms`'s:
 path  = "{service}/*-service/src/{command}.rs"
 node  = { kind = "enum_variant", inside = { kind = "enum_item", regex = "Failure", stopBy = "end" } }
 bind  = { failure = "^([A-Za-z0-9_]+)" }
+where = "on a variant of the {= command|pascal =}Failure enum"
 label = "Add {= failure =} to every match"
 ```
 
@@ -142,6 +217,7 @@ give is set, and the rest are asked for.
 | `bind` | no | `{ input = "regex" }`: an input set from the matched node's text, the regex's first capture group. POSIX extended, like `each` in AST queries |
 | `file` | no | the name of an input that gets the file's own project-relative path (`src/Olifant/Catalog.hs`), which a one-segment `{slot}` cannot bind |
 | `label` | no | a template: what the editor shows. Defaults to the generator's `description` |
+| `where` | no | a template over the path's slots: what `node` looks for, in words, finishing "`GENERATOR` applies …" (`on a field of the {= command\|pascal =} struct`). Shown when the file has no such node yet ([below](#near-misses-where-and-nearby)). Defaults to a mechanical description of the rule |
 
 The details:
 
@@ -153,10 +229,12 @@ The details:
   [applies_at]
   path  = "{service}/*-service/src/{command}.rs"
   node  = { kind = "field_declaration", inside = { kind = "struct_item", regex = "^pub struct {= command|pascal =} ", stopBy = "end" } }
+  where = "on a field of the {= command|pascal =} struct"
   label = "Wire {= command =}'s dependencies"
   ```
 
-  Only path slots are in scope there, not `bind` values or `[derive]`.
+  Only path slots are in scope there, not `bind` values or `[derive]`. The same goes for
+  `where`, which is why it can name the struct.
 - **The innermost node wins.** When several matches contain the cursor, `bind` reads the
   smallest. A cursor just past a node's last character still counts as inside it; a cursor on
   the `|` before an Elm variant does not.
@@ -188,15 +266,16 @@ path  = "src/**.hs"
 file  = "path"
 node  = { kind = "data_type" }
 bind  = { type = "^data[[:space:]]+([A-Za-z0-9_]+)" }
+where = "on a data declaration"
 label = "Add a constructor to {= type =} (GHC finds every case)"
 ```
 
-In the Olifant repository, on `data CatalogError` (`src/Olifant/Catalog.hs`, line 82):
+In the Olifant repository, on `data CatalogError` (`src/Olifant/Catalog.hs`, line 84):
 
 ```
-$ olifant actions --at src/Olifant/Catalog.hs:82:3 --human
+$ olifant actions --at src/Olifant/Catalog.hs:84:3 --human
 Add a constructor to CatalogError (GHC finds every case)  (olifant-dev/error-case)  asks: name
-$ olifant actions --at src/Olifant/Catalog.hs:82:3 --json
+$ olifant actions --at src/Olifant/Catalog.hs:84:3 --json
 [{"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"}}]
 ```
 
@@ -211,8 +290,9 @@ generator `INVALID`, `gen` exits 1, and `olifant actions` leaves it out.
 | a `{slot}` that isn't an input | `` `{pages}` in applies_at.path is not an input (inputs: page, msg) `` |
 | a `bind` key that isn't an input | `` `bind.message`: `message` is not an input `` |
 | `file` naming something that isn't an input | `` file: `where` is not an input `` |
+| a `where` that isn't a template | `` `where`: line 1: unclosed `{=`: expected `=}` `` |
 | a Perl class in a `bind` regex | `` `bind.msg`: `^(\w+)` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \s or \w) `` |
-| an unknown key | `` unknown key(s) `colour`; expected one of `path`, `node`, `bind`, `file`, `label` `` |
+| an unknown key | `` unknown key(s) `colour`; expected one of `path`, `node`, `bind`, `file`, `label`, `where` `` |
 
 (Each is prefixed with the file and `` `applies_at`: ``.)
 
@@ -220,16 +300,21 @@ generator `INVALID`, `gen` exits 1, and `olifant actions` leaves it out.
 
 ```
 olifant actions --at FILE:LINE:COL [--content -]
+olifant actions --file FILE [--content -]
 ```
 
+`--at` asks about one position, `--file` about the whole file
+([below](#every-place-in-a-file---file)); exactly one of them is required (`Missing: (--at
+FILE:LINE:COL | --file FILE)`, exit 2).
+
 - **`FILE`** is relative to where you run `olifant` (or absolute); it is matched as a
-  project-relative path, so `cd src && olifant actions --at Olifant/Catalog.hs:82:3` gives the
+  project-relative path, so `cd src && olifant actions --at Olifant/Catalog.hs:84:3` gives the
   same answer as above.
 - **`LINE` and `COL` are 1-based**, as editors show them. `COL` counts UTF-8 bytes, as
   Neovim's cursor and LSP's `utf-8` position encoding do: on `"Café" x`, `x` is column 9, not
   8. A malformed position is a usage error (exit 2): `option --at: expected FILE:LINE:COL
   (1-based)`.
-- The JSON is a list, one object per generator that applies, in catalog order:
+- For `--at`, the JSON is a list, one object per generator that applies, in catalog order:
   `generator` (its id), `label`, `sets` (the inputs bound, as `--set` would take them) and
   `missing` (the required inputs, with no default, that are still unset).
 - The human form is one line per action: the label, the generator, and `asks: …` when
@@ -248,6 +333,85 @@ Add NotPaid to every match  (rust-htmx/failure-arms)
 ```
 
 The `one_of` choices are still read from the project on disk.
+
+### Every place in a file: `--file`
+
+An editor that shows hints wants every place at once, not a process per cursor move.
+`--file` answers for the whole file. In the rust-htmx sandbox:
+
+```
+$ olifant actions --file billing/billing-service/src/refund_invoice.rs --json
+{"actions":[{"generator":"rust-htmx/wire-command","label":"Wire refund_invoice's dependencies","missing":[],"range":{"end":[9,55],"start":[9,5]},"sets":{"command":"refund_invoice","service":"billing"}},{"generator":"rust-htmx/failure-arms","label":"Add Unknown to every match","missing":[],"range":{"end":[26,20],"start":[26,5]},"sets":{"command":"refund_invoice","failure":"Unknown","service":"billing"}},{"generator":"rust-htmx/failure-arms","label":"Add AlreadyRefunded to every match","missing":[],"range":{"end":[28,20],"start":[28,5]},"sets":{"command":"refund_invoice","failure":"AlreadyRefunded","service":"billing"}}],"nearby":[]}
+```
+
+and in the Olifant repository, where `olifant-dev/error-case` applies on each `data`
+declaration:
+
+```
+$ olifant actions --file src/Olifant/Catalog.hs --human
+48:1  Add a constructor to CatalogEntry (GHC finds every case)  (olifant-dev/error-case)  asks: name
+59:1  Add a constructor to Catalog (GHC finds every case)  (olifant-dev/error-case)  asks: name
+78:1  Add a constructor to CatalogPaths (GHC finds every case)  (olifant-dev/error-case)  asks: name
+84:1  Add a constructor to CatalogError (GHC finds every case)  (olifant-dev/error-case)  asks: name
+```
+
+- The JSON is an object with two lists, `actions` and `nearby` (next section).
+- **`actions`** has one entry per node a generator's `node` rule matches, each with that
+  node's `bind` values, in file order: `generator`, `label`, `range`, `sets` and `missing`, as
+  for `--at`. `range` is `{"start": [LINE, COL], "end": [LINE, COL]}`, with 1-based lines and
+  UTF-8 byte columns as `--at` takes them; `end` is just past the node (`Unknown(String)` on
+  line 26 runs from column 5 to 20, the `,` after it).
+- **A generator without `node`** applies to the whole file: one entry with `"range": null`,
+  listed first. Its human line starts with `file` instead of `LINE:COL`:
+
+  ```
+  file  Add a test module for cancel_invoice  (command-test)
+  22:5  Add Unknown to every match  (rust-htmx/failure-arms)
+  ```
+
+  (`command-test` is a project generator with only `path = "{service}/*-service/src/{command}.rs"`.)
+  Editors list such an action in their menu but don't hint it.
+- The human form is one line per action, `LINE:COL` of the node's start, then as `--at`,
+  then one `nearby:` line per near miss.
+- `--content -` works as for `--at`. A file no generator's path matches, or one that doesn't
+  exist, is `{"actions":[],"nearby":[]}`, exit 0.
+
+### Near misses: `where` and `nearby`
+
+**`nearby`** lists each generator whose `path` matched the file but whose `node` rule found
+nothing in it: `generator`, `label` and `why`, what it looks for. In `cancel_invoice.rs`,
+whose struct has no fields yet:
+
+```
+$ olifant actions --file billing/billing-service/src/cancel_invoice.rs --human
+22:5  Add Unknown to every match  (rust-htmx/failure-arms)
+nearby: rust-htmx/wire-command — on a field of the CancelInvoice struct
+$ olifant actions --file billing/billing-service/src/cancel_invoice.rs --json
+{"actions":[{"generator":"rust-htmx/failure-arms","label":"Add Unknown to every match","missing":[],"range":{"end":[22,20],"start":[22,5]},"sets":{"command":"cancel_invoice","failure":"Unknown","service":"billing"}}],"nearby":[{"generator":"rust-htmx/wire-command","label":"Wire cancel_invoice's dependencies","why":"on a field of the CancelInvoice struct"}]}
+```
+
+`why` is the generator's `[applies_at] where`, rendered with the path's slots: `on a field of
+the {= command|pascal =} struct` became `on a field of the CancelInvoice struct`. Write it to
+finish the sentence "`wire-command` applies …", since that is how Durandal shows it
+([above](#when-nothing-applies)).
+
+Without a `where` (or with one that doesn't render), `why` describes the rule mechanically.
+The same rule as `wire-command`'s, in a project generator with no `where`:
+
+```
+nearby: plain-field — a `field_declaration` inside a `struct_item` matching /^pub struct CancelInvoice /
+```
+
+It is accurate, and it is why `where` exists. The `label` in `nearby` is rendered with the
+path's slots only, since there is no node to `bind` from; a label that needs a bound value
+falls back to the description, as `failure-arms`'s does in a new file:
+
+```
+$ printf '#[derive(Clone)]\npub struct PayInvoice {}\n' | olifant actions --file billing/billing-service/src/pay_invoice.rs --content - --json
+{"actions":[],"nearby":[{"generator":"rust-htmx/failure-arms","label":"Add an arm for a Failure variant you just wrote to every match on its enum (spec §5.6); the arm's value is a hole","why":"on a variant of the PayInvoiceFailure enum"},{"generator":"rust-htmx/wire-command","label":"Wire pay_invoice's dependencies","why":"on a field of the PayInvoice struct"}]}
+```
+
+A generator with no `node` is never in `nearby`: it applies whenever its path matches.
 
 ## Plans for editors: `files`
 
@@ -268,6 +432,66 @@ entry per file the plan writes:
   has none.
 - A plan with conflicts still exits 5 with the plan on stdout. An editor shows it as a plan
   with conflicts, not as an error.
+
+## Code that does not parse, in a plan
+
+When it plans, `gen` also parses every existing file the plan changes, as it was before the
+plan, with the file's language adapter (the ast-grep check the fill phase uses on fills,
+[chapter 12](12-holes-and-models.md)). A file that doesn't parse gets a warning, listed
+before any other warning. It is a warning, not a conflict: you may be mid-edit, and the plan
+may well be right.
+
+Beat 1 of the demo, typed with a `;` where the field wants `,`:
+
+```rust
+#[derive(Clone)]
+pub struct CancelInvoice {
+    pub email_sender: Arc<dyn EmailSender>;
+}
+```
+
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice --plan --human
+Plan: rust-htmx/wire-command (7 edits, 0 conflicts)
+  = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 7 of billing/billing-service/src/cancel_invoice.rs matches)
+  ~ billing/billing-service/src/cancel_invoice.rs (+2 lines at line 4)
+  ~ billing/billing-service/src/service.rs (+2 lines at line 9)
+  ~ billing/billing-service/src/service.rs (+1 line at line 22)
+  ~ billing/billing-service/src/service.rs (+1 line at line 30)
+  ~ main/src/main.rs (+1 line at line 22)
+  ~ main/src/main.rs (+1 line at line 25)
+  ? warning: billing/billing-service/src/cancel_invoice.rs:7 does not parse (near `;`) — this plan may place code wrongly, and checks will fail
+```
+
+(`--plan` also prints each edit's text, left out here.) The warning names the first parse
+error's line and up to 20 characters of the text there. Tree-sitter recovers from most
+errors, so placement often still works, as it did here; but `cargo check` on the result will
+fail, so the warning says so before you find out. Some mistakes the parser repairs silently
+(a missing `;`, or a `}` missing at the very end of the file); those get no warning, and the
+compiler is the first to say so.
+
+When a compiler check in the same plan does fail in that file, its message points back. Chain
+beat 1 with an arm for a new `AlreadyPaid` variant in the same broken file:
+
+```
+$ olifant gen rust-htmx/wire-command --set service=billing --set command=cancel_invoice \
+    + rust-htmx/failure-arms --set service=billing --set command=cancel_invoice --set failure=AlreadyPaid --plan --human --no-fill
+Plan: rust-htmx/wire-command + rust-htmx/failure-arms (7 edits, 1 conflict): nothing written
+  …
+  ! rust-htmx/failure-arms (step 2): cannot complete cases: the generated code does not compile: billing/billing-service/src/cancel_invoice.rs (struct fields are separated by `,`) (see the parse warning above)
+  ? warning: billing/billing-service/src/cancel_invoice.rs:7 does not parse (near `;`) — this plan may place code wrongly, and checks will fail
+```
+
+Without the parse warning, "the generated code does not compile" would blame the plan for
+your `;`. The same suffix goes on a warning that a check could not run because the project
+does not compile, when it names that file. (In the human form, conflicts print before warnings, so the warning is
+below, not above; Durandal's preview puts it first.)
+
+Only files that exist and that the plan changes are checked: files it creates are its own
+text, already checked, and files it only reads are not checked. A `complete` edit's
+files count once the compiler has found them and the plan adds a branch there. In JSON the
+warning is a string in `warnings`, like any other; editors find it by its shape,
+`FILE:LINE does not parse`.
 
 ## Progress: `gen --progress`
 
@@ -460,3 +684,86 @@ for `<leader>ma`. Give it a test case as usual ([chapter 10](10-testing-generato
   `olifant where`: on the node, just outside it, and in a place it should not apply.
 - **Write the label as the action.** "Add AlreadyRefunded to every match" says what will
   happen; the description is the fallback.
+- **Write `where` as the place.** "on a field of the CancelInvoice struct" tells someone
+  where to put the cursor; "a `field_declaration` inside a `struct_item` matching /…/" tells
+  them how the rule works. Check it with `olifant actions --file` on a file that has no such
+  node yet.
+
+## Troubleshooting
+
+### `:checkhealth durandal` and `olifant doctor`
+
+When an action does nothing useful, start with `:checkhealth durandal`. It checks Neovim
+(0.11+), `nui.nvim` and that `olifant` is on Neovim's `PATH`, then, from the project of the
+current buffer, runs `olifant doctor --json` and shows each of its checks:
+
+```
+durandal ~
+- ✅ OK Neovim 0.12.5
+- ✅ OK nui.nvim
+- ✅ OK olifant: /Users/you/.local/bin/olifant
+
+durandal: olifant doctor in /tmp/demo ~
+- ✅ OK config — project at /tmp/demo
+- ✅ OK pack rust-htmx — loaded
+- ✅ OK language rust — loaded
+- ✅ OK ast-grep — /opt/homebrew/bin/ast-grep
+- ❌ ERROR check tool cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
+  - ADVICE:
+    - install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)
+- ✅ OK model — qwen3-coder:30b answers at http://localhost:11434/v1
+```
+
+Outside an Olifant project it stops after `olifant`, with a note to open a file in one.
+`olifant doctor` is an ordinary command too
+([chapter 2](02-running-generators.md#is-this-machine-ready-olifant-doctor)): run it in a
+terminal for the same checks, against your shell's `PATH`.
+
+### Neovim's `PATH` is not your shell's
+
+Olifant runs the tools a generator needs (`ast-grep` always; `cargo`, `elm` or `cabal` for a
+`complete` edit's checks) from the `PATH` of the process that started it. From Durandal,
+that is Neovim's `PATH`, which is whatever Neovim was started with: a GUI Neovim, or one
+started before you edited your shell profile, may not have what your terminal has. Homebrew's
+`rustup` is the usual case: it is keg-only, so `cargo` is in `/opt/homebrew/opt/rustup/bin`
+and on no `PATH` until you add it.
+
+The symptom is a plan that cannot complete:
+
+```
+! rust-htmx/failure-arms: cannot complete cases: `cargo` is not installed (needed to check rust); run `olifant doctor`
+```
+
+A `complete` edit whose compiler is missing always ends that way. Run `olifant doctor` the
+way Durandal does, with `:checkhealth durandal`, and you see Neovim's `PATH` in the error. Add
+the directory to `PATH` in your shell profile, then restart Neovim from a new shell. (Or,
+for a GUI Neovim, set `vim.env.PATH` in your config.)
+
+### No `[model]`
+
+Without a `[model]` in `.olifant/config.toml`, holes stay placeholders (`todo!(…)` in Rust,
+`Debug.todo` in Elm): the plan applies and compiles, but you write that code yourself. Doctor
+says so as a warning, with the snippet to add:
+
+```
+! model — no [model] configured: holes stay placeholders
+  fix: add to .olifant/config.toml:
+[model]
+default = "local"
+[model.backends.local]
+kind = "openai-compatible"
+url = "http://localhost:11434/v1"
+model = "qwen3-coder:30b"
+```
+
+With one configured, doctor asks an `openai-compatible` server for its model list (3 seconds
+at most) and warns if it doesn't answer or doesn't have the model; for `anthropic` it checks
+only that the key's environment variable is set, in Neovim's environment when run from
+`:checkhealth`. [Chapter 12](12-holes-and-models.md#configuring-a-model) has the details.
+
+### Errors in your code
+
+Durandal doesn't underline errors as you type; your language server does. For Rust that is
+`rust-analyzer`, which runs `cargo check` itself, so it needs `cargo` on Neovim's `PATH`
+too: if `rust-analyzer` shows no errors at all, the `PATH` above is the likely cause. Olifant
+only reports a broken file when you ask for a plan ([above](#code-that-does-not-parse-in-a-plan)).
