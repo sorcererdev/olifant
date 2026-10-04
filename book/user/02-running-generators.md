@@ -1,7 +1,8 @@
 # 2. Running generators
 
 Four commands cover almost everything: `list`, `show`, `gen`, and `gen --plan`. A fifth,
-`doctor`, says whether this machine has what they need.
+`doctor`, says whether this machine has what they need, and a sixth, `check`, whether the
+code still follows the project's conventions.
 
 ## What can I run? `olifant list`
 
@@ -235,6 +236,44 @@ answers for the whole file at once: every place a generator applies (`LINE:COL`,
 nothing to apply to yet, with what they look for. `--content -` reads the file's current,
 possibly unsaved, text from stdin. Only generators with an `[applies_at]` are offered;
 [chapter 14](14-editors-and-actions.md) covers both, and the Neovim plugin that uses them.
+
+## Do the conventions hold? `olifant check`
+
+`olifant check` checks the two kinds of convention a project keeps
+([chapter 15](15-conventions-that-hold.md)): its owned regions are up to date
+([chapter 5](05-owned-regions.md)), and its **rules** are kept. In a rust-htmx sandbox
+with `use diesel::prelude::*;` typed into a command:
+
+```
+$ olifant check
+! billing/billing-service/src/cancel_invoice.rs:2  commands-use-ports — Commands talk to ports, not the database (rust-htmx: ports & adapters)  (fix: Add Repository Port)
+conventions hold (1 finding, none blocking)
+$ echo $?
+0
+```
+
+A finding is `✗` (error), `!` (warn) or `·` (hint, or a finding already in the baseline,
+marked `(existing)`), then the file and line, the rule, its message and, when it has one, the
+generator that fixes it. The exit code is 1 when a region drifted or is broken, a rule is
+broken, or a finding is an `error` not in the baseline; warnings and hints never fail.
+
+| command | what it does |
+|---|---|
+| `olifant check` | regions and every rule over the project |
+| `olifant check --report` | also every exception (allow comments and `[rules]` allows, stale ones marked) and the debt per rule; in JSON, each rule's severity too |
+| `olifant check --file FILE [--content -]` | only FILE's rule findings, from stdin with `--content -` (for editors); no regions, always exit 0 |
+| `olifant check --baseline` | record today's findings in `.olifant/baseline.toml`: from then on only new ones fail |
+| `olifant check --changed-since REF` | only findings on lines changed since the git ref REF, and in untracked files; no regions |
+
+`--json` prints `{"regions", "findings", "exceptions", "errors"}` (and `rules` with
+`--report`). Each finding has `rule`, `file`, `range` (`{"start": [LINE, COL], "end": [LINE,
+COL]}`, or `null` for a finding about the whole file), `severity`, `message`, `fix` (a
+generator id) and `fix_name`, `sets` (the fix's inputs, from the path) and `baselined`:
+
+```
+$ olifant check --json
+{"errors":[],"exceptions":[],"findings":[{"baselined":false,"file":"billing/billing-service/src/cancel_invoice.rs","fix":"rust-htmx/service-repository","fix_name":"Add Repository Port","message":"Commands talk to ports, not the database (rust-htmx: ports & adapters)","range":{"end":[2,24],"start":[2,1]},"rule":"commands-use-ports","sets":{"command":"cancel_invoice","service":"billing"},"severity":"warn"}],"regions":[]}
+```
 
 ## Is this machine ready? `olifant doctor`
 

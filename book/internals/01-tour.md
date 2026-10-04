@@ -26,8 +26,8 @@ By the end you should be able to say which function produced each of those lines
 last three come out in that odd order. First, a map of the repository, the units it is split
 into, and the ports that keep the core testable.
 
-Olifant is small: about 6,500 lines of library code in `src/`, 3,400 lines of tests next to
-it, and a 42-line `app/Main.hs`. Line references (`src/Olifant/Cli.hs:48`) are to the code as
+Olifant is small: about 7,400 lines of library code in `src/`, 4,100 lines of tests next to
+it, and an 89-line `app/Main.hs`. Line references (`src/Olifant/Cli.hs:48`) are to the code as
 of this chapter; if one is off, the code has moved and the chapter needs fixing.
 
 If the Haskell itself is in your way, read [chapter 2](02-haskell-for-this-codebase.md)
@@ -70,8 +70,9 @@ Both module lists are owned regions ([user book, chapter 5](../user/05-owned-reg
 
 The declarations are in `packs/olifant-dev/regions.toml`. Add a module file under `src/`,
 run any `olifant gen` or `olifant sync` in the repo, and both lists pick it up. You never
-edit those lists by hand. The pre-merge hook runs `olifant sync --check`, so a stale list
-can't reach `main`.
+edit those lists by hand. The pre-merge hook runs `olifant check`, which checks the regions
+and the project's rules ([the conventions](#the-fourth-use-case-conventions-olifant-check-and-sync---plan),
+below), so a stale list can't reach `main`.
 
 **`packs/`** holds real packs, and they are part of the test suite.
 `src/Olifant/GeneratorTestingSpec.hs:131` finds every `packs/*/generators/*/tests/*/inputs.toml`,
@@ -124,8 +125,8 @@ into `cancel_invoice.rs`) carries it in `given/`.
 - `post-commit` and `post-merge` reinstall `olifant` when you are on `main`.
 - `pre-merge-commit` runs `cabal test` (with `OLIFANT_REQUIRE_TOOLS=1`, and
   `~/.ghcup/bin` and `/opt/homebrew/opt/rustup/bin` on `PATH`, so a missing `ast-grep`,
-  `elm` or `cargo` fails the merge) and `olifant sync --check` before a merge into `main`
-  completes.
+  `elm` or `cargo` fails the merge) and `olifant check` (regions and rules) before a merge
+  into `main` completes.
 
 ## The units
 
@@ -155,10 +156,11 @@ From the bottom up:
 | **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Opening`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `placedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Holes, Language, Query, Suggest, Template |
 | **Generator** | A generator definition: the types, loading `generator.toml`, resolving `one_of` choices, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve, and `Choices`) and `Inputs` (including `envBefore`, `inputsUsed`), plus `parseGenerator`, `withChoices`, `needsChoices`, `ChoiceView`, `choiceViews` | Anchor, Language, Naming, Query, Template, Toml |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
-| **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Template, Workspace |
+| **Rules** | Rules (spec §5.9): parse `rules.toml` and the project's `[rules]`, check files against them, honour and report the exceptions, fingerprint findings for the baseline | `Rules.hs`: `RuleDef`, `RuleCheck`, `Severity`, `RulesConfig`, `Finding`, `Exception`, `parseRules`, `parseRulesConfig`, `parseSeverity`, `checkFiles`, `fingerprint` | Actions (`matchPathSlots`), Glob, Language, Template, Toml |
+| **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Template, Workspace |
 | **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `actionsAt`, `actionsInFile`, `describeRule`, `matchPathSlots` | Generator, Language, Query, Template |
 | **Doctor** | `olifant doctor` (spec §4.7): what generators need here, and how to fix what is missing | `Doctor.hs`: `Status`, `Check`, `DoctorInput`, `DoctorPorts`, `doctor` | Language, Model |
-| **Catalog** | Finding packs and generators, checking a generator's sources and fixed `at` targets, loading one into a runnable `Generator`, and reading `[model]` | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `checkEntry`, `resolver`, `Catalog` (with `catalogModel`, `catalogProject`, `catalogPacks`), `CatalogEntry` | Anchor, Generator, Language, Model, Region, Template, Toml, Workspace |
+| **Catalog** | Finding packs and generators, checking a generator's sources and fixed `at` targets, loading one into a runnable `Generator`, reading `[model]`, and loading regions and rules | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `checkEntry`, `resolver`, `Catalog` (with `catalogModel`, `catalogProject`, `catalogPacks`, `catalogRules`, `catalogBrokenRules`, `catalogRulesConfig`), `CatalogEntry` | Anchor, Generator, Language, Model, Region, Rules, Template, Toml, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internals: `Cli/Options` (argument parsing), `Cli/Output` (rendering) | almost everything |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs` | Anchor, Catalog, Fill, Generation, Generator, Language, Query, Toml, Workspace |
 
@@ -178,7 +180,9 @@ none upwards.
   ├────────────────────────────────────────────────────────────┤
   │ Cli                         GeneratorTesting               │  entry points
   ├────────────────────────────────────────────────────────────┤
-  │ Catalog                                                    │  finding and loading generators
+  │ Catalog                                                    │  finding and loading generators, regions, rules
+  ├────────────────────────────────────────────────────────────┤
+  │ Rules                                                      │  conventions as checks (uses Actions' path patterns)
   ├────────────────────────────────────────────────────────────┤
   │ Generation        Actions        Doctor                    │  the use cases: steps → plan → writes; actions; doctor
   ├────────────────────────────────────────────────────────────┤
@@ -215,8 +219,9 @@ Generator            → Anchor, Language, Naming, Query, Template, Toml
 Generation           → Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Template, Workspace
 Actions              → Generator, Language, Query, Template
 Doctor               → Language, Model
-Catalog              → Anchor, Generator, Language, Model, Region, Template, Toml, Workspace
-Cli                  → Actions, Anchor, Catalog, Doctor, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Template, Workspace
+Rules                → Actions, Glob, Language, Template, Toml
+Catalog              → Anchor, Generator, Language, Model, Region, Rules, Template, Toml, Workspace
+Cli                  → Actions, Anchor, Catalog, Doctor, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Rules, Template, Toml, Workspace
 GeneratorTesting     → Anchor, Catalog, Fill, Generation, Generator, Language, Query, Toml, Workspace
 app/Main             → Cli, Language, Language.AstGrep, Model, Workspace
 ```
@@ -264,7 +269,8 @@ Olifant touches five things outside its own memory: the filesystem, ast-grep, a 
 compiler, arbitrary commands (for queries; AST queries reuse ast-grep through the Syntax
 port instead of touching anything new), and a model that fills typed holes. `olifant doctor`
 adds a sixth: the process's own environment (what is on its `PATH`, which variables are set)
-and a quick probe of the model. Each is a **port**. A port is a record of functions,
+and a quick probe of the model. `olifant check --changed-since` adds a seventh: git, for the
+lines a branch changed. Each is a **port**. A port is a record of functions,
 parameterised by the monad `m` it runs in:
 
 ```haskell
@@ -337,6 +343,7 @@ pending, as a missing tool is everywhere else (spec §4.5, §5.7).
 | `Syntax m` | `Language/Syntax.hs:15` | `astGrepSyntax` (`Language/AstGrep.hs:33`): runs `ast-grep scan --stdin --inline-rules … --json=compact`; compiles a pack's vendored grammar with `cc` into the cache on first use | `noSyntax` (`Language/Syntax.hs:17`) always says "ast-grep is not installed"; `fakeSyntax :: Syntax Identity` in `AnchorSpec.hs:58` returns canned matches |
 | `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, and parses the report (stderr, or stdout when the support's `supportReadsStdout` says so, as cargo's does) through the `CompilerSupport` its `format` names (`elm-json`, `ghc-json`, `rustc-json`) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:545`) replays a list of reports, one per round |
 | `Filler m` | `Fill.hs:30` | `curlFiller timeout backend` (`Model.hs:170`): posts the request with `curl` to an OpenAI-compatible server or to Anthropic's API, and decodes the reply into fills by hole name | `replayFiller` (`GeneratorTesting.hs:143`) answers from a pack case's `fills.toml`; `withFiller` (`GenerationSpec.hs:615`) replays a list of replies, one per request, and counts the requests, so a spec can say "one request, then a retry with only the failing hole" |
+| `rtGitChanged` | `Cli.hs:54` | `gitChanged` (`app/Main.hs:58`): `git -C ROOT diff --relative --no-color -U0 REF --`, each `+++ b/FILE` then each `@@ -a,b +c,d @@` hunk's new lines `c .. c+d-1` (a `d` of 0, a pure deletion, adds no range), and `git ls-files --others --exclude-standard` for untracked files; either command failing is `Left` with git's message | `CliSpec.hs:76`: `\_ _ -> pure (Right ([], ["src/b.x"]))` |
 | `DoctorPorts m` | `Doctor.hs:36` | built in `app/Main.hs:42` from `findExecutable`, `lookupEnv "PATH"`, `probeBackend` (`Model.hs:213`) and `isJust <$> lookupEnv` | `ports` in `DoctorSpec.hs:25` (these executables exist, the probe answers this, these variables are set); `CliSpec.hs:76` finds every executable except `nope…` |
 | `Queries m` | `Query.hs:186` | `processCommand dir` (`Query.hs:200`): runs a program (a bare name from `PATH`, or a project path like `bin/list`) in the project dir, for `queryCommand`; `astQueries syntax langs` (`Anchor/Items.hs:20`): evaluates an `ast` query's target over every matching file, for `queryAst` | `noQueries` (`Query.hs:193`); `QuerySpec.hs:46`'s `fake out = noQueries {queryCommand = …}` overrides one field and leaves `queryAst` as the no-op |
 
@@ -348,13 +355,24 @@ name and retry count, or `Nothing`. Its last field, `toolProgress :: ProgressEve
 language | Filling holes attempt model | Filled hole attempt | Unfilled hole why`. `basicTools`
 sets it to `const (pure ())`, so nothing reports unless the CLI asks (`gen --progress`, step 5
 below). It is what `generate` takes. `noTools` (`:30`) needs nothing installed. `Runtime`
-(`src/Olifant/Cli.hs:34`) is the CLI's port: the root workspace, the project dir, stdin, the
-clock, stdout, stderr, whether stdout is a terminal, the Syntax and Checker adapters, and
-`rtDoctor`, the `DoctorPorts` only `olifant doctor` uses.
+(`src/Olifant/Cli.hs:39`) is the CLI's port: the root workspace, the project dir, stdin, the
+clock, stdout, stderr, whether stdout is a terminal, the Syntax and Checker adapters,
+`rtDoctor`, the `DoctorPorts` only `olifant doctor` uses, and `rtGitChanged` (`:54`), the
+git port only `check --changed-since` uses:
+
+```haskell
+-- src/Olifant/Cli.hs:52
+  , -- | lines changed since a git ref (file, 1-based inclusive ranges) and
+    -- untracked files, for `check --changed-since`
+    rtGitChanged :: FilePath -> Text -> IO (Either Text ([(FilePath, [(Int, Int)])], [FilePath]))
+```
+
+It is a single function in `IO`, not a record parameterised by `m`, because only the CLI
+uses it and the CLI runs in `IO`; a test replaces the function.
 `app/Main.hs` is the only place that builds a real one:
 
 ```haskell
--- app/Main.hs:28
+-- app/Main.hs:28 (excerpt)
   result <-
     try . runCli
       Runtime
@@ -369,6 +387,7 @@ clock, stdout, stderr, whether stdout is a terminal, the Syntax and Checker adap
         , rtErr = TIO.hPutStr stderr
         , rtSyntax = astGrepSyntax cache
         , rtChecker = processChecker
+        , rtGitChanged = gitChanged
         , rtDoctor =
             DoctorPorts
               findExecutable
@@ -380,8 +399,10 @@ clock, stdout, stderr, whether stdout is a terminal, the Syntax and Checker adap
 ```
 
 `CliSpec.hs:54` (`runWith`) builds the test version: `memoryWorkspace` for the root, output
-collected in `IORef`s, a fixed clock, `noSyntax`, `noChecker`, and `DoctorPorts` that find
-every executable not named `nope…`, answer every probe and see no environment variables. Every CLI behaviour, from
+collected in `IORef`s, a fixed clock, `noSyntax`, `noChecker`, `DoctorPorts` that find
+every executable not named `nope…`, answer every probe and see no environment variables, and
+an `rtGitChanged` (`CliSpec.hs:76`) that reports no changed lines and one untracked file,
+`src/b.x`. Every CLI behaviour, from
 exit codes and JSON shapes to `--steps -` reading stdin, is tested without a process, a
 terminal or a disk.
 
@@ -498,12 +519,21 @@ no generators. Once every pack checks out, `openAt` (`:163`) goes through each o
   than whatever order the `Map` happens to iterate in.
 - `languagesIn` (`Catalog.hs:173`) parses `languages/*.toml` into `Language` values with
   `parseLanguage` (`src/Olifant/Language/Adapter.hs:63`).
-- `regionsIn` (`Catalog.hs:317`) reads `regions.toml`.
+- `regionsIn` (`Catalog.hs:333`) reads `regions.toml`.
+- `rulesIn` (`Catalog.hs:350`) reads `rules.toml` with `Rules.parseRules`, and `addRules`
+  (`:358`) adds them; a rule replaces an earlier one with its id.
 
-A generator, language or regions file that fails to parse is kept aside (`catalogBroken`,
-`catalogBrokenLanguages`, `catalogBrokenRegions`) instead of failing the command. One bad
-generator never breaks unrelated ones. The project's own `.olifant/generators/` and
-`.olifant/regions.toml` are added the same way.
+A generator, language, regions or rules file that fails to parse is kept aside
+(`catalogBroken`, `catalogBrokenLanguages`, `catalogBrokenRegions`, `catalogBrokenRules`)
+instead of failing the command. One bad generator never breaks unrelated ones. The
+project's own `.olifant/generators/`, `.olifant/regions.toml` and `.olifant/rules.toml` are
+added the same way, after the packs', so a project rule or region replaces a pack's with
+the same name. The project config's `[rules]` table (severities and `[[rules.allow]]`) is
+read by `Rules.parseRulesConfig` into `catalogRulesConfig` (`:131`); unlike a rules file, a
+mistake there is a `ConfigInvalid` that stops every command, as a bad `[model]` does. Last,
+`checkFixes` (`:364`) moves every rule whose `fix` names no catalog entry from
+`catalogRules` to `catalogBrokenRules` (`"rule `X`: fix names no generator `Y`"`), so a
+fix that is offered always exists.
 
 So every invocation parses every generator in every configured pack. That's cheap at
 today's sizes, but it is also why a typo in one pack's TOML shows up in `olifant list` for
@@ -983,10 +1013,22 @@ gets this for every site, since it has no spec a `where` could ever match. Missi
 that don't mention any of the plan's constructors are ignored, and GHC's function-equation
 sites that do are the plan warnings from `addUnplaced` above, never todos.
 
-**Phase 3: regions, `refreshRegions`** (`src/Olifant/Generation/Regions.hs:30`). This phase
+**Phase 3: regions, `refreshRegions`** (`src/Olifant/Generation/Regions.hs:32`). This phase
 re-renders every owned region against the files as the plan leaves them. The Elm pack
-declares no regions, so `toolRegions` is empty and the phase returns immediately (`:32`). In
-this repository the phase is where `olifant.cabal`'s module lists are refreshed.
+declares no regions, so `toolRegions` is empty and the phase returns immediately. In
+this repository the phase is where `olifant.cabal`'s module lists are refreshed; in a
+rust-htmx project, every service's `lib.rs` and `ports.rs`.
+
+Those are **families** (spec §5.9): a `file` that is a pattern. Before the fold, each
+declaration goes through `regionInstances universe` (`:84`), where `universe` is the files
+on disk plus the files the plan creates. A `file` with a `*`, `?` or `[` becomes one
+`RegionDef` per matching path (`matchesGlob`), with `{= dir =}` and `{= file =}` replaced in
+a glob query's pattern and excludes, or an AST query's `files`, by that path's directory and
+the path itself (a plain text replace, before the query is rendered); any other `file` is
+the declaration as it is. The instances are sorted by `(regionName, regionFile)` (`:39`), so
+the edits come out in the same order on every run. From there each instance is an ordinary
+region: its own fences, its own drift, and a file without fences is skipped (or, under
+`ReportUnset`, reported) on its own.
 
 #### 4d. The re-run second pass (`Generation.hs:115`)
 
@@ -1514,6 +1556,164 @@ missing check tool (its fix names both rustup locations), a model that doesn't a
 `[model]`, an Anthropic backend whose probe would fail if called, broken adapters and
 generators, and no project. `CliSpec.hs:249` checks the CLI's rendering and exit codes.
 
+## The fourth use case: conventions (`olifant check` and `sync --plan`)
+
+Generators keep conventions when they write code; `olifant check` checks them when people
+write it (spec §5.9, §5.10; user book, chapter 15). It joins two things: the owned regions
+the regions phase already refreshes, and **rules**, a new unit.
+
+```sh
+olifant check          # in a rust-htmx sandbox, with `use diesel::prelude::*;` in a command
+```
+
+```
+! billing/billing-service/src/cancel_invoice.rs:2  commands-use-ports — Commands talk to ports, not the database (rust-htmx: ports & adapters)  (fix: Add Repository Port)
+conventions hold (1 finding, none blocking)
+```
+
+### The `Rules` unit (`src/Olifant/Rules.hs`)
+
+`Rules` is pure apart from the `Syntax` port it is handed, and knows nothing about the
+catalog or the CLI. Its types:
+
+```haskell
+-- src/Olifant/Rules.hs:44
+data RuleCheck = RuleMatch Rule | RuleMissing Template
+
+-- src/Olifant/Rules.hs:65 (fields abbreviated)
+data Finding = Finding
+  { fRule :: Text, fFile :: FilePath
+  , fRange :: Maybe ((Int, Int), (Int, Int))   -- 1-based lines, UTF-8 byte columns; Nothing for a whole file
+  , fSeverity :: Severity, fMessage :: Text
+  , fFix :: Maybe Text, fSets :: [(Text, Text)]
+  , fFingerprint :: Text }
+
+-- src/Olifant/Rules.hs:80
+data Exception = Exception {exRule :: Text, exWhere :: Text, exReason :: Maybe Text, exStale :: Bool}
+```
+
+**Parsing.** `parseRules` (`:84`) reads `[rules.ID]` tables with the usual `Toml` decoders
+(`onlyKeys`, so a typo gets "did you mean"). A rule has exactly one of `match`, parsed by
+`ruleFromTree` like an AST query's rule, and `missing`, parsed as a template. `severity`
+defaults to `Warn`, and `off` is refused there: turning a rule off is the project's
+decision, not the pack's. `since` and `why` are not kept as fields; they are appended to the
+message (`" (since 2026-10: …)"`), so everything that shows a message shows them.
+`parseRulesConfig` (`:127`) reads the project config's `[rules]`: every key but `allow` is a
+rule id with a severity (`off` allowed), and `[[rules.allow]]` is `(rule, paths, reason)`,
+all three required.
+
+**`checkFiles`** (`:146`) is the whole check:
+
+```haskell
+checkFiles :: Monad m => Syntax m -> [Language] -> RulesConfig -> [RuleDef] -> [FilePath]
+           -> (FilePath -> m (Maybe Text)) -> [FilePath] -> m ([Finding], [Exception])
+```
+
+It takes the project's file list (for `missing`), a reader (so the CLI can hand it a buffer
+from stdin for one path, and the disk for the rest), and the files to check. For each file:
+
+1. **Which rules apply.** A rule applies when the project's severity for it isn't `Off`, its
+   `files` pattern matches (`matchPathSlots`, the same pattern language as `[applies_at]
+   path`, `Actions.hs:39`, which is why `Rules` imports `Actions`), and no `exclude` glob
+   does. The pattern's slots are kept: they become the finding's `fSets`, the fix's inputs.
+2. **What each finds.** `RuleMatch`: the rule is rendered as a template over the slots
+   (`renderRule`) and run over the file's text through `querySyntax`, one finding per match;
+   ast-grep's 0-based character positions become 1-based lines and UTF-8 byte columns, as in
+   `actionsInFile`. A file without a language, or a failed query, finds nothing.
+   `RuleMissing`: the template is rendered with `dir`, `stem` and `file`, `..` is collapsed
+   (`collapse`, `:212`), and if that path is not in the file list the file gets one finding
+   with no range.
+3. **Exceptions.** `parseAllows` (`:223`) finds `olifant:allow RULE` and
+   `olifant:allow-file RULE` comments: every occurrence of the language's comment prefix
+   (`langComment`) on a line, kept only when an even number of `"` come before it on that
+   line, so `"// olifant:allow …"` in a string is not one. `allow-file` counts only in the
+   first five lines. The reason is whatever follows the rule after a leading `—`, `-` or `:`.
+   A finding is suppressed (`suppressedBy`) by a file allow for its rule, a line allow on its
+   first line or the line above, or a config allow whose `paths` glob matches the file.
+4. **Reporting the exceptions.** Allows naming no loaded rule become `unknown-rule`
+   findings, and allows for a known rule without a reason `allow-without-reason`, both
+   `Warn` with the allow's line. Every allow for a known rule is an `Exception`, stale when
+   it suppressed nothing in its file. Config allows are exceptions where they were used;
+   after all files, a config allow used nowhere is added once, stale (only when some file
+   was checked, so `--file` on an unrelated path doesn't call everything stale).
+
+Findings are sorted by line within a file (a whole-file finding, `Nothing`, first).
+
+**Fingerprints** (`:204`). A baseline must recognise a finding after lines move, so a
+finding's identity is not its line. `fingerprint` is 64-bit FNV-1a over the rule id and
+what was found (the matched node's text, or the missing path), each with runs of whitespace
+collapsed to one space, joined by `\0`. Moving code, re-indenting it or adding lines above
+it keeps the fingerprint; changing the matched text, or the file's path, does not.
+
+`RulesSpec.hs` runs `checkFiles` in `Identity` with a fake `Syntax` (`diesel`, `:40`: every
+line starting `use diesel` is a match), covering matches with slots and fixes, `missing`,
+line and file allows, reasons, unknown rules, stale allows, allows in strings, `[rules]`
+severities and path allows, fingerprints across moved lines, `since`/`why`, and the loading
+errors. `GeneratorTestingSpec`'s "rust-htmx rules" runs the pack's real `rules.toml` through
+real ast-grep.
+
+### Loading rules (`Catalog`)
+
+As step 2 above describes, `openAt` adds each pack's `rules.toml` and
+`openProjectCatalog` the project's `.olifant/rules.toml` (`addRules`: a later rule replaces
+an earlier one with its id), reads `[rules]` into `catalogRulesConfig`, and runs
+`checkFixes` once the generators are known. A file that doesn't parse is in
+`catalogBrokenRules` with its path; a rule with a bad `fix` is there as `rules.toml` with
+the rule's id.
+
+### `olifant check` (`Cli.hs:177`)
+
+`checkP` (`Cli/Options.hs:125`) parses `CheckCmd report file fromStdin baseline
+changedSince`. `runCommand` reads `.olifant/baseline.toml` with `readBaseline` (`:538`) into
+`(rule, file, fingerprint)` triples (a baseline that doesn't parse counts as empty), and a
+finding is `baselined` when its triple is there. Then three branches:
+
+- **`--file FILE`** (`:198`): the path is made project-relative as for `actions`, its text
+  read from stdin with `--content -`, and `checkFiles` runs on that one file, with the
+  reader returning the stdin text for it and the disk for every other path. No regions, and
+  always `ExitSuccess`: an editor shows findings, it doesn't fail.
+- **`--baseline`** (`:204`): `checkFiles` over every file some rule's `files` matches, and
+  the findings (after allows) written as `[[baseline]]` tables to `.olifant/baseline.toml`,
+  replacing the whole file. That is how debt goes down: an entry whose finding is gone is
+  simply not written again.
+- **Otherwise** (`:213`): `refreshRegions ReportUnset` with an empty plan, the same call as
+  `sync --check`, so drift, broken fences and regions not set up come back as edits and
+  conflicts. With `--changed-since REF`, regions are skipped and `rtGitChanged` gives the
+  changed line ranges and untracked files; `touched` keeps a finding in an untracked file,
+  or in a changed file whose range overlaps a changed range, or that has no range (a whole
+  file). `failed` (`:234`) is any drift, region conflict, broken rule, git failure, or a
+  finding that is `Error` and not baselined.
+
+Both renderings are built and `emit` prints one. JSON: `{"regions", "findings",
+"exceptions", "errors"}`, plus `rules` (`id`, project severity, `debt`) with `--report`;
+`fix_name` is the fix generator's `name` (`nameOf`, as `actions` does). Human: drift and
+conflicts, `✗` broken rules, one line per finding (`findingHuman`: `✗`/`!`/`·` by severity, `·`
+and `(existing)` when baselined), with `--report` the exceptions and `debt:` lines, and the
+verdict. `CliSpec`'s "olifant check" group runs all of this against `memoryWorkspace` and
+`noSyntax`, using `missing` rules (which need no ast-grep) for findings.
+
+### `sync --plan` and `sync --init` for a family
+
+`sync`'s three outputs are one function: `syncRegions` (`Cli.hs:449`) takes a `SyncOutput`
+(`:446`), `SyncWrite` (`sync`), `SyncReport` (`sync --check`) or `SyncShow` (`sync --plan`).
+All three run `refreshRegions` and build a `Plan` named `sync`, now with `planBefore` read
+from the files the refresh would write, so `planJson` gives `--plan` the same `files`
+(`before`, `after`) a `gen --plan` has. Only `SyncWrite` writes, and only `SyncReport` exits 5
+for drift.
+
+`sync --init NAME` is `initRegion` (`:463`): it expands the declaration with
+`regionInstances` and calls `initFences` (`:478`) on each instance, which returns `Right
+True` (fences added), `Right False` (already there) or `Left (exit code, error code,
+message)`. The first `Left` fails the command. A single region that was already set up says
+so, as before; anything else runs `syncRegions … SyncWrite` with just that declaration, so
+every instance is filled in one plan.
+
+### The editor's side
+
+Durandal calls `sync --plan --json` after each save and applies `files` as buffer edits,
+then `check --file FILE --content - --json` for the saved buffer's diagnostics (user book,
+chapter 14). Both are read-only, so the editor decides what is written, and when.
+
 ## Rough spots
 
 This section is where things worth knowing about, but not urgent, go when you work near
@@ -1543,6 +1743,17 @@ The editor features brought these:
   `--file billing/billing-service/src/lib.rs` reports `wire-command` "on a field of the Lib
   struct", though `lib` is not a command and `--at` on such a field would drop it into
   `missing`.
+
+The conventions brought these:
+
+- **The baseline is a set.** An entry is `(rule, file, fingerprint)`, and two findings with
+  the same matched text in the same file have the same fingerprint, so one entry covers
+  both: a second `use diesel::prelude::*;` pasted into a baselined file is not new.
+- **A `missing` finding doesn't say what is missing.** The path is in its fingerprint, not
+  its message, so the message has to name the convention well enough ("Every command has a
+  test file").
+- **Rules see the disk's file list.** `check --file --content -` checks the buffer's text,
+  but a `missing` rule still asks whether the other path exists on disk.
 
 ## Where to go next
 
