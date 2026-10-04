@@ -20,7 +20,8 @@ The sandbox is a git repo, so after any `olifant gen` you can see exactly what c
 
 You need `olifant` on your PATH (`scripts/install-olifant.sh`, or the git hooks install it
 whenever `main` changes), plus `ast-grep` and `elm` for the Elm pack
-(`brew install ast-grep elm`).
+(`brew install ast-grep elm`), and `uv` for the python-htmx pack (`brew install uv`;
+`scripts/try-pack.sh python-htmx` runs `uv sync`, which brings pyright and pytest).
 
 When a chapter and the code disagree, the code is right and the chapter is a bug: fix it in
 the same branch as the code change.

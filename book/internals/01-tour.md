@@ -43,9 +43,9 @@ app/Main.hs          the executable: builds the real adapters, calls Olifant.Cli
 src/Olifant/*.hs     the library, one unit per top-level module
 src/Olifant/*Spec.hs the tests, next to the unit they test
 src/TestDriver.hs    one line: asks hspec-discover to find every *Spec.hs
-packs/               generator packs: elm, rails, redwood, rust-htmx, olifant-dev
+packs/               generator packs: elm, rails, redwood, rust-htmx, python-htmx, olifant-dev
 book/                these books
-scripts/             try-pack.sh, install-olifant.sh, test-watch.sh
+scripts/             try-pack.sh, install-olifant.sh, test-watch.sh, record-pyright.sh
 .githooks/           post-commit, post-merge, pre-merge-commit
 .olifant/config.toml Olifant's own project config: it uses the olifant-dev pack on itself
 ```
@@ -111,6 +111,17 @@ broken file), it falls back to the first 2,000 characters of stderr. A missing `
 itself compiles, and a case that needs an unwired hand edit (an `email_sender` field typed
 into `cancel_invoice.rs`) carries it in `given/`.
 
+**"python pack"** does the same for python-htmx with the pack's Python adapter (pyright
+through `uv`), and checks the fixture itself twice: `compileClean` on it alone (pyright
+strict), and `uv run --frozen pytest -q` in a temp copy, its environment in the temp
+directory (`olifant-test-cache/python-fixture-venv`). Snippet cases are left out of its
+"output type-checks" cases, as they are of Rust's. **"placeholder output compiles"** picks
+the pack's language and the program its check runs from the pack's name: `elm` and `elm`,
+`python-htmx` and `python`/`uv`, anything else `rust`/`cargo`. Every Python check goes
+through `missingTool` when `uv` is absent, except that the placeholder group looks for its
+tool only after planning, which without the tool already failed
+([Rough spots](#rough-spots)).
+
 **`packs/olifant-dev`** is the pack Olifant uses on its own source. Its
 `unit` generator creates `src/Olifant/X.hs` plus `src/Olifant/XSpec.hs`, and its
 `internal-module` generator creates `src/Olifant/X/Y.hs`.
@@ -120,6 +131,12 @@ into `cancel_invoice.rs`) carries it in `given/`.
   commits it to a fresh git repo. Every example in these books runs in a sandbox like that.
 - `install-olifant.sh` runs `cabal install` into `~/.local/bin`.
 - `test-watch.sh` runs `ghcid` over the test suite and re-runs it on every save.
+- `record-pyright.sh DIR` records pyright's JSON report for a sample project
+  (`uvx pyright --outputjson`, paths made relative to `DIR`) as `DIR/report.json`: the
+  testdata under `src/Olifant/Language/testdata/pyright/` (a union, an enum, a qualified
+  import, two matches in one file, a broken file, a clean run).
+- For a fixture with a `pyproject.toml`, `try-pack.sh` runs `uv sync` in the sandbox, and it
+  accepts a pack that has a `languages/` directory and no generators yet.
 
 **`.githooks/`** (enable with `git config core.hooksPath .githooks`):
 - `post-commit` and `post-merge` reinstall `olifant` when you are on `main`.
@@ -146,7 +163,7 @@ From the bottom up:
 | **Toml** | TOML parsed into a small `Tree`, plus decoders with readable errors; the only module that knows the `toml-parser` API | `Toml.hs`: `Tree`, `Table`, `parseToml`, `keyOrder`, `required`, `optional`, `inKey`, `text`, `list`, `table`, `onlyKeys` | Suggest |
 | **Glob** | `**` / `*` path globs | `Glob.hs`: `matchesGlob`, `globPrefix` | none |
 | **Template** | The `{= … =}` language, holes included: parse, render, exemplars | `Template.hs` over `Template/{Syntax,Parse,Render,Value,Exemplar,Error}`: `Template`, `parseTemplate`, `render`, `evaluate`, `Value`, `Env`, `exemplar`, `freeVariables` | Naming, Suggest |
-| **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`, `Diagnostics`, `Support`: `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`, `compileClean`, `CompilerSupport`, `typeNames`, `supportFor`. `Language.Elm`, `Language.Ghc` and `Language.Rustc` (one `CompilerSupport` record each, spec §5.6) and `Language.AstGrep` (the ast-grep adapter) are internal; only `AstGrep` is imported directly, by `Main`. `HoleKind` is an adapter's `[holes.KIND]` | Glob, Process, Template, Toml |
+| **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`, `Diagnostics`, `Support`: `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`, `compileClean`, `CompilerSupport`, `typeNames`, `supportFor`. `checkProgram`, `indentBlockEnd`. `Language.Elm`, `Language.Ghc`, `Language.Pyright` and `Language.Rustc` (one `CompilerSupport` record each, spec §5.6) and `Language.AstGrep` (the ast-grep adapter) are internal; only `AstGrep` is imported directly, by `Main`. `HoleKind` is an adapter's `[holes.KIND]` | Glob, Process, Template, Toml |
 | **Process** | Run an external program with byte stdin/stdout/stderr; never throws | `Process.hs`: `runBytes` | none |
 | **Fill** | The **Filler** port: what a model is asked for typed holes, and what it answers | `Fill.hs`: `FillHole`, `FillRequest`, `Filler`, `ModelFiller` | none |
 | **Model** | `[model]` config and the real fillers: request and reply formats per backend, called with `curl` | `Model.hs`: `Backend`, `ModelConfig`, `parseModelConfig`, `backendKinds`, `backendModel`, `systemPrompt`, `userPrompt`, `requestBody`, `decodeFills`, `curlFiller`, `probeBackend` | Fill, Process, Toml |
@@ -155,7 +172,7 @@ From the bottom up:
 | **Query** | Facts from the repo as records (globs, commands printing JSON, AST queries selecting nodes, or the cases the compiler says a `match` at the cursor lacks), the **Queries** port, and what an enum's choice is | `Query.hs`: `Query` (with `UncoveredQuery`), `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `QueryFailure`, `failed`, `noQueries`, `processCommand`, `ChoiceValue`, `choiceValue`, `queryVariables` | Glob, Language (`Rule`), Naming, Process, Template, Toml |
 | **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Opening`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `placedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Holes, Language, Query, Suggest, Template |
 | **Generator** | A generator definition: the types, loading `generator.toml`, resolving `one_of` choices, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve, `Choices`, and a snippet's `Cursor` edit and `HoleSource`) and `Inputs` (including `envBefore`, `inputsUsed`), plus `parseGenerator`, `withChoices`, `needsChoices`, `ChoiceView`, `choiceViews` | Anchor, Language, Naming, Query, Template, Toml |
-| **Cursor** | Snippets at the cursor (spec §5.3): a cursor edit placed as a replacement of the cursor's line, indented to fit | `Cursor.hs`: `isSnippet`, `atCursor`, `cursorIndent`, `indentTemplate` | Generator, Template |
+| **Cursor** | Snippets at the cursor (spec §5.3): a cursor edit placed as a replacement of the cursor's line, indented to fit, or like the node an `after` rule says it follows | `Cursor.hs`: `isSnippet`, `atCursor`, `atCursorIndented`, `cursorIndent`, `indentTemplate`, `afterIndent`, `afterRule` | Generator, Language, Template |
 | **Snippet** | Typed holes with a source (spec §4.9), and what an editor expands: ghost lines and an LSP snippet body | `Snippet.hs`: `Snippet`, `withHoleSources`, `holeSource`, `snippetOf`, `lspEscape` | Generator, Holes, Template |
 | **Uncovered** | The cases the compiler says the `match` at the cursor lacks: the `uncovered` query | `Uncovered.hs`: `uncoveredAt`, `uncoveredQuery` | Glob, Holes, Language, Query, Template, Workspace |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
@@ -221,7 +238,7 @@ Model                → Fill, Process, Toml
 Anchor               → Holes, Language, Query, Suggest, Template
 Region               → Query, Template, Toml
 Generator            → Anchor, Language, Naming, Query, Template, Toml
-Cursor               → Generator, Template          (Generator.Definition, Template.Syntax directly)
+Cursor               → Generator, Language, Template          (Generator.Definition, Template.Syntax directly)
 Snippet              → Generator, Holes, Template   (Generator.Definition, Template.Syntax directly)
 Uncovered            → Glob, Holes, Language, Query, Template, Workspace
 Generation           → Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace
@@ -230,7 +247,7 @@ Doctor               → Language, Model
 Rules                → Actions, Glob, Language, Template, Toml
 Catalog              → Anchor, Generator, Language, Model, Region, Rules, Snippet, Template, Toml, Workspace
 Cli                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Rules, Snippet, Template, Toml, Uncovered, Workspace
-GeneratorTesting     → Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace
+GeneratorTesting     → Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace   (Generator.Definition directly, for apAfter)
 app/Main             → Cli, Language, Language.AstGrep, Model, Workspace
 ```
 
@@ -257,9 +274,10 @@ A module outside a unit normally imports only that unit's facade. These are the 
 app/Main.hs:15                         import Olifant.Language.AstGrep (astGrepSyntax)
 src/Olifant/Cli.hs:26                  import Olifant.Template.Syntax (Segment (..), Template (..))
 src/Olifant/Cli.hs:36                  import Olifant.Generator.Schema (generatorSchema)
-src/Olifant/Cursor.hs:14               import Olifant.Generator.Definition (EditWith (..), Generator, GeneratorWith (..))
-src/Olifant/Cursor.hs:15               import Olifant.Template.Syntax (Segment (..), Template (..))
-src/Olifant/GeneratorTesting.hs:27     import Olifant.Language.Adapter (Language (..), languageFor)
+src/Olifant/Cursor.hs:23               import Olifant.Generator.Definition (EditWith (..), Generator, GeneratorWith (..))
+src/Olifant/Cursor.hs:24               import Olifant.Template.Syntax (Segment (..), Template (..))
+src/Olifant/GeneratorTesting.hs:25     import Olifant.Generator.Definition (AppliesAt (..), GeneratorWith (..))
+src/Olifant/GeneratorTesting.hs:28     import Olifant.Language.Adapter (Language (..), languageFor)
 src/Olifant/Holes.hs:20                import Olifant.Language.Adapter (HoleKind (..), Language (..), languageFor)
 src/Olifant/Query.hs:46                import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
 src/Olifant/Snippet.hs:19              import Olifant.Generator.Definition (GeneratorWith (..), HoleSource (..))
@@ -365,7 +383,7 @@ pending, as a missing tool is everywhere else (spec §4.5, §5.7).
 |---|---|---|---|
 | `Workspace m` | `Workspace.hs:30` | `diskWorkspace` (`Workspace.hs:72`): reads and writes under a root; lists files with `git ls-files` when inside a git work tree, otherwise walks the tree. `within dir` (`:152`) views a workspace from a subdirectory. `overlay path text` (`:134`) wraps any workspace so that one file reads as `text` (an editor's unsaved buffer, `gen --overlay`): `readText`, `fileExists` and `inspectPath` see it, `listFiles` includes it even when it is not on disk, and writes and removes go to the wrapped workspace untouched | `memoryWorkspace` (`Workspace.hs:45`): a `Map` in an `IORef`, which also hands back an action that reads the final map, so tests can assert on "the disk" |
 | `Syntax m` | `Language/Syntax.hs:15` | `astGrepSyntax` (`Language/AstGrep.hs:33`): runs `ast-grep scan --stdin --inline-rules … --json=compact`; compiles a pack's vendored grammar with `cc` into the cache on first use | `noSyntax` (`Language/Syntax.hs:17`) always says "ast-grep is not installed"; `fakeSyntax :: Syntax Identity` in `AnchorSpec.hs:58` returns canned matches |
-| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:48`): copies the files into a temp dir, runs the adapter's `[check] command` there, and parses the report (stderr, or stdout when the support's `supportReadsStdout` says so, as cargo's does) through the `CompilerSupport` its `format` names (`elm-json`, `ghc-json`, `rustc-json`) | `noChecker` (`Check.hs:38`); `scriptedChecker` (`GenerationSpec.hs:545`) replays a list of reports, one per round |
+| `Checker m` | `Language/Check.hs:36` | `processChecker` (`Check.hs:49`): copies the files into a temp dir, runs the adapter's `[check] command` there, and parses the report (stderr, or stdout when the support's `supportReadsStdout` says so, as cargo's and pyright's do) through the `CompilerSupport` its `format` names (`elm-json`, `ghc-json`, `pyright-json`, `rustc-json`), then lets the support read the checked files for the sites' extents (`supportSpans`) | `noChecker` (`Check.hs:39`); `scriptedChecker` (`GenerationSpec.hs:545`) replays a list of reports, one per round |
 | `Filler m` | `Fill.hs:30` | `curlFiller timeout backend` (`Model.hs:170`): posts the request with `curl` to an OpenAI-compatible server or to Anthropic's API, and decodes the reply into fills by hole name | `replayFiller` (`GeneratorTesting.hs:143`) answers from a pack case's `fills.toml`; `withFiller` (`GenerationSpec.hs:615`) replays a list of replies, one per request, and counts the requests, so a spec can say "one request, then a retry with only the failing hole" |
 | `rtGitChanged` | `Cli.hs:54` | `gitChanged` (`app/Main.hs:58`): `git -C ROOT diff --relative --no-color -U0 REF --`, each `+++ b/FILE` then each `@@ -a,b +c,d @@` hunk's new lines `c .. c+d-1` (a `d` of 0, a pure deletion, adds no range), and `git ls-files --others --exclude-standard` for untracked files; either command failing is `Left` with git's message | `CliSpec.hs:76`: `\_ _ -> pure (Right ([], ["src/b.x"]))` |
 | `DoctorPorts m` | `Doctor.hs:36` | built in `app/Main.hs:42` from `findExecutable`, `lookupEnv "PATH"`, `probeBackend` (`Model.hs:213`) and `isJust <$> lookupEnv` | `ports` in `DoctorSpec.hs:25` (these executables exist, the probe answers this, these variables are set); `CliSpec.hs:76` finds every executable except `nope…` |
@@ -909,7 +927,12 @@ phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on 
   `NAME = Page`. It renders that target's `container` rule (`{ kind = "type_declaration",
   regex = "^type Page\b" }`) and asks the **Syntax port** for matches (`querySyntax`,
   `:201`). Exactly one match is required. Then it asks for the `items` (`union_variant`)
-  *inside* that container (`:210`). Back in `resolveOne`'s `where`, `place` (`:147`) picks
+  *inside* that container (`:209`), and keeps those whose range lies within the
+  container's (`inside`, `:218`). An item may span the container exactly: a Python
+  `block` whose one statement is a `match` has the same range as the `match`, and the test
+  used to drop it, so `end of function create_booking_status` missed. The items query's
+  own `inside` already asks for a strict ancestor, so the range test no longer excludes
+  the container's own range. Back in `resolveOne`'s `where`, `place` (`:147`) picks
   the line after the last item, indented like it — and sets `locSpacing`: if the container's
   existing items are separated by a blank line, `place` copies that spacing onto the new one
   (`BlankAfter` for `start of`, `BlankBefore` for `end of`; spec §5.2).
@@ -962,13 +985,18 @@ same text, so what `--plan` shows is what is written, apart from the site's inde
 
 **Phase 2: `complete` edits, the check loop** (`src/Olifant/Generation/Complete.hs:38`).
 `perLanguage` (`:41`) first turns the adapter's `[check] format` into a `CompilerSupport`
-record with `supportFor` (`Language/Support.hs:13`) — `elmSupport`, `ghcSupport` or
-`rustcSupport`. A format
+record with `supportFor` (`Language/Support.hs:14`) — `elmSupport`, `ghcSupport`,
+`pyrightSupport` or `rustcSupport`. A format
 `supportFor` doesn't recognise fails every `complete` edit for that language with one message
 (`Complete.hs:46`), rather than surfacing the problem deep inside the loop. For each language that has
 `complete` edits, `gather` (`:55`) collects every file the check needs, meaning the adapter's
 `files` globs plus its `context` (`elm.json`; a Haskell adapter's `*.cabal` and
-`cabal.project`; Rust's `**/Cargo.toml` and `Cargo.lock`), *as they will be after phase 1*. Then `loop` (`:63`) runs, carrying that
+`cabal.project`; Rust's `**/Cargo.toml` and `Cargo.lock`; Python's `pyproject.toml` and
+`uv.lock`), *as they will be after phase 1*, leaving out anything under a `Workspace.pruned`
+directory. For Python that matters: `.venv` holds thousands of `.py` files, so `pruned` has
+`.venv`, `__pycache__` and `.pytest_cache` beside `.git`, `node_modules`, `elm-stuff`,
+`dist-newstyle` and `target` (`Workspace.hs:183`), which the disk workspace never walks
+either. Then `loop` (`:63`) runs, carrying that
 `support` record alongside the language:
 
 ```haskell
@@ -979,15 +1007,20 @@ record with `supportFor` (`Language/Support.hs:13`) — `elmSupport`, `ghcSuppor
           runCheck (toolChecker tools) lang (placeholderize (toolLanguages tools) files) >>= \case
 ```
 
-`runCheck` goes through the **Checker port**. `processChecker` (`src/Olifant/Language/Check.hs:48`)
+`runCheck` goes through the **Checker port**. `processChecker` (`src/Olifant/Language/Check.hs:49`)
 writes the files into a temp directory and runs the adapter's `[check] command` there
-(`runIn`, `:82`, which expands `{= files =}` to the sources and `{= cache =}` to a
-per-language XDG cache directory, `:93`). It looks up the same `CompilerSupport` by format
-(`supportFor`, `Check.hs:54`) and hands the compiler's raw output, stdout if the record's
-`supportReadsStdout` says so (cargo) and stderr otherwise (`:56`), to `supportParse` —
-`parseElmReport` (`Language/Elm.hs:20`) for `elm-json`, `parseGhcReport`
-(`Language/Ghc.hs:36`) for `ghc-json`, `parseRustcReport` (`Language/Rustc.hs:50`) for
-`rustc-json` — into a `CheckReport`:
+(`runIn`, `:93`, which expands `{= files =}` to the sources and `{= cache =}` to a
+per-language XDG cache directory, `:108`). Before it runs anything, `runIn` asks
+`checkProgram` (`:65`) which program the command runs: the first word, or, past a leading
+`env` and its `NAME=value` settings, the word after them (`env UV_PROJECT_ENVIRONMENT=… uv
+run pyright` runs `uv`). A missing program is `CheckToolMissing` naming it, so the message
+says `` `uv` is not installed ``, never `` `env` ``. It looks up the same `CompilerSupport` by
+format (`supportFor`, `Check.hs:55`) and hands the compiler's raw output, stdout if the
+record's `supportReadsStdout` says so (cargo, pyright) and stderr otherwise (`:57`), to
+`supportParse` — `parseElmReport` (`Language/Elm.hs:20`) for `elm-json`, `parseGhcReport`
+(`Language/Ghc.hs:36`) for `ghc-json`, `parsePyrightReport` (`Language/Pyright.hs:43`) for
+`pyright-json`, `parseRustcReport` (`Language/Rustc.hs:50`) for `rustc-json` — into a
+`CheckReport`:
 `MissingPatterns` (file, the `case`'s line range, the missing patterns, and the scrutinee's
 type when the compiler names it), broken files, and now `reportUnplaced`: sites the loop
 cannot extend (GHC's equations, lambdas and pattern bindings; rustc's refutable `let`s),
@@ -1007,8 +1040,38 @@ reference scrutinee (`supportPattern`), checks visibility by type name (`support
 the qualifier of `Type::Variant` or `Type.Variant`, `qualifier`, `:92`, must be one of
 `typeNames` of the reported type), names the enclosing function with `rustFunctionAt`
 (`:98`, the nearest `fn NAME` above), and sets `supportArmSeparator = ","` and
-`supportReadsStdout = True`. `typeNames` lives in `Language/Diagnostics.hs` (`:60`) now that
+`supportReadsStdout = True`. `typeNames` lives in `Language/Diagnostics.hs` (`:77`) now that
 GHC and rustc both use it.
+
+`Language/Pyright.hs` reads `pyright --outputjson`: one JSON object whose
+`generalDiagnostics` each have a `file`, a `severity`, an optional `rule`, a `message` and a
+`range` with 0-based lines. A `reportMatchNotExhaustive` diagnostic is a site at the `match`
+line; its patterns come from the message's `Unhandled type: "…"` (`unhandled`, `:60`), split
+on ` | `, each class as a class pattern (`pythonPattern`, `:71`: `SlotTaken` → `SlotTaken()`,
+type arguments dropped) and each `Literal[E.X, E.Y]` as its members. pyright puts a
+non-breaking space in some messages, which `unhandled` turns back into a space first. A
+`reportReturnType` "must return value on all code paths" in a file that has such a site is
+the missing case's consequence (a function whose last statement is the `match`), so it is
+not a broken file; every other `error` is (`:47-51`). `pyrightSupport` (`:19`) writes a
+pattern as the site writes its others (`qualifyLike`, `:76`: the qualifier of the first
+`case q.Class` arm, so `Cancelled()` becomes `create_booking.Cancelled()` or
+`cb.Cancelled()`), has no visibility rule (`supportVisible` is always `True`: sites come
+from pyright's own report), names the enclosing function with `pythonFunctionAt` (`:89`, the
+nearest `def` or `async def` above), and sets `supportArmSeparator = ""`.
+
+pyright gives only the `match` line, and the loop needs the site's last line to place an
+arm after it. That is the one thing a report can't say, so `CompilerSupport` has an
+optional, source-aware step, `supportSpans :: Maybe (Map FilePath Text -> CheckReport ->
+CheckReport)` (`Language/Diagnostics.hs:49`). `processChecker` applies it last, to the
+report with its paths already made project-relative (`relativeTo`), with the files it
+checked (`Check.hs:61`). Pyright's is `extendSites` (`Pyright.hs:34`), which ends each site
+at `indentBlockEnd` (`Diagnostics.hs:57`): the last non-blank line, after the `match`, of the
+lines that are blank or indented deeper than it. It is pure and generic, the indentation
+rule for any block; a trailing blank line is not part of the block. Elm, GHC and rustc set
+`supportSpans = Nothing`. The recorded reports `LanguageSpec` parses are in
+`src/Olifant/Language/testdata/pyright/`, made with `scripts/record-pyright.sh`, and one
+spec runs real pyright through `processChecker` (with `uvx`, so it is pending without `uv`,
+even under `OLIFANT_REQUIRE_TOOLS=1`).
 
 The loop narrows a reported pattern's candidates with `supportVisible` (`Complete.hs:72`): for Elm, by
 module import (`visibleAt`); for GHC, by the edit's `Type.Ctor` qualifier appearing as a
@@ -1481,11 +1544,13 @@ Add a constructor to CatalogError (GHC finds every case)  (olifant-dev/error-cas
 last (`Generator/Load.hs:61`), after the inputs, because `appliesAtFrom` (`:76`) checks every
 name against them: each `{slot}` in `path`, each `bind` key and `file` must be an input, and
 each `bind` regex goes through `posixRegex` (the same check as fragments and `each`), so `\w`
-is a load error. `node` is parsed by `ruleFromTree` (`:83`), as an `at` rule is, and `label`
-and `where` (`:88`) are templates, and `suggest` (`:90`) is an optional boolean, `False`
+is a load error. `node` is parsed by `ruleFromTree` (`:87`), as an `at` rule is, and so is
+`after` (`:90`); a table with both is refused (`` `applies_at` takes `after` or `node`, not
+both ``). `label` and `where` are templates, and `suggest` is an optional boolean, `False`
 when absent. The result is `genAppliesAt :: Maybe AppliesAt`
-(`Generator/Definition.hs:54`; `AppliesAt` at `:117`: `apPath`, `apNode`, `apBind`, `apFile`,
-`apLabel`, `apWhere`, `apSuggest`, and a snippet's `apTrigger`, [below](#snippets-gen---at-olifant-complete-and-uncovered)). `applies_at` is in `topKeys`, so `olifant schema` describes it. Errors
+(`Generator/Definition.hs:56`; `AppliesAt` at `:124`: `apPath`, `apNode`, `apBind`, `apFile`,
+`apLabel`, `apWhere`, `apSuggest`, a snippet's `apTrigger`, [below](#snippets-gen---at-olifant-complete-and-uncovered),
+and `apAfter`). `applies_at` is in `topKeys`, so `olifant schema` describes it. Errors
 are prefixed `` `applies_at`: `` once, by `optional`.
 
 **The command.** `Cli/Options.hs` (`actionsP`, `:124`) takes exactly one of `--at
@@ -1515,8 +1580,8 @@ steps: `candidates` (`:113`), which says how each generator relates to the file,
 (`:154`), which turns a generator and a node into an `Action`.
 
 ```haskell
--- src/Olifant/Actions.hs:74
-data Candidate = Whole | Nodes [Match] | Near Text
+-- src/Olifant/Actions.hs:81
+data Candidate = Whole | Nodes [Match] | After [Match] | Near Text
 ```
 
 `candidates` keeps each generator whose `genAppliesAt` is set and whose path matches, with one
@@ -1535,22 +1600,29 @@ of these:
    won't render: `Near why`, where `why` is `apWhere` rendered over the path's bindings, or,
    if there is none or it won't render, `describeRule` of the rendered rule (or "a matching
    node" when even that failed).
+4. **An `after`** (and no `node`): the same search (`search`, which takes the constructor to
+   wrap the matches in), giving `After` with the matches, or the same `Near`.
 
 `describeRule` (`:135`) reads the rule's JSON: `kind` becomes "a `KIND`", `regex` "matching
 /RE/", `inside` and `has` recurse as "inside …" and "containing …". Other keys are ignored, so
 it is a description, not a translation.
 
-**`actionsAt`** (`:78`) is the cursor's view. `Whole` offers the generator with no node.
+**`actionsAt`** (`:85`) is the cursor's view. `Whole` offers the generator with no node.
 `Nodes` keeps the matches whose range contains the cursor, sorted by size, lines then
-columns, and offers the smallest. `Near`, or no match containing the cursor: nothing. The
-cursor arrives as a 1-based line and a UTF-8 byte column (Neovim's); ast-grep's columns are
+columns, and offers the smallest. `After` keeps the matches the cursor's line *follows*
+(`follows`, `:141`: the node ends above the cursor's line, and every line between them is
+blank) and offers the nearest, the one that ends last. `Near`, or no match containing (or
+followed by) the cursor: nothing. The cursor arrives as a 1-based line and a UTF-8 byte column (Neovim's); ast-grep's columns are
 characters, so `charColumn` decodes that many bytes of the cursor's line and counts them, and
 the 0-based `(line, char)` is compared with `matchStart <= cursor <= matchEnd`, so just past
 the end counts.
 
-**`actionsInFile`** (`:98`) is the file's view. It offers `Whole` once, with `range =
+**`actionsInFile`** (`:154`) is the file's view. It offers `Whole` once, with `range =
 Nothing`, and `Nodes` once per match, each with its own node, so each has its own `bind`
-values. The `Range` (`:61`) converts back from ast-grep's 0-based character positions: the
+values. `After` is also once per match, but its range is where `--at` would apply, not the
+node: `lineAfter` (`:176`) runs from the line after the node to the last of the blank lines
+that follow it, column 1 on both (at least that first line; durandal.nvim's e2e found the
+range first covered only it, while `--at` accepted any of them). The `Range` (`:61`) converts back from ast-grep's 0-based character positions: the
 line plus one, and the column as one plus the UTF-8 length of the line's first `c`
 characters (`pos`). Actions are sorted by `fmap rangeStart . faRange`, which puts `Nothing`
 (whole-file actions) first and the rest in file order. `Near why` becomes a `Nearby` with the
@@ -1582,7 +1654,10 @@ entry per node in file order, byte-column ranges, `nearby` with and without `whe
 path that matches nothing. Its last group, "the rust-htmx demo generators (real ast-grep)",
 runs `wire-command`'s and `failure-arms`'s real `[applies_at]` through `preparePack` and
 ast-grep on their test cases' `given/` files, including the miss that motivated `nearby`: a
-field typed into `CancelInvoiceInput` gives no `wire-command` action, and a reason.
+field typed into `CancelInvoiceInput` gives no `wire-command` action, and a reason. The
+"after" group (`:112`) covers the line right after a node and after blank lines only, nothing
+inside the node, before it or past code that follows it, the `--file` range over the blank
+lines, and the load error for `after` with `node`.
 
 ### Suggestions: `suggest` and `--overlay` together
 
@@ -1620,16 +1695,24 @@ tab stops are holes, the menu is `actions`. Three small units carry what is new:
 **Placing it: `gen --at`.** `parseGen` pulls `--at FILE:LINE:COL` out of the arguments
 before the steps are split (`takeAt`, `Cli/Options.hs:193`, as it does `--overlay`), and
 `cursorP` (`:170`) splits it from the right into `genAt`. In `runCommand`, once the steps'
-generators are loaded, `placeCursor` (`Cli.hs:431`) runs before `runSteps`:
+generators are loaded, `placeCursor` (`Cli.hs:434`) runs before `runSteps`:
 
 1. No snippet among them: the generators are unchanged (`--at` still gives `uncovered`
    queries their cursor).
 2. A snippet and no `--at`: `Left`, which `runCommand` turns into a usage failure, exit 2.
 3. Otherwise it reads the cursor's file, from stdin when it is the `--overlay` file, and
    replaces each snippet's `Cursor src` with `atCursor unit path line lines gen`
-   (`Cursor.hs:52`): a `Replace` of line `n`, `(n, n)`, whose old text is the line as read
+   (`Cursor.hs:61`): a `Replace` of line `n`, `(n, n)`, whose old text is the line as read
    and whose new text is `indentTemplate (cursorIndent unit ls n) src`. `unit` is the
    adapter's `langIndent`.
+4. A snippet whose `[applies_at]` has an `after` rule is placed with `atCursorIndented`
+   (`Cursor.hs:65`, which `atCursor` is now a case of) and the indentation of the node the
+   cursor follows: `afterIndent` (`:78`) runs the rule (`afterRule`, `:91`, renders it with
+   no inputs) through the Syntax port, keeps the matches the line follows, as `actionsAt`
+   does, and takes the leading whitespace of the nearest one's first line. The line above is
+   no guide here: below a Python class it is the class's last field, one level deeper.
+   When the line follows no such node, or the search fails, `cursorIndent` decides as
+   before.
 
 From there the planner sees a replacement, the kind a rule's fix makes (`Replace`,
 spec §5.9): `decideItems` checks the line still reads `old` (so a buffer that changed since
@@ -1686,11 +1769,12 @@ report's missing-case sites in that file that start at or above the cursor's lin
 latest, strips a leading `&` or `&mut ` from each pattern, and keeps those matching the
 regex. Each becomes a record `{name = pattern}`.
 
-**Tests.** `parseCase` (`GeneratorTesting.hs:176`) reads a case's `at`. `runCase` passes it
-to `atCaseCursor` (`:144`), which places a snippet as `placeCursor` does and sets the tools'
+**Tests.** `parseCase` reads a case's `at`. `runCase` passes it
+to `atCaseCursor` (`GeneratorTesting.hs:145`), which places a snippet as `placeCursor` does,
+`afterIndent` included, and sets the tools'
 `queryUncovered` to the cursor's; a snippet case's second run is skipped (`:80`).
 `GeneratorTestingSpec` leaves cases whose `inputs.toml` has an `at` line out of "rust pack
-output compiles", and "placeholder output compiles" calls `atCaseCursor` too. The unit specs
+output compiles" and the "python pack" group's "output type-checks", and "placeholder output compiles" calls `atCaseCursor` too. The unit specs
 are `CursorSpec` (indentation, and the replacement), `SnippetSpec` (ghost, body, escaping,
 sources), `UncoveredSpec` (which site, `&`, the regex) and new cases in `GeneratorSpec`,
 `QuerySpec`, `ActionsSpec` (order, triggers, choices, `completionsAt`) and `CliSpec` (`gen
@@ -1728,9 +1812,11 @@ with `Status` one of `Ok`, `Warn`, `Bad`, in this order:
   adapters and generators are `Bad`, with the catalog's reason and "fix the adapter file" or
   "fix its generator.toml".
 - **`ast-grep`**, then **`check tool EXE (LANGUAGE)`** for each adapter with a `[check]`,
-  where `EXE` is the first word of its `command`: `tool` asks `dpFind`; when it is missing,
-  the detail shows `dpPath`'s `PATH` and the fix is `installHint` (`:86`), which knows where
-  `cargo`, `elm`, `ghc` and `cabal` usually live.
+  where `EXE` is the program its `command` runs, by `checkProgram` (`checkTool`, `:68`: the
+  first word, or the word after a leading `env` and its settings, so Python's is `uv`):
+  `tool` asks `dpFind`; when it is missing, the detail shows `dpPath`'s `PATH` and the fix is
+  `installHint` (`:86`), which knows where `cargo`, `elm`, `ghc` and `cabal` usually live, and
+  that `uv` comes from `brew install uv` (pyright then comes with the project, `uv sync`).
 - **`model`**: no `[model]` is `Warn` with `modelSnippet` (`:94`) as the fix; backends with
   no `default` is `Warn`; a `default` with no such backend is `Bad`. An `OpenAICompatible`
   default is probed with `dpProbe`, and a failure is `Warn` with the reason. An `Anthropic`
@@ -1979,6 +2065,41 @@ Snippets brought these:
   `holes` is described as `{}`, so a schema-aware editor flags a valid snippet.
 - **An `uncovered` enum's choices exist only at a cursor**, so `show` prints `<enum()>`, and an
   `actions --at` in a complete `match` still lists `match-arm` with `"choices":{"pattern":[]}`.
+
+Python brought these:
+
+- **A missing return is forgiven in a file with a missing case.** `parsePyrightReport`
+  treats "must return value on all code paths" as the missing case's consequence whenever
+  the file has a `reportMatchNotExhaustive` site, so a genuine missing return in the same
+  file is not a broken file to Olifant (pyright still reports it).
+- **No visibility rule.** `supportVisible` is always `True`, so a class could be offered at
+  a `match` on another union with a class of the same name. Sites come from pyright's own
+  report, so in practice they are real.
+- **A one-line union has no target.** `union NAME` wants the parenthesized, one-per-line
+  form; `type F = A | B` misses.
+- **One arm, then a blank line.** `insertBranch` copies the spacing between a `match`'s last
+  two arms; with only one, a language with no arm separator gets a blank line, Elm's style.
+  Python has none, so a `match` with one `case` gets a blank line before the new arm (and
+  the plan still says `+2 lines`).
+- **`compileClean` has nothing to show for pyright.** When pyright fails with no broken file
+  (only a missing case), the message falls back to stderr, which pyright leaves empty, so
+  "output type-checks" fails with a blank reason.
+- **`after` without ast-grep is silent.** `afterIndent` treats a failed search as "follows
+  nothing", so without ast-grep a snippet anticipated `after` a node is indented by
+  `cursorIndent`, under the class's field, instead of reporting the missing tool: the
+  `failure-variant` case fails rather than going pending. And `indentTemplate` indents a
+  snippet's first line even when it is empty, so after an indented node the snippet's
+  leading blank line would carry the indentation.
+- **`stmt` and `block` fills are barely parse-checked.** Their `wrap` is
+  `def __olifant():\n{= fill =}`, and tree-sitter accepts an unindented body there (an empty
+  `block`, no `ERROR`), so a fill's indentation is checked only by pyright, with the plan.
+- **"placeholder output compiles" fails without its compiler.** It plans first and checks for
+  the tool after, and with no compiler a `complete` edit finds no site and an `uncovered`
+  query no case, so "at least one hole is unfilled" fails, for every pack. The real-pyright
+  spec in `LanguageSpec` is the opposite: it uses `pendingWith`, so `OLIFANT_REQUIRE_TOOLS=1`
+  doesn't make it required.
+- **The `after`-and-`node` error says `applies_at` twice**: `` `applies_at`: `applies_at`
+  takes `after` or `node`, not both … ``.
 
 The conventions brought these:
 

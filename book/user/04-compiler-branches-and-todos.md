@@ -344,6 +344,44 @@ variant), and the same run warns:
 Treat the `todo!()`s as must-fix, like `Debug.todo`: they compile, and panic if the arm runs.
 `grep -rn 'olifant:'` finds them, whether a todo branch or an unfilled hole left them.
 
+## Python (pyright)
+
+The python-htmx pack's adapter checks with `uv run pyright --outputjson`, in strict mode
+(format `pyright-json`; the `[check]` is in
+[chapter 9](09-packs-and-language-adapters.md#a-fourth-example-python)). pyright reports a
+`match` that does not handle every member of a union. `python-htmx/failure-arms` adds a
+failure to a command's union with an `insert`, and an arm to every such `match` with a
+`complete` edit whose value is a hole:
+
+```toml
+# packs/python-htmx/generators/failure-arms/generator.toml (excerpt)
+[[edits]]
+complete = "{= failure|pascal =}"
+text     = "case {= pattern =}:\n    return {= ? value: expr | the value this match returns for {= pattern =}, following the other arms =}"
+```
+
+`pattern` is written as the `match` writes its other arms, so one `match` gets `case
+create_booking.Cancelled():` and one that imports the module as `cb` gets `case
+cb.Cancelled():`. Each site is its own hole. In the `two-matches` case, `failures.py` has a
+second `match` that maps failures to messages, whose first arm runs over seven lines; the recorded
+fills differ by site, and each arm goes after its `match`'s last line:
+
+```diff
+         case create_booking.TableNotFound():
+             return 404
++        case create_booking.Cancelled():
++            return 400
+ …
+         case create_booking.TableNotFound():
+             return "We could not find that table"
++        case create_booking.Cancelled():
++            return "Your booking was cancelled"
+```
+
+Without a model, each value is a placeholder that type-checks and raises if it runs,
+`(_ for _ in ()).throw(NotImplementedError("olifant: value: …"))`. [Chapter
+14](14-editors-and-actions.md#the-python-chain) runs the generator as an editor does.
+
 ## When Olifant refuses to guess
 
 - **Two candidates.** Elm prints constructors unqualified. If a site could belong to two
@@ -365,7 +403,7 @@ Treat the `todo!()`s as must-fix, like `Debug.todo`: they compile, and panic if 
 `elm` on your PATH, and a language adapter with a `[check]` command (the Elm pack has
 one). Without `elm` the `complete` edits are a conflict that says so. Checking costs one
 `elm make` of the project per round, a second or two for a small app. The same goes for
-`cabal` (GHC) and `cargo` (Rust). cargo builds into a cache directory that outlives the
+`cabal` (GHC), `cargo` (Rust) and `uv` (Python, which runs pyright). cargo builds into a cache directory that outlives the
 check's scratch copy (`~/.cache/olifant/check/rust`), so only the first round on a machine
 compiles the dependencies; after that the `command-failure` plan above takes well under a
 second.

@@ -262,7 +262,7 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
 | `[inputs.*]`, `[derive]`, `[requires]`, `[[edits]]`, `[[uses]]` | no | below; `[[uses]]` is [chapter 8](08-composing-generators.md) |
 | `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)); an enum that is `one_of` it takes its choices from it, with `value` saying which part of each record ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) |
-| `[applies_at]` | no | where in the code the generator applies, for editors: `path` (a pattern whose `{slot}`s bind inputs), `node` (an ast-grep rule the cursor must be inside), `bind` (inputs from regexes over that node's text), `file` (an input that takes the file's path), `label`, `where`, `suggest` and, for a snippet, `trigger` (what the text before the cursor must end with). `olifant actions` reads it ([chapter 14](14-editors-and-actions.md#applies_at-where-a-generator-applies)) |
+| `[applies_at]` | no | where in the code the generator applies, for editors: `path` (a pattern whose `{slot}`s bind inputs), `node` (an ast-grep rule the cursor must be inside), `bind` (inputs from regexes over that node's text), `file` (an input that takes the file's path), `after` (instead of `node`: an ast-grep rule for a node the cursor's line follows, with only blank lines between), `label`, `where`, `suggest` and, for a snippet, `trigger` (what the text before the cursor must end with). `olifant actions` reads it ([chapter 14](14-editors-and-actions.md#applies_at-where-a-generator-applies)) |
 | `[holes.NAME]` | no | where a hole's value comes from: `source = "model"` (the default), `"yours"` (a tab stop) or `"derived"` with `value = "TEMPLATE"` (a pre-filled tab stop). For snippets ([below](#cursor-a-snippet); [chapter 12](12-holes-and-models.md#where-a-holes-value-comes-from-holesname)) |
 
 Any other key is an error that names the key, so typos fail at load (`list` marks the
@@ -504,7 +504,10 @@ it `Type.Ctor` (`{= T =}.{= C =}`, e.g. `CatalogError.PackLocked`, visible where
 appears in the type GHC reports: `T`, `Maybe T`, `(T, Bool)`); rustc's (`rustc-json`) names it
 `Type::Variant` (`{= Failure =}::{= failure|pascal =}`, e.g.
 `RefundInvoiceFailure::AlreadyRefunded`; `Type.Variant` also works), visible where rustc
-reports a `match` on that type.
+reports a `match` on that type; pyright's (`pyright-json`) names it by the class alone
+(`{= failure|pascal =}`, e.g. `Cancelled`), and any `match` pyright reports may get it, the
+pattern written as that `match` writes its other classes (`create_booking.Cancelled()`,
+[chapter 9](09-packs-and-language-adapters.md#a-fourth-example-python)).
 
 ### `cursor`: a snippet
 
@@ -526,6 +529,8 @@ port's wiring, a new variant's arms) belongs to another generator that editors o
 follow-up; a generator with both is a load error that says so. `cursor = false` is an error
 too, not a way to switch it off. A snippet's holes may say where their values come from
 (`[holes.NAME]`, in the table above), and a snippet's `[applies_at]` may have a `trigger`.
+A snippet anticipated `after` a node (`python-htmx/failure-variant`, after a failure class)
+is indented like that node, not like the line above the cursor.
 
 ## Putting inserts and `complete` together
 
@@ -652,6 +657,7 @@ The others, from `src/Olifant/Template/Render.hs`:
 | `parens` | wraps text with spaces in parentheses, unless it is already one group | `List String` → `(List String)`, `Int` → `Int`, `(Maybe Int)` unchanged |
 | `rust_string` | escapes text for the inside of a Rust format-string literal (`todo!("…")`, `#[error("…")]`): `\` → `\\`, `"` → `\"`, `{` → `{{`, `}` → `}}` | `Too "late" for {refunds}` → `Too \"late\" for {{refunds}}` |
 | `escaped` | escapes text for the inside of an Elm or Haskell string literal: `\` → `\\`, `"` → `\"` | `say "hi" to C:\tmp` → `say \"hi\" to C:\\tmp` |
+| `python_string` | escapes text for the inside of a double-quoted Python string: `\` → `\\`, `"` → `\"`, a newline → `\n` | `Too "late" for {refunds}, C:\tmp` → `Too \"late\" for {refunds}, C:\\tmp` |
 
 `rust_string` is what the rust-htmx pack writes a free-text message with, in `command-failure`'s
 `#[error("{= message|rust_string =}")]` and in its adapter's `placeholder`
