@@ -124,6 +124,9 @@ spec = describe "olifant actions (spec §4.6)" $ do
       on 4 `shouldBe` []
       on 1 `shouldBe` []
       on 9 `shouldBe` []
+    it "--file: its range is every blank line that follows the node (where --at applies)" $
+      map faRange (fst (runIdentity (actionsInFile classAt [rust] noQueries [] (const (pure Nothing)) [("p/after", afterClass)] file src)))
+        `shouldBe` [Just (Range (6, 1) (7, 1))]
     it "reads `after` and refuses it with `node`" $ do
       let both = parseGenerator (GeneratorId "p/g") (T.unlines ["description = \"d\"", "language = \"x\"", "[applies_at]", "path = \"x\"", "node = { kind = \"a\" }", "after = { kind = \"b\" }"])
       both `shouldSatisfy` either ("`after` or `node`" `T.isInfixOf`) (const False)

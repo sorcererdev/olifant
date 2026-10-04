@@ -172,7 +172,11 @@ actionsInFile syntax langs queries paths readFile' gens path content = do
             then Right (Nearby gid (labelFor gen ap (M.fromList fromPath)) why)
             else Left []
     range m = Range (pos (matchStart m)) (pos (matchEnd m))
-    lineAfter m = let l = fst (matchEnd m) + 2 in Range (l, 1) (l, 1)
+    -- the blank lines after a node, 1-based (at least the first line after it)
+    lineAfter m =
+      let first = fst (matchEnd m) + 2
+          blanks = length (takeWhile (T.null . T.strip) (drop (first - 1) ls))
+       in Range (first, 1) (first + max 0 (blanks - 1), 1)
     pos (l, c) = (l + 1, 1 + BS.length (TE.encodeUtf8 (T.take c (maybe "" id (listToMaybe (drop l ls))))))
 
 -- | Each generator whose path matches, with what its rule finds in the text.
