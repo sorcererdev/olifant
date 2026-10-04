@@ -19,7 +19,7 @@ import System.Directory (getTemporaryDirectory)
 import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
-import Olifant.Rules (Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
+import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
 import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
@@ -151,9 +151,13 @@ spec = do
           path = "billing/billing-service/src/cancel_invoice.rs"
           code = "use std::sync::Arc;\nuse diesel::prelude::*;\n\nfn f() { let x = g().unwrap(); }\n"
       (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
-      [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, fFix f, fSets f) | f <- fs]
-        `shouldBe` [ ("commands-use-ports", Just 2, Warn, Just "rust-htmx/service-repository", [("service", "billing")])
-                   , ("commands-no-unwrap", Just 4, Hint, Nothing, []) ]
+      [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
+        `shouldBe` [ ("commands-use-ports", Just 2, Warn, ["rust-htmx/command-dependency", "rust-htmx/service-repository"])
+                   , ("commands-no-unwrap", Just 4, Hint, []) ]
+      -- the realistic flow: Diesel code, no import yet; one finding per line
+      let usage = "fn f(conn: &mut PgConnection) {\n    let rows = invoices::table.filter(invoices::id.eq(1)).load::<Invoice>(conn);\n    diesel::insert_into(invoices::table).values(&x).execute(conn);\n}\n"
+      (uses, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just usage)) [path]
+      [(fRule f, fmap (fst . fst) (fRange f)) | f <- uses, fRule f == "commands-use-ports"] `shouldBe` [("commands-use-ports", Just 2), ("commands-use-ports", Just 3)]
       -- the service's own modules are not commands (review: upgraded minor)
       (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
       others `shouldBe` []

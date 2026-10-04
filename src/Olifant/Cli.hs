@@ -4,7 +4,7 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
-import Olifant.Rules (Exception (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined)
+import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, suggestChoice)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
@@ -16,8 +16,9 @@ import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.List (find)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Functor ((<&>))
+import Data.List (find, sortOn)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -29,7 +30,7 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Generator (generatorName, ChoiceView (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (generatorName, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
@@ -184,22 +185,41 @@ runCommand rt cwd fmt cat = \case
         rules = catalogRules cat
         nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
         sevText = \case R.Hint -> "hint" :: Text; R.Warn -> "warn"; R.Error -> "error"; R.Off -> "off"
+        offerJson o = object ["generator" .= foGenerator o, "name" .= nameOf (foGenerator o), "label" .= fromMaybe (nameOf (foGenerator o)) (foLabel o), "sets" .= M.fromList (foSets o)]
         findingJson olds f =
           object
             [ "rule" .= fRule f, "file" .= fFile f, "severity" .= sevText (fSeverity f), "message" .= fMessage f
             , "range" .= fmap (\((l1, c1), (l2, c2)) -> object ["start" .= [l1, c1], "end" .= [l2, c2]]) (fRange f)
-            , "fix" .= fFix f, "fix_name" .= fmap nameOf (fFix f), "sets" .= M.fromList (fSets f), "baselined" .= (f `elem` olds) ]
+            , "fixes" .= map offerJson (fFixes f)
+            , -- the first fix, as before (one-fix clients)
+              "fix" .= fmap foGenerator (listToMaybe (fFixes f)), "fix_name" .= fmap (nameOf . foGenerator) (listToMaybe (fFixes f)), "sets" .= maybe M.empty (M.fromList . foSets) (listToMaybe (fFixes f))
+            , "baselined" .= (f `elem` olds) ]
         exceptionJson e = object ["rule" .= exRule e, "where" .= exWhere e, "reason" .= exReason e, "stale" .= exStale e]
         reportJson fs = ["rules" .= [object ["id" .= ruleId r, "severity" .= sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat)))), "debt" .= length [f | f <- baselinedIn fs, fRule f == ruleId r]] | r <- rules] | report]
         mark = \case R.Error -> "✗" :: Text; R.Warn -> "!"; _ -> "·"
-        findingHuman olds f = (if f `elem` olds then "·" else mark (fSeverity f)) <> " " <> T.pack (fFile f) <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> "  " <> fRule f <> " — " <> fMessage f <> maybe "" (\x -> "  (fix: " <> nameOf x <> ")") (fFix f) <> (if f `elem` olds then "  (existing)" else "")
+        findingHuman olds f = (if f `elem` olds then "·" else mark (fSeverity f)) <> " " <> T.pack (fFile f) <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> "  " <> fRule f <> " — " <> fMessage f <> (if null (fFixes f) then "" else "  (fixes: " <> T.intercalate "; " [fromMaybe (nameOf (foGenerator o)) (foLabel o) | o <- fFixes f] <> ")") <> (if f `elem` olds then "  (existing)" else "")
         exceptionHuman e = "  " <> exRule e <> " at " <> exWhere e <> ": " <> fromMaybe "(no reason)" (exReason e) <> (if exStale e then "  [stale: suppresses nothing]" else "")
     paths <- listFiles ws "."
+    now <- rtNow rt
+    -- A fix's enum inputs left open are pre-chosen when the finding's code
+    -- names exactly one choice (`invoices::table` → invoice_repository), and
+    -- the label says which (beat 4 feedback).
+    let chooseInputs (fs, exs) = (,exs) <$> traverse (\f -> (\os -> f {fFixes = os}) <$> traverse (choose f) (fFixes f)) fs
+        choose f o = case find ((== foGenerator o) . generatorIdText . entryId) (catalogEntries cat) of
+          Nothing -> pure o
+          Just e ->
+            withChoices (projectQueries rt cat) paths (readText ws) (M.fromList (foSets o)) now (entryDefinition e) <&> \case
+              Left _ -> o
+              Right g ->
+                let picks = [(inputName i, c) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i], Just c <- [suggestChoice (fText f) cs]]
+                 in case picks of
+                      (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c)}
+                      [] -> o
     case file of
       Just f -> do
         let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> f))
         content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> f)
-        (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (\p -> if p == rel then pure content else readText ws p) [rel]
+        (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (\p -> if p == rel then pure content else readText ws p) [rel] >>= chooseInputs
         let olds = baselinedIn fs
         emit rt fmt (object (["findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs] ++ reportJson fs)) (T.unlines (map (findingHuman olds) fs))
         pure ExitSuccess
@@ -238,7 +258,7 @@ runCommand rt cwd fmt cat = \case
                     (Nothing, _) -> False
                     (Just _, Nothing) -> True
                     (Just rs, Just ((l1, _), (l2, _))) -> any (\(a, b) -> a <= l2 && l1 <= b) rs
-        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked
+        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked >>= chooseInputs
         let fs = filter touched fs0
             drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
             regionsJson = [object ["file" .= p, "region" .= r, "status" .= ("drift" :: Text)] | (p, r) <- drift] ++ [object ["status" .= ("broken" :: Text), "message" .= describeConflict c] | c <- conflicts]
@@ -555,6 +575,10 @@ projectQueries rt cat =
     { queryCommand = processCommand (rtProjectDir rt)
     , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
     }
+
+-- | `invoice_repository` → `InvoiceRepository`.
+toPascal :: Text -> Text
+toPascal = T.concat . map (\w -> T.toUpper (T.take 1 w) <> T.drop 1 w) . T.splitOn "_"
 
 -- | `.olifant/baseline.toml` (spec §5.10): (rule, file, fingerprint) entries.
 readBaseline :: Text -> Either Text [((Text, Text, Text), Int)]

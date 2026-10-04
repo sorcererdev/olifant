@@ -24,29 +24,45 @@ rust-htmx has two, in `packs/rust-htmx/rules.toml`:
 
 ```toml
 [rules.commands-use-ports]
-files    = "{service}/*-service/src/{command}.rs"
+files    = "{service}/*-service/src/*.rs"
 exclude  = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
-match    = { kind = "use_declaration", regex = "diesel" }
+match    = { any = [
+  { kind = "use_declaration", regex = "diesel" },
+  { kind = "scoped_identifier", regex = "^diesel::" },
+  { kind = "scoped_identifier", regex = "::(table|dsl)$" },
+] }
 message  = "Commands talk to ports, not the database (rust-htmx: ports & adapters)"
 severity = "warn"
-fix      = "rust-htmx/service-repository"
+
+[[rules.commands-use-ports.fixes]]
+generator = "rust-htmx/command-dependency"
+label     = "Use an existing port"
+with      = { service = "{= service =}", command = "{= stem =}" }
+
+[[rules.commands-use-ports.fixes]]
+generator = "rust-htmx/service-repository"
+label     = "Add a new repository port"
+with      = { service = "{= service =}" }
 
 [rules.commands-no-unwrap]
 files    = "*/*-service/src/*.rs"
-exclude  = ["**/lib.rs"]
+exclude  = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
 match    = { kind = "call_expression", regex = "\\.unwrap\\(\\)$" }
 message  = "Commands return their Failure, they don't panic (use ? and a Failure variant)"
 severity = "hint"
 ```
 
-Type `use diesel::prelude::*;` into a command, in a rust-htmx sandbox
-(`scripts/try-pack.sh rust-htmx /tmp/rh && cd /tmp/rh`), and:
+Start writing Diesel in a command — `let rows = invoices::table.filter(invoices::id.eq(1)).load::<Invoice>(&mut conn);`,
+no import needed — in a rust-htmx sandbox (`scripts/try-pack.sh rust-htmx /tmp/rh && cd /tmp/rh`), and:
 
 ```
 $ olifant check
-! billing/billing-service/src/cancel_invoice.rs:2  commands-use-ports — Commands talk to ports, not the database (rust-htmx: ports & adapters)  (fix: Add Repository Port)
+! billing/billing-service/src/cancel_invoice.rs:15  commands-use-ports — Commands talk to ports, not the database (rust-htmx: ports & adapters)  (fixes: Use an existing port: InvoiceRepository; Add a new repository port)
 conventions hold (1 finding, none blocking)
 ```
+
+The rule matches any Diesel in a command — an import, a `diesel::` path, a schema table — so it
+fires where you start, and nested or repeated matches on one line are one finding.
 
 | key | required | what it does |
 |---|---|---|
@@ -56,7 +72,8 @@ conventions hold (1 finding, none blocking)
 | `missing` | one of `match`, `missing` | a path that must exist, as a template over the file: `{= dir =}` (its directory), `{= stem =}` (its name without extension) and `{= file =}` (its path). `..` is allowed. If the path does not exist, the file has a finding with no line |
 | `message` | yes | what is wrong and why it matters, in one sentence |
 | `severity` | no | `hint`, `warn` (the default) or `error`. Only an `error` fails `check`. A project can change it ([below](#the-projects-say-rules)) |
-| `fix` | no | the id of a generator that fixes it. A `fix` naming no generator makes the rule broken |
+| `fix` | no | the id of a generator that fixes it (shorthand for one entry in `fixes`) |
+| `fixes` | no | `[[rules.ID.fixes]]` tables, best first: `generator`, `label` (what an editor shows), `with` (its inputs, templates over the `files` slots and `{= dir =}`, `{= stem =}`, `{= file =}`; without it, the slots as they are). A fix naming no generator, or an input the generator doesn't have, makes the rule broken |
 | `since`, `why` | no | when the rule arrived (`"2026-10"`) and why (a sentence, or an ADR), shown after the message: `… (since 2026-10: commands are the behaviour; untested ones rot)` |
 
 Rules are read from every pack's `rules.toml`, then the project's `.olifant/rules.toml`; a
@@ -65,15 +82,20 @@ project rule with a pack rule's id replaces it.
 Rules are ast-grep queries and globs: no compiler and no model, so a check takes a moment, and
 an editor can run one on every save.
 
-### The fix
+### The fixes
 
-`fix` names a generator, offered where the finding is. For `commands-use-ports` it is
-`rust-htmx/service-repository`, whose `name` is "Add Repository Port": a command that wants
-the database needs a repository port. The `{slot}`s of `files` become the fix's inputs, so
-the finding above comes with `"sets": {"command": "cancel_invoice", "service": "billing"}` in
-JSON, and an editor asks only for the rest
-([chapter 14](14-editors-and-actions.md#rule-findings-as-diagnostics)). Name the slots after
-the fix's inputs, and use `*` for a part of the path the fix doesn't take.
+A rule offers fixes, best first. `commands-use-ports` offers the usual answer before the bigger
+one: **use the port the service already has** (`rust-htmx/command-dependency`, "Add Command
+Dependency": the field, its import and the wiring), then **add a new repository port**
+(`rust-htmx/service-repository`). Each fix's `with` maps the finding to the generator's inputs —
+`service` from the path, `command` from the file's name — and an editor asks only for the rest
+([chapter 14](14-editors-and-actions.md#rule-findings-as-diagnostics)).
+
+An enum input a fix leaves open is chosen for you when exactly one choice's words appear in the
+code the finding is about: `invoices::table` names the `invoice` in `invoice_repository` (a
+port's kind, like `repository` or `sender`, is ignored), so the first fix arrives as "Use an
+existing port: InvoiceRepository" with `dependency = "invoice_repository"` already set. With no
+clear match, the editor asks, offering this service's ports.
 
 Nothing runs the fix for you. It is an offer, like an action: you review the plan and apply
 it, or not.

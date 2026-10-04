@@ -242,11 +242,11 @@ possibly unsaved, text from stdin. Only generators with an `[applies_at]` are of
 `olifant check` checks the two kinds of convention a project keeps
 ([chapter 15](15-conventions-that-hold.md)): its owned regions are up to date
 ([chapter 5](05-owned-regions.md)), and its **rules** are kept. In a rust-htmx sandbox
-with `use diesel::prelude::*;` typed into a command:
+with Diesel code typed into a command (`invoices::table.filter(…)`):
 
 ```
 $ olifant check
-! billing/billing-service/src/cancel_invoice.rs:2  commands-use-ports — Commands talk to ports, not the database (rust-htmx: ports & adapters)  (fix: Add Repository Port)
+! billing/billing-service/src/cancel_invoice.rs:15  commands-use-ports — Commands talk to ports, not the database (rust-htmx: ports & adapters)  (fixes: Use an existing port: InvoiceRepository; Add a new repository port)
 conventions hold (1 finding, none blocking)
 $ echo $?
 0

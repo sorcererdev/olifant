@@ -34,7 +34,7 @@ import Data.Either (lefts, rights)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Olifant.Model (ModelConfig (..), parseModelConfig)
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -43,7 +43,7 @@ import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, pos
 import Olifant.Language (Language (..), Match (..), Syntax, languageFor, matchShape, parseLanguage)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
-import Olifant.Rules (RuleDef (..), RulesConfig (..), parseRules, parseRulesConfig)
+import Olifant.Rules (FixDef (..), RuleDef (..), RulesConfig (..), parseRules, parseRulesConfig)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, freeVariables, parseTemplate, templateSource)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, normalisePath)
@@ -367,13 +367,14 @@ checkFixes :: Catalog -> Catalog
 checkFixes cat =
   let entries = [(generatorIdText (entryId e), map inputName (genInputs (entryDefinition e))) | e <- catalogEntries cat]
       slots r = [T.takeWhile (/= '}') piece | piece <- drop 1 (T.splitOn "{" (ruleFiles r)), not ("=" `T.isPrefixOf` piece)]
-      problem r = case ruleFix r of
-        Nothing -> Nothing
-        Just f -> case lookup f entries of
-          Nothing -> Just ("rule `" <> ruleId r <> "`: fix names no generator `" <> f <> "`")
-          Just inputs -> case [s | s <- slots r, s `notElem` inputs] of
-            s : _ -> Just ("rule `" <> ruleId r <> "`: `{" <> s <> "}` is not an input of " <> f <> " (its inputs: " <> T.intercalate ", " inputs <> ")")
-            [] -> Nothing
+      problem r = listToMaybe (mapMaybe (fixProblem r) (ruleFixes r))
+      fixProblem r d = case lookup (fdGenerator d) entries of
+        Nothing -> Just ("rule `" <> ruleId r <> "`: fix names no generator `" <> fdGenerator d <> "`")
+        Just inputs ->
+          let given = maybe [("`{" <> x <> "}`", x) | x <- slots r] (map (\(k, _) -> ("`" <> k <> "` (in with)", k))) (fdWith d)
+           in case [shown | (shown, x) <- given, x `notElem` inputs] of
+                shown : _ -> Just ("rule `" <> ruleId r <> "`: " <> shown <> " is not an input of " <> fdGenerator d <> " (its inputs: " <> T.intercalate ", " inputs <> ")")
+                [] -> Nothing
       bad = [(r, why) | r <- catalogRules cat, Just why <- [problem r]]
       known = map ruleId (catalogRules cat)
       config = catalogRulesConfig cat

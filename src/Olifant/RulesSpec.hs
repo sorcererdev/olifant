@@ -58,8 +58,8 @@ spec :: Spec
 spec = describe "rules (spec §5.9)" $ do
   it "(a) a match rule finds its node, with message, fix and the path's slots" $ do
     let [f] = fst (run none [(cmd, "use std::sync::Arc;\nuse diesel::prelude::*;\n")] [cmd])
-    (fRule f, fRange f, fSeverity f, fMessage f, fFix f, fSets f)
-      `shouldBe` ("commands-use-ports", Just ((2, 1), (2, 24)), Warn, "Commands talk to ports, not the database", Just "rust-htmx/service-repository", [("command", "cancel_invoice"), ("service", "billing")])
+    (fRule f, fRange f, fSeverity f, fMessage f, fFixes f)
+      `shouldBe` ("commands-use-ports", Just ((2, 1), (2, 24)), Warn, "Commands talk to ports, not the database", [FixOffer "rust-htmx/service-repository" Nothing [("command", "cancel_invoice"), ("service", "billing")]])
     fst (run none [("billing/billing-service/src/lib.rs", "use diesel::x;\n")] ["billing/billing-service/src/lib.rs"]) `shouldBe` []
   it "(b) a missing rule finds a file that should exist" $ do
     let port = "billing/src/ports/email_sender.rs"
@@ -90,6 +90,24 @@ spec = describe "rules (spec §5.9)" $ do
     let (fs, exs) = run (RulesConfig [] [("commands-use-ports", ["billing/**"], "billing migrates later")]) [(cmd, "use diesel::x;\n")] [cmd]
     fs `shouldBe` []
     map exReason exs `shouldBe` [Just "billing migrates later"]
+  describe "ranked fixes and one finding per line (beat 4 feedback)" $ do
+    it "offers several fixes, each with its label and inputs from the finding" $ do
+      let Right [r] = parseRules (T.unlines
+            [ "[rules.p]", "files = \"{service}/*-service/src/*.rs\"", "message = \"m\"", "match = { kind = \"use_declaration\" }"
+            , "[[rules.p.fixes]]", "generator = \"rust-htmx/command-dependency\"", "label = \"Use an existing port\"", "with = { service = \"{= service =}\", command = \"{= stem =}\" }"
+            , "[[rules.p.fixes]]", "generator = \"rust-htmx/service-repository\"", "label = \"Add a new repository port\"", "with = { service = \"{= service =}\" }" ])
+          (fs, _) = runIdentity (checkFiles diesel [rust] none [r] [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
+      map fFixes fs `shouldBe`
+        [ [ FixOffer "rust-htmx/command-dependency" (Just "Use an existing port") [("command", "cancel_invoice"), ("service", "billing")]
+          , FixOffer "rust-htmx/service-repository" (Just "Add a new repository port") [("service", "billing")] ] ]
+    it "keeps one finding where matches nest (the outermost)" $ do
+      let nested = Syntax $ \_ _ _ -> Identity (Right [Match (0, 4) (0, 10) "diesel", Match (0, 0) (0, 20) "use diesel::prelude"])
+          (fs, _) = runIdentity (checkFiles nested [rust] none rules [cmd] (\_ -> Identity (Just "use diesel::prelude;\n")) [cmd])
+      map fRange fs `shouldBe` [Just ((1, 1), (1, 21))]
+    it "pre-chooses the choice whose words appear in the code" $ do
+      suggestChoice "let rows = invoices::table.filter(x);" ["email_sender", "invoice_repository"] `shouldBe` Just "invoice_repository"
+      suggestChoice "diesel::insert_into(things)" ["email_sender", "invoice_repository"] `shouldBe` Nothing
+      suggestChoice "invoice_emails::table" ["email_sender", "invoice_repository"] `shouldBe` Nothing
   describe "rules that cannot run (review C2)" $ do
     it "a syntax failure is an error finding, not silence" $ do
       let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed"))

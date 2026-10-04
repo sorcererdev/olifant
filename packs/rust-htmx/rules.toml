@@ -8,10 +8,27 @@
 [rules.commands-use-ports]
 files    = "{service}/*-service/src/*.rs"
 exclude  = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
-match    = { kind = "use_declaration", regex = "diesel" }
+# Any Diesel in a command: an import, a `diesel::` path, or a schema table
+# (`invoices::table`) — so it fires wherever you start, even before the
+# import exists. One finding per line (nested matches count once).
+match    = { any = [
+  { kind = "use_declaration", regex = "diesel" },
+  { kind = "scoped_identifier", regex = "^diesel::" },
+  { kind = "scoped_identifier", regex = "::(table|dsl)$" },
+] }
 message  = "Commands talk to ports, not the database (rust-htmx: ports & adapters)"
 severity = "warn"
-fix      = "rust-htmx/service-repository"
+
+# The usual answer first: the port this service already has for that data.
+[[rules.commands-use-ports.fixes]]
+generator = "rust-htmx/command-dependency"
+label     = "Use an existing port"
+with      = { service = "{= service =}", command = "{= stem =}" }
+
+[[rules.commands-use-ports.fixes]]
+generator = "rust-htmx/service-repository"
+label     = "Add a new repository port"
+with      = { service = "{= service =}" }
 
 [rules.commands-no-unwrap]
 files    = "*/*-service/src/*.rs"

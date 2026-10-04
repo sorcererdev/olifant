@@ -17,14 +17,18 @@ module Olifant.Rules
   , checkFiles
   , fingerprint
   , markBaselined
+  , suggestChoice
+  , FixDef (..)
+  , FixOffer (..)
   ) where
 
 import Control.Monad ((>=>))
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
+import Data.Char (isAlphaNum)
 import Data.Word (Word64)
 import Numeric (showHex)
-import Data.List (nub, sortOn, (\\))
+import Data.List (nub, nubBy, sortOn, (\\))
 import Data.Set qualified as S
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
@@ -54,9 +58,20 @@ data RuleDef = RuleDef
   , ruleCheck :: RuleCheck
   , ruleMessage :: Text
   , ruleSeverity :: Severity
-  , ruleFix :: Maybe Text
+  , ruleFixes :: [FixDef]
+  -- ^ ranked: the first is offered first
   }
   deriving stock (Show)
+
+-- | A fix a rule offers: a generator, a label, and its inputs from the
+-- finding (`with`: templates over the path's slots and dir/stem/file;
+-- without it, the path's slots as they are).
+data FixDef = FixDef {fdGenerator :: Text, fdLabel :: Maybe Text, fdWith :: Maybe [(Text, Template)]}
+  deriving stock (Show)
+
+-- | A fix offered for one finding: the generator, its label, its inputs.
+data FixOffer = FixOffer {foGenerator :: Text, foLabel :: Maybe Text, foSets :: [(Text, Text)]}
+  deriving stock (Eq, Show)
 
 -- | The project's `[rules]`: severities (incl. `off`) and allowed paths
 -- (rule, globs, reason).
@@ -70,8 +85,9 @@ data Finding = Finding
   , fRange :: Maybe ((Int, Int), (Int, Int))
   , fSeverity :: Severity
   , fMessage :: Text
-  , fFix :: Maybe Text
-  , fSets :: [(Text, Text)]
+  , fFixes :: [FixOffer]
+  , fText :: Text
+  -- ^ the code the finding is about (for choosing a fix's inputs)
   , fFingerprint :: Text
   -- ^ what the finding is about, stable when lines move (for the baseline, spec §5.10)
   }
@@ -91,7 +107,7 @@ parseRules src = do
   traverse (\(k, v) -> inKey ("rules." <> k) (table v >>= rule k)) (M.toList rs)
   where
     rule k t = do
-      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix", "since", "why"] t
+      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix", "fixes", "since", "why"] t
       files <- required "files" text t
       exclude <- fromMaybe [] <$> optional "exclude" (list text) t
       message0 <- required "message" text t
@@ -104,17 +120,24 @@ parseRules src = do
             _ -> ""
           message = message0 <> story
       severity <- maybe (Right Warn) ruleSev =<< optional "severity" text t
-      fix <- optional "fix" text t
+      one <- maybe [] (\g -> [FixDef g Nothing Nothing]) <$> optional "fix" text t
+      many <- maybe (Right []) (list (table >=> fixDef)) (M.lookup "fixes" t)
       check <- case (M.lookup "match" t, M.lookup "missing" t) of
         (Just m, Nothing) -> RuleMatch <$> inKey "match" (ruleFromTree m)
         (Nothing, Just m) -> RuleMissing <$> inKey "missing" (text m >>= tmpl >>= onlyFileVars)
         _ -> Left "a rule has exactly one of `match` (an ast-grep rule) or `missing` (a path that must exist)"
-      pure (RuleDef k files exclude check message severity fix)
+      pure (RuleDef k files exclude check message severity (one ++ many))
     ruleSev s =
       parseSeverity s >>= \case
         Off -> Left "a rule's severity is hint, warn, error (turn it off in the project's [rules])"
         x -> Right x
     tmpl t = either (Left . describeTemplateError) Right (parseTemplate t)
+    fixDef f = inKey "fixes" $ do
+      onlyKeys ["generator", "label", "with"] f
+      g <- required "generator" text f
+      label <- optional "label" text f
+      with <- traverse (\w -> traverse (\(k, v) -> inKey ("with." <> k) ((k,) <$> (text v >>= tmpl))) (M.toList w)) =<< optional "with" table f
+      pure (FixDef g label with)
     -- A `missing` path knows only the file it is about (review C2).
     onlyFileVars t = case S.toList (freeVariables t) \\ ["dir", "stem", "file"] of
       [] -> Right t
@@ -181,8 +204,8 @@ checkFiles syntax langs config rules paths readFile' files = do
           used = [s | fd <- raw, Just s <- [suppressedBy fd]]
           usedAllows = [alLine a | Left a <- used]
           lineRange a = Just ((alLine a, 1), (alLine a, 1))
-          unknown = [Finding "unknown-rule" f (lineRange a) Warn ("olifant:allow names no rule `" <> alRule a <> "`") Nothing [] (fingerprint ["unknown-rule", alRule a]) | a <- allows, alRule a `notElem` known]
-          noReason = [Finding "allow-without-reason" f (lineRange a) Warn ("olifant:allow " <> alRule a <> " needs a reason: `— why`") Nothing [] (fingerprint ["allow-without-reason", alRule a]) | a <- allows, alRule a `elem` known, isNothing (alReason a)]
+          unknown = [Finding "unknown-rule" f (lineRange a) Warn ("olifant:allow names no rule `" <> alRule a <> "`") [] "" (fingerprint ["unknown-rule", alRule a]) | a <- allows, alRule a `notElem` known]
+          noReason = [Finding "allow-without-reason" f (lineRange a) Warn ("olifant:allow " <> alRule a <> " needs a reason: `— why`") [] "" (fingerprint ["allow-without-reason", alRule a]) | a <- allows, alRule a `elem` known, isNothing (alReason a)]
           commentExceptions = [Exception (alRule a) (T.pack f <> ":" <> T.pack (show (alLine a))) (alReason a) (alLine a `notElem` usedAllows) | a <- allows, alRule a `elem` known]
           configExceptions = nub [Exception r (where' globs) (Just reason) False | Right (r, globs, reason) <- used]
           sorted = sortOn (\fd -> (fmap fst (fRange fd), fRule fd)) (kept ++ unknown ++ noReason)
@@ -191,7 +214,9 @@ checkFiles syntax langs config rules paths readFile' files = do
       RuleMatch rule -> case (lang, renderRule (M.fromList [(k, VText v) | (k, v) <- slots]) rule) of
         (Just l, Right q) ->
           querySyntax syntax l q content >>= \case
-            Right ms -> pure [finding f r slots (Just (range content m)) (matchText m) | m <- ms]
+            -- One finding where matches nest: the outermost (an import and
+            -- the path inside it are one finding).
+            Right ms -> pure [finding f r slots (Just (range content m)) (matchText m) | m <- outermost ms]
             Left failure -> pure [cannotRun f r (describeSyntaxFailure failure)]
         (Nothing, _) -> pure [cannotRun f r "no language adapter for this file"]
         (_, Left err) -> pure [cannotRun f r (describeTemplateError err)]
@@ -203,8 +228,18 @@ checkFiles syntax langs config rules paths readFile' files = do
               Left err -> [cannotRun f r (describeTemplateError err)]
     -- A rule that cannot run is an error: a gate must never pass silently
     -- because it could not look (review C2).
-    cannotRun f r why = Finding "rule-failed" f Nothing Error ("rule `" <> ruleId r <> "` could not run on " <> T.pack f <> ": " <> why) Nothing [] (fingerprint ["rule-failed", ruleId r])
-    finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (ruleFix r) (sortOn fst slots) (fingerprint [ruleId r, what])
+    cannotRun f r why = Finding "rule-failed" f Nothing Error ("rule `" <> ruleId r <> "` could not run on " <> T.pack f <> ": " <> why) [] "" (fingerprint ["rule-failed", ruleId r])
+    finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (offers f slots r) what (fingerprint [ruleId r, what])
+    offers f slots r =
+      let env = M.fromList ([(k, VText v) | (k, v) <- slots] ++ [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f))])
+       in [ FixOffer (fdGenerator d) (fdLabel d) (sortOn fst sets)
+          | d <- ruleFixes r
+          , Right sets <- [maybe (Right slots) (traverse (\(k, t) -> (k,) <$> either (Left . describeTemplateError) Right (render env t))) (fdWith d)]
+          ]
+    -- the outermost of nested matches, then the first on each line
+    outermost ms =
+      nubBy (\a b -> fst (matchStart a) == fst (matchStart b)) $
+        sortOn matchStart [m | m <- ms, not (any (\o -> o /= m && matchStart o <= matchStart m && matchEnd m <= matchEnd o) ms)]
     range content m =
       let ls = T.lines content
           pos (l, c) = (l + 1, 1 + BS.length (TE.encodeUtf8 (T.take c (fromMaybe "" (listToMaybe (drop l ls))))))
@@ -218,6 +253,21 @@ fingerprint parts = T.pack (showHex64 (BS.foldl' step 14695981039346656037 bytes
     bytes = TE.encodeUtf8 (T.intercalate "\0" (map (T.unwords . T.words) parts))
     step h b = (h `xor` fromIntegral b) * 1099511628211 :: Word64
     showHex64 w = let s = showHex w "" in replicate (16 - length s) '0' ++ s
+
+-- | The one choice whose words all appear in the code (`invoice_repository`
+-- for `invoices::table`: "invoice" is there; "repository" is the port's
+-- kind, so suffixes like that are ignored), or none when it is ambiguous.
+suggestChoice :: Text -> [Text] -> Maybe Text
+suggestChoice code choices = case filter fits choices of
+  [c] -> Just c
+  _ -> Nothing
+  where
+    tokens = S.fromList (T.split (not . isAlphaNum) (T.toLower code))
+    stems = S.map (\w -> fromMaybe w (T.stripSuffix "s" w)) tokens
+    kinds = ["repository", "sender", "client", "port", "service", "gateway", "store"]
+    fits c =
+      let ws = [w | w <- T.splitOn "_" (T.toLower c), w `notElem` kinds, not (T.null w)]
+       in not (null ws) && all (\w -> w `S.member` tokens || w `S.member` stems) ws
 
 -- | Which findings the baseline covers: each (rule, file, fingerprint) key
 -- covers as many findings as its count, in order — a second identical
