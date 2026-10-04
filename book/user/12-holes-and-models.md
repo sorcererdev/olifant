@@ -79,11 +79,19 @@ The kinds in this repository's packs:
 | Rust (`rust-htmx`) | `expr` | `todo!("olifant: {= hole =}: {= instruction\|rust_string =}")` | `fn __olifant() { let _ = {= fill =}; }` |
 | | `block` | the same `todo!` | `fn __olifant() { {= fill =} }` |
 | | `type` | `() /* olifant: {= hole =} */` | `type __Olifant = {= fill =};` |
+| | `ident` | `{= hole =}` | `struct {= fill =};` |
+| | `text` | `{= hole =}` | `const _: &str = "{= fill =}";` |
 | Elm (`elm`) | `expr` | `Debug.todo "olifant: {= hole =}: {= instruction\|escaped =}"` | `olifantHole =` / `    {= fill =}` |
 | Haskell (`olifant-dev`) | `expr` | `error "olifant: {= hole =}: {= instruction\|escaped =}"` | `olifantHole = {= fill =}` |
+| | `text` | `{= hole =}` | `olifantHole = "{= fill =}"` |
 
-Every placeholder contains `olifant:` and its hole's name, so you can grep for unfilled
-holes. That is also a rule: an adapter whose `placeholder` doesn't use `{= hole =}` fails to
+Rust's `ident` and `text` and Haskell's `text` are for snippets' tab stops
+([below](#where-a-holes-value-comes-from-holesname)): a name, and text inside a string. Their
+placeholder is the bare name, which compiles where a name or a string's contents stand, but
+carries no `olifant:`.
+
+Every model placeholder contains `olifant:` and its hole's name, so you can grep for unfilled
+holes. The name is also a rule: an adapter whose `placeholder` doesn't use `{= hole =}` fails to
 load, because Olifant finds each hole's placeholder by its text, and the name makes it
 unique. The instruction goes through `rust_string` or `escaped`
 ([chapter 7](07-writing-a-generator.md#filters)), so a quote in it cannot end the string
@@ -145,10 +153,66 @@ holes:
 (This run used a fixture whose last arm had no comma. All four holes went to the model in
 one request, and the whole command took 3.6 seconds.)
 
+A hole can also go in a snippet's cursor edit, where it is a tab stop
+([below](#where-a-holes-value-comes-from-holesname)).
+
 A hole stays local. Its fill replaces exactly its own placeholder and nothing else. If a
 change needs code in several places, such as a new constructor parameter plus its call site,
 use inputs, queries and composed generators ([chapter 8](08-composing-generators.md)). A hole
 never makes edits elsewhere.
+
+## Where a hole's value comes from: `[holes.NAME]`
+
+So far every hole has been the model's. In a **snippet**, a generator whose one edit goes at
+the cursor ([chapter 14](14-editors-and-actions.md#snippets)), the holes are the tab stops an
+editor walks you through, and not all of them are a model's to fill. `[holes.NAME]` says where
+a hole's value comes from:
+
+```toml
+# packs/olifant-dev/generators/spec-case/generator.toml (excerpt)
+[[edits]]
+cursor = true
+text = "it \"{= ? behaviour: text | what it does, in words =}\" $ do\n  {= ? body: expr | the test =}"
+
+[holes.behaviour]
+source = "yours"
+
+[holes.body]
+source = "derived"
+value  = "pending"
+```
+
+| `source` | what the hole is | in the text `gen` writes | in the snippet an editor expands |
+|---|---|---|---|
+| `model` (the default) | a gap the model fills, as in the rest of this chapter | the fill, or the kind's placeholder | a tab stop holding the fill, or `⟨name⟩` before there is one |
+| `yours` | a plain tab stop | the hole's name (`behaviour`) | a tab stop holding the name |
+| `derived` | a tab stop pre-filled from a template (`value`, over the generator's inputs and derived values) | the rendered value (`pending`) | a tab stop holding the value, to keep or change |
+
+**The model never sees a yours or derived hole.** Only model holes go to the fill phase.
+A tab stop is `skipped`, with why it is not filled (with `--no-fill`, the why is `--no-fill`,
+as for every hole):
+
+```
+holes:
+  behaviour (text@yours) src/Olifant/SampleUnitSpec.hs:8  skipped: a tab stop (yours)
+  body (expr@derived) src/Olifant/SampleUnitSpec.hs:9  skipped: a tab stop (derived)
+```
+
+(from `gen olifant-dev/spec-case --at … --plan`, [chapter 14](14-editors-and-actions.md#the-plans-snippet)).
+The kind still has to be one of the adapter's, since that is how the hole is written down,
+but its placeholder is not used: the text has the name or the value instead. A snippet can
+mix sources: `match-arm`'s one hole, `status`, has no `[holes.status]`, so the model fills
+it when the snippet is expanded, and the expansion offers the fill as a tab stop to keep or
+type over.
+
+`[holes.NAME]` names a hole in the generator's own templates; one that names no hole there is
+a load error (`[holes.mesage]: no hole called mesage in this generator's templates`), and
+so are an unknown `source` and a `derived` one without `value`. There is no `choice` source
+yet (`` `choice` holes are not built yet: make it an input with one_of = "QUERY" (editors
+list one item per choice) ``): a choice is an `enum` input whose values come from a query
+([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)), and
+an editor's menu has one item per value. Spec §4.9 plans `choice` tab stops, and filling a
+model hole on demand from inside an expanded snippet; neither is built.
 
 ## What happens in a `gen`
 
@@ -432,24 +496,25 @@ entry:
 |---|---|
 | `name` | the hole's name, with `[file:line]` when the name repeats |
 | `kind` | its kind |
+| `source` | where its value comes from: `model`, or `yours` or `derived` for a snippet's tab stop ([above](#where-a-holes-value-comes-from-holesname)) |
 | `file`, `line` | where its placeholder or fill is |
 | `placeholder` | the placeholder's text, as the adapter rendered it, whatever the status: what an editor looks for to show the hole (Durandal draws it as `⟨name⟩`, [chapter 14](14-editors-and-actions.md#ghost-text-and-follow-ups)) |
-| `status` | `filled`, `unfilled` (it has its placeholder because something failed or no model is configured) or `skipped` (`--no-fill`) |
+| `status` | `filled`, `unfilled` (it has its placeholder because something failed or no model is configured) or `skipped` (`--no-fill`, or a tab stop) |
 | `model` | the model that filled it (`null` unless filled) |
 | `attempts` | which attempt succeeded (`null` unless filled) |
-| `why` | why it is `unfilled` or `skipped` |
+| `why` | why it is `unfilled` or `skipped` (`a tab stop (yours)`) |
 | `fill` | the code that was filled in (`null` unless filled) |
 
 From `gen … --plan --json` with a model:
 
 ```json
-"holes": [{"attempts": 1, "file": "billing/billing-service/src/refund_invoice.rs", "fill": "409", "kind": "expr", "line": 35, "model": "qwen3-coder:30b", "name": "status", "placeholder": "todo!(\"olifant: status: the value this match returns for RefundInvoiceFailure::AlreadyRefunded, following the other arms\")", "status": "filled", "why": null}]
+"holes": [{"attempts": 1, "file": "billing/billing-service/src/refund_invoice.rs", "fill": "409", "kind": "expr", "line": 35, "model": "qwen3-coder:30b", "name": "status", "placeholder": "todo!(\"olifant: status: the value this match returns for RefundInvoiceFailure::AlreadyRefunded, following the other arms\")", "source": "model", "status": "filled", "why": null}]
 ```
 
 and with the `anthropic` backend and no key in the environment:
 
 ```json
-"holes": [{"attempts": null, "file": "billing/billing-service/src/refund_invoice.rs", "fill": null, "kind": "expr", "line": 35, "model": null, "name": "status", "placeholder": "todo!(\"olifant: status: …\")", "status": "unfilled", "why": "ANTHROPIC_API_KEY is not set"}]
+"holes": [{"attempts": null, "file": "billing/billing-service/src/refund_invoice.rs", "fill": null, "kind": "expr", "line": 35, "model": null, "name": "status", "placeholder": "todo!(\"olifant: status: …\")", "source": "model", "status": "unfilled", "why": "ANTHROPIC_API_KEY is not set"}]
 ```
 
 The human form is one line per hole, with the fill after a colon (a fill of several lines is
@@ -539,7 +604,10 @@ code. What worked in the runs behind this chapter:
 - **`--plan` shows repeated-name holes as placeholders.** When a hole's name repeats
   (`status[file:line]`), the `holes` lines show each fill, but the edits' text in `--plan`
   still shows the placeholder, with the bare name (`todo!("olifant: status: …")`). The files
-  are written with the fills. This is a bug.
+  are written with the fills. This is a bug. The same happens to every model hole in a
+  snippet's edit (`gen --at`, [chapter 14](14-editors-and-actions.md#rough-edges-of-snippets)),
+  repeated or not: its `--plan` text has `todo!("olifant: status: …")` where `files`, the
+  `snippet` and `holes` have `409`.
 - **A slow model holds up `gen`.** Each call may take up to `timeout` seconds, and there are
   up to three. A busy local server makes `gen` wait, and calls that time out leave their
   holes unfilled (`curl: (28) Operation timed out …`). That happened in several runs behind

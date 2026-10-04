@@ -6,11 +6,15 @@ plugin. It runs `olifant` for everything, so this chapter covers both halves: wh
 plugin does, and what Olifant gives an editor:
 
 - **`[applies_at]`** in a `generator.toml`: where in the code a generator applies, which
-  of its inputs the code there already gives, (`where`) what it looks for, in words, and
-  (`suggest`) whether an editor may offer it unasked;
+  of its inputs the code there already gives, (`where`) what it looks for, in words,
+  (`suggest`) whether an editor may offer it unasked, and (`trigger`) what a snippet waits
+  for you to type;
 - **`olifant actions --at FILE:LINE:COL`**: the generators that apply at a cursor;
 - **`olifant actions --file FILE`**: every place in a file where one applies, and the
   generators that could apply but found nothing yet;
+- **snippets**: generators whose one edit goes at the cursor (`cursor = true`), planned with
+  **`gen --at FILE:LINE:COL`** and offered by **`olifant complete`** to a completion menu
+  ([below](#snippets));
 - a plan an editor can apply as buffer edits (**`files`**), and progress while it is built
   (**`gen --progress`**), with a warning first when a file it touches does not parse;
 - **`gen --plan --overlay FILE`**: a plan against a buffer you have not saved, which is how
@@ -38,7 +42,7 @@ you press `<CR>`. The change goes in as ordinary buffer edits, so `u` undoes it.
 | `<leader>ma` | `:DurandalActions` | generators that apply at the cursor (`olifant actions`) |
 | `<leader>mg` | `:DurandalGenerate` | any generator, inputs from a picker (`olifant show`) |
 | | `:DurandalHints [toggle\|on\|off]` | the ⚡ hints ([below](#hints-on-the-cursor-line)); no argument toggles |
-| `<Tab>` | | while a suggestion is shown, and only then: apply the ghost text, or review the follow-up ([below](#ghost-text-and-follow-ups)) |
+| `<Tab>` | | while a suggestion is shown, and only then: apply the ghost text, review the follow-up ([below](#ghost-text-and-follow-ups)), or expand the snippet ([below](#snippets)) |
 | | `:DurandalGhosts [toggle\|on\|off]` | ghost text and follow-ups; no argument toggles |
 | | `:checkhealth durandal` | Neovim, `nui.nvim`, `olifant`, then `olifant doctor` ([Troubleshooting](#troubleshooting)) |
 
@@ -56,7 +60,7 @@ Two things the plugin does that Olifant doesn't:
 - **It saves modified buffers in the project before it plans** from `<leader>ma` or
   `<leader>mg`. `gen` reads the disk. (`olifant actions` can read an unsaved buffer,
   [below](#unsaved-text---content--), and so can `gen --plan --overlay`, which suggestions
-  use instead of saving.)
+  and snippets use instead of saving: a snippet picked from `<leader>ma` saves nothing.)
 - **It logs** which actions it hinted, offered and suggested, and which you picked, applied
   or dismissed, to `~/.cache/durandal/actions.jsonl`, on your machine only, so that where
   generators apply can be tuned. Olifant logs nothing.
@@ -78,8 +82,13 @@ line, never on the rest of the file, and never for a generator whose `[applies_a
 The hints come from one `olifant actions --file` call per buffer
 ([below](#every-place-in-a-file---file)), sent the buffer's unsaved text, not from a call per
 cursor move. Durandal makes that call when you enter the buffer and when you save it, and
-after a change once the buffer has been quiet for 300 ms (a change in normal mode, or leaving
-insert mode). Moving the cursor only redraws. If a call fails, the last good hints stay.
+after a change once the buffer has been quiet for 300 ms (a change in normal or insert mode,
+or leaving insert mode; insert mode counts so that a snippet can appear while you type,
+[below](#snippets)). Moving the cursor only redraws. If a call fails, the last good hints
+stay.
+
+Snippets are never hinted. They show as ghost text after their trigger, or in the completion
+menu, so the ⚡ hint is only ever for the other generators that apply on the line.
 
 Turn them off for the session with `:DurandalHints off` (`on` and `toggle` as you'd expect),
 or for good in the setup:
@@ -127,16 +136,19 @@ from the cursor, Copilot's next edit suggestions and Cursor's Tab, point to them
 jump there rather than drawing them where you type. So a convention's next edit is ghost
 text only when it is small and right where you are, and a follow-up you review otherwise.
 
-Today both of rust-htmx's suggestions are follow-ups. `wire-command` changes `service.rs`
-and `main.rs` too. `failure-arms`'s arm goes into the `match` seven lines below the variant
-(`⚡ Tab: review Add Failure Arms (+1 line here)`); were it on the cursor's line or the next,
-it would be the ghost line
+rust-htmx's two generators that react to what you wrote are follow-ups. `wire-command`
+changes `service.rs` and `main.rs` too. `failure-arms`'s arm goes into the `match` seven
+lines below the variant (`⚡ Tab: review Add Failure Arms (+1 line here)`); were it on the
+cursor's line or the next, it would be the ghost line
 
 ```
             RefundInvoiceFailure::AlreadyRefunded => ⟨status⟩,
 ```
 
-Ghost text proper arrives with snippets (spec §4.9), which are small inserts at the cursor.
+The ghost text you will see most is a **snippet's** (spec §4.9): a small block at the cursor
+for what you are about to write, not a consequence of what you wrote. Snippets are the next
+section; they are suggested the same way, and drawn the same way, but `Tab` expands them with
+their holes as tab stops ([below](#snippets)).
 
 **When Durandal plans.** Once the cursor has settled (300 ms) on a line where a `suggest`
 action applies, according to the hints' `--file` answer, and nothing is `missing`: a
@@ -146,10 +158,16 @@ action's `gen` with `--plan --json --no-fill --overlay FILE`, the buffer's text 
 per buffer; if the buffer changed while it ran, the answer is dropped; a plan that fails, has
 a conflict or changes nothing shows nothing.
 
+When several apply on the line, **follow-ups come before snippets**: what you just wrote is
+finished before what comes next is offered. The first one that offers something here is
+shown. One that offers nothing (a plan with nothing to suggest, one you dismissed, a snippet
+whose trigger does not match) gives way to the next.
+
 **`Tab` is Durandal's only while a suggestion is shown**, as a buffer-local mapping in normal
 and insert mode that is removed with the suggestion. A completion menu (the built-in one,
 `blink.cmp` or `nvim-cmp`) clears the suggestion when it opens, and none is drawn while one is
-open, so its `Tab` is never taken.
+open, so its `Tab` is never taken. Nor is anything drawn while a snippet is being filled in
+(`vim.snippet.active()`): there `Tab` moves to the next tab stop.
 
 **Accepting plans again, for real**: the same `gen` against the buffer as it is now, without
 `--no-fill`, so the model fills the holes (with a spinner, `--progress`), and the plan's
@@ -166,7 +184,8 @@ planned again.
 
 Each step goes to the action log as an event with the generator: `ghost-shown`,
 `ghost-applied`, `ghost-dismissed`, `followup-shown`, `followup-reviewed`, `followup-applied`
-and `followup-dismissed`. They are what will say whether the split is right.
+and `followup-dismissed` (snippets have their own, [below](#snippets)). They are what will
+say whether the split is right.
 
 Turn suggestions off for the session with `:DurandalGhosts off`, or for good:
 
@@ -187,7 +206,7 @@ plays the buffer here):
 $ F=billing/billing-service/src/cancel_invoice.rs
 $ buffer() { sed 's/^pub struct CancelInvoice {}/pub struct CancelInvoice {\n    pub email_sender: Arc<dyn EmailSender>,\n}/' $F; }
 $ buffer | olifant actions --at $F:7:5 --content - --json
-[{"generator":"rust-htmx/wire-command","label":"Wire cancel_invoice's dependencies","missing":[],"name":"Wire Command Dependencies","sets":{"command":"cancel_invoice","service":"billing"},"suggest":true}]
+[{"choices":{},"generator":"rust-htmx/wire-command","label":"Wire cancel_invoice's dependencies","missing":[],"name":"Wire Command Dependencies","sets":{"command":"cancel_invoice","service":"billing"},"snippet":false,"suggest":true,"trigger":false},{"choices":{"port":["email_sender","invoice_repository"]},"generator":"rust-htmx/add-port","label":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","missing":["port"],"name":"Add port","sets":{"command":"cancel_invoice","service":"billing"},"snippet":true,"suggest":false,"trigger":false}]
 $ buffer | olifant gen rust-htmx/wire-command --set command=cancel_invoice --set service=billing --plan --human --no-fill --overlay $F
 Plan: rust-htmx/wire-command (7 edits, 0 conflicts)
   = billing/billing-service/src/cancel_invoice.rs (skipped: unless: line 7 of billing/billing-service/src/cancel_invoice.rs matches)
@@ -201,7 +220,149 @@ Plan: rust-htmx/wire-command (7 edits, 0 conflicts)
 
 (Each edit's text is left out here.) It took 0.16 seconds, and `git status` is clean
 afterwards. `failure-arms`'s plan for a new variant takes a little over a second, since
-`cargo` checks the buffer's text to find the `match`.
+`cargo` checks the buffer's text to find the `match`. `actions` also lists
+`rust-htmx/add-port` on that line: a snippet, offered in the menu only (`"suggest":false`),
+so it is never planned in the background ([next](#snippets)).
+
+### Snippets
+
+A **snippet** is a generator whose one edit goes at the cursor (spec §4.9). It is still a
+generator: typed inputs, `one_of` choices, queries over the code, holes, checks. What makes
+it a snippet is that it writes the line you are on, and that its holes become **tab stops**
+you fill in, or the model does. It is offered two ways:
+
+- **Anticipated**: when the code and what you just typed point to it, it is ghost text on
+  your line, and `Tab` takes it.
+- **Chosen**: it is a ⚡ item in your completion menu (nvim-cmp) and in `<leader>ma`.
+
+The packs in this repository have four:
+
+| snippet | where | offered | its holes |
+|---|---|---|---|
+| `rust-htmx/failure-variant` | a blank line in a command's `Failure` enum | anticipated | `message` and `Variant`, yours |
+| `rust-htmx/match-arm` | a blank line in a `match` the compiler says lacks a case | anticipated (the first missing case) and in the menu (one item per case) | `status`, the model's |
+| `rust-htmx/add-port` | inside a command's struct | in the menu only, one item per port | none |
+| `olifant-dev/spec-case` | just after typing `it "` in a `*Spec.hs` | anticipated | `behaviour`, yours; `body`, derived (`pending`) |
+
+#### Anticipated: ghost text, then tab stops
+
+In `refund_invoice.rs`, open a line below `Unknown(String),` (`o`, then `Esc`, which strips
+the autoindent and leaves it empty). Durandal draws the snippet's first line over your line
+and the rest below it, dim, each hole as `⟨name⟩`:
+
+```
+    #[error("⟨message⟩")]  ⚡ Tab: Failure variant
+    ⟨Variant⟩,
+```
+
+`Tab` plans it for real, with the model for any model holes (a spinner while it fills), and
+expands it with Neovim's `vim.snippet`: the line becomes
+
+```
+    #[error("message")]
+    Variant,
+```
+
+with `message` selected. Type the message, `Tab` to `Variant`, type the name, `Tab` once more
+to leave the snippet at its end. Expanding changes only the buffer: nothing is saved, and the
+emptied line and the expansion are one undo step, so one `u` takes it all back. If you edited
+the buffer while it was planning, nothing is expanded: `not expanded: the buffer changed
+while planning`.
+
+The snippet does only the line you are on. What it implies elsewhere is a **follow-up**:
+with the cursor on the variant you just named, `AlreadyRefunded,`, `failure-arms` offers
+`⚡ Tab: review Add Failure Arms (+1 line here)`, as [above](#ghost-text-and-follow-ups).
+That is the whole convention, in two `Tab`s and a review: the variant at the cursor, its arm
+in every `match` reviewed.
+
+`match-arm` works the same way on a blank line after a `match`'s last arm. Its ghost is the
+arm for the first case the compiler says is missing, with the value as a model hole:
+
+```
+            RefundInvoiceFailure::AlreadyRefunded => ⟨status⟩,  ⚡ Tab: Next match arm
+```
+
+`Tab` asks the model, and the expansion has its fill as the tab stop's text,
+`RefundInvoiceFailure::AlreadyRefunded => 409,` with `409` selected: keep it with `Tab`, or
+type over it.
+
+**When it is drawn.** Durandal plans a snippet as it does a follow-up (once the cursor has
+settled, against the unsaved buffer, `--no-fill`), after one more question: before planning,
+it asks the engine whether the snippet applies at the cursor itself (`olifant actions --at`
+with the buffer). That is where the snippet's **trigger** is checked: the text before the
+cursor must end with it ([below](#writing-a-snippet)). `failure-variant`'s trigger is
+"nothing but whitespace", so it waits for a blank line; `spec-case`'s is `it "`. The same
+answer lists the choices of anything still `missing`, and Durandal takes the first:
+`match-arm`'s `pattern` is the first case the compiler says the `match` lacks. A snippet with
+a missing input that has no choices offers nothing, and gives way to the next candidate. A
+ghost is at most 8 lines, like other ghost text.
+
+#### Chosen: the completion menu, and `<leader>ma`
+
+Durandal is an nvim-cmp source named `durandal`. Add it to cmp's sources:
+
+```lua
+sources = { { name = "nvim_lsp" }, { name = "durandal" } },
+```
+
+Its items are the snippets that apply at the cursor, from `olifant complete`
+([below](#olifant-complete)), labelled `⚡ LABEL` with the Snippet kind and the generator's
+`description` as the detail. A snippet missing one choice is one item per choice. On a blank
+line inside `pub struct CancelInvoice { … }`, the menu has
+
+```
+⚡ Add port EmailSender
+⚡ Add port InvoiceRepository
+```
+
+(The trigger does not matter here: you opened the menu, so you are asking.) Picking one
+removes the word you typed to find it, plans the snippet at the cursor (the model fills
+model holes) and expands it, as `Tab` does for a ghost: the line becomes
+`    pub email_sender: Arc<dyn EmailSender>,`. With the cursor on that field, `wire-command`'s
+follow-up appears, `⚡ Tab: review Wire Command Dependencies (+2 lines here, +7 in service.rs,
+main.rs)`: the import, `new()`'s parameter and `main.rs`'s construction, reviewed. Without
+nvim-cmp the source is simply not registered; there is no `blink.cmp` source yet.
+
+`<leader>ma` lists snippets too, after the other actions on the line. Picking one asks for
+what is missing as usual (for `add-port`, the port), then expands the snippet at the cursor
+instead of opening the preview.
+
+**Events.** Snippets go to the action log as `snippet-shown`, `snippet-applied` and
+`snippet-dismissed` (a ghost shown, taken with `Tab`, dismissed with `Esc`),
+`snippet-picked` (expanded from `<leader>ma`) and `snippet-chosen` (from the completion
+menu). Whether an anticipated snippet is taken or dismissed is what will say if its trigger
+is precise enough (spec §4.9).
+
+#### From the command line
+
+Every step is a command. In the rust-htmx sandbox, with the blank line typed below
+`Unknown(String),` and not saved:
+
+```
+$ F=billing/billing-service/src/refund_invoice.rs
+$ buffer() { sed 's/^    Unknown(String),$/    Unknown(String),\n/' $F; }
+$ buffer | olifant actions --at $F:27:1 --content - --json
+[{"choices":{},"generator":"rust-htmx/failure-variant","label":"Failure variant","missing":[],"name":"Failure variant","sets":{},"snippet":true,"suggest":true,"trigger":true}]
+$ buffer | olifant gen rust-htmx/failure-variant --at $F:27:1 --plan --json --no-fill --overlay $F | jq -c .snippet
+{"body":"    #[error(\"${1:message}\")]\n    ${2:Variant},$0","file":"billing/billing-service/src/refund_invoice.rs","ghost":["    #[error(\"⟨message⟩\")]","    ⟨Variant⟩,"],"line":27}
+```
+
+The first is the gate, the second the ghost. `ghost` is what Durandal draws and `body` what
+`vim.snippet` expands, both indented as placed ([below](#the-plans-snippet)). The
+plan took 0.07 seconds. `Tab` runs the same `gen` without `--no-fill` and with `--progress`.
+For `match-arm`, `buffer` now prints the file with an `AlreadyRefunded` variant added to the
+enum, and a blank line 35 after the last arm of `status()`'s `match`, which has no arm for
+it yet:
+
+```
+$ buffer | olifant actions --at $F:35:1 --content - --json
+[{"choices":{"pattern":["RefundInvoiceFailure::AlreadyRefunded"]},"generator":"rust-htmx/match-arm","label":"An arm for a case the compiler says this match lacks; its value is a hole the model fills (a snippet, spec §4.9)","missing":["pattern"],"name":"Next match arm","sets":{},"snippet":true,"suggest":true,"trigger":true}]
+$ buffer | olifant gen rust-htmx/match-arm --set pattern=RefundInvoiceFailure::AlreadyRefunded --at $F:35:1 --plan --json --overlay $F | jq -c .snippet
+{"body":"            RefundInvoiceFailure::AlreadyRefunded => ${1:409},$0","file":"billing/billing-service/src/refund_invoice.rs","ghost":["            RefundInvoiceFailure::AlreadyRefunded => 409,"],"line":35}
+```
+
+The `actions` call took 1.4 seconds, most of it `cargo` saying which cases are missing; the
+filled plan took 2.4, with `qwen3-coder:30b`.
 
 ### When nothing applies
 
@@ -212,13 +373,15 @@ afterwards. `failure-arms`'s plan for a new variant takes a little over a second
   the cursor there and goes on as if you had asked there.
 - **Nothing applies anywhere in the file, but a generator could.** Each generator whose path
   matched says what it is waiting for, from its `where`
-  ([below](#near-misses-where-and-nearby)). In a new `pay_invoice.rs` with only its struct
-  typed so far:
+  ([below](#near-misses-where-and-nearby)), one line each:
 
   ```
   rust-htmx/failure-arms applies on a variant of the PayInvoiceFailure enum — none yet
   rust-htmx/wire-command applies on a field of the PayInvoice struct — none yet
   ```
+
+  (In rust-htmx today a new, saved `pay_invoice.rs` with only its struct gets the first kind
+  of answer instead: the `add-port` snippet applies on the struct's empty `{}`, line 2.)
 
 - **No generator's path matches the file**: `No Olifant generators apply to Cargo.toml`.
 
@@ -332,16 +495,19 @@ pub enum RefundInvoiceFailure {
 ```
 $ olifant actions --at billing/billing-service/src/refund_invoice.rs:28:5 --human
 Add AlreadyRefunded to every match  (rust-htmx/failure-arms)
+Failure variant  (rust-htmx/failure-variant)
 ```
 
 ```
 $ olifant actions --at billing/billing-service/src/refund_invoice.rs:28:5 --json
-[{"generator":"rust-htmx/failure-arms","label":"Add AlreadyRefunded to every match","missing":[],"name":"Add Failure Arms","sets":{"command":"refund_invoice","failure":"AlreadyRefunded","service":"billing"},"suggest":true}]
+[{"choices":{},"generator":"rust-htmx/failure-arms","label":"Add AlreadyRefunded to every match","missing":[],"name":"Add Failure Arms","sets":{"command":"refund_invoice","failure":"AlreadyRefunded","service":"billing"},"snippet":false,"suggest":true,"trigger":false},{"choices":{},"generator":"rust-htmx/failure-variant","label":"Failure variant","missing":[],"name":"Failure variant","sets":{},"snippet":true,"suggest":true,"trigger":true}]
 ```
 
 `service` and `command` came from the file's path, and `failure` from the variant under the
 cursor. Nothing is `missing`, so Durandal goes straight to the plan, which is the `gen`
-command those `sets` spell:
+command those `sets` spell. (`failure-variant`, a snippet, is listed after it: column 5 is
+the start of the line's text, so the text before the cursor is only whitespace and its
+trigger matches. In Durandal the follow-up comes first, [above](#ghost-text-and-follow-ups).)
 
 ```
 $ olifant gen rust-htmx/failure-arms --set service=billing --set command=refund_invoice --set failure=AlreadyRefunded --progress --human
@@ -373,15 +539,20 @@ command offers `rust-htmx/wire-command`:
 
 ```
 $ olifant actions --at billing/billing-service/src/refund_invoice.rs:9:5 --json
-[{"generator":"rust-htmx/wire-command","label":"Wire refund_invoice's dependencies","missing":[],"name":"Wire Command Dependencies","sets":{"command":"refund_invoice","service":"billing"},"suggest":true}]
+[{"choices":{},"generator":"rust-htmx/wire-command","label":"Wire refund_invoice's dependencies","missing":[],"name":"Wire Command Dependencies","sets":{"command":"refund_invoice","service":"billing"},"snippet":false,"suggest":true,"trigger":false},{"choices":{"port":["email_sender","invoice_repository"]},"generator":"rust-htmx/add-port","label":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","missing":["port"],"name":"Add port","sets":{"command":"refund_invoice","service":"billing"},"snippet":true,"suggest":false,"trigger":false}]
 ```
 
-and in the `match` (line 34), nothing:
+(with the `add-port` snippet after it), and in the `match` (line 34), only the `match-arm`
+snippet, with the case the compiler says is missing as its one choice:
 
 ```
 $ olifant actions --at billing/billing-service/src/refund_invoice.rs:34:5 --json
-[]
+[{"choices":{"pattern":["RefundInvoiceFailure::AlreadyRefunded"]},"generator":"rust-htmx/match-arm","label":"An arm for a case the compiler says this match lacks; its value is a hole the model fills (a snippet, spec §4.9)","missing":["pattern"],"name":"Next match arm","sets":{},"snippet":true,"suggest":true,"trigger":true}]
 ```
+
+Line 34 is the existing arm, `RefundInvoiceFailure::Unknown(_) => 500,`; at column 5 the text
+before the cursor is whitespace, so the trigger matches here too. Taken, the snippet would
+replace that line, not add one ([Rough edges](#rough-edges-of-snippets)).
 
 ## `[applies_at]`: where a generator applies
 
@@ -413,6 +584,7 @@ give is set, and the rest are asked for.
 | `label` | no | a template: what the editor shows. Defaults to the generator's `description` |
 | `where` | no | a template over the path's slots: what `node` looks for, in words, finishing "`GENERATOR` applies …" (`on a field of the {= command\|pascal =} struct`). Shown when the file has no such node yet ([below](#near-misses-where-and-nearby)). Defaults to a mechanical description of the rule |
 | `suggest` | no | `true` lets an editor offer the generator unasked, as ghost text or a follow-up ([above](#ghost-text-and-follow-ups)), wherever it applies with nothing `missing`. `actions` reports it as `"suggest"`. Default `false`: the generator is only in the menu |
+| `trigger` | no | a POSIX extended regex the text before the cursor must end with: what you type to anticipate a snippet (`'^[[:space:]]*it "'`). Only `actions --at` checks it; `--file` and `olifant complete` ignore it ([below](#writing-a-snippet)). `actions` reports whether there is one as `"trigger"` |
 
 The details:
 
@@ -444,11 +616,13 @@ The details:
 
   ```
   $ printf 'pub struct Lib {\n    pub x: u8,\n}\n' | olifant actions --at billing/billing-service/src/lib.rs:2:5 --content - --json
-  [{"generator":"rust-htmx/wire-command","label":"Wire a command's dependencies after you add fields to its struct by hand (spec §7.1: reconcile)","missing":["command"],"name":"Wire Command Dependencies","sets":{"service":"billing"},"suggest":true}]
+  [{"choices":{"command":["cancel_invoice","refund_invoice","void_invoice"]},"generator":"rust-htmx/wire-command","label":"Wire a command's dependencies after you add fields to its struct by hand (spec §7.1: reconcile)","missing":["command"],"name":"Wire Command Dependencies","sets":{"service":"billing"},"snippet":false,"suggest":true,"trigger":false},{"choices":{"port":["email_sender","invoice_repository"]},"generator":"rust-htmx/add-port","label":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","missing":["port"],"name":"Add port","sets":{"command":"lib","service":"billing"},"snippet":true,"suggest":false,"trigger":false}]
   ```
 
-  (`command=lib` was dropped, so the label fell back to the description.) Other input types
-  are not checked here; `gen` checks them as usual.
+  (`command=lib` was dropped from `wire-command`, so its label fell back to the description,
+  and `choices` lists the commands to ask from.) Other input types are not checked here;
+  `gen` checks them as usual. `add-port`'s `command` is an `ident`, not an `enum`, so it
+  keeps `lib`.
 
 `olifant-dev/error-case`, which Olifant uses on its own source, shows `file` and a `bind`
 over a declaration:
@@ -466,13 +640,13 @@ where = "on a data declaration"
 label = "Add a constructor to {= type =} (GHC finds every case)"
 ```
 
-In the Olifant repository, on `data CatalogError` (`src/Olifant/Catalog.hs`, line 93):
+In the Olifant repository, on `data CatalogError` (`src/Olifant/Catalog.hs`, line 94):
 
 ```
-$ olifant actions --at src/Olifant/Catalog.hs:93:3 --human
+$ olifant actions --at src/Olifant/Catalog.hs:94:3 --human
 Add a constructor to CatalogError (GHC finds every case)  (olifant-dev/error-case)  asks: name
-$ olifant actions --at src/Olifant/Catalog.hs:93:3 --json
-[{"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"name":"Add Error Case","sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"},"suggest":false}]
+$ olifant actions --at src/Olifant/Catalog.hs:94:3 --json
+[{"choices":{},"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"name":"Add Error Case","sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"},"snippet":false,"suggest":false,"trigger":false}]
 ```
 
 `name`, the new constructor, is the one thing the code can't say, so it is the one thing
@@ -489,9 +663,269 @@ generator `INVALID`, `gen` exits 1, and `olifant actions` leaves it out.
 | a `where` that isn't a template | `` `where`: line 1: unclosed `{=`: expected `=}` `` |
 | a Perl class in a `bind` regex | `` `bind.msg`: `^(\w+)` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \s or \w) `` |
 | a `suggest` that isn't a boolean | `` `suggest`: expected true or false, got a string `` |
-| an unknown key | `` unknown key(s) `colour`; expected one of `path`, `node`, `bind`, `file`, `label`, `where`, `suggest` `` |
+| a Perl class in a `trigger` | `` `trigger`: `\s+$` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \s or \w) `` |
+| an unknown key | `` unknown key(s) `colour`; expected one of `path`, `node`, `bind`, `file`, `label`, `where`, `suggest`, `trigger` `` |
 
 (Each is prefixed with the file and `` `applies_at`: ``.)
+
+## Writing a snippet
+
+A snippet is an ordinary generator with three differences: its one edit is a **cursor
+edit**, its holes may say **where their value comes from**, and its `[applies_at]` may have a
+**trigger**. Here is `failure-variant`, whole:
+
+```toml
+# packs/rust-htmx/generators/failure-variant/generator.toml
+name = "Failure variant"
+description = "A new variant for a command's Failure enum: its #[error] message and its name, as tab stops (a snippet, spec §4.9)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/failure-variant --at billing/billing-service/src/refund_invoice.rs:27:1 --plan",
+]
+
+# At the cursor; once the variant is named, failure-arms follows up with an
+# arm for it in every match (spec §4.8).
+[[edits]]
+cursor = true
+text = "#[error(\"{= ? message: text | what went wrong, for a person =}\")]\n{= ? Variant: ident | the variant, PascalCase =},"
+
+[holes.message]
+source = "yours"
+
+[holes.Variant]
+source = "yours"
+
+# Anticipated on a blank line inside a command's Failure enum.
+[applies_at]
+path    = "*/*-service/src/*.rs"
+node    = { kind = "enum_variant_list", inside = { kind = "enum_item", regex = "Failure", stopBy = "end" } }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line in a command's Failure enum"
+suggest = true
+label   = "Failure variant"
+```
+
+### The cursor edit: `cursor = true`
+
+```toml
+[[edits]]
+cursor = true
+text = "…"            # or: template = "…"
+```
+
+The text goes where the editor's cursor is, given as `gen --at FILE:LINE:COL`
+([chapter 2](02-running-generators.md#a-snippet-at-the-cursor---at)). It **replaces the
+cursor's line**: an editor sends the line as it is (blank, or holding the trigger you typed),
+and the snippet takes its place. That makes it a replacement like a rule's fix, so it is
+drift-checked: the line must still read what it read when the plan was made.
+
+Every line is **indented to fit**. A line with anything on it keeps its own leading
+whitespace. An empty line, which is what `Esc` leaves after autoindent, takes the indentation
+of the nearest non-blank line above it, one level deeper when that line opens a block (ends
+with `{`, `(`, `[` or `=`, or is or ends with the word `where` or `do`). One level is the
+language adapter's `indent` ([chapter 9](09-packs-and-language-adapters.md#the-keys)): four
+spaces by default, two in `olifant-dev`'s Haskell adapter. So on the blank line below
+`    Unknown(String),` the variant is indented four spaces, and on the blank line inside
+`pub struct CancelInvoice {` it is one level in.
+
+The rules:
+
+- **A cursor edit is the generator's only edit.** A generator with a cursor edit and any other
+  edit fails to load: `a cursor edit (a snippet) must be the generator's only edit: what it
+  implies elsewhere is a separate generator, offered as a follow-up`. The snippet is the part
+  at the cursor; the distant consequences are another generator, with `suggest = true`, which
+  applies where the snippet leaves the cursor (`failure-variant` → `failure-arms`, `add-port`
+  → `wire-command`).
+- **`cursor = false` is an error**, not a no-op: `` `cursor = true` makes the edit a snippet at
+  the editor's cursor; leave `cursor` out otherwise ``.
+- **A snippet needs a cursor.** `gen` without `--at` is a usage error, exit 2:
+  `` `rust-htmx/failure-variant` is a snippet: it needs --at FILE:LINE:COL ``. `olifant show`
+  lists the edit as `at the cursor (a snippet: gen --at FILE:LINE:COL)`, and `show --json` as
+  `{"kind":"cursor"}`.
+
+### Holes with a source: `[holes.NAME]`
+
+A snippet's holes are its tab stops. Each one's value comes from somewhere, and
+`[holes.NAME]` says where:
+
+| `source` | the tab stop starts as | filled by |
+|---|---|---|
+| `"model"` (the default) | the model's fill, or `⟨name⟩` until there is one | the model, when the snippet is expanded ([chapter 12](12-holes-and-models.md)) |
+| `"yours"` | the hole's name (`message`) | you |
+| `"derived"`, with `value = "TEMPLATE"` | the template, rendered (`pending`) | you, if you want something else |
+
+`failure-variant`'s two holes are yours: only you know the message and the name.
+`spec-case`'s body is derived, so the case starts as `pending`, and its behaviour is yours:
+
+```toml
+# packs/olifant-dev/generators/spec-case/generator.toml (excerpt)
+[[edits]]
+cursor = true
+text = "it \"{= ? behaviour: text | what it does, in words =}\" $ do\n  {= ? body: expr | the test =}"
+
+[holes.behaviour]
+source = "yours"
+
+[holes.body]
+source = "derived"
+value  = "pending"
+```
+
+`match-arm`'s `status` has no `[holes.status]`, so it is the model's: the value of an arm is a
+judgement, and the model makes it with the other arms in view.
+
+A yours or derived hole is a tab stop and nothing else. The model is never asked about it,
+and `gen` leaves its name (yours) or its value (derived) in the text, in the plan's files and
+on disk: `#[error("message")]` / `Variant,`. Its kind still has to be one the file's adapter
+declares, since that is how a hole is written down; the packs here add `ident` and `text` to
+Rust and `text` to Haskell for tab stops ([chapter 12](12-holes-and-models.md#kinds-and-placeholders)).
+
+Mistakes are load errors (prefixed with the file and `` `holes.NAME`: ``, except the first):
+
+| mistake | error |
+|---|---|
+| a `[holes.NAME]` for a hole no template has | `[holes.mesage]: no hole called mesage in this generator's templates` |
+| `source = "choice"` | `` `choice` holes are not built yet: make it an input with one_of = "QUERY" (editors list one item per choice) `` |
+| another source | `` unknown source `mine`: a hole's source is yours, derived or model `` |
+| `derived` without `value` | ``missing `value` `` |
+
+There are no `choice` holes yet: a choice is an `enum` input whose choices come from a query
+(`one_of`). An editor's menu has one item per choice, and an anticipated snippet takes the
+first, as `match-arm` and `add-port` do.
+
+### The trigger
+
+```toml
+[applies_at]
+trigger = '^[[:space:]]*it "'
+```
+
+`trigger` is a POSIX extended regex the text before the cursor must end with; it is
+anchored at the end for you (a trigger already ending in `$` is used as is). `actions --at`
+checks it, so it decides when a snippet is **anticipated**: `failure-variant`'s
+`^[[:space:]]*$` waits for a line with nothing before the cursor but whitespace, and
+`spec-case`'s waits for `it "` typed at the start of a line. `actions --file` (the hints) and
+`olifant complete` (the menu) ignore it: in the menu you are asking.
+
+A trigger narrows `node`, it doesn't replace it: `failure-variant` also has a `node`, so a blank
+line anywhere but in a `Failure` enum offers nothing. `spec-case` has none, so its `path`
+(`**/*Spec.hs`) and its trigger decide. `add-port` has no trigger and no `suggest`: it is
+only ever chosen. Anticipation should be precise, not frequent (spec §4.9); when in doubt,
+leave a snippet in the menu.
+
+### What the compiler says is missing: `uncovered` queries
+
+`match-arm` offers an arm for each case the `match` at the cursor lacks. It asks the compiler
+which ones:
+
+```toml
+# packs/rust-htmx/generators/match-arm/generator.toml (excerpt)
+[inputs.pattern]
+type   = "enum"
+one_of = "uncovered"
+prompt = "The case to add an arm for"
+
+[query.uncovered]
+uncovered = "Failure::"
+value     = "name"
+
+[[edits]]
+cursor = true
+text = "{= pattern =} => {= ? status: expr | the value this match returns for {= pattern =}, following the other arms =},"
+```
+
+An `uncovered` query runs the file's language check (the adapter's `[check]`, over the
+buffer when there is one, holes as placeholders) and reads the missing-case errors. Of those
+in the cursor's file, it takes the latest one that starts at or above the cursor's line, so
+a blank line after a `match`'s last arm still counts as inside it. Its records are the
+patterns that match the regex, each as `name`, with a leading `&` (or `&mut `) left out, since
+rustc reports a `match` on a reference with `&RefundInvoiceFailure::AlreadyRefunded` and the
+arm wants `RefundInvoiceFailure::AlreadyRefunded`. The regex is a template, like the other
+query strings.
+
+It needs a cursor, so it only runs where there is one: `actions --at`, `olifant complete`,
+`gen --at`, and a test case with `at` ([below](#testing-a-snippet)). Everywhere else (`actions
+--file`, `show`, a `gen` without `--at`) it finds nothing. So the hints know `match-arm`
+applies in every `match`, and only the cursor's `actions --at` knows the cases. An
+`uncovered` query takes no other key (in a generator, `value` as well), and a file whose
+adapter has no `[check]` is a query failure (`the … adapter has no [check]: the compiler
+cannot say which cases are missing`).
+
+### The plan's `snippet`
+
+`gen --at … --plan --json` on a snippet has a `snippet` object, which is all an editor needs to
+show and expand it:
+
+| field | what it is |
+|---|---|
+| `file`, `line` | the file and the 1-based line the snippet replaces |
+| `ghost` | the lines to draw, each hole as `⟨name⟩`, a derived hole as its value, a filled model hole as its fill |
+| `body` | the same lines in LSP snippet syntax: each hole a tab stop `${N:…}`, numbered in reading order and starting as its name, value or fill, then `$0` at the end. `\`, `$` and `}` in the text are escaped |
+
+Both keep the indentation the snippet was placed with, so an editor empties the line and
+expands the body at column 0. From `spec-case` in an `olifant-dev` sandbox
+(`scripts/try-pack.sh olifant-dev`), with `  it "` typed as line 8 of the sample spec and
+not saved:
+
+```
+$ F=src/Olifant/SampleUnitSpec.hs
+$ buffer() { cat $F; printf '  it "\n'; }
+$ buffer | olifant actions --at $F:8:7 --content - --json
+[{"choices":{},"generator":"olifant-dev/spec-case","label":"Spec case","missing":[],"name":"Spec case","sets":{},"snippet":true,"suggest":true,"trigger":true}]
+$ buffer | olifant gen olifant-dev/spec-case --at $F:8:7 --plan --json --overlay $F | jq -c .snippet
+{"body":"  it \"${1:behaviour}\" \\$ do\n    ${2:pending}$0","file":"src/Olifant/SampleUnitSpec.hs","ghost":["  it \"⟨behaviour⟩\" $ do","    pending"],"line":8}
+```
+
+(The `$` of `$ do` is escaped as `\$`. Column 7 is just after the `"`; at column 6 the
+trigger doesn't match and `actions` says `[]`. The plan also warns that the file does not
+parse, `src/Olifant/SampleUnitSpec.hs:3 does not parse (near `import Test.Hspec`)`: the `"`
+you just typed opened a string that nothing closes yet. The warning is harmless here.)
+
+Each hole in `holes` has a `source` too, and the tab stops are `skipped`:
+
+```
+$ buffer | olifant gen olifant-dev/spec-case --at $F:8:7 --plan --json --overlay $F | jq -c '[.holes[] | {name, kind, source, status, why}]'
+[{"name":"behaviour","kind":"text","source":"yours","status":"skipped","why":"a tab stop (yours)"},{"name":"body","kind":"expr","source":"derived","status":"skipped","why":"a tab stop (derived)"}]
+```
+
+In the human form the source follows the kind: `behaviour (text@yours)`.
+
+### Testing a snippet
+
+A snippet's test case says where the cursor is, with `at` in `inputs.toml`:
+
+```toml
+# packs/rust-htmx/generators/match-arm/tests/uncovered-variant/inputs.toml
+now = "2026-10-04T12:00:00Z"
+# The cursor: a blank line after the match's last arm. The compiler reports
+# AlreadyRefunded as not covered there.
+at = "billing/billing-service/src/refund_invoice.rs:35:1"
+
+[inputs]
+pattern = "RefundInvoiceFailure::AlreadyRefunded"
+```
+
+The case's `given/` has the cursor's state: the blank line, and the variant with no arm. The
+rest is as for any case ([chapter 10](10-testing-generators.md#a-snippet-case-at)), with two
+exceptions: a snippet case is not re-run, and not compiled on its own.
+
+### Rough edges of snippets
+
+- **The trigger sees only what is before the cursor.** `^[[:space:]]*$` matches at the
+  start of a line's text as well as on a blank line, and the snippet replaces the whole line.
+  `gen rust-htmx/failure-variant --at …refund_invoice.rs:26:5` replaces `Unknown(String),`
+  with the new variant, and `match-arm` at the start of an existing arm replaces the arm.
+  Durandal offers follow-ups first, so the variant line's `failure-arms` usually wins, but a
+  dismissed follow-up lets the snippet through.
+- **`add-port` offers ports the struct already has.** After `email_sender` is added, the menu
+  still lists `⚡ Add port EmailSender`.
+- **A `match` with nothing missing still lists `match-arm`** in `actions --at`, with
+  `"choices":{"pattern":[]}`. Durandal skips it; `olifant complete` lists nothing.
+- **`gen --plan` shows a model hole's placeholder in a snippet's edit text**, though the
+  `snippet`, `files` and `holes` have the fill: `--- …` / `… => todo!("olifant: status: …"),`
+  above `holes: status … filled by qwen3-coder:30b: 409`.
+- **`show` lists an `uncovered` enum as `<enum()>`**: its choices exist only at a cursor.
 
 ## `olifant actions`
 
@@ -505,16 +939,20 @@ olifant actions --file FILE [--content -]
 FILE:LINE:COL | --file FILE)`, exit 2).
 
 - **`FILE`** is relative to where you run `olifant` (or absolute); it is matched as a
-  project-relative path, so `cd src && olifant actions --at Olifant/Catalog.hs:93:3` gives the
+  project-relative path, so `cd src && olifant actions --at Olifant/Catalog.hs:94:3` gives the
   same answer as above.
 - **`LINE` and `COL` are 1-based**, as editors show them. `COL` counts UTF-8 bytes, as
   Neovim's cursor and LSP's `utf-8` position encoding do: on `"Café" x`, `x` is column 9, not
   8. A malformed position is a usage error (exit 2): `option --at: expected FILE:LINE:COL
   (1-based)`.
-- For `--at`, the JSON is a list, one object per generator that applies, in catalog order:
-  `generator` (its id), `name` (its display name), `label`, `sets` (the inputs bound, as
-  `--set` would take them), `missing` (the required inputs, with no default, that are still
-  unset) and `suggest` (its `[applies_at] suggest`, `false` when not set).
+- For `--at`, the JSON is a list, one object per generator that applies, in catalog order
+  with snippets last: `generator` (its id), `name` (its display name), `label`, `sets` (the
+  inputs bound, as `--set` would take them), `missing` (the required inputs, with no default,
+  that are still unset), `choices` (for each missing `enum` input, its values, which is what
+  an editor offers; `{}` when there are none), `suggest` (its `[applies_at] suggest`, `false`
+  when not set), `snippet` (whether its edit is a cursor edit, [above](#writing-a-snippet))
+  and `trigger` (whether its `[applies_at]` has a `trigger`).
+- A snippet with a `trigger` is listed only when the text before the cursor ends with it.
 - The human form is one line per action: the label, the generator, and `asks: …` when
   something is missing. When nothing applies, JSON is `[]`, the human form prints nothing,
   and the exit code is 0 either way.
@@ -539,7 +977,7 @@ An editor that shows hints wants every place at once, not a process per cursor m
 
 ```
 $ olifant actions --file billing/billing-service/src/refund_invoice.rs --json
-{"actions":[{"generator":"rust-htmx/wire-command","label":"Wire refund_invoice's dependencies","missing":[],"name":"Wire Command Dependencies","range":{"end":[9,55],"start":[9,5]},"sets":{"command":"refund_invoice","service":"billing"},"suggest":true},{"generator":"rust-htmx/failure-arms","label":"Add Unknown to every match","missing":[],"name":"Add Failure Arms","range":{"end":[26,20],"start":[26,5]},"sets":{"command":"refund_invoice","failure":"Unknown","service":"billing"},"suggest":true},{"generator":"rust-htmx/failure-arms","label":"Add AlreadyRefunded to every match","missing":[],"name":"Add Failure Arms","range":{"end":[28,20],"start":[28,5]},"sets":{"command":"refund_invoice","failure":"AlreadyRefunded","service":"billing"},"suggest":true}],"nearby":[]}
+{"actions":[{"generator":"rust-htmx/add-port","label":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","missing":["port"],"name":"Add port","range":{"end":[10,2],"start":[8,26]},"sets":{"command":"refund_invoice","service":"billing"},"snippet":true,"suggest":false,"trigger":false},{"generator":"rust-htmx/wire-command","label":"Wire refund_invoice's dependencies","missing":[],"name":"Wire Command Dependencies","range":{"end":[9,55],"start":[9,5]},"sets":{"command":"refund_invoice","service":"billing"},"snippet":false,"suggest":true,"trigger":false},{"generator":"rust-htmx/failure-variant","label":"Failure variant","missing":[],"name":"Failure variant","range":{"end":[29,2],"start":[24,31]},"sets":{},"snippet":true,"suggest":true,"trigger":true},{"generator":"rust-htmx/failure-arms","label":"Add Unknown to every match","missing":[],"name":"Add Failure Arms","range":{"end":[26,20],"start":[26,5]},"sets":{"command":"refund_invoice","failure":"Unknown","service":"billing"},"snippet":false,"suggest":true,"trigger":false},{"generator":"rust-htmx/failure-arms","label":"Add AlreadyRefunded to every match","missing":[],"name":"Add Failure Arms","range":{"end":[28,20],"start":[28,5]},"sets":{"command":"refund_invoice","failure":"AlreadyRefunded","service":"billing"},"snippet":false,"suggest":true,"trigger":false},{"generator":"rust-htmx/match-arm","label":"An arm for a case the compiler says this match lacks; its value is a hole the model fills (a snippet, spec §4.9)","missing":["pattern"],"name":"Next match arm","range":{"end":[35,10],"start":[33,20]},"sets":{},"snippet":true,"suggest":true,"trigger":true}],"nearby":[]}
 ```
 
 and in the Olifant repository, where `olifant-dev/error-case` applies on each `data`
@@ -547,16 +985,18 @@ declaration:
 
 ```
 $ olifant actions --file src/Olifant/Catalog.hs --human
-52:1  Add a constructor to CatalogEntry (GHC finds every case)  (olifant-dev/error-case)  asks: name
-63:1  Add a constructor to Catalog (GHC finds every case)  (olifant-dev/error-case)  asks: name
-87:1  Add a constructor to CatalogPaths (GHC finds every case)  (olifant-dev/error-case)  asks: name
-93:1  Add a constructor to CatalogError (GHC finds every case)  (olifant-dev/error-case)  asks: name
+53:1  Add a constructor to CatalogEntry (GHC finds every case)  (olifant-dev/error-case)  asks: name
+64:1  Add a constructor to Catalog (GHC finds every case)  (olifant-dev/error-case)  asks: name
+88:1  Add a constructor to CatalogPaths (GHC finds every case)  (olifant-dev/error-case)  asks: name
+94:1  Add a constructor to CatalogError (GHC finds every case)  (olifant-dev/error-case)  asks: name
 ```
 
 - The JSON is an object with two lists, `actions` and `nearby` (next section).
 - **`actions`** has one entry per node a generator's `node` rule matches, each with that
   node's `bind` values, in file order: `generator`, `name`, `label`, `range`, `sets`,
-  `missing` and `suggest`, as for `--at`. `range` is `{"start": [LINE, COL], "end": [LINE, COL]}`, with 1-based lines and
+  `missing`, `suggest`, `snippet` and `trigger`, as for `--at` (but no `choices`, and no
+  trigger is checked: a snippet's range is its whole `node`, such as the `Failure` enum's
+  body, lines 24 to 29 above). `range` is `{"start": [LINE, COL], "end": [LINE, COL]}`, with 1-based lines and
   UTF-8 byte columns as `--at` takes them; `end` is just past the node (`Unknown(String)` on
   line 26 runs from column 5 to 20, the `,` after it).
 - **A generator without `node`** applies to the whole file: one entry with `"range": null`,
@@ -582,11 +1022,17 @@ whose struct has no fields yet:
 
 ```
 $ olifant actions --file billing/billing-service/src/cancel_invoice.rs --human
+6:26  A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)  (rust-htmx/add-port)  asks: port
+20:31  Failure variant  (rust-htmx/failure-variant)
 22:5  Add Unknown to every match  (rust-htmx/failure-arms)
+nearby: rust-htmx/match-arm — on a blank line inside a match
 nearby: rust-htmx/wire-command — on a field of the CancelInvoice struct
 $ olifant actions --file billing/billing-service/src/cancel_invoice.rs --json
-{"actions":[{"generator":"rust-htmx/failure-arms","label":"Add Unknown to every match","missing":[],"name":"Add Failure Arms","range":{"end":[22,20],"start":[22,5]},"sets":{"command":"cancel_invoice","failure":"Unknown","service":"billing"},"suggest":true}],"nearby":[{"generator":"rust-htmx/wire-command","label":"Wire cancel_invoice's dependencies","name":"Wire Command Dependencies","why":"on a field of the CancelInvoice struct"}]}
+{"actions":[{"generator":"rust-htmx/add-port","label":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","missing":["port"],"name":"Add port","range":{"end":[6,28],"start":[6,26]},"sets":{"command":"cancel_invoice","service":"billing"},"snippet":true,"suggest":false,"trigger":false},{"generator":"rust-htmx/failure-variant","label":"Failure variant","missing":[],"name":"Failure variant","range":{"end":[23,2],"start":[20,31]},"sets":{},"snippet":true,"suggest":true,"trigger":true},{"generator":"rust-htmx/failure-arms","label":"Add Unknown to every match","missing":[],"name":"Add Failure Arms","range":{"end":[22,20],"start":[22,5]},"sets":{"command":"cancel_invoice","failure":"Unknown","service":"billing"},"snippet":false,"suggest":true,"trigger":false}],"nearby":[{"generator":"rust-htmx/match-arm","label":"An arm for a case the compiler says this match lacks; its value is a hole the model fills (a snippet, spec §4.9)","name":"Next match arm","why":"on a blank line inside a match"},{"generator":"rust-htmx/wire-command","label":"Wire cancel_invoice's dependencies","name":"Wire Command Dependencies","why":"on a field of the CancelInvoice struct"}]}
 ```
+
+(`cancel_invoice.rs` has no `status()`, so `match-arm` has no `match` to apply in. The
+`add-port` snippet's node is the struct's empty body, `{}`.)
 
 `why` is the generator's `[applies_at] where`, rendered with the path's slots: `on a field of
 the {= command|pascal =} struct` became `on a field of the CancelInvoice struct`. Write it to
@@ -602,14 +1048,57 @@ nearby: plain-field — a `field_declaration` inside a `struct_item` matching /^
 
 It is accurate, and it is why `where` exists. The `label` in `nearby` is rendered with the
 path's slots only, since there is no node to `bind` from; a label that needs a bound value
-falls back to the description, as `failure-arms`'s does in a new file:
+falls back to the description, as `failure-arms`'s does in a new file, saved with only its
+struct:
 
 ```
-$ printf '#[derive(Clone)]\npub struct PayInvoice {}\n' | olifant actions --file billing/billing-service/src/pay_invoice.rs --content - --json
-{"actions":[],"nearby":[{"generator":"rust-htmx/failure-arms","label":"Add an arm for a Failure variant you just wrote to every match on its enum (spec §5.6); the arm's value is a hole","why":"on a variant of the PayInvoiceFailure enum"},{"generator":"rust-htmx/wire-command","label":"Wire pay_invoice's dependencies","why":"on a field of the PayInvoice struct"}]}
+$ printf '#[derive(Clone)]\npub struct PayInvoice {}\n' > billing/billing-service/src/pay_invoice.rs
+$ olifant actions --file billing/billing-service/src/pay_invoice.rs --json
+{"actions":[{"generator":"rust-htmx/add-port","label":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","missing":["port"],"name":"Add port","range":{"end":[2,25],"start":[2,23]},"sets":{"command":"pay_invoice","service":"billing"},"snippet":true,"suggest":false,"trigger":false}],"nearby":[{"generator":"rust-htmx/failure-arms","label":"Add an arm for a Failure variant you just wrote to every match on its enum (spec §5.6); the arm's value is a hole","name":"Add Failure Arms","why":"on a variant of the PayInvoiceFailure enum"},{"generator":"rust-htmx/failure-variant","label":"Failure variant","name":"Failure variant","why":"on a blank line in a command's Failure enum"},{"generator":"rust-htmx/match-arm","label":"An arm for a case the compiler says this match lacks; its value is a hole the model fills (a snippet, spec §4.9)","name":"Next match arm","why":"on a blank line inside a match"},{"generator":"rust-htmx/wire-command","label":"Wire pay_invoice's dependencies","name":"Wire Command Dependencies","why":"on a field of the PayInvoice struct"}]}
 ```
 
-A generator with no `node` is never in `nearby`: it applies whenever its path matches.
+A generator with no `node` is never in `nearby`: it applies whenever its path matches. Nor is
+one whose path slots are not real choices: sent the same text with `--content -` before it
+is saved, `pay_invoice` is not yet one of the service's commands, so `failure-arms` and
+`wire-command` are left out and only the snippets with no inputs are near misses. (The
+`add-port` snippet applies on the struct's empty body; its `command` is an `ident`, which is
+not checked.)
+
+## `olifant complete`
+
+```
+olifant complete --at FILE:LINE:COL [--content -]
+```
+
+The snippets for a completion menu at a position: what Durandal's nvim-cmp source lists
+([above](#chosen-the-completion-menu-and-leaderma)). It is `actions --at` narrowed to
+snippets, with two differences: a `trigger` is not checked (you opened the menu, so you are
+asking), and a snippet missing exactly one input that has choices becomes one item per
+choice, with that input set. A snippet missing anything else is left out, since a menu item
+can't ask. On the blank line inside `CancelInvoice`:
+
+```
+$ F=billing/billing-service/src/cancel_invoice.rs
+$ buffer() { sed 's/^pub struct CancelInvoice {}/pub struct CancelInvoice {\n\n}/' $F; }
+$ buffer | olifant complete --at $F:7:1 --content - --human
+⚡ Add port EmailSender  (rust-htmx/add-port)
+⚡ Add port InvoiceRepository  (rust-htmx/add-port)
+$ buffer | olifant complete --at $F:7:1 --content - --json
+[{"detail":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","generator":"rust-htmx/add-port","label":"Add port EmailSender","name":"Add port","sets":{"command":"cancel_invoice","port":"email_sender","service":"billing"}},{"detail":"A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)","generator":"rust-htmx/add-port","label":"Add port InvoiceRepository","name":"Add port","sets":{"command":"cancel_invoice","port":"invoice_repository","service":"billing"}}]
+```
+
+- The JSON is a list, one object per item: `generator`, `name`, `label` (the `[applies_at]
+  label` rendered with the item's `sets`, so it can name the choice), `sets` (everything to
+  pass as `--set`) and `detail` (the generator's `description`). The human form is one line
+  per item, `⚡ LABEL  (GENERATOR)`.
+- Each item is a `gen GENERATOR --set … --at FILE:LINE:COL` away from its plan.
+- `--at` and `--content -` are as for `actions`; `--at` is required (`Missing: --at
+  FILE:LINE:COL`, exit 2). Nothing applies: `[]`, exit 0.
+
+With a `match` that lacks a case, `match-arm` is one item per case the compiler reports
+(`⚡ RefundInvoiceFailure::AlreadyRefunded arm  (rust-htmx/match-arm)`), and none when
+nothing is missing. In the rust-htmx sandbox each call takes well under a second; one with
+an `uncovered` query also runs the language check, so `match-arm`'s took 0.5 seconds.
 
 ## Plans for editors: `files`
 
@@ -633,6 +1122,10 @@ entry per file the plan writes:
 - With `--overlay FILE` ([chapter 2](02-running-generators.md#an-unsaved-buffer---overlay-file)),
   FILE's `before` is the text sent on stdin, the buffer, not the disk's. An editor checks
   that each file still has its `before` text when it applies `after`, and refuses if not.
+- A snippet's plan (`gen --at`) also has a `snippet` object, `{file, line, ghost, body}`
+  ([above](#the-plans-snippet)). Durandal expands `body` instead of applying `files`: a
+  snippet's `files` have its tab stops written as their names (`#[error("message")]`), which
+  is what a plain `gen --at` writes to disk.
 
 ## Code that does not parse, in a plan
 
@@ -803,7 +1296,7 @@ Anywhere in a page module, the generator now applies, with `page` set:
 $ olifant actions --at src/Page/Home.elm:25:7 --human
 The update branch for a Msg you added by hand: ( model, Cmd.none )  (msg-branch)  asks: msg
 $ olifant actions --at src/Page/Home.elm:1:1 --json
-[{"generator":"msg-branch","label":"The update branch for a Msg you added by hand: ( model, Cmd.none )","missing":["msg"],"name":"Msg Branch","sets":{"page":"Home"},"suggest":false}]
+[{"choices":{},"generator":"msg-branch","label":"The update branch for a Msg you added by hand: ( model, Cmd.none )","missing":["msg"],"name":"Msg Branch","sets":{"page":"Home"},"snippet":false,"suggest":false,"trigger":false}]
 $ olifant actions --at src/Main.elm:1:1 --json
 []
 ```
@@ -828,9 +1321,9 @@ the rule language is the one in [chapter 6](06-queries-and-choices.md). Probe a 
 
 ```
 $ olifant actions --at src/Page/Home.elm:25:7 --json
-[{"generator":"msg-branch","label":"Add the update branch for Reset","missing":[],"name":"Msg Branch","sets":{"msg":"Reset","page":"Home"},"suggest":false}]
+[{"choices":{},"generator":"msg-branch","label":"Add the update branch for Reset","missing":[],"name":"Msg Branch","sets":{"msg":"Reset","page":"Home"},"snippet":false,"suggest":false,"trigger":false}]
 $ olifant actions --at src/Page/Home.elm:24:7 --json
-[{"generator":"msg-branch","label":"Add the update branch for NoOp","missing":[],"name":"Msg Branch","sets":{"msg":"NoOp","page":"Home"},"suggest":false}]
+[{"choices":{},"generator":"msg-branch","label":"Add the update branch for NoOp","missing":[],"name":"Msg Branch","sets":{"msg":"NoOp","page":"Home"},"snippet":false,"suggest":false,"trigger":false}]
 $ olifant actions --at src/Page/Home.elm:25:5 --json
 []
 $ olifant actions --at src/Page/Home.elm:23:6 --json
@@ -888,7 +1381,7 @@ plans the branch against the unsaved buffer, as this does:
 ```
 $ buffer() { sed 's/    | Reset/    | Reset\n    | Increment/' src/Page/Home.elm; }
 $ buffer | olifant actions --at src/Page/Home.elm:26:7 --content - --json
-[{"generator":"msg-branch","label":"Add the update branch for Increment","missing":[],"name":"Msg Branch","sets":{"msg":"Increment","page":"Home"},"suggest":true}]
+[{"choices":{},"generator":"msg-branch","label":"Add the update branch for Increment","missing":[],"name":"Msg Branch","sets":{"msg":"Increment","page":"Home"},"snippet":false,"suggest":true,"trigger":false}]
 $ buffer | olifant gen msg-branch --set msg=Increment --set page=Home --plan --json --no-fill --overlay src/Page/Home.elm | jq -c '.files[] | {path, new: (.before == null)}'
 {"path":"src/Page/Home.elm","new":false}
 ```
@@ -917,6 +1410,11 @@ before the branch counts), not ghost text.
   wrote and binds every input (`failure-arms`, `wire-command`, `msg-branch`); one that needs
   a name or a choice is never suggested anyway, and one that is only sometimes right belongs
   in the menu. Dismissals in the action log say when it is wrong.
+- **Make a snippet's trigger precise.** An anticipated snippet appears while you type, so it
+  should appear only where it is almost always wanted: a `node` and a `trigger` together,
+  as `failure-variant` has. Probe it with `actions --at` on the line you mean, on the line
+  after you typed something else, and at the start of a line that already has code. When in
+  doubt, leave out `suggest` and let the snippet wait in the menu, as `add-port` does.
 - **Write `where` as the place.** "on a field of the CancelInvoice struct" tells someone
   where to put the cursor; "a `field_declaration` inside a `struct_item` matching /…/" tells
   them how the rule works. Check it with `olifant actions --file` on a file that has no such

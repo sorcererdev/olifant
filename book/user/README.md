@@ -13,5 +13,5 @@
 11. [Olifant and AI agents](11-olifant-and-agents.md)
 12. [Holes and models](12-holes-and-models.md)
 13. [Tutorial: holes with a local model](13-tutorial-holes.md)
-14. [Olifant in your editor: `[applies_at]`, `olifant actions`, hints, ghost text and follow-ups, conventions on save, `files`, `--progress` and `olifant doctor`](14-editors-and-actions.md)
+14. [Olifant in your editor: `[applies_at]`, `olifant actions`, hints, ghost text and follow-ups, snippets (`cursor`, `[holes.NAME]`, `trigger`, `gen --at`, `olifant complete`), conventions on save, `files`, `--progress` and `olifant doctor`](14-editors-and-actions.md)
 15. [Conventions that hold: rules, exceptions, `olifant check` and the baseline](15-conventions-that-hold.md)

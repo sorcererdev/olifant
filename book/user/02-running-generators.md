@@ -194,8 +194,9 @@ holes:
 (run on a `Home.elm` whose `Model` is `{ count : Int }`). Each hole's line says where it is
 and how it ended: `filled by MODEL: CODE` (with `(attempt N)` after a retry), `unfilled:
 WHY` (it was left as a placeholder that compiles: no model is configured, or the model
-failed), or `skipped: --no-fill`. In JSON, `holes` has `name`, `kind`, `file`, `line`,
-`placeholder`, `status`, `model`, `attempts`, `why` and `fill`.
+failed), or `skipped: --no-fill`. In JSON, `holes` has `name`, `kind`, `source`, `file`,
+`line`, `placeholder`, `status`, `model`, `attempts`, `why` and `fill`. (`source` is `model`
+except for a snippet's tab stops, [below](#a-snippet-at-the-cursor---at).)
 
 - `--model NAME` fills holes with `[model.backends.NAME]` instead of the default.
 - `--no-fill` leaves every hole as its placeholder, and asks no model.
@@ -256,6 +257,47 @@ The same command without `--overlay` plans against the saved file, where there i
 This is how Durandal plans ghost text and follow-ups without saving
 ([chapter 14](14-editors-and-actions.md#ghost-text-and-follow-ups)).
 
+## A snippet at the cursor: `--at`
+
+A **snippet** is a generator whose one edit goes at the cursor
+([chapter 14](14-editors-and-actions.md#snippets)): a new variant in an enum, the next arm of
+a `match`, a field. `olifant show` lists its edit as `at the cursor`. It needs to know where
+the cursor is, so `gen` takes `--at FILE:LINE:COL` (1-based, as for `olifant actions`). In a
+rust-htmx sandbox with a blank line 27 typed below `Unknown(String),` and saved:
+
+```
+$ olifant gen rust-htmx/failure-variant --at billing/billing-service/src/refund_invoice.rs:27:1 --plan --human
+Plan: rust-htmx/failure-variant (1 edit, 0 conflicts)
+  ~ billing/billing-service/src/refund_invoice.rs (replaced 1 line with 2 lines at line 27)
+holes:
+  message (text@yours) billing/billing-service/src/refund_invoice.rs:27  skipped: a tab stop (yours)
+  Variant (ident@yours) billing/billing-service/src/refund_invoice.rs:28  skipped: a tab stop (yours)
+
+--- billing/billing-service/src/refund_invoice.rs
+    #[error("message")]
+    Variant,
+```
+
+- **The snippet replaces the cursor's line**, indented to fit: a line with text keeps its
+  own indentation, and an empty one takes the line above's, one level deeper after a line
+  that opens a block. Only `LINE` decides where; `COL` is the cursor an editor reports, for
+  the `trigger` and for queries that ask about the cursor.
+- **Its holes are tab stops.** `message` and `Variant` are the snippet's, not the model's
+  (`skipped: a tab stop (yours)`), so a plain `gen --at` writes their names. That is for
+  scripts and tests; an editor takes the plan's `snippet` (with `--json`) and expands it with
+  the holes as tab stops ([chapter 14](14-editors-and-actions.md#the-plans-snippet)). A hole
+  that is the model's is filled as usual ([below](#holes-and-models---model---no-fill)).
+- **With `--overlay FILE`**, the line and everything else are read from the buffer on stdin,
+  which is how an editor plans a snippet as you type.
+- **A snippet without `--at` is a usage error**, exit 2:
+
+  ```
+  $ olifant gen rust-htmx/failure-variant --plan --human
+  error: `rust-htmx/failure-variant` is a snippet: it needs --at FILE:LINE:COL
+  ```
+
+  `--at` on a generator that is not a snippet changes nothing about where it writes.
+
 ## What applies here? `olifant actions`
 
 Editors ask which generators apply at a cursor, with the inputs the code there already
@@ -264,23 +306,45 @@ gives:
 ```
 $ olifant actions --at billing/billing-service/src/refund_invoice.rs:28:5 --human
 Add AlreadyRefunded to every match  (rust-htmx/failure-arms)
-$ olifant actions --at src/Olifant/Catalog.hs:93:3 --json        # in the Olifant repo
-[{"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"name":"Add Error Case","sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"},"suggest":false}]
+Failure variant  (rust-htmx/failure-variant)
+$ olifant actions --at src/Olifant/Catalog.hs:94:3 --json        # in the Olifant repo
+[{"choices":{},"generator":"olifant-dev/error-case","label":"Add a constructor to CatalogError (GHC finds every case)","missing":["name"],"name":"Add Error Case","sets":{"path":"src/Olifant/Catalog.hs","type":"CatalogError"},"snippet":false,"suggest":false,"trigger":false}]
 $ olifant actions --file billing/billing-service/src/cancel_invoice.rs --human
+6:26  A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)  (rust-htmx/add-port)  asks: port
+20:31  Failure variant  (rust-htmx/failure-variant)
 22:5  Add Unknown to every match  (rust-htmx/failure-arms)
+nearby: rust-htmx/match-arm — on a blank line inside a match
 nearby: rust-htmx/wire-command — on a field of the CancelInvoice struct
 ```
 
 (The first is in a rust-htmx sandbox with an `AlreadyRefunded` variant typed into the
-`RefundInvoiceFailure` enum.) `LINE` and `COL` are 1-based; `COL` counts UTF-8 bytes (as Neovim does). `sets` are the inputs bound from
-the path and the code, `missing` the required inputs still to ask for, `name` the
-generator's display name, and `suggest` whether an editor may offer it unasked
-([chapter 14](14-editors-and-actions.md#ghost-text-and-follow-ups)). `--file FILE`
+`RefundInvoiceFailure` enum; the `Failure variant` snippet is listed after it, as
+[chapter 14](14-editors-and-actions.md#the-demo-from-the-command-line) explains.) `LINE`
+and `COL` are 1-based; `COL` counts UTF-8 bytes (as Neovim does). `sets` are the inputs
+bound from the path and the code, `missing` the required inputs still to ask for, `choices`
+the values a missing `enum` can take, `name` the generator's display name, `suggest` whether
+an editor may offer it unasked
+([chapter 14](14-editors-and-actions.md#ghost-text-and-follow-ups)), and `snippet` and
+`trigger` whether it is a snippet and whether it waits for something typed
+([chapter 14](14-editors-and-actions.md#snippets)). `--file FILE`
 answers for the whole file at once: every place a generator applies (`LINE:COL`, or a
 `range` in JSON), and, under `nearby`, the generators whose path matched but which found
 nothing to apply to yet, with what they look for. `--content -` reads the file's current,
 possibly unsaved, text from stdin. Only generators with an `[applies_at]` are offered;
 [chapter 14](14-editors-and-actions.md) covers both, and the Neovim plugin that uses them.
+
+`olifant complete --at FILE:LINE:COL [--content -]` is the same question for a completion
+menu: only the snippets, with one item per choice. With `pub struct CancelInvoice {}` opened
+onto three lines and saved, on the blank line 7 between the braces:
+
+```
+$ olifant complete --at billing/billing-service/src/cancel_invoice.rs:7:1 --human
+⚡ Add port EmailSender  (rust-htmx/add-port)
+⚡ Add port InvoiceRepository  (rust-htmx/add-port)
+```
+
+Each item's `sets` (in JSON) and `--at` make its `gen` command
+([chapter 14](14-editors-and-actions.md#olifant-complete)).
 
 ## Do the conventions hold? `olifant check`
 
