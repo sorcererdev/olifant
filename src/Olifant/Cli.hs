@@ -36,6 +36,7 @@ import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
 import Olifant.Cursor (atCursor, isSnippet)
+import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (AppliesAt (..), Generator, generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
@@ -174,7 +175,8 @@ runCommand rt cwd fmt cat = \case
         human a = actLabel a <> "  (" <> actGenerator a <> ")" <> (if null (actMissing a) then "" else "  asks: " <> T.intercalate ", " (actMissing a))
     case at of
       Just pos -> do
-        acts <- actionsAt (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel pos (fromMaybe "" content)
+        let here = maybe project (\t -> overlay rel t project) content
+        acts <- actionsAt (rtSyntax rt) (catalogLanguages cat) (queriesAt rt cat here rel (fst pos)) paths (readText project) gens rel pos (fromMaybe "" content)
         emit rt fmt (toJSON (map (actionJson suggestOf nameOf) acts)) (T.unlines (map human acts))
       Nothing -> do
         (acts, near) <- actionsInFile (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel (fromMaybe "" content)
@@ -193,7 +195,8 @@ runCommand rt cwd fmt cat = \case
     paths <- listFiles project "."
     let gens = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat]
         described gid = maybe ("", gid) (\g -> (genDescription g, generatorName g)) (lookup gid gens)
-    items <- completionsAt (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel pos (fromMaybe "" content)
+    let here = maybe project (\t -> overlay rel t project) content
+    items <- completionsAt (rtSyntax rt) (catalogLanguages cat) (queriesAt rt cat here rel (fst pos)) paths (readText project) gens rel pos (fromMaybe "" content)
     let json c = object ["generator" .= cpGenerator c, "name" .= snd (described (cpGenerator c)), "label" .= cpLabel c, "sets" .= M.fromList (cpSets c), "detail" .= fst (described (cpGenerator c))]
     emit rt fmt (toJSON (map json items)) (T.unlines ["⚡ " <> cpLabel c <> "  (" <> cpGenerator c <> ")" | c <- items])
     pure ExitSuccess
@@ -459,7 +462,7 @@ runSteps rt cwd fmt cat g context steps = do
    (Right ws, filler0) -> case filler0 of
              Left why -> failWith rt fmt 2 "usage" why Nothing []
              Right filler ->
-              generate ws (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolFillContext = context, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
+              generate ws (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolQueries = maybe (projectQueries rt cat) (\(f, l, _) -> queriesAt rt cat ws (makeRelative (rtProjectDir rt) (normalise (cwd </> f))) l) (genAt g), toolFiller = filler, toolFillContext = context, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan =
@@ -657,11 +660,17 @@ projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages
 
 -- | Queries run in the project: commands in its root, AST queries over its
 -- files with the catalog's language adapters.
+-- | 'projectQueries' with a cursor: `uncovered` queries ask the compiler
+-- about the match there (spec §4.9), reading through @ws@ (an overlay).
+queriesAt :: Runtime -> Catalog -> Workspace IO -> FilePath -> Int -> Queries IO
+queriesAt rt cat ws file line = (projectQueries rt cat) {queryUncovered = uncoveredQuery (rtChecker rt) (catalogLanguages cat) ws file line}
+
 projectQueries :: Runtime -> Catalog -> Queries IO
 projectQueries rt cat =
   Queries
     { queryCommand = processCommand (rtProjectDir rt)
     , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
+    , queryUncovered = \_ -> pure (Right [])
     }
 
 -- | A fix's enum inputs left open are pre-chosen when the finding's code

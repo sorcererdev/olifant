@@ -6,6 +6,8 @@ module Olifant.GeneratorTesting
   , discoverCases
   , runCase
   , parseCaseInputs
+  , parseCaseCursor
+  , atCaseCursor
   , preparePack
   ) where
 
@@ -20,6 +22,7 @@ import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
 import Olifant.Cursor (atCursor, isSnippet)
+import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (Generator)
 import Olifant.Language.Adapter (Language (..), languageFor)
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
@@ -70,15 +73,9 @@ runCase root syntax checker bless pc = do
         preparePack root syntax checker (casePackRoot pc) (casePack pc) (caseGenerator pc) given >>= \case
           Left why -> pure (CaseFailed [why])
           Right (ws, tools0, resolve, gen0) -> do
-                   let tools = tools0 {toolFiller = (\fills -> ModelFiller "recorded" 0 (replayFiller fills)) <$> replay}
                    -- A snippet goes at the case's cursor; it is not re-run (its
                    -- line is the expansion now, so a second run is another snippet).
-                   gen <- case at of
-                     Just (file, line) | isSnippet gen0 -> do
-                       text <- fromMaybe "" <$> readText ws file
-                       let unit = maybe "    " langIndent (languageFor (toolLanguages tools) file)
-                       pure (atCursor unit file line (T.splitOn "\n" text) gen0)
-                     _ -> pure gen0
+                   (tools, gen) <- atCaseCursor ws checker at (tools0 {toolFiller = (\fills -> ModelFiller "recorded" 0 (replayFiller fills)) <$> replay}) gen0
                    firstRun <- generate ws resolve tools [Step gen sets] now Apply
                    secondRun <- if isSnippet gen0 then pure (fmap (\p -> p {planWrites = M.empty}) firstRun) else generate ws resolve tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of
@@ -138,9 +135,24 @@ preparePack root syntax checker packRoot pack generator overlay =
             fixturePaths <- listFiles root fixtureDir
             fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
             (ws, _) <- memoryWorkspace (M.toList (M.fromList overlay `M.union` M.fromList fixture))
-            let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat)}
+            let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat), queryUncovered = \_ -> pure (Right [])}
                 tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
             pure (Right (ws, tools, resolver root syntax cat, gen))
+
+-- | A case's cursor (`at`): the snippet placed there, and `uncovered`
+-- queries asking the compiler about the match there (spec §4.9).
+atCaseCursor :: Workspace IO -> Checker IO -> Maybe (FilePath, Int) -> Tools IO -> Generator -> IO (Tools IO, Generator)
+atCaseCursor ws checker at tools gen = case at of
+  Nothing -> pure (tools, gen)
+  Just (file, line) -> do
+    text <- fromMaybe "" <$> readText ws file
+    let unit = maybe "    " langIndent (languageFor (toolLanguages tools) file)
+        tools' = tools {toolQueries = (toolQueries tools) {queryUncovered = uncoveredQuery checker (toolLanguages tools) ws file line}}
+    pure (tools', if isSnippet gen then atCursor unit file line (T.splitOn "\n" text) gen else gen)
+
+-- | A case's `at = "FILE:LINE:COL"`, if it has one.
+parseCaseCursor :: Text -> Either Text (Maybe (FilePath, Int))
+parseCaseCursor src = (\(_, _, at) -> at) <$> parseCase src
 
 -- | `[fills]` in a case's `fills.toml`: hole name = recorded code.
 parseFills :: Text -> Either Text (Map Text Text)

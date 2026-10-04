@@ -143,6 +143,8 @@ spec = describe "olifant actions (spec §4.6)" $ do
         `shouldBe` [("Add port email_sender", [("port", "email_sender")]), ("Add port invoice_repository", [("port", "invoice_repository")])]
     it "(b) a snippet whose trigger does not match is still listed (chosen ignores triggers)" $
       map cpGenerator (complete [("p/spec-case", specCase)]) `shouldBe` ["p/spec-case"]
+    it "(b) a snippet whose one missing input has no choices offers nothing (no uncovered cases: no arm)" $
+      runIdentity (completionsAt matches [rust] noQueries [] (const (pure Nothing)) [("p/add-port", addPort)] file (1, 1) "x") `shouldBe` []
     it "(c) only snippets: other generators that apply are left out" $
       complete [("g", failureArms)] `shouldBe` []
   describe "--file: every place in a file (spec §4.6)" $ do

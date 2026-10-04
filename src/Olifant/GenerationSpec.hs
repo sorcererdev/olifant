@@ -905,7 +905,7 @@ regionSpec = describe "generate (owned regions)" $ do
   it "re-runs an AST query for a later region after an earlier one rewrote the file it reads" $ do
     let Right n = parseTemplate "{= n =}"
         q = AstQueryQ (AstQuery "f.txt" (ItemsOf "type T") [])
-        lineCount = Queries (\_ -> pure (Left (failed "no"))) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt"))
+        lineCount = Queries (\_ -> pure (Left (failed "no"))) (\_ _ view -> fmap (\c -> Right [M.fromList [("n", VText (maybe "?" (T.pack . show . length . T.lines) c))]]) (view "f.txt")) (\_ -> pure (Right []))
         region name = RegionDef name "f.txt" q (ItemTemplate n) False (Just "--") Nothing Nothing
         both = (noTools :: Tools IO) {toolRegions = [region "a", region "b"], toolQueries = lineCount}
     (ws, snap) <- memoryWorkspace [("f.txt", "-- olifant:region a\n-- olifant:end a\n-- olifant:region b\n-- olifant:end b\n")]
