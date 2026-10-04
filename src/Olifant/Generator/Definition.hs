@@ -21,6 +21,8 @@ module Olifant.Generator.Definition
   , Choices (..)
   , ListItem (..)
   , FieldSpec (..)
+  , HoleSource (..)
+  , describeHoleSource
   ) where
 
 import Data.Maybe (fromMaybe)
@@ -54,6 +56,8 @@ data GeneratorWith src = Generator
     genAppliesAt :: Maybe AppliesAt
   , -- | `name`: what editors show ("Add Command Dependency"); see 'generatorName'
     genName :: Maybe Text
+  , -- | `[holes.NAME]` (spec §4.9): where a hole's value comes from (model by default)
+    genHoles :: [(Text, HoleSource)]
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -104,7 +108,7 @@ data Unless t = UnlessExists t | UnlessMatches t
 -- fix removes or rewrites the code it found (spec §5.9).
 replaceGenerator :: FilePath -> (Int, Int) -> Text -> Template -> Generator
 replaceGenerator path range old new =
-  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix")
+  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix") []
 
 -- | The name people see: `name`, or one made from the id
 -- (`rust-htmx/command-dependency` → "Command Dependency").
@@ -119,6 +123,17 @@ generatorName g = fromMaybe derived (genName g)
 -- the label an editor shows, and what the rule looks for, in words.
 data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template, apWhere :: Maybe Template, apSuggest :: Bool}
   deriving stock (Show)
+
+-- | Where a hole's value comes from (spec §4.9): a tab stop for you, a tab
+-- stop pre-filled from a template, or the model (the default).
+data HoleSource = Yours | Derived Template | Model
+  deriving stock (Show)
+
+describeHoleSource :: HoleSource -> Text
+describeHoleSource = \case
+  Yours -> "yours"
+  Derived _ -> "derived"
+  Model -> "model"
 
 -- | Where an insert goes: a phrase (rendered, then parsed) or a raw ast-grep rule.
 data AnchorSpec = AtPhrase Template | AtRule Rule Position

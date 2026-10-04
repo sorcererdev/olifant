@@ -27,6 +27,7 @@ import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Anchor (Located (..), positionWords)
 import Olifant.Catalog (CatalogEntry (..))
+import Olifant.Snippet (Snippet (..), holeSource)
 import Olifant.Generation
 import Olifant.Holes (HoleSite (..))
 import Olifant.Generator
@@ -179,6 +180,7 @@ planJson applied plan =
     , "conflicts" .= [object ["code" .= conflictCode c, "message" .= describeConflict c] | c <- planConflicts plan]
     , "warnings" .= planWarnings plan
     , "holes" .= map holeJson (planHoles plan)
+    , "snippet" .= fmap (\s -> object ["file" .= snFile s, "line" .= snLine s, "ghost" .= snGhost s, "body" .= snBody s]) (planSnippet plan)
     , "todos" .= [object ["edit" .= editId e, "file" .= siteFile s, "function" .= siteFunction s, "pattern" .= sitePattern s] | e <- planEdits plan, Just s <- [editSite e], siteTodo s]
     ]
       -- Whole files for editors, which apply them as buffer changes; not on
@@ -212,7 +214,8 @@ holeJson h =
         HoleFilled m n -> ("filled" :: Text, Just m, Just n, Nothing)
         HoleUnfilled w -> ("unfilled", Nothing, Nothing, Just w)
         HoleSkipped w -> ("skipped", Nothing, Nothing, Just w)
-   in object ["name" .= holeName site, "kind" .= holeKind site, "file" .= holeFile site, "line" .= holeLine site, "placeholder" .= holePlaceholder site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why, "fill" .= phFill h]
+      (kind, source) = holeSource (holeKind site)
+   in object ["name" .= holeName site, "kind" .= kind, "source" .= source, "file" .= holeFile site, "line" .= holeLine site, "placeholder" .= holePlaceholder site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why, "fill" .= phFill h]
 
 planHuman :: Bool -> Plan -> Text
 planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines ++ map ("  ? warning: " <>) (planWarnings plan) ++ holeLines) <> details

@@ -4,6 +4,7 @@
 files = ["**/*.hs"]
 comment = "--"
 grammar = "haskell"
+indent = "  "
 placeholder = 'error "{= message =}"'
 branch = "{= pattern =} -> {= body =}"
 
@@ -23,3 +24,8 @@ format = "ghc-json"
 [holes.expr]
 placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'
 wrap = "olifantHole = {= fill =}"
+
+# Tab stops in snippets (spec §4.9): text inside a string.
+[holes.text]
+placeholder = "{= hole =}"
+wrap = "olifantHole = \"{= fill =}\""

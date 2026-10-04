@@ -111,11 +111,11 @@ planOutputSpec = describe "planHuman" $ do
           , edit 2 "b.elm" (WillInsert 9 "Settings ->\n    1") (Just (Site "b.elm" "view" "Settings" False))
           , edit 3 "c.elm" (WillInsert 4 "T ->\n    Debug.todo \"\"") (Just (Site "c.elm" "toPath" "T" True))
           ]
-          [] [] M.empty [] M.empty
+          [] [] M.empty [] M.empty M.empty Nothing
   it "lists holes in the plan, with status (spec §6.4)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleUnfilled "no model is configured") Nothing
-        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty
-    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"placeholder\":\"todo!()\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty M.empty Nothing
+    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"placeholder\":\"todo!()\",\"source\":\"model\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
     planHuman False p `shouldSatisfy` T.isInfixOf "holes:\n  status (expr) a.rs:3  unfilled: no model is configured"
   describe "gen with holes (spec §6.4)" $ do
     let holeProject model =
@@ -151,7 +151,7 @@ planOutputSpec = describe "planHuman" $ do
       out `shouldSatisfy` T.isInfixOf "no model is configured"
   it "shows each fill in the plan, JSON and human (review I1)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleFilled "qwen" 1) (Just "409")
-        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty M.empty Nothing
     TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"fill\":\"409\""
     planHuman False p `shouldSatisfy` T.isInfixOf "status (expr) a.rs:3  filled by qwen: 409"
   it "marks edits the compiler found, and todos (fix pass)" $ do
@@ -272,6 +272,29 @@ runCliSpec = describe "runCli" $ do
     (bad, badOut, _, _) <- runWith "" files False ["gen", "s", "--plan"]
     bad `shouldBe` ExitFailure 2
     badOut `shouldSatisfy` T.isInfixOf "`s` is a snippet: it needs --at FILE:LINE:COL"
+  it "(e) a snippet plan carries its ghost and tab-stop body, and each hole's source (spec §4.9)" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[[edits]]", "cursor = true", "text = \"#[error(\\\"{= ? message: text | what =}\\\")]\\n{= ? Variant: ident | v =},\""
+          , "[holes.message]", "source = \"yours\"", "[holes.Variant]", "source = \"yours\"" ]
+        files =
+          [ ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[holes.text]\nplaceholder = '{= hole =}'\nwrap = \"h = {= fill =}\"\n[holes.ident]\nplaceholder = '{= hole =}'\nwrap = \"{= fill =}\"\n")
+          , ("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.x", "enum E {\n    A,\n\n}\n") ]
+    (code, out, err, _) <- runWith "" files False ["gen", "s", "--at", "a.x:3:1", "--plan", "--json", "--no-fill"]
+    (code, err) `shouldBe` (ExitSuccess, "")
+    -- indented as placed: the editor empties the line and expands at column 0
+    out `shouldSatisfy` T.isInfixOf "\"snippet\":{\"body\":\"    #[error(\\\"${1:message}\\\")]\\n    ${2:Variant},$0\",\"file\":\"a.x\",\"ghost\":[\"    #[error(\\\"⟨message⟩\\\")]\",\"    ⟨Variant⟩,\"],\"line\":3}"
+    -- the edit shows the holes as written, never the markers
+    out `shouldNotSatisfy` T.isInfixOf "olifant-hole"
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"enum E {\\n    A,\\n    #[error(\\\"message\\\")]\\n    Variant,\\n}\\n\""
+    out `shouldSatisfy` T.isInfixOf "\"kind\":\"text\""
+    out `shouldSatisfy` T.isInfixOf "\"source\":\"yours\""
+    -- a [holes.NAME] for a hole the templates never use
+    let typo = map (\(p, t) -> if p == "/proj/.olifant/generators/s/generator.toml" then (p, t <> "[holes.mesage]\nsource = \"yours\"\n") else (p, t)) files
+    (bad, badOut, _, _) <- runWith "" typo False ["gen", "s", "--at", "a.x:3:1", "--plan", "--json"]
+    bad `shouldNotBe` ExitSuccess
+    badOut `shouldSatisfy` T.isInfixOf "[holes.mesage]: no hole called mesage in this generator's templates"
   it "plans a snippet against an unsaved buffer (--at with --overlay)" $ do
     let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
         files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "on disk\n")]

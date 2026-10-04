@@ -19,6 +19,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Anchor (Miss (..), describeMisses)
 import Olifant.Generator (GeneratorId)
+import Olifant.Snippet (Snippet)
 import Olifant.Holes (HoleSite (..))
 
 data Plan = Plan
@@ -34,6 +35,10 @@ data Plan = Plan
     planHoles :: [PlannedHole]
   , -- | each written file's text before this plan (Nothing: a new file), for editors
     planBefore :: Map FilePath (Maybe Text)
+  , -- | files with holes as planned, markers still in place (for snippets, spec §4.9)
+    planMarked :: Map FilePath Text
+  , -- | a snippet's ghost and tab-stop body, when the plan is one (set by `gen --at`)
+    planSnippet :: Maybe Snippet
   }
   deriving stock (Eq, Show)
 

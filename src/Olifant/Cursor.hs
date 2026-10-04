@@ -34,13 +34,18 @@ cursorIndent unit ls n = case drop (n - 1) ls of
 indentTemplate :: Text -> Template -> Template
 indentTemplate ind (Template src segs) = Template src (Lit ind : go segs)
   where
-    go = map $ \case
-      Lit t -> Lit (T.intercalate "\n" (indentRest (T.splitOn "\n" t)))
-      other -> other
-    -- the first piece continues the current line; later ones start lines
-    indentRest = \case
+    go = \case
       [] -> []
-      first : rest -> first : [if T.null l then l else ind <> l | l <- rest]
+      Lit t : rest -> Lit (T.intercalate "\n" (indentRest (not (null rest)) (T.splitOn "\n" t))) : go rest
+      other : rest -> other : go rest
+    -- The first piece continues the current line; later ones start lines.
+    -- An empty piece is an empty line, unless it is the last one and more
+    -- of the template follows on its line (a hole, a value).
+    indentRest more = \case
+      [] -> []
+      first : rest ->
+        let n = length rest
+         in first : [if T.null l && not (more && i == n) then l else ind <> l | (i, l) <- zip [1 ..] rest]
 
 -- | The generator with its cursor edit placed: a replacement of line @n@
 -- of @path@ (whose current lines are @ls@), indented by 'cursorIndent'.

@@ -62,7 +62,8 @@ parseGenerator gid src = do
     _ -> Right ()
   appliesAt <- optional "applies_at" (table >=> appliesAtFrom (map inputName inputs')) top
   name <- optional "name" text top
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name)
+  holes <- maybe (Right []) (traverse (\(k, v) -> inKey ("holes." <> k) ((k,) <$> (table v >>= holeSourceFrom))) . M.toList) =<< optional "holes" (shaped "[holes.NAME] tables, one per hole" table) top
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes)
   where
     queryWithValue v = do
       t <- table v
@@ -108,7 +109,7 @@ choiceValueFrom v = case v of
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, cursorKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at"]
+topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
@@ -199,6 +200,16 @@ scalarDefault = \case
 
 deriveFrom :: Table -> Either Text [(Text, Template)]
 deriveFrom tbl = traverse (\(k, v) -> inKey ("derive." <> k) ((,) k <$> (text v >>= tmpl))) (M.toList tbl)
+
+holeSourceFrom :: Table -> Either Text HoleSource
+holeSourceFrom t = do
+  onlyKeys ["source", "value"] t
+  required "source" text t >>= \case
+    "yours" -> Right Yours
+    "model" -> Right Model
+    "derived" -> Derived <$> required "value" (text >=> tmpl) t
+    "choice" -> Left "`choice` holes are not built yet: make it an input with one_of = \"QUERY\" (editors list one item per choice)"
+    other -> Left ("unknown source `" <> other <> "`: a hole's source is yours, derived or model")
 
 isCursor :: EditWith s -> Bool
 isCursor = \case

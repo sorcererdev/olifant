@@ -23,11 +23,15 @@ spec = describe "Olifant.Cursor (snippets at the cursor, spec §5.3)" $ do
     it "a line with text, or only whitespace, keeps its own" $ do
       cursorIndent "    " ["fn f() {", "        it \""] 2 `shouldBe` "        "
       cursorIndent "    " ["fn f() {", "  "] 2 `shouldBe` "  "
-  describe "indentTemplate" $
+  describe "indentTemplate" $ do
     it "indents every non-empty line of what the template renders" $ do
       let Right g = load "text = \"a {= x =}\\nb\\n\\nc\""
           [Cursor t] = genEdits g
       render (M.fromList [("x", VText "1")]) (indentTemplate "  " t) `shouldBe` Right "  a 1\n  b\n\n  c"
+    it "indents a line that starts with a hole or a value" $ do
+      let Right g = load "text = \"#[error]\\n{= x =},\""
+          [Cursor t] = genEdits g
+      render (M.fromList [("x", VText "V")]) (indentTemplate "    " t) `shouldBe` Right "    #[error]\n    V,"
   describe "atCursor" $
     it "makes the cursor edit a replacement of the cursor's line, which must still read as it does" $ do
       let Right g = load "text = \"x\""

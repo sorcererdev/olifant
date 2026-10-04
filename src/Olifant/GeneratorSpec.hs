@@ -253,6 +253,17 @@ parseSpec = describe "parseGenerator" $ do
       snippet ["[[edits]]", "create = \"a.txt\"", "text = \"y\""] `shouldSatisfy` either ("a cursor edit (a snippet) must be the generator's only edit" `T.isInfixOf`) (const False)
     it "refuses `cursor = false`" $
       parseGenerator (GeneratorId "p/s") (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = false", "text = \"x\""]) `shouldSatisfy` either ("cursor = true" `T.isInfixOf`) (const False)
+  describe "[holes.NAME]: where a hole's value comes from (spec §4.9)" $ do
+    let withHoles extra = parseGenerator (GeneratorId "p/s") (T.unlines (["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"{= ? V: ident | v =} {= ? b: block | b =}\""] ++ extra))
+    it "(a) reads yours and derived (model is the default)" $
+      fmap (map (fmap describeHoleSource) . genHoles) (withHoles ["[holes.V]", "source = \"yours\"", "[holes.b]", "source = \"derived\"", "value = \"pending\""])
+        `shouldBe` Right [("V", "yours"), ("b", "derived")]
+    it "(a) refuses an unknown source, naming the ones there are" $
+      withHoles ["[holes.V]", "source = \"mine\""] `shouldSatisfy` either ("yours, derived or model" `T.isInfixOf`) (const False)
+    it "(a) a derived hole needs its value" $
+      withHoles ["[holes.b]", "source = \"derived\""] `shouldSatisfy` either ("`value`" `T.isInfixOf`) (const False)
+    it "(a) choice holes are not built yet: says to use an input with one_of" $
+      withHoles ["[holes.V]", "source = \"choice\""] `shouldSatisfy` either ("one_of" `T.isInfixOf`) (const False)
   describe "[applies_at] (spec §4.6)" $ do
     let gen extra = load (T.unlines (
           [ "description = \"d\"", "language = \"rust\""

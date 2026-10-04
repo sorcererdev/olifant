@@ -93,3 +93,12 @@ container = { kind = "arguments", inside = { kind = "call_expression", has = { f
 # ast-grep needs a kind: the expressions an argument can be.
 items = { any = [{ kind = "call_expression" }, { kind = "identifier" }, { kind = "field_expression" }, { kind = "reference_expression" }, { kind = "macro_invocation" }, { kind = "string_literal" }, { kind = "integer_literal" }, { kind = "struct_expression" }, { kind = "scoped_identifier" }, { kind = "closure_expression" }] }
 example = "end of call BillingService::new in main"
+
+# Tab stops in snippets (spec §4.9): a name, or text inside a string.
+[holes.ident]
+placeholder = "{= hole =}"
+wrap = "struct {= fill =};"
+
+[holes.text]
+placeholder = "{= hole =}"
+wrap = "const _: &str = \"{= fill =}\";"

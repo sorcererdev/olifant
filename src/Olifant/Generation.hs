@@ -42,7 +42,8 @@ import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
 import Olifant.Language (Language, Match (..), Syntax (..), languageFor)
-import Olifant.Holes (HoleSite (..), matchesWithHoles, placeHoles, placeholderize)
+import Olifant.Holes (HoleSite (..), hasMarkers, matchesWithHoles, placeHoles, placeholderize)
+import Olifant.Snippet (holeSource)
 import Olifant.Generation.FillPhase (fillPhase)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
@@ -80,6 +81,7 @@ showHoles langs e =
             WillCreate t -> WillCreate (shown t)
             WillOverwrite t -> WillOverwrite (shown t)
             WillInsert n t -> WillInsert n (shown t)
+            WillReplace l n t -> WillReplace l n (shown t)
             other -> other}
 
 -- | The message for a 'GenerationError', naming the step it happened in.
@@ -137,7 +139,8 @@ generate ws resolve tools steps now mode =
           changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, if p `elem` replaced then Just (Just c) /= M.lookup p originals else not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
           (placed, holeConflicts, holes0) = case placeHoles (toolLanguages tools) changed of
             Left problems -> (changed, map HoleProblem problems, [])
-            Right (files, hs) -> (files, [], [PlannedHole h (HoleUnfilled "no model is configured") Nothing | h <- hs])
+            -- a tab stop (yours, derived) is the person's, never the model's (spec §4.9)
+            Right (files, hs) -> (files, [], [PlannedHole h (case snd (holeSource (holeKind h)) of "model" -> HoleUnfilled "no model is configured"; src -> HoleSkipped ("a tab stop (" <> src <> ")")) Nothing | h <- hs])
           shown = map (showHoles (toolLanguages tools)) edits
       -- The fill phase (spec §6.4): only with a model, and only when nothing
       -- else went wrong.
@@ -146,7 +149,11 @@ generate ws resolve tools steps now mode =
       let previous p = maybe (readText ws p) pure (M.lookup p originals)
       (writes, holes, fillWarnings) <-
         if null (conflicts ++ holeConflicts)
-          then fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed holes0
+          then do
+            let forModel = [h | h@(PlannedHole _ (HoleUnfilled _) _) <- holes0]
+            (w, filled, fw) <- fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed forModel
+            let byName = [(holeName (phSite h), h) | h <- filled]
+            pure (w, [maybe h id (lookup (holeName (phSite h)) byName) | h <- holes0], fw)
           else pure (placed, holes0, [])
       before <- traverse (\p -> (p,) <$> previous p) (M.keys writes)
       -- A list this plan should extend but cannot (no fences yet): say so,
@@ -190,7 +197,7 @@ generate ws resolve tools steps now mode =
                                WillOverwrite t -> WillOverwrite (withFills t)
                                WillInsert n t -> WillInsert n (withFills t)
                                other -> other} | e <- shown]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before)
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before) (M.filter hasMarkers changed) Nothing
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

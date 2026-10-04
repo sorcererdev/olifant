@@ -10,7 +10,9 @@ import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
 import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, matchPathSlots)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
-import Control.Monad (when)
+import Control.Monad (join, when)
+import Olifant.Holes (HoleSite (..))
+import Olifant.Snippet (Snippet, snippetOf)
 import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
@@ -426,6 +428,7 @@ placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
 -- with the fix's context files shown to the model).
 runSteps :: Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
 runSteps rt cwd fmt cat g context steps = do
+  let snippetAt = snippetAtCursor rt cwd g
   now <- maybe (rtNow rt) pure (genNow g)
   let mode = if genPlanOnly g then PlanOnly else Apply
       project = within (rtProjectDir rt) (rtRoot rt)
@@ -446,7 +449,8 @@ runSteps rt cwd fmt cat g context steps = do
               Right plan0 -> do
                 let plan =
                       (if genNoFill g then noFill plan0 else plan0)
-                        { planWarnings =
+                        { planSnippet = snippetAt plan0
+                        , planWarnings =
                             planWarnings plan0
                               ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]
                               ++ ["language adapter " <> T.pack path <> " failed to load: " <> err | (path, err) <- catalogBrokenLanguages cat]
@@ -454,6 +458,20 @@ runSteps rt cwd fmt cat g context steps = do
                     applied = mode == Apply && not (hasConflicts plan)
                 emit rt fmt (planJson applied plan) (planHuman applied plan)
                 pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
+
+-- | The snippet a `gen --at` plan placed (spec §4.9): the lines that replaced
+-- the cursor's line, holes as tab stops, model fills where there are any.
+snippetAtCursor :: Runtime -> FilePath -> GenOptions -> Plan -> Maybe Snippet
+snippetAtCursor rt cwd g plan = do
+  (file, line, _) <- genAt g
+  let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
+  text <- maybe (M.lookup rel (planWrites plan)) Just (M.lookup rel (planMarked plan))
+  before <- join (M.lookup rel (planBefore plan))
+  let count t = length (T.splitOn "\n" t)
+      k = count text - count before + 1
+      lines' = take k (drop (line - 1) (T.splitOn "\n" text))
+      fills = [(T.takeWhile (/= '[') (holeName (phSite h)), f) | h <- planHoles plan, holeFile (phSite h) == rel, Just f <- [phFill h]]
+  if k < 1 then Nothing else Just (snippetOf rel line (T.intercalate "\n" lines') (`lookup` fills))
 
 -- | A usage-level failure inside a command: JSON on stdout in JSON mode.
 usageIn :: Runtime -> Format -> Text -> IO ExitCode
@@ -547,7 +565,7 @@ syncRegions rt fmt rtBrokenRegions ws tools regionMode output absorb now = do
       writes = M.fromList [(p, if p `elem` absorb then absorbDuplicates c else c) | (p, Just c) <- M.toList current]
       warnings = ["region `" <> r <> "` is not set up in " <> T.pack p <> " (run `olifant sync --init " <> r <> "`)" | (p, r) <- unset]
   before <- M.fromList <$> traverse (\p -> (p,) <$> readText ws p) (M.keys writes)
-  let plan = Plan (GeneratorId "sync") [] now edits conflicts warnings writes [] before
+  let plan = Plan (GeneratorId "sync") [] now edits conflicts warnings writes [] before M.empty Nothing
       applied = output == SyncWrite && not (hasConflicts plan)
   when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
   emit rt fmt (planJson applied plan) (if output == SyncReport then syncCheckHuman plan else planHuman applied plan)
