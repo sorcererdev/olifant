@@ -26,11 +26,12 @@ import Olifant.Generator
 import Olifant.Language
 import Olifant.Query (Queries)
 import Olifant.Template (Value (..), render)
-import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 
 -- | A generator offered at a cursor: its id, the label to show, the inputs
 -- bound from the path and the code, and the required inputs still missing.
-data Action = Action {actGenerator :: Text, actLabel :: Text, actSets :: [(Text, Text)], actMissing :: [Text]}
+-- | 'actChoices': for each missing enum input, its values (for editors, spec §4.9).
+data Action = Action {actGenerator :: Text, actLabel :: Text, actSets :: [(Text, Text)], actMissing :: [Text], actChoices :: [(Text, [Text])]}
   deriving stock (Eq, Show)
 
 -- | A path pattern against a project-relative path: `{name}` matches one
@@ -86,11 +87,17 @@ actionsAt syntax langs queries paths readFile' gens path (line, col) content =
       l : _ -> T.length (TE.decodeUtf8Lenient (BS.take (col - 1) (TE.encodeUtf8 l)))
       [] -> col - 1
     one (gid, gen, ap, fromPath, cand) = case cand of
+      _ | not (triggered ap) -> pure Nothing
       Whole -> Just <$> offer queries paths readFile' path gid gen ap fromPath Nothing
       Nodes ms
         | node : _ <- sortOn size [m | m <- ms, matchStart m <= cursor, cursor <= matchEnd m] ->
             Just <$> offer queries paths readFile' path gid gen ap fromPath (Just node)
       _ -> pure Nothing
+    -- A snippet's trigger (spec §4.9): the text before the cursor ends with it.
+    before = TE.decodeUtf8Lenient (BS.take (col - 1) (TE.encodeUtf8 (fromMaybe "" (listToMaybe (drop (line - 1) (T.lines content))))))
+    triggered ap = case apTrigger ap of
+      Nothing -> True
+      Just re -> maybe False (`matchTest` T.unpack before) (makeRegexM (T.unpack (if "$" `T.isSuffixOf` re then re else "(" <> re <> ")$")) :: Maybe Regex)
     size m = (fst (matchEnd m) - fst (matchStart m), snd (matchEnd m) - snd (matchStart m))
 
 -- | Every place in the file where a generator applies (in file order), and
@@ -172,7 +179,14 @@ offer queries paths readFile' path gid gen ap fromPath node = do
       kept = M.filterWithKey valid sets
       required = [inputName s | s <- genInputs gen, not (inputOptional s), isNothing (inputDefault s)]
       unbound = [n | n <- required, M.notMember n kept]
-  pure (Action gid (labelFor gen ap kept) (M.toAscList kept) unbound)
+      choices = case resolved of
+        Right g -> [(inputName s, cs) | s <- genInputs g, inputName s `elem` unbound, Just cs <- [enumValues (inputType s)]]
+        Left _ -> []
+      enumValues = \case
+        ScalarInput (EnumOf _ _ (Resolved cs _)) -> Just cs
+        ScalarInput (EnumS cs) -> Just cs
+        _ -> Nothing
+  pure (Action gid (labelFor gen ap kept) (M.toAscList kept) unbound choices)
   where
     capture re t = do
       rx <- makeRegexM (T.unpack re) :: Maybe Regex

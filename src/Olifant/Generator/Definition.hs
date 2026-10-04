@@ -121,7 +121,7 @@ generatorName g = fromMaybe derived (genName g)
 -- inputs, an optional ast-grep rule the cursor must be inside, regexes over
 -- that node's text for more inputs, an input that takes the file's own path,
 -- the label an editor shows, and what the rule looks for, in words.
-data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template, apWhere :: Maybe Template, apSuggest :: Bool}
+data AppliesAt = AppliesAt {apPath :: Text, apNode :: Maybe Rule, apBind :: [(Text, Text)], apFile :: Maybe Text, apLabel :: Maybe Template, apWhere :: Maybe Template, apSuggest :: Bool, apTrigger :: Maybe Text}
   deriving stock (Show)
 
 -- | Where a hole's value comes from (spec §4.9): a tab stop for you, a tab

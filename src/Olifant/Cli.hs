@@ -166,7 +166,11 @@ runCommand rt cwd fmt cat = \case
     paths <- listFiles project "."
     let gens = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat]
         nameOf gid = maybe gid generatorName (lookup gid gens)
-        suggestOf gid = maybe False (maybe False apSuggest . genAppliesAt) (lookup gid gens)
+        -- how an editor may offer it: unasked (suggest), as a snippet, on a trigger (spec §4.8, §4.9)
+        suggestOf gid =
+          let g = lookup gid gens
+              ap = genAppliesAt =<< g
+           in ["suggest" .= maybe False apSuggest ap, "snippet" .= maybe False isSnippet g, "trigger" .= maybe False (isJust . apTrigger) ap]
         human a = actLabel a <> "  (" <> actGenerator a <> ")" <> (if null (actMissing a) then "" else "  asks: " <> T.intercalate ", " (actMissing a))
     case at of
       Just pos -> do
@@ -176,7 +180,7 @@ runCommand rt cwd fmt cat = \case
         (acts, near) <- actionsInFile (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel (fromMaybe "" content)
         let rangeJson (Range (l1, c1) (l2, c2)) = object ["start" .= [l1, c1], "end" .= [l2, c2]]
             json = object
-              [ "actions" .= [object ["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "suggest" .= suggestOf (actGenerator a), "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] | FileAction a r <- acts]
+              [ "actions" .= [object (["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] ++ suggestOf (actGenerator a)) | FileAction a r <- acts]
               , "nearby" .= [object ["generator" .= nbGenerator n, "name" .= nameOf (nbGenerator n), "label" .= nbLabel n, "why" .= nbWhy n] | n <- near]
               ]
             where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
@@ -712,8 +716,8 @@ parseDiffHunks = finish . foldl step (Nothing, [])
       _ -> Nothing
 
 -- | One action as editors read it (spec §4.6).
-actionJson :: (Text -> Bool) -> (Text -> Text) -> Action -> Value
-actionJson suggestOf nameOf a = object ["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "suggest" .= suggestOf (actGenerator a), "label" .= actLabel a, "sets" .= M.fromList (actSets a), "missing" .= actMissing a]
+actionJson :: (Text -> [Pair]) -> (Text -> Text) -> Action -> Value
+actionJson suggestOf nameOf a = object (["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "label" .= actLabel a, "sets" .= M.fromList (actSets a), "missing" .= actMissing a, "choices" .= M.fromList (actChoices a)] ++ suggestOf (actGenerator a))
 
 -- | A progress event as one JSON line (`gen --progress`).
 progressJson :: ProgressEvent -> Value

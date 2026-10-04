@@ -283,6 +283,9 @@ parseSpec = describe "parseGenerator" $ do
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either ("`{svc}` in applies_at.path is not an input" `T.isInfixOf`) (const False)
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either (not . ("`applies_at`: `applies_at`" `T.isInfixOf`)) (const False)
       gen ["[applies_at]", "path = \"x.rs\"", "bind = { nope = \"(a)\" }"] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
+    it "(a) reads `trigger`, a POSIX regex over the text before the cursor (spec §4.9)" $ do
+      fmap (fmap apTrigger . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\"", "trigger = 'it \"'"]) `shouldBe` Right (Just (Just "it \""))
+      gen ["[applies_at]", "path = \"x.rs\"", "trigger = '\\s'"] `shouldSatisfy` either ("POSIX" `T.isInfixOf`) (const False)
     it "reads `suggest` (default false)" $ do
       fmap (fmap apSuggest . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\"", "suggest = true"]) `shouldBe` Right (Just True)
       fmap (fmap apSuggest . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\""]) `shouldBe` Right (Just False)

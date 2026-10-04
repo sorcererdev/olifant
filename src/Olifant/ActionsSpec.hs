@@ -60,7 +60,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
     matchPathSlots "**/src/{command}.rs" file `shouldBe` Just [("command", "refund_invoice")]
   it "(b) offers a generator whose path and node match, with inputs bound and the label rendered" $
     at matches [("p/failure-arms", failureArms)] file (3, 6)
-      `shouldBe` [Action "p/failure-arms" "Add AlreadyRefunded to every match" [("command", "refund_invoice"), ("failure", "AlreadyRefunded"), ("service", "billing")] []]
+      `shouldBe` [Action "p/failure-arms" "Add AlreadyRefunded to every match" [("command", "refund_invoice"), ("failure", "AlreadyRefunded"), ("service", "billing")] [] []]
   it "(c) matches at a node's first and just past its last character; binds from the innermost node (Review Focus 1)" $ do
     map actSets (at matches [("g", failureArms)] file (3, 5)) `shouldBe` [[("command", "refund_invoice"), ("failure", "AlreadyRefunded"), ("service", "billing")]]
     map actSets (at matches [("g", failureArms)] file (3, 20)) `shouldBe` [[("command", "refund_invoice"), ("failure", "AlreadyRefunded"), ("service", "billing")]]
@@ -104,12 +104,35 @@ spec = describe "olifant actions (spec §4.6)" $ do
           , "[inputs.path]", "type = \"text\"", "[inputs.name]", "type = \"ident\""
           , "[applies_at]", "path = \"**/*.rs\"", "file = \"path\"", "label = \"Add a case\"" ]
     map (\a -> (actSets a, actMissing a)) (at matches [("g", errorCase)] file (1, 1)) `shouldBe` [([("path", T.pack file)], ["name"])]
+  describe "trigger: what was just typed (spec §4.9)" $ do
+    let specCase = generator . T.unlines $
+          [ "description = \"A spec case\"", "language = \"rust\""
+          , "[[edits]]", "cursor = true", "text = \"x\""
+          , "[applies_at]", "path = \"**/*.rs\"", "trigger = 'it \"'" ]
+        on line col content = runIdentity (actionsAt matches [rust] noQueries [] (const (pure Nothing)) [("p/spec-case", specCase)] file (1, col) (line <> "\n" <> content))
+    it "(b) applies when the text before the cursor ends with the trigger" $
+      map actGenerator (on "  it \"" 7 "") `shouldBe` ["p/spec-case"]
+    it "(b) not once more is typed, nor with the cursor before it" $ do
+      on "  it \"x" 8 "" `shouldBe` []
+      on "  it \"" 3 "" `shouldBe` []
+    it "(b) a generator without a trigger is unchanged" $
+      map actGenerator (at matches [("g", failureArms)] file (3, 6)) `shouldBe` ["g"]
+  it "(d) lists the choices of a missing enum input" $ do
+    let withPorts = generator . T.unlines $
+          [ "description = \"d\"", "language = \"rust\""
+          , "[inputs.port]", "type = \"enum\"", "one_of = \"ports\""
+          , "[query.ports]", "glob = \"ports/*.rs\"", "value = \"file name\""
+          , "[[edits]]", "cursor = true", "text = \"{= port =}\""
+          , "[applies_at]", "path = \"**/*.rs\"" ]
+        [a] = runIdentity (actionsAt matches [rust] noQueries ["ports/email_sender.rs", "ports/invoice_repository.rs"] (const (pure Nothing)) [("p/add-port", withPorts)] file (1, 1) "x")
+    actMissing a `shouldBe` ["port"]
+    actChoices a `shouldBe` [("port", ["email_sender", "invoice_repository"])]
   describe "--file: every place in a file (spec §4.6)" $ do
     let inFile syn gens path content = runIdentity (actionsInFile syn [rust] noQueries [] (const (pure Nothing)) gens path content)
         threeVariants = Syntax $ \_ _ _ -> Identity (Right [Match (3, 4) (3, 9) "Third", Match (1, 4) (1, 9) "First", Match (2, 4) (2, 10) "Second"])
     it "(a) a generator without node applies to the whole file (no range)" $ do
       let whole = generator . T.unlines $ ["description = \"d\"", "language = \"rust\"", "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\"", "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\"", "label = \"Whole\""]
-      fst (inFile matches [("w", whole)] file "x") `shouldBe` [FileAction (Action "w" "Whole" [("command", "refund_invoice"), ("service", "billing")] []) Nothing]
+      fst (inFile matches [("w", whole)] file "x") `shouldBe` [FileAction (Action "w" "Whole" [("command", "refund_invoice"), ("service", "billing")] [] []) Nothing]
     it "(b) one entry per matching node, in file order, each with its own binds (Review Focus 2)" $
       map (\fa -> (lookup "failure" (actSets (faAction fa)), faRange fa)) (fst (inFile threeVariants [("g", failureArms)] file "enum E {\n    First,\n    Second,\n    Third,\n}\n"))
         `shouldBe` [ (Just "First", Just (Range (2, 5) (2, 10))), (Just "Second", Just (Range (3, 5) (3, 11))), (Just "Third", Just (Range (4, 5) (4, 10))) ]

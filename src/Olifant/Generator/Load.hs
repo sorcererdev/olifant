@@ -79,7 +79,7 @@ parseGenerator gid src = do
 -- | `[applies_at]` (spec §4.6). Slots and bind names must be inputs.
 appliesAtFrom :: [Text] -> Table -> Either Text AppliesAt
 appliesAtFrom inputNames t = do
-  onlyKeys ["path", "node", "bind", "file", "label", "where", "suggest"] t
+  onlyKeys ["path", "node", "bind", "file", "label", "where", "suggest", "trigger"] t
   path <- required "path" text t
   case [x | x <- slots path, x `notElem` inputNames] of
     x : _ -> Left ("`{" <> x <> "}` in applies_at.path is not an input (inputs: " <> T.intercalate ", " inputNames <> ")")
@@ -91,7 +91,9 @@ appliesAtFrom inputNames t = do
   where' <- traverse (inKey "where" . (text >=> tmpl)) (M.lookup "where" t)
   -- `suggest`: editors may offer it unasked, as ghost text or a follow-up (spec §4.8)
   suggest <- fromMaybe False <$> optional "suggest" bool t
-  pure (AppliesAt path node bind file label where' suggest)
+  -- `trigger`: what the text before the cursor must end with (spec §4.9)
+  trigger <- optional "trigger" (text >=> posixRegex) t
+  pure (AppliesAt path node bind file label where' suggest trigger)
   where
     slots p = case T.breakOn "{" p of
       (_, "") -> []
