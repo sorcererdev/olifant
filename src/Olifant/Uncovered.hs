@@ -25,15 +25,19 @@ import Olifant.Workspace (Workspace (..), pruned)
 import System.FilePath (splitDirectories)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
--- | The patterns the match at 1-based @line@ of @file@ lacks, matching @re@:
--- of the report's sites in that file starting at or above the line, the
--- latest (a blank line after the last arm is still in its match).
-uncoveredAt :: Text -> FilePath -> Int -> CheckReport -> [Text]
-uncoveredAt re file line report =
-  case sortOn (Down . fst . missingCase) [m | m <- reportMissing report, missingFile m == file, fst (missingCase m) <= line - 1] of
+-- | The patterns the match at 1-based @line@ of @file@ lacks, matching @re@
+-- (@lineAt@ gives the file's 1-based lines): the latest of the report's
+-- sites in that file that reaches the cursor — its arms span the line, or
+-- only blank lines lie between its last arm and the line (review I2: code
+-- in between is another match).
+uncoveredAt :: Text -> FilePath -> Int -> (Int -> Text) -> CheckReport -> [Text]
+uncoveredAt re file line lineAt report =
+  case sortOn (Down . fst . missingCase) [m | m <- reportMissing report, missingFile m == file, reaches (missingCase m)] of
     site : _ -> [p | p <- map unref (missingPatterns site), maybe False (`matchTest` T.unpack p) rx]
     [] -> []
   where
+    c0 = line - 1
+    reaches (start, end) = start <= c0 && (c0 <= end || all (T.null . T.strip . lineAt) [end + 2 .. line - 1])
     rx = makeRegexM (T.unpack re) :: Maybe Regex
     -- rustc: `&E::A` for a match on a reference; the arm is `E::A`
     unref p = T.stripStart (fromMaybe p (T.stripPrefix "&mut " p <|> T.stripPrefix "&" p))
@@ -53,4 +57,9 @@ uncoveredQuery checker langs ws file line re = case languageFor langs file of
       let files = M.fromList [(p, t) | (p, Just t) <- texts]
       runCheck checker lang (placeholderize langs files) >>= \case
         Left f -> pure (Left (QueryFailure ("uncovered " <> re <> ": " <> describeCheckFailure f) False))
-        Right report -> pure (Right [M.fromList [("name", VText p)] | p <- uncoveredAt re file line report])
+        Right report -> do
+          ls <- maybe [] (T.splitOn "\n") <$> readText ws file
+          let lineAt n = case drop (n - 1) ls of
+                l : _ | n >= 1 -> l
+                _ -> ""
+          pure (Right [M.fromList [("name", VText p)] | p <- uncoveredAt re file line lineAt report])

@@ -16,6 +16,7 @@ module Olifant.Actions
 
 import Data.Aeson qualified as J
 import Data.Aeson.KeyMap qualified as KM
+import Data.Char (isAlphaNum, isSpace)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
@@ -89,10 +90,16 @@ data Completion = Completion {cpGenerator :: Text, cpLabel :: Text, cpSets :: [(
   deriving stock (Eq, Show)
 
 completionsAt :: Monad m => Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Completion]
-completionsAt syntax langs queries paths readFile' gens path pos content = do
-  acts <- actionsAtWith False syntax langs queries paths readFile' snippets path pos content
-  pure (concatMap items acts)
+completionsAt syntax langs queries paths readFile' gens path pos@(line, col) content
+  -- a snippet replaces its line: only a line that is blank but for the word
+  -- being typed (review I6)
+  | not (T.all isSpace (T.dropWhileEnd isWordChar before) && T.all isSpace after) = pure []
+  | otherwise = do
+      acts <- actionsAtWith False syntax langs queries paths readFile' snippets path pos content
+      pure (concatMap items acts)
   where
+    (before, after) = splitAtByte (fromMaybe "" (listToMaybe (drop (line - 1) (T.lines content)))) col
+    isWordChar c = isAlphaNum c || c == '_' 
     snippets = [(gid, g) | (gid, g) <- gens, isSnippet g]
     items a = case (actMissing a, lookup (actGenerator a) snippets) of
       ([], _) -> [Completion (actGenerator a) (actLabel a) (actSets a)]
@@ -112,19 +119,27 @@ actionsAtWith useTrigger syntax langs queries paths readFile' gens path (line, c
     charColumn = \case
       l : _ -> T.length (TE.decodeUtf8Lenient (BS.take (col - 1) (TE.encodeUtf8 l)))
       [] -> col - 1
-    one (gid, gen, ap, fromPath, cand) = case cand of
+    one c@(_, gen, _, _, _) = fmap (>>= offerable gen) (one' c)
+    -- a snippet missing an enum input with no choices here offers nothing
+    -- (review I4: a complete match has no next arm)
+    offerable gen a
+      | isSnippet gen, any (null . snd) (actChoices a) = Nothing
+      | otherwise = Just a
+    one' (gid, gen, ap, fromPath, cand) = case cand of
       _ | not (triggered ap) -> pure Nothing
       Whole -> Just <$> offer queries paths readFile' path gid gen ap fromPath Nothing
       Nodes ms
         | node : _ <- sortOn size [m | m <- ms, matchStart m <= cursor, cursor <= matchEnd m] ->
             Just <$> offer queries paths readFile' path gid gen ap fromPath (Just node)
       _ -> pure Nothing
-    -- A snippet's trigger (spec §4.9): the text before the cursor ends with it.
-    before = TE.decodeUtf8Lenient (BS.take (col - 1) (TE.encodeUtf8 (fromMaybe "" (listToMaybe (drop (line - 1) (T.lines content))))))
+    -- A snippet's trigger (spec §4.9): the text before the cursor ends with
+    -- it, and nothing but whitespace follows (the snippet replaces the line,
+    -- review I1).
+    (before, after) = splitAtByte (fromMaybe "" (listToMaybe (drop (line - 1) (T.lines content)))) col
     triggered ap = case apTrigger ap of
       _ | not useTrigger -> True
       Nothing -> True
-      Just re -> maybe False (`matchTest` T.unpack before) (makeRegexM (T.unpack (if "$" `T.isSuffixOf` re then re else "(" <> re <> ")$")) :: Maybe Regex)
+      Just re -> T.all isSpace after && maybe False (`matchTest` T.unpack before) (makeRegexM (T.unpack (if "$" `T.isSuffixOf` re then re else "(" <> re <> ")$")) :: Maybe Regex)
     size m = (fst (matchEnd m) - fst (matchStart m), snd (matchEnd m) - snd (matchStart m))
 
 -- | Every place in the file where a generator applies (in file order), and
@@ -187,6 +202,12 @@ describeRule = \case
         has = maybe "" (\v -> " containing " <> describeRule v) (KM.lookup "has" o)
      in kind <> regex <> inside <> has
   _ -> "a matching node"
+
+-- | A line split at a 1-based UTF-8 byte column: the text before it, and from it.
+splitAtByte :: Text -> Int -> (Text, Text)
+splitAtByte l col =
+  let (b, a) = BS.splitAt (col - 1) (TE.encodeUtf8 l)
+   in (TE.decodeUtf8Lenient b, TE.decodeUtf8Lenient a)
 
 -- | The label, rendered with what is bound; the description when it needs more.
 labelFor :: GeneratorWith s -> AppliesAt -> M.Map Text Text -> Text

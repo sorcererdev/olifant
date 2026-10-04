@@ -301,6 +301,19 @@ runCliSpec = describe "runCli" $ do
     (code, out, _, _) <- runWith "top\n  it \"" files False ["gen", "s", "--at", "a.txt:2:7", "--plan", "--json", "--overlay", "a.txt"]
     code `shouldBe` ExitSuccess
     out `shouldSatisfy` T.isInfixOf "\"snippet\":{\"body\":\"  a\\n  b$0\",\"file\":\"a.txt\",\"ghost\":[\"  a\",\"  b\"],\"line\":2}"
+  it "(review I7, I8) --at outside the file, and --steps - with --overlay, are usage errors" $ do
+    let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "one\ntwo\n")]
+    (c0, o0, _, d0) <- runWith "" files False ["gen", "s", "--at", "a.txt:0:1"]
+    (c0, M.lookup "/proj/a.txt" d0) `shouldBe` (ExitFailure 2, Just "one\ntwo\n")
+    o0 `shouldSatisfy` T.isInfixOf "--at a.txt:0: line 0 is outside a.txt (lines 1–3)"
+    (c9, _, _, _) <- runWith "" files False ["gen", "s", "--at", "a.txt:9:1", "--plan"]
+    c9 `shouldBe` ExitFailure 2
+    (c3, _, _, _) <- runWith "" files False ["gen", "s", "--at", "a.txt:3:1", "--plan"]
+    c3 `shouldBe` ExitSuccess
+    (cs, os, _, _) <- runWith "[]" files False ["gen", "--steps", "-", "--plan", "--overlay", "a.txt"]
+    cs `shouldBe` ExitFailure 2
+    os `shouldSatisfy` T.isInfixOf "--steps - and --overlay both read stdin"
   it "plans a snippet against an unsaved buffer (--at with --overlay)" $ do
     let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
         files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "on disk\n")]
@@ -509,7 +522,7 @@ runCliSpec = describe "runCli" $ do
           , "[[edits]]", "cursor = true", "text = \"V,\""
           , "[applies_at]", "path = \"**/*.x\"", "trigger = '^[[:space:]]*$'", "label = \"Failure variant\"" ]
         files = ("/proj/.olifant/generators/variant/generator.toml", gen) : project
-    (code, out, _, _) <- runWith "enum E {\n    already typed\n}\n" files False ["complete", "--at", "billing/src/cancel.x:2:9", "--content", "-", "--json"]
+    (code, out, _, _) <- runWith "enum E {\n    fail\n}\n" files False ["complete", "--at", "billing/src/cancel.x:2:9", "--content", "-", "--json"]
     code `shouldBe` ExitSuccess
     out `shouldSatisfy` T.isInfixOf "[{\"detail\":\"A variant\",\"generator\":\"variant\",\"label\":\"Failure variant\",\"name\":\"Failure variant\",\"sets\":{}}]"
     (_, human, _, _) <- runWith "" files False ["complete", "--at", "billing/src/cancel.x:1:1", "--human"]

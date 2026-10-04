@@ -371,6 +371,9 @@ runCommand rt cwd fmt cat = \case
       SyncInit name -> case find ((== name) . regionName) (catalogRegions cat) of
         Nothing -> failWith rt fmt 3 "region_not_found" ("no region named `" <> name <> "`") (Just "regions are declared in regions.toml") ["available" .= map regionName (catalogRegions cat)]
         Just def -> initRegion rt fmt ws tools def now
+  GenCmd g
+    | genStepsFile g == Just "-", Just _ <- genOverlay g ->
+        usageIn rt fmt "--steps - and --overlay both read stdin: pass the steps as a file (--steps FILE)"
   GenCmd g -> do
     let usage = usageIn rt fmt
     specs <- case genStepsFile g of
@@ -439,7 +442,10 @@ placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
     let unit = maybe "    " langIndent (languageFor (catalogLanguages cat) rel)
     pure $ case text of
       Nothing -> Left (T.pack rel <> " does not exist")
-      Just t -> Right [if isSnippet gen then atCursor unit rel line (T.splitOn "\n" t) gen else gen | gen <- gens]
+      Just t
+        | let n = length (T.splitOn "\n" t), line < 1 || line > n ->
+            Left ("--at " <> T.pack rel <> ":" <> T.pack (show line) <> ": line " <> T.pack (show line) <> " is outside " <> T.pack rel <> " (lines 1–" <> T.pack (show n) <> ")")
+        | otherwise -> Right [if isSnippet gen then atCursor unit rel line (T.splitOn "\n" t) gen else gen | gen <- gens]
 
 -- | Run plan steps as `gen` does (model, fills, progress, regions,
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,

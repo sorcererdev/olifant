@@ -120,6 +120,15 @@ spec = describe "olifant actions (spec §4.6)" $ do
     it "(b) not once more is typed, nor with the cursor before it" $ do
       on "  it \"x" 8 "" `shouldBe` []
       on "  it \"" 3 "" `shouldBe` []
+    it "(review I1) never on a line with code after the cursor: the snippet would replace it" $ do
+      let blank = generator . T.unlines $
+            [ "description = \"d\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
+            , "[applies_at]", "path = \"**/*.rs\"", "trigger = '^[[:space:]]*$'" ]
+          onLine l c = runIdentity (actionsAt matches [rust] noQueries [] (const (pure Nothing)) [("p/blank", blank)] file (1, c) (l <> "\n"))
+      onLine "    Unknown(String)," 1 `shouldBe` []
+      onLine "    Unknown(String)," 3 `shouldBe` []
+      map actGenerator (onLine "    " 5) `shouldBe` ["p/blank"]
+      map actGenerator (onLine "" 1) `shouldBe` ["p/blank"]
     it "(b) a generator without a trigger is unchanged" $
       map actGenerator (at matches [("g", failureArms)] file (3, 6)) `shouldBe` ["g"]
   it "(d) lists the choices of a missing enum input" $ do
@@ -142,7 +151,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
         specCase = generator . T.unlines $
           [ "description = \"A spec case\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
           , "[applies_at]", "path = \"**/*.rs\"", "trigger = 'it \"'", "label = \"Spec case\"" ]
-        complete gens = runIdentity (completionsAt matches [rust] noQueries ["ports/email_sender.rs", "ports/invoice_repository.rs"] (const (pure Nothing)) gens file (1, 1) "x")
+        complete gens = runIdentity (completionsAt matches [rust] noQueries ["ports/email_sender.rs", "ports/invoice_repository.rs"] (const (pure Nothing)) gens file (1, 1) "")
     it "(a) one item per choice of the one missing enum input, labelled with it" $
       map (\c -> (cpLabel c, cpSets c)) (complete [("p/add-port", addPort)])
         `shouldBe` [("Add port email_sender", [("port", "email_sender")]), ("Add port invoice_repository", [("port", "invoice_repository")])]
@@ -150,6 +159,15 @@ spec = describe "olifant actions (spec §4.6)" $ do
       map cpGenerator (complete [("p/spec-case", specCase)]) `shouldBe` ["p/spec-case"]
     it "(b) a snippet whose one missing input has no choices offers nothing (no uncovered cases: no arm)" $
       runIdentity (completionsAt matches [rust] noQueries [] (const (pure Nothing)) [("p/add-port", addPort)] file (1, 1) "x") `shouldBe` []
+    it "(review I6) chosen: only on a line that is blank but for the word being typed (it replaces the line)" $ do
+      let onLine l c = runIdentity (completionsAt matches [rust] noQueries [] (const (pure Nothing)) [("p/spec-case", specCase)] file (1, c) (l <> "\n"))
+      map cpGenerator (onLine "  spe" 6) `shouldBe` ["p/spec-case"]
+      map cpGenerator (onLine "" 1) `shouldBe` ["p/spec-case"]
+      onLine "  foo bar" 10 `shouldBe` []
+      onLine "  spe x" 6 `shouldBe` []
+    it "(review I4) a snippet whose missing enum input has no choices is not listed at the cursor" $ do
+      let addPortNoPorts = runIdentity (actionsAt matches [rust] noQueries [] (const (pure Nothing)) [("p/add-port", addPort)] file (1, 1) "x")
+      addPortNoPorts `shouldBe` []
     it "(c) only snippets: other generators that apply are left out" $
       complete [("g", failureArms)] `shouldBe` []
   describe "--file: every place in a file (spec §4.6)" $ do
