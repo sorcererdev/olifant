@@ -1,0 +1,8 @@
+now = "2026-10-04T12:00:00Z"
+# The cursor: a blank line after the match's last arm. The compiler reports
+# AlreadyRefunded as not covered there.
+at = "billing/billing-service/src/refund_invoice.rs:35:1"
+
+# Run `OLIFANT_BLESS=1 cabal test` to record snapshot/ from the output.
+[inputs]
+pattern = "RefundInvoiceFailure::AlreadyRefunded"

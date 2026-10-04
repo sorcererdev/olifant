@@ -13,7 +13,7 @@ import Data.Text qualified as T
 import Olifant.Anchor (RenderedAnchor (..))
 import Olifant.Generator (AnchorSpec (..), EditWith (..), OnExists (..), Unless (..))
 import Olifant.Language (renderRule)
-import Olifant.Template (Env, Template, TemplateError, render)
+import Olifant.Template (Env, Template, TemplateError (..), render)
 import Olifant.Workspace (normalisePath)
 
 data RenderedEdit
@@ -49,6 +49,8 @@ renderEdits language env = traverse $ \case
   Insert target anchors src u -> RenderedInsert <$> path target <*> traverse anchor anchors <*> render env src <*> traverse (traverse (render env)) u
   Complete ctor wher body -> (\c w -> RenderedComplete (CompleteSpec c w body env language)) <$> render env ctor <*> traverse (render env) wher
   Replace target range old src -> (\p t -> RenderedReplace p range old t) <$> path target <*> render env src
+  -- placed by `gen --at` before planning ("Olifant.Cursor"); never reaches here otherwise
+  Cursor _ -> Left (TypeMismatch "a cursor edit (a snippet) needs a cursor: gen --at FILE:LINE:COL")
   where
     path t = normalisePath . T.unpack <$> render env t
     anchor = \case

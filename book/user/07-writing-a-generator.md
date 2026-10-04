@@ -262,7 +262,8 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
 | `[inputs.*]`, `[derive]`, `[requires]`, `[[edits]]`, `[[uses]]` | no | below; `[[uses]]` is [chapter 8](08-composing-generators.md) |
 | `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)); an enum that is `one_of` it takes its choices from it, with `value` saying which part of each record ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) |
-| `[applies_at]` | no | where in the code the generator applies, for editors: `path` (a pattern whose `{slot}`s bind inputs), `node` (an ast-grep rule the cursor must be inside), `bind` (inputs from regexes over that node's text), `file` (an input that takes the file's path) and `label`. `olifant actions` reads it ([chapter 14](14-editors-and-actions.md#applies_at-where-a-generator-applies)) |
+| `[applies_at]` | no | where in the code the generator applies, for editors: `path` (a pattern whose `{slot}`s bind inputs), `node` (an ast-grep rule the cursor must be inside), `bind` (inputs from regexes over that node's text), `file` (an input that takes the file's path), `label`, `where`, `suggest` and, for a snippet, `trigger` (what the text before the cursor must end with). `olifant actions` reads it ([chapter 14](14-editors-and-actions.md#applies_at-where-a-generator-applies)) |
+| `[holes.NAME]` | no | where a hole's value comes from: `source = "model"` (the default), `"yours"` (a tab stop) or `"derived"` with `value = "TEMPLATE"` (a pre-filled tab stop). For snippets ([below](#cursor-a-snippet); [chapter 12](12-holes-and-models.md#where-a-holes-value-comes-from-holesname)) |
 
 Any other key is an error that names the key, so typos fail at load (`list` marks the
 generator `INVALID`, `gen` exits 1).
@@ -364,8 +365,8 @@ conflict that prints the hint, so the hint should say how to fix it.
 
 ## Edits
 
-Every `[[edits]]` entry is exactly one of `create`, `insert` or `complete`. Paths and `at`
-phrases are templates too.
+Every `[[edits]]` entry is exactly one of `create`, `insert`, `complete` or `cursor`. Paths
+and `at` phrases are templates too.
 
 ### `create`
 
@@ -504,6 +505,27 @@ appears in the type GHC reports: `T`, `Maybe T`, `(T, Bool)`); rustc's (`rustc-j
 `Type::Variant` (`{= Failure =}::{= failure|pascal =}`, e.g.
 `RefundInvoiceFailure::AlreadyRefunded`; `Type.Variant` also works), visible where rustc
 reports a `match` on that type.
+
+### `cursor`: a snippet
+
+```toml
+[[edits]]
+cursor = true
+text   = "pub {= port|snake =}: Arc<dyn {= port|pascal =}>,"   # or: template = "…"
+```
+
+The text goes at the editor's cursor, given as `gen --at FILE:LINE:COL`
+([chapter 2](02-running-generators.md#a-snippet-at-the-cursor---at)): it replaces that line,
+each of its lines indented to fit. That makes the generator a **snippet**
+([chapter 14](14-editors-and-actions.md#writing-a-snippet)), which editors offer as ghost
+text or in a completion menu, with its holes as tab stops. The example is
+`rust-htmx/add-port`'s.
+
+A cursor edit must be the generator's only edit. What a snippet implies elsewhere (the
+port's wiring, a new variant's arms) belongs to another generator that editors offer as a
+follow-up; a generator with both is a load error that says so. `cursor = false` is an error
+too, not a way to switch it off. A snippet's holes may say where their values come from
+(`[holes.NAME]`, in the table above), and a snippet's `[applies_at]` may have a `trigger`.
 
 ## Putting inserts and `complete` together
 
@@ -719,7 +741,9 @@ as in `elm/msg`, so it only exists when an input asks for it:
 ```
 
 A hole without a `name:` and a `kind` is a load error ("a hole is `{= ? name: kind |
-instruction =}`"). [Chapter 12](12-holes-and-models.md) covers how holes are filled, and
+instruction =}`"). A hole is the model's unless a `[holes.NAME]` table says otherwise: in a
+snippet, `source = "yours"` makes it a plain tab stop and `source = "derived"` (with `value`)
+a pre-filled one. [Chapter 12](12-holes-and-models.md) covers how holes are filled, and
 [chapter 13](13-tutorial-holes.md) writes a generator with one.
 
 ### A literal `{` before a tag

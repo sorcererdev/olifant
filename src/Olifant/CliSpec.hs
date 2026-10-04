@@ -111,11 +111,11 @@ planOutputSpec = describe "planHuman" $ do
           , edit 2 "b.elm" (WillInsert 9 "Settings ->\n    1") (Just (Site "b.elm" "view" "Settings" False))
           , edit 3 "c.elm" (WillInsert 4 "T ->\n    Debug.todo \"\"") (Just (Site "c.elm" "toPath" "T" True))
           ]
-          [] [] M.empty [] M.empty
+          [] [] M.empty [] M.empty M.empty Nothing
   it "lists holes in the plan, with status (spec §6.4)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleUnfilled "no model is configured") Nothing
-        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty
-    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"placeholder\":\"todo!()\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty M.empty Nothing
+    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"placeholder\":\"todo!()\",\"source\":\"model\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
     planHuman False p `shouldSatisfy` T.isInfixOf "holes:\n  status (expr) a.rs:3  unfilled: no model is configured"
   describe "gen with holes (spec §6.4)" $ do
     let holeProject model =
@@ -151,7 +151,7 @@ planOutputSpec = describe "planHuman" $ do
       out `shouldSatisfy` T.isInfixOf "no model is configured"
   it "shows each fill in the plan, JSON and human (review I1)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleFilled "qwen" 1) (Just "409")
-        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty
+        p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty M.empty Nothing
     TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"fill\":\"409\""
     planHuman False p `shouldSatisfy` T.isInfixOf "status (expr) a.rs:3  filled by qwen: 409"
   it "marks edits the compiler found, and todos (fix pass)" $ do
@@ -259,6 +259,67 @@ runCliSpec = describe "runCli" $ do
     M.lookup "/proj/old.txt" onDisk `shouldBe` Just "on disk\n"
     (bad, _, _, _) <- runWith "x" files False ["gen", "two", "--set", "name=a", "--overlay", "old.txt"]
     bad `shouldBe` ExitFailure 2
+  it "(b) places a snippet at --at: replaces the cursor's line, indented to fit (spec §5.3)" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[[edits]]", "cursor = true", "text = \"#[error(\\\"m\\\")]\\nV,\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "enum E {\n    A,\n\n}\n")]
+    (code, out, err, onDisk) <- runWith "" files False ["gen", "s", "--at", "a.txt:3:1", "--plan"]
+    (code, err) `shouldBe` (ExitSuccess, "")
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"enum E {\\n    A,\\n    #[error(\\\"m\\\")]\\n    V,\\n}\\n\""
+    M.lookup "/proj/a.txt" onDisk `shouldBe` Just "enum E {\n    A,\n\n}\n"
+    -- (d) a snippet needs a cursor
+    (bad, badOut, _, _) <- runWith "" files False ["gen", "s", "--plan"]
+    bad `shouldBe` ExitFailure 2
+    badOut `shouldSatisfy` T.isInfixOf "`s` is a snippet: it needs --at FILE:LINE:COL"
+  it "(e) a snippet plan carries its ghost and tab-stop body, and each hole's source (spec §4.9)" $ do
+    let gen = T.unlines
+          [ "description = \"d\"", "language = \"x\""
+          , "[[edits]]", "cursor = true", "text = \"#[error(\\\"{= ? message: text | what =}\\\")]\\n{= ? Variant: ident | v =},\""
+          , "[holes.message]", "source = \"yours\"", "[holes.Variant]", "source = \"yours\"" ]
+        files =
+          [ ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[holes.text]\nplaceholder = '{= hole =}'\nwrap = \"h = {= fill =}\"\n[holes.ident]\nplaceholder = '{= hole =}'\nwrap = \"{= fill =}\"\n")
+          , ("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.x", "enum E {\n    A,\n\n}\n") ]
+    (code, out, err, _) <- runWith "" files False ["gen", "s", "--at", "a.x:3:1", "--plan", "--json", "--no-fill"]
+    (code, err) `shouldBe` (ExitSuccess, "")
+    -- indented as placed: the editor empties the line and expands at column 0
+    out `shouldSatisfy` T.isInfixOf "\"snippet\":{\"body\":\"    #[error(\\\"${1:message}\\\")]\\n    ${2:Variant},$0\",\"file\":\"a.x\",\"ghost\":[\"    #[error(\\\"⟨message⟩\\\")]\",\"    ⟨Variant⟩,\"],\"line\":3}"
+    -- the edit shows the holes as written, never the markers
+    out `shouldNotSatisfy` T.isInfixOf "olifant-hole"
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"enum E {\\n    A,\\n    #[error(\\\"message\\\")]\\n    Variant,\\n}\\n\""
+    out `shouldSatisfy` T.isInfixOf "\"kind\":\"text\""
+    out `shouldSatisfy` T.isInfixOf "\"source\":\"yours\""
+    -- a [holes.NAME] for a hole the templates never use
+    let typo = map (\(p, t) -> if p == "/proj/.olifant/generators/s/generator.toml" then (p, t <> "[holes.mesage]\nsource = \"yours\"\n") else (p, t)) files
+    (bad, badOut, _, _) <- runWith "" typo False ["gen", "s", "--at", "a.x:3:1", "--plan", "--json"]
+    bad `shouldNotBe` ExitSuccess
+    badOut `shouldSatisfy` T.isInfixOf "[holes.mesage]: no hole called mesage in this generator's templates"
+  it "a snippet's lines are the replacement's, whether or not the buffer ends with a newline" $ do
+    let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"a\\nb\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "x\n")]
+    (code, out, _, _) <- runWith "top\n  it \"" files False ["gen", "s", "--at", "a.txt:2:7", "--plan", "--json", "--overlay", "a.txt"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "\"snippet\":{\"body\":\"  a\\n  b$0\",\"file\":\"a.txt\",\"ghost\":[\"  a\",\"  b\"],\"line\":2}"
+  it "(review I7, I8) --at outside the file, and --steps - with --overlay, are usage errors" $ do
+    let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "one\ntwo\n")]
+    (c0, o0, _, d0) <- runWith "" files False ["gen", "s", "--at", "a.txt:0:1"]
+    (c0, M.lookup "/proj/a.txt" d0) `shouldBe` (ExitFailure 2, Just "one\ntwo\n")
+    o0 `shouldSatisfy` T.isInfixOf "--at a.txt:0: line 0 is outside a.txt (lines 1–3)"
+    (c9, _, _, _) <- runWith "" files False ["gen", "s", "--at", "a.txt:9:1", "--plan"]
+    c9 `shouldBe` ExitFailure 2
+    (c3, _, _, _) <- runWith "" files False ["gen", "s", "--at", "a.txt:3:1", "--plan"]
+    c3 `shouldBe` ExitSuccess
+    (cs, os, _, _) <- runWith "[]" files False ["gen", "--steps", "-", "--plan", "--overlay", "a.txt"]
+    cs `shouldBe` ExitFailure 2
+    os `shouldSatisfy` T.isInfixOf "--steps - and --overlay both read stdin"
+  it "plans a snippet against an unsaved buffer (--at with --overlay)" $ do
+    let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "on disk\n")]
+    (code, out, _, _) <- runWith "enum E {\n    A,\n\n}\n" files False ["gen", "s", "--at", "a.txt:3:1", "--plan", "--overlay", "a.txt"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"enum E {\\n    A,\\n    V,\\n}\\n\""
   it "gives each planned file's before and after, null before for a new file (for editors)" $ do
     let gen = T.unlines
           [ "description = \"d\"", "language = \"x\"", "[inputs.name]", "type = \"ident\""
@@ -455,6 +516,19 @@ runCliSpec = describe "runCli" $ do
     listed `shouldSatisfy` T.isInfixOf "\"name\":\"Model\""
     (_, shown, _, _) <- runWith "" project False ["show", "model", "--json"]
     shown `shouldSatisfy` T.isInfixOf "\"name\":\"Model\""
+  it "complete: snippets for the completion menu, at a position (spec §4.9)" $ do
+    let gen = T.unlines
+          [ "description = \"A variant\"", "language = \"x\"", "name = \"Failure variant\""
+          , "[[edits]]", "cursor = true", "text = \"V,\""
+          , "[applies_at]", "path = \"**/*.x\"", "trigger = '^[[:space:]]*$'", "label = \"Failure variant\"" ]
+        files = ("/proj/.olifant/generators/variant/generator.toml", gen) : project
+    (code, out, _, _) <- runWith "enum E {\n    fail\n}\n" files False ["complete", "--at", "billing/src/cancel.x:2:9", "--content", "-", "--json"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "[{\"detail\":\"A variant\",\"generator\":\"variant\",\"label\":\"Failure variant\",\"name\":\"Failure variant\",\"sets\":{}}]"
+    (_, human, _, _) <- runWith "" files False ["complete", "--at", "billing/src/cancel.x:1:1", "--human"]
+    human `shouldSatisfy` T.isInfixOf "⚡ Failure variant  (variant)"
+    (none, noneOut, _, _) <- runWith "" files False ["complete", "--at", "notes/readme.md:1:1", "--json"]
+    (none, T.strip noneOut) `shouldBe` (ExitSuccess, "[]")
   it "lists the actions that apply at a position (spec §4.6)" $ do
     let gen = T.unlines
           [ "description = \"Wire it\"", "language = \"x\""
@@ -463,12 +537,12 @@ runCliSpec = describe "runCli" $ do
         files = ("/proj/.olifant/generators/wire/generator.toml", gen) : project
     (code, out, _, _) <- runWith "unsaved text" files False ["actions", "--at", "billing/src/cancel.x:3:5", "--content", "-"]
     code `shouldBe` ExitSuccess
-    out `shouldSatisfy` T.isInfixOf "[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"},\"suggest\":false}]"
+    out `shouldSatisfy` T.isInfixOf "[{\"choices\":{},\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"},\"snippet\":false,\"suggest\":false,\"trigger\":false}]"
     (code2, _, _, _) <- runWith "" files False ["actions", "--at", "billing/src/cancel.x"]
     code2 `shouldBe` ExitFailure 2
     (code3, out3, _, _) <- runWith "" files False ["actions", "--file", "billing/src/cancel.x"]
     code3 `shouldBe` ExitSuccess
-    out3 `shouldSatisfy` T.isInfixOf "{\"actions\":[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"range\":null,\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"},\"suggest\":false}],\"nearby\":[]}"
+    out3 `shouldSatisfy` T.isInfixOf "{\"actions\":[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"range\":null,\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"},\"snippet\":false,\"suggest\":false,\"trigger\":false}],\"nearby\":[]}"
     (code4, _, _, _) <- runWith "" files False ["actions"]
     code4 `shouldBe` ExitFailure 2
   it "suggests `gen` when the first word looks like a generator" $ do

@@ -147,6 +147,49 @@ given file is the block's `};`). The other cases with a `given/`:
 The snapshot is compared against what the run writes, as always; a `given/` file the run
 leaves alone does not need to be in the snapshot.
 
+### A snippet case: `at`
+
+A snippet ([chapter 14](14-editors-and-actions.md#writing-a-snippet)) goes at a cursor, so its
+case says where the cursor is, as `gen --at` takes it:
+
+```toml
+# packs/rust-htmx/generators/failure-variant/tests/blank-line/inputs.toml
+now = "2026-10-04T12:00:00Z"
+# The cursor: the blank line after `Unknown(String),` (Esc strips its indent).
+at = "billing/billing-service/src/refund_invoice.rs:27:1"
+
+[inputs]
+```
+
+`at` is `FILE:LINE:COL`, a project path and a 1-based line and column. Anything else fails the
+case with the message a malformed `inputs.toml` gets ("cannot read …/inputs.toml (needs
+`now` and an [inputs] table of strings)"), which doesn't mention `at`. The case's `given/` holds the cursor's state:
+here `refund_invoice.rs` with the blank line 27. The snapshot is the file with that line
+replaced, each tab stop written as its name or value (`#[error("message")]` / `Variant,`), as
+`gen --at` writes it. `at` also gives `uncovered` queries their cursor
+([chapter 6](06-queries-and-choices.md#uncovered-the-cases-a-match-at-the-cursor-lacks)), so
+`match-arm`'s case gets its one choice, `RefundInvoiceFailure::AlreadyRefunded`, from the
+compiler, and its `fills.toml` has the model's `status`.
+
+The four snippet cases in this repository:
+
+| case | cursor | `given/` holds |
+|---|---|---|
+| `rust-htmx/failure-variant/blank-line` | `refund_invoice.rs:27:1` | a blank line in the `Failure` enum |
+| `rust-htmx/match-arm/uncovered-variant` | `refund_invoice.rs:35:1` | an `AlreadyRefunded` variant, and a blank line after `status()`'s last arm |
+| `rust-htmx/add-port/blank-field-line` | `cancel_invoice.rs:7:1` | `CancelInvoice`'s struct opened onto three lines |
+| `olifant-dev/spec-case/after-it` | `SampleUnitSpec.hs:8:7` | `  it "` typed as line 8 |
+
+Two of the checks below don't apply to a snippet case:
+
+- **It is not re-run.** After the first run the cursor's line is the expansion, so a second
+  run at the same cursor would be another snippet, not a no-op.
+- **It is not compiled on its own** in "rust pack output compiles". A snippet is unfinished by
+  design: `failure-variant`'s output has a variant no `match` covers, and `add-port`'s a field
+  nobody wires, until the follow-up runs. The "placeholder output compiles" group still runs
+  a snippet case that has a `fills.toml`, with the cursor placed as in the case, so
+  `match-arm`'s arm must compile with its `status` left as a placeholder.
+
 ## What a case checks
 
 `runCase` in `src/Olifant/GeneratorTesting.hs`:
@@ -163,7 +206,7 @@ leaves alone does not need to be in the snapshot.
    content, and every snapshot file must have been written.
 5. **Re-run is a no-op**: the same inputs are run again on the result, and must write nothing.
    This is what catches an `insert` that is not idempotent, or a `create` that would not
-   reproduce its own file.
+   reproduce its own file. A snippet case is not re-run ([above](#a-snippet-case-at)).
 
 A case with a `fills.toml` replays it as the model in steps 2 and 5, and fails if any hole
 ends up unfilled ([below](#holes-fillstoml-and-placeholder-output)).

@@ -210,7 +210,10 @@ spec = do
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
     rustSrc <- runIO (TIO.readFile "packs/rust-htmx/languages/rust.toml")
     let Right rust = parseLanguage "rust" "packs/rust-htmx" rustSrc
-    forM_ [c | c <- cases, casePack c == "rust-htmx"] $ \c ->
+    -- A snippet's case (it has a cursor, `at`) is unfinished by design: the
+    -- follow-up it raises completes it (spec §4.9), so it is not compiled alone.
+    snippetCases <- runIO (filterM (\c -> T.isInfixOf "\nat = " . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) cases)
+    forM_ [c | c <- cases, casePack c == "rust-htmx", c `notElem` snippetCases] $ \c ->
       it (T.unpack (caseName c)) $
         findExecutable "cargo" >>= \case
           Nothing -> missingTool strict "cargo is not installed (brew install rustup; rustup default stable)"
@@ -235,7 +238,8 @@ spec = do
         case (prepared, parseCaseInputs inputs) of
           (Left why, _) -> expectationFailure (T.unpack why)
           (_, Left why) -> expectationFailure (T.unpack why)
-          (Right (ws, tools, resolve, gen), Right (now, sets)) -> do
+          (Right (ws, tools0, resolve, gen0), Right (now, sets)) -> do
+            (tools, gen) <- atCaseCursor ws processChecker (either (const Nothing) id (parseCaseCursor inputs)) tools0 gen0
             Right plan <- generate ws resolve tools [Step gen sets] now PlanOnly
             [() | PlannedHole {phStatus = HoleUnfilled _} <- planHoles plan] `shouldNotBe` []
             src <- TIO.readFile (casePackRoot c </> "languages" </> (if casePack c == "elm" then "elm.toml" else "rust.toml"))

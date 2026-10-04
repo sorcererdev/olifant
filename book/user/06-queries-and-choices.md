@@ -148,7 +148,8 @@ route-names (1 edit, 0 conflicts)
 ```
 
 `routes` is a list like any other: templates, `for_each` and `[[uses]]` can use it. Any
-query works here (`glob`, `command`, `items_of`, `ast`). Queries run after inputs and
+query works here (`glob`, `command`, `items_of`, `ast`, and `uncovered`,
+[below](#uncovered-the-cases-a-match-at-the-cursor-lacks)). Queries run after inputs and
 `[derive]`, so their strings can use them (`files = "{= service_dir =}/src/{= cmd =}.rs"`),
 but not each other's records. A query named like an input or derived value is an error.
 A query that fails stops the generator with `query_failed` (exit 1).
@@ -433,6 +434,39 @@ For agents this matters: the valid values are in `show`, so there is no need to 
 directories first, and `show --set service=billing` gives exactly the values for the
 service at hand. In a chain of steps, each step's choices also see the files the steps
 before it create ([chapter 8](08-composing-generators.md)).
+
+## `uncovered`: the cases a `match` at the cursor lacks
+
+One more kind of query asks the compiler instead of the files. In a generator,
+
+```toml
+# packs/rust-htmx/generators/match-arm/generator.toml (excerpt)
+[inputs.pattern]
+type   = "enum"
+one_of = "uncovered"
+prompt = "The case to add an arm for"
+
+[query.uncovered]
+uncovered = "Failure::"
+value     = "name"
+```
+
+finds the cases the `match` at the editor's cursor is missing: it runs the file's language
+check (the adapter's `[check]`, as a `complete` edit does, [chapter 4](04-compiler-branches-and-todos.md))
+and reads the latest missing-case error in the cursor's file that starts at or above the
+cursor's line. Each missing pattern that matches the regex (POSIX extended, and a template)
+is a record with one field, `name`; a leading `&` (rustc's way of writing a case of a
+`match` on a reference) is left out. On a blank line after `status()`'s last arm, with an
+`AlreadyRefunded` variant that has no arm yet, the one record is
+`{name = "RefundInvoiceFailure::AlreadyRefunded"}`, so `pattern`'s one choice is that.
+
+It only makes sense with a cursor, and it only runs with one: `olifant actions --at`,
+`olifant complete`, `gen --at` and a test case with `at`. Anywhere else it finds nothing (an
+enum `one_of` it has no choices: `show` lists it as `<enum()>`). The generator it serves is
+a snippet, `rust-htmx/match-arm`
+([chapter 14](14-editors-and-actions.md#what-the-compiler-says-is-missing-uncovered-queries)).
+An `uncovered` query has no other keys, and a file whose adapter has no `[check]` makes it
+fail.
 
 ## `unless`: skip an edit when a file exists, or a line matches
 

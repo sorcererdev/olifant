@@ -1,0 +1,27 @@
+name = "Spec case"
+description = "An hspec case: `it \"…\" $ do` and its body, as tab stops (a snippet, spec §4.9)"
+language = "haskell"
+version = 1
+examples = [
+  "olifant gen olifant-dev/spec-case --at src/Olifant/SampleUnitSpec.hs:8:7 --plan",
+]
+
+# The behaviour is yours; the body starts as `pending`, yours to replace.
+[[edits]]
+cursor = true
+text = "it \"{= ? behaviour: text | what it does, in words =}\" $ do\n  {= ? body: expr | the test =}"
+
+[holes.behaviour]
+source = "yours"
+
+[holes.body]
+source = "derived"
+value  = "pending"
+
+# Anticipated right after typing `it "` in a spec.
+[applies_at]
+path    = "**/*Spec.hs"
+trigger = "^[[:space:]]*it \""
+where   = "after `it \"` in a spec"
+suggest = true
+label   = "Spec case"

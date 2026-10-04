@@ -37,6 +37,8 @@ spec = do
       map (\r -> (M.lookup "dir" r, M.lookup "stem" r)) (globRecords "*/*-service" [] ["billing/billing-service"])
         `shouldBe` [(Just (VText "billing"), Just (VText "billing-service"))]
   describe "queryFromTree" $ do
+    it "reads `uncovered = REGEX` (the cases the match at the cursor lacks, spec §4.9)" $
+      queryFromTree (TTable (M.fromList [("uncovered", TText "Failure::")])) `shouldBe` Right (UncoveredQuery "Failure::")
     it "reads a glob with excludes and a command with select and sort" $ do
       queryFromTree (TTable (M.fromList [("glob", TText "src/**/*.hs"), ("exclude", TList [TText "**/*Spec.hs"])])) `shouldBe` Right (GlobQuery "src/**/*.hs" ["**/*Spec.hs"])
       queryFromTree (TTable (M.fromList [("command", TList [TText "cargo", TText "metadata"]), ("select", TText "packages"), ("sort", TText "name")])) `shouldBe` Right (CommandQuery ["cargo", "metadata"] (Just "packages") (Just "name"))

@@ -1,0 +1,31 @@
+name = "Next match arm"
+description = "An arm for a case the compiler says this match lacks; its value is a hole the model fills (a snippet, spec §4.9)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/match-arm --at billing/billing-service/src/refund_invoice.rs:35:1 --set pattern=RefundInvoiceFailure::AlreadyRefunded --plan",
+]
+
+# The cases the match at the cursor lacks, from the compiler; editors offer
+# the first as ghost text and every one in the menu.
+[inputs.pattern]
+type   = "enum"
+one_of = "uncovered"
+prompt = "The case to add an arm for"
+
+[query.uncovered]
+uncovered = "Failure::"
+value     = "name"
+
+[[edits]]
+cursor = true
+text = "{= pattern =} => {= ? status: expr | the value this match returns for {= pattern =}, following the other arms =},"
+
+# Anticipated on a blank line inside a match in a command file.
+[applies_at]
+path    = "*/*-service/src/*.rs"
+node    = { kind = "match_block" }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line inside a match"
+suggest = true
+label   = "{= pattern =} arm"

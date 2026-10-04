@@ -6,6 +6,8 @@ module Olifant.GeneratorTesting
   , discoverCases
   , runCase
   , parseCaseInputs
+  , parseCaseCursor
+  , atCaseCursor
   , preparePack
   ) where
 
@@ -19,7 +21,10 @@ import Data.Time (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
+import Olifant.Cursor (atCursor, isSnippet)
+import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (Generator)
+import Olifant.Language.Adapter (Language (..), languageFor)
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Data.List (nub)
 import Olifant.Anchor (astQueries)
@@ -56,7 +61,7 @@ runCase root syntax checker bless pc = do
   caseInputs <- readText root (caseDir pc </> "inputs.toml")
   case caseInputs >>= either (const Nothing) Just . parseCase of
     Nothing -> pure (CaseFailed ["cannot read " <> T.pack (caseDir pc </> "inputs.toml") <> " (needs `now` and an [inputs] table of strings)"])
-    Just (now, sets) -> do
+    Just (now, sets, at) -> do
         -- A case's `given/` files replace or add to the fixture, for this
         -- case only: the state a re-run or a hand edit leaves.
         givenPaths <- listFiles root (caseDir pc </> "given")
@@ -67,10 +72,12 @@ runCase root syntax checker bless pc = do
         let replay = recorded >>= either (const Nothing) Just . parseFills
         preparePack root syntax checker (casePackRoot pc) (casePack pc) (caseGenerator pc) given >>= \case
           Left why -> pure (CaseFailed [why])
-          Right (ws, tools0, resolve, gen) -> do
-                   let tools = tools0 {toolFiller = (\fills -> ModelFiller "recorded" 0 (replayFiller fills)) <$> replay}
+          Right (ws, tools0, resolve, gen0) -> do
+                   -- A snippet goes at the case's cursor; it is not re-run (its
+                   -- line is the expansion now, so a second run is another snippet).
+                   (tools, gen) <- atCaseCursor ws checker at (tools0 {toolFiller = (\fills -> ModelFiller "recorded" 0 (replayFiller fills)) <$> replay}) gen0
                    firstRun <- generate ws resolve tools [Step gen sets] now Apply
-                   secondRun <- generate ws resolve tools [Step gen sets] now Apply
+                   secondRun <- if isSnippet gen0 then pure (fmap (\p -> p {planWrites = M.empty}) firstRun) else generate ws resolve tools [Step gen sets] now Apply
                    case (firstRun, secondRun) of
                      (Left err, _)
                        | generationToolMissing err -> pure (CaseSkipped (describeGenerationError err))
@@ -128,9 +135,24 @@ preparePack root syntax checker packRoot pack generator overlay =
             fixturePaths <- listFiles root fixtureDir
             fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
             (ws, _) <- memoryWorkspace (M.toList (M.fromList overlay `M.union` M.fromList fixture))
-            let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat)}
+            let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat), queryUncovered = \_ -> pure (Right [])}
                 tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries}
             pure (Right (ws, tools, resolver root syntax cat, gen))
+
+-- | A case's cursor (`at`): the snippet placed there, and `uncovered`
+-- queries asking the compiler about the match there (spec §4.9).
+atCaseCursor :: Workspace IO -> Checker IO -> Maybe (FilePath, Int) -> Tools IO -> Generator -> IO (Tools IO, Generator)
+atCaseCursor ws checker at tools gen = case at of
+  Nothing -> pure (tools, gen)
+  Just (file, line) -> do
+    text <- fromMaybe "" <$> readText ws file
+    let unit = maybe "    " langIndent (languageFor (toolLanguages tools) file)
+        tools' = tools {toolQueries = (toolQueries tools) {queryUncovered = uncoveredQuery checker (toolLanguages tools) ws file line}}
+    pure (tools', if isSnippet gen then atCursor unit file line (T.splitOn "\n" text) gen else gen)
+
+-- | A case's `at = "FILE:LINE:COL"`, if it has one.
+parseCaseCursor :: Text -> Either Text (Maybe (FilePath, Int))
+parseCaseCursor src = (\(_, _, at) -> at) <$> parseCase src
 
 -- | `[fills]` in a case's `fills.toml`: hole name = recorded code.
 parseFills :: Text -> Either Text (Map Text Text)
@@ -147,13 +169,20 @@ replayFiller fills = Filler $ \req -> pure $ case [fhName h | h <- frHoles req, 
 
 -- | A case's `inputs.toml`: `now` and the `[inputs]` values.
 parseCaseInputs :: Text -> Either Text (UTCTime, Map Text Text)
-parseCaseInputs = parseCase
+parseCaseInputs src = (\(now, sets, _) -> (now, sets)) <$> parseCase src
 
-parseCase :: Text -> Either Text (UTCTime, Map Text Text)
+-- | `now`, the `[inputs]`, and `at = "FILE:LINE:COL"`: where a snippet's
+-- cursor is (spec §5.3).
+parseCase :: Text -> Either Text (UTCTime, Map Text Text, Maybe (FilePath, Int))
 parseCase src = do
   top <- Toml.parseToml src
   nowText <- Toml.required "now" Toml.text top
   now <- maybe (Left "`now`: expected ISO 8601") Right (iso8601ParseM (T.unpack nowText))
   inputs <- fromMaybe M.empty <$> Toml.optional "inputs" Toml.table top
   sets <- traverse Toml.text inputs
-  pure (now, sets)
+  at <- Toml.optional "at" Toml.text top >>= traverse cursor
+  pure (now, sets, at)
+  where
+    cursor t = case reverse (T.splitOn ":" t) of
+      (_ : l : rest@(_ : _)) | [(line, "")] <- reads (T.unpack l) -> Right (T.unpack (T.intercalate ":" (reverse rest)), line)
+      _ -> Left "`at`: expected FILE:LINE:COL"

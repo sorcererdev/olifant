@@ -52,7 +52,9 @@ import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, isAbsolute, joinPath, makeRelative, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 
-data Query = GlobQuery Text [Text] | CommandQuery [Text] (Maybe Text) (Maybe Text) | AstQueryQ AstQuery
+-- | 'UncoveredQuery': the cases the compiler says the match at the cursor
+-- lacks, those matching a regex (spec §4.9); only where there is a cursor.
+data Query = GlobQuery Text [Text] | CommandQuery [Text] (Maybe Text) (Maybe Text) | AstQueryQ AstQuery | UncoveredQuery Text
   deriving stock (Eq, Show)
 
 -- | Nodes in code (spec §4.5): in the files a glob selects, the items of an
@@ -69,7 +71,10 @@ type Record = Map Text Value
 queryFromTree :: Tree -> Either Text Query
 queryFromTree tree = do
   t <- table tree
-  case filter (`M.member` t) ["glob", "command", "files"] of
+  case filter (`M.member` t) ["glob", "command", "files", "uncovered"] of
+    ["uncovered"] -> do
+      onlyKeys ["uncovered"] t
+      UncoveredQuery <$> required "uncovered" text t
     ["files"] -> do
       onlyKeys ["files", "items_of", "ast", "each"] t
       files <- required "files" text t
@@ -87,7 +92,7 @@ queryFromTree tree = do
       argv <- required "command" (list text) t
       if null argv then Left "`command` needs at least the program" else pure ()
       CommandQuery argv <$> optional "select" text t <*> optional "sort" text t
-    _ -> Left "a query needs exactly one of `glob`, `command` or `files` (an AST query)"
+    _ -> Left "a query needs exactly one of `glob`, `command`, `files` (an AST query) or `uncovered` (the cases the match at the cursor lacks)"
   where
     field (name, v) = inKey ("each." <> name) ((name,) <$> (text v >>= posixRegex))
 
@@ -111,6 +116,7 @@ describeQuery = \case
   AstQueryQ (AstQuery files sel _) -> "ast " <> files <> " (" <> (case sel of ItemsOf target -> "items of " <> target; RawRule _ -> "rule") <> ")"
   GlobQuery g _ -> "glob " <> g
   CommandQuery argv _ _ -> "command " <> T.unwords argv
+  UncoveredQuery re -> "uncovered " <> re
 
 -- | What queries never see: the directories no listing walks, plus Olifant's own.
 ignoredDirs :: [FilePath]
@@ -170,6 +176,7 @@ queryVariables = \case
   GlobQuery g ex -> vars (g : ex)
   CommandQuery argv _ _ -> vars argv
   AstQueryQ (AstQuery files sel _) -> vars (files : [t | ItemsOf t <- [sel]])
+  UncoveredQuery re -> vars [re]
   where
     vars ts = S.unions [either (const S.empty) freeVariables (parseTemplate t) | t <- ts]
 
@@ -188,6 +195,9 @@ data Queries m = Queries
   , -- | an AST query over some paths, reading files through the given view
     -- (a plan's contents first, then disk)
     queryAst :: AstQuery -> [FilePath] -> (FilePath -> m (Maybe Text)) -> m (Either QueryFailure [Record])
+  , -- | the cases the match at the cursor lacks, matching a regex (records
+    -- with `name`); none where there is no cursor (see "Olifant.Uncovered")
+    queryUncovered :: Text -> m (Either QueryFailure [Record])
   }
 
 noQueries :: Applicative m => Queries m
@@ -195,6 +205,7 @@ noQueries =
   Queries
     { queryCommand = \argv -> pure (Left (failed ("commands are not available here (" <> T.unwords argv <> ")")))
     , queryAst = \q _ _ -> pure (Left (failed ("AST queries are not available here (" <> describeQuery (AstQueryQ q) <> ")")))
+    , queryUncovered = \_ -> pure (Right [])
     }
 
 processCommand :: FilePath -> [Text] -> IO (Either QueryFailure ByteString)
@@ -223,6 +234,7 @@ runQuery :: Monad m => Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -
 runQuery queries paths readFile' q = case q of
   GlobQuery g excludes -> pure (Right (globRecords g excludes paths))
   AstQueryQ ast -> queryAst queries ast paths readFile'
+  UncoveredQuery re -> queryUncovered queries re
   CommandQuery argv select sortKey ->
     queryCommand queries argv >>= \case
       Left f -> pure (Left f {failureWhy = describeQuery q <> " failed: " <> failureWhy f})
@@ -255,6 +267,7 @@ renderQuery :: Env -> Query -> Either TemplateError Query
 renderQuery env = \case
   GlobQuery g excludes -> GlobQuery <$> tmpl g <*> traverse tmpl excludes
   CommandQuery argv sel sortKey -> CommandQuery <$> traverse tmpl argv <*> pure sel <*> pure sortKey
+  UncoveredQuery re -> UncoveredQuery <$> tmpl re
   AstQueryQ (AstQuery files sel each) -> do
     files' <- tmpl files
     sel' <- case sel of

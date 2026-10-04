@@ -39,6 +39,7 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generator
+import Olifant.Snippet (withHoleSources)
 import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
 import Olifant.Language (Language (..), Match (..), Syntax, languageFor, matchShape, parseLanguage)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
@@ -234,8 +235,10 @@ findEntry cat ref =
 -- | Resolve a generator's sources (templates, exemplars, fragments) into
 -- templates. Fragments need the syntax port and the catalog's adapters.
 loadGenerator :: Monad m => Workspace m -> Syntax m -> Catalog -> CatalogEntry -> m (Either CatalogError Generator)
-loadGenerator root syntax cat entry = sequenceA <$> traverse resolve (entryDefinition entry)
+loadGenerator root syntax cat entry = (>>= sourced) . sequenceA <$> traverse resolve (entryDefinition entry)
   where
+    -- `[holes.NAME]` sources go into the hole markers (spec §4.9)
+    sourced g = first (SourceInvalid gid (entryDir entry </> "generator.toml")) (withHoleSources g)
     gid = entryId entry
     resolve = \case
       InlineText t -> pure (Right t)

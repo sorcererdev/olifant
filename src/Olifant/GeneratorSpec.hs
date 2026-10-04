@@ -245,6 +245,25 @@ parseSpec = describe "parseGenerator" $ do
     it "derives one from the id when there is none" $ do
       fmap generatorName (parseGenerator (GeneratorId "rust-htmx/command-dependency") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Command Dependency"
       fmap generatorName (parseGenerator (GeneratorId "olifant-dev/error_case") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Error Case"
+  describe "cursor edits (snippets, spec §5.3)" $ do
+    let snippet extra = parseGenerator (GeneratorId "p/s") (T.unlines (["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"x\""] ++ extra))
+    it "reads `cursor = true` with a text or template" $
+      fmap (map (\case Cursor _ -> "cursor"; _ -> "other" :: T.Text) . genEdits) (snippet []) `shouldBe` Right ["cursor"]
+    it "(a) refuses a cursor edit beside any other edit" $
+      snippet ["[[edits]]", "create = \"a.txt\"", "text = \"y\""] `shouldSatisfy` either ("a cursor edit (a snippet) must be the generator's only edit" `T.isInfixOf`) (const False)
+    it "refuses `cursor = false`" $
+      parseGenerator (GeneratorId "p/s") (T.unlines ["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = false", "text = \"x\""]) `shouldSatisfy` either ("cursor = true" `T.isInfixOf`) (const False)
+  describe "[holes.NAME]: where a hole's value comes from (spec §4.9)" $ do
+    let withHoles extra = parseGenerator (GeneratorId "p/s") (T.unlines (["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"{= ? V: ident | v =} {= ? b: block | b =}\""] ++ extra))
+    it "(a) reads yours and derived (model is the default)" $
+      fmap (map (fmap describeHoleSource) . genHoles) (withHoles ["[holes.V]", "source = \"yours\"", "[holes.b]", "source = \"derived\"", "value = \"pending\""])
+        `shouldBe` Right [("V", "yours"), ("b", "derived")]
+    it "(a) refuses an unknown source, naming the ones there are" $
+      withHoles ["[holes.V]", "source = \"mine\""] `shouldSatisfy` either ("yours, derived or model" `T.isInfixOf`) (const False)
+    it "(a) a derived hole needs its value" $
+      withHoles ["[holes.b]", "source = \"derived\""] `shouldSatisfy` either ("`value`" `T.isInfixOf`) (const False)
+    it "(a) choice holes are not built yet: says to use an input with one_of" $
+      withHoles ["[holes.V]", "source = \"choice\""] `shouldSatisfy` either ("one_of" `T.isInfixOf`) (const False)
   describe "[applies_at] (spec §4.6)" $ do
     let gen extra = load (T.unlines (
           [ "description = \"d\"", "language = \"rust\""
@@ -264,6 +283,9 @@ parseSpec = describe "parseGenerator" $ do
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either ("`{svc}` in applies_at.path is not an input" `T.isInfixOf`) (const False)
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either (not . ("`applies_at`: `applies_at`" `T.isInfixOf`)) (const False)
       gen ["[applies_at]", "path = \"x.rs\"", "bind = { nope = \"(a)\" }"] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
+    it "(a) reads `trigger`, a POSIX regex over the text before the cursor (spec §4.9)" $ do
+      fmap (fmap apTrigger . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\"", "trigger = 'it \"'"]) `shouldBe` Right (Just (Just "it \""))
+      gen ["[applies_at]", "path = \"x.rs\"", "trigger = '\\s'"] `shouldSatisfy` either ("POSIX" `T.isInfixOf`) (const False)
     it "reads `suggest` (default false)" $ do
       fmap (fmap apSuggest . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\"", "suggest = true"]) `shouldBe` Right (Just True)
       fmap (fmap apSuggest . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\""]) `shouldBe` Right (Just False)

@@ -1,0 +1,41 @@
+name = "Add port"
+description = "A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)"
+language = "rust"
+version = 1
+examples = [
+  "olifant gen rust-htmx/add-port --set service=billing --set command=cancel_invoice --set port=email_sender --at billing/billing-service/src/cancel_invoice.rs:7:1 --plan",
+]
+
+[inputs.service]
+type = "ident"
+prompt = "The service the command belongs to"
+
+[inputs.command]
+type = "ident"
+prompt = "The command (use case) that needs the port"
+
+[inputs.port]
+type   = "enum"
+one_of = "ports"
+prompt = "The port (a file in the service's ports/)"
+
+[derive]
+service_dir = "{= service|kebab =}/{= service|kebab =}-service"
+
+# The service's ports; the menu has one item per port.
+[query.ports]
+glob  = "{= service_dir =}/src/ports/*.rs"
+value = "file name"
+
+# The field; the follow-up (Wire … dependencies) adds the import, new()'s
+# parameter and main.rs's construction.
+[[edits]]
+cursor = true
+text = "pub {= port|snake =}: Arc<dyn {= port|pascal =}>,"
+
+# Chosen, not anticipated: inside the command's struct, from the menu.
+[applies_at]
+path  = "{service}/*-service/src/{command}.rs"
+node  = { kind = "field_declaration_list", inside = { kind = "struct_item", regex = "^pub struct {= command|pascal =} ", stopBy = "end" } }
+where = "inside the {= command|pascal =} struct"
+label = "Add port {= port|pascal =}"

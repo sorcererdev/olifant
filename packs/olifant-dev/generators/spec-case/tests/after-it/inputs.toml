@@ -1,0 +1,6 @@
+now = "2026-10-04T12:00:00Z"
+# The cursor: just after typing `it "` on line 8.
+at = "src/Olifant/SampleUnitSpec.hs:8:7"
+
+# Run `OLIFANT_BLESS=1 cabal test` to record snapshot/ from the output.
+[inputs]

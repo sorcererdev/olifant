@@ -43,6 +43,7 @@ library
     Olifant.Cli
     Olifant.Cli.Options
     Olifant.Cli.Output
+    Olifant.Cursor
     Olifant.Doctor
     Olifant.Fill
     Olifant.Generation
@@ -80,6 +81,7 @@ library
     Olifant.Query
     Olifant.Region
     Olifant.Rules
+    Olifant.Snippet
     Olifant.Suggest
     Olifant.Template
     Olifant.Template.Error
@@ -89,6 +91,7 @@ library
     Olifant.Template.Syntax
     Olifant.Template.Value
     Olifant.Toml
+    Olifant.Uncovered
     Olifant.Workspace
     -- olifant:end library-modules
 
@@ -117,6 +120,8 @@ test-suite spec
     Olifant.Cli.Options
     Olifant.Cli.Output
     Olifant.CliSpec
+    Olifant.Cursor
+    Olifant.CursorSpec
     Olifant.Doctor
     Olifant.DoctorSpec
     Olifant.Fill
@@ -166,6 +171,8 @@ test-suite spec
     Olifant.RegionSpec
     Olifant.Rules
     Olifant.RulesSpec
+    Olifant.Snippet
+    Olifant.SnippetSpec
     Olifant.Suggest
     Olifant.Template
     Olifant.Template.Error
@@ -176,6 +183,8 @@ test-suite spec
     Olifant.Template.Value
     Olifant.TemplateSpec
     Olifant.Toml
+    Olifant.Uncovered
+    Olifant.UncoveredSpec
     Olifant.Workspace
     Olifant.WorkspaceSpec
     -- olifant:end test-modules

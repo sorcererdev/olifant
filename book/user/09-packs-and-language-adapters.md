@@ -218,7 +218,7 @@ example   = "end of struct BillingService"
 | `comment` | region fences in this language's files (chapter 5) |
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
-| `indent` | one level of indentation; default four spaces. Used only when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)) |
+| `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
 | `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC) and `rustc-json` (cargo) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `[targets.*]` | the `at` targets (below) |
@@ -365,9 +365,26 @@ A pack's test cases check the first rule for you: the "placeholder output compil
 compiles every case that has recorded fills with its holes left unfilled
 ([chapter 10](10-testing-generators.md#holes-fillstoml-and-placeholder-output)).
 
-The kinds in this repository are Rust `expr`, `block` and `type`; Elm `expr`; and Haskell
-`expr` (`placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'`,
-`wrap = "olifantHole = {= fill =}"`). Using a kind the adapter doesn't declare is a conflict
+The kinds in this repository are Rust `expr`, `block`, `type`, `ident` and `text`; Elm
+`expr`; and Haskell `expr` (`placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'`,
+`wrap = "olifantHole = {= fill =}"`) and `text`. `ident` and `text` are for snippets' tab
+stops ([chapter 12](12-holes-and-models.md#where-a-holes-value-comes-from-holesname)), a name
+and text inside a string:
+
+```toml
+# packs/rust-htmx/languages/rust.toml
+# Tab stops in snippets (spec §4.9): a name, or text inside a string.
+[holes.ident]
+placeholder = "{= hole =}"
+wrap = "struct {= fill =};"
+
+[holes.text]
+placeholder = "{= hole =}"
+wrap = "const _: &str = \"{= fill =}\";"
+```
+
+A tab stop that is yours or derived is written as its name or value, not its placeholder, so
+these placeholders matter only for a model hole of that kind. Using a kind the adapter doesn't declare is a conflict
 that names the ones it has:
 
 ```

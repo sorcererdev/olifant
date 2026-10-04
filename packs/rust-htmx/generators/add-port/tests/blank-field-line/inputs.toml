@@ -1,0 +1,9 @@
+now = "2026-10-04T12:00:00Z"
+# The cursor: a blank line inside `pub struct CancelInvoice { … }`.
+at = "billing/billing-service/src/cancel_invoice.rs:7:1"
+
+# Run `OLIFANT_BLESS=1 cabal test` to record snapshot/ from the output.
+[inputs]
+service = "billing"
+command = "cancel_invoice"
+port = "email_sender"

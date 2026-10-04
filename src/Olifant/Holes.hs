@@ -54,10 +54,16 @@ hasMarkers = T.isInfixOf open
 
 -- | The kind's placeholder for a hole called @name@.
 placeholderFor :: Language -> Marker -> Text -> Either Text Text
-placeholderFor lang m name = case lookup (markerKind m) (langHoles lang) of
-  Nothing -> Left ("`" <> markerKind m <> "` is not a hole kind of the " <> langName lang <> " adapter (kinds: " <> kinds <> ")")
+placeholderFor lang m name = case lookup kind (langHoles lang) of
+  Nothing -> Left ("`" <> kind <> "` is not a hole kind of the " <> langName lang <> " adapter (kinds: " <> kinds <> ")")
+  -- a tab stop (spec §4.9) shows its name, or its derived value
+  Just _ | source == "yours" -> Right name
+  Just _ | source == "derived" -> Right (markerInstruction m)
   Just k -> either (const (Left ("the " <> langName lang <> " adapter's [holes." <> markerKind m <> "] placeholder failed to render"))) Right (render (M.fromList [("hole", VText name), ("instruction", VText (markerInstruction m))]) (kindPlaceholder k))
   where
+    (kind, source) = case T.breakOn "@" (markerKind m) of
+      (k, "") -> (k, "model")
+      (k, rest) -> (k, T.drop 1 rest)
     kinds = if null (langHoles lang) then "none" else T.intercalate ", " (map fst (langHoles lang))
 
 -- | What a check sees: every marker as its placeholder (by its own name).

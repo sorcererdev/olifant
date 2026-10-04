@@ -9,7 +9,7 @@ module Olifant.Generator.Load
   , useKeys
   ) where
 
-import Control.Monad (forM_, (>=>))
+import Control.Monad (forM_, when, (>=>))
 import Data.Char (isAlphaNum)
 import Data.Set qualified as S
 import Olifant.Generator.Inputs (inputsUsed)
@@ -41,6 +41,8 @@ parseGenerator gid src = do
   derived <- optional "derive" (shaped "a [derive] table of NAME = \"{= … =}\" lines" table) top >>= maybe (Right []) deriveFrom
   requires <- optional "requires" (table >=> requiresFrom) top
   edits <- fromMaybe [] <$> optional "edits" (shaped "[[edits]] (double brackets: an array of tables, one per edit)" (list (table >=> editFrom))) top
+  -- A snippet's distant consequences are the follow-up its result raises (spec §4.9).
+  when (any isCursor edits && length edits > 1) (Left "a cursor edit (a snippet) must be the generator's only edit: what it implies elsewhere is a separate generator, offered as a follow-up")
   uses <- fromMaybe [] <$> optional "uses" (list (table >=> useFrom)) top
   examples <- fromMaybe [] <$> optional "examples" (list text) top
   withValues <- maybe (Right []) (traverse (\(k, v) -> inKey ("query." <> k) ((k,) <$> queryWithValue v)) . M.toList) =<< optional "query" table top
@@ -60,7 +62,8 @@ parseGenerator gid src = do
     _ -> Right ()
   appliesAt <- optional "applies_at" (table >=> appliesAtFrom (map inputName inputs')) top
   name <- optional "name" text top
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name)
+  holes <- maybe (Right []) (traverse (\(k, v) -> inKey ("holes." <> k) ((k,) <$> (table v >>= holeSourceFrom))) . M.toList) =<< optional "holes" (shaped "[holes.NAME] tables, one per hole" table) top
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes)
   where
     queryWithValue v = do
       t <- table v
@@ -76,7 +79,7 @@ parseGenerator gid src = do
 -- | `[applies_at]` (spec §4.6). Slots and bind names must be inputs.
 appliesAtFrom :: [Text] -> Table -> Either Text AppliesAt
 appliesAtFrom inputNames t = do
-  onlyKeys ["path", "node", "bind", "file", "label", "where", "suggest"] t
+  onlyKeys ["path", "node", "bind", "file", "label", "where", "suggest", "trigger"] t
   path <- required "path" text t
   case [x | x <- slots path, x `notElem` inputNames] of
     x : _ -> Left ("`{" <> x <> "}` in applies_at.path is not an input (inputs: " <> T.intercalate ", " inputNames <> ")")
@@ -88,7 +91,9 @@ appliesAtFrom inputNames t = do
   where' <- traverse (inKey "where" . (text >=> tmpl)) (M.lookup "where" t)
   -- `suggest`: editors may offer it unasked, as ghost text or a follow-up (spec §4.8)
   suggest <- fromMaybe False <$> optional "suggest" bool t
-  pure (AppliesAt path node bind file label where' suggest)
+  -- `trigger`: what the text before the cursor must end with (spec §4.9)
+  trigger <- optional "trigger" (text >=> posixRegex) t
+  pure (AppliesAt path node bind file label where' suggest trigger)
   where
     slots p = case T.breakOn "{" p of
       (_, "") -> []
@@ -105,12 +110,13 @@ choiceValueFrom v = case v of
     | otherwise -> Left ("`value`: expected \"file name\", \"parent folder\", \"path\", a field name or a {= … =} template; got `" <> v <> "`")
 
 -- | The keys each table accepts (also the source of `olifant schema`).
-topKeys, inputKeys, createKeys, insertKeys, completeKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at"]
+topKeys, inputKeys, createKeys, insertKeys, completeKeys, cursorKeys, requiresKeys, useKeys :: [Text]
+topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
 completeKeys = ["complete", "where", "template", "text"]
+cursorKeys = ["cursor", "template", "text"]
 requiresKeys = ["exists", "hint"]
 useKeys = ["generator", "for_each", "with"]
 
@@ -197,6 +203,21 @@ scalarDefault = \case
 deriveFrom :: Table -> Either Text [(Text, Template)]
 deriveFrom tbl = traverse (\(k, v) -> inKey ("derive." <> k) ((,) k <$> (text v >>= tmpl))) (M.toList tbl)
 
+holeSourceFrom :: Table -> Either Text HoleSource
+holeSourceFrom t = do
+  onlyKeys ["source", "value"] t
+  required "source" text t >>= \case
+    "yours" -> Right Yours
+    "model" -> Right Model
+    "derived" -> Derived <$> required "value" (text >=> tmpl) t
+    "choice" -> Left "`choice` holes are not built yet: make it an input with one_of = \"QUERY\" (editors list one item per choice)"
+    other -> Left ("unknown source `" <> other <> "`: a hole's source is yours, derived or model")
+
+isCursor :: EditWith s -> Bool
+isCursor = \case
+  Cursor {} -> True
+  _ -> False
+
 requiresFrom :: Table -> Either Text Requires
 requiresFrom t = do
   onlyKeys requiresKeys t
@@ -205,7 +226,12 @@ requiresFrom t = do
   pure (Requires exists hint)
 
 editFrom :: Table -> Either Text (EditWith SourceRef)
-editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
+editFrom t = case filter (`M.member` t) ["create", "insert", "complete", "cursor"] of
+  ["cursor"] -> do
+    onlyKeysWith editAdvice cursorKeys t
+    required "cursor" bool t >>= \case
+      True -> Cursor <$> sourceFrom False t
+      False -> Left "`cursor = true` makes the edit a snippet at the editor's cursor; leave `cursor` out otherwise"
   ["create"] -> do
     onlyKeysWith editAdvice createKeys t
     target <- required "create" (pathText "create" >=> tmpl) t
@@ -239,7 +265,7 @@ editFrom t = case filter (`M.member` t) ["create", "insert", "complete"] of
     case (wher, src) of
       (Just _, Nothing) -> Left "`where` chooses a body for one kind of case, but this edit has no `text` or `template`; add one, or drop `where` to leave todos everywhere"
       _ -> pure (Complete ctor wher src)
-  _ -> Left "each edit needs exactly one of `create`, `insert` or `complete`: create = \"path/{= name =}.ext\" (a new file), insert = \"src/Main.elm\" with at = \"end of …\" (text into a file), or complete = \"Module.{= Ctor =}\" (case branches the compiler asks for)"
+  _ -> Left "each edit needs exactly one of `create`, `insert`, `complete` or `cursor`: create = \"path/{= name =}.ext\" (a new file), insert = \"src/Main.elm\" with at = \"end of …\" (text into a file), or complete = \"Module.{= Ctor =}\" (case branches the compiler asks for)"
 
 sourceFrom :: Bool -> Table -> Either Text SourceRef
 sourceFrom allowExemplar t = case (M.lookup "template" t, M.lookup "exemplar" t, M.lookup "text" t) of

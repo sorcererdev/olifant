@@ -152,17 +152,20 @@ From the bottom up:
 | **Model** | `[model]` config and the real fillers: request and reply formats per backend, called with `curl` | `Model.hs`: `Backend`, `ModelConfig`, `parseModelConfig`, `backendKinds`, `backendModel`, `systemPrompt`, `userPrompt`, `requestBody`, `decodeFills`, `curlFiller`, `probeBackend` | Fill, Process, Toml |
 | **Holes** | Typed holes inside a plan's text: markers, placeholders, final names, matching a hole against anything | `Holes.hs`: `Marker`, `HoleSite`, `splitMarkers`, `hasMarkers`, `placeholderize`, `placeHoles`, `matchesWithHoles` | Language, Template |
 | **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `pruned`, `diskWorkspace`, `memoryWorkspace`, `within`, `overlay`, `normalisePath`, `isSafeRelative` | Process (to run `git`) |
-| **Query** | Facts from the repo as records (globs, commands printing JSON, or AST queries selecting nodes), the **Queries** port, and what an enum's choice is | `Query.hs`: `Query`, `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `QueryFailure`, `failed`, `noQueries`, `processCommand`, `ChoiceValue`, `choiceValue`, `queryVariables` | Glob, Language (`Rule`), Naming, Process, Template, Toml |
+| **Query** | Facts from the repo as records (globs, commands printing JSON, AST queries selecting nodes, or the cases the compiler says a `match` at the cursor lacks), the **Queries** port, and what an enum's choice is | `Query.hs`: `Query` (with `UncoveredQuery`), `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `QueryFailure`, `failed`, `noQueries`, `processCommand`, `ChoiceValue`, `choiceValue`, `queryVariables` | Glob, Language (`Rule`), Naming, Process, Template, Toml |
 | **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Opening`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `placedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Holes, Language, Query, Suggest, Template |
-| **Generator** | A generator definition: the types, loading `generator.toml`, resolving `one_of` choices, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve, and `Choices`) and `Inputs` (including `envBefore`, `inputsUsed`), plus `parseGenerator`, `withChoices`, `needsChoices`, `ChoiceView`, `choiceViews` | Anchor, Language, Naming, Query, Template, Toml |
+| **Generator** | A generator definition: the types, loading `generator.toml`, resolving `one_of` choices, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve, `Choices`, and a snippet's `Cursor` edit and `HoleSource`) and `Inputs` (including `envBefore`, `inputsUsed`), plus `parseGenerator`, `withChoices`, `needsChoices`, `ChoiceView`, `choiceViews` | Anchor, Language, Naming, Query, Template, Toml |
+| **Cursor** | Snippets at the cursor (spec §5.3): a cursor edit placed as a replacement of the cursor's line, indented to fit | `Cursor.hs`: `isSnippet`, `atCursor`, `cursorIndent`, `indentTemplate` | Generator, Template |
+| **Snippet** | Typed holes with a source (spec §4.9), and what an editor expands: ghost lines and an LSP snippet body | `Snippet.hs`: `Snippet`, `withHoleSources`, `holeSource`, `snippetOf`, `lspEscape` | Generator, Holes, Template |
+| **Uncovered** | The cases the compiler says the `match` at the cursor lacks: the `uncovered` query | `Uncovered.hs`: `uncoveredAt`, `uncoveredQuery` | Glob, Holes, Language, Query, Template, Workspace |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
 | **Rules** | Rules (spec §5.9): parse `rules.toml` and the project's `[rules]`, check files against them, honour and report the exceptions, fingerprint findings for the baseline | `Rules.hs`: `RuleDef`, `RuleCheck`, `Severity`, `RulesConfig`, `Finding`, `Exception`, `parseRules`, `parseRulesConfig`, `parseSeverity`, `checkFiles`, `fingerprint` | Actions (`matchPathSlots`), Glob, Language, Template, Toml |
-| **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Template, Workspace |
-| **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `actionsAt`, `actionsInFile`, `describeRule`, `matchPathSlots` | Generator, Language, Query, Template |
+| **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
+| **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses; snippets for a completion menu (spec §4.9) | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `Completion`, `actionsAt`, `actionsInFile`, `completionsAt`, `describeRule`, `matchPathSlots` | Cursor, Generator, Language, Query, Template |
 | **Doctor** | `olifant doctor` (spec §4.7): what generators need here, and how to fix what is missing | `Doctor.hs`: `Status`, `Check`, `DoctorInput`, `DoctorPorts`, `doctor` | Language, Model |
-| **Catalog** | Finding packs and generators, checking a generator's sources and fixed `at` targets, loading one into a runnable `Generator`, reading `[model]`, and loading regions and rules | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `checkEntry`, `resolver`, `Catalog` (with `catalogModel`, `catalogProject`, `catalogPacks`, `catalogRules`, `catalogBrokenRules`, `catalogRulesConfig`), `CatalogEntry` | Anchor, Generator, Language, Model, Region, Rules, Template, Toml, Workspace |
+| **Catalog** | Finding packs and generators, checking a generator's sources and fixed `at` targets, loading one into a runnable `Generator` (with its `[holes.NAME]` sources in the hole markers), reading `[model]`, and loading regions and rules | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `checkEntry`, `resolver`, `Catalog` (with `catalogModel`, `catalogProject`, `catalogPacks`, `catalogRules`, `catalogBrokenRules`, `catalogRulesConfig`), `CatalogEntry` | Anchor, Generator, Language, Model, Region, Rules, Snippet, Template, Toml, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internals: `Cli/Options` (argument parsing), `Cli/Output` (rendering) | almost everything |
-| **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs` | Anchor, Catalog, Fill, Generation, Generator, Language, Query, Toml, Workspace |
+| **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
 
 `GeneratorTesting` isn't used by the CLI yet. Only `GeneratorTestingSpec` calls it.
 Fill and Suggest have no spec file of their own: Fill is types only, tested through
@@ -185,6 +188,8 @@ none upwards.
   │ Rules                                                      │  conventions as checks (uses Actions' path patterns)
   ├────────────────────────────────────────────────────────────┤
   │ Generation        Actions        Doctor                    │  the use cases: steps → plan → writes; actions; doctor
+  ├────────────────────────────────────────────────────────────┤
+  │ Cursor           Snippet          Uncovered                │  snippets: the cursor, tab stops, missing cases
   ├────────────────────────────────────────────────────────────┤
   │ Generator                   Region                         │  definitions (generator.toml, regions.toml)
   ├────────────────────────────────────────────────────────────┤
@@ -216,13 +221,16 @@ Model                → Fill, Process, Toml
 Anchor               → Holes, Language, Query, Suggest, Template
 Region               → Query, Template, Toml
 Generator            → Anchor, Language, Naming, Query, Template, Toml
-Generation           → Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Template, Workspace
-Actions              → Generator, Language, Query, Template
+Cursor               → Generator, Template          (Generator.Definition, Template.Syntax directly)
+Snippet              → Generator, Holes, Template   (Generator.Definition, Template.Syntax directly)
+Uncovered            → Glob, Holes, Language, Query, Template, Workspace
+Generation           → Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace
+Actions              → Cursor, Generator, Language, Query, Template
 Doctor               → Language, Model
 Rules                → Actions, Glob, Language, Template, Toml
-Catalog              → Anchor, Generator, Language, Model, Region, Rules, Template, Toml, Workspace
-Cli                  → Actions, Anchor, Catalog, Doctor, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Rules, Template, Toml, Workspace
-GeneratorTesting     → Anchor, Catalog, Fill, Generation, Generator, Language, Query, Toml, Workspace
+Catalog              → Anchor, Generator, Language, Model, Region, Rules, Snippet, Template, Toml, Workspace
+Cli                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Rules, Snippet, Template, Toml, Uncovered, Workspace
+GeneratorTesting     → Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace
 app/Main             → Cli, Language, Language.AstGrep, Model, Workspace
 ```
 
@@ -246,10 +254,19 @@ A module outside a unit normally imports only that unit's facade. These are the 
 (found with `grep -n 'import Olifant\.[A-Za-z]*\.[A-Z]'`):
 
 ```
-app/Main.hs:9                          import Olifant.Language.AstGrep (astGrepSyntax)
-src/Olifant/Cli.hs:25                  import Olifant.Generator.Schema (generatorSchema)
+app/Main.hs:15                         import Olifant.Language.AstGrep (astGrepSyntax)
+src/Olifant/Cli.hs:26                  import Olifant.Template.Syntax (Segment (..), Template (..))
+src/Olifant/Cli.hs:36                  import Olifant.Generator.Schema (generatorSchema)
+src/Olifant/Cursor.hs:14               import Olifant.Generator.Definition (EditWith (..), Generator, GeneratorWith (..))
+src/Olifant/Cursor.hs:15               import Olifant.Template.Syntax (Segment (..), Template (..))
+src/Olifant/GeneratorTesting.hs:27     import Olifant.Language.Adapter (Language (..), languageFor)
 src/Olifant/Holes.hs:20                import Olifant.Language.Adapter (HoleKind (..), Language (..), languageFor)
 src/Olifant/Query.hs:46                import Olifant.Language.Rule (Rule (..), renderRule, ruleFromTree)
+src/Olifant/Snippet.hs:19              import Olifant.Generator.Definition (GeneratorWith (..), HoleSource (..))
+src/Olifant/Snippet.hs:21              import Olifant.Template.Syntax (Segment (..), Template (..))
+src/Olifant/Uncovered.hs:19            import Olifant.Language.Adapter (CheckDef (..))
+src/Olifant/Uncovered.hs:20            import Olifant.Language.Check (Checker (..), describeCheckFailure)
+src/Olifant/Uncovered.hs:21            import Olifant.Language.Diagnostics (CheckReport (..), MissingPatterns (..))
 ```
 
 `Main` importing an adapter directly is fine: wiring adapters together is `Main`'s job.
@@ -257,6 +274,13 @@ src/Olifant/Query.hs:46                import Olifant.Language.Rule (Rule (..), 
 it is a small inconsistency, not a layering problem.
 `Cli` is the only user of the JSON Schema `olifant schema` prints, so the `Generator` facade
 does not re-export it.
+The snippet units go around facades more than the rest. `Cursor` and `Snippet` build and
+take apart `Template` segments (`Lit`, `Hole`), which the `Template` facade doesn't export,
+and `Cli` does the same to build a fix's replacement. `Snippet` imports
+`Generator.Definition` for `HoleSource`, which the facade does re-export, and `Uncovered` and
+`GeneratorTesting` reach into `Language.*` for names the `Language` facade also exports. None
+of these is a layering problem: `Template` could export its segments, and the rest could
+import the facades they skip.
 `Generation/Complete.hs` used to be a third exception here: it imported `Olifant.Language.Elm`
 directly and branched on `langQualify lang == Just "elm"` to decide whether to qualify a
 pattern. Step 2c (compiler support, below) closed that gap — the check loop now goes through
@@ -1149,26 +1173,49 @@ hole as "anything":
 That is what makes a re-run over a filled hole (or its placeholder, or your edit of either) a
 no-op that calls no model.
 
-**Placing the holes** (`Generation.hs:131`):
+**Placing the holes** (`Generation.hs:138`):
 
 ```haskell
--- src/Olifant/Generation.hs:131
-      let changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
+-- src/Olifant/Generation.hs:138
+      let replaced = [editPath e | e <- edits, WillReplace {} <- [editAction e]]
+          changed = M.fromList [(p, c) | (p, Just c) <- M.toList current, if p `elem` replaced then Just (Just c) /= M.lookup p originals else not (sameWithHoles (Just (Just c)) (M.lookup p originals))]
           (placed, holeConflicts, holes0) = case placeHoles (toolLanguages tools) changed of
             Left problems -> (changed, map HoleProblem problems, [])
-            Right (files, hs) -> (files, [], [PlannedHole h (HoleUnfilled "no model is configured") Nothing | h <- hs])
+            -- a tab stop (yours, derived) is the person's, never the model's (spec §4.9)
+            Right (files, hs) -> (files, [], [PlannedHole h (case snd (holeSource (holeKind h)) of "model" -> HoleUnfilled "no model is configured"; src -> HoleSkipped ("a tab stop (" <> src <> ")")) Nothing | h <- hs])
           shown = map (showHoles (toolLanguages tools)) edits
 ```
 
-`changed` is every file whose final text differs from the original, holes matching anything.
+`changed` is every file whose final text differs from the original, holes matching anything
+(a file a replacement rewrote, a fix's or a snippet's, is compared exactly instead).
 `placeHoles` (`Holes.hs:76`) walks those files line by line, collects every marker with its
 file and 1-based line, counts names, and gives each hole its final name: the bare name, or
 `name[file:line]` when it repeats. Then it renders each placeholder with that name and
 writes it in place of the marker, giving a `HoleSite` (`:28`) per hole: name, kind,
 instruction, file, line and placeholder. A file with markers but no adapter, or a kind the
 adapter doesn't declare, comes back as `Left` problems, and each becomes a `HoleProblem`
-conflict (`Plan.hs:88`; code `hole_problem`). Every hole starts as `PlannedHole site
-(HoleUnfilled "no model is configured") Nothing` (`Plan.hs:62`).
+conflict (`Plan.hs:88`; code `hole_problem`). Every model hole starts as `PlannedHole site
+(HoleUnfilled "no model is configured") Nothing` (`Plan.hs:62`); a snippet's tab stop
+starts, and stays, `HoleSkipped "a tab stop (yours)"` (or `derived`).
+
+**A hole's source rides in its kind.** `[holes.NAME] source = "yours"` or `"derived"`
+(user book, chapter 12) has to reach `placeHoles`, the fill phase and the plan's JSON, and
+the marker is what all of them see. So when `Catalog.loadGenerator` resolves a generator, it
+runs `Snippet.withHoleSources` (`Snippet.hs:31`, called as `sourced`, `Catalog.hs:241`) over
+every template: a `Hole n kind instr` named in `[holes]` becomes `Hole n "text@yours" instr`,
+or, for a derived one, `Hole n "expr@derived" value` (the instruction replaced by the
+`value` template, rendered like any instruction). A `[holes.NAME]` that names no hole is a
+`SourceInvalid` load error there. `Snippet.holeSource` (`:53`) splits a kind back into
+`(kind, source)`, `model` when there is no `@`. Downstream:
+
+- `placeholderFor` (`Holes.hs:56`) looks up the bare kind, so the adapter's kinds are checked
+  as usual, but writes a yours hole as its name and a derived one as its instruction, the
+  rendered value, instead of the kind's placeholder.
+- The excerpt above makes a non-model hole `HoleSkipped`, and the fill phase is given only
+  the `HoleUnfilled` ones (`forModel`, `Generation.hs:153`); the filled ones are merged back
+  by name, so `planHoles` keeps every hole in order.
+- `holeJson` (`Cli/Output.hs:217`) splits the kind into `kind` and `source`. The human form
+  prints the raw kind, `text@yours`.
 
 The adapters' placeholders must use `{= hole =}` (`holeKindFrom`, `Language/Adapter.hs:83`,
 refuses one that doesn't, `:86`), so every placeholder in a plan is unique text. Fills are
@@ -1332,11 +1379,11 @@ A missing-tool `CompleteFailed` gets a different suffix, at render time: `descri
 only a missing tool) is set, so the hint is in the CLI's human and JSON output and in pack
 test failures alike.
 
-#### 4h. Writes (`Generation.hs:174`)
+#### 4h. Writes (`Generation.hs:200`)
 
 ```haskell
--- src/Olifant/Generation.hs:174
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings)) writes holes (M.fromList before)
+-- src/Olifant/Generation.hs:200
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before) (M.filter hasMarkers changed) Nothing
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)
@@ -1354,7 +1401,11 @@ and simply doesn't write. The `Plan` type is in `src/Olifant/Generation/Plan.hs:
 `planBefore` (`:36`), is each written file's text before the plan, `Nothing` for a new file,
 for editors (the JSON `files`, step 5). It is `before` from 4g: `originals` (4b) where it
 can; a file that only the compiler found, named by no edit and no `[requires]`, was never
-inspected, so `generate` reads it from the workspace (`previous`).
+inspected, so `generate` reads it from the workspace (`previous`). The last two fields are
+for snippets: `planMarked` (`:39`) is every changed file that still has hole markers, as it
+was before `placeHoles`, so the CLI can tell which text was a hole, and `planSnippet` (`:41`)
+is always `Nothing` here; `gen --at` sets it in step 5
+([below](#snippets-gen---at-olifant-complete-and-uncovered)).
 
 The writes happen here, before anything is printed. If rendering the output crashed, the
 files would already be written.
@@ -1369,11 +1420,12 @@ Just before this, `runCommand` built the `Tools` for `generate` (`Cli.hs:238`) w
 events go through the `Tools` port, `GenerationSpec` can collect them in a list.
 
 ```haskell
--- src/Olifant/Cli.hs:240
+-- src/Olifant/Cli.hs:467
               Right plan0 -> do
                 let plan =
                       (if genNoFill g then noFill plan0 else plan0)
-                        { planWarnings =
+                        { planSnippet = snippetAt plan0
+                        , planWarnings =
                             planWarnings plan0
                               ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]
                               ++ ["language adapter " <> T.pack path <> " failed to load: " <> err | (path, err) <- catalogBrokenLanguages cat]
@@ -1396,9 +1448,10 @@ one printed is computed.
   nor a plain `gen` prints any edit's text. The `[step]` tag appears only when edits came
   from more than one step path (`multiStep`, `:232`).
 - **`planJson`** (`:168`) produces the `plan_version: 2` object, with a `holes` array from
-  `holeJson` (`:206`): `name`, `kind`, `file`, `line`, `placeholder` (`holePlaceholder` of
-  the `HoleSite`, the text an editor replaces with `⟨name⟩` in ghost text), `status`,
-  `model`, `attempts`, `why` and `fill`. Applied runs leave out file
+  `holeJson` (`:206`): `name`, `kind`, `source`, `file`, `line`, `placeholder`
+  (`holePlaceholder` of the `HoleSite`, the text an editor replaces with `⟨name⟩` in ghost
+  text), `status`, `model`, `attempts`, `why` and `fill`, and `snippet` (`:183`), the
+  `planSnippet` as `{file, line, ghost, body}` or `null`. Applied runs leave out file
   contents (`content`, `:190`) — this one is keyed only on `applied`, not on conflicts,
   because a conflicted edit never has a `WillCreate`/`WillInsert`/etc. action to hold
   content in the first place (`editAction` is `Conflicted`). `files` (`:177`) follows the same
@@ -1417,7 +1470,7 @@ not a dumped Haskell value (below).
 `gen` is one use case; the other is what editors call before it (user book, chapter 14):
 
 ```sh
-olifant actions --at src/Olifant/Catalog.hs:93:3     # in this repo: on `data CatalogError`
+olifant actions --at src/Olifant/Catalog.hs:94:3     # in this repo: on `data CatalogError`
 ```
 
 ```
@@ -1432,7 +1485,7 @@ is a load error. `node` is parsed by `ruleFromTree` (`:83`), as an `at` rule is,
 and `where` (`:88`) are templates, and `suggest` (`:90`) is an optional boolean, `False`
 when absent. The result is `genAppliesAt :: Maybe AppliesAt`
 (`Generator/Definition.hs:54`; `AppliesAt` at `:117`: `apPath`, `apNode`, `apBind`, `apFile`,
-`apLabel`, `apWhere`, `apSuggest`). `applies_at` is in `topKeys`, so `olifant schema` describes it. Errors
+`apLabel`, `apWhere`, `apSuggest`, and a snippet's `apTrigger`, [below](#snippets-gen---at-olifant-complete-and-uncovered)). `applies_at` is in `topKeys`, so `olifant schema` describes it. Errors
 are prefixed `` `applies_at`: `` once, by `optional`.
 
 **The command.** `Cli/Options.hs` (`actionsP`, `:124`) takes exactly one of `--at
@@ -1445,14 +1498,15 @@ files for the queries, and pairs every catalog entry's id with its definition. G
 fail to load aren't catalog entries, so they are never offered. Then it branches on the
 position:
 
-- `--at` calls `actionsAt`. `actionJson` (`:679`) renders each `Action` as `{generator,
-  name, label, sets, missing, suggest}`; the human form is one line per action. `name` and
-  `suggest` are not on the `Action`: `Actions` knows nothing of display names or editors, so
-  `runCommand` looks both up by generator id in the catalog (`nameOf`, and `suggestOf`,
-  `:166`, which is `apSuggest` of the generator's `[applies_at]`) and passes them in.
+- `--at` calls `actionsAt`. `actionJson` (`:738`) renders each `Action` as `{generator,
+  name, label, sets, missing, choices, suggest, snippet, trigger}`; the human form is one
+  line per action. `name`, `suggest`, `snippet` and `trigger` are not on the `Action`:
+  `Actions` knows nothing of display names or editors, so `runCommand` looks them up by
+  generator id in the catalog (`nameOf`, and `suggestOf`, `:171`, which gives `apSuggest`,
+  `isSnippet` and whether there is an `apTrigger`) and passes them in.
 - `--file` calls `actionsInFile` and renders `{"actions": [...], "nearby": [...]}` in place:
   each `FileAction` with its `range` (`{start: [l, c], end: [l, c]}`, or `null`) and the same
-  `name` and `suggest`, each `Nearby` as `{generator, name, label, why}`. The human form puts `LINE:COL  ` (or `file  `)
+  `name`, `suggest`, `snippet` and `trigger` (no `choices`), each `Nearby` as `{generator, name, label, why}`. The human form puts `LINE:COL  ` (or `file  `)
   before the `--at` line, then a `nearby: GENERATOR — WHY` line per near miss.
 
 **Matching** (`Actions.hs`). Both use cases take the ports they need as arguments (the
@@ -1545,6 +1599,108 @@ Olifant's part is three small pieces: `Workspace.overlay`, the `--overlay` optio
 existing); `CliSpec`'s "plans against an unsaved buffer" runs `gen --plan --overlay` on a
 memory workspace and checks the plan saw the stdin text and the disk did not change, and that
 `--overlay` without `--plan` is exit 2.
+
+## Snippets: `gen --at`, `olifant complete` and `uncovered`
+
+A snippet (user book, chapter 14; spec §4.9, §5.3) is a generator whose one edit goes at the
+cursor. Most of it is the machinery above, reused: the cursor edit becomes a replacement, the
+tab stops are holes, the menu is `actions`. Three small units carry what is new: **Cursor**
+(where the text goes), **Snippet** (hole sources, and what an editor expands) and
+**Uncovered** (the compiler's missing cases at the cursor).
+
+**Loading.** `editFrom` (`Generator/Load.hs:230`) reads `cursor = true` with a `text` or
+`template` (keys `cursorKeys`) into `Cursor {editSource}` (`Generator/Definition.hs:93`);
+`cursor = false` is refused. `parseGenerator` refuses a cursor edit beside any other edit
+(`:45`), reads `[holes.NAME]` into `genHoles :: [(Text, HoleSource)]` (`:65`;
+`holeSourceFrom`, `:206`; `HoleSource = Yours | Derived Template | Model`,
+`Definition.hs:129`), and `appliesAtFrom` reads `trigger` through `posixRegex` (`:95`) into
+`apTrigger`. `queryFromTree` (`Query.hs:77`) reads `uncovered = REGEX` as `UncoveredQuery`.
+`Catalog.loadGenerator` then writes the hole sources into the markers' kinds (4e).
+
+**Placing it: `gen --at`.** `parseGen` pulls `--at FILE:LINE:COL` out of the arguments
+before the steps are split (`takeAt`, `Cli/Options.hs:193`, as it does `--overlay`), and
+`cursorP` (`:170`) splits it from the right into `genAt`. In `runCommand`, once the steps'
+generators are loaded, `placeCursor` (`Cli.hs:431`) runs before `runSteps`:
+
+1. No snippet among them: the generators are unchanged (`--at` still gives `uncovered`
+   queries their cursor).
+2. A snippet and no `--at`: `Left`, which `runCommand` turns into a usage failure, exit 2.
+3. Otherwise it reads the cursor's file, from stdin when it is the `--overlay` file, and
+   replaces each snippet's `Cursor src` with `atCursor unit path line lines gen`
+   (`Cursor.hs:52`): a `Replace` of line `n`, `(n, n)`, whose old text is the line as read
+   and whose new text is `indentTemplate (cursorIndent unit ls n) src`. `unit` is the
+   adapter's `langIndent`.
+
+From there the planner sees a replacement, the kind a rule's fix makes (`Replace`,
+spec §5.9): `decideItems` checks the line still reads `old` (so a buffer that changed since
+is a drift conflict) and splices the new lines in. One fix was needed in `decideItems`
+(`Generation/Planner.hs:97`): an `old` of `""` is one empty line, not none, so a blank
+cursor line matches. `renderEdits` refuses a `Cursor` that reaches it (`Render.hs:53`); only a
+caller that skipped `placeCursor` could do that.
+
+`cursorIndent` (`Cursor.hs:21`) is the rule from the user book: a line with anything on it
+keeps its own leading whitespace; an empty one takes the previous non-blank line's, plus
+`unit` when that line ends with `{`, `(`, `[` or `=`, or is or ends with the word `where` or
+`do`. `indentTemplate` (`:34`) indents the template rather than its output: a `Lit ind`
+first, and `ind` after every newline inside literal text unless the line it starts is empty.
+A line that starts with a hole or a value is not empty, so it is indented too.
+
+**Reading stdin once.** `placeCursor` reads the overlay's text from stdin, and so does
+`Workspace.overlay` later. `Main` now wraps `rtReadStdin` in an `IORef` (`app/Main.hs:31`),
+so stdin is read at most once and every reader gets the same text.
+
+**The snippet in the plan.** `runSteps` gives `generate` the cursor's queries (`queriesAt`,
+below) and, after it, sets `planSnippet` with `snippetAtCursor` (`Cli.hs:482`). That takes
+the cursor file's text from `planMarked`, the text with its hole markers still in (from
+`planWrites` if it has none), takes as many lines from the cursor's line as the replacement
+there has, and looks up each model hole's fill in `planHoles` by its bare name (the name
+before any `[file:line]`). `snippetOf` (`Snippet.hs:61`) walks the lines with `splitMarkers`
+and numbers the holes in reading order with `mapAccumL`. Each marker becomes, in the ghost,
+`⟨name⟩` (yours, or a model hole with no fill), its value (derived) or its fill, and in the
+body `${N:…}` holding the name, the value or the fill. Literal text goes through `lspEscape`
+(`:78`), which escapes `\`, `$` and `}`, and the body ends with `$0`. Indentation stays as
+placed.
+
+**The menu: `actions` and `complete`.** `actionsAt` is now `actionsAtWith True`
+(`Actions.hs:83`). `actionsAtWith` (`:103`) sorts the generators with snippets last (`ordered`,
+`:108`, a stable `sortOn isSnippet`) and drops a candidate whose `trigger` the text before the
+cursor doesn't end with (`triggered`, `:124`): the cursor line's first `COL - 1` bytes,
+matched against the regex with `$` appended unless it ends with one. `offer` adds
+`actChoices` (`:209`): each missing input whose resolved type is an enum, with its values.
+`completionsAt` (`:91`) is `actionsAtWith False` (no trigger) over the snippets only; an
+action with nothing missing is one `Completion`, one missing enum input with choices is one
+per value (its label rendered with that value), and anything else is dropped.
+`runCommand` renders actions with `choices` (`actionJson`, `Cli.hs:738`) and, from the
+catalog, `suggest`, `snippet` and `trigger` (`suggestOf`, `:171`); `CompleteCmd` (`:191`)
+renders completions with the generator's `name` and `description` (`detail`).
+
+**`uncovered`.** The `Queries` port has a third field, `queryUncovered :: Text -> m (Either
+QueryFailure [Record])` (`Query.hs:200`). Everywhere without a cursor it answers `[]`
+(`projectQueries`, `noQueries`, `preparePack`). `queriesAt` (`Cli.hs:664`) swaps in
+`uncoveredQuery checker langs ws file line` for `actions --at`, `complete` and `gen --at`,
+where `ws` is the project with the overlay or `--content -` text laid over it. `uncoveredQuery`
+(`Uncovered.hs:43`) finds the file's language and its `[check]`, takes the project files the
+adapter and the check's `context` cover (pruned directories left out), placeholderizes their
+holes and runs the check through the **Checker** port. `uncoveredAt` (`:31`) reads the
+report's missing-case sites in that file that start at or above the cursor's line, takes the
+latest, strips a leading `&` or `&mut ` from each pattern, and keeps those matching the
+regex. Each becomes a record `{name = pattern}`.
+
+**Tests.** `parseCase` (`GeneratorTesting.hs:176`) reads a case's `at`. `runCase` passes it
+to `atCaseCursor` (`:144`), which places a snippet as `placeCursor` does and sets the tools'
+`queryUncovered` to the cursor's; a snippet case's second run is skipped (`:80`).
+`GeneratorTestingSpec` leaves cases whose `inputs.toml` has an `at` line out of "rust pack
+output compiles", and "placeholder output compiles" calls `atCaseCursor` too. The unit specs
+are `CursorSpec` (indentation, and the replacement), `SnippetSpec` (ghost, body, escaping,
+sources), `UncoveredSpec` (which site, `&`, the regex) and new cases in `GeneratorSpec`,
+`QuerySpec`, `ActionsSpec` (order, triggers, choices, `completionsAt`) and `CliSpec` (`gen
+--at` with and without `--overlay`, the `snippet` JSON, `complete`).
+
+**The editor's side.** `durandal.nvim` gates an anticipated snippet with `actions --at`
+(the trigger and the choices), plans it with `gen --at … --plan --json --no-fill --overlay`
+for the ghost, and on `Tab` plans it again with the model and `--progress` and expands the
+plan's `snippet.body` with `vim.snippet.expand` on the emptied line. Its nvim-cmp source calls
+`complete`. None of that writes a file: the expansion is a buffer edit.
 
 ## The third use case: `olifant doctor`
 
@@ -1801,8 +1957,28 @@ Suggestions brought these:
   command file that has never been saved has `command` in `missing` from `actions`, so the
   editor never suggests on it, though `gen --plan --overlay` accepts `command=pay_invoice`.
 - **One overlay, one stdin.** Only one file can be overlaid, and it is read from stdin, which
-  `--steps -` also reads: the two together fail with an internal error (`<stdin>:
-  hGetBuffering: illegal operation (handle is closed)`), not a usage error.
+  `--steps -` also reads. Since `Main` reads stdin once and shares it, the two together no
+  longer crash: both get the same text, so the steps parse and the overlaid file is the JSON
+  (`Plan: rust-htmx/wire-command (0 edits, 0 conflicts)`). It should be a usage error.
+
+Snippets brought these:
+
+- **A trigger sees only the text before the cursor.** `placeCursor` replaces the whole line,
+  so a whitespace trigger (`^[[:space:]]*$`) at the start of a line that has code offers a
+  snippet that would replace that code. Nothing checks the rest of the line.
+- **`--at` is not range-checked.** A `LINE` past the end of the file "replaces 0 lines" and
+  the snippet lands at the end.
+- **`withFills` doesn't touch `WillReplace`.** `--plan`'s edit text (and JSON `content`) for a
+  snippet or a fix shows a model hole's placeholder, though `files`, `snippet` and `holes`
+  have the fill.
+- **The source is in the kind.** The human hole line prints `text@yours`; JSON splits it. An
+  adapter kind with an `@` in its name would be misread.
+- **`--no-fill` overwrites a tab stop's `why`** with `--no-fill`, since `noFill` marks every
+  hole skipped.
+- **`olifant schema` doesn't know snippets.** The `edits` items' `oneOf` has no cursor edit and
+  `holes` is described as `{}`, so a schema-aware editor flags a valid snippet.
+- **An `uncovered` enum's choices exist only at a cursor**, so `show` prints `<enum()>`, and an
+  `actions --at` in a complete `match` still lists `match-arm` with `"choices":{"pattern":[]}`.
 
 The conventions brought these:
 

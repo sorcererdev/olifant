@@ -93,7 +93,11 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
                 (target, after) = splitAt (l2 - l1 + 1) rest
                 newLines = if T.null new then [] else T.lines new
                 same a b = map T.stripEnd a == map T.stripEnd b
-             in if same target (T.lines old)
+                -- the old lines as written ("" is one empty line, not none)
+                oldLines = case T.splitOn "\n" old of
+                  xs | length xs == length target + 1, last xs == "" -> init xs
+                  xs -> xs
+             in if same target oldLines
                   then (M.insert p (Just (T.unlines (before ++ newLines ++ after))) current, planned path n p (WillReplace l1 (length target) new), Nothing)
                   else
                     if not (null newLines) && same (take (length newLines) rest) newLines

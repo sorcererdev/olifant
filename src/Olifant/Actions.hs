@@ -9,11 +9,14 @@ module Olifant.Actions
   , matchPathSlots
   , actionsAt
   , actionsInFile
+  , Completion (..)
+  , completionsAt
   , describeRule
   ) where
 
 import Data.Aeson qualified as J
 import Data.Aeson.KeyMap qualified as KM
+import Data.Char (isAlphaNum, isSpace)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
@@ -22,15 +25,17 @@ import Data.ByteString qualified as BS
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian)
+import Olifant.Cursor (isSnippet)
 import Olifant.Generator
 import Olifant.Language
 import Olifant.Query (Queries)
 import Olifant.Template (Value (..), render)
-import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 
 -- | A generator offered at a cursor: its id, the label to show, the inputs
 -- bound from the path and the code, and the required inputs still missing.
-data Action = Action {actGenerator :: Text, actLabel :: Text, actSets :: [(Text, Text)], actMissing :: [Text]}
+-- | 'actChoices': for each missing enum input, its values (for editors, spec §4.9).
+data Action = Action {actGenerator :: Text, actLabel :: Text, actSets :: [(Text, Text)], actMissing :: [Text], actChoices :: [(Text, [Text])]}
   deriving stock (Eq, Show)
 
 -- | A path pattern against a project-relative path: `{name}` matches one
@@ -76,21 +81,65 @@ data Candidate = Whole | Nodes [Match] | Near Text
 -- | Every generator whose `applies_at` matches @path@ at the 1-based
 -- (line, column), given the file's (possibly unsaved) text.
 actionsAt :: Monad m => Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Action]
-actionsAt syntax langs queries paths readFile' gens path (line, col) content =
-  fmap catMaybes . traverse one =<< candidates syntax langs gens path content
+actionsAt = actionsAtWith True
+
+-- | Snippets for a completion menu at the cursor (spec §4.9): like
+-- 'actionsAt', but a trigger is not needed (the person chose to look), and
+-- a snippet missing one enum input is one item per choice.
+data Completion = Completion {cpGenerator :: Text, cpLabel :: Text, cpSets :: [(Text, Text)]}
+  deriving stock (Eq, Show)
+
+completionsAt :: Monad m => Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Completion]
+completionsAt syntax langs queries paths readFile' gens path pos@(line, col) content
+  -- a snippet replaces its line: only a line that is blank but for the word
+  -- being typed (review I6)
+  | not (T.all isSpace (T.dropWhileEnd isWordChar before) && T.all isSpace after) = pure []
+  | otherwise = do
+      acts <- actionsAtWith False syntax langs queries paths readFile' snippets path pos content
+      pure (concatMap items acts)
   where
+    (before, after) = splitAtByte (fromMaybe "" (listToMaybe (drop (line - 1) (T.lines content)))) col
+    isWordChar c = isAlphaNum c || c == '_' 
+    snippets = [(gid, g) | (gid, g) <- gens, isSnippet g]
+    items a = case (actMissing a, lookup (actGenerator a) snippets) of
+      ([], _) -> [Completion (actGenerator a) (actLabel a) (actSets a)]
+      ([k], Just g) | Just cs <- lookup k (actChoices a), Just ap <- genAppliesAt g ->
+        [Completion (actGenerator a) (labelFor g ap (M.fromList sets)) sets | v <- cs, let sets = M.toAscList (M.insert k v (M.fromList (actSets a)))]
+      _ -> []
+
+actionsAtWith :: Monad m => Bool -> Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Action]
+actionsAtWith useTrigger syntax langs queries paths readFile' gens path (line, col) content =
+  fmap catMaybes . traverse one =<< candidates syntax langs ordered path content
+  where
+    -- snippets after the rest: what was written comes before what comes next
+    ordered = sortOn (isSnippet . snd) gens
     -- COL is a UTF-8 byte column (Neovim's, LSP's utf-8); ast-grep's columns
     -- are characters, so the cursor is converted on its own line.
     cursor = (line - 1, charColumn (drop (line - 1) (T.lines content)))
     charColumn = \case
       l : _ -> T.length (TE.decodeUtf8Lenient (BS.take (col - 1) (TE.encodeUtf8 l)))
       [] -> col - 1
-    one (gid, gen, ap, fromPath, cand) = case cand of
+    one c@(_, gen, _, _, _) = fmap (>>= offerable gen) (one' c)
+    -- a snippet missing an enum input with no choices here offers nothing
+    -- (review I4: a complete match has no next arm)
+    offerable gen a
+      | isSnippet gen, any (null . snd) (actChoices a) = Nothing
+      | otherwise = Just a
+    one' (gid, gen, ap, fromPath, cand) = case cand of
+      _ | not (triggered ap) -> pure Nothing
       Whole -> Just <$> offer queries paths readFile' path gid gen ap fromPath Nothing
       Nodes ms
         | node : _ <- sortOn size [m | m <- ms, matchStart m <= cursor, cursor <= matchEnd m] ->
             Just <$> offer queries paths readFile' path gid gen ap fromPath (Just node)
       _ -> pure Nothing
+    -- A snippet's trigger (spec §4.9): the text before the cursor ends with
+    -- it, and nothing but whitespace follows (the snippet replaces the line,
+    -- review I1).
+    (before, after) = splitAtByte (fromMaybe "" (listToMaybe (drop (line - 1) (T.lines content)))) col
+    triggered ap = case apTrigger ap of
+      _ | not useTrigger -> True
+      Nothing -> True
+      Just re -> T.all isSpace after && maybe False (`matchTest` T.unpack before) (makeRegexM (T.unpack (if "$" `T.isSuffixOf` re then re else "(" <> re <> ")$")) :: Maybe Regex)
     size m = (fst (matchEnd m) - fst (matchStart m), snd (matchEnd m) - snd (matchStart m))
 
 -- | Every place in the file where a generator applies (in file order), and
@@ -154,6 +203,12 @@ describeRule = \case
      in kind <> regex <> inside <> has
   _ -> "a matching node"
 
+-- | A line split at a 1-based UTF-8 byte column: the text before it, and from it.
+splitAtByte :: Text -> Int -> (Text, Text)
+splitAtByte l col =
+  let (b, a) = BS.splitAt (col - 1) (TE.encodeUtf8 l)
+   in (TE.decodeUtf8Lenient b, TE.decodeUtf8Lenient a)
+
 -- | The label, rendered with what is bound; the description when it needs more.
 labelFor :: GeneratorWith s -> AppliesAt -> M.Map Text Text -> Text
 labelFor gen ap sets = fromMaybe (genDescription gen) (either (const Nothing) Just . render (M.map VText sets) =<< apLabel ap)
@@ -172,7 +227,14 @@ offer queries paths readFile' path gid gen ap fromPath node = do
       kept = M.filterWithKey valid sets
       required = [inputName s | s <- genInputs gen, not (inputOptional s), isNothing (inputDefault s)]
       unbound = [n | n <- required, M.notMember n kept]
-  pure (Action gid (labelFor gen ap kept) (M.toAscList kept) unbound)
+      choices = case resolved of
+        Right g -> [(inputName s, cs) | s <- genInputs g, inputName s `elem` unbound, Just cs <- [enumValues (inputType s)]]
+        Left _ -> []
+      enumValues = \case
+        ScalarInput (EnumOf _ _ (Resolved cs _)) -> Just cs
+        ScalarInput (EnumS cs) -> Just cs
+        _ -> Nothing
+  pure (Action gid (labelFor gen ap kept) (M.toAscList kept) unbound choices)
   where
     capture re t = do
       rx <- makeRegexM (T.unpack re) :: Maybe Regex
