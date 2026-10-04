@@ -105,7 +105,14 @@ actionsInFile syntax langs queries paths readFile' gens path content = do
     one (gid, gen, ap, fromPath, cand) = case cand of
       Whole -> Left . pure . (`FileAction` Nothing) <$> offer queries paths readFile' path gid gen ap fromPath Nothing
       Nodes ms -> Left <$> traverse (\m -> (`FileAction` Just (range m)) <$> offer queries paths readFile' path gid gen ap fromPath (Just m)) ms
-      Near why -> pure (Right (Nearby gid (labelFor gen ap (M.fromList fromPath)) why))
+      -- Only when the path's values are real choices: lib.rs is not a
+      -- command (review I4).
+      Near why -> do
+        a <- offer queries paths readFile' path gid gen ap fromPath Nothing
+        pure $
+          if all (\(k, _) -> k `elem` map fst (actSets a)) fromPath
+            then Right (Nearby gid (labelFor gen ap (M.fromList fromPath)) why)
+            else Left []
     range m = Range (pos (matchStart m)) (pos (matchEnd m))
     pos (l, c) = (l + 1, 1 + BS.length (TE.encodeUtf8 (T.take c (maybe "" id (listToMaybe (drop l ls))))))
 
@@ -124,7 +131,9 @@ candidates syntax langs gens path content = catMaybes <$> traverse one gens
             (Just lang, Right r) ->
               querySyntax syntax lang r content >>= \case
                 Right ms@(_ : _) -> pure (Nodes ms)
-                _ -> pure (Near (why ap (describeRule r)))
+                Right [] -> pure (Near (why ap (describeRule r)))
+                -- Not "none yet": the search itself failed (review I3).
+                Left failure -> pure (Near ("cannot search this file: " <> describeSyntaxFailure failure <> "; run `olifant doctor`"))
             (_, r) -> pure (Near (why ap (either (const "a matching node") describeRule r)))
           where
             env = M.fromList [(k, VText v) | (k, v) <- fromPath]

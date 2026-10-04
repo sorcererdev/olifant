@@ -1008,6 +1008,12 @@ parseCheckSpec = describe "parse pre-check (spec §4.6)" $ do
     ref <- newIORef [[missing "src/P.elm" (3, 5) ["Reset"]]]
     plan <- planOver (scriptedChecker ref) [("src/P.elm", page)] gen
     take 1 (planWarnings plan) `shouldBe` ["src/P.elm:3 does not parse (near `;;`) — this plan may place code wrongly, and checks will fail"]
+  it "(g) warns about a named file even when every edit to it conflicted (review I7)" $ do
+    let anchored = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[[edits]]", "insert = \"src/A.elm\"", "at = \"end of type Msg\"", "text = \"| Reset\"" ]
+    plan <- planOver noChecker [("src/A.elm", "module A exposing (..)\nx = 1;;\n")] anchored
+    planConflicts plan `shouldNotBe` []
+    take 1 (planWarnings plan) `shouldBe` [warned]
   it "(f) a missing check tool's conflict suggests olifant doctor (spec §4.7)" $
     describeConflict (CompleteFailed ["g"] "`cargo` is not installed (needed to check rust)" True) `shouldSatisfy` T.isSuffixOf "; run `olifant doctor`"
   it "(e) points the compile warning for that file back at the parse warning" $ do

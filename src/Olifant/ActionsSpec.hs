@@ -129,6 +129,20 @@ spec = describe "olifant actions (spec §4.6)" $ do
             , "node = { kind = \"field_declaration\", inside = { kind = \"struct_item\", regex = \"^pub struct {= command|pascal =} \" } }" ] ++ w
       map nbWhy (snd (inFile none [("g", own ["where = \"on a field of the {= command|pascal =} struct\""])] file "x")) `shouldBe` ["on a field of the RefundInvoice struct"]
       map nbWhy (snd (inFile none [("g", own [])] file "x")) `shouldBe` ["a `field_declaration` inside a `struct_item` matching /^pub struct RefundInvoice /"]
+    it "(c3) a search that failed says so, and suggests olifant doctor — not \"none yet\" (review I3)" $ do
+      let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed (brew install ast-grep)"))
+      map nbWhy (snd (inFile broken [("g", failureArms)] file "x")) `shouldSatisfy` all (\w -> "cannot search this file" `T.isInfixOf` w && "ast-grep is not installed" `T.isInfixOf` w && "olifant doctor" `T.isInfixOf` w)
+    it "(c4) no near miss when a path-bound value is not a valid choice (lib.rs is not a command) (review I4)" $ do
+      let enumGen = generator . T.unlines $
+            [ "description = \"d\"", "language = \"rust\""
+            , "[inputs.service]", "type = \"enum\"", "one_of = \"services\""
+            , "[inputs.command]", "type = \"ident\""
+            , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
+            , "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\"", "node = { kind = \"struct_item\" }" ]
+          none = Syntax $ \_ _ _ -> Identity (Right [])
+          near ps = snd (runIdentity (actionsInFile none [rust] noQueries ps (const (pure Nothing)) [("g", enumGen)] file "x"))
+      near ["shipping/shipping-service/lib.rs"] `shouldBe` []
+      map nbGenerator (near ["billing/billing-service/lib.rs"]) `shouldBe` ["g"]
     it "(d) another path: neither" $
       inFile threeVariants [("g", failureArms)] "notes/readme.md" "x" `shouldBe` ([], [])
   describe "the rust-htmx demo generators (real ast-grep)" $ do

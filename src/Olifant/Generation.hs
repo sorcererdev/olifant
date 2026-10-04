@@ -145,7 +145,10 @@ generate ws resolve tools steps now mode =
       before <- traverse (\p -> (p,) <$> previous p) (M.keys writes)
       -- Parse pre-check (spec §4.6): a touched file that does not parse is
       -- warned about first; placement and checks around it may go wrong.
-      unparsed <- fmap concat . forM [(p, old) | (p, Just old) <- before] $ \(p, old) ->
+      -- Every existing file an edit names (even when all its edits
+      -- conflicted, review I7), and every file the compiler found.
+      let touched = M.toList (M.fromList ([(p, t) | (p, Just t) <- M.toList originals, p `elem` targets] ++ [(p, t) | (p, Just t) <- before]))
+      unparsed <- fmap concat . forM touched $ \(p, old) ->
         case languageFor (toolLanguages tools) p of
           Nothing -> pure []
           Just lang ->
