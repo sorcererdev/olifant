@@ -234,8 +234,9 @@ runCommand rt cwd fmt cat = \case
     let ws = within (rtProjectDir rt) (rtRoot rt)
         tools = projectTools rt cat
     case mode of
-      SyncApply -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset False now
-      SyncCheck -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools ReportUnset True now
+      SyncApply -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset SyncWrite now
+      SyncCheck -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools ReportUnset SyncReport now
+      SyncPlan -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset SyncShow now
       SyncInit name -> case find ((== name) . regionName) (catalogRegions cat) of
         Nothing -> failWith rt fmt 3 "region_not_found" ("no region named `" <> name <> "`") (Just "regions are declared in regions.toml") ["available" .= map regionName (catalogRegions cat)]
         Just def -> initRegion rt fmt ws tools def now
@@ -359,46 +360,67 @@ choiceViewsFor rt cat sets gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.
-syncRegions :: Runtime -> Format -> [(FilePath, Text)] -> Workspace IO -> Tools IO -> RegionMode -> Bool -> UTCTime -> IO ExitCode
-syncRegions rt fmt rtBrokenRegions ws tools regionMode checkOnly now = do
+-- | What `sync` does with the refresh: write it, only report drift
+-- (`--check`), or show it as a plan with whole files (`--plan`, for editors).
+data SyncOutput = SyncWrite | SyncReport | SyncShow
+  deriving stock (Eq)
+
+syncRegions :: Runtime -> Format -> [(FilePath, Text)] -> Workspace IO -> Tools IO -> RegionMode -> SyncOutput -> UTCTime -> IO ExitCode
+syncRegions rt fmt rtBrokenRegions ws tools regionMode output now = do
   (edits, conflicts0, current) <- refreshRegions regionMode tools ws 1 M.empty
   let conflicts = [RegionBroken "" path ("cannot read " <> T.pack path <> ": " <> err) | (path, err) <- rtBrokenRegions] ++ conflicts0
-  let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current]
-      plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes [] M.empty
-      applied = not checkOnly && not (hasConflicts plan)
+      writes = M.fromList [(p, c) | (p, Just c) <- M.toList current]
+  before <- M.fromList <$> traverse (\p -> (p,) <$> readText ws p) (M.keys writes)
+  let plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes [] before
+      applied = output == SyncWrite && not (hasConflicts plan)
   when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
-  emit rt fmt (planJson applied plan) (if checkOnly then syncCheckHuman plan else planHuman applied plan)
-  pure (if hasConflicts plan || (checkOnly && not (null edits)) then ExitFailure 5 else ExitSuccess)
+  emit rt fmt (planJson applied plan) (if output == SyncReport then syncCheckHuman plan else planHuman applied plan)
+  pure (if hasConflicts plan || (output == SyncReport && not (null edits)) then ExitFailure 5 else ExitSuccess)
 
--- | `sync --init NAME`: put a region's empty fences at its `init_at`, then fill it.
+-- | `sync --init NAME`: put a region's empty fences at its `init_at`, then
+-- fill it. A family (spec §5.9) sets up every matching file that lacks them.
 initRegion :: Runtime -> Format -> Workspace IO -> Tools IO -> RegionDef -> UTCTime -> IO ExitCode
-initRegion rt fmt ws tools def now
-  | not (isSafeRelative file) = failWith rt fmt 5 "region_broken" ("region `" <> regionName def <> "`: " <> T.pack file <> " is outside the project") Nothing []
+initRegion rt fmt ws tools def now = do
+  universe <- listFiles ws "."
+  let instances = regionInstances universe def
+      family = length instances /= 1 || map regionFile instances /= [regionFile def]
+  results <- traverse (initFences ws tools) instances
+  case [failure | Left failure <- results] of
+    (code, err, msg) : _ -> failWith rt fmt code err msg Nothing []
+    []
+      | not family, [Right False] <- results ->
+          emit rt fmt (object ["region" .= regionName def, "status" .= ("already set up" :: Text)]) ("region " <> regionName def <> " is already set up in " <> T.pack (regionFile def) <> "\n") >> pure ExitSuccess
+      | otherwise -> syncRegions rt fmt [] ws tools {toolRegions = [def]} SkipUnset SyncWrite now
+
+-- | Put one region's empty fences at its `init_at`: Right True when added,
+-- Right False when already there, Left (exit code, error code, message).
+initFences :: Workspace IO -> Tools IO -> RegionDef -> IO (Either (Int, Text, Text) Bool)
+initFences ws tools def
+  | not (isSafeRelative file) = pure (Left (5, "region_broken", "region `" <> regionName def <> "`: " <> T.pack file <> " is outside the project"))
   | otherwise = case regionComment def <|> (langComment <$> lang) of
-      Nothing -> failWith rt fmt 1 "region_broken" ("no comment syntax for " <> T.pack file <> " (add `comment` to the region)") Nothing []
+      Nothing -> pure (Left (1, "region_broken", "no comment syntax for " <> T.pack file <> " (add `comment` to the region)"))
       Just c ->
         readText ws file >>= \case
           -- A whole-file region is set up by creating its file with the header.
           Nothing
-            | regionWholeFile def -> writeText ws file (wholeHeader def c <> "\n") >> fill
-            | otherwise -> failWith rt fmt 3 "file_not_found" ("cannot read " <> T.pack file) Nothing []
+            | regionWholeFile def -> writeText ws file (wholeHeader def c <> "\n") >> pure (Right True)
+            | otherwise -> pure (Left (3, "file_not_found", "cannot read " <> T.pack file))
           Just content -> case applyRegion def c [] content of
-            Right _ -> emit rt fmt (object ["region" .= regionName def, "status" .= ("already set up" :: Text)]) ("region " <> regionName def <> " is already set up in " <> T.pack file <> "\n") >> pure ExitSuccess
-            Left (FenceBroken why) -> failWith rt fmt 5 "region_broken" ("region `" <> regionName def <> "` in " <> T.pack file <> " is broken: " <> why) Nothing []
+            Right _ -> pure (Right False)
+            Left (FenceBroken why) -> pure (Left (5, "region_broken", "region `" <> regionName def <> "` in " <> T.pack file <> " is broken: " <> why))
             Left FenceMissing -> case regionInitAt def of
-              Nothing -> failWith rt fmt 2 "usage" ("region `" <> regionName def <> "` has no `init_at`, so Olifant cannot tell where its fences go") Nothing []
+              Nothing -> pure (Left (2, "usage", "region `" <> regionName def <> "` has no `init_at`, so Olifant cannot tell where its fences go"))
               Just phrase ->
                 resolveLayers (toolSyntax tools) lang [PhraseAnchor phrase] content >>= \case
-                  Left misses -> failWith rt fmt 5 "anchor_unresolved" (describeMisses misses) Nothing []
+                  Left misses -> pure (Left (5, "anchor_unresolved", T.pack file <> ": " <> describeMisses misses))
                   Right loc -> do
                     let (open, close) = fenceLines def c
                         placed = maybe loc (\i -> loc {locIndent = i}) (regionInitIndent def)
                     writeText ws file (snd (insertLines placed (open <> "\n" <> close) content))
-                    fill
+                    pure (Right True)
   where
     file = regionFile def
     lang = languageFor (toolLanguages tools) file
-    fill = syncRegions rt fmt [] ws tools {toolRegions = [def]} SkipUnset False now
 
 -- | The model that fills holes in a `gen` (spec §6.4): `--model`, else
 -- `[model] default`; none with `--no-fill` or without `[model]`.

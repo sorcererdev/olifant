@@ -35,7 +35,7 @@ data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | 
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
-data SyncMode = SyncApply | SyncCheck | SyncInit Text
+data SyncMode = SyncApply | SyncCheck | SyncInit Text | SyncPlan
   deriving stock (Eq, Show)
 
 -- | One step of a `gen` run: a generator and exactly its inputs (spec §7).
@@ -119,7 +119,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> optional (strOption (long "model" <> metavar "NAME" <> help "Fill holes with [model.backends.NAME] (default: [model] default)"))
         <*> switch (long "no-fill" <> help "Leave every hole as its placeholder")
         <*> switch (long "progress" <> help "Write progress as JSON lines on stderr (checks, fill requests, fills)")
-    syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> pure SyncApply
+    syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> flag' SyncPlan (long "plan" <> help "Show the refresh as a plan (whole files, for editors); write nothing") <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
     actionsP =
       (\target content -> either (\(f, pos) -> ActionsCmd f (Just pos) content) (\f -> ActionsCmd f Nothing content) target)

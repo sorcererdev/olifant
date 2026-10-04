@@ -15,6 +15,7 @@ module Olifant.Generation
   , generate
   , RegionMode (..)
   , refreshRegions
+  , regionInstances
   , module Olifant.Generation.Plan
   , module Olifant.Generation.Tools
   ) where
@@ -30,7 +31,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Complete (completeEdits)
-import Olifant.Generation.Regions (RegionMode (..), refreshRegions)
+import Olifant.Generation.Regions (RegionMode (..), refreshRegions, regionInstances)
 import Olifant.Generation.Compose
 import Olifant.Generation.Plan
 import Olifant.Anchor (resolveLayers)

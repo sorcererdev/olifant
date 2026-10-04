@@ -246,6 +246,26 @@ runCliSpec = describe "runCli" $ do
     out `shouldSatisfy` T.isInfixOf "\"files\":[{\"after\":\"hi\\n\",\"before\":null,\"path\":\"new/a.txt\"},{\"after\":\"first\\na\\n\",\"before\":\"first\\n\",\"path\":\"old.txt\"}]"
     (_, applied, _, _) <- runWith "" files False ["gen", "two", "--set", "name=b"]
     applied `shouldNotSatisfy` T.isInfixOf "\"files\""
+  describe "sync --plan and family init (spec §5.9)" $ do
+    let regionsToml = "[regions.mods]\nfile = \"*/list.txt\"\ncomment = \"#\"\nquery = { glob = \"{= dir =}/*.x\" }\nitem = \"{= stem =}\"\ninit_at = \"start of file\"\n"
+        stale = [("/proj/.olifant/regions.toml", regionsToml), ("/proj/a/list.txt", "# olifant:region mods\n# olifant:end mods\n"), ("/proj/a/one.x", "")]
+    it "plans the refresh as whole files and writes nothing" $ do
+      (code, out, _, files) <- runWith "" stale False ["sync", "--plan", "--json"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/a/list.txt" files `shouldBe` Just "# olifant:region mods\n# olifant:end mods\n"
+      out `shouldSatisfy` T.isInfixOf "\"added\":1"
+      out `shouldSatisfy` T.isInfixOf "\"before\":\"# olifant:region mods\\n# olifant:end mods\\n\""
+      out `shouldSatisfy` T.isInfixOf "\"path\":\"a/list.txt\""
+    it "refuses --plan with --check" $ do
+      (code, _, _, _) <- runWith "" stale False ["sync", "--plan", "--check"]
+      code `shouldBe` ExitFailure 2
+    it "sets up every file of a family with --init" $ do
+      let unfenced = [("/proj/.olifant/regions.toml", regionsToml), ("/proj/a/list.txt", "keep\n"), ("/proj/a/one.x", ""), ("/proj/b/list.txt", "other\n"), ("/proj/b/two.x", "")]
+      (code, _, _, files) <- runWith "" unfenced False ["sync", "--init", "mods"]
+      code `shouldBe` ExitSuccess
+      fmap (T.isInfixOf "one\n# olifant:end mods") (M.lookup "/proj/a/list.txt" files) `shouldBe` Just True
+      fmap (T.isInfixOf "two\n# olifant:end mods") (M.lookup "/proj/b/list.txt" files) `shouldBe` Just True
+      fmap (T.isInfixOf "keep") (M.lookup "/proj/a/list.txt" files) `shouldBe` Just True
   it "olifant doctor: checks with fixes; exit 1 only on an error (spec §4.7)" $ do
     let withCheck tool =
           [ ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
