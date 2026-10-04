@@ -3,6 +3,7 @@ module Olifant.Generator.Definition
   , GeneratorWith (..)
   , GeneratorDef
   , generatorName
+  , replaceGenerator
   , Generator
   , Requires (..)
   , EditWith (..)
@@ -29,6 +30,7 @@ import Olifant.Anchor (Position)
 import Olifant.Language (Rule)
 import Olifant.Query (ChoiceValue (..), Query)
 import Olifant.Template (Binding, Template)
+import Olifant.Template.Syntax (Segment (..), Template (..))
 
 newtype GeneratorId = GeneratorId {generatorIdText :: Text}
   deriving stock (Eq, Ord, Show)
@@ -79,6 +81,9 @@ data EditWith src
   | -- | Add a branch for 'editConstructor' to every case the compiler reports (spec §5.6).
     -- With no body, every site gets a todo branch.
     Complete {editConstructor :: Template, editWhere :: Maybe Template, editBody :: Maybe src}
+  | -- | Replace whole lines (1-based, inclusive) that must still read
+    -- 'editOld' — a rule's fix (spec §5.9); not written in generator.toml.
+    Replace {editTarget :: Template, editLines :: (Int, Int), editOld :: Text, editSource :: src}
   deriving stock (Show, Functor, Foldable, Traversable)
 
 data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists
@@ -90,6 +95,13 @@ data OnExists = ErrorIfExists | SkipIfExists | OverwriteIfExists
 -- already there by name, wherever it is (spec §5.4).
 data Unless t = UnlessExists t | UnlessMatches t
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
+
+-- | A generator of one replacement: lines @l1..l2@ of @path@, which must
+-- read @old@, become @new@ (a template: it may hold holes) — how a rule's
+-- fix removes or rewrites the code it found (spec §5.9).
+replaceGenerator :: FilePath -> (Int, Int) -> Text -> Template -> Generator
+replaceGenerator path range old new =
+  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix")
 
 -- | The name people see: `name`, or one made from the id
 -- (`rust-htmx/command-dependency` → "Command Dependency").

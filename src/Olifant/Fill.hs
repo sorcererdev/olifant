@@ -23,7 +23,9 @@ data FillHole = FillHole
   }
   deriving stock (Eq, Show)
 
-data FillRequest = FillRequest {frHoles :: [FillHole], frInputs :: [(Text, Text)]}
+-- | 'frContext': related files the model should see (a fix's context, e.g.
+-- the port's trait it must call).
+data FillRequest = FillRequest {frHoles :: [FillHole], frInputs :: [(Text, Text)], frContext :: [(FilePath, Text)]}
   deriving stock (Eq, Show)
 
 -- | The port to a model: fills by hole name, or why there are none.

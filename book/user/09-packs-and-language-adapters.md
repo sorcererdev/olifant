@@ -18,7 +18,8 @@ packs/elm/
   languages/
     elm.toml             the Elm language adapter
     grammar/elm/         the tree-sitter grammar it needs, vendored as C source
-  regions.toml           owned regions (optional; olifant-dev has one)
+  regions.toml           owned regions (optional; olifant-dev and rust-htmx have one)
+  rules.toml             rules: conventions as checks (optional; rust-htmx has one)
   SKILL.md               instructions for AI agents (optional; Olifant itself never reads it)
 ```
 
@@ -29,7 +30,8 @@ packs/elm/
 | `generators/<name>/tests/<case>/` | the test suite | [chapter 10](10-testing-generators.md) |
 | `fixtures/app/` | `exemplar = "fixture:…"`, `fragment = { file = "fixture:…" }`, tests, `scripts/try-pack.sh` | chapters 7 and 10 |
 | `languages/<name>.toml` | `at` phrases, `complete`, `olifant anchors`/`where`, region comments | below |
-| `regions.toml` | every `gen` and `sync` | [chapter 5](05-owned-regions.md) |
+| `regions.toml` | every `gen`, `sync` and `check` | [chapter 5](05-owned-regions.md) |
+| `rules.toml` | `check` (and Durandal, on save) | [chapter 15](15-conventions-that-hold.md) |
 | `SKILL.md` | agent harnesses | [chapter 11](11-olifant-and-agents.md) |
 
 Only directories exactly one level under `generators/` with a `generator.toml` count; the same
@@ -404,9 +406,10 @@ expression kind a list element can be.
 
 ## Adding a target, and testing it with `olifant where`
 
-`lib.rs` in the rust-htmx fixture is a list of `pub mod` lines, and `service-command` places
-its new line with `at = "after last line matching ^pub mod "`. A structural target is
-better. Work on a copy of the pack, so nothing in the repo changes:
+`lib.rs` in the rust-htmx fixture is a list of `pub mod` lines. Today it is an owned region
+([chapter 5](05-owned-regions.md#families-one-region-per-matching-file)), but a generator that
+placed a line there used `at = "after last line matching ^pub mod "`, and a structural target
+is better. Work on a copy of the pack, so nothing in the repo changes:
 
 ```sh
 cp -R ~/projects/olifant/packs/rust-htmx /tmp/my-rust-pack
@@ -448,14 +451,16 @@ $ olifant anchors rust
   mods                    e.g. end of mods
 …
 $ olifant where billing/billing-service/src/lib.rs "end of mods"
-billing/billing-service/src/lib.rs:7
+billing/billing-service/src/lib.rs:8
     pub mod refund_invoice;
     pub mod service;
     pub mod void_invoice;
   ▶ (inserted here)
+    // olifant:end modules
 
 $ olifant where billing/billing-service/src/lib.rs "start of mods"
-billing/billing-service/src/lib.rs:1
+billing/billing-service/src/lib.rs:2
+    // olifant:region modules (generated from glob billing/billing-service/src/*.rs; edit the declaration, not this block)
   ▶ (inserted here)
     pub mod cancel_invoice;
     pub mod models;

@@ -19,9 +19,12 @@ import Data.Aeson (encode)
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
-import Olifant.Language (noChecker, noSyntax)
+import Olifant.Language (Syntax, noChecker, noSyntax)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
+import Olifant.Language.AstGrep (astGrepSyntax)
+import System.Directory (findExecutable, getTemporaryDirectory)
+import System.FilePath ((</>))
 import Test.Hspec
 
 project :: [(FilePath, Text)]
@@ -55,7 +58,16 @@ runWith :: Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text,
 runWith = runIn "/proj"
 
 runIn :: FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runIn dir stdinText files tty args = do
+runIn = runInWith noSyntax
+
+-- | With the real ast-grep (tests that need it are pending without it).
+runWithAstGrep :: Text -> [(FilePath, Text)] -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runWithAstGrep stdinText files args = do
+  tmp <- getTemporaryDirectory
+  runInWith (astGrepSyntax (tmp </> "olifant-test-cache")) "/proj" stdinText files False args
+
+runInWith :: Syntax IO -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInWith syntax dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -71,8 +83,9 @@ runIn dir stdinText files tty args = do
         , rtStdoutIsTty = tty
         , rtOut = \t -> modifyIORef' out (<> t)
         , rtErr = \t -> modifyIORef' err (<> t)
-        , rtSyntax = noSyntax
+        , rtSyntax = syntax
         , rtChecker = noChecker
+        , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
         }
       args
@@ -246,6 +259,174 @@ runCliSpec = describe "runCli" $ do
     out `shouldSatisfy` T.isInfixOf "\"files\":[{\"after\":\"hi\\n\",\"before\":null,\"path\":\"new/a.txt\"},{\"after\":\"first\\na\\n\",\"before\":\"first\\n\",\"path\":\"old.txt\"}]"
     (_, applied, _, _) <- runWith "" files False ["gen", "two", "--set", "name=b"]
     applied `shouldNotSatisfy` T.isInfixOf "\"files\""
+  it "I6: reads changed lines from a diff, whatever git's prefix settings" $
+    parseDiffHunks "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +2,3 @@\n@@ -9,2 +12 @@\n@@ -20 +30,0 @@\n+++ b/sub/y.rs\n@@ -0,0 +1,2 @@\n"
+      `shouldBe` [("x.rs", [(2, 4), (12, 12)]), ("sub/y.rs", [(1, 2)])]
+  describe "olifant fix (spec §5.9, beat 4 feedback)" $ do
+    let rustPack =
+          [ ("/packs/p/languages/rust.toml", T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[holes.stmt]", "placeholder = 'todo!(\"olifant: {= hole =}\");'", "wrap = \"fn __o() { {= fill =} }\""])
+          , ("/packs/p/generators/port/generator.toml", "description = \"p\"\nlanguage = \"rust\"\n[inputs.service]\ntype = \"ident\"\n[[edits]]\ncreate = \"{= service =}/port.rs\"\ntext = \"// port\\n\"\n")
+          , ("/packs/p/rules.toml", T.unlines
+              [ "[rules.no-db]", "files = \"{service}/src/*.rs\"", "message = \"no db\""
+              , "match = { any = [ { kind = \"use_declaration\", regex = \"diesel\" }, { kind = \"scoped_identifier\", regex = \"^diesel::\" } ] }"
+              , "[[rules.no-db.fixes]]", "generator = \"p/port\"", "with = { service = \"{= service =}\" }"
+              , "replace = [ { enclosing = [\"use_declaration\"], text = \"\" }, { enclosing = [\"let_declaration\"], text = \"{= ? call: stmt | do {= finding =} through the port =}\" } ]" ])
+          , ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          , ("/proj/billing/src/a.rs", "use diesel::prelude::*;\nfn f() {\n    let rows = diesel::select(1);\n    g();\n}\n")
+          ]
+        astGrep act = findExecutable "ast-grep" >>= maybe (pendingWith "ast-grep is not installed") (const act)
+    it "deletes the import and runs the fix's generator, as one plan" $ astGrep $ do
+      (code, out, _, files) <- runWithAstGrep "" rustPack ["fix", "no-db", "--at", "billing/src/a.rs:1:5", "--plan", "--json"]
+      code `shouldBe` ExitSuccess
+      out `shouldSatisfy` T.isInfixOf "\"status\":\"replace\""
+      out `shouldSatisfy` T.isInfixOf "billing/port.rs"
+      M.lookup "/proj/billing/src/a.rs" files `shouldBe` Just "use diesel::prelude::*;\nfn f() {\n    let rows = diesel::select(1);\n    g();\n}\n"
+    it "rewrites the statement as a hole (a placeholder without a model), applied" $ astGrep $ do
+      (code, _, _, files) <- runWithAstGrep "" rustPack ["fix", "no-db", "--at", "billing/src/a.rs:3:16", "--json"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/billing/src/a.rs" files `shouldBe` Just "use diesel::prelude::*;\nfn f() {\n    todo!(\"olifant: call\");\n    g();\n}\n"
+      M.member "/proj/billing/port.rs" files `shouldBe` True
+    it "says so when there is no such finding there" $ astGrep $ do
+      (code, out, _, _) <- runWithAstGrep "" rustPack ["fix", "no-db", "--at", "billing/src/a.rs:4:5", "--json"]
+      code `shouldBe` ExitFailure 3
+      out `shouldSatisfy` T.isInfixOf "no `no-db` finding at billing/src/a.rs:4"
+  describe "olifant check (spec §5.9)" $ do
+    let head' = \case
+          x : _ -> x
+          [] -> error "empty"
+        pack =
+          [ ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n")
+          , ("/packs/p/rules.toml", "[rules.has-test]\nfiles = \"src/*.x\"\nmissing = \"tests/{= stem =}.x\"\nmessage = \"Every module has a test\"\nseverity = \"warn\"\n")
+          ]
+        config extra = ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n" <> extra)
+        regionsToml = ("/proj/.olifant/regions.toml", "[regions.mods]\nfile = \"list.txt\"\ncomment = \"#\"\nquery = { glob = \"src/*.x\" }\nitem = \"{= stem =}\"\n")
+        fresh = ("/proj/list.txt", "# olifant:region mods\n# olifant:end mods\n")
+        upToDate = ("/proj/list.txt", "# olifant:region mods (generated from glob src/*.x; edit the declaration, not this block)\na\n# olifant:end mods\n")
+    it "(a) fails on region drift, listing drift and findings" $ do
+      (code, out, _, _) <- runWith "" (pack ++ [config "", regionsToml, fresh, ("/proj/src/a.x", "")]) False ["check", "--json"]
+      code `shouldBe` ExitFailure 1
+      out `shouldSatisfy` T.isInfixOf "\"region\":\"mods\""
+      out `shouldSatisfy` T.isInfixOf "\"rule\":\"has-test\""
+    it "(b) passes with only warnings; fails on an error" $ do
+      (ok, _, _, _) <- runWith "" (pack ++ [config "", regionsToml, upToDate, ("/proj/src/a.x", "")]) False ["check", "--json"]
+      ok `shouldBe` ExitSuccess
+      (bad, _, _, _) <- runWith "" (pack ++ [config "[rules]\n\"has-test\" = \"error\"\n", regionsToml, upToDate, ("/proj/src/a.x", "")]) False ["check", "--json"]
+      bad `shouldBe` ExitFailure 1
+    it "(c) --file reads the buffer from stdin (Review Focus 4)" $ do
+      (code, out, _, _) <- runWith "-- olifant:allow-file has-test — written next sprint\n" (pack ++ [config "", ("/proj/src/a.x", "")]) False ["check", "--file", "src/a.x", "--content", "-", "--json"]
+      code `shouldBe` ExitSuccess
+      out `shouldSatisfy` T.isInfixOf "\"findings\":[]"
+    it "(d) --report lists each rule's severity and every exception, stale ones too" $ do
+      let allowCfg = "[[rules.allow]]\nrule = \"has-test\"\npaths = [\"legacy/**\"]\nreason = \"old code\"\n"
+      (_, out, _, _) <- runWith "" (pack ++ [config allowCfg, ("/proj/src/a.x", "-- olifant:allow has-test — later\n")]) False ["check", "--report", "--json"]
+      out `shouldSatisfy` T.isInfixOf "\"rules\":[{\"debt\":0,\"id\":\"has-test\",\"severity\":\"warn\"}]"
+      out `shouldSatisfy` T.isInfixOf "\"reason\":\"later\""
+      out `shouldSatisfy` T.isInfixOf "\"reason\":\"old code\",\"rule\":\"has-test\",\"stale\":true"
+    it "C1: refuses a rule whose path slots are not inputs of its fix" $ do
+      let gen = ("/packs/p/generators/repo/generator.toml", "description = \"r\"\nlanguage = \"x\"\n[inputs.service]\ntype = \"ident\"\n[[edits]]\ncreate = \"r.x\"\ntext = \"r\"\n")
+          slotted = ("/packs/p/rules.toml", "[rules.r]\nfiles = \"{service}/{command}.x\"\nmissing = \"t/{= stem =}\"\nmessage = \"m\"\nfix = \"p/repo\"\n")
+      (code, out, _, _) <- runWith "" [head' pack, gen, slotted, config "", ("/proj/a/b.x", "")] False ["check", "--json"]
+      code `shouldBe` ExitFailure 1
+      out `shouldSatisfy` T.isInfixOf "`{command}` is not an input of p/repo"
+    it "C2: a rule that cannot run fails the check instead of passing silently" $ do
+      -- the CLI tests have no ast-grep: a match rule cannot run
+      let matchRule = ("/packs/p/rules.toml", "[rules.no-x]\nfiles = \"src/*.x\"\nmatch = { kind = \"x\" }\nmessage = \"m\"\n")
+      (code, out, _, _) <- runWith "" [head' pack, matchRule, config "", ("/proj/src/a.x", "")] False ["check", "--json"]
+      code `shouldBe` ExitFailure 1
+      out `shouldSatisfy` T.isInfixOf "rule `no-x` could not run on src/a.x"
+    it "I3: fails on a broken regions.toml" $ do
+      (code, out, _, _) <- runWith "" (pack ++ [config "", ("/proj/.olifant/regions.toml", "[regions.r]\nfile = \"l.txt\"\nbogus = 1\n")]) False ["check", "--json"]
+      code `shouldBe` ExitFailure 1
+      out `shouldSatisfy` T.isInfixOf "regions.toml"
+    it "I8: reports [rules] entries that name no rule" $ do
+      (code, out, _, _) <- runWith "" (pack ++ [config ("[rules]\n\"has-tset\" = \"error\"\n[[rules.allow]]\nrule = \"hsa-test\"\npaths = [\"x/**\"]\nreason = \"r\"\n"), ("/proj/src/a.x", "")]) False ["check", "--json"]
+      code `shouldBe` ExitFailure 1
+      out `shouldSatisfy` T.isInfixOf "[rules]: no rule named `has-tset`"
+      out `shouldSatisfy` T.isInfixOf "[rules.allow]: no rule named `hsa-test`"
+    describe "ratchet (spec §5.10)" $ do
+      let errorCfg = config "[rules]\n\"has-test\" = \"error\"\n"
+          base = pack ++ [errorCfg, ("/proj/src/a.x", "")]
+      it "(a) --baseline records today's findings; then only new findings fail" $ do
+        (code, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        code `shouldBe` ExitSuccess
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        baseline `shouldSatisfy` T.isInfixOf "rule = \"has-test\""
+        let withBaseline = base ++ [("/proj/.olifant/baseline.toml", baseline)]
+        (ok, out, _, _) <- runWith "" withBaseline False ["check", "--json"]
+        ok `shouldBe` ExitSuccess
+        out `shouldSatisfy` T.isInfixOf "\"baselined\":true"
+        (bad, _, _, _) <- runWith "" (withBaseline ++ [("/proj/src/b.x", "")]) False ["check", "--json"]
+        bad `shouldBe` ExitFailure 1
+      it "shows baselined findings as existing debt in human output" $ do
+        (_, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        (_, out, _, _) <- runWith "" (base ++ [("/proj/.olifant/baseline.toml", baseline)]) False ["check", "--human"]
+        out `shouldSatisfy` T.isInfixOf "· src/a.x  has-test — Every module has a test  (existing)"
+        out `shouldSatisfy` T.isInfixOf "conventions hold (1 finding, 1 existing)"
+      it "I9: re-baselining never adds new findings unless --accept-new" $ do
+        (_, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        let grown = base ++ [("/proj/.olifant/baseline.toml", baseline), ("/proj/src/b.x", "")]
+        (_, out, _, files2) <- runWith "" grown False ["check", "--baseline", "--human"]
+        out `shouldSatisfy` T.isInfixOf "1 new finding not added (fix it, or --accept-new)"
+        fmap (T.isInfixOf "src/b.x") (M.lookup "/proj/.olifant/baseline.toml" files2) `shouldBe` Just False
+        (_, _, _, files3) <- runWith "" grown False ["check", "--baseline", "--accept-new", "--json"]
+        fmap (T.isInfixOf "src/b.x") (M.lookup "/proj/.olifant/baseline.toml" files3) `shouldBe` Just True
+      it "I10: human --report lists every rule and severity; plain check shows stale allows" $ do
+        (_, out, _, _) <- runWith "" (pack ++ [config "", ("/proj/src/a.x", "-- olifant:allow-file has-test — later\n"), ("/proj/tests/a.x", "")]) False ["check", "--human"]
+        out `shouldSatisfy` T.isInfixOf "stale allow: has-test at src/a.x:1"
+        (_, rep, _, _) <- runWith "" base False ["check", "--report", "--human"]
+        rep `shouldSatisfy` T.isInfixOf "rules:\n  has-test: error"
+      it "(c) --report shows remaining debt per rule" $ do
+        (_, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        (_, out, _, _) <- runWith "" (base ++ [("/proj/.olifant/baseline.toml", baseline)]) False ["check", "--report", "--json"]
+        out `shouldSatisfy` T.isInfixOf "\"debt\":1"
+      it "(f) --file marks baselined findings" $ do
+        (_, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        (_, out, _, _) <- runWith "" (base ++ [("/proj/.olifant/baseline.toml", baseline)]) False ["check", "--file", "src/a.x", "--json"]
+        out `shouldSatisfy` T.isInfixOf "\"baselined\":true"
+      it "(d) --changed-since keeps only findings in changed files or lines" $ do
+        (code, out, _, _) <- runWith "" (base ++ [("/proj/src/b.x", "")]) False ["check", "--changed-since", "main", "--json"]
+        -- the fake git says only src/b.x changed since main
+        code `shouldBe` ExitFailure 1
+        out `shouldSatisfy` T.isInfixOf "\"file\":\"src/b.x\""
+        out `shouldNotSatisfy` T.isInfixOf "\"file\":\"src/a.x\""
+    it "refuses a rule whose fix names no generator" $ do
+      let badFix = ("/packs/p/rules.toml", "[rules.r]\nfiles = \"src/*.x\"\nmissing = \"t/{= stem =}\"\nmessage = \"m\"\nfix = \"p/nope\"\n")
+      (_, out, _, _) <- runWith "" [("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n"), badFix, config "", ("/proj/src/a.x", "")] False ["check", "--json"]
+      out `shouldSatisfy` T.isInfixOf "fix names no generator `p/nope`"
+  describe "sync --plan and family init (spec §5.9)" $ do
+    let regionsToml = "[regions.mods]\nfile = \"*/list.txt\"\ncomment = \"#\"\nquery = { glob = \"{= dir =}/*.x\" }\nitem = \"{= stem =}\"\ninit_at = \"start of file\"\n"
+        stale = [("/proj/.olifant/regions.toml", regionsToml), ("/proj/a/list.txt", "# olifant:region mods\n# olifant:end mods\n"), ("/proj/a/one.x", "")]
+    it "plans the refresh as whole files and writes nothing" $ do
+      (code, out, _, files) <- runWith "" stale False ["sync", "--plan", "--json"]
+      code `shouldBe` ExitSuccess
+      M.lookup "/proj/a/list.txt" files `shouldBe` Just "# olifant:region mods\n# olifant:end mods\n"
+      out `shouldSatisfy` T.isInfixOf "\"added\":1"
+      out `shouldSatisfy` T.isInfixOf "\"before\":\"# olifant:region mods\\n# olifant:end mods\\n\""
+      out `shouldSatisfy` T.isInfixOf "\"path\":\"a/list.txt\""
+    it "I4: init absorbs the lines the region now owns (no duplicates); re-running says already set up" $ do
+      let handWritten = [("/proj/.olifant/regions.toml", regionsToml), ("/proj/a/list.txt", "one\n"), ("/proj/a/one.x", "")]
+      (code, _, _, files) <- runWith "" handWritten False ["sync", "--init", "mods"]
+      code `shouldBe` ExitSuccess
+      fmap (T.count "one\n") (M.lookup "/proj/a/list.txt" files) `shouldBe` Just 1
+      (_, again, _, _) <- runWith "" (M.toList files) False ["sync", "--init", "mods", "--human"]
+      again `shouldSatisfy` T.isInfixOf "already set up"
+    it "I5: sync warns about a family file that is not set up" $ do
+      (_, out, _, _) <- runWith "" [("/proj/.olifant/regions.toml", regionsToml), ("/proj/a/list.txt", "x\n"), ("/proj/a/one.x", "")] False ["sync", "--json"]
+      out `shouldSatisfy` T.isInfixOf "region `mods` is not set up in a/list.txt"
+    it "refuses --plan with --check" $ do
+      (code, _, _, _) <- runWith "" stale False ["sync", "--plan", "--check"]
+      code `shouldBe` ExitFailure 2
+    it "sets up every file of a family with --init" $ do
+      let unfenced = [("/proj/.olifant/regions.toml", regionsToml), ("/proj/a/list.txt", "keep\n"), ("/proj/a/one.x", ""), ("/proj/b/list.txt", "other\n"), ("/proj/b/two.x", "")]
+      (code, _, _, files) <- runWith "" unfenced False ["sync", "--init", "mods"]
+      code `shouldBe` ExitSuccess
+      fmap (T.isInfixOf "one\n# olifant:end mods") (M.lookup "/proj/a/list.txt" files) `shouldBe` Just True
+      fmap (T.isInfixOf "two\n# olifant:end mods") (M.lookup "/proj/b/list.txt" files) `shouldBe` Just True
+      fmap (T.isInfixOf "keep") (M.lookup "/proj/a/list.txt" files) `shouldBe` Just True
   it "olifant doctor: checks with fixes; exit 1 only on an error (spec §4.7)" $ do
     let withCheck tool =
           [ ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")

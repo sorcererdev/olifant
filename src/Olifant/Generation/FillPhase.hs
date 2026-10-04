@@ -32,7 +32,7 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
     -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
     loop mf r accepted notes pending = do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
-      reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs)
+      reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools))
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
           next accepted' notes' failed
             | null failed || r >= 1 + max 0 (mfRetries mf) = do

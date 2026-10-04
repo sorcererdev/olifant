@@ -4,6 +4,8 @@ resolver = "2"
 members = [
           ##PLOP NEW PACKAGE HOOK##
           "user-accounts/user-accounts-service",
+          "billing/adapters/in-memory-invoice-repository",
+          "billing/adapters/diesel-invoice-repository",
           "billing/billing-service",
           "notifications/notifications-service",
 ]

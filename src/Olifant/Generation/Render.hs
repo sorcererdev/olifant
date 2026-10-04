@@ -23,6 +23,8 @@ data RenderedEdit
     RenderedInsert FilePath [RenderedAnchor] Text (Maybe (Unless Text))
   | -- | resolved after a check (spec §5.6); the body is rendered per site
     RenderedComplete CompleteSpec
+  | -- | path, lines (1-based, inclusive), the text they must hold, the new text
+    RenderedReplace FilePath (Int, Int) Text Text
 
 data CompleteSpec = CompleteSpec
   { completeConstructor :: Text
@@ -37,6 +39,7 @@ renderedPath = \case
   RenderedCreate p _ _ _ -> Just p
   RenderedInsert p _ _ _ -> Just p
   RenderedComplete _ -> Nothing
+  RenderedReplace p _ _ _ -> Just p
 
 -- | The first argument is the generator's language (it selects the checker
 -- for `complete` edits).
@@ -45,6 +48,7 @@ renderEdits language env = traverse $ \case
   Create target src onExists u -> RenderedCreate <$> path target <*> render env src <*> pure onExists <*> traverse (traverse (render env)) u
   Insert target anchors src u -> RenderedInsert <$> path target <*> traverse anchor anchors <*> render env src <*> traverse (traverse (render env)) u
   Complete ctor wher body -> (\c w -> RenderedComplete (CompleteSpec c w body env language)) <$> render env ctor <*> traverse (render env) wher
+  Replace target range old src -> (\p t -> RenderedReplace p range old t) <$> path target <*> render env src
   where
     path t = normalisePath . T.unpack <$> render env t
     anchor = \case
@@ -56,3 +60,4 @@ renderedUnless = \case
   RenderedCreate _ _ _ u -> u
   RenderedInsert _ _ _ u -> u
   RenderedComplete _ -> Nothing
+  RenderedReplace {} -> Nothing

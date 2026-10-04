@@ -221,7 +221,6 @@ but never creates `X`. The pack's generator appends a stub to the service's `mod
 $ olifant gen rust-htmx/service-repository --set service=notifications --set aggregate=delivery_log --human
 rust-htmx/service-repository (10 edits, 0 conflicts)
   + notifications/notifications-service/src/ports/delivery_log_repository.rs (19 lines)
-  ~ notifications/notifications-service/src/ports.rs (+1 line at line 3)
   ~ notifications/notifications-service/src/models.rs (+4 lines at line 1)
   …
 $ git diff -- notifications/notifications-service/src/models.rs
@@ -241,12 +240,14 @@ The edit has `unless = { matches = "^[[:space:]]*pub (struct|enum|type) Delivery
 $ olifant gen rust-htmx/service-repository --set service=notifications --set aggregate=delivery_log --plan --human
 Plan: rust-htmx/service-repository (10 edits, 0 conflicts)
   + notifications/notifications-service/src/ports/delivery_log_repository.rs (19 lines)
-  ~ notifications/notifications-service/src/ports.rs (+1 line at line 3)
   = notifications/notifications-service/src/models.rs (skipped: unless: line 1 of notifications/notifications-service/src/models.rs matches)
   …
 ```
 
-(run with `pub struct DeliveryLog {` on line 1 of `models.rs`).
+(run with `pub struct DeliveryLog {` on line 1 of `models.rs`). The port's `pub mod` line
+in `ports.rs` comes from the pack's `ports` region, refreshed at the end of the run: the
+plan's last line, left out here
+([chapter 5](05-owned-regions.md#families-one-region-per-matching-file)).
 
 ## Holes: `fills.toml` and placeholder output
 
@@ -567,7 +568,7 @@ in the owner's clone; a fresh clone needs it):
 
 | hook | on `main` only | does |
 |---|---|---|
-| `pre-merge-commit` | yes | runs `cabal test` with `OLIFANT_REQUIRE_TOOLS=1` (a missing `ast-grep`, `elm` or `cargo` fails instead of pending), then `olifant sync --check` (via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
+| `pre-merge-commit` | yes | runs `cabal test` with `OLIFANT_REQUIRE_TOOLS=1` (a missing `ast-grep`, `elm` or `cargo` fails instead of pending), then `olifant check` (owned regions and rules, [chapter 15](15-conventions-that-hold.md); via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
 | `post-commit` | yes | runs `scripts/install-olifant.sh`, so `~/.local/bin/olifant` is always built from `main`; never blocks the commit |
 | `post-merge` | yes | the same install, after a merge into `main` |
 

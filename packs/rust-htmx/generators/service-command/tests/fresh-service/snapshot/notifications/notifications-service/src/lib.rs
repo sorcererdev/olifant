@@ -1,6 +1,7 @@
-//##PLOP INSERT MOD HOOK##
+// olifant:region modules (generated from glob notifications/notifications-service/src/*.rs; edit the declaration, not this block)
 pub mod models;
 pub mod ports;
+pub mod schedule_digest;
 pub mod send_email;
 pub mod service;
-pub mod schedule_digest;
+// olifant:end modules

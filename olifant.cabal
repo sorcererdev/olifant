@@ -79,6 +79,7 @@ library
     Olifant.Process
     Olifant.Query
     Olifant.Region
+    Olifant.Rules
     Olifant.Suggest
     Olifant.Template
     Olifant.Template.Error
@@ -163,6 +164,8 @@ test-suite spec
     Olifant.QuerySpec
     Olifant.Region
     Olifant.RegionSpec
+    Olifant.Rules
+    Olifant.RulesSpec
     Olifant.Suggest
     Olifant.Template
     Olifant.Template.Error

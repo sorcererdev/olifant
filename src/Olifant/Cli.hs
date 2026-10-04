@@ -1,11 +1,14 @@
 -- | The `olifant` command line: parses arguments, runs catalog/generation
 -- use cases, and renders JSON or human output with the spec's exit codes.
-module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli) where
+module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) where
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
+import Olifant.Rules (Exception (..), FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, suggestChoice)
+import Olifant.Rules qualified as R
+import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
-import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile)
+import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, matchPathSlots)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (when)
 import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
@@ -13,8 +16,12 @@ import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.List (find)
-import Data.Maybe (fromMaybe)
+import Data.Functor ((<&>))
+import Data.List (find, sortOn)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Olifant.Template (describeTemplateError, render)
+import Olifant.Template qualified as Tm
+import Olifant.Template.Syntax (Segment (..), Template (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -26,7 +33,7 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Generator (generatorName, ChoiceView (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
+import Olifant.Generator (generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, within)
@@ -46,6 +53,9 @@ data Runtime = Runtime
   , rtSyntax :: Syntax IO
   , rtChecker :: Checker IO
   , rtDoctor :: DoctorPorts IO
+  , -- | lines changed since a git ref (file, 1-based inclusive ranges) and
+    -- untracked files, for `check --changed-since`
+    rtGitChanged :: FilePath -> Text -> IO (Either Text ([(FilePath, [(Int, Int)])], [FilePath]))
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -168,6 +178,105 @@ runCommand rt cwd fmt cat = \case
             where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
         emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
     pure ExitSuccess
+  CheckCmd report file fromStdin baseline acceptNew changedSince -> do
+    let ws = within (rtProjectDir rt) (rtRoot rt)
+        baselinePath = ".olifant/baseline.toml"
+        key f = (fRule f, T.pack (fFile f), fFingerprint f)
+    known <- fmap (maybe [] (either (const []) id . readBaseline)) (readText ws baselinePath)
+    -- Each key covers as many findings as its count (review I9).
+    let baselinedIn fs = [f | (f, True) <- markBaselined known fs]
+        rules = catalogRules cat
+        nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
+        sevText = \case R.Hint -> "hint" :: Text; R.Warn -> "warn"; R.Error -> "error"; R.Off -> "off"
+        offerJson o = object ["generator" .= foGenerator o, "name" .= nameOf (foGenerator o), "label" .= fromMaybe (nameOf (foGenerator o)) (foLabel o), "sets" .= M.fromList (foSets o)]
+        findingJson olds f =
+          object
+            [ "rule" .= fRule f, "file" .= fFile f, "severity" .= sevText (fSeverity f), "message" .= fMessage f
+            , "range" .= fmap (\((l1, c1), (l2, c2)) -> object ["start" .= [l1, c1], "end" .= [l2, c2]]) (fRange f)
+            , "fixes" .= map offerJson (fFixes f)
+            , -- the first fix, as before (one-fix clients)
+              "fix" .= fmap foGenerator (listToMaybe (fFixes f)), "fix_name" .= fmap (nameOf . foGenerator) (listToMaybe (fFixes f)), "sets" .= maybe M.empty (M.fromList . foSets) (listToMaybe (fFixes f))
+            , "baselined" .= (f `elem` olds) ]
+        exceptionJson e = object ["rule" .= exRule e, "where" .= exWhere e, "reason" .= exReason e, "stale" .= exStale e]
+        reportJson fs = ["rules" .= [object ["id" .= ruleId r, "severity" .= sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat)))), "debt" .= length [f | f <- baselinedIn fs, fRule f == ruleId r]] | r <- rules] | report]
+        mark = \case R.Error -> "✗" :: Text; R.Warn -> "!"; _ -> "·"
+        findingHuman olds f = (if f `elem` olds then "·" else mark (fSeverity f)) <> " " <> T.pack (fFile f) <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> "  " <> fRule f <> " — " <> fMessage f <> (if null (fFixes f) then "" else "  (fixes: " <> T.intercalate "; " [fromMaybe (nameOf (foGenerator o)) (foLabel o) | o <- fFixes f] <> ")") <> (if f `elem` olds then "  (existing)" else "")
+        exceptionHuman e = "  " <> exRule e <> " at " <> exWhere e <> ": " <> fromMaybe "(no reason)" (exReason e) <> (if exStale e then "  [stale: suppresses nothing]" else "")
+    paths <- listFiles ws "."
+    now <- rtNow rt
+    let chooseInputs = chooseFixInputs rt cat paths now
+    case file of
+      Just f -> do
+        let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> f))
+        content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> f)
+        (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (\p -> if p == rel then pure content else readText ws p) [rel] >>= chooseInputs
+        let olds = baselinedIn fs
+        emit rt fmt (object (["findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs] ++ reportJson fs)) (T.unlines (map (findingHuman olds) fs))
+        pure ExitSuccess
+      Nothing | baseline -> do
+        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
+        (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked
+        -- Debt only goes down: once a baseline exists, re-baselining keeps
+        -- at most each key's old count, unless --accept-new (review I9).
+        let current = M.fromListWith (+) [(key f, 1 :: Int) | f <- fs]
+            old = M.fromListWith (+) known
+            kept
+              | null known || acceptNew = current
+              | otherwise = M.intersectionWith min current old
+            refused = sum (M.elems current) - sum (M.elems kept)
+            entry ((r, f, fp), n) = T.unlines (["[[baseline]]", "rule = " <> quote r, "file = " <> quote f, "fingerprint = " <> quote fp] ++ ["count = " <> T.pack (show n) | n > 1] ++ [""])
+            quote t = "\"" <> T.replace "\"" "\\\"" (T.replace "\\" "\\\\" t) <> "\""
+            header = "# Findings recorded by `olifant check --baseline` (spec §5.10): known debt.\n# check fails only on findings not listed here. Re-running --baseline only removes\n# paid debt; new findings are added only with --accept-new.\n\n"
+            total = sum (M.elems kept)
+            plural n w = T.pack (show n) <> " " <> w <> (if n == 1 then "" else "s")
+        writeText ws baselinePath (header <> T.concat (map entry (M.toList kept)))
+        emit rt fmt (object ["baselined" .= total, "refused" .= refused, "file" .= baselinePath])
+          ("baselined " <> plural total "finding" <> " in " <> T.pack baselinePath <> "\n" <> (if refused > 0 then plural refused "new finding" <> " not added (fix it, or --accept-new)\n" else ""))
+        pure ExitSuccess
+      Nothing -> do
+        (edits, conflicts, _) <- case changedSince of
+          Just _ -> pure ([], [], M.empty) -- a findings run on the branch's changes
+          Nothing -> refreshRegions ReportUnset (projectTools rt cat) ws 1 M.empty
+        changed <- traverse (rtGitChanged rt (rtProjectDir rt)) changedSince
+        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
+            touched f = case changed of
+              Nothing -> True
+              Just (Left _) -> True
+              Just (Right (ranges, untracked)) ->
+                fFile f `elem` untracked
+                  || case (lookup (fFile f) ranges, fRange f) of
+                    (Nothing, _) -> False
+                    (Just _, Nothing) -> True
+                    (Just rs, Just ((l1, _), (l2, _))) -> any (\(a, b) -> a <= l2 && l1 <= b) rs
+        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked >>= chooseInputs
+        let fs = filter touched fs0
+            drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
+            regionsJson = [object ["file" .= p, "region" .= r, "status" .= ("drift" :: Text)] | (p, r) <- drift] ++ [object ["status" .= ("broken" :: Text), "message" .= describeConflict c] | c <- conflicts]
+            broken = [T.pack p <> ": " <> why | (p, why) <- catalogBrokenRules cat ++ catalogBrokenRegions cat]
+            gitProblem = [why | Just (Left why) <- [changed]]
+            olds = baselinedIn fs
+            stale = [e | e <- exs, exStale e]
+            failed = not (null drift) || not (null conflicts) || not (null broken) || not (null gitProblem) || any (\f -> fSeverity f == R.Error && f `notElem` olds) fs
+            human =
+              T.unlines $
+                ["region " <> r <> " out of date in " <> T.pack p <> " (run olifant sync)" | (p, r) <- drift]
+                  ++ map describeConflict conflicts
+                  ++ ["git: " <> g | g <- gitProblem]
+                  ++ ["✗ " <> b | b <- broken]
+                  ++ map (findingHuman olds) fs
+                  ++ ["! stale allow: " <> exRule e <> " at " <> exWhere e <> " — it suppresses nothing; remove it" | not report, e <- stale]
+                  ++ (if report then "rules:" : ["  " <> ruleId r <> ": " <> sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat)))) | r <- rules] else [])
+                  ++ (if report then "exceptions:" : map exceptionHuman exs else [])
+                  ++ ["debt: " <> ruleId r <> " " <> T.pack (show n) <> " existing" | report, r <- rules, let n = length [f | f <- olds, fRule f == ruleId r], n > 0]
+                  ++ [ if failed
+                         then "check failed"
+                         else
+                           let n = length fs
+                               old = length olds
+                            in "conventions hold (" <> T.pack (show n) <> " finding" <> (if n == 1 then "" else "s") <> ", " <> (if old > 0 then T.pack (show old) <> " existing" else "none blocking") <> ")"
+                     ]
+        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ reportJson fs)) human
+        pure (if failed then ExitFailure 1 else ExitSuccess)
   DoctorCmd -> do
     checks <-
       doctor (rtDoctor rt) $
@@ -234,8 +343,9 @@ runCommand rt cwd fmt cat = \case
     let ws = within (rtProjectDir rt) (rtRoot rt)
         tools = projectTools rt cat
     case mode of
-      SyncApply -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset False now
-      SyncCheck -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools ReportUnset True now
+      SyncApply -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset SyncWrite [] now
+      SyncCheck -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools ReportUnset SyncReport [] now
+      SyncPlan -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset SyncShow [] now
       SyncInit name -> case find ((== name) . regionName) (catalogRegions cat) of
         Nothing -> failWith rt fmt 3 "region_not_found" ("no region named `" <> name <> "`") (Just "regions are declared in regions.toml") ["available" .= map regionName (catalogRegions cat)]
         Just def -> initRegion rt fmt ws tools def now
@@ -259,14 +369,50 @@ runCommand rt cwd fmt cat = \case
           Left (step, err) -> catalogFailureAt rt fmt (if length ss > 1 then Just step else Nothing) err
           -- choices_from is resolved inside generate, step by step, so a
           -- step can choose what an earlier step of the chain creates.
-          Right gens -> do
-            now <- maybe (rtNow rt) pure (genNow g)
-            let mode = if genPlanOnly g then PlanOnly else Apply
-                steps = zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss
-            case modelFor cat g of
+          Right gens -> runSteps rt fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
+  FixCmd rule file (line, _) n g -> do
+    let ws = within (rtProjectDir rt) (rtRoot rt)
+        rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
+    paths <- listFiles ws "."
+    now <- rtNow rt
+    (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (catalogRules cat) paths (readText ws) [rel] >>= chooseFixInputs rt cat paths now
+    let here = [f | f <- fs, fRule f == rule, Just ((l1, _), (l2, _)) <- [fRange f], l1 <= line, line <= l2]
+    case here of
+      [] -> failWith rt fmt 3 "finding_not_found" ("no `" <> rule <> "` finding at " <> T.pack rel <> ":" <> T.pack (show line)) (Just "run `olifant check --file` to see the findings") []
+      f : _ -> case drop (n - 1) (fFixes f) of
+        [] -> failWith rt fmt 2 "usage" ("`" <> rule <> "` offers " <> T.pack (show (length (fFixes f))) <> " fix(es); there is no fix " <> T.pack (show n)) Nothing []
+        o : _ -> case findEntry cat (foGenerator o) of
+          Left err -> catalogFailure rt fmt err
+          Right entry ->
+            loadGenerator (rtRoot rt) (rtSyntax rt) cat entry >>= \case
+              Left err -> catalogFailure rt fmt err
+              Right gen -> do
+                let sets = M.fromList (foSets o)
+                    env = M.map Tm.VText (M.insert "finding" (maybe "" rpFinding (foReplace o)) sets)
+                    defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
+                    replacement = case foReplace o of
+                      Nothing -> Right []
+                      Just rp -> do
+                        rendered <- first describeTemplateError (render env (rpText rp))
+                        let text = T.intercalate "\n" [if T.null l then l else rpIndent rp <> l | l <- T.lines rendered]
+                        pure [Step (replaceGenerator rel (rpLines rp) (rpOld rp) (Template text [Lit text])) M.empty]
+                context <- fmap catMaybes . traverse (\t -> either (const (pure Nothing)) (\p -> fmap (T.unpack p,) <$> readText ws (T.unpack p)) (render env t)) $ concatMap fdContext (take 1 defs)
+                case replacement of
+                  Left why -> failWith rt fmt 1 "fix_failed" why Nothing []
+                  -- The replacement first, while its lines are where the rule saw them.
+                  Right first' -> runSteps rt fmt cat g context (first' ++ [Step gen sets])
+
+-- | Run plan steps as `gen` does (model, fills, progress, regions,
+-- output): `gen` itself, and `fix` (a replacement, then the fix's generator,
+-- with the fix's context files shown to the model).
+runSteps :: Runtime -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
+runSteps rt fmt cat g context steps = do
+  now <- maybe (rtNow rt) pure (genNow g)
+  let mode = if genPlanOnly g then PlanOnly else Apply
+  case modelFor cat g of
              Left why -> failWith rt fmt 2 "usage" why Nothing []
              Right filler ->
-              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
+              generate (within (rtProjectDir rt) (rtRoot rt)) (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolFiller = filler, toolFillContext = context, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
               Left err -> generationFailure rt fmt err
               Right plan0 -> do
                 let plan =
@@ -359,46 +505,71 @@ choiceViewsFor rt cat sets gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.
-syncRegions :: Runtime -> Format -> [(FilePath, Text)] -> Workspace IO -> Tools IO -> RegionMode -> Bool -> UTCTime -> IO ExitCode
-syncRegions rt fmt rtBrokenRegions ws tools regionMode checkOnly now = do
-  (edits, conflicts0, current) <- refreshRegions regionMode tools ws 1 M.empty
-  let conflicts = [RegionBroken "" path ("cannot read " <> T.pack path <> ": " <> err) | (path, err) <- rtBrokenRegions] ++ conflicts0
-  let writes = M.fromList [(p, c) | (p, Just c) <- M.toList current]
-      plan = Plan (GeneratorId "sync") [] now edits conflicts [] writes [] M.empty
-      applied = not checkOnly && not (hasConflicts plan)
-  when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
-  emit rt fmt (planJson applied plan) (if checkOnly then syncCheckHuman plan else planHuman applied plan)
-  pure (if hasConflicts plan || (checkOnly && not (null edits)) then ExitFailure 5 else ExitSuccess)
+-- | What `sync` does with the refresh: write it, only report drift
+-- (`--check`), or show it as a plan with whole files (`--plan`, for editors).
+data SyncOutput = SyncWrite | SyncReport | SyncShow
+  deriving stock (Eq)
 
--- | `sync --init NAME`: put a region's empty fences at its `init_at`, then fill it.
+syncRegions :: Runtime -> Format -> [(FilePath, Text)] -> Workspace IO -> Tools IO -> RegionMode -> SyncOutput -> [FilePath] -> UTCTime -> IO ExitCode
+syncRegions rt fmt rtBrokenRegions ws tools regionMode output absorb now = do
+  (edits, conflicts0, current) <- refreshRegions regionMode tools ws 1 M.empty
+  unset <- if regionMode == SkipUnset then unsetRegions tools ws else pure []
+  let conflicts = [RegionBroken "" path ("cannot read " <> T.pack path <> ": " <> err) | (path, err) <- rtBrokenRegions] ++ conflicts0
+      writes = M.fromList [(p, if p `elem` absorb then absorbDuplicates c else c) | (p, Just c) <- M.toList current]
+      warnings = ["region `" <> r <> "` is not set up in " <> T.pack p <> " (run `olifant sync --init " <> r <> "`)" | (p, r) <- unset]
+  before <- M.fromList <$> traverse (\p -> (p,) <$> readText ws p) (M.keys writes)
+  let plan = Plan (GeneratorId "sync") [] now edits conflicts warnings writes [] before
+      applied = output == SyncWrite && not (hasConflicts plan)
+  when applied $ mapM_ (uncurry (writeText ws)) (M.toList writes)
+  emit rt fmt (planJson applied plan) (if output == SyncReport then syncCheckHuman plan else planHuman applied plan)
+  pure (if hasConflicts plan || (output == SyncReport && not (null edits)) then ExitFailure 5 else ExitSuccess)
+
+-- | `sync --init NAME`: put a region's empty fences at its `init_at`, then
+-- fill it. A family (spec §5.9) sets up every matching file that lacks them.
 initRegion :: Runtime -> Format -> Workspace IO -> Tools IO -> RegionDef -> UTCTime -> IO ExitCode
-initRegion rt fmt ws tools def now
-  | not (isSafeRelative file) = failWith rt fmt 5 "region_broken" ("region `" <> regionName def <> "`: " <> T.pack file <> " is outside the project") Nothing []
+initRegion rt fmt ws tools def now = do
+  universe <- listFiles ws "."
+  let instances = regionInstances universe def
+      family = length instances /= 1 || map regionFile instances /= [regionFile def]
+  results <- traverse (initFences ws tools) instances
+  let fenced = [regionFile i | (i, Right True) <- zip instances results]
+      whereText = if family then T.pack (show (length instances)) <> " files" else T.pack (regionFile def)
+  case [failure | Left failure <- results] of
+    (code, err, msg) : _ -> failWith rt fmt code err msg Nothing []
+    []
+      | null fenced ->
+          emit rt fmt (object ["region" .= regionName def, "status" .= ("already set up" :: Text)]) ("region " <> regionName def <> " is already set up in " <> whereText <> "\n") >> pure ExitSuccess
+      | otherwise -> syncRegions rt fmt [] ws tools {toolRegions = [def]} SkipUnset SyncWrite fenced now
+
+-- | Put one region's empty fences at its `init_at`: Right True when added,
+-- Right False when already there, Left (exit code, error code, message).
+initFences :: Workspace IO -> Tools IO -> RegionDef -> IO (Either (Int, Text, Text) Bool)
+initFences ws tools def
+  | not (isSafeRelative file) = pure (Left (5, "region_broken", "region `" <> regionName def <> "`: " <> T.pack file <> " is outside the project"))
   | otherwise = case regionComment def <|> (langComment <$> lang) of
-      Nothing -> failWith rt fmt 1 "region_broken" ("no comment syntax for " <> T.pack file <> " (add `comment` to the region)") Nothing []
+      Nothing -> pure (Left (1, "region_broken", "no comment syntax for " <> T.pack file <> " (add `comment` to the region)"))
       Just c ->
         readText ws file >>= \case
           -- A whole-file region is set up by creating its file with the header.
           Nothing
-            | regionWholeFile def -> writeText ws file (wholeHeader def c <> "\n") >> fill
-            | otherwise -> failWith rt fmt 3 "file_not_found" ("cannot read " <> T.pack file) Nothing []
+            | regionWholeFile def -> writeText ws file (wholeHeader def c <> "\n") >> pure (Right True)
+            | otherwise -> pure (Left (3, "file_not_found", "cannot read " <> T.pack file))
           Just content -> case applyRegion def c [] content of
-            Right _ -> emit rt fmt (object ["region" .= regionName def, "status" .= ("already set up" :: Text)]) ("region " <> regionName def <> " is already set up in " <> T.pack file <> "\n") >> pure ExitSuccess
-            Left (FenceBroken why) -> failWith rt fmt 5 "region_broken" ("region `" <> regionName def <> "` in " <> T.pack file <> " is broken: " <> why) Nothing []
+            Right _ -> pure (Right False)
+            Left (FenceBroken why) -> pure (Left (5, "region_broken", "region `" <> regionName def <> "` in " <> T.pack file <> " is broken: " <> why))
             Left FenceMissing -> case regionInitAt def of
-              Nothing -> failWith rt fmt 2 "usage" ("region `" <> regionName def <> "` has no `init_at`, so Olifant cannot tell where its fences go") Nothing []
+              Nothing -> pure (Left (2, "usage", "region `" <> regionName def <> "` has no `init_at`, so Olifant cannot tell where its fences go"))
               Just phrase ->
                 resolveLayers (toolSyntax tools) lang [PhraseAnchor phrase] content >>= \case
-                  Left misses -> failWith rt fmt 5 "anchor_unresolved" (describeMisses misses) Nothing []
+                  Left misses -> pure (Left (5, "anchor_unresolved", T.pack file <> ": " <> describeMisses misses))
                   Right loc -> do
                     let (open, close) = fenceLines def c
                         placed = maybe loc (\i -> loc {locIndent = i}) (regionInitIndent def)
                     writeText ws file (snd (insertLines placed (open <> "\n" <> close) content))
-                    fill
+                    pure (Right True)
   where
     file = regionFile def
     lang = languageFor (toolLanguages tools) file
-    fill = syncRegions rt fmt [] ws tools {toolRegions = [def]} SkipUnset False now
 
 -- | The model that fills holes in a `gen` (spec §6.4): `--model`, else
 -- `[model] default`; none with `--no-fill` or without `[model]`.
@@ -430,6 +601,68 @@ projectQueries rt cat =
     { queryCommand = processCommand (rtProjectDir rt)
     , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
     }
+
+-- | A fix's enum inputs left open are pre-chosen when the finding's code
+-- names exactly one choice (`invoices::table` → invoice_repository), and the
+-- label says which (beat 4 feedback).
+chooseFixInputs :: Runtime -> Catalog -> [FilePath] -> UTCTime -> ([Finding], a) -> IO ([Finding], a)
+chooseFixInputs rt cat paths now (fs, exs) = (,exs) <$> traverse (\f -> (\os -> f {fFixes = os}) <$> traverse (choose f) (fFixes f)) fs
+  where
+    ws = within (rtProjectDir rt) (rtRoot rt)
+    nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
+    choose f o = case find ((== foGenerator o) . generatorIdText . entryId) (catalogEntries cat) of
+      Nothing -> pure o
+      Just e ->
+        withChoices (projectQueries rt cat) paths (readText ws) (M.fromList (foSets o)) now (entryDefinition e) <&> \case
+          Left _ -> o
+          Right g ->
+            let picks = [(inputName i, c) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i], Just c <- [suggestChoice (fText f) cs]]
+             in case picks of
+                  (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c)}
+                  [] -> o
+
+-- | `invoice_repository` → `InvoiceRepository`.
+toPascal :: Text -> Text
+toPascal = T.concat . map (\w -> T.toUpper (T.take 1 w) <> T.drop 1 w) . T.splitOn "_"
+
+-- | `.olifant/baseline.toml` (spec §5.10): (rule, file, fingerprint) entries.
+readBaseline :: Text -> Either Text [((Text, Text, Text), Int)]
+readBaseline src = do
+  top <- Toml.parseToml src
+  entries <- maybe (Right []) (Toml.list Toml.table) (M.lookup "baseline" top)
+  traverse entry entries
+  where
+    entry t = do
+      k <- (,,) <$> Toml.required "rule" Toml.text t <*> Toml.required "file" Toml.text t <*> Toml.required "fingerprint" Toml.text t
+      n <- maybe 1 fromInteger <$> Toml.optional "count" Toml.int t
+      pure (k, n)
+
+-- | Changed lines per file from `git diff -U0 --src-prefix=a/ --dst-prefix=b/`
+-- (1-based inclusive ranges; pure deletions have none). Review I6: the
+-- prefixes are forced, so `diff.noprefix` and friends cannot hide changes.
+parseDiffHunks :: Text -> [(FilePath, [(Int, Int)])]
+parseDiffHunks = finish . foldl step (Nothing, [])
+  . T.lines
+  where
+    step (cur, acc) l
+      | Just p <- T.stripPrefix "+++ b/" l = (Just (T.unpack p), acc)
+      | "+++ " `T.isPrefixOf` l = (Nothing, acc)
+      | "@@ " `T.isPrefixOf` l, Just f <- cur, Just r <- range l = (cur, add f r acc)
+      | otherwise = (cur, acc)
+    add f r acc = case lookup f acc of
+      Just rs -> [(g, if g == f then rs ++ [r] else x) | (g, x) <- acc]
+      Nothing -> acc ++ [(f, [r])]
+    finish (_, acc) = acc
+    range l = case T.words l of
+      (_ : _ : plus : _) | Just spec <- T.stripPrefix "+" plus ->
+        let (start, count) = T.breakOn "," spec
+         in case (reads (T.unpack start), if T.null count then Just 1 else readMaybeInt (T.drop 1 count)) of
+              ([(c, "")], Just d) | d > 0 -> Just (c, c + d - 1)
+              _ -> Nothing
+      _ -> Nothing
+    readMaybeInt t = case reads (T.unpack t) of
+      [(n, "")] -> Just n
+      _ -> Nothing
 
 -- | One action as editors read it (spec §4.6).
 actionJson :: (Text -> Text) -> Action -> Value

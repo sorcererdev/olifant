@@ -66,7 +66,8 @@ data PlannedHole = PlannedHole {phSite :: HoleSite, phStatus :: HoleStatus, phFi
 
 -- | 'Conflicted': this edit produced a conflict (see 'planConflicts').
 -- | 'WillRefresh': an owned region (name, lines added, lines removed, new file content).
-data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | WillRefresh Text Int Int Text | Skipped SkipReason | Conflicted
+-- | 'WillReplace': first line, lines removed, the new text (a rule's fix).
+data EditAction = WillCreate Text | WillOverwrite Text | WillInsert Int Text | WillRefresh Text Int Int Text | WillReplace Int Int Text | Skipped SkipReason | Conflicted
   deriving stock (Eq, Show)
 
 -- | 'UnlessMatched': `unless.exists` found this file; 'UnlessFound': a line

@@ -1,3 +1,4 @@
+name = "Add Repository Port"
 description = "Create a repository for a service: the port trait, an in-memory adapter and a Diesel adapter"
 language = "rust"
 version = 1
@@ -34,10 +35,7 @@ hint = "Create the service first: olifant gen rust-htmx/service-skeleton --set s
 create   = "{= service_dir =}/src/ports/{= aggregate|snake =}_repository.rs"
 template = "port.rs.dt"
 
-[[edits]]
-insert = "{= service_dir =}/src/ports.rs"
-at     = ["after last line matching ^pub mod ", "end of file"]
-text   = "pub mod {= aggregate|snake =}_repository;"
+# The `pub mod` line comes from the pack's owned region (regions.toml), refreshed after every gen.
 
 # The aggregate the port stores, as a stub (the plop template imports it but
 # never creates it). Skipped when models.rs already has a type of that name.

@@ -49,6 +49,7 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
             pure (current, planned path n' (fromMaybe "" (renderedPath edit)) (Skipped why) : edits, conflicts, n')
       PlanEdit path (RenderedCreate p content onExists _) -> pure (record n' (decideCreate path n' p content onExists current))
       PlanEdit path (RenderedInsert p anchors snippet _) -> record n' <$> decideInsert path n' p anchors snippet current
+      PlanEdit path (RenderedReplace p range old new) -> pure (record n' (decideReplace path n' p range old new current))
       where
         record m (current', new, conflict) = (current', new : edits, maybe conflicts (: conflicts) conflict, m)
     -- `unless.exists` sees files on disk and files this plan has created so
@@ -81,6 +82,23 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
                   | otherwise ->
                       let (line, updated) = insertLines loc snippet old
                        in (M.insert p (Just updated) current, (planned path n p (WillInsert line (placedText loc snippet))) {editAnchor = Just (locUsed loc)}, Nothing)
+    -- A rule's fix: the lines must still read what the rule saw.
+    decideReplace path n p (l1, l2) old new current
+      | Just problem <- unwritable n p = (current, planned path n p Conflicted, Just problem)
+      | otherwise = case M.findWithDefault Nothing p current of
+          Nothing -> (current, planned path n p Conflicted, Just (InsertTargetMissing n p))
+          Just content ->
+            let ls = T.lines content
+                (before, rest) = splitAt (l1 - 1) ls
+                (target, after) = splitAt (l2 - l1 + 1) rest
+                newLines = if T.null new then [] else T.lines new
+                same a b = map T.stripEnd a == map T.stripEnd b
+             in if same target (T.lines old)
+                  then (M.insert p (Just (T.unlines (before ++ newLines ++ after))) current, planned path n p (WillReplace l1 (length target) new), Nothing)
+                  else
+                    if not (null newLines) && same (take (length newLines) rest) newLines
+                      then (current, planned path n p (Skipped AlreadyPresent), Nothing)
+                      else (current, planned path n p Conflicted, Just (TargetUnusable n p "the code to replace changed since the rule saw it; check again"))
     unwritable n p
       | not (isSafeRelative p) = Just (UnsafePath n p)
       | Just why <- M.lookup p blocked = Just (TargetUnusable n p why)

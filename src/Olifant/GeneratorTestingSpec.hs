@@ -6,7 +6,8 @@ import Control.Monad (filterM, forM_)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.GeneratorTesting
-import Olifant.Generation (HoleStatus (..), Mode (..), Plan (..), PlannedHole (..), Step (..), describeGenerationError, generate)
+import Olifant.Generation.Regions (RegionMode (..), refreshRegions)
+import Olifant.Generation (describeConflict, PlannedEdit (..), HoleStatus (..), Mode (..), Plan (..), PlannedHole (..), Step (..), describeGenerationError, generate)
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
@@ -18,6 +19,7 @@ import System.Directory (getTemporaryDirectory)
 import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
+import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
 import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
@@ -139,6 +141,37 @@ spec = do
           CaseSkipped why -> missingTool strict (T.unpack why)
           other -> other `shouldBe` CasePassed
 
+  describe "rust-htmx rules (spec §5.9)" $
+    it "flags diesel in a command (with the repository fix) and unwrap as a hint" $ do
+      tmp <- getTemporaryDirectory
+      rulesSrc <- TIO.readFile "packs/rust-htmx/rules.toml"
+      langSrc <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
+      let Right rules = parseRules rulesSrc
+          Right rust = parseLanguage "rust" "packs/rust-htmx" langSrc
+          path = "billing/billing-service/src/cancel_invoice.rs"
+          code = "use std::sync::Arc;\nuse diesel::prelude::*;\n\nfn f() { let x = g().unwrap(); }\n"
+      (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+      [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
+        `shouldBe` [ ("commands-use-ports", Just 2, Warn, ["rust-htmx/command-dependency", "rust-htmx/service-repository"])
+                   , ("commands-no-unwrap", Just 4, Hint, []) ]
+      -- the realistic flow: Diesel code, no import yet; one finding per line
+      let usage = "fn f(conn: &mut PgConnection) {\n    let rows = invoices::table.filter(invoices::id.eq(1)).load::<Invoice>(conn);\n    diesel::insert_into(invoices::table).values(&x).execute(conn);\n}\n"
+      (uses, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just usage)) [path]
+      [(fRule f, fmap (fst . fst) (fRange f)) | f <- uses, fRule f == "commands-use-ports"] `shouldBe` [("commands-use-ports", Just 2), ("commands-use-ports", Just 3)]
+      -- the service's own modules are not commands (review: upgraded minor)
+      (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
+      others `shouldBe` []
+  describe "rust-htmx regions (spec §5.9)" $
+    it "a command file created by hand gets its `pub mod` line; ports.rs lists the ports" $ do
+      tmp <- getTemporaryDirectory
+      prepared <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/rust-htmx" "rust-htmx" "wire-command" [("billing/billing-service/src/void_payment.rs", "")]
+      case prepared of
+        Left why -> expectationFailure (T.unpack why)
+        Right (ws, tools, _, _) -> do
+          (edits, conflicts, current) <- refreshRegions ReportUnset tools ws 1 M.empty
+          map describeConflict conflicts `shouldBe` []
+          [editPath e | e <- edits] `shouldBe` ["billing/billing-service/src/lib.rs"]
+          fmap (fmap (T.isInfixOf "pub mod refund_invoice;\npub mod service;\npub mod void_invoice;\npub mod void_payment;\n")) (M.lookup "billing/billing-service/src/lib.rs" current) `shouldBe` Just (Just True)
   describe "rust-htmx dependent choices" $
     it "wire-command refuses a field that is not one of the service's ports, naming the service" $ do
       tmp <- getTemporaryDirectory

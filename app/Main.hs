@@ -4,11 +4,12 @@ import Control.Exception (SomeException, displayException, try)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
-import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
+import Olifant.Cli (DoctorPorts (..), Runtime (..), parseDiffHunks, runCli)
 import Olifant.Model (probeBackend)
 import Data.Maybe (fromMaybe, isJust)
 import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
+import System.Process (readProcessWithExitCode)
 import Olifant.Language (processChecker)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Workspace (diskWorkspace)
@@ -39,6 +40,7 @@ main = do
         , rtErr = TIO.hPutStr stderr
         , rtSyntax = astGrepSyntax cache
         , rtChecker = processChecker
+        , rtGitChanged = gitChanged
         , rtDoctor =
             DoctorPorts
               findExecutable
@@ -50,3 +52,20 @@ main = do
   case result of
     Right code -> exitWith code
     Left (e :: SomeException) -> TIO.hPutStrLn stderr ("olifant: internal error: " <> T.pack (displayException e)) >> exitWith (ExitFailure 1)
+
+-- | Lines changed since a git ref, relative to a directory (the project
+-- root), and the untracked files there (spec §5.10, `check --changed-since`).
+gitChanged :: FilePath -> T.Text -> IO (Either T.Text ([(FilePath, [(Int, Int)])], [FilePath]))
+gitChanged dir ref = do
+  diff <- git ["diff", "--relative", "--no-color", "--no-ext-diff", "-U0", "--src-prefix=a/", "--dst-prefix=b/", T.unpack ref, "--"]
+  untracked <- git ["ls-files", "--others", "--exclude-standard"]
+  pure $ case (diff, untracked) of
+    (Left e, _) -> Left e
+    (_, Left e) -> Left e
+    (Right d, Right u) -> Right (parseDiffHunks d, map T.unpack (filter (not . T.null) (T.lines u)))
+  where
+    git args = do
+      (code, out, err) <- readProcessWithExitCode "git" (["-C", dir, "-c", "core.quotePath=false"] ++ args) ""
+      pure $ case code of
+        ExitSuccess -> Right (T.pack out)
+        ExitFailure _ -> Left ("git " <> T.pack (unwords args) <> ": " <> T.strip (T.pack err))

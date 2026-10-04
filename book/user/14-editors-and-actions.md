@@ -12,6 +12,9 @@ plugin does, and what Olifant gives an editor:
   generators that could apply but found nothing yet;
 - a plan an editor can apply as buffer edits (**`files`**), and progress while it is built
   (**`gen --progress`**), with a warning first when a file it touches does not parse;
+- **`olifant sync --plan`** and **`olifant check --file FILE`**: the conventions on save,
+  regions refreshed as buffer edits and rule findings as diagnostics
+  ([below](#conventions-on-save));
 - **`olifant doctor`**: what generators need on this machine, and how to fix what is missing
   ([Troubleshooting](#troubleshooting)).
 
@@ -117,6 +120,76 @@ You are often mid-edit when you ask for an action. If a file the plan touches do
 and its title ends with `gd go to the error`. `gd` closes the preview and puts the cursor on
 that line, so you can fix the code and ask again. The warning alone doesn't stop you
 applying the plan: it is a warning, not a conflict.
+
+## Conventions on save
+
+Generators keep conventions when they write code; Durandal keeps them when you do
+([chapter 15](15-conventions-that-hold.md)). Every time you save a buffer in an Olifant
+project, it does two things, and nothing while you type.
+
+### Regions, as buffer edits
+
+First it runs `olifant sync --plan --json` ([chapter 5](05-owned-regions.md#--plan-the-refresh-for-editors))
+and applies the plan's `files` the way it applies a generator's: as ordinary buffer edits,
+written, each an undo step in its buffer. Save a new `billing/billing-service/src/void_payment.rs`
+and `lib.rs` gains its line, with a notice:
+
+```
+synced billing/billing-service/src/lib.rs: modules +1
+```
+
+(`modules +0 −1` when a file went away.) The refresh covers the whole project, not only the
+file you saved.
+
+It never writes over your unsaved work. If a file the refresh would change is open with
+unsaved changes, nothing is applied, and the notice says so:
+
+```
+billing/billing-service/src/lib.rs has unsaved changes; region modules not refreshed (save it, then save again)
+```
+
+A refresh with a conflict (a broken fence) is not applied either; `olifant sync --check` in
+a terminal says why.
+
+### Rule findings as diagnostics
+
+Then it checks the saved buffer's rules, with `olifant check --file FILE --content -` and the
+buffer's text on stdin, and shows each finding as a Neovim diagnostic (source `durandal`, the
+rule's id as its code). It does the same when you enter a buffer.
+
+- The diagnostic has the rule's severity: `hint`, `warn` or `error`. With `use
+  diesel::prelude::*;` in a command, that is a warning under the line: "Commands talk to
+  ports, not the database (rust-htmx: ports & adapters)".
+- A finding in the baseline ([chapter 15](15-conventions-that-hold.md#a-new-rule-the-ratchet))
+  is always a hint, its message ending "(existing)": known debt, not news.
+- A finding about a whole file (a `missing` rule) is on line 1.
+- A check that fails (no `olifant`, a broken `rules.toml`) changes nothing and says nothing;
+  run `olifant check` in a terminal to see why.
+
+Add `// olifant:allow commands-use-ports — spike` to the line, save, and the diagnostic goes.
+
+### A finding's fix, first in `<leader>ma`
+
+When the cursor is on a finding whose rule has a `fix`, `<leader>ma` lists the fix first,
+before the actions that apply there:
+
+```
+Fix: Commands talk to ports, not the database (rust-htmx: ports & adapters) (Add Repository Port)
+```
+
+Picking it goes on as `<leader>mg` would, with the finding's `sets` (the slots of the rule's
+`files`) already set: it asks for the rest (`aggregate`), then shows the plan.
+
+### Turning it off
+
+```lua
+opts = { conventions = false },
+```
+
+turns off both, region refreshes and diagnostics. The diagnostics are in their own
+namespace, `require("durandal.conventions").ns`, so Neovim's diagnostic settings apply to
+them as to any other: `vim.diagnostic.enable(false, { ns_id = require("durandal.conventions").ns })`
+hides them and keeps the refreshes.
 
 ## The demo, from the command line
 
@@ -767,3 +840,5 @@ Durandal doesn't underline errors as you type; your language server does. For Ru
 `rust-analyzer`, which runs `cargo check` itself, so it needs `cargo` on Neovim's `PATH`
 too: if `rust-analyzer` shows no errors at all, the `PATH` above is the likely cause. Olifant
 only reports a broken file when you ask for a plan ([above](#code-that-does-not-parse-in-a-plan)).
+The diagnostics Durandal does show, on save, are the project's rules
+([above](#rule-findings-as-diagnostics)), not compile errors.
