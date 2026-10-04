@@ -1,0 +1,46 @@
+{
+    "version": "1.1.414",
+    "time": "1791152318052",
+    "generalDiagnostics": [
+        {
+            "file": "src/colors.py",
+            "severity": "error",
+            "message": "Function with declared return type \"str\" must return value on all code paths\n  \"None\" is not assignable to \"str\"",
+            "range": {
+                "start": {
+                    "line": 8,
+                    "character": 22
+                },
+                "end": {
+                    "line": 8,
+                    "character": 25
+                }
+            },
+            "rule": "reportReturnType"
+        },
+        {
+            "file": "src/colors.py",
+            "severity": "error",
+            "message": "Cases within match statement do not exhaustively handle all values\n  Unhandled type: \"Literal[Color.BLUE]\"\n  If exhaustive handling is not intended, add \"case _: pass\"",
+            "range": {
+                "start": {
+                    "line": 9,
+                    "character": 10
+                },
+                "end": {
+                    "line": 9,
+                    "character": 11
+                }
+            },
+            "rule": "reportMatchNotExhaustive"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 1,
+        "errorCount": 2,
+        "warningCount": 0,
+        "informationCount": 0,
+        "timeInSec": 0.078
+    }
+}
+
