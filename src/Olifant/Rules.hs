@@ -15,10 +15,14 @@ module Olifant.Rules
   , parseRulesConfig
   , parseSeverity
   , checkFiles
+  , fingerprint
   ) where
 
 import Control.Monad ((>=>))
+import Data.Bits (xor)
 import Data.ByteString qualified as BS
+import Data.Word (Word64)
+import Numeric (showHex)
 import Data.List (nub, sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
@@ -66,6 +70,8 @@ data Finding = Finding
   , fMessage :: Text
   , fFix :: Maybe Text
   , fSets :: [(Text, Text)]
+  , fFingerprint :: Text
+  -- ^ what the finding is about, stable when lines move (for the baseline, spec §5.10)
   }
   deriving stock (Eq, Show)
 
@@ -83,10 +89,18 @@ parseRules src = do
   traverse (\(k, v) -> inKey ("rules." <> k) (table v >>= rule k)) (M.toList rs)
   where
     rule k t = do
-      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix"] t
+      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix", "since", "why"] t
       files <- required "files" text t
       exclude <- fromMaybe [] <$> optional "exclude" (list text) t
-      message <- required "message" text t
+      message0 <- required "message" text t
+      since <- optional "since" text t
+      why <- optional "why" text t
+      let story = case (since, why) of
+            (Just s, Just w) -> " (since " <> s <> ": " <> w <> ")"
+            (Just s, Nothing) -> " (since " <> s <> ")"
+            (Nothing, Just w) -> " (" <> w <> ")"
+            _ -> ""
+          message = message0 <> story
       severity <- maybe (Right Warn) ruleSev =<< optional "severity" text t
       fix <- optional "fix" text t
       check <- case (M.lookup "match" t, M.lookup "missing" t) of
@@ -161,8 +175,8 @@ checkFiles syntax langs config rules paths readFile' files = do
           used = [s | fd <- raw, Just s <- [suppressedBy fd]]
           usedAllows = [alLine a | Left a <- used]
           lineRange a = Just ((alLine a, 1), (alLine a, 1))
-          unknown = [Finding "unknown-rule" f (lineRange a) Warn ("olifant:allow names no rule `" <> alRule a <> "`") Nothing [] | a <- allows, alRule a `notElem` known]
-          noReason = [Finding "allow-without-reason" f (lineRange a) Warn ("olifant:allow " <> alRule a <> " needs a reason: `— why`") Nothing [] | a <- allows, alRule a `elem` known, isNothing (alReason a)]
+          unknown = [Finding "unknown-rule" f (lineRange a) Warn ("olifant:allow names no rule `" <> alRule a <> "`") Nothing [] (fingerprint ["unknown-rule", alRule a]) | a <- allows, alRule a `notElem` known]
+          noReason = [Finding "allow-without-reason" f (lineRange a) Warn ("olifant:allow " <> alRule a <> " needs a reason: `— why`") Nothing [] (fingerprint ["allow-without-reason", alRule a]) | a <- allows, alRule a `elem` known, isNothing (alReason a)]
           commentExceptions = [Exception (alRule a) (T.pack f <> ":" <> T.pack (show (alLine a))) (alReason a) (alLine a `notElem` usedAllows) | a <- allows, alRule a `elem` known]
           configExceptions = nub [Exception r (where' globs) (Just reason) False | Right (r, globs, reason) <- used]
           sorted = sortOn (\fd -> (fmap fst (fRange fd), fRule fd)) (kept ++ unknown ++ noReason)
@@ -171,19 +185,28 @@ checkFiles syntax langs config rules paths readFile' files = do
       RuleMatch rule -> case (lang, renderRule (M.fromList [(k, VText v) | (k, v) <- slots]) rule) of
         (Just l, Right q) ->
           querySyntax syntax l q content >>= \case
-            Right ms -> pure [finding f r slots (Just (range content m)) | m <- ms]
+            Right ms -> pure [finding f r slots (Just (range content m)) (matchText m) | m <- ms]
             Left _ -> pure []
         _ -> pure []
       RuleMissing tmpl ->
         let env = M.fromList [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f))]
          in pure $ case render env tmpl of
-              Right p | collapse (T.unpack p) `notElem` paths -> [finding f r slots Nothing]
+              Right p | collapse (T.unpack p) `notElem` paths -> [finding f r slots Nothing p]
               _ -> []
-    finding f r slots rng = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (ruleFix r) (sortOn fst slots)
+    finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (ruleFix r) (sortOn fst slots) (fingerprint [ruleId r, what])
     range content m =
       let ls = T.lines content
           pos (l, c) = (l + 1, 1 + BS.length (TE.encodeUtf8 (T.take c (fromMaybe "" (listToMaybe (drop l ls))))))
        in (pos (matchStart m), pos (matchEnd m))
+
+-- | A stable fingerprint of what a finding is about: FNV-1a (64-bit) of its
+-- parts with whitespace collapsed, so it survives reformatting and moves.
+fingerprint :: [Text] -> Text
+fingerprint parts = T.pack (showHex64 (BS.foldl' step 14695981039346656037 bytes))
+  where
+    bytes = TE.encodeUtf8 (T.intercalate "\0" (map (T.unwords . T.words) parts))
+    step h b = (h `xor` fromIntegral b) * 1099511628211 :: Word64
+    showHex64 w = let s = showHex w "" in replicate (16 - length s) '0' ++ s
 
 -- | `a/b/../c` → `a/c`.
 collapse :: FilePath -> FilePath

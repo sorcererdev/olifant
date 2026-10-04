@@ -73,6 +73,7 @@ runIn dir stdinText files tty args = do
         , rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax
         , rtChecker = noChecker
+        , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
         }
       args
@@ -272,12 +273,48 @@ runCliSpec = describe "runCli" $ do
     it "(d) --report lists each rule's severity and every exception, stale ones too" $ do
       let allowCfg = "[[rules.allow]]\nrule = \"has-test\"\npaths = [\"legacy/**\"]\nreason = \"old code\"\n"
       (_, out, _, _) <- runWith "" (pack ++ [config allowCfg, ("/proj/src/a.x", "-- olifant:allow has-test — later\n")]) False ["check", "--report", "--json"]
-      out `shouldSatisfy` T.isInfixOf "\"rules\":[{\"id\":\"has-test\",\"severity\":\"warn\"}]"
+      out `shouldSatisfy` T.isInfixOf "\"rules\":[{\"debt\":0,\"id\":\"has-test\",\"severity\":\"warn\"}]"
       out `shouldSatisfy` T.isInfixOf "\"reason\":\"later\""
       out `shouldSatisfy` T.isInfixOf "\"reason\":\"old code\",\"rule\":\"has-test\",\"stale\":true"
+    describe "ratchet (spec §5.10)" $ do
+      let errorCfg = config "[rules]\n\"has-test\" = \"error\"\n"
+          base = pack ++ [errorCfg, ("/proj/src/a.x", "")]
+      it "(a) --baseline records today's findings; then only new findings fail" $ do
+        (code, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        code `shouldBe` ExitSuccess
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        baseline `shouldSatisfy` T.isInfixOf "rule = \"has-test\""
+        let withBaseline = base ++ [("/proj/.olifant/baseline.toml", baseline)]
+        (ok, out, _, _) <- runWith "" withBaseline False ["check", "--json"]
+        ok `shouldBe` ExitSuccess
+        out `shouldSatisfy` T.isInfixOf "\"baselined\":true"
+        (bad, _, _, _) <- runWith "" (withBaseline ++ [("/proj/src/b.x", "")]) False ["check", "--json"]
+        bad `shouldBe` ExitFailure 1
+      it "shows baselined findings as existing debt in human output" $ do
+        (_, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        (_, out, _, _) <- runWith "" (base ++ [("/proj/.olifant/baseline.toml", baseline)]) False ["check", "--human"]
+        out `shouldSatisfy` T.isInfixOf "· src/a.x  has-test — Every module has a test  (existing)"
+        out `shouldSatisfy` T.isInfixOf "conventions hold (1 finding, 1 existing)"
+      it "(c) --report shows remaining debt per rule" $ do
+        (_, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        (_, out, _, _) <- runWith "" (base ++ [("/proj/.olifant/baseline.toml", baseline)]) False ["check", "--report", "--json"]
+        out `shouldSatisfy` T.isInfixOf "\"debt\":1"
+      it "(f) --file marks baselined findings" $ do
+        (_, _, _, files) <- runWith "" base False ["check", "--baseline", "--json"]
+        Just baseline <- pure (M.lookup "/proj/.olifant/baseline.toml" files)
+        (_, out, _, _) <- runWith "" (base ++ [("/proj/.olifant/baseline.toml", baseline)]) False ["check", "--file", "src/a.x", "--json"]
+        out `shouldSatisfy` T.isInfixOf "\"baselined\":true"
+      it "(d) --changed-since keeps only findings in changed files or lines" $ do
+        (code, out, _, _) <- runWith "" (base ++ [("/proj/src/b.x", "")]) False ["check", "--changed-since", "main", "--json"]
+        -- the fake git says only src/b.x changed since main
+        code `shouldBe` ExitFailure 1
+        out `shouldSatisfy` T.isInfixOf "\"file\":\"src/b.x\""
+        out `shouldNotSatisfy` T.isInfixOf "\"file\":\"src/a.x\""
     it "refuses a rule whose fix names no generator" $ do
       let badFix = ("/packs/p/rules.toml", "[rules.r]\nfiles = \"src/*.x\"\nmissing = \"t/{= stem =}\"\nmessage = \"m\"\nfix = \"p/nope\"\n")
-      (_, out, _, _) <- runWith "" [head pack, badFix, config "", ("/proj/src/a.x", "")] False ["check", "--json"]
+      (_, out, _, _) <- runWith "" [("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n"), badFix, config "", ("/proj/src/a.x", "")] False ["check", "--json"]
       out `shouldSatisfy` T.isInfixOf "fix names no generator `p/nope`"
   describe "sync --plan and family init (spec §5.9)" $ do
     let regionsToml = "[regions.mods]\nfile = \"*/list.txt\"\ncomment = \"#\"\nquery = { glob = \"{= dir =}/*.x\" }\nitem = \"{= stem =}\"\ninit_at = \"start of file\"\n"

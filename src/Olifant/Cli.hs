@@ -6,6 +6,7 @@ import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..))
 import Olifant.Rules (Exception (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles)
 import Olifant.Rules qualified as R
+import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
 import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, matchPathSlots)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
@@ -48,6 +49,9 @@ data Runtime = Runtime
   , rtSyntax :: Syntax IO
   , rtChecker :: Checker IO
   , rtDoctor :: DoctorPorts IO
+  , -- | lines changed since a git ref (file, 1-based inclusive ranges) and
+    -- untracked files, for `check --changed-since`
+    rtGitChanged :: FilePath -> Text -> IO (Either Text ([(FilePath, [(Int, Int)])], [FilePath]))
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -170,8 +174,12 @@ runCommand rt cwd fmt cat = \case
             where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
         emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
     pure ExitSuccess
-  CheckCmd report file fromStdin -> do
+  CheckCmd report file fromStdin baseline changedSince -> do
     let ws = within (rtProjectDir rt) (rtRoot rt)
+        baselinePath = ".olifant/baseline.toml"
+        key f = (fRule f, T.pack (fFile f), fFingerprint f)
+    known <- fmap (maybe [] (either (const []) id . readBaseline)) (readText ws baselinePath)
+    let baselined f = key f `elem` known
         rules = catalogRules cat
         nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
         sevText = \case R.Hint -> "hint" :: Text; R.Warn -> "warn"; R.Error -> "error"; R.Off -> "off"
@@ -179,11 +187,11 @@ runCommand rt cwd fmt cat = \case
           object
             [ "rule" .= fRule f, "file" .= fFile f, "severity" .= sevText (fSeverity f), "message" .= fMessage f
             , "range" .= fmap (\((l1, c1), (l2, c2)) -> object ["start" .= [l1, c1], "end" .= [l2, c2]]) (fRange f)
-            , "fix" .= fFix f, "fix_name" .= fmap nameOf (fFix f), "sets" .= M.fromList (fSets f) ]
+            , "fix" .= fFix f, "fix_name" .= fmap nameOf (fFix f), "sets" .= M.fromList (fSets f), "baselined" .= (fFingerprint f /= "" && baselined f) ]
         exceptionJson e = object ["rule" .= exRule e, "where" .= exWhere e, "reason" .= exReason e, "stale" .= exStale e]
-        reportJson = ["rules" .= [object ["id" .= ruleId r, "severity" .= sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat))))] | report, r <- rules] | report]
+        reportJson fs = ["rules" .= [object ["id" .= ruleId r, "severity" .= sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat)))), "debt" .= length [f | f <- fs, fRule f == ruleId r, baselined f]] | r <- rules] | report]
         mark = \case R.Error -> "✗" :: Text; R.Warn -> "!"; _ -> "·"
-        findingHuman f = mark (fSeverity f) <> " " <> T.pack (fFile f) <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> "  " <> fRule f <> " — " <> fMessage f <> maybe "" (\x -> "  (fix: " <> nameOf x <> ")") (fFix f)
+        findingHuman f = (if baselined f then "·" else mark (fSeverity f)) <> " " <> T.pack (fFile f) <> maybe "" (\((l, _), _) -> ":" <> T.pack (show l)) (fRange f) <> "  " <> fRule f <> " — " <> fMessage f <> maybe "" (\x -> "  (fix: " <> nameOf x <> ")") (fFix f) <> (if baselined f then "  (existing)" else "")
         exceptionHuman e = "  " <> exRule e <> " at " <> exWhere e <> ": " <> fromMaybe "(no reason)" (exReason e) <> (if exStale e then "  [stale: suppresses nothing]" else "")
     paths <- listFiles ws "."
     case file of
@@ -191,16 +199,39 @@ runCommand rt cwd fmt cat = \case
         let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> f))
         content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> f)
         (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (\p -> if p == rel then pure content else readText ws p) [rel]
-        emit rt fmt (object (["findings" .= map findingJson fs, "exceptions" .= map exceptionJson exs] ++ reportJson)) (T.unlines (map findingHuman fs))
+        emit rt fmt (object (["findings" .= map findingJson fs, "exceptions" .= map exceptionJson exs] ++ reportJson fs)) (T.unlines (map findingHuman fs))
+        pure ExitSuccess
+      Nothing | baseline -> do
+        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
+        (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked
+        let entry f = T.unlines ["[[baseline]]", "rule = " <> quote (fRule f), "file = " <> quote (T.pack (fFile f)), "fingerprint = " <> quote (fFingerprint f), ""]
+            quote t = "\"" <> T.replace "\"" "\\\"" (T.replace "\\" "\\\\" t) <> "\""
+            header = "# Findings recorded by `olifant check --baseline` (spec §5.10): known debt.\n# check fails only on findings not listed here; re-run --baseline as debt is paid.\n\n"
+        writeText ws baselinePath (header <> T.concat (map entry fs))
+        emit rt fmt (object ["baselined" .= length fs, "file" .= baselinePath]) ("baselined " <> T.pack (show (length fs)) <> " finding" <> (if length fs == 1 then "" else "s") <> " in " <> T.pack baselinePath <> "\n")
         pure ExitSuccess
       Nothing -> do
-        (edits, conflicts, _) <- refreshRegions ReportUnset (projectTools rt cat) ws 1 M.empty
+        (edits, conflicts, _) <- case changedSince of
+          Just _ -> pure ([], [], M.empty) -- a findings run on the branch's changes
+          Nothing -> refreshRegions ReportUnset (projectTools rt cat) ws 1 M.empty
+        changed <- traverse (rtGitChanged rt (rtProjectDir rt)) changedSince
         let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
-        (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked
-        let drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
+            touched f = case changed of
+              Nothing -> True
+              Just (Left _) -> True
+              Just (Right (ranges, untracked)) ->
+                fFile f `elem` untracked
+                  || case (lookup (fFile f) ranges, fRange f) of
+                    (Nothing, _) -> False
+                    (Just _, Nothing) -> True
+                    (Just rs, Just ((l1, _), (l2, _))) -> any (\(a, b) -> a <= l2 && l1 <= b) rs
+        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked
+        let fs = filter touched fs0
+            drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
             regionsJson = [object ["file" .= p, "region" .= r, "status" .= ("drift" :: Text)] | (p, r) <- drift] ++ [object ["status" .= ("broken" :: Text), "message" .= describeConflict c] | c <- conflicts]
             broken = [T.pack p <> ": " <> why | (p, why) <- catalogBrokenRules cat]
-            failed = not (null drift) || not (null conflicts) || not (null broken) || any ((== R.Error) . fSeverity) fs
+            gitProblem = [why | Just (Left why) <- [changed]]
+            failed = not (null drift) || not (null conflicts) || not (null broken) || not (null gitProblem) || any (\f -> fSeverity f == R.Error && not (baselined f)) fs
             human =
               T.unlines $
                 ["region " <> r <> " out of date in " <> T.pack p <> " (run olifant sync)" | (p, r) <- drift]
@@ -208,8 +239,15 @@ runCommand rt cwd fmt cat = \case
                   ++ ["✗ " <> b | b <- broken]
                   ++ map findingHuman fs
                   ++ (if report then "exceptions:" : map exceptionHuman exs else [])
-                  ++ [if failed then "check failed" else "conventions hold (" <> T.pack (show (length fs)) <> " finding" <> (if length fs == 1 then "" else "s") <> ", none blocking)"]
-        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map findingJson fs, "exceptions" .= map exceptionJson exs, "errors" .= broken] ++ reportJson)) human
+                  ++ ["debt: " <> ruleId r <> " " <> T.pack (show n) <> " existing" | report, r <- rules, let n = length [f | f <- fs, fRule f == ruleId r, baselined f], n > 0]
+                  ++ [ if failed
+                         then "check failed"
+                         else
+                           let n = length fs
+                               old = length (filter baselined fs)
+                            in "conventions hold (" <> T.pack (show n) <> " finding" <> (if n == 1 then "" else "s") <> ", " <> (if old > 0 then T.pack (show old) <> " existing" else "none blocking") <> ")"
+                     ]
+        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map findingJson fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ reportJson fs)) human
         pure (if failed then ExitFailure 1 else ExitSuccess)
   DoctorCmd -> do
     checks <-
@@ -495,6 +533,13 @@ projectQueries rt cat =
     { queryCommand = processCommand (rtProjectDir rt)
     , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
     }
+
+-- | `.olifant/baseline.toml` (spec §5.10): (rule, file, fingerprint) entries.
+readBaseline :: Text -> Either Text [(Text, Text, Text)]
+readBaseline src = do
+  top <- Toml.parseToml src
+  entries <- maybe (Right []) (Toml.list Toml.table) (M.lookup "baseline" top)
+  traverse (\t -> (,,) <$> Toml.required "rule" Toml.text t <*> Toml.required "file" Toml.text t <*> Toml.required "fingerprint" Toml.text t) entries
 
 -- | One action as editors read it (spec §4.6).
 actionJson :: (Text -> Text) -> Action -> Value

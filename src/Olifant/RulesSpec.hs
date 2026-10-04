@@ -90,6 +90,15 @@ spec = describe "rules (spec §5.9)" $ do
     let (fs, exs) = run (RulesConfig [] [("commands-use-ports", ["billing/**"], "billing migrates later")]) [(cmd, "use diesel::x;\n")] [cmd]
     fs `shouldBe` []
     map exReason exs `shouldBe` [Just "billing migrates later"]
+  describe "ratchet (spec §5.10)" $ do
+    it "(b) a finding's fingerprint survives moving lines, and differs for different code" $ do
+      let fp content = map fFingerprint (fst (run none [(cmd, content)] [cmd]))
+      fp "use diesel::prelude::*;\n" `shouldBe` fp "\n\n// moved\nuse diesel::prelude::*;\n"
+      fingerprint ["r", "use   diesel::x;"] `shouldBe` fingerprint ["r", "use diesel::x;"]
+      fp "use diesel::prelude::*;\n" `shouldNotBe` fp "use diesel::r2d2;\n"
+    it "(e) since and why are part of the message" $ do
+      let Right [r] = parseRules "[rules.x]\nfiles = \"*.rs\"\nmessage = \"No.\"\nmatch = { kind = \"a\" }\nsince = \"2026-10\"\nwhy = \"ADR-12\"\n"
+      ruleMessage r `shouldBe` "No. (since 2026-10: ADR-12)"
   describe "loading" $ do
     it "reads [rules] config: severities and allows" $
       parseRulesConfig (M.fromList []) `shouldBe` Right (RulesConfig [] [])
