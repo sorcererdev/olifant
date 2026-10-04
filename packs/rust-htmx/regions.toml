@@ -1,0 +1,17 @@
+# Each service's module lists, kept equal to its files (spec §5.9): add or
+# remove a command or port file — by hand or by a generator — and the
+# `pub mod` line follows on the next gen, sync, or save in the editor.
+
+[regions.modules]
+file    = "*/*-service/src/lib.rs"
+comment = "//"
+query   = { glob = "{= dir =}/*.rs", exclude = ["{= dir =}/lib.rs"] }
+item    = "pub mod {= stem =};"
+init_at = "start of file"
+
+[regions.ports]
+file    = "*/*-service/src/ports.rs"
+comment = "//"
+query   = { glob = "{= dir =}/ports/*.rs" }
+item    = "pub mod {= stem =};"
+init_at = "start of file"

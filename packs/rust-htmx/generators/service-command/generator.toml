@@ -34,10 +34,7 @@ hint = "Create the service first: olifant gen rust-htmx/service-skeleton --set s
 create   = "{= service_dir =}/src/{= cmd =}.rs"
 template = "command.rs.dt"
 
-[[edits]]
-insert = "{= service_dir =}/src/lib.rs"
-at     = "after last line matching ^pub mod "
-text   = "pub mod {= cmd =};"
+# The `pub mod` line comes from the pack's owned region (regions.toml), refreshed after every gen.
 
 # Structure first; a service fresh from service-skeleton has no commands yet
 # (empty struct, empty `use` list), so the template's hook comments are the
