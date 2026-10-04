@@ -932,6 +932,11 @@ regionSpec = describe "generate (owned regions)" $ do
       body "billing/billing-service/src/lib.rs" `shouldBe` Just "pub mod cancel;\npub mod void;\n// olifant:end modules\n"
       body "mail/mail-service/src/lib.rs" `shouldBe` Just "pub mod send;\n// olifant:end modules\n"
       fmap (T.isInfixOf "generated from glob mail/mail-service/src/*.rs") (M.lookup "mail/mail-service/src/lib.rs" out) `shouldBe` Just True
+    it "I5: gen warns when it creates a file next to a list that is not set up" $ do
+      (ws, _) <- memoryWorkspace [("billing/billing-service/src/lib.rs", "pub mod cancel;\n"), ("billing/billing-service/src/cancel.rs", "")]
+      let creator = generatorFrom (header <> "[[edits]]\ncreate = \"billing/billing-service/src/{= name =}.rs\"\ntext = \"x\"\n")
+      Right plan <- generate ws noResolve famTools [Step creator (M.fromList [("name", "pay")])] now PlanOnly
+      planWarnings plan `shouldSatisfy` any (\w -> "not set up in billing/billing-service/src/lib.rs" `T.isInfixOf` w && "sync --init modules" `T.isInfixOf` w)
     it "(c) reports drift per file" $ do
       (ws, _) <- memoryWorkspace files
       (edits, _, _) <- refreshRegions ReportUnset famTools ws 1 M.empty

@@ -6,7 +6,7 @@ import Data.Functor.Identity (Identity (..), runIdentity)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (Language, Match (..), Syntax (..), parseLanguage)
+import Olifant.Language (Language, Match (..), Syntax (..), SyntaxFailure (..), parseLanguage)
 import Olifant.Rules
 import Test.Hspec
 
@@ -90,6 +90,16 @@ spec = describe "rules (spec §5.9)" $ do
     let (fs, exs) = run (RulesConfig [] [("commands-use-ports", ["billing/**"], "billing migrates later")]) [(cmd, "use diesel::x;\n")] [cmd]
     fs `shouldBe` []
     map exReason exs `shouldBe` [Just "billing migrates later"]
+  describe "rules that cannot run (review C2)" $ do
+    it "a syntax failure is an error finding, not silence" $ do
+      let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed"))
+          (fs, _) = runIdentity (checkFiles broken [rust] none rules [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
+      map (\f -> (fRule f, fSeverity f)) fs `shouldBe` [("rule-failed", Error)]
+      map fMessage fs `shouldSatisfy` all ("ast-grep is not installed" `T.isInfixOf`)
+    it "a missing template may only use dir, stem and file" $
+      parseRules "[rules.x]\nfiles = \"*\"\nmessage = \"m\"\nmissing = \"{= dir =}/fakes/{= file_name =}.rs\"\n" `shouldSatisfy` either ("file_name" `T.isInfixOf`) (const False)
+  it "I11: an escaped quote does not hide a string (allow inside a string never suppresses)" $
+    findings none "const S: &str = \"say \\\"hi // olifant:allow commands-use-ports - x\";\nuse diesel::y;\n" `shouldSatisfy` any (\(r, _, _) -> r == "commands-use-ports")
   describe "ratchet (spec §5.10)" $ do
     it "(b) a finding's fingerprint survives moving lines, and differs for different code" $ do
       let fp content = map fFingerprint (fst (run none [(cmd, content)] [cmd]))
@@ -99,6 +109,10 @@ spec = describe "rules (spec §5.9)" $ do
     it "(e) since and why are part of the message" $ do
       let Right [r] = parseRules "[rules.x]\nfiles = \"*.rs\"\nmessage = \"No.\"\nmatch = { kind = \"a\" }\nsince = \"2026-10\"\nwhy = \"ADR-12\"\n"
       ruleMessage r `shouldBe` "No. (since 2026-10: ADR-12)"
+  it "I9: the baseline counts: a second identical finding is new" $ do
+    let fs = fst (run none [(cmd, "use diesel::x;\nuse diesel::x;\n")] [cmd])
+        key f = (fRule f, T.pack (fFile f), fFingerprint f)
+    map snd (markBaselined [(key (head' fs), 1)] fs) `shouldBe` [True, False]
   describe "loading" $ do
     it "reads [rules] config: severities and allows" $
       parseRulesConfig (M.fromList []) `shouldBe` Right (RulesConfig [] [])
@@ -108,3 +122,8 @@ spec = describe "rules (spec §5.9)" $ do
       parseRules "[rules.x]\nfiles = \"*\"\nmessage = \"m\"\nmatch = { kind = \"a\" }\nseverity = \"loud\"\n" `shouldSatisfy` either ("hint, warn, error" `T.isInfixOf`) (const False)
     it "suggests the right key for a typo" $
       parseRules "[rules.x]\nfiles = \"*\"\nmesage = \"m\"\nmatch = { kind = \"a\" }\n" `shouldSatisfy` either ("message" `T.isInfixOf`) (const False)
+
+head' :: [a] -> a
+head' = \case
+  x : _ -> x
+  [] -> error "empty"

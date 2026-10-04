@@ -1,6 +1,6 @@
 -- | The owned-region phase (spec §5.8): after a plan's edits, rewrite every
 -- region from its query, against the files as the plan leaves them.
-module Olifant.Generation.Regions (RegionMode (..), refreshRegions, regionInstances) where
+module Olifant.Generation.Regions (RegionMode (..), refreshRegions, regionInstances, unsetRegions, absorbDuplicates) where
 
 import Control.Monad (foldM)
 import Data.List (sortOn, (\\))
@@ -95,6 +95,47 @@ regionInstances universe def
       AstQueryQ q -> AstQueryQ q {astFiles = sub f (astFiles q)}
       q -> q
     sub f = T.replace "{= dir =}" (T.pack (takeDirectory f)) . T.replace "{= file =}" (T.pack f)
+
+-- | Region files that exist but have no fences for their region (not set
+-- up): `gen` and `sync` skip them, so they say so (review I5).
+unsetRegions :: Monad m => Tools m -> Workspace m -> m [(FilePath, Text)]
+unsetRegions tools ws = do
+  universe <- listFiles ws "."
+  fmap concat . traverse (\d -> check d) $ concatMap (regionInstances universe) (toolRegions tools)
+  where
+    check def
+      | regionWholeFile def = pure []
+      | otherwise =
+          readText ws (regionFile def) >>= \case
+            Just content | not (("olifant:region " <> regionName def) `T.isInfixOf` content) -> pure [(regionFile def, regionName def)]
+            _ -> pure []
+
+-- | After `sync --init` puts fences into a hand-written file, the lines the
+-- region now owns would appear twice (inside and below): drop the copies
+-- outside the fences (review I4).
+absorbDuplicates :: Text -> Text
+absorbDuplicates content =
+  let ls = T.lines content
+      isOpen l = "olifant:region " `T.isInfixOf` l
+      isClose l = "olifant:end " `T.isInfixOf` l
+      inside = go False ls
+        where
+          go _ [] = []
+          go False (l : rest) = go (isOpen l) rest
+          go True (l : rest)
+            | isClose l = go False rest
+            | otherwise = T.strip l : go True rest
+      owned = S.fromList [l | l <- inside, not (T.null l)]
+      keep = go False ls
+        where
+          go _ [] = []
+          go open (l : rest)
+            | isOpen l = l : go True rest
+            | isClose l = l : go False rest
+            | open = l : go True rest
+            | T.strip l `S.member` owned = go False rest
+            | otherwise = l : go False rest
+   in T.unlines keep
 
 -- | The lines currently inside a region (stripped), for counting what changed.
 oldBody :: RegionDef -> Text -> Text -> [Text]

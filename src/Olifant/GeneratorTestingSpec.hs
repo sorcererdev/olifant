@@ -152,8 +152,11 @@ spec = do
           code = "use std::sync::Arc;\nuse diesel::prelude::*;\n\nfn f() { let x = g().unwrap(); }\n"
       (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
       [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, fFix f, fSets f) | f <- fs]
-        `shouldBe` [ ("commands-use-ports", Just 2, Warn, Just "rust-htmx/service-repository", [("command", "cancel_invoice"), ("service", "billing")])
+        `shouldBe` [ ("commands-use-ports", Just 2, Warn, Just "rust-htmx/service-repository", [("service", "billing")])
                    , ("commands-no-unwrap", Just 4, Hint, Nothing, []) ]
+      -- the service's own modules are not commands (review: upgraded minor)
+      (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
+      others `shouldBe` []
   describe "rust-htmx regions (spec §5.9)" $
     it "a command file created by hand gets its `pub mod` line; ports.rs lists the ports" $ do
       tmp <- getTemporaryDirectory

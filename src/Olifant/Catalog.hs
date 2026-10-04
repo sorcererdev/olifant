@@ -360,14 +360,28 @@ addRules found cat = case found of
   Left broken -> cat {catalogBrokenRules = catalogBrokenRules cat ++ [broken]}
   Right defs -> cat {catalogRules = [r | r <- catalogRules cat, ruleId r `notElem` map ruleId defs] ++ defs}
 
--- | A rule's fix must name a generator; one that does not is broken.
+-- | A rule's fix must name a generator that takes the rule's path slots
+-- (review C1); the project's `[rules]` must name rules that exist (review
+-- I8). Anything else is broken, and `check` fails on it.
 checkFixes :: Catalog -> Catalog
 checkFixes cat =
-  let ids = map (generatorIdText . entryId) (catalogEntries cat)
-      bad = [r | r <- catalogRules cat, Just f <- [ruleFix r], f `notElem` ids]
+  let entries = [(generatorIdText (entryId e), map inputName (genInputs (entryDefinition e))) | e <- catalogEntries cat]
+      slots r = [T.takeWhile (/= '}') piece | piece <- drop 1 (T.splitOn "{" (ruleFiles r)), not ("=" `T.isPrefixOf` piece)]
+      problem r = case ruleFix r of
+        Nothing -> Nothing
+        Just f -> case lookup f entries of
+          Nothing -> Just ("rule `" <> ruleId r <> "`: fix names no generator `" <> f <> "`")
+          Just inputs -> case [s | s <- slots r, s `notElem` inputs] of
+            s : _ -> Just ("rule `" <> ruleId r <> "`: `{" <> s <> "}` is not an input of " <> f <> " (its inputs: " <> T.intercalate ", " inputs <> ")")
+            [] -> Nothing
+      bad = [(r, why) | r <- catalogRules cat, Just why <- [problem r]]
+      known = map ruleId (catalogRules cat)
+      config = catalogRulesConfig cat
+      unknownSeverity = [("[rules]", "no rule named `" <> k <> "`") | (k, _) <- rcSeverity config, k `notElem` known]
+      unknownAllow = [("[rules.allow]", "no rule named `" <> k <> "`") | (k, _, _) <- rcAllow config, k `notElem` known]
    in cat
-        { catalogRules = [r | r <- catalogRules cat, ruleId r `notElem` map ruleId bad]
-        , catalogBrokenRules = catalogBrokenRules cat ++ [("rules.toml", "rule `" <> ruleId r <> "`: fix names no generator `" <> fromMaybe "" (ruleFix r) <> "`") | r <- bad]
+        { catalogRules = [r | r <- catalogRules cat, ruleId r `notElem` map (ruleId . fst) bad]
+        , catalogBrokenRules = catalogBrokenRules cat ++ [("rules.toml", why) | (_, why) <- bad] ++ unknownSeverity ++ unknownAllow
         }
 
 -- | Add regions (or a broken file); a region replaces an earlier one with its name.

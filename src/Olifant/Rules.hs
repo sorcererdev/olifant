@@ -16,6 +16,7 @@ module Olifant.Rules
   , parseSeverity
   , checkFiles
   , fingerprint
+  , markBaselined
   ) where
 
 import Control.Monad ((>=>))
@@ -23,7 +24,8 @@ import Data.Bits (xor)
 import Data.ByteString qualified as BS
 import Data.Word (Word64)
 import Numeric (showHex)
-import Data.List (nub, sortOn)
+import Data.List (nub, sortOn, (\\))
+import Data.Set qualified as S
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -31,8 +33,8 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Actions (matchPathSlots)
 import Olifant.Glob (matchesGlob)
-import Olifant.Language (Language (..), Match (..), Rule, Syntax (..), languageFor, renderRule, ruleFromTree)
-import Olifant.Template (Template, Value (..), parseTemplate, render)
+import Olifant.Language (Language (..), Match (..), Rule, Syntax (..), describeSyntaxFailure, languageFor, renderRule, ruleFromTree)
+import Olifant.Template (Template, Value (..), describeTemplateError, freeVariables, parseTemplate, render)
 import Olifant.Toml (Table, inKey, list, onlyKeys, optional, parseToml, required, table, text)
 import System.FilePath (joinPath, splitDirectories, takeBaseName, takeDirectory)
 
@@ -105,14 +107,18 @@ parseRules src = do
       fix <- optional "fix" text t
       check <- case (M.lookup "match" t, M.lookup "missing" t) of
         (Just m, Nothing) -> RuleMatch <$> inKey "match" (ruleFromTree m)
-        (Nothing, Just m) -> RuleMissing <$> inKey "missing" (text m >>= tmpl)
+        (Nothing, Just m) -> RuleMissing <$> inKey "missing" (text m >>= tmpl >>= onlyFileVars)
         _ -> Left "a rule has exactly one of `match` (an ast-grep rule) or `missing` (a path that must exist)"
       pure (RuleDef k files exclude check message severity fix)
     ruleSev s =
       parseSeverity s >>= \case
         Off -> Left "a rule's severity is hint, warn, error (turn it off in the project's [rules])"
         x -> Right x
-    tmpl t = either (Left . T.pack . show) Right (parseTemplate t)
+    tmpl t = either (Left . describeTemplateError) Right (parseTemplate t)
+    -- A `missing` path knows only the file it is about (review C2).
+    onlyFileVars t = case S.toList (freeVariables t) \\ ["dir", "stem", "file"] of
+      [] -> Right t
+      vs -> Left ("`missing` can use {= dir =}, {= stem =} and {= file =}; not " <> T.intercalate ", " ["`" <> v <> "`" | v <- vs])
 
 parseSeverity :: Text -> Either Text Severity
 parseSeverity = \case
@@ -186,13 +192,18 @@ checkFiles syntax langs config rules paths readFile' files = do
         (Just l, Right q) ->
           querySyntax syntax l q content >>= \case
             Right ms -> pure [finding f r slots (Just (range content m)) (matchText m) | m <- ms]
-            Left _ -> pure []
-        _ -> pure []
+            Left failure -> pure [cannotRun f r (describeSyntaxFailure failure)]
+        (Nothing, _) -> pure [cannotRun f r "no language adapter for this file"]
+        (_, Left err) -> pure [cannotRun f r (describeTemplateError err)]
       RuleMissing tmpl ->
         let env = M.fromList [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f))]
          in pure $ case render env tmpl of
               Right p | collapse (T.unpack p) `notElem` paths -> [finding f r slots Nothing p]
-              _ -> []
+              Right _ -> []
+              Left err -> [cannotRun f r (describeTemplateError err)]
+    -- A rule that cannot run is an error: a gate must never pass silently
+    -- because it could not look (review C2).
+    cannotRun f r why = Finding "rule-failed" f Nothing Error ("rule `" <> ruleId r <> "` could not run on " <> T.pack f <> ": " <> why) Nothing [] (fingerprint ["rule-failed", ruleId r])
     finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (ruleFix r) (sortOn fst slots) (fingerprint [ruleId r, what])
     range content m =
       let ls = T.lines content
@@ -207,6 +218,28 @@ fingerprint parts = T.pack (showHex64 (BS.foldl' step 14695981039346656037 bytes
     bytes = TE.encodeUtf8 (T.intercalate "\0" (map (T.unwords . T.words) parts))
     step h b = (h `xor` fromIntegral b) * 1099511628211 :: Word64
     showHex64 w = let s = showHex w "" in replicate (16 - length s) '0' ++ s
+
+-- | Which findings the baseline covers: each (rule, file, fingerprint) key
+-- covers as many findings as its count, in order — a second identical
+-- finding is new (review I9).
+markBaselined :: [((Text, Text, Text), Int)] -> [Finding] -> [(Finding, Bool)]
+markBaselined counts = go (M.fromListWith (+) counts)
+  where
+    go _ [] = []
+    go left (f : fs) =
+      let k = (fRule f, T.pack (fFile f), fFingerprint f)
+       in case M.lookup k left of
+            Just n | n > 0 -> (f, True) : go (M.insert k (n - 1) left) fs
+            _ -> (f, False) : go left fs
+
+-- | Quotes that open or close a string: `\"` inside one does not count (review I11).
+unescapedQuotes :: Text -> Int
+unescapedQuotes = go 0 . T.unpack
+  where
+    go n ('\\' : _ : rest) = go n rest
+    go n ('"' : rest) = go (n + 1) rest
+    go n (_ : rest) = go n rest
+    go n [] = n
 
 -- | `a/b/../c` → `a/c`.
 collapse :: FilePath -> FilePath
@@ -227,7 +260,7 @@ parseAllows prefix content = catMaybes [allowAt i l | (i, l) <- zip [1 ..] (T.li
     commentBodies l =
       [ T.drop (T.length prefix) rest
       | (before, rest) <- T.breakOnAll prefix l
-      , even (T.count "\"" before)
+      , even (unescapedQuotes before)
       ]
     comment i body = case T.words body of
       ("olifant:allow-file" : r : _) | i <= 5 -> Just (Allow i True r (reason r body))

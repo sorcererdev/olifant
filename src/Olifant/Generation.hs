@@ -16,6 +16,8 @@ module Olifant.Generation
   , RegionMode (..)
   , refreshRegions
   , regionInstances
+  , unsetRegions
+  , absorbDuplicates
   , module Olifant.Generation.Plan
   , module Olifant.Generation.Tools
   ) where
@@ -24,14 +26,14 @@ import Control.Monad (filterM, foldM, forM, forM_, when)
 import Data.Bifunctor (first)
 import Data.Aeson (object, (.=))
 import Data.Functor ((<&>))
-import Data.List (nub, sortOn)
+import Data.List (isPrefixOf, nub, sortOn)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Complete (completeEdits)
-import Olifant.Generation.Regions (RegionMode (..), refreshRegions, regionInstances)
+import Olifant.Generation.Regions (RegionMode (..), absorbDuplicates, refreshRegions, regionInstances, unsetRegions)
 import Olifant.Generation.Compose
 import Olifant.Generation.Plan
 import Olifant.Anchor (resolveLayers)
@@ -144,6 +146,16 @@ generate ws resolve tools steps now mode =
           then fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed holes0
           else pure (placed, holes0, [])
       before <- traverse (\p -> (p,) <$> previous p) (M.keys writes)
+      -- A list this plan should extend but cannot (no fences yet): say so,
+      -- or the new file is silently left out (review I5).
+      unset <- unsetRegions tools ws
+      let created = [p | (p, Nothing) <- before]
+          unsetWarnings =
+            [ "region `" <> r <> "` is not set up in " <> T.pack f <> ", so it will not list " <> T.intercalate ", " (map T.pack near) <> " (run `olifant sync --init " <> r <> "`)"
+            | (f, r) <- unset
+            , let near = [c | c <- created, takeDirectory f `isPrefixOf` takeDirectory c, c /= f]
+            , not (null near)
+            ]
       -- Parse pre-check (spec §4.6): a touched file that does not parse is
       -- warned about first; placement and checks around it may go wrong.
       -- Every existing file an edit names (even when all its edits
@@ -175,7 +187,7 @@ generate ws resolve tools steps now mode =
                                WillOverwrite t -> WillOverwrite (withFills t)
                                WillInsert n t -> WillInsert n (withFills t)
                                other -> other} | e <- shown]
-          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings)) writes holes (M.fromList before)
+          plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before)
       when (mode == Apply && not (hasConflicts plan)) $
         forM_ (M.toList writes) (uncurry (writeText ws))
       pure (Right plan)

@@ -6,7 +6,7 @@
 # .olifant/config.toml. `olifant check --report` lists every exception.
 
 [rules.commands-use-ports]
-files    = "{service}/*-service/src/{command}.rs"
+files    = "{service}/*-service/src/*.rs"
 exclude  = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
 match    = { kind = "use_declaration", regex = "diesel" }
 message  = "Commands talk to ports, not the database (rust-htmx: ports & adapters)"
@@ -15,7 +15,7 @@ fix      = "rust-htmx/service-repository"
 
 [rules.commands-no-unwrap]
 files    = "*/*-service/src/*.rs"
-exclude  = ["**/lib.rs"]
+exclude  = ["**/lib.rs", "**/service.rs", "**/models.rs", "**/ports.rs"]
 match    = { kind = "call_expression", regex = "\\.unwrap\\(\\)$" }
 message  = "Commands return their Failure, they don't panic (use ? and a Failure variant)"
 severity = "hint"
