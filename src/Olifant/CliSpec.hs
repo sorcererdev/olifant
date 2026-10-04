@@ -497,6 +497,19 @@ runCliSpec = describe "runCli" $ do
     listed `shouldSatisfy` T.isInfixOf "\"name\":\"Model\""
     (_, shown, _, _) <- runWith "" project False ["show", "model", "--json"]
     shown `shouldSatisfy` T.isInfixOf "\"name\":\"Model\""
+  it "complete: snippets for the completion menu, at a position (spec §4.9)" $ do
+    let gen = T.unlines
+          [ "description = \"A variant\"", "language = \"x\"", "name = \"Failure variant\""
+          , "[[edits]]", "cursor = true", "text = \"V,\""
+          , "[applies_at]", "path = \"**/*.x\"", "trigger = '^[[:space:]]*$'", "label = \"Failure variant\"" ]
+        files = ("/proj/.olifant/generators/variant/generator.toml", gen) : project
+    (code, out, _, _) <- runWith "enum E {\n    already typed\n}\n" files False ["complete", "--at", "billing/src/cancel.x:2:9", "--content", "-", "--json"]
+    code `shouldBe` ExitSuccess
+    out `shouldSatisfy` T.isInfixOf "[{\"detail\":\"A variant\",\"generator\":\"variant\",\"label\":\"Failure variant\",\"name\":\"Failure variant\",\"sets\":{}}]"
+    (_, human, _, _) <- runWith "" files False ["complete", "--at", "billing/src/cancel.x:1:1", "--human"]
+    human `shouldSatisfy` T.isInfixOf "⚡ Failure variant  (variant)"
+    (none, noneOut, _, _) <- runWith "" files False ["complete", "--at", "notes/readme.md:1:1", "--json"]
+    (none, T.strip noneOut) `shouldBe` (ExitSuccess, "[]")
   it "lists the actions that apply at a position (spec §4.6)" $ do
     let gen = T.unlines
           [ "description = \"Wire it\"", "language = \"x\""

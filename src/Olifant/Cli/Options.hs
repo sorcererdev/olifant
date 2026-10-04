@@ -31,7 +31,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int GenOptions
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int GenOptions | CompleteCmd FilePath (Int, Int) Bool
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -110,6 +110,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "fix" fixP "Apply a rule's fix where it found something: the fix's generator, and the code it replaces, as one plan (--plan to preview)"
             <> cmd "doctor" (pure DoctorCmd) "Check what generators need here (tools on this PATH, packs, the model) and how to fix it"
             <> cmd "actions" (actionsP) "The generators that apply at a position (for editors): --at FILE:LINE:COL [--content -]"
+            <> cmd "complete" completeP "Snippets for a completion menu at a position (for editors): --at FILE:LINE:COL [--content -]"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
     cmd name p desc = command name (info (Options <$> formatP <*> p) (progDesc desc))
@@ -146,6 +147,10 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> switch (long "baseline" <> help "Record today's findings in .olifant/baseline.toml: from then on only new findings fail (spec §5.10)")
         <*> switch (long "accept-new" <> help "With --baseline: also record findings that are new since the last baseline")
         <*> optional (strOption (long "changed-since" <> metavar "REF" <> help "Only findings on lines changed since REF (git), for CI on a branch"))
+    completeP =
+      (\(f, pos) content -> CompleteCmd f pos content)
+        <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line, UTF-8 byte column")
+        <*> (maybe False (== ("-" :: String)) <$> optional (strOption (long "content" <> metavar "-" <> help "Read the file's current text from stdin")))
     actionsP =
       (\target content -> either (\(f, pos) -> ActionsCmd f (Just pos) content) (\f -> ActionsCmd f Nothing content) target)
         <$> ( (Left <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line, UTF-8 byte column"))

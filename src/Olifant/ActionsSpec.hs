@@ -127,6 +127,24 @@ spec = describe "olifant actions (spec §4.6)" $ do
         [a] = runIdentity (actionsAt matches [rust] noQueries ["ports/email_sender.rs", "ports/invoice_repository.rs"] (const (pure Nothing)) [("p/add-port", withPorts)] file (1, 1) "x")
     actMissing a `shouldBe` ["port"]
     actChoices a `shouldBe` [("port", ["email_sender", "invoice_repository"])]
+  describe "completions: snippets for the menu (spec §4.9)" $ do
+    let addPort = generator . T.unlines $
+          [ "description = \"A port field\"", "language = \"rust\""
+          , "[inputs.port]", "type = \"enum\"", "one_of = \"ports\""
+          , "[query.ports]", "glob = \"ports/*.rs\"", "value = \"file name\""
+          , "[[edits]]", "cursor = true", "text = \"{= port =}\""
+          , "[applies_at]", "path = \"**/*.rs\"", "label = \"Add port {= port =}\"" ]
+        specCase = generator . T.unlines $
+          [ "description = \"A spec case\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
+          , "[applies_at]", "path = \"**/*.rs\"", "trigger = 'it \"'", "label = \"Spec case\"" ]
+        complete gens = runIdentity (completionsAt matches [rust] noQueries ["ports/email_sender.rs", "ports/invoice_repository.rs"] (const (pure Nothing)) gens file (1, 1) "x")
+    it "(a) one item per choice of the one missing enum input, labelled with it" $
+      map (\c -> (cpLabel c, cpSets c)) (complete [("p/add-port", addPort)])
+        `shouldBe` [("Add port email_sender", [("port", "email_sender")]), ("Add port invoice_repository", [("port", "invoice_repository")])]
+    it "(b) a snippet whose trigger does not match is still listed (chosen ignores triggers)" $
+      map cpGenerator (complete [("p/spec-case", specCase)]) `shouldBe` ["p/spec-case"]
+    it "(c) only snippets: other generators that apply are left out" $
+      complete [("g", failureArms)] `shouldBe` []
   describe "--file: every place in a file (spec §4.6)" $ do
     let inFile syn gens path content = runIdentity (actionsInFile syn [rust] noQueries [] (const (pure Nothing)) gens path content)
         threeVariants = Syntax $ \_ _ _ -> Identity (Right [Match (3, 4) (3, 9) "Third", Match (1, 4) (1, 9) "First", Match (2, 4) (2, 10) "Second"])

@@ -8,7 +8,7 @@ import Olifant.Rules (Exception (..), FixDef (..), FixOffer (..), Finding (..), 
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
-import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, matchPathSlots)
+import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, completionsAt, matchPathSlots)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (join, when)
 import Olifant.Holes (HoleSite (..))
@@ -185,6 +185,17 @@ runCommand rt cwd fmt cat = \case
               ]
             where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
         emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
+    pure ExitSuccess
+  CompleteCmd file pos fromStdin -> do
+    let project = within (rtProjectDir rt) (rtRoot rt)
+        rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
+    content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> file)
+    paths <- listFiles project "."
+    let gens = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat]
+        described gid = maybe ("", gid) (\g -> (genDescription g, generatorName g)) (lookup gid gens)
+    items <- completionsAt (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel pos (fromMaybe "" content)
+    let json c = object ["generator" .= cpGenerator c, "name" .= snd (described (cpGenerator c)), "label" .= cpLabel c, "sets" .= M.fromList (cpSets c), "detail" .= fst (described (cpGenerator c))]
+    emit rt fmt (toJSON (map json items)) (T.unlines ["⚡ " <> cpLabel c <> "  (" <> cpGenerator c <> ")" | c <- items])
     pure ExitSuccess
   CheckCmd report file fromStdin baseline acceptNew changedSince -> do
     let ws = within (rtProjectDir rt) (rtRoot rt)

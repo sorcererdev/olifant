@@ -9,6 +9,8 @@ module Olifant.Actions
   , matchPathSlots
   , actionsAt
   , actionsInFile
+  , Completion (..)
+  , completionsAt
   , describeRule
   ) where
 
@@ -22,6 +24,7 @@ import Data.ByteString qualified as BS
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian)
+import Olifant.Cursor (isSnippet)
 import Olifant.Generator
 import Olifant.Language
 import Olifant.Query (Queries)
@@ -77,7 +80,28 @@ data Candidate = Whole | Nodes [Match] | Near Text
 -- | Every generator whose `applies_at` matches @path@ at the 1-based
 -- (line, column), given the file's (possibly unsaved) text.
 actionsAt :: Monad m => Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Action]
-actionsAt syntax langs queries paths readFile' gens path (line, col) content =
+actionsAt = actionsAtWith True
+
+-- | Snippets for a completion menu at the cursor (spec §4.9): like
+-- 'actionsAt', but a trigger is not needed (the person chose to look), and
+-- a snippet missing one enum input is one item per choice.
+data Completion = Completion {cpGenerator :: Text, cpLabel :: Text, cpSets :: [(Text, Text)]}
+  deriving stock (Eq, Show)
+
+completionsAt :: Monad m => Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Completion]
+completionsAt syntax langs queries paths readFile' gens path pos content = do
+  acts <- actionsAtWith False syntax langs queries paths readFile' snippets path pos content
+  pure (concatMap items acts)
+  where
+    snippets = [(gid, g) | (gid, g) <- gens, isSnippet g]
+    items a = case (actMissing a, lookup (actGenerator a) snippets) of
+      ([], _) -> [Completion (actGenerator a) (actLabel a) (actSets a)]
+      ([k], Just g) | Just cs <- lookup k (actChoices a), Just ap <- genAppliesAt g ->
+        [Completion (actGenerator a) (labelFor g ap (M.fromList sets)) sets | v <- cs, let sets = M.toAscList (M.insert k v (M.fromList (actSets a)))]
+      _ -> []
+
+actionsAtWith :: Monad m => Bool -> Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Action]
+actionsAtWith useTrigger syntax langs queries paths readFile' gens path (line, col) content =
   fmap catMaybes . traverse one =<< candidates syntax langs gens path content
   where
     -- COL is a UTF-8 byte column (Neovim's, LSP's utf-8); ast-grep's columns
@@ -96,6 +120,7 @@ actionsAt syntax langs queries paths readFile' gens path (line, col) content =
     -- A snippet's trigger (spec §4.9): the text before the cursor ends with it.
     before = TE.decodeUtf8Lenient (BS.take (col - 1) (TE.encodeUtf8 (fromMaybe "" (listToMaybe (drop (line - 1) (T.lines content))))))
     triggered ap = case apTrigger ap of
+      _ | not useTrigger -> True
       Nothing -> True
       Just re -> maybe False (`matchTest` T.unpack before) (makeRegexM (T.unpack (if "$" `T.isSuffixOf` re then re else "(" <> re <> ")$")) :: Maybe Regex)
     size m = (fst (matchEnd m) - fst (matchStart m), snd (matchEnd m) - snd (matchStart m))
