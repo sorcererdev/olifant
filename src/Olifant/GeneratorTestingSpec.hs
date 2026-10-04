@@ -15,7 +15,12 @@ import Olifant.Language (Syntax (..), SyntaxFailure (..), compileClean, noChecke
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Language.AstGrep (astGrepSyntax)
-import System.Directory (getTemporaryDirectory)
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory)
+import System.Environment (getEnvironment)
+import System.Exit (ExitCode (..))
+import System.FilePath (takeDirectory)
+import System.IO.Temp (withSystemTempDirectory)
+import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
@@ -205,6 +210,35 @@ spec = do
   -- Generated Rust must still build: each rust-htmx case's service crates
   -- (fixture + given/ + snapshot), `cargo check`ed with minimal manifests (the
   -- template's heavy workspace dependencies are not what generators write).
+  -- The python-htmx fixture is the architecture written down: it must stay
+  -- pyright-strict clean and its own tests green; and every case's output
+  -- (fixture + given/ + snapshot) must type-check, as Rust's must build.
+  describe "python pack" $ do
+    cases <- runIO (discoverCases (diskWorkspace ".") "packs")
+    strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
+    pySrc <- runIO (TIO.readFile "packs/python-htmx/languages/python.toml")
+    let Right python = parseLanguage "python" "packs/python-htmx" pySrc
+        withUv k = findExecutable "uv" >>= \case
+          Nothing -> missingTool strict "uv is not installed (brew install uv)"
+          Just _ -> k
+    it "its fixture is pyright-strict clean" $ withUv $ do
+      fixture <- readTree "packs/python-htmx/fixtures/app"
+      compileClean python fixture `shouldReturn` Right ()
+    it "its fixture's own tests pass" $ withUv $ do
+      tmp <- getTemporaryDirectory
+      fixture <- readTree "packs/python-htmx/fixtures/app"
+      withSystemTempDirectory "olifant-py" $ \dir -> do
+        forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+        env <- getEnvironment
+        (code, out, err) <- readCreateProcessWithExitCode ((proc "uv" ["run", "--quiet", "--frozen", "pytest", "-q"]) {cwd = Just dir, env = Just (("UV_PROJECT_ENVIRONMENT", tmp </> "olifant-test-cache" </> "python-fixture-venv") : env)}) ""
+        (code, out <> err) `shouldSatisfy` ((== ExitSuccess) . fst)
+    snippetCases <- runIO (filterM (\c -> T.isInfixOf "\nat = " . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) cases)
+    forM_ [c | c <- cases, casePack c == "python-htmx", c `notElem` snippetCases] $ \c ->
+      it ("output type-checks: " <> T.unpack (caseName c)) $ withUv $ do
+        fixture <- readTree "packs/python-htmx/fixtures/app"
+        given <- readTree (caseDir c </> "given")
+        snapshot <- readTree (caseDir c </> "snapshot")
+        compileClean python (M.unions [snapshot, given, fixture]) `shouldReturn` Right ()
   describe "rust pack output compiles" $ do
     cases <- runIO (discoverCases (diskWorkspace ".") "packs")
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")

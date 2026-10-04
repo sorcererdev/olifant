@@ -180,4 +180,4 @@ isSafeRelative p = not (isAbsolute p) && n /= "." && ".." `notElem` splitDirecto
 -- | Directories that hold dependencies, build output or VCS data: never part
 -- of what generators and queries see, and never walked.
 pruned :: [FilePath]
-pruned = [".git", "node_modules", "elm-stuff", "dist-newstyle", "target"]
+pruned = [".git", "node_modules", "elm-stuff", "dist-newstyle", "target", ".venv", "__pycache__", ".pytest_cache"]
