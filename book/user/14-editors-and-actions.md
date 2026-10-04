@@ -105,8 +105,10 @@ hint, a follow-up appears:
 ```
 
 `Tab` opens the review: the same preview as `<leader>ma`'s, titled `Wire Command Dependencies
-Tab apply · Esc dismiss`. There `Tab` (or `<CR>`) applies, `Esc` dismisses, and `q` closes the
-review and leaves the follow-up where it was. Nothing changes that you have not seen.
+Tab apply · Esc back`. There `Tab` (or `<CR>`) applies, `Shift-Tab` switches between the file
+list and the diff, and `Esc` or `q` closes the review and leaves the follow-up where it was, so
+`Tab` opens it again. Nothing changes that you have not seen. While a suggestion is shown it
+takes the ⚡ hint's place on its line.
 
 Whether a suggestion is **ghost text** or a **follow-up** depends on its plan, not on the
 generator. It is ghost text only when the whole plan is one contiguous insert into the file
@@ -157,8 +159,8 @@ included. If a file changed between that plan and applying it, nothing is applie
 says `not applied:` and why. What lands has the model's fills where the suggestion showed
 `⟨name⟩`; filling only on accept keeps the background plan fast and free.
 
-**Dismissing.** `Esc` in normal mode, or `Esc` in a follow-up's review, dismisses it, and it
-is not offered again for that generator, those inputs and that line's text: edit the line,
+**Dismissing.** `Esc` in normal mode on the line dismisses it (backing out of a review does
+not), and it is not offered again for that generator, those inputs and that line's text: edit the line,
 and it may come back. Moving the cursor off the line only clears it; come back and it is
 planned again.
 
