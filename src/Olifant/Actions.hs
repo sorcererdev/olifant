@@ -102,8 +102,10 @@ completionsAt syntax langs queries paths readFile' gens path pos content = do
 
 actionsAtWith :: Monad m => Bool -> Syntax m -> [Language] -> Queries m -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [(Text, GeneratorWith s)] -> FilePath -> (Int, Int) -> Text -> m [Action]
 actionsAtWith useTrigger syntax langs queries paths readFile' gens path (line, col) content =
-  fmap catMaybes . traverse one =<< candidates syntax langs gens path content
+  fmap catMaybes . traverse one =<< candidates syntax langs ordered path content
   where
+    -- snippets after the rest: what was written comes before what comes next
+    ordered = sortOn (isSnippet . snd) gens
     -- COL is a UTF-8 byte column (Neovim's, LSP's utf-8); ast-grep's columns
     -- are characters, so the cursor is converted on its own line.
     cursor = (line - 1, charColumn (drop (line - 1) (T.lines content)))

@@ -104,6 +104,11 @@ spec = describe "olifant actions (spec §4.6)" $ do
           , "[inputs.path]", "type = \"text\"", "[inputs.name]", "type = \"ident\""
           , "[applies_at]", "path = \"**/*.rs\"", "file = \"path\"", "label = \"Add a case\"" ]
     map (\a -> (actSets a, actMissing a)) (at matches [("g", errorCase)] file (1, 1)) `shouldBe` [([("path", T.pack file)], ["name"])]
+  it "lists snippets after the other actions here (what was written comes before what comes next)" $ do
+    let snippetHere = generator . T.unlines $
+          [ "description = \"A snippet\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
+          , "[applies_at]", "path = \"**/*.rs\"" ]
+    map actGenerator (at matches [("p/snippet", snippetHere), ("p/failure-arms", failureArms)] file (3, 6)) `shouldBe` ["p/failure-arms", "p/snippet"]
   describe "trigger: what was just typed (spec §4.9)" $ do
     let specCase = generator . T.unlines $
           [ "description = \"A spec case\"", "language = \"rust\""
