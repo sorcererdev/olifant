@@ -6,11 +6,20 @@ module Olifant.Cursor
   ( cursorIndent
   , indentTemplate
   , atCursor
+  , atCursorIndented
+  , afterIndent
+  , afterRule
   , isSnippet
   ) where
 
+import Data.Functor ((<&>))
+import Data.List (sortOn)
+import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Aeson (Value)
+import Olifant.Language (Language, Match (..), Rule, Syntax, querySyntax, renderRule)
 import Olifant.Generator.Definition (EditWith (..), Generator, GeneratorWith (..))
 import Olifant.Template.Syntax (Segment (..), Template (..))
 
@@ -50,14 +59,37 @@ indentTemplate ind (Template src segs) = Template src (Lit ind : go segs)
 -- | The generator with its cursor edit placed: a replacement of line @n@
 -- of @path@ (whose current lines are @ls@), indented by 'cursorIndent'.
 atCursor :: Text -> FilePath -> Int -> [Text] -> Generator -> Generator
-atCursor unit path n ls g = g {genEdits = map place (genEdits g)}
+atCursor unit path n ls = atCursorIndented (cursorIndent unit ls n) path n ls
+
+-- | 'atCursor' with a given indentation.
+atCursorIndented :: Text -> FilePath -> Int -> [Text] -> Generator -> Generator
+atCursorIndented ind path n ls g = g {genEdits = map place (genEdits g)}
   where
     old = case drop (n - 1) ls of
       l : _ -> l
       [] -> ""
     place = \case
-      Cursor src -> Replace (Template (T.pack path) [Lit (T.pack path)]) (n, n) old (indentTemplate (cursorIndent unit ls n) src)
+      Cursor src -> Replace (Template (T.pack path) [Lit (T.pack path)]) (n, n) old (indentTemplate ind src)
       other -> other
+
+-- | For a snippet anticipated `after` a node: that node's indentation (the
+-- line above may be deeper — a Python class's last field), when line @n@
+-- (1-based) follows one with only blank lines between.
+afterIndent :: Monad m => Syntax m -> Language -> Value -> [Text] -> Int -> m (Maybe Text)
+afterIndent syntax lang rule ls n =
+  querySyntax syntax lang rule (T.intercalate "\n" ls) <&> \case
+    Right ms -> case sortOn (Down . fst . matchEnd) [m | m <- ms, follows m] of
+      m : _ -> Just (T.takeWhile (\c -> c == ' ' || c == '\t') (fromMaybe "" (listToMaybe (drop (fst (matchStart m)) ls))))
+      [] -> Nothing
+    Left _ -> Nothing
+  where
+    follows m =
+      let end = fst (matchEnd m)
+       in end < n - 1 && all (T.null . T.strip) (take (n - 2 - end) (drop (end + 1) ls))
+
+-- | An `after` rule as ast-grep takes it (a snippet's rule uses no inputs).
+afterRule :: Rule -> Maybe Value
+afterRule = either (const Nothing) Just . renderRule mempty
 
 -- | A snippet: a generator whose edit goes at the cursor.
 isSnippet :: GeneratorWith s -> Bool

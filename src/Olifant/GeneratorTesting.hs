@@ -21,7 +21,8 @@ import Data.Time (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
-import Olifant.Cursor (atCursor, isSnippet)
+import Olifant.Cursor (afterIndent, afterRule, atCursorIndented, cursorIndent, isSnippet)
+import Olifant.Generator.Definition (AppliesAt (..), GeneratorWith (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (Generator)
 import Olifant.Language.Adapter (Language (..), languageFor)
@@ -148,7 +149,12 @@ atCaseCursor ws checker at tools gen = case at of
     text <- fromMaybe "" <$> readText ws file
     let unit = maybe "    " langIndent (languageFor (toolLanguages tools) file)
         tools' = tools {toolQueries = (toolQueries tools) {queryUncovered = uncoveredQuery checker (toolLanguages tools) ws file line}}
-    pure (tools', if isSnippet gen then atCursor unit file line (T.splitOn "\n" text) gen else gen)
+        ls = T.splitOn "\n" text
+    -- a snippet anticipated `after` a node takes that node's indentation
+    ind <- case (afterRule =<< apAfter =<< genAppliesAt gen, languageFor (toolLanguages tools) file) of
+      (Just after, Just lang) -> afterIndent (toolSyntax tools) lang after ls line
+      _ -> pure Nothing
+    pure (tools', if isSnippet gen then atCursorIndented (fromMaybe (cursorIndent unit ls line) ind) file line ls gen else gen)
 
 -- | A case's `at = "FILE:LINE:COL"`, if it has one.
 parseCaseCursor :: Text -> Either Text (Maybe (FilePath, Int))

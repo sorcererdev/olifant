@@ -35,7 +35,7 @@ import Olifant.Cli.Options
 import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Cursor (atCursor, isSnippet)
+import Olifant.Cursor (afterIndent, afterRule, atCursor, atCursorIndented, cursorIndent, isSnippet)
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (AppliesAt (..), Generator, generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
@@ -438,14 +438,25 @@ placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
   (Just (file, line, _), _) -> do
     let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
         overlaid = fmap (\f -> makeRelative (rtProjectDir rt) (normalise (cwd </> f))) (genOverlay g) == Just rel
+        lang = languageFor (catalogLanguages cat) rel
+        unit = maybe "    " langIndent lang
     text <- if overlaid then Just <$> rtReadStdin rt else readText (within (rtProjectDir rt) (rtRoot rt)) rel
-    let unit = maybe "    " langIndent (languageFor (catalogLanguages cat) rel)
-    pure $ case text of
-      Nothing -> Left (T.pack rel <> " does not exist")
+    case text of
+      Nothing -> pure (Left (T.pack rel <> " does not exist"))
       Just t
         | let n = length (T.splitOn "\n" t), line < 1 || line > n ->
-            Left ("--at " <> T.pack rel <> ":" <> T.pack (show line) <> ": line " <> T.pack (show line) <> " is outside " <> T.pack rel <> " (lines 1–" <> T.pack (show n) <> ")")
-        | otherwise -> Right [if isSnippet gen then atCursor unit rel line (T.splitOn "\n" t) gen else gen | gen <- gens]
+            pure (Left ("--at " <> T.pack rel <> ":" <> T.pack (show line) <> ": line " <> T.pack (show line) <> " is outside " <> T.pack rel <> " (lines 1–" <> T.pack (show n) <> ")"))
+        | otherwise -> do
+            let ls = T.splitOn "\n" t
+            Right <$> traverse (place ls lang unit rel line) gens
+  where
+    -- a snippet anticipated `after` a node takes that node's indentation
+    place ls lang unit rel line gen
+      | not (isSnippet gen) = pure gen
+      | Just after <- afterRule =<< apAfter =<< genAppliesAt gen, Just l <- lang = do
+          ind <- afterIndent (rtSyntax rt) l after ls line
+          pure (atCursorIndented (fromMaybe (cursorIndent unit ls line) ind) rel line ls gen)
+      | otherwise = pure (atCursor unit rel line ls gen)
 
 -- | Run plan steps as `gen` does (model, fills, progress, regions,
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,

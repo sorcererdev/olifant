@@ -109,6 +109,24 @@ spec = describe "olifant actions (spec §4.6)" $ do
           [ "description = \"A snippet\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
           , "[applies_at]", "path = \"**/*.rs\"" ]
     map actGenerator (at matches [("p/snippet", snippetHere), ("p/failure-arms", failureArms)] file (3, 6)) `shouldBe` ["p/failure-arms", "p/snippet"]
+  describe "after: the cursor follows a node (a snippet's anticipation, spec §4.9)" $ do
+    let afterClass = generator . T.unlines $
+          [ "description = \"A failure\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
+          , "[applies_at]", "path = \"**/*.rs\"", "after = { kind = \"class_definition\" }", "trigger = '^[[:space:]]*$'" ]
+        -- a class on 0-based lines 2–4
+        classAt = Syntax $ \_ _ _ -> Identity (Right [Match (2, 0) (4, 15) "class X:\n    reason: str"])
+        src = T.unlines ["import x", "", "class X:", "    reason: str", "    more: int", "", "", "def f(): pass"]
+        on line = runIdentity (actionsAt classAt [rust] noQueries [] (const (pure Nothing)) [("p/after", afterClass)] file (line, 1) src)
+    it "applies on the line right after the node, and after blank lines only" $ do
+      map actGenerator (on 6) `shouldBe` ["p/after"]
+      map actGenerator (on 7) `shouldBe` ["p/after"]
+    it "not inside the node, not before it, not past code that follows it" $ do
+      on 4 `shouldBe` []
+      on 1 `shouldBe` []
+      on 9 `shouldBe` []
+    it "reads `after` and refuses it with `node`" $ do
+      let both = parseGenerator (GeneratorId "p/g") (T.unlines ["description = \"d\"", "language = \"x\"", "[applies_at]", "path = \"x\"", "node = { kind = \"a\" }", "after = { kind = \"b\" }"])
+      both `shouldSatisfy` either ("`after` or `node`" `T.isInfixOf`) (const False)
   describe "trigger: what was just typed (spec §4.9)" $ do
     let specCase = generator . T.unlines $
           [ "description = \"A spec case\"", "language = \"rust\""

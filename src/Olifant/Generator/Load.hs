@@ -79,12 +79,18 @@ parseGenerator gid src = do
 -- | `[applies_at]` (spec §4.6). Slots and bind names must be inputs.
 appliesAtFrom :: [Text] -> Table -> Either Text AppliesAt
 appliesAtFrom inputNames t = do
-  onlyKeys ["path", "node", "bind", "file", "label", "where", "suggest", "trigger"] t
+  onlyKeys ["path", "node", "after", "bind", "file", "label", "where", "suggest", "trigger"] t
   path <- required "path" text t
   case [x | x <- slots path, x `notElem` inputNames] of
     x : _ -> Left ("`{" <> x <> "}` in applies_at.path is not an input (inputs: " <> T.intercalate ", " inputNames <> ")")
     [] -> Right ()
   node <- traverse (inKey "node" . ruleFromTree) (M.lookup "node" t)
+  -- `after`: the cursor's line follows such a node (only blank lines between,
+  -- spec §4.9): where a snippet for "the next one" is anticipated
+  after <- traverse (inKey "after" . ruleFromTree) (M.lookup "after" t)
+  case (node, after) of
+    (Just _, Just _) -> Left "`applies_at` takes `after` or `node`, not both (`node`: the cursor is inside one; `after`: it follows one)"
+    _ -> Right ()
   bind <- maybe (Right []) (traverse (\(k, v) -> inKey ("bind." <> k) (if k `elem` inputNames then (k,) <$> (text v >>= posixRegex) else Left ("`" <> k <> "` is not an input"))) . M.toList) =<< optional "bind" table t
   file <- traverse (\v -> text v >>= \k -> if k `elem` inputNames then Right k else Left ("file: `" <> k <> "` is not an input")) (M.lookup "file" t)
   label <- traverse (text >=> tmpl) (M.lookup "label" t)
@@ -93,7 +99,7 @@ appliesAtFrom inputNames t = do
   suggest <- fromMaybe False <$> optional "suggest" bool t
   -- `trigger`: what the text before the cursor must end with (spec §4.9)
   trigger <- optional "trigger" (text >=> posixRegex) t
-  pure (AppliesAt path node bind file label where' suggest trigger)
+  pure (AppliesAt path node bind file label where' suggest trigger after)
   where
     slots p = case T.breakOn "{" p of
       (_, "") -> []
