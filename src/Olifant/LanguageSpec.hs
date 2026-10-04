@@ -20,6 +20,7 @@ import Olifant.Template (Value (..))
 import Control.Monad (forM_)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
+import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
 import Olifant.Cli.Output (anchorsHuman)
 import Test.Hspec
@@ -170,6 +171,38 @@ spec = do
       fmap reportBroken (supportParse rustcSupport "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"code\":{\"code\":\"E0063\"},\"message\":\"missing field `email_sender` in initializer of `CancelInvoice`\",\"spans\":[{\"file_name\":\"billing/billing-service/src/service.rs\",\"line_start\":26,\"line_end\":26,\"is_primary\":true}],\"children\":[]}}\n{\"reason\":\"build-finished\",\"success\":false}\n")
         `shouldBe` Right [("billing/billing-service/src/service.rs", "missing field `email_sender` in initializer of `CancelInvoice`")]
     it "is a known format" $ fmap supportFormat (supportFor "rustc-json") `shouldBe` Just "rustc-json"
+  describe "pyright-json (Python, recorded from pyright)" $ do
+    let sample name = BS.readFile ("src/Olifant/Language/testdata/pyright/" <> name <> "/report.json")
+        sites r = [(missingFile m, fst (missingCase m), missingPatterns m) | m <- reportMissing r]
+    it "is a known format, read from stdout" $ do
+      fmap supportFormat (supportFor "pyright-json") `shouldBe` Just "pyright-json"
+      fmap supportReadsStdout (supportFor "pyright-json") `shouldBe` Just True
+    it "(a) a non-exhaustive match is a site at its `match` line, the class as a pattern" $ do
+      Right r <- parsePyrightReport <$> sample "union"
+      sites r `shouldBe` [("src/failures.py", 17, ["PartyTooLarge()"])]
+    it "(a) the function's \"must return on all code paths\" is the missing case's doing, not a broken file" $ do
+      Right r <- parsePyrightReport <$> sample "union"
+      reportBroken r `shouldBe` []
+    it "(b) an enum member is written as Enum.MEMBER" $ do
+      Right r <- parsePyrightReport <$> sample "enum"
+      sites r `shouldBe` [("src/colors.py", 9, ["Color.BLUE"])]
+    it "(c) any other error is a broken file" $ do
+      Right r <- parsePyrightReport <$> sample "broken"
+      (sites r, map fst (reportBroken r)) `shouldBe` ([], ["src/broken.py"])
+    it "(d) a pattern is written as the site spells the others: qualified when they are (Review Focus 1)" $ do
+      site <- TIO.readFile "src/Olifant/Language/testdata/pyright/qualified/src/web.py"
+      supportPattern pyrightSupport site "PartyTooLarge" "PartyTooLarge()" `shouldBe` "fx.PartyTooLarge()"
+      supportPattern pyrightSupport "match f:\n    case SlotTaken():\n" "PartyTooLarge" "PartyTooLarge()" `shouldBe` "PartyTooLarge()"
+    it "(e) a clean run is an empty report" $
+      (parsePyrightReport <$> sample "clean") `shouldReturn` Right (CheckReport [] [] [])
+    it "(f) two matches lacking the same case are two sites" $ do
+      Right r <- parsePyrightReport <$> sample "two-matches"
+      sites r `shouldBe` [("src/failures.py", 17, ["PartyTooLarge()"]), ("src/failures.py", 23, ["PartyTooLarge()"])]
+      reportBroken r `shouldBe` []
+    it "(g) output that is not pyright's JSON is an error" $
+      parsePyrightReport "Traceback: oops" `shouldSatisfy` either (const True) (const False)
+    it "names the enclosing function: the nearest def at or above the line" $
+      supportFunction pyrightSupport "def a():\n    pass\n\ndef status(f):\n    match f:\n" 4 `shouldBe` "status"
   describe "rustc-json sites (spec §5.6, fixtures captured from cargo 1.99)" $ do
     report <- runIO (BS.readFile "src/Olifant/Language/testdata/rustc-e0004.jsonl")
     let Right r = parseRustcReport report
