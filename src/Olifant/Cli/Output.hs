@@ -210,7 +210,7 @@ holeJson h =
         HoleFilled m n -> ("filled" :: Text, Just m, Just n, Nothing)
         HoleUnfilled w -> ("unfilled", Nothing, Nothing, Just w)
         HoleSkipped w -> ("skipped", Nothing, Nothing, Just w)
-   in object ["name" .= holeName site, "kind" .= holeKind site, "file" .= holeFile site, "line" .= holeLine site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why, "fill" .= phFill h]
+   in object ["name" .= holeName site, "kind" .= holeKind site, "file" .= holeFile site, "line" .= holeLine site, "placeholder" .= holePlaceholder site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why, "fill" .= phFill h]
 
 planHuman :: Bool -> Plan -> Text
 planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ map (("  ! " <>) . describeConflict) (planConflicts plan) ++ todoLines ++ map ("  ? warning: " <>) (planWarnings plan) ++ holeLines) <> details

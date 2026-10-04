@@ -264,6 +264,9 @@ parseSpec = describe "parseGenerator" $ do
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either ("`{svc}` in applies_at.path is not an input" `T.isInfixOf`) (const False)
       gen ["[applies_at]", "path = \"{svc}/x.rs\""] `shouldSatisfy` either (not . ("`applies_at`: `applies_at`" `T.isInfixOf`)) (const False)
       gen ["[applies_at]", "path = \"x.rs\"", "bind = { nope = \"(a)\" }"] `shouldSatisfy` either ("`nope`" `T.isInfixOf`) (const False)
+    it "reads `suggest` (default false)" $ do
+      fmap (fmap apSuggest . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\"", "suggest = true"]) `shouldBe` Right (Just True)
+      fmap (fmap apSuggest . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\""]) `shouldBe` Right (Just False)
     it "reads `where`, a template" $ do
       fmap (fmap (fmap templateSource . apWhere) . genAppliesAt) (gen ["[applies_at]", "path = \"x.rs\"", "where = \"on a field of {= service =}\""]) `shouldBe` Right (Just (Just "on a field of {= service =}"))
       gen ["[applies_at]", "path = \"x.rs\"", "where = 3"] `shouldSatisfy` either ("where" `T.isInfixOf`) (const False)

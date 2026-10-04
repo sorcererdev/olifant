@@ -44,4 +44,6 @@ with      = { service = "{= service =}", command = "{= command =}", dependency =
 path  = "{service}/*-service/src/{command}.rs"
 node  = { kind = "field_declaration", inside = { kind = "struct_item", regex = "^pub struct {= command|pascal =} ", stopBy = "end" } }
 where = "on a field of the {= command|pascal =} struct"
+# Offered unasked (spec §4.8): a follow-up you Tab to review, Tab to apply.
+suggest = true
 label = "Wire {= command =}'s dependencies"

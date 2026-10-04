@@ -115,7 +115,7 @@ planOutputSpec = describe "planHuman" $ do
   it "lists holes in the plan, with status (spec §6.4)" $ do
     let hole = PlannedHole (HoleSite "status" "expr" "the status" "a.rs" 3 "todo!()") (HoleUnfilled "no model is configured") Nothing
         p = Plan (GeneratorId "g") [] at0 [] [] [] M.empty [hole] M.empty
-    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
+    TL.toStrict (TLE.decodeUtf8 (encode (planJson False p))) `shouldSatisfy` T.isInfixOf "\"holes\":[{\"attempts\":null,\"file\":\"a.rs\",\"fill\":null,\"kind\":\"expr\",\"line\":3,\"model\":null,\"name\":\"status\",\"placeholder\":\"todo!()\",\"status\":\"unfilled\",\"why\":\"no model is configured\"}]"
     planHuman False p `shouldSatisfy` T.isInfixOf "holes:\n  status (expr) a.rs:3  unfilled: no model is configured"
   describe "gen with holes (spec §6.4)" $ do
     let holeProject model =
@@ -463,12 +463,12 @@ runCliSpec = describe "runCli" $ do
         files = ("/proj/.olifant/generators/wire/generator.toml", gen) : project
     (code, out, _, _) <- runWith "unsaved text" files False ["actions", "--at", "billing/src/cancel.x:3:5", "--content", "-"]
     code `shouldBe` ExitSuccess
-    out `shouldSatisfy` T.isInfixOf "[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}]"
+    out `shouldSatisfy` T.isInfixOf "[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"},\"suggest\":false}]"
     (code2, _, _, _) <- runWith "" files False ["actions", "--at", "billing/src/cancel.x"]
     code2 `shouldBe` ExitFailure 2
     (code3, out3, _, _) <- runWith "" files False ["actions", "--file", "billing/src/cancel.x"]
     code3 `shouldBe` ExitSuccess
-    out3 `shouldSatisfy` T.isInfixOf "{\"actions\":[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"range\":null,\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"}}],\"nearby\":[]}"
+    out3 `shouldSatisfy` T.isInfixOf "{\"actions\":[{\"generator\":\"wire\",\"label\":\"Wire cancel\",\"missing\":[],\"name\":\"Wire\",\"range\":null,\"sets\":{\"command\":\"cancel\",\"service\":\"billing\"},\"suggest\":false}],\"nearby\":[]}"
     (code4, _, _, _) <- runWith "" files False ["actions"]
     code4 `shouldBe` ExitFailure 2
   it "suggests `gen` when the first word looks like a generator" $ do
