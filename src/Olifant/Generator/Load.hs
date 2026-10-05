@@ -63,7 +63,11 @@ parseGenerator gid src = do
   appliesAt <- optional "applies_at" (table >=> appliesAtFrom (map inputName inputs')) top
   name <- optional "name" text top
   holes <- maybe (Right []) (traverse (\(k, v) -> inKey ("holes." <> k) ((k,) <$> (table v >>= holeSourceFrom))) . M.toList) =<< optional "holes" (shaped "[holes.NAME] tables, one per hole" table) top
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes)
+  -- `starter`: the pack's project generator; `next`: what to run after `olifant init`
+  starter <- fromMaybe False <$> optional "starter" bool top
+  next <- fromMaybe [] <$> optional "next" (list (text >=> tmpl)) top
+  when (not starter && not (null next)) (Left "`next` lists what to run after `olifant init`: it belongs to a starter (`starter = true`)")
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes starter next)
   where
     queryWithValue v = do
       t <- table v
@@ -117,7 +121,7 @@ choiceValueFrom v = case v of
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, cursorKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes"]
+topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes", "starter", "next"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]

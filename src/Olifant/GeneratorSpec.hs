@@ -245,6 +245,13 @@ parseSpec = describe "parseGenerator" $ do
     it "derives one from the id when there is none" $ do
       fmap generatorName (parseGenerator (GeneratorId "rust-htmx/command-dependency") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Command Dependency"
       fmap generatorName (parseGenerator (GeneratorId "olifant-dev/error_case") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Error Case"
+  describe "starter and next (olifant init)" $ do
+    let starterGen extra = parseGenerator (GeneratorId "p/project") (T.unlines (["description = \"d\"", "language = \"x\""] ++ extra))
+    it "(h) reads `starter` and `next`" $ do
+      fmap (\g -> (genStarter g, length (genNext g))) (starterGen ["starter = true", "next = [\"uv sync\"]"]) `shouldBe` Right (True, 1)
+      fmap genStarter (starterGen []) `shouldBe` Right False
+    it "(h) refuses `next` without `starter`" $
+      starterGen ["next = [\"x\"]"] `shouldSatisfy` either ("`next`" `T.isInfixOf`) (const False)
   describe "cursor edits (snippets, spec §5.3)" $ do
     let snippet extra = parseGenerator (GeneratorId "p/s") (T.unlines (["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"x\""] ++ extra))
     it "reads `cursor = true` with a text or template" $
