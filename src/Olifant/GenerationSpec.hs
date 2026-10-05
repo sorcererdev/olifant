@@ -320,17 +320,20 @@ composeSpec = describe "generate (composition)" $ do
     [k | k <- M.keys files, "src/" `T.isPrefixOf` T.pack k] `shouldBe` ["src/About.txt", "src/ContactUs.txt"]
   describe "insertBranch (spec §5.6)" $ do
     it "adds the separator to a last arm that lacks it (Review Focus 4)" $
-      insertBranch "," (0, 2) "B => todo!()," "match f {\n    A => 1,\n    C => 2\n}\n"
+      insertBranch "," False (0, 2) "B => todo!()," "match f {\n    A => 1,\n    C => 2\n}\n"
         `shouldBe` (4, "match f {\n    A => 1,\n    C => 2,\n    B => todo!(),\n}\n")
     it "leaves a block last arm as it is" $
-      insertBranch "," (0, 3) "B => todo!()," "match f {\n    A => {\n        1\n    }\n}\n"
+      insertBranch "," False (0, 3) "B => todo!()," "match f {\n    A => {\n        1\n    }\n}\n"
         `shouldBe` (5, "match f {\n    A => {\n        1\n    }\n    B => todo!(),\n}\n")
     it "adds no blank line after a single arm in a comma-separated language" $
-      insertBranch "," (0, 1) "B => todo!()," "match f {\n    A => 1,\n}\n"
+      insertBranch "," False (0, 1) "B => todo!()," "match f {\n    A => 1,\n}\n"
         `shouldBe` (3, "match f {\n    A => 1,\n    B => todo!(),\n}\n")
     it "adds no separator when the language has none" $
-      insertBranch "" (0, 2) "B -> 2" "case x of\n    A -> 1\n    C -> 3\n"
+      insertBranch "" True (0, 2) "B -> 2" "case x of\n    A -> 1\n    C -> 3\n"
         `shouldBe` (4, "case x of\n    A -> 1\n    C -> 3\n    B -> 2\n")
+    it "(python) no blank line after a single arm where the language's style has none" $
+      insertBranch "" False (0, 2) "case B():\n    return 2" "match x:\n    case A():\n        return 1\n"
+        `shouldBe` (4, "match x:\n    case A():\n        return 1\n    case B():\n        return 2\n")
   describe "dependent choices (spec §4.1)" $ do
     let wiring = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"x\""
@@ -590,6 +593,15 @@ holesSpec = describe "holes in plans (spec §6.4)" $ do
     (ws, _) <- memoryWorkspace [("src/A.elm", page), ("src/B.elm", page)]
     Right plan <- generate ws noResolve (tools (scriptedChecker ref)) [Step gen (M.fromList [("name", "reset")])] now Apply
     map (holeName . phSite) (planHoles plan) `shouldBe` ["body[src/A.elm:9]", "body[src/B.elm:9]"]
+  it "a case the compiler still reports after its branch says why the compiler objects" $ do
+    let page = "module Page.A exposing (..)\n\nupdate msg model =\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n"
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\"", "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "complete = \"{= name|pascal =}\"", "text = \"{= pattern =} ->\\n    ( model, Cmd.none )\"" ]
+        stubborn = Checker $ \_ files -> pure (Right (CheckReport [missing "src/A.elm" (3, 5) ["Reset"]] [(p, "Reset is not defined") | (p, t) <- M.toList files, "Reset ->" `T.isInfixOf` t] []))
+    (ws, _) <- memoryWorkspace [("src/A.elm", page)]
+    Right plan <- generate ws noResolve (tools stubborn) [Step gen (M.fromList [("name", "reset")])] now PlanOnly
+    map describeConflict (planConflicts plan) `shouldSatisfy` any (\c -> "still reports Reset" `T.isInfixOf` c && "Reset is not defined" `T.isInfixOf` c)
   it "(python review I1) an error already in the file is not the generated code's: the branch stands" $ do
     let page = "module Page.A exposing (..)\n\nbad = OLD_ERROR\n\nupdate msg model =\n    case msg of\n        NoOp ->\n            ( model, Cmd.none )\n"
         gen = generatorFrom . T.unlines $

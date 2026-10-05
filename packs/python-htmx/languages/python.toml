@@ -23,11 +23,11 @@ wrap = "def __olifant():\n    return {= fill =}"
 
 [holes.stmt]
 placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}")'
-wrap = "def __olifant():\n{= fill =}"
+wrap = "def __olifant():\n{= fill|indent =}"
 
 [holes.block]
 placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}")'
-wrap = "def __olifant():\n{= fill =}"
+wrap = "def __olifant():\n{= fill|indent =}"
 
 # Tab stops in snippets (spec §4.9): a name, or text inside a string.
 [holes.ident]

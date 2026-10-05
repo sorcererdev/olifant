@@ -348,7 +348,7 @@ Its conventions are what the generators rely on:
 - **A site names a failure through its command's module** (`create_booking.SlotTaken`, or an
   alias's `cb.SlotTaken`), so a new failure needs no import anywhere.
 
-It runs: `uv run uvicorn bistro.main:app --reload`, then http://localhost:8000/ shows the
+It runs: `uv run uvicorn --factory --app-dir src bistro.main:create --reload`, then http://localhost:8000/ shows the
 day's grid, one booking form per table and half-hour slot. A booking answers 201, and the
 same slot again 409, from `failures.py`'s `match`.
 

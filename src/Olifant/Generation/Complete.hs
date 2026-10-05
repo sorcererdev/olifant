@@ -78,7 +78,9 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   -- none of our edits can appear: never dropped silently.
                   hidden = [(d, p) | d <- diags, p <- missingPatterns d, let named = [c | (_, c) <- mine, mentions (completeConstructor c) p], not (null named), not (any (visible d) named)]
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
-                ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
+                ((f, _, p) : _) ->
+                  let why = [t | (bf, t) <- reportBroken report, bf == f]
+                   in pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added" <> (if null why then "" else ": " <> T.intercalate "; " (nub why))) False], [], current)
                 []
                   | null wanted -> addHidden hidden . addUnplaced (reportUnplaced report) <$> finishChecked lang (reportBroken report)
                   | otherwise -> do
@@ -86,7 +88,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                       case sequence built of
                         Left why -> pure (reverse acc, [CompleteFailed step why False], [], current)
                         Right branches -> do
-                          let (edits, files') = applyBranches (supportArmSeparator support) n branches files
+                          let (edits, files') = applyBranches (supportArmSeparator support) (supportLoneArmSpaced support) n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
                           loop lang support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
 
@@ -170,14 +172,14 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
 -- | Insert every branch, bottom-up within a file so earlier line numbers stay
 -- valid. Edits are numbered in that application order, so each reported line
 -- is where the text lands when the plan's edits are replayed in order.
-applyBranches :: Text -> Int -> [Branch] -> Map FilePath Text -> ([PlannedEdit], Map FilePath Text)
-applyBranches sep n branches files0 = (reverse edits, final)
+applyBranches :: Text -> Bool -> Int -> [Branch] -> Map FilePath Text -> ([PlannedEdit], Map FilePath Text)
+applyBranches sep spaced n branches files0 = (reverse edits, final)
   where
     order = sortOn (\(k, b) -> (missingFile (brSite b), Down (snd (missingCase (brSite b))), Down k)) (zip [0 :: Int ..] branches)
     (edits, final) = foldl step ([], files0) (zip [n ..] (map snd order))
     step (acc, files) (i, b) =
       let file = missingFile (brSite b)
-          (line, updated) = insertBranch sep (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
+          (line, updated) = insertBranch sep spaced (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
           edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) Nothing (Just (brInfo b))
        in (edit : acc, M.insert file updated files)
 
@@ -185,8 +187,8 @@ applyBranches sep n branches files0 = (reverse edits, final)
 -- and spaced like them: a blank line before it only if one precedes the
 -- last alternative (Elm's style), none if they are adjacent (Haskell's).
 -- With a single alternative there is nothing to copy: a blank line.
-insertBranch :: Text -> (Int, Int) -> Text -> Text -> (Int, Text)
-insertBranch sep (caseStart, caseEnd) branch content0 =
+insertBranch :: Text -> Bool -> (Int, Int) -> Text -> Text -> (Int, Text)
+insertBranch sep spaced (caseStart, caseEnd) branch content0 =
   let content = separated content0
       ls = T.lines content
       body = zip [0 :: Int ..] ls
@@ -197,9 +199,9 @@ insertBranch sep (caseStart, caseEnd) branch content0 =
       alternatives = [i | (i, l) <- inCase, not (T.null (T.strip l)), T.takeWhile (\c -> c == ' ' || c == '\t') l == indent]
       blankBefore = case reverse alternatives of
         (lastAlt : _ : _) -> lastAlt > 0 && T.null (T.strip (ls !! (lastAlt - 1)))
-        -- One arm: nothing to copy. Elm's style is a blank line; Rust's
-        -- comma-separated arms sit together.
-        _ -> T.null sep
+        -- One arm: nothing to copy; the language's style decides (Elm's
+        -- blank line; Rust's and Python's arms sit together).
+        _ -> spaced
    in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing Nothing "") ((if blankBefore then "\n" else "") <> branch) content
   where
     -- Rust arms are comma-separated: give the last arm its comma unless it

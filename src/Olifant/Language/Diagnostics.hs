@@ -47,6 +47,9 @@ data CompilerSupport = CompilerSupport
   -- ends with it or ends a block (`,` in Rust; nothing in Elm and Haskell)
   , supportReadsStdout :: Bool
   -- ^ the report is on stdout (cargo), not stderr (elm, GHC)
+  , supportLoneArmSpaced :: Bool
+  -- ^ after a match's only arm, a new one goes after a blank line (Elm's
+  -- style); with two or more, the existing spacing is copied
   , supportSpans :: Maybe (Map FilePath Text -> CheckReport -> CheckReport)
   -- ^ sites' extents from the checked files, when the report gives only
   -- where they start (pyright: the `match` line)
@@ -60,7 +63,10 @@ indentBlockEnd ls i = case drop i ls of
   [] -> i
   header : rest ->
     let depth = T.length (T.takeWhile isSpace header)
-        inside = takeWhile (\l -> T.null (T.strip l) || T.length (T.takeWhile isSpace l) > depth) rest
+        -- a line inside a triple-quoted string is in the block whatever its column
+        quotes l = length (T.breakOnAll "\"\"\"" l) + length (T.breakOnAll "'''" l)
+        inString = scanl (\open l -> if odd (quotes l) then not open else open) False rest
+        inside = map fst (takeWhile (\(l, open) -> open || T.null (T.strip l) || T.length (T.takeWhile isSpace l) > depth) (zip rest inString))
         lastCode = [n | (n, l) <- zip [i + 1 ..] inside, not (T.null (T.strip l))]
      in if null lastCode then i else last lastCode
 

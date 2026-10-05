@@ -273,20 +273,22 @@ spec = do
           (Left why, _) -> expectationFailure (T.unpack why)
           (_, Left why) -> expectationFailure (T.unpack why)
           (Right (ws, tools0, resolve, gen0), Right (now, sets)) -> do
-            Right (tools, gen) <- atCaseCursor ws processChecker (either (const Nothing) id (parseCaseCursor inputs)) tools0 gen0
-            Right plan <- generate ws resolve tools [Step gen sets] now PlanOnly
-            [() | PlannedHole {phStatus = HoleUnfilled _} <- planHoles plan] `shouldNotBe` []
-            -- the pack's language, and the program its check runs
+            -- the pack's language, and the program its check runs: without it
+            -- the case is pending (planning would find no sites to fill)
             let (langName', tool) = case casePack c of
                   "elm" -> ("elm", "elm")
                   "python-htmx" -> ("python", "uv")
                   _ -> ("rust", "cargo")
-            src <- TIO.readFile (casePackRoot c </> "languages" </> (langName' <> ".toml"))
-            let Right lang = parseLanguage (T.pack langName') (casePackRoot c) src
-            fixture <- readTree (casePackRoot c </> "fixtures" </> "app")
             findExecutable tool >>= \case
               Nothing -> missingTool strict "the pack's compiler is not installed"
-              Just _ -> compileClean lang (M.unions [planWrites plan, given, fixture]) `shouldReturn` Right ()
+              Just _ -> do
+                Right (tools, gen) <- atCaseCursor ws processChecker (either (const Nothing) id (parseCaseCursor inputs)) tools0 gen0
+                Right plan <- generate ws resolve tools [Step gen sets] now PlanOnly
+                [() | PlannedHole {phStatus = HoleUnfilled _} <- planHoles plan] `shouldNotBe` []
+                src <- TIO.readFile (casePackRoot c </> "languages" </> (langName' <> ".toml"))
+                let Right lang = parseLanguage (T.pack langName') (casePackRoot c) src
+                fixture <- readTree (casePackRoot c </> "fixtures" </> "app")
+                compileClean lang (M.unions [planWrites plan, given, fixture]) `shouldReturn` Right ()
   where
     -- Pending locally; a failure where tools are required (the pre-merge hook
     -- sets OLIFANT_REQUIRE_TOOLS=1), so a missing tool cannot look green.

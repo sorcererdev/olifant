@@ -89,7 +89,7 @@ appliesAtFrom inputNames t = do
   -- spec §4.9): where a snippet for "the next one" is anticipated
   after <- traverse (inKey "after" . ruleFromTree) (M.lookup "after" t)
   case (node, after) of
-    (Just _, Just _) -> Left "`applies_at` takes `after` or `node`, not both (`node`: the cursor is inside one; `after`: it follows one)"
+    (Just _, Just _) -> Left "use `after` or `node`, not both (`node`: the cursor is inside one; `after`: it follows one)"
     _ -> Right ()
   bind <- maybe (Right []) (traverse (\(k, v) -> inKey ("bind." <> k) (if k `elem` inputNames then (k,) <$> (text v >>= posixRegex) else Left ("`" <> k <> "` is not an input"))) . M.toList) =<< optional "bind" table t
   file <- traverse (\v -> text v >>= \k -> if k `elem` inputNames then Right k else Left ("file: `" <> k <> "` is not an input")) (M.lookup "file" t)

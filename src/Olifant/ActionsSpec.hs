@@ -130,6 +130,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
     it "reads `after` and refuses it with `node`" $ do
       let both = parseGenerator (GeneratorId "p/g") (T.unlines ["description = \"d\"", "language = \"x\"", "[applies_at]", "path = \"x\"", "node = { kind = \"a\" }", "after = { kind = \"b\" }"])
       both `shouldSatisfy` either ("`after` or `node`" `T.isInfixOf`) (const False)
+      both `shouldSatisfy` either (not . ("`applies_at`: `applies_at`" `T.isInfixOf`)) (const False)
   describe "trigger: what was just typed (spec §4.9)" $ do
     let specCase = generator . T.unlines $
           [ "description = \"A spec case\"", "language = \"rust\""
@@ -244,6 +245,18 @@ spec = describe "olifant actions (spec §4.6)" $ do
             actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("rust-htmx/" <> gen, g)] path pos content
         cancel = "packs/rust-htmx/generators/wire-command/tests/cancel-invoice/given/billing/billing-service/src/cancel_invoice.rs"
         refund = "packs/rust-htmx/generators/failure-arms/tests/already-refunded/given/billing/billing-service/src/refund_invoice.rs"
+    it "(python) failure-variant follows a failure class, not a decorated function with a `reason: str` parameter" $ findExecutable "ast-grep" >>= \case
+      Nothing -> if strict then expectationFailure "ast-grep is required" else pendingWith "ast-grep is not installed"
+      Just _ -> do
+        tmp <- getTemporaryDirectory
+        let route = "@app.get(\"/\")\ndef f(reason: str) -> str:\n    return reason\n\n"
+            failure = "@dataclass(frozen=True)\nclass Gone:\n    reason: str\n\n"
+            offered path content = do
+              Right (ws, tools, _, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "failure-variant" [(path, content)]
+              paths <- listFiles ws "."
+              map actGenerator <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/failure-variant", g)] path (4, 1) content
+        offered "src/bistro/web/app.py" route `shouldReturn` []
+        offered "src/bistro/booking/create_booking.py" failure `shouldReturn` ["python-htmx/failure-variant"]
     it "offers wire-command on a field of the command's struct, not on another struct" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]

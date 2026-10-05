@@ -102,6 +102,10 @@ compileClean lang files = case langCheck lang of
           | Right report <- supportParse support (if supportReadsStdout support then out else err)
           , not (null (reportBroken report)) ->
               T.unlines [T.pack f <> ": " <> t | (f, t) <- reportBroken report]
+          -- only missing cases (pyright reports them as errors): say which
+          | Right report <- supportParse support (if supportReadsStdout support then out else err)
+          , not (null (reportMissing report)) ->
+              T.unlines [T.pack (missingFile m) <> ":" <> T.pack (show (fst (missingCase m) + 1)) <> ": missing cases " <> T.intercalate ", " (missingPatterns m) | m <- reportMissing report]
         _ -> T.take 2000 (TE.decodeUtf8With lenientDecode err)
 
 -- | The argument @{= files =}@ expands to the sources the adapter's globs

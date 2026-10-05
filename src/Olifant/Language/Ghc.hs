@@ -28,6 +28,7 @@ ghcSupport =
     , supportFunction = declarationAt
     , supportArmSeparator = ""
     , supportReadsStdout = False
+    , supportLoneArmSpaced = True
     , supportSpans = Nothing
     }
 

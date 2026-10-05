@@ -15,6 +15,7 @@ import Olifant.Anchor (RenderedAnchor (..), locIndent, locLine, locOpen, resolve
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Olifant.Template (Value (..))
 import Control.Monad (forM_)
@@ -245,6 +246,12 @@ spec = do
       contextKey check (project "v1" "x = 1\n") `shouldBe` contextKey check (project "v1" "x = 2\n")
     it "changes with the lockfile (or the project file)" $
       contextKey check (project "v1" "x = 1\n") `shouldNotBe` contextKey check (project "v2" "x = 1\n")
+  describe "compileClean with pyright (a site but no broken file)" $
+    it "says which cases are missing, not an empty reason" $ do
+      let report = "{\"generalDiagnostics\": [{\"file\": \"a.py\", \"severity\": \"error\", \"rule\": \"reportMatchNotExhaustive\", \"message\": \"Cases within match statement do not exhaustively handle all values\\n  Unhandled type: \\\"Gone\\\"\", \"range\": {\"start\": {\"line\": 3, \"character\": 4}, \"end\": {\"line\": 3, \"character\": 9}}}]}"
+          Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", " <> T.pack (show ("printf '%s' '" <> T.unpack report <> "'; exit 1")) <> "]", "format = \"pyright-json\""])
+      r <- compileClean lang (M.fromList [("a.py", "x = 1\n")])
+      r `shouldSatisfy` either ("Gone()" `T.isInfixOf`) (const False)
   describe "a check whose report cannot be read (python review I4)" $
     it "says what the tool printed on stderr (uv offline, no lockfile)" $ do
       let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", \"echo 'error: No `uv.lock` found; run uv lock' >&2; exit 2\"]", "format = \"pyright-json\""])
@@ -255,15 +262,19 @@ spec = do
   describe "a match's extent from its indentation (Python)" $ do
     it "(a) the last line of the block under a line: blank lines don't extend it, a line back at its indentation ends it" $
       indentBlockEnd ["def f(x):", "    match x:", "        case A():", "            return 1", "", "    return 2"] 1 `shouldBe` 3
+    it "a column-0 line inside a triple-quoted string does not end the block" $
+      indentBlockEnd ["    match x:", "        case A():", "            return \"\"\"one", "at column 0", "            \"\"\"", "    y = 1"] 0 `shouldBe` 4
     it "(b) a last arm whose body spans lines (nested if, a multi-line call) ends at its last line (Review Focus 2)" $ do
       src <- TIO.readFile "src/Olifant/Language/testdata/pyright/two-matches/src/failures.py"
       indentBlockEnd (T.splitOn "\n" src) 23 `shouldBe` 30
       indentBlockEnd (T.splitOn "\n" src) 17 `shouldBe` 19
     it "(c) through the checker: each pyright site spans its match to the last arm (real pyright via uvx)" $
       findExecutable "uvx" >>= \case
-        Nothing -> pendingWith "uv is not installed (brew install uv)"
+        Nothing -> lookupEnv "OLIFANT_REQUIRE_TOOLS" >>= \case
+          Just "1" -> expectationFailure "required tool missing: uv (brew install uv)"
+          _ -> pendingWith "uv is not installed (brew install uv)"
         Just _ -> do
-          let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uvx\", \"--quiet\", \"pyright\", \"--outputjson\"]", "context = [\"pyproject.toml\"]", "format = \"pyright-json\""])
+          let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uvx\", \"--quiet\", \"pyright==1.1.414\", \"--outputjson\"]", "context = [\"pyproject.toml\"]", "format = \"pyright-json\""])
           files <- traverse (\f -> (f,) <$> TIO.readFile ("src/Olifant/Language/testdata/pyright/two-matches/" <> f)) ["pyproject.toml", "src/failures.py"]
           r <- runCheck processChecker py (M.fromList files)
           fmap (map (\m -> (missingFile m, missingCase m)) . reportMissing) r `shouldBe` Right [("src/failures.py", (17, 19)), ("src/failures.py", (23, 30))]

@@ -47,7 +47,8 @@ data Language = Language
 
 -- | How a hole of one kind is written unfilled ('kindPlaceholder', with
 -- @hole@ and @instruction@; it must compile) and the code a fill must parse
--- in ('kindWrap', containing the literal @{= fill =}@).
+-- in ('kindWrap', containing the literal @{= fill =}@, or @{= fill|indent =}@
+-- for a body: every line one level in).
 data HoleKind = HoleKind {kindPlaceholder :: Template, kindWrap :: Text}
   deriving stock (Show)
 
@@ -85,9 +86,9 @@ parseLanguage name packRoot src = do
       ph <- required "placeholder" (text >=> tmpl) t
       if "hole" `S.member` freeVariables ph then Right () else Left "`placeholder` must use {= hole =} (the hole's name), so every placeholder is unique"
       wrap <- required "wrap" text t
-      if "{= fill =}" `T.isInfixOf` wrap
+      if any (`T.isInfixOf` wrap) ["{= fill =}", "{= fill|indent =}"]
         then Right (HoleKind ph wrap)
-        else Left "`wrap` must contain {= fill =}, where the fill goes"
+        else Left "`wrap` must contain {= fill =} (or {= fill|indent =}, one level in), where the fill goes"
     targetFrom t = do
       onlyKeys ["phrase", "container", "items", "example"] t
       TargetDef

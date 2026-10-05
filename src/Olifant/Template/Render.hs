@@ -106,6 +106,10 @@ applyFilter f v = case caseFromText f of
       VText t -> Right (VText (T.concatMap rustChar t))
       VName n -> Right (VText (T.concatMap rustChar (Naming.render Naming.Snake n)))
       other -> Left (TypeMismatch ("`rust_string` needs text, got " <> describeValue other))
+    -- One level in (four spaces) on every non-empty line: a body under a def.
+    "indent" -> case v of
+      VText t -> Right (VText (T.intercalate "\n" [if T.null (T.strip l) then l else "    " <> l | l <- T.splitOn "\n" t]))
+      other -> Left (TypeMismatch ("`indent` needs text, got " <> describeValue other))
     -- Inside a double-quoted Python string: backslash, quote and newline escaped.
     "python_string" -> case v of
       VText t -> Right (VText (T.concatMap pythonChar t))

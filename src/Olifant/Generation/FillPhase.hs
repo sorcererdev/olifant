@@ -102,11 +102,13 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
 
     parses s f = case (languageFor (toolLanguages tools) (holeFile s), lookup (holeKind s) . langHoles =<< languageFor (toolLanguages tools) (holeFile s)) of
       (Just lang, Just k) ->
-        querySyntax (toolSyntax tools) lang (object ["kind" .= ("ERROR" :: Text)]) (T.replace "{= fill =}" f (kindWrap k)) >>= \case
+        querySyntax (toolSyntax tools) lang (object ["kind" .= ("ERROR" :: Text)]) (T.replace "{= fill =}" f (T.replace "{= fill|indent =}" (indented f) (kindWrap k))) >>= \case
           Right [] -> pure True
           Right _ -> pure False
           Left _ -> pure True -- no parser: the check decides
       _ -> pure True
+
+    indented f = T.intercalate "\n" [if T.null (T.strip l) then l else "    " <> l | l <- T.splitOn "\n" f]
 
     -- Broken files (with messages) among those holding these holes, by each
     -- language's check over the project as this plan has it.

@@ -19,7 +19,7 @@ source = "yours"
 # a reason) in a service's module.
 [applies_at]
 path    = "src/bistro/*/*.py"
-after   = { kind = "decorated_definition", regex = "reason: str" }
+after   = { kind = "decorated_definition", regex = "reason: str", has = { kind = "class_definition" } }
 trigger = "^[[:space:]]*$"
 where   = "on a blank line after a failure class"
 suggest = true
