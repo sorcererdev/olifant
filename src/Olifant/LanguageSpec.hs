@@ -237,6 +237,14 @@ spec = do
       case r of
         Left (CheckToolMissing why) -> why `shouldSatisfy` T.isInfixOf "olifant-no-such-tool"
         other -> expectationFailure (show other)
+  describe "contextKey: one check environment per project and lockfile" $ do
+    let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""])
+        Just check = langCheck py
+        project lock src = M.fromList [("pyproject.toml", "[project]\nname = \"bistro\"\n"), ("uv.lock", lock), ("src/a.py", src)]
+    it "is the same for the same project, whatever its sources say" $
+      contextKey check (project "v1" "x = 1\n") `shouldBe` contextKey check (project "v1" "x = 2\n")
+    it "changes with the lockfile (or the project file)" $
+      contextKey check (project "v1" "x = 1\n") `shouldNotBe` contextKey check (project "v2" "x = 1\n")
   describe "a check whose report cannot be read (python review I4)" $
     it "says what the tool printed on stderr (uv offline, no lockfile)" $ do
       let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", \"echo 'error: No `uv.lock` found; run uv lock' >&2; exit 2\"]", "format = \"pyright-json\""])

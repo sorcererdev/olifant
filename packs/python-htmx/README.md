@@ -19,5 +19,5 @@ architecture the generators reproduce:
 Needs `uv` (`brew install uv`); pyright comes with `uv sync`. Olifant checks
 with `uv run pyright --outputjson`, its environment in Olifant's cache.
 
-Run the fixture: `uv run uvicorn bistro.main:app --reload`, then open
+Run the fixture: `uv run uvicorn --app-dir src bistro.main:app --reload`, then open
 http://localhost:8000/.

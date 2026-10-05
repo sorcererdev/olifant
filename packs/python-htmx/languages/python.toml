@@ -1,5 +1,7 @@
 # Python: ast-grep's built-in grammar; checks with pyright (strict, from the
-# project's pyproject.toml) through uv, its venv in Olifant's cache.
+# project's pyproject.toml) through uv, its venv in Olifant's cache: one per
+# project and lockfile ({= context =}). The project is an app, not a package
+# (`[tool.uv] package = false`): nothing is built; pyright finds src/.
 files = ["**/*.py"]
 comment = "#"
 grammar = "python"
@@ -8,7 +10,7 @@ placeholder = 'raise NotImplementedError("{= message|python_string =}")'
 branch = "case {= pattern =}:\n    {= body =}"
 
 [check]
-command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
+command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
 context = ["pyproject.toml", "uv.lock"]
 format  = "pyright-json"
 

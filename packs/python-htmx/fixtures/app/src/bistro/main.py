@@ -1,6 +1,6 @@
 """The composition root: real adapters, the service, the web app.
 
-Run: uv run uvicorn bistro.main:app --reload
+Run: uv run uvicorn --app-dir src bistro.main:app --reload
 """
 
 from bistro.adapters.sqlite_booking_repository import SqliteBookingRepository
