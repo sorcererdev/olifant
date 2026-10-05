@@ -1,0 +1,5 @@
+"""{= port|pascal =} in memory: for tests, and until a real adapter exists."""
+
+
+class InMemory{= port|pascal =}:
+    """Keeps the {= port|pascal =} contract (see {= port|snake =}__test.py)."""

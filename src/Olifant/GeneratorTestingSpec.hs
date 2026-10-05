@@ -256,6 +256,28 @@ spec = do
         env <- getEnvironment
         (code, out, err) <- readCreateProcessWithExitCode ((proc "uv" ["run", "--quiet", "--frozen", "pytest", "-q"]) {cwd = Just dir, env = Just (("UV_PROJECT_ENVIRONMENT", tmp </> "olifant-test-cache" </> "python-fixture-venv") : env)}) ""
         (code, out <> err) `shouldSatisfy` ((== ExitSuccess) . fst)
+    -- the test policy: a case marked `run_tests = true` runs its project's
+    -- tests; exactly `expect_failing = N` of them fail (0: boilerplate passes;
+    -- a stub of behaviour fails until written)
+    testedCases <- runIO (filterM (\c -> T.isInfixOf "\nrun_tests = true" . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) [c | c <- cases, casePack c == "python-htmx"])
+    forM_ testedCases $ \c ->
+      it ("tests keep the test policy: " <> T.unpack (caseName c)) $ withUv $ do
+        inputs <- TIO.readFile (caseDir c </> "inputs.toml")
+        let expected = case [n | l <- T.lines inputs, Just rest <- [T.stripPrefix "expect_failing = " l], [(n, "")] <- [reads (T.unpack rest)]] of
+              n : _ -> n
+              [] -> 0 :: Int
+        starter <- T.isInfixOf "\nstarter = true" <$> TIO.readFile (casePackRoot c </> "generators" </> T.unpack (caseGenerator c) </> "generator.toml")
+        fixture <- if starter then pure M.empty else readTree "packs/python-htmx/fixtures/app"
+        given <- readTree (caseDir c </> "given")
+        snapshot <- readTree (caseDir c </> "snapshot")
+        tmp <- getTemporaryDirectory
+        withSystemTempDirectory "olifant-py-case" $ \dir -> do
+          forM_ (M.toList (M.unions [snapshot, given, fixture])) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+          env <- getEnvironment
+          (_, out, _) <- readCreateProcessWithExitCode ((proc "uv" ["run", "--quiet", "--frozen", "pytest", "-q", "-p", "no:cacheprovider"]) {cwd = Just dir, env = Just (("UV_PROJECT_ENVIRONMENT", tmp </> "olifant-test-cache" </> "python-case-venv") : env)}) ""
+          -- pytest's short summary has one FAILED line per failing test
+          let failedCount = length [() | l <- T.lines (T.pack out), "FAILED " `T.isPrefixOf` l]
+          (failedCount, T.takeEnd 600 (T.pack out)) `shouldSatisfy` ((== expected) . fst)
     snippetCases <- runIO (filterM (\c -> T.isInfixOf "\nat = " . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) cases)
     forM_ [c | c <- cases, casePack c == "python-htmx", c `notElem` snippetCases] $ \c ->
       it ("output type-checks: " <> T.unpack (caseName c)) $ withUv $ do
