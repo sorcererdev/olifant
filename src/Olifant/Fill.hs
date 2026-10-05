@@ -20,6 +20,8 @@ data FillHole = FillHole
   , fhFile :: FilePath
   , fhContext :: Text
   , fhPrevious :: Maybe (Text, Text)
+  , fhImports :: Bool
+  -- ^ the fill may begin with import lines (the language says how they look)
   }
   deriving stock (Eq, Show)
 

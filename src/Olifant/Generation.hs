@@ -41,10 +41,10 @@ import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
-import Olifant.Language (Language, Match (..), Syntax (..), languageFor)
+import Olifant.Language (Language (..), Match (..), Syntax (..), languageFor)
 import Olifant.Holes (HoleSite (..), hasMarkers, matchesWithHoles, placeHoles, placeholderize)
 import Olifant.Snippet (holeSource)
-import Olifant.Generation.FillPhase (fillPhase)
+import Olifant.Generation.FillPhase (applyFills, fillPhase)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative)
@@ -189,13 +189,16 @@ generate ws resolve tools steps now mode =
           pointBackConflict = \case
             CompleteFailed st why tm -> CompleteFailed st (pointBack why) tm
             c -> c
-      -- What the plan shows is what is written: fills, not placeholders.
-      let filled = [(holePlaceholder (phSite h), f) | h <- holes, Just f <- [phFill h]]
-          withFills t = foldl (\acc (ph, f) -> T.replace ph f acc) t filled
+      -- What the plan shows is what is written: fills, not placeholders,
+      -- placed as they are written. A whole file shows a fill's imports where
+      -- they went; an inserted fragment shows only the fill's code.
+      let filled = [(phSite h, f) | h <- holes, Just f <- [phFill h]]
+          importsOf p = langImports =<< languageFor (toolLanguages tools) p
+          withFills imports p t = M.findWithDefault t p (applyFills imports (M.singleton p t) [(s {holeFile = p}, f) | (s, f) <- filled])
           shownFilled = [e {editAction = case editAction e of
-                               WillCreate t -> WillCreate (withFills t)
-                               WillOverwrite t -> WillOverwrite (withFills t)
-                               WillInsert n t -> WillInsert n (withFills t)
+                               WillCreate t -> WillCreate (withFills importsOf (editPath e) t)
+                               WillOverwrite t -> WillOverwrite (withFills importsOf (editPath e) t)
+                               WillInsert n t -> WillInsert n (withFills (const Nothing) (editPath e) t)
                                other -> other} | e <- shown]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before) (M.filter hasMarkers changed) Nothing
       when (mode == Apply && not (hasConflicts plan)) $

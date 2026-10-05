@@ -100,11 +100,9 @@ userPrompt req =
       [ ""
       , "Hole `" <> fhName h <> "` (kind: " <> fhKind h <> ") in " <> T.pack (fhFile h)
       , "Instruction: " <> fhInstruction h
-      , "The file around it:"
-      , "```"
-      , fhContext h
-      , "```"
       ]
+        ++ ["If the code needs a name the file does not import, begin the fill with the import lines; they are moved to the file's imports." | fhImports h]
+        ++ ["The file around it:", "```", fhContext h, "```"]
         ++ maybe [] (\(f, why) -> ["Your previous fill was:", "```", f, "```", "It failed: " <> why, "Fix it."]) (fhPrevious h)
 
 requestBody :: Backend -> FillRequest -> Value

@@ -8,6 +8,9 @@ grammar = "python"
 indent = "    "
 placeholder = 'raise NotImplementedError("{= message|python_string =}")'
 branch = "case {= pattern =}:\n    {= body =}"
+# A fill may begin with import lines (a decode that needs `date`): they join
+# the file's imports.
+imports = "^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$"
 
 [check]
 command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]

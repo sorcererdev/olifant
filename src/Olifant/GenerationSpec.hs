@@ -715,6 +715,46 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     Right plan <- generate ws noResolve tools [Step pair M.empty] now Apply
     (M.lookup "src/P.elm" <$> snap) `shouldReturn` Just "p = ( if True then\n  1\nelse\n  2, 3 )\n"
     statuses plan `shouldBe` [("x", HoleFilled "fake" 1), ("y", HoleFilled "fake" 1)]
+  it "(m) a fill's leading import lines join the file's imports, once each (python-pack: fills that need a name)" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/c.py\"", "text = \"\\\"\\\"\\\"Codec.\\\"\\\"\\\"\\n\\nfrom x import Slot\\n\\n\\ndef decode(t: str) -> Slot:\\n    return {= ? decode: expr | read it =}\\n\"" ]
+    calls <- newIORef []
+    let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> pure (Right (M.fromList [("decode", "from datetime import date\nfrom x import Slot\n\nSlot(day=date.fromisoformat(t))")]))
+        sawCode = Syntax $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "import" | "import" `T.isInfixOf` content])
+        tools = (basicTools sawCode compiles [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+    statuses plan `shouldBe` [("decode", HoleFilled "fake" 1)]
+    (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "\"\"\"Codec.\"\"\"\n\nfrom x import Slot\nfrom datetime import date\n\n\ndef decode(t: str) -> Slot:\n    return Slot(day=date.fromisoformat(t))\n"
+    -- what the plan shows is what is written
+    map Just [t | e <- planEdits plan, WillCreate t <- [editAction e]] `shouldBe` [M.lookup "src/c.py" (planWrites plan)]
+    -- the model is told it may (the language allows it)
+    reqs <- readIORef calls
+    map fhImports (concatMap frHoles reqs) `shouldBe` [True]
+  it "(m2) with no imports in the file, a fill's imports go after its leading docstring and comments" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/d.py\"", "text = \"# a header\\n\\\"\\\"\\\"Days.\\n\\nMore.\\n\\\"\\\"\\\"\\n\\nTODAY = {= ? today: expr | today =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("today", "import datetime\ndatetime.date.today()")]))
+        tools = (basicTools noSyntax compiles [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/d.py" <$> snap) `shouldReturn` Just "# a header\n\"\"\"Days.\n\nMore.\n\"\"\"\n\nimport datetime\n\nTODAY = datetime.date.today()\n"
   it "(h) refuses a fill that escapes its hole or is the placeholder itself (review I4)" $ do
     (tools, _) <- withFiller (replicate 3 (Right (M.fromList [("a", "1 } evil = { 2"), ("b", "Debug.todo \"olifant: b\"")])))
     (plan, files) <- run1 tools

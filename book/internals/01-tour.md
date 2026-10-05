@@ -1345,18 +1345,27 @@ accepted in a round (`:72`), `Unfilled` for each hole still failing when the rou
 those holes `HoleFilled model attempts` with their fill, marks the others `HoleUnfilled`
 with their last reason, and turns the notes into the warning "holes were filled but not
 compile-checked: …" (`:76`). `applyFills` finds each placeholder by its text and indents a
-multi-line fill's continuation lines like the placeholder's line.
+multi-line fill's continuation lines like the placeholder's line. When the file's language
+has `imports`, `splitImports` takes the fill's leading import lines off first and
+`addImports` puts each one the file lacks after its last top-level import (or after the
+leading comments and docstring, `headerEnd`). `parses` checks only the code part, and
+`FillHole`'s `fhImports` tells the model it may send imports (`Model.hs` adds the line to
+that hole's prompt).
 
 Then `generate` makes the shown edits match the writes:
 
 ```haskell
--- src/Olifant/Generation.hs:167
-      let filled = [(holePlaceholder (phSite h), f) | h <- holes, Just f <- [phFill h]]
-          withFills t = foldl (\acc (ph, f) -> T.replace ph f acc) t filled
+-- src/Olifant/Generation.hs
+      let filled = [(phSite h, f) | h <- holes, Just f <- [phFill h]]
+          importsOf p = langImports =<< languageFor (toolLanguages tools) p
+          withFills imports p t = M.findWithDefault t p (applyFills imports (M.singleton p t) [(s {holeFile = p}, f) | (s, f) <- filled])
 ```
 
-`shownFilled` (`:169`) applies `withFills` to every edit's text, so `--plan` shows the fill
-where the placeholder was.
+`shownFilled` applies `withFills` to every edit's text, so `--plan` shows the fill where
+the placeholder was. `withFills` is `applyFills` on that one text, so a created or
+overwritten file shows the fill's imports where they went and its continuation lines
+indented as written; an inserted fragment is shown with the code only (`const Nothing`
+for the imports).
 
 **The real filler** is in `Model.hs`. `parseModelConfig` (`:59`) reads `[model]`: `default`,
 `retries` (2), `timeout` (120 seconds) and `[model.backends.NAME]`, each a `Backend`

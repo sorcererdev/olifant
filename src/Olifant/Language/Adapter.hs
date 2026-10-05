@@ -26,6 +26,7 @@ import Olifant.Language.Support (knownFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
 import Olifant.Toml
+import Text.Regex.TDFA (Regex, makeRegexM)
 import System.FilePath ((</>))
 
 data Language = Language
@@ -42,6 +43,9 @@ data Language = Language
   -- an empty container is opened
   , langHoles :: [(Text, HoleKind)]
   -- ^ `[holes.KIND]` (spec §6.3): the hole kinds this language supports
+  , langImports :: Maybe Text
+  -- ^ `imports`: a POSIX expression matching one import line. A fill may
+  -- begin with such lines; they join the file's imports
   }
   deriving stock (Show)
 
@@ -64,7 +68,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -74,7 +78,8 @@ parseLanguage name packRoot src = do
   check <- optional "check" (table >=> checkFrom) top
   indent <- fromMaybe "    " <$> optional "indent" text top
   holes <- maybe [] M.toList <$> optional "holes" (table >=> traverse (\v -> table v >>= holeKindFrom)) top
-  pure (Language name files comment grammar targets placeholder branch check indent holes)
+  imports <- optional "imports" (text >=> \re -> maybe (Left ("`imports` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
