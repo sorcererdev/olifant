@@ -1,0 +1,42 @@
+name = "Model"
+description = "A model of a service: a frozen dataclass in models/NAME.py, its fields yours"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/model --set app=bistro --set service=booking --set model=guest",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service it belongs to"
+
+[inputs.model]
+type   = "ident"
+prompt = "The model (guest, table, …)"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+[[edits]]
+create = "src/{= app =}/{= service|snake =}/models/{= model|snake =}.py"
+text   = "from dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass {= model|pascal =}:\n    {= ? field: ident | the first field =}: {= ? type: ident | its type =}\n"
+
+# The first field as tab stops, valid code until you change them.
+[holes.field]
+source = "derived"
+value  = "id"
+
+[holes.type]
+source = "derived"
+value  = "str"

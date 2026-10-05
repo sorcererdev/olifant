@@ -1,0 +1,6 @@
+now = "2026-10-04T12:00:00Z"
+# The service exists (the fixture's booking): nothing changes.
+
+[inputs]
+app = "bistro"
+service = "booking"

@@ -1,0 +1,5 @@
+now = "2026-10-04T12:00:00Z"
+
+[inputs]
+app = "bistro"
+service = "kitchen"
