@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Floor{% endblock %}
+{% block content %}
+  <h1>Floor</h1>
+  <pre>{{ result }}</pre>
+  <form hx-post="/floor/cancel_booking" hx-target="next .outcome" hx-swap="innerHTML">
+    <h2>Cancel booking</h2>
+    <input name="id" placeholder="id" required>
+    <button>Cancel booking</button>
+  </form>
+  <div class="outcome"></div>
+  {# forms: one per command (web-command adds each above this line) #}
+{% endblock %}

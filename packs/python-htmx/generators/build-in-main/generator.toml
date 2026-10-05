@@ -1,0 +1,51 @@
+name = "Build In Main"
+description = "main.py builds a command or query, passing each port's adapter (added once); used by web-resource and web-command"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/build-in-main --set app=bistro --set service=booking --set kind=commands --set command=cancel_booking",
+]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.kind]
+type    = "enum"
+choices = ["commands", "queries"]
+prompt  = "A command or a query"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command or query"
+
+[derive]
+main    = "src/{= app =}/main.py"
+Command = "{= command|pascal =}"
+
+# its ports: the parameters of its __init__
+[query.deps]
+files = "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}.py"
+ast   = { kind = "typed_parameter", inside = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^__init__$" } } } }
+each  = { name = "^([a-z_][a-z_0-9]*)", port = ":[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)" }
+
+[[edits]]
+insert = "{= main =}"
+at     = "end of imports"
+text   = "from {= app =}.{= service|snake =}.{= kind =}.{= command|snake =} import {= Command =}"
+unless = { matches = "^from [A-Za-z0-9_.]+ import .*{= Command =}([^A-Za-z0-9_]|$)" }
+
+[[edits]]
+insert = "{= main =}"
+at     = "before first line matching ^    # routers"
+text   = "{= command|snake =} = {= Command =}()"
+unless = { matches = "^    {= command|snake =} = " }
+
+[[uses]]
+generator = "wire-main"
+for_each  = "deps"
+with      = { app = "{= app =}", service = "{= service =}", command = "{= command =}", param = "{= item.name =}", port = "{= item.port =}" }

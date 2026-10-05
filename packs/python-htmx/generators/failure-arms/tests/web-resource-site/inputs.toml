@@ -1,0 +1,9 @@
+now = "2026-10-05T12:00:00Z"
+# A failure added to a command that a generated web resource routes: its
+# status arm goes in web/floor/failures.py (the site web-command wrote).
+
+[inputs]
+app = "bistro"
+service = "booking"
+command = "cancel_booking"
+failure = "AlreadyCancelled"

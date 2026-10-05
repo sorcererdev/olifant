@@ -1,0 +1,139 @@
+name = "Web Command"
+description = "A command on a web resource: its POST route (form → Input, Ok → 201, a failure → its status), its failures' statuses, a form on the page, the routes test's fake, and main.py building it"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/web-command --set app=bistro --set service=booking --set resource=floor --set command=cancel_booking",
+]
+
+# What the model filling a status sees: the command (its failures' reasons).
+context = ["src/{= app =}/{= service|snake =}/commands/{= command|snake =}.py"]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.resource]
+type   = "ident"
+prompt = "The web resource (web/RESOURCE/)"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command"
+
+[derive]
+Command  = "{= command|pascal =}"
+command_ = "{= command|snake =}"
+pkg      = "{= app =}.{= service|snake =}"
+web      = "src/{= app =}/web/{= resource|snake =}"
+routes_f = "{= resource|snake =}_routes"
+
+# its failures: the names in its Failure union
+[query.failures]
+files = "src/{= app =}/{= service|snake =}/commands/{= command|snake =}.py"
+ast   = { kind = "identifier", inside = { kind = "type_alias_statement", has = { field = "left", regex = "^{= command|pascal =}Failure$" }, stopBy = "end" }, not = { regex = "^{= command|pascal =}Failure$" } }
+
+# its Input's fields: the form's inputs
+[query.fields]
+files = "src/{= app =}/{= service|snake =}/commands/{= command|snake =}.py"
+ast   = { kind = "assignment", has = { field = "type", kind = "type" }, inside = { kind = "expression_statement", inside = { kind = "block", inside = { kind = "class_definition", has = { field = "name", regex = "^{= command|pascal =}Input$" } } } } }
+each  = { name = "^([a-z_][a-z_0-9]*):" }
+
+# its ports, faked in the routes test
+[query.deps]
+files = "src/{= app =}/{= service|snake =}/commands/{= command|snake =}.py"
+ast   = { kind = "typed_parameter", inside = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^__init__$" } } } }
+each  = { name = "^([a-z_][a-z_0-9]*)", port = ":[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)" }
+
+# routes.py: the router takes the command; its route
+[[edits]]
+insert = "{= web =}/routes.py"
+at     = "end of imports"
+text   = "from {= pkg =}.commands.{= command_ =} import {= Command =}, {= Command =}Input"
+unless = { matches = "^from [A-Za-z0-9_.]+ import {= Command =}, " }
+
+[[edits]]
+insert = "{= web =}/routes.py"
+at     = "end of imports"
+text   = "from {= app =}.web.{= resource|snake =}.failures import {= command_ =}_status"
+unless = { matches = "import {= command_ =}_status$" }
+
+[[edits]]
+insert = "{= web =}/routes.py"
+at     = "end of imports"
+text   = "from {= app =}.shared.result import Ok"
+unless = { matches = "import Ok$" }
+
+[[edits]]
+insert = "{= web =}/routes.py"
+at     = "end of imports"
+text   = "from pydantic import TypeAdapter, ValidationError"
+unless = { matches = "^from pydantic import" }
+
+[[edits]]
+insert = "{= web =}/routes.py"
+at     = "end of parameters in {= routes_f =}"
+text   = "{= command_ =}: {= Command =},"
+unless = { matches = "^    {= command_ =}: " }
+
+[[edits]]
+insert   = "{= web =}/routes.py"
+at       = "before first line matching ^    return router$"
+template = "route.py.dt"
+unless   = { matches = "\"/{= command_ =}\"" }
+
+# failures.py: the command's failures as statuses (failure-arms keeps it exhaustive)
+[[edits]]
+create    = "{= web =}/failures.py"
+text      = "\"\"\"Each command's failures as HTTP statuses: one exhaustive match per command (failure-arms adds a new failure's arm).\"\"\"\n\nfrom {= pkg =}.commands import {= command_ =}\n"
+on_exists = "skip"
+
+[[edits]]
+insert = "{= web =}/failures.py"
+at     = "end of imports"
+text   = "from {= pkg =}.commands import {= command_ =}"
+unless = { matches = "^from [A-Za-z0-9_.]+ import {= command_ =}$" }
+
+[[edits]]
+insert   = "{= web =}/failures.py"
+at       = "end of file"
+template = "status.py.dt"
+unless   = { matches = "^def {= command_ =}_status\\(" }
+
+# the page: a form for it
+[[edits]]
+insert   = "{= web =}/templates/page.html"
+at       = "before first line matching \\{# forms"
+template = "form.html.dt"
+unless   = { matches = "hx-post=\"/{= resource|snake =}/{= command_ =}\"" }
+
+# the routes test builds it (with fakes for its ports)
+[[edits]]
+insert = "{= web =}/routes__test.py"
+at     = "end of imports"
+text   = "from {= pkg =}.commands.{= command_ =} import {= Command =}"
+unless = { matches = "^from [A-Za-z0-9_.]+ import {= Command =}$" }
+
+[[edits]]
+insert = "{= web =}/routes__test.py"
+at     = "end of call {= routes_f =}"
+text   = "{= command_ =}={= Command =}(),"
+
+[[uses]]
+generator = "wire-test"
+for_each  = "deps"
+with      = { app = "{= app =}", service = "{= service =}", test = "{= web =}/routes__test.py", command = "{= command =}", param = "{= item.name =}", port = "{= item.port =}" }
+
+# main.py builds it and gives it to the router
+[[uses]]
+generator = "build-in-main"
+with      = { app = "{= app =}", service = "{= service =}", kind = "commands", command = "{= command =}" }
+
+[[edits]]
+insert = "src/{= app =}/main.py"
+at     = "end of call {= routes_f =} in create"
+text   = "{= command_ =}={= command_ =},"

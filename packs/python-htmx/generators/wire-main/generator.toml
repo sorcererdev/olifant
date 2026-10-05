@@ -51,7 +51,7 @@ unless = { matches = "^    {= port_ =} = " }
 # one adapter per port, however many commands use it
 [[edits]]
 insert = "{= main =}"
-at     = "after first line matching ^    # adapters"
+at     = "before first line matching ^    # commands and queries"
 text   = "{= port_ =} = {= if sqlite =}Sqlite{= Port =}(db_path){= elif others =}{= for o in others =}{= if loop.first =}{= o.stem|pascal =}(){= end =}{= end =}{= else =}InMemory{= Port =}(){= end =}"
 unless = { matches = "^    {= port_ =} = " }
 

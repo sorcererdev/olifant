@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 
 from bistro.shared.result import Ok
-
 from bistro.booking.ports.booking_repository.booking_repository import BookingRepository
 
 

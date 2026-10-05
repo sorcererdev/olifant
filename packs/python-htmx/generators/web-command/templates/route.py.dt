@@ -1,0 +1,12 @@
+    @router.post("/{= command_ =}", response_class=HTMLResponse)
+    async def {= command_ =}_route(request: Request) -> HTMLResponse:
+        try:
+            input = TypeAdapter({= Command =}Input).validate_python(dict(await request.form()))
+        except ValidationError as error:
+            return TEMPLATES.TemplateResponse(request, "failure.html", {"reason": str(error)}, status_code=422)
+        match {= command_ =}.handle(input):
+            case Ok(value=value):
+                return TEMPLATES.TemplateResponse(request, "done.html", {"value": value}, status_code=201)
+            case failure:
+                return TEMPLATES.TemplateResponse(request, "failure.html", {"reason": failure.reason}, status_code={= command_ =}_status(failure))
+

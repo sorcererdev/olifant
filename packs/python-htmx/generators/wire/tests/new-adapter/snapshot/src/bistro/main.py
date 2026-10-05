@@ -18,10 +18,10 @@ from bistro.booking.ports.table_repository.sqlite_table_repository import Sqlite
 
 def create(db_path: str = "bistro.sqlite3") -> FastAPI:
     # adapters
-    table_repository = SqliteTableRepository(db_path)
     booking_repository = SqliteBookingRepository(db_path)
     booking_repository.add_tables([Table(id="t1", seats=2), Table(id="t2", seats=4), Table(id="t3", seats=6)])
     id_generator = UuidIdGenerator()
+    table_repository = SqliteTableRepository(db_path)
     # commands and queries
     create_booking = CreateBooking(
         bookings=booking_repository,
