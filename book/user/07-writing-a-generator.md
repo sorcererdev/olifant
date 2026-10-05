@@ -647,6 +647,7 @@ The case filters, from `src/Olifant/Naming.hs`, applied to `BlogPost`:
 | `constant` | `BLOG_POST` |
 | `title` | `Blog Post` |
 | `lower_words` | `blog post` |
+| `sentence` | `Blog post` (a docstring's first words: `"""{= command\|sentence =}."""` → `"""Cancel booking."""`) |
 
 The others, from `src/Olifant/Template/Render.hs`:
 
