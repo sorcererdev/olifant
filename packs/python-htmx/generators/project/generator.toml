@@ -1,0 +1,79 @@
+name = "Python web app"
+description = "A new python-htmx app: uv, pytest, pyright strict, FastAPI + htmx, a composition root and one passing test (the starter for olifant init)"
+language = "python"
+version = 1
+starter = true
+next = [
+  "uv sync",
+  "uv run pytest",
+  "uv run uvicorn --factory --app-dir src {= name|snake =}.main:create --reload",
+]
+examples = [
+  "olifant init --pack python-htmx bistro",
+]
+
+[inputs.name]
+type   = "ident"
+prompt = "The app's name (its package under src/)"
+
+[derive]
+app = "{= name|snake =}"
+src = "src/{= name|snake =}"
+
+[[edits]]
+create   = "pyproject.toml"
+template = "pyproject.toml.dt"
+
+# The lockfile for the starter's dependencies, so the project is checkable
+# (uv run --frozen) the moment init finishes.
+[[edits]]
+create   = "uv.lock"
+template = "uv.lock.dt"
+
+[[edits]]
+create = ".gitignore"
+text   = ".venv/\n__pycache__/\n.pytest_cache/\n*.sqlite3\n"
+
+[[edits]]
+create = "{= src =}/__init__.py"
+text   = ""
+
+[[edits]]
+create = "{= src =}/shared/__init__.py"
+text   = ""
+
+[[edits]]
+create   = "{= src =}/shared/result.py"
+template = "result.py.dt"
+
+[[edits]]
+create   = "{= src =}/main.py"
+template = "main.py.dt"
+
+[[edits]]
+create   = "{= src =}/main__test.py"
+template = "main__test.py.dt"
+
+[[edits]]
+create = "{= src =}/web/__init__.py"
+text   = ""
+
+[[edits]]
+create   = "{= src =}/web/app.py"
+template = "app.py.dt"
+
+[[edits]]
+create   = "{= src =}/web/app__test.py"
+template = "app__test.py.dt"
+
+[[edits]]
+create   = "{= src =}/web/resources.py"
+template = "resources.py.dt"
+
+[[edits]]
+create   = "{= src =}/web/templates/base.html"
+template = "base.html.dt"
+
+[[edits]]
+create   = "{= src =}/web/templates/home.html"
+template = "home.html.dt"

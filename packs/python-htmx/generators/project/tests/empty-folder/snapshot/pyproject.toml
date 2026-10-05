@@ -1,0 +1,32 @@
+[project]
+name = "demo"
+version = "0.1.0"
+description = "demo"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.0",
+    "pyright>=1.1.380",
+    "pytest>=8.3",
+]
+
+# An app, not a package: nothing is built or installed; its code is on the
+# path through src/ (pytest's pythonpath, uvicorn's --app-dir, pyright's default).
+[tool.uv]
+package = false
+
+[tool.pyright]
+typeCheckingMode = "strict"
+include = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["src"]
+pythonpath = ["src"]
+python_files = ["*__test.py"]

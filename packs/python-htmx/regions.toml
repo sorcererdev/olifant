@@ -8,3 +8,4 @@ comment = "#"
 query   = { glob = "{= dir =}/*/routes.py" }
 item    = '    "{= dir|basename =}",'
 init_at = "after first line matching ^RESOURCES"
+init_indent = "    "

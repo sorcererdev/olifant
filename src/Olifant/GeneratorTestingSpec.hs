@@ -25,6 +25,8 @@ import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
 import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
+import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
+import System.Directory (canonicalizePath)
 import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
@@ -221,6 +223,28 @@ spec = do
         withUv k = findExecutable "uv" >>= \case
           Nothing -> missingTool strict "uv is not installed (brew install uv)"
           Just _ -> k
+    it "olifant init makes a project where pytest and pyright are green (north-star project 2 §1)" $ withUv $ do
+      tmp <- getTemporaryDirectory
+      withSystemTempDirectory "olifant-init" $ \dir0 -> do
+        dir <- canonicalizePath dir0
+        packs <- canonicalizePath "packs/python-htmx"
+        let rt = Runtime
+              { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
+              , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 4) 0), rtStdoutIsTty = False
+              , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processChecker
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
+              , rtGitInit = \_ _ -> pure (Right ()) }
+        runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
+        env <- getEnvironment
+        let project = dir </> "demo"
+            uv args = readCreateProcessWithExitCode ((proc "uv" args) {cwd = Just project, env = Just (("UV_PROJECT_ENVIRONMENT", tmp </> "olifant-test-cache" </> "init-venv") : env)}) ""
+        (synced, _, syncErr) <- uv ["sync", "--quiet"]
+        (synced, syncErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+        (tested, out, _) <- uv ["run", "--quiet", "pytest", "-q"]
+        (tested, T.isInfixOf "3 passed" (T.pack out)) `shouldBe` (ExitSuccess, True)
+        (typed, typedOut, _) <- uv ["run", "--quiet", "pyright"]
+        (typed, typedOut) `shouldSatisfy` ((== ExitSuccess) . fst)
     it "its fixture is pyright-strict clean" $ withUv $ do
       fixture <- readTree "packs/python-htmx/fixtures/app"
       compileClean python fixture `shouldReturn` Right ()
@@ -235,7 +259,9 @@ spec = do
     snippetCases <- runIO (filterM (\c -> T.isInfixOf "\nat = " . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) cases)
     forM_ [c | c <- cases, casePack c == "python-htmx", c `notElem` snippetCases] $ \c ->
       it ("output type-checks: " <> T.unpack (caseName c)) $ withUv $ do
-        fixture <- readTree "packs/python-htmx/fixtures/app"
+        -- a starter's project stands alone: no fixture under it
+        starter <- T.isInfixOf "\nstarter = true" <$> TIO.readFile (casePackRoot c </> "generators" </> T.unpack (caseGenerator c) </> "generator.toml")
+        fixture <- if starter then pure M.empty else readTree "packs/python-htmx/fixtures/app"
         given <- readTree (caseDir c </> "given")
         snapshot <- readTree (caseDir c </> "snapshot")
         compileClean python (M.unions [snapshot, given, fixture]) `shouldReturn` Right ()

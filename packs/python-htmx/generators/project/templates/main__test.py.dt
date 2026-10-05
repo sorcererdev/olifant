@@ -1,0 +1,18 @@
+from pathlib import Path
+
+from fastapi import FastAPI
+
+
+def test_importing_main_opens_no_database() -> None:
+    import importlib
+
+    import {= app =}.main
+
+    importlib.reload({= app =}.main)
+    assert not Path("{= app =}.sqlite3").exists()
+
+
+def test_create_makes_the_app(tmp_path: Path) -> None:
+    from {= app =}.main import create
+
+    assert isinstance(create(str(tmp_path / "{= app =}.sqlite3")), FastAPI)

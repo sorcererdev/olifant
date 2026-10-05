@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}demo{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    table { border-collapse: collapse; }
+    td, th { border: 1px solid #ddd; padding: .4rem .6rem; min-width: 6rem; }
+    .booked { background: #e8f4ea; }
+    .failure { color: #b00020; }
+  </style>
+</head>
+<body>
+  <nav><a href="/">demo</a></nav>
+  {% block content %}{% endblock %}
+</body>
+</html>
