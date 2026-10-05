@@ -42,6 +42,7 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
         pure $ case [p | p <- required, isNothing (M.findWithDefault Nothing p current), p `S.notMember` onDisk] of
           [] -> acc
           missing -> (current, edits, RequirementUnmet path missing hint : conflicts, n)
+      PlanContext _ -> pure acc
       -- `complete` edits are planned later, by the check loop.
       PlanEdit _ (RenderedComplete _) -> pure acc
       PlanEdit path edit

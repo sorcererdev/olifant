@@ -67,7 +67,8 @@ parseGenerator gid src = do
   starter <- fromMaybe False <$> optional "starter" bool top
   next <- fromMaybe [] <$> optional "next" (list (text >=> tmpl)) top
   when (not starter && not (null next)) (Left "`next` lists what to run after `olifant init`: it belongs to a starter (`starter = true`)")
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes starter next)
+  context <- fromMaybe [] <$> optional "context" (list (text >=> tmpl)) top
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes starter next context)
   where
     queryWithValue v = do
       t <- table v
@@ -121,7 +122,7 @@ choiceValueFrom v = case v of
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, cursorKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes", "starter", "next"]
+topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes", "starter", "next", "context"]
 inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]

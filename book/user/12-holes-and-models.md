@@ -403,7 +403,9 @@ Like `--plan`, `--model` and `--no-fill` apply to the whole run, wherever they a
 ### What is sent to the model
 
 **A request contains your code.** For every hole, the request holds up to 201 lines of the
-file the hole is in, as the plan would leave it, along with the generator's inputs. With
+file the hole is in, as the plan would leave it, along with the generator's inputs, and
+the whole of each file the generator's `context` globs match (shown as "Related file …";
+a rule fix's `context` works the same way). With
 the `anthropic` backend, or any `openai-compatible` URL that isn't on your machine, that
 text leaves your machine. If your code must not, use a local model, or `--no-fill`. Here is
 the start of a real request body to Ollama:

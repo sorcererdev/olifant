@@ -62,6 +62,9 @@ data GeneratorWith src = Generator
     genStarter :: Bool
   , -- | `next`: what to run after `olifant init` (rendered with the inputs)
     genNext :: [Template]
+  , -- | `context`: globs (templates) of files the model sees when it fills
+    -- this generator's holes, e.g. the models a codec reads
+    genContext :: [Template]
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -112,7 +115,7 @@ data Unless t = UnlessExists t | UnlessMatches t
 -- fix removes or rewrites the code it found (spec §5.9).
 replaceGenerator :: FilePath -> (Int, Int) -> Text -> Template -> Generator
 replaceGenerator path range old new =
-  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix") [] False []
+  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix") [] False [] []
 
 -- | The name people see: `name`, or one made from the id
 -- (`rust-htmx/command-dependency` → "Command Dependency").
