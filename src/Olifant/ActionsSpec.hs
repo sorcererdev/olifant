@@ -256,7 +256,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
               paths <- listFiles ws "."
               map actGenerator <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/failure-variant", g)] path (4, 1) content
         offered "src/bistro/web/app.py" route `shouldReturn` []
-        offered "src/bistro/booking/create_booking.py" failure `shouldReturn` ["python-htmx/failure-variant"]
+        offered "src/bistro/booking/commands/create_booking.py" failure `shouldReturn` ["python-htmx/failure-variant"]
     it "offers wire-command on a field of the command's struct, not on another struct" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]

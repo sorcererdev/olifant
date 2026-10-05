@@ -1,4 +1,4 @@
 # Recorded from qwen3-coder:30b via Ollama (2026-10-04): a status, and a statement (no return).
 [fills]
-"body[src/bistro/web/failures.py:19]" = "return 400"
-"body[src/bistro/web/failures.py:31]" = "level = \"info\""
+"body[src/bistro/web/bookings/failures.py:19]" = "return 400"
+"body[src/bistro/web/bookings/failures.py:31]" = "level = \"info\""

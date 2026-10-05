@@ -3,7 +3,7 @@ description = "A new failure for a command: a frozen dataclass with a reason, it
 language = "python"
 version = 1
 examples = [
-  "olifant gen python-htmx/failure-variant --at src/bistro/booking/create_booking.py:31:1 --plan",
+  "olifant gen python-htmx/failure-variant --at src/bistro/booking/commands/create_booking.py:33:1 --plan",
 ]
 
 # At the cursor, PEP 8-spaced from the class above; naming it raises the
@@ -18,7 +18,7 @@ source = "yours"
 # Anticipated on a blank line right after a failure (a frozen dataclass with
 # a reason) in a service's module.
 [applies_at]
-path    = "src/bistro/*/*.py"
+path    = "src/*/*/commands/*.py"
 after   = { kind = "decorated_definition", regex = "reason: str", has = { kind = "class_definition" } }
 trigger = "^[[:space:]]*$"
 where   = "on a blank line after a failure class"

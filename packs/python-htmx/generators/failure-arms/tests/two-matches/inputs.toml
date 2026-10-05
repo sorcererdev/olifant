@@ -2,6 +2,7 @@ now = "2026-10-04T12:00:00Z"
 
 # Run `OLIFANT_BLESS=1 cabal test` to record snapshot/ from the output.
 [inputs]
+app = "bistro"
 service = "booking"
 command = "create_booking"
 failure = "Cancelled"

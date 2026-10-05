@@ -1,0 +1,10 @@
+# The app's web resources, kept equal to its routes (spec project 2 §3): add a
+# web resource — by hand or by a generator — and its name follows on the next
+# gen, sync, or save in the editor; the home page links each one.
+
+[regions.resources]
+file    = "src/*/web/resources.py"
+comment = "#"
+query   = { glob = "{= dir =}/*/routes.py" }
+item    = '    "{= dir|basename =}",'
+init_at = "after first line matching ^RESOURCES"
