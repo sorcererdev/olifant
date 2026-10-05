@@ -1,5 +1,5 @@
 diff --git a/src/bistro/booking/ports/booking_repository/booking_repository__test.py b/src/bistro/booking/ports/booking_repository/booking_repository__test.py
-index 4997900..2589615 100644
+index 3c7f446..2589615 100644
 --- a/src/bistro/booking/ports/booking_repository/booking_repository__test.py
 +++ b/src/bistro/booking/ports/booking_repository/booking_repository__test.py
 @@ -1,5 +1,6 @@
@@ -13,15 +13,15 @@ index 4997900..2589615 100644
      return Booking(
          id=id,
          table_id="table_id",
--        day=getattr(NotImplemented, "olifant: sample[src/bistro/booking/ports/booking_repository/booking_repository__test.py:24]: a sample date"),
--        start=getattr(NotImplemented, "olifant: sample[src/bistro/booking/ports/booking_repository/booking_repository__test.py:25]: a sample time"),
+-        day=getattr(NotImplemented, "olifant: sample[src/bistro/booking/ports/booking_repository/booking_repository__test.py:24]: a sample date, not None (so its codec is tested)"),
+-        start=getattr(NotImplemented, "olifant: sample[src/bistro/booking/ports/booking_repository/booking_repository__test.py:25]: a sample time, not None (so its codec is tested)"),
 +        day=date(2026, 10, 9),
 +        start=time(19, 0),
          party=2,
          guest="guest",
      )
 diff --git a/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py b/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py
-index b3e93da..c867967 100644
+index d0a14e0..c867967 100644
 --- a/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py
 +++ b/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py
 @@ -1,6 +1,7 @@
@@ -47,8 +47,8 @@ index b3e93da..c867967 100644
      return Booking(
          id=row["id"],
          table_id=row["table_id"],
--        day=getattr(NotImplemented, "olifant: decode[src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py:56]: row[\"day\"] (the text the matching encode wrote) back to a date"),
--        start=getattr(NotImplemented, "olifant: decode[src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py:57]: row[\"start\"] (the text the matching encode wrote) back to a time"),
+-        day=getattr(NotImplemented, "olifant: decode[src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py:56]: row[\"day\"] (the text the matching encode wrote) back to a date (a NULL, if it may be one, is None)"),
+-        start=getattr(NotImplemented, "olifant: decode[src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py:57]: row[\"start\"] (the text the matching encode wrote) back to a time (a NULL, if it may be one, is None)"),
 +        day=date.fromisoformat(row["day"]),
 +        start=time.fromisoformat(row["start"]),
          party=row["party"],
