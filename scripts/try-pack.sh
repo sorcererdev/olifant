@@ -31,7 +31,7 @@ fi
 pack=$1
 pack_dir="$repo/packs/$pack"
 fixture="$pack_dir/fixtures/app"
-[ -d "$pack_dir/generators" ] || { echo "no pack named '$pack'. Packs:" >&2; list_packs >&2; exit 2; }
+[ -d "$pack_dir/languages" ] || [ -d "$pack_dir/generators" ] || { echo "no pack named '$pack'. Packs:" >&2; list_packs >&2; exit 2; }
 
 if [ $# -ge 2 ]; then
   sandbox=$2
@@ -45,6 +45,16 @@ sandbox=$(cd "$sandbox" && pwd -P)
 [ -d "$fixture" ] && cp -R "$fixture/." "$sandbox/"
 mkdir -p "$sandbox/.olifant"
 printf '[packs]\n%s = { path = "%s" }\n' "$pack" "$pack_dir" > "$sandbox/.olifant/config.toml"
+
+# A Python project: its environment (pyright, pytest, the app's deps), so
+# `uv run pytest` works and Olifant's checks start warm.
+if [ -f "$sandbox/pyproject.toml" ]; then
+  if command -v uv > /dev/null; then
+    (cd "$sandbox" && uv sync --quiet)
+  else
+    echo "note: uv is not installed (brew install uv); the Python checks will not run" >&2
+  fi
+fi
 
 git -C "$sandbox" init -q
 git -C "$sandbox" add -A
@@ -62,6 +72,6 @@ Sandbox for pack '$pack' ready:
   git add -A && git diff --cached            see everything the generator changed (incl. new files)
   git reset --hard && git clean -fd          start over
 
-Generators: $(ls "$pack_dir/generators" | tr '\n' ' ')
+Generators: $(ls "$pack_dir/generators" 2>/dev/null | tr '\n' ' ')
 Using: $olifant_bin  (built from main by the hooks; run scripts/install-olifant.sh to use this branch)
 MSG

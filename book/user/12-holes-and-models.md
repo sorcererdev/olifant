@@ -84,8 +84,16 @@ The kinds in this repository's packs:
 | Elm (`elm`) | `expr` | `Debug.todo "olifant: {= hole =}: {= instruction\|escaped =}"` | `olifantHole =` / `    {= fill =}` |
 | Haskell (`olifant-dev`) | `expr` | `error "olifant: {= hole =}: {= instruction\|escaped =}"` | `olifantHole = {= fill =}` |
 | | `text` | `{= hole =}` | `olifantHole = "{= fill =}"` |
+| Python (`python-htmx`) | `expr` | `(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction\|python_string =}"))` | `def __olifant():` / `    return {= fill =}` |
+| | `stmt`, `block` | `raise NotImplementedError("olifant: {= hole =}: {= instruction\|python_string =}")` | `def __olifant():` / `{= fill =}` |
+| | `ident` | `{= hole =}` | `class {= fill =}: ...` |
+| | `text` | `{= hole =}` | `__olifant = "{= fill =}"` |
 
-Rust's `ident` and `text` and Haskell's `text` are for snippets' tab stops
+Python's `expr` placeholder is an expression of type `Never`: strict pyright accepts it
+wherever any type is wanted, it needs no import, and it raises if it runs
+([chapter 9](09-packs-and-language-adapters.md#hole-kinds-holeskind)).
+
+Rust's and Python's `ident` and `text` and Haskell's `text` are for snippets' tab stops
 ([below](#where-a-holes-value-comes-from-holesname)): a name, and text inside a string. Their
 placeholder is the bare name, which compiles where a name or a string's contents stand, but
 carries no `olifant:`.
@@ -93,7 +101,7 @@ carries no `olifant:`.
 Every model placeholder contains `olifant:` and its hole's name, so you can grep for unfilled
 holes. The name is also a rule: an adapter whose `placeholder` doesn't use `{= hole =}` fails to
 load, because Olifant finds each hole's placeholder by its text, and the name makes it
-unique. The instruction goes through `rust_string` or `escaped`
+unique. The instruction goes through `rust_string`, `python_string` or `escaped`
 ([chapter 7](07-writing-a-generator.md#filters)), so a quote in it cannot end the string
 early.
 

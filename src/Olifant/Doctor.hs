@@ -12,7 +12,7 @@ module Olifant.Doctor
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (CheckDef (..), Language (..))
+import Olifant.Language (CheckDef (..), Language (..), checkProgram)
 import Olifant.Model (Backend (..), ModelConfig (..))
 
 data Status = Ok | Warn | Bad
@@ -65,9 +65,9 @@ doctor ports di = do
         Nothing -> do
           path <- dpPath ports
           pure (Check name Bad ("`" <> T.pack exe <> "` is not on this PATH: " <> path) (Just fix))
-    checkTool (lang, check) = case checkCommand check of
-      exe : _ -> pure <$> tool ("check tool " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (installHint exe)
-      [] -> pure []
+    checkTool (lang, check) = case checkProgram (checkCommand check) of
+      Just exe -> pure <$> tool ("check tool " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (installHint exe)
+      Nothing -> pure []
     modelCheck = case (mcDefault (diModel di), mcBackends (diModel di)) of
       (Nothing, []) -> pure (Check "model" Warn "no [model] configured: holes stay placeholders" (Just modelSnippet))
       (Nothing, _) -> pure (Check "model" Warn "[model] has backends but no default" (Just "set `default = \"NAME\"` under [model]"))
@@ -89,6 +89,7 @@ installHint = \case
   "elm" -> "npm install -g elm (or brew install elm)"
   "ghc" -> "install with ghcup; it lives in ~/.ghcup/bin"
   "cabal" -> "install with ghcup; it lives in ~/.ghcup/bin"
+  "uv" -> "brew install uv (pyright comes with the project: `uv sync`)"
   exe -> "install " <> exe <> " and make sure it is on the PATH your editor starts with"
 
 modelSnippet :: Text

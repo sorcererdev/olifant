@@ -171,7 +171,7 @@ replaced, each tab stop written as its name or value (`#[error("message")]` / `V
 `match-arm`'s case gets its one choice, `RefundInvoiceFailure::AlreadyRefunded`, from the
 compiler, and its `fills.toml` has the model's `status`.
 
-The four snippet cases in this repository:
+The five snippet cases in this repository:
 
 | case | cursor | `given/` holds |
 |---|---|---|
@@ -179,12 +179,32 @@ The four snippet cases in this repository:
 | `rust-htmx/match-arm/uncovered-variant` | `refund_invoice.rs:35:1` | an `AlreadyRefunded` variant, and a blank line after `status()`'s last arm |
 | `rust-htmx/add-port/blank-field-line` | `cancel_invoice.rs:7:1` | `CancelInvoice`'s struct opened onto three lines |
 | `olifant-dev/spec-case/after-it` | `SampleUnitSpec.hs:8:7` | `  it "` typed as line 8 |
+| `python-htmx/failure-variant/after-a-failure` | `create_booking.py:31:1` | the blank line `o` made below the last failure's `reason: str` |
+
+A snippet whose `[applies_at]` has `after` ([chapter 14](14-editors-and-actions.md#after-a-node-after))
+is placed in a case as `gen --at` places it: indented like the node the cursor follows, when
+it follows one. `after-a-failure`'s snapshot has the new class at column 0, below the
+four-space `reason: str`, with two blank lines above it and two below:
+
+```
+$ diff given/src/bistro/booking/create_booking.py snapshot/src/bistro/booking/create_booking.py
+32a33,35
+> @dataclass(frozen=True)
+> class Name:
+>     reason: str
+33a37
+> 
+```
+
+(run in `packs/python-htmx/generators/failure-variant/tests/after-a-failure/`.) An `at` on a
+line that follows no such node gets the usual indentation, from the line above.
 
 Two of the checks below don't apply to a snippet case:
 
 - **It is not re-run.** After the first run the cursor's line is the expansion, so a second
   run at the same cursor would be another snippet, not a no-op.
-- **It is not compiled on its own** in "rust pack output compiles". A snippet is unfinished by
+- **It is not compiled on its own** in "rust pack output compiles", nor type-checked in the
+  "python pack" group. A snippet is unfinished by
   design: `failure-variant`'s output has a variant no `match` covers, and `add-port`'s a field
   nobody wires, until the follow-up runs. The "placeholder output compiles" group still runs
   a snippet case that has a `fills.toml`, with the cursor placed as in the case, so
@@ -292,6 +312,79 @@ in `ports.rs` comes from the pack's `ports` region, refreshed at the end of the 
 plan's last line, left out here
 ([chapter 5](05-owned-regions.md#families-one-region-per-matching-file)).
 
+### The Python pack
+
+`python-htmx`'s fixture (`packs/python-htmx/fixtures/app/`) is a small, real app: a
+restaurant's table bookings, in a ports-and-adapters shape, which is the architecture the
+pack's generators reproduce.
+
+```
+pyproject.toml                       uv project: FastAPI, Jinja, uvicorn; dev: pyright, pytest;
+                                     [tool.pyright] typeCheckingMode = "strict"
+uv.lock
+src/bistro/
+  booking/                           a service
+    models.py                        frozen dataclasses: Table, Slot, Booking
+    ports.py                         Protocols: BookingRepository, IdGenerator
+    create_booking.py                a command: its input, its failures, their union, handle()
+    service.py                       BookingService: its commands, wired to its ports
+  shared/result.py                   Ok[T]
+  adapters/                          in-memory and SQLite repositories; sequential and UUID ids
+  web/
+    app.py                           FastAPI routes; the day's grid and htmx fragments
+    failures.py                      each failure as an HTTP status: an exhaustive match
+    templates/
+  main.py                            the composition root: SQLite, the service, the app
+tests/                               the command, both repositories (one shared contract
+                                     test), and the route
+```
+
+Its conventions are what the generators rely on:
+
+- **Failures are values.** `handle()` returns `Ok[Booking] | CreateBookingFailure`, never
+  raises; each failure is a frozen dataclass with a `reason: str`.
+- **A union is one member per line**, in parentheses, so a new member is a new line
+  (`union NAME`, [chapter 9](09-packs-and-language-adapters.md#a-fourth-example-python)).
+- **A site names a failure through its command's module** (`create_booking.SlotTaken`, or an
+  alias's `cb.SlotTaken`), so a new failure needs no import anywhere.
+
+It runs: `uv run uvicorn --factory --app-dir src bistro.main:create --reload`, then http://localhost:8000/ shows the
+day's grid, one booking form per table and half-hour slot. A booking answers 201, and the
+same slot again 409, from `failures.py`'s `match`.
+
+Since the fixture *is* the architecture, the **"python pack"** group checks it as well as
+the cases' output:
+
+```
+$ cabal test --test-show-details=direct --test-options='--match "python"'
+…
+  python pack
+    its fixture is pyright-strict clean [✔]
+    its fixture's own tests pass [✔]
+    output type-checks: python-htmx/failure-arms/new-failure [✔]
+    output type-checks: python-htmx/failure-arms/qualified [✔]
+    output type-checks: python-htmx/failure-arms/two-matches [✔]
+…
+```
+
+- **Pyright-strict clean.** The fixture goes to `compileClean` with the pack's Python adapter,
+  so the check is the adapter's own: `uv run pyright --outputjson`, its environment in
+  `~/.cache/olifant/check/python/venv`.
+- **Its own tests pass.** The fixture is copied to a temp directory and `uv run --frozen
+  pytest -q` runs there, with its environment in the temp directory's
+  `olifant-test-cache/python-fixture-venv`. A fixture whose tests fail fails here, with
+  pytest's output.
+- **Output type-checks.** Each case that is not a snippet: the fixture, its `given/` and its
+  snapshot, through pyright, as "rust pack output compiles" does with cargo. A case whose
+  arm pyright rejects fails, even when the snapshot matches.
+
+The `failure-arms` cases cover the sites the conventions allow: `new-failure` (the
+fixture's one `match`), `qualified` (a `failures.py` that imports the module as `cb`, so the
+arm is `case cb.Cancelled():`) and `two-matches` (a second `match` that returns messages,
+whose arm spans several lines; its recorded fills are `400` and `"Your booking was
+cancelled"`, one per site). Each needs `uv`; without it, the group is pending with `uv is not
+installed (brew install uv)`.
+
 ## Holes: `fills.toml` and placeholder output
 
 A generator with holes ([chapter 12](12-holes-and-models.md)) asks a model for code. A test
@@ -343,9 +436,13 @@ group **"placeholder output compiles"** takes every case that has a `fills.toml`
 again with no model, checks that at least one hole is unfilled, and compiles the fixture with
 the case's `given/` and that plan's output laid over it, every hole as its adapter's
 placeholder. A placeholder that doesn't compile, such as a `todo!()` in a type position or
-a `Debug.todo` message with an unescaped quote, fails here. It uses the pack's compiler
-(`elm` for the Elm pack, `cargo` otherwise), and is pending when that compiler is missing,
-like the other compile groups.
+a `Debug.todo` message with an unescaped quote, fails here. It uses the pack's own language
+and compiler (Elm and `elm` for the Elm pack, Python and `uv` for python-htmx, Rust and
+`cargo` otherwise). It is meant to be pending when that compiler is missing, like the other
+compile groups, but today it fails instead ([below](#other-limits-of-pack-tests)).
+For python-htmx this is where the `Never` placeholder
+(`(_ for _ in ()).throw(NotImplementedError(…))`) proves itself: in `failures.py` it stands
+for an `int`, under strict pyright, with no import.
 
 ## Writing a new generator, test first
 
@@ -553,8 +650,20 @@ The same run of the Rust case with `OLIFANT_REQUIRE_TOOLS=1` fails both, the que
        required tool missing: cargo is not installed (brew install rustup; rustup default stable)
 ```
 
+The Python checks need `uv`. Without it (here with `ast-grep` on the PATH), the
+`failure-arms` cases and the "python pack" group are pending:
+
+```
+    python-htmx/failure-arms/new-failure [‐]
+      # PENDING: python-htmx/failure-arms: cannot complete cases: `uv` is not installed (needed to check python); run `olifant doctor`
+…
+  python pack
+    its fixture is pyright-strict clean [‐]
+      # PENDING: uv is not installed (brew install uv)
+```
+
 The pre-merge hook sets `OLIFANT_REQUIRE_TOOLS=1`, so a merge into `main` on a machine
-missing `ast-grep`, `elm` or `cargo` fails instead of quietly skipping those cases. The hook
+missing `ast-grep`, `elm`, `cargo` or `uv` fails instead of quietly skipping those cases. The hook
 puts `~/.ghcup/bin` and `/opt/homebrew/opt/rustup/bin` on its PATH.
 
 ## Other limits of pack tests
@@ -573,6 +682,12 @@ puts `~/.ghcup/bin` and `/opt/homebrew/opt/rustup/bin` on its PATH.
 - **Failure messages are words, not Haskell values.** A case failure (a generation error, or
   one from re-running) prints the same sentence the CLI would, e.g. "undefined variable
   `nope`", not `CaseFailed ["TemplateFailed …"]`.
+- **A missing compiler fails "placeholder output compiles".** Without the compiler,
+  `complete` finds no site and an `uncovered` query no case, so the plan has no hole, and the
+  group's first check ("at least one hole is unfilled") fails before it gets to the
+  compiler. With `ast-grep` on the PATH but no `uv`, `cargo` or `elm`, all eight cases in the
+  group fail there (`not expected: []`), while the other groups have the same cases
+  pending.
 - **One fixture per pack.** Every case of every generator runs against the same
   `fixtures/app/`. A case that needs a different starting point (a page that already has
   messages) adds the changed files under its own `given/`, not to the fixture.
@@ -596,6 +711,13 @@ sandbox immediately. The `olifant` binary does not: it is whatever `~/.local/bin
 built from. Run `scripts/install-olifant.sh` to install the current branch's binary.
 `scripts/try-pack.sh` with no arguments lists the packs and their generators.
 
+For a Python pack (a fixture with a `pyproject.toml`), `try-pack.sh` also runs `uv sync` in
+the sandbox before committing it, so `uv run pytest` and `uv run pyright` work there at once.
+The `.venv` it makes is in the fixture's `.gitignore`, and Olifant never looks inside it.
+Without `uv`, it says so (`note: uv is not installed (brew install uv); the Python checks
+will not run`) and makes the sandbox anyway. A pack with a `languages/` directory and no
+generators yet can be tried too.
+
 ## Running the suite while you work
 
 - `cabal test` runs everything; `--test-options='--match "rails"'` narrows it (hspec's
@@ -611,11 +733,11 @@ in the owner's clone; a fresh clone needs it):
 
 | hook | on `main` only | does |
 |---|---|---|
-| `pre-merge-commit` | yes | runs `cabal test` with `OLIFANT_REQUIRE_TOOLS=1` (a missing `ast-grep`, `elm` or `cargo` fails instead of pending), then `olifant check` (owned regions and rules, [chapter 15](15-conventions-that-hold.md); via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
+| `pre-merge-commit` | yes | runs `cabal test` with `OLIFANT_REQUIRE_TOOLS=1` (a missing `ast-grep`, `elm`, `cargo` or `uv` fails instead of pending), then `olifant check` (owned regions and rules, [chapter 15](15-conventions-that-hold.md); via `cabal run`, so it checks with the code being merged); either failing aborts the merge ("fix, then run `git merge --continue`"). `git merge --no-verify` skips it |
 | `post-commit` | yes | runs `scripts/install-olifant.sh`, so `~/.local/bin/olifant` is always built from `main`; never blocks the commit |
 | `post-merge` | yes | the same install, after a merge into `main` |
 
-So pack snapshots, the Elm and Rust "compiles" checks, and the cabal module lists (chapter 5) are all
+So pack snapshots, the Elm and Rust "compiles" checks, the Python pack's checks, and the cabal module lists (chapter 5) are all
 enforced at the point a branch lands on `main`.
 
 Git only runs `pre-merge-commit` when a merge creates a merge commit; a fast-forward merge

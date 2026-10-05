@@ -23,6 +23,7 @@ import Olifant.Generation.Render (CompleteSpec (..))
 import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Language
+import Data.Functor ((<&>))
 import Olifant.Holes (placeholderize)
 import Olifant.Template (Value (..), describeTemplateError, render)
 import Olifant.Workspace (Workspace (..))
@@ -77,15 +78,17 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   -- none of our edits can appear: never dropped silently.
                   hidden = [(d, p) | d <- diags, p <- missingPatterns d, let named = [c | (_, c) <- mine, mentions (completeConstructor c) p], not (null named), not (any (visible d) named)]
               case [k | w <- wanted, let k@(_, _, _) = key w, k `S.member` seen] of
-                ((f, _, p) : _) -> pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added") False], [], current)
+                ((f, _, p) : _) ->
+                  let why = [t | (bf, t) <- reportBroken report, bf == f]
+                   in pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added" <> (if null why then "" else ": " <> T.intercalate "; " (nub why))) False], [], current)
                 []
-                  | null wanted -> pure (addHidden hidden (addUnplaced (reportUnplaced report) (finish (reportBroken report))))
+                  | null wanted -> addHidden hidden . addUnplaced (reportUnplaced report) <$> finishChecked lang (reportBroken report)
                   | otherwise -> do
                       built <- traverse (branchFor lang support files) wanted
                       case sequence built of
                         Left why -> pure (reverse acc, [CompleteFailed step why False], [], current)
                         Right branches -> do
-                          let (edits, files') = applyBranches (supportArmSeparator support) n branches files
+                          let (edits, files') = applyBranches (supportArmSeparator support) (supportLoneArmSpaced support) n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
                           loop lang support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
 
@@ -109,13 +112,25 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   <> " cannot appear there, so olifant did not extend it"
            in (es, cs, ws' ++ map warn hidden, cur)
         siteText m = T.pack (missingFile m) <> " (line " <> T.pack (show (fst (missingCase m) + 1)) <> ")"
-        finish broken =
-          let changed f = M.lookup f disk /= M.lookup f files
-              ours = [b | b@(f, _) <- broken, changed f]
+        -- An error a changed file had before this run is not ours (python
+        -- review I1: pyright reports missing cases beside other errors):
+        -- only then is the unchanged project checked, for its errors.
+        finishChecked lang' broken
+          | null [() | (f, _) <- broken, changed f] = pure (finish broken [])
+          | otherwise =
+              runCheck (toolChecker tools) lang' (placeholderize (toolLanguages tools) disk) <&> \case
+                Right before -> finish broken (reportBroken before)
+                Left _ -> finish broken []
+        changed f = M.lookup f disk /= M.lookup f files
+        finish broken already =
+          let ours = [b | b@(f, _) <- broken, changed f, b `notElem` already]
               describe bs = T.intercalate ", " (nub [T.pack f <> " (" <> t <> ")" | (f, t) <- bs])
            in case (ours, broken) of
                 (_ : _, _) -> (reverse acc, [CompleteFailed step ("the generated code does not compile: " <> describe ours) False], [], current)
-                ([], _ : _) -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
+                ([], _ : _)
+                  -- branches were added and checked; the errors are older
+                  | not (null acc) -> (reverse acc, [], [showStepPath step <> ": the project already had errors before this plan (not from it): " <> describe broken], current)
+                  | otherwise -> (reverse acc, [], [showStepPath step <> ": could not check for missing cases because the project does not compile: " <> describe broken], current)
                 ([], []) -> (reverse acc, [], [], current)
 
     branchFor lang support files (d, p, cands) = do
@@ -127,7 +142,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       let chosen = listToMaybe matching
           (step, spec) = fromMaybe (NE.head cands) chosen
           ctors = nub (map (completeConstructor . snd) (NE.toList cands))
-          pat = supportPattern support content (completeConstructor spec) p
+          pat = supportPattern support d content (completeConstructor spec) p
           site = VRecord (M.fromList [("file", VText (T.pack file)), ("function", VText fn)])
           text = case chosen of
             Just (_, s) | Just body <- completeBody s -> either (Left . describeTemplateError) Right (render (M.insert "pattern" (VText pat) (M.insert "site" site (completeEnv spec))) body)
@@ -157,14 +172,14 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
 -- | Insert every branch, bottom-up within a file so earlier line numbers stay
 -- valid. Edits are numbered in that application order, so each reported line
 -- is where the text lands when the plan's edits are replayed in order.
-applyBranches :: Text -> Int -> [Branch] -> Map FilePath Text -> ([PlannedEdit], Map FilePath Text)
-applyBranches sep n branches files0 = (reverse edits, final)
+applyBranches :: Text -> Bool -> Int -> [Branch] -> Map FilePath Text -> ([PlannedEdit], Map FilePath Text)
+applyBranches sep spaced n branches files0 = (reverse edits, final)
   where
     order = sortOn (\(k, b) -> (missingFile (brSite b), Down (snd (missingCase (brSite b))), Down k)) (zip [0 :: Int ..] branches)
     (edits, final) = foldl step ([], files0) (zip [n ..] (map snd order))
     step (acc, files) (i, b) =
       let file = missingFile (brSite b)
-          (line, updated) = insertBranch sep (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
+          (line, updated) = insertBranch sep spaced (missingCase (brSite b)) (brText b) (M.findWithDefault "" file files)
           edit = PlannedEdit (brStep b) i file (WillInsert (line + 1) (brText b)) Nothing (Just (brInfo b))
        in (edit : acc, M.insert file updated files)
 
@@ -172,8 +187,8 @@ applyBranches sep n branches files0 = (reverse edits, final)
 -- and spaced like them: a blank line before it only if one precedes the
 -- last alternative (Elm's style), none if they are adjacent (Haskell's).
 -- With a single alternative there is nothing to copy: a blank line.
-insertBranch :: Text -> (Int, Int) -> Text -> Text -> (Int, Text)
-insertBranch sep (caseStart, caseEnd) branch content0 =
+insertBranch :: Text -> Bool -> (Int, Int) -> Text -> Text -> (Int, Text)
+insertBranch sep spaced (caseStart, caseEnd) branch content0 =
   let content = separated content0
       ls = T.lines content
       body = zip [0 :: Int ..] ls
@@ -184,9 +199,9 @@ insertBranch sep (caseStart, caseEnd) branch content0 =
       alternatives = [i | (i, l) <- inCase, not (T.null (T.strip l)), T.takeWhile (\c -> c == ' ' || c == '\t') l == indent]
       blankBefore = case reverse alternatives of
         (lastAlt : _ : _) -> lastAlt > 0 && T.null (T.strip (ls !! (lastAlt - 1)))
-        -- One arm: nothing to copy. Elm's style is a blank line; Rust's
-        -- comma-separated arms sit together.
-        _ -> T.null sep
+        -- One arm: nothing to copy; the language's style decides (Elm's
+        -- blank line; Rust's and Python's arms sit together).
+        _ -> spaced
    in insertLines (Located (caseEnd + 1) indent "" "" NoSpacing Nothing "") ((if blankBefore then "\n" else "") <> branch) content
   where
     -- Rust arms are comma-separated: give the last arm its comma unless it

@@ -37,6 +37,9 @@ packs/elm/
 Only directories exactly one level under `generators/` with a `generator.toml` count; the same
 is true of `.olifant/generators/` in a project.
 
+The packs in this repository are `elm`, `rails`, `redwood`, `rust-htmx`, `olifant-dev` (the
+one Olifant uses on its own source) and `python-htmx` ([below](#a-fourth-example-python)).
+
 ## Configuring packs
 
 A pack is used by a project when a config file names it:
@@ -219,14 +222,14 @@ example   = "end of struct BillingService"
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
-| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC) and `rustc-json` (cargo) |
+| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `[targets.*]` | the `at` targets (below) |
 
 There used to be a `qualify` key (`qualify = "elm"`) for Elm's module rules. It is retired:
 loading an adapter that still has it is now a load error saying the `[check] format`
 decides that instead. An unknown `format` is also a load error, listing the known ones:
-`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json, rustc-json ``. Like any
+`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json, pyright-json, rustc-json ``. Like any
 broken adapter, this keeps the pack's language aside instead of failing the whole command
 (`catalogBrokenLanguages`); it bites only commands that need that language, such as `olifant
 anchors` on it or a `complete` edit whose `language` names it.
@@ -311,6 +314,148 @@ example = "end of enum RefundInvoiceFailure"
       impl RefundInvoiceFailure {
   ```
 
+### A fourth example: Python
+
+`packs/python-htmx/languages/python.toml` is the Python adapter. It uses ast-grep's built-in
+grammar and checks with pyright, in strict mode, through `uv`:
+
+```toml
+files = ["**/*.py"]
+comment = "#"
+grammar = "python"
+indent = "    "
+placeholder = 'raise NotImplementedError("{= message|python_string =}")'
+branch = "case {= pattern =}:\n    {= body =}"
+
+[check]
+command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
+context = ["pyproject.toml", "uv.lock"]
+format  = "pyright-json"
+```
+
+- **`uv run pyright`, not a `pyright` on your PATH.** pyright is a dev dependency of the
+  project, so its version is pinned in `uv.lock`, and strict mode comes from the project's own
+  `pyproject.toml` (`[tool.pyright] typeCheckingMode = "strict"`). `--frozen` uses the lock
+  as it is and never rewrites it.
+- **`env UV_PROJECT_ENVIRONMENT={= cache =}/venv`.** The scratch copy is new each round, so
+  a `.venv` inside it would be built again every time. The environment lives in the cache
+  instead (`~/.cache/olifant/check/python/venv`), as cargo's build directory does, so only
+  the first check on a machine installs anything.
+- **The program is `uv`.** The command starts with `env`, so Olifant looks past it and its
+  `NAME=value` settings to what it runs. Without `uv`, a `complete` edit says
+  `` `uv` is not installed (needed to check python) ``, and `olifant doctor` says how to
+  fix it:
+
+  ```
+  ✗ check tool uv (python) — `uv` is not on this PATH: /usr/bin:/bin
+    fix: brew install uv (pyright comes with the project: `uv sync`)
+  ```
+
+- **`branch`** is a `case` arm on two lines; `complete` indents both like the `match`'s other
+  arms. `placeholder` is what an arm with no body gets, a `raise` that names the function and
+  the pattern.
+
+**`pyright-json`** reads the JSON pyright prints on stdout. A non-exhaustive `match`
+(`reportMatchNotExhaustive`, on in strict mode) is a site. With a `Cancelled` failure added
+to the union and no arm for it, pyright says, on the `match` line of `failures.py`:
+
+```
+Cases within match statement do not exhaustively handle all values
+  Unhandled type: "Cancelled"
+  If exhaustive handling is not intended, add "case _: pass"
+```
+
+- **The patterns** come from `Unhandled type: "…"`: a class becomes a class pattern
+  (`Cancelled` → `Cancelled()`, `Ok[int]` → `Ok()`), and an enum's `Literal[Color.RED,
+  Color.BLUE]` becomes `Color.RED` and `Color.BLUE`.
+- **Written as the site writes the others.** pyright names the class bare, but at a site
+  whose arms say `case create_booking.SlotTaken():` the new arm says `case
+  create_booking.Cancelled():`, and at one that imports the module as `cb`, `case
+  cb.Cancelled():`. A pattern that already has a `.` is left alone.
+- **Where the site ends.** pyright gives only the `match` line. The site runs from there to
+  the last line indented deeper than it, so the new arm goes after the last `case`, however
+  many lines that `case` has.
+- **One error belongs to the missing case.** A function whose `match` lacks a case also gets
+  "must return value on all code paths" from pyright. In a file with a non-exhaustive
+  `match`, that error is the missing case's consequence, not a broken file. Any other error
+  is a broken file; warnings and information are ignored.
+- **No visibility rule.** pyright reports only real sites, so any of the plan's classes may
+  fill any of them, and a `complete` edit names the class bare (`complete = "{=
+  failure|pascal =}"`).
+
+The adapter's targets:
+
+```
+$ olifant anchors python --human
+python: at = "<start of|end of|before|after> <target>"
+
+targets:
+  class NAME     e.g. end of class BookingService
+  function NAME  e.g. end of function create_app
+  imports        e.g. end of imports
+  match on NAME  e.g. end of match on failure
+  union NAME     e.g. end of union CreateBookingFailure
+
+built in (any file):
+  before|after marker TEXT
+  before|after first line matching REGEX
+  before|after last line matching REGEX
+  start of|end of file
+```
+
+`union NAME` is a failure union written one member per line, in parentheses, which is the
+pack's convention:
+
+```python
+type CreateBookingFailure = (
+    SlotTaken
+    | PartyTooLarge
+    | TableNotFound
+)
+```
+
+The whole union is the target's one item, so `end of` goes after its last line, at its
+indentation:
+
+```
+$ olifant where src/bistro/booking/create_booking.py "end of union CreateBookingFailure" --human
+src/bistro/booking/create_booking.py:37
+        SlotTaken
+        | PartyTooLarge
+        | TableNotFound
+  ▶     (inserted here)
+    )
+    
+    type CreateBookingOutput = Ok[Booking] | CreateBookingFailure
+```
+
+A one-line union (`type F = A | B`) has no parentheses, so it is not a `union NAME`: write
+unions the long way. `match on NAME` is a `match` on the subject `NAME`, its items the
+`case`s. `function NAME` is a function's body, even when the body is one `match`, as in the
+fixture's `failures.py`:
+
+```
+$ olifant where src/bistro/web/failures.py "end of match on failure" --human
+src/bistro/web/failures.py:18
+                return 422
+            case create_booking.TableNotFound():
+                return 404
+  ▶         (inserted here)
+$ olifant where src/bistro/web/failures.py "end of function create_booking_status" --human
+src/bistro/web/failures.py:18
+                return 422
+            case create_booking.TableNotFound():
+                return 404
+  ▶     (inserted here)
+```
+
+There is no `module` target: `start of file` and `end of file` are built in.
+
+Olifant never looks inside `.venv`, `__pycache__` or `.pytest_cache`, as it never looks
+inside `node_modules` or `target` ([chapter 6](06-queries-and-choices.md)). The pack's
+fixture and tests are in [chapter 10](10-testing-generators.md#the-python-pack), and its two
+generators, chained in an editor, in [chapter 14](14-editors-and-actions.md#the-python-chain).
+
 ### Hole kinds: `[holes.KIND]`
 
 A typed hole (`{= ? name: kind | instruction =}`, [chapter 12](12-holes-and-models.md)) can
@@ -353,7 +498,7 @@ olifantHole =
   one, which is why the Rust `type` placeholder carries the name in a comment. Put
   `olifant:` before the name, as these do, so that a search finds every unfilled hole and a
   reader knows what is missing. Escape the instruction for
-  the string it lands in: `rust_string` in Rust, `escaped` in Elm and Haskell
+  the string it lands in: `rust_string` in Rust, `python_string` in Python, `escaped` in Elm and Haskell
   ([chapter 7](07-writing-a-generator.md#filters)).
 - **`wrap`** is plain text (not a template) containing `{= fill =}` exactly once, where the
   fill goes. With the fill in place, it must be a whole file the adapter's grammar parses
@@ -367,7 +512,7 @@ compiles every case that has recorded fills with its holes left unfilled
 
 The kinds in this repository are Rust `expr`, `block`, `type`, `ident` and `text`; Elm
 `expr`; and Haskell `expr` (`placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'`,
-`wrap = "olifantHole = {= fill =}"`) and `text`. `ident` and `text` are for snippets' tab
+`wrap = "olifantHole = {= fill =}"`) and `text`; Python's are below. `ident` and `text` are for snippets' tab
 stops ([chapter 12](12-holes-and-models.md#where-a-holes-value-comes-from-holesname)), a name
 and text inside a string:
 
@@ -383,8 +528,42 @@ placeholder = "{= hole =}"
 wrap = "const _: &str = \"{= fill =}\";"
 ```
 
+Python's placeholders are the hardest: one must stand anywhere an expression can, in strict
+pyright, with no import. A `raise` is a statement, so the `expr` placeholder is a generator
+expression's `throw`:
+
+```toml
+# packs/python-htmx/languages/python.toml
+# Hole kinds (spec §6.3). An expression placeholder is a value of type Never
+# (it fits any type under pyright strict, needs no import) that raises with
+# the hole's message if it is ever run.
+[holes.expr]
+placeholder = '(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}"))'
+wrap = "def __olifant():\n    return {= fill =}"
+
+[holes.stmt]
+placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}")'
+wrap = "def __olifant():\n{= fill =}"
+
+[holes.block]
+placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}")'
+wrap = "def __olifant():\n{= fill =}"
+```
+
+`(_ for _ in ()).throw(…)` has type `Never`, which pyright accepts as any type: as a
+`return` value, an argument or a dataclass field's default. Run, it raises
+`NotImplementedError` with the hole's message. `stmt` and `block` are a plain `raise` on a
+line of its own. Python also has `ident` (`wrap = "class {= fill =}: ..."`) and `text`
+(`wrap = "__olifant = \"{= fill =}\""`), for snippets' tab stops. In a plan, an unfilled
+`value` hole of `failure-arms` reads:
+
+```python
+case create_booking.Cancelled():
+    return (_ for _ in ()).throw(NotImplementedError("olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms"))
+```
+
 A tab stop that is yours or derived is written as its name or value, not its placeholder, so
-these placeholders matter only for a model hole of that kind. Using a kind the adapter doesn't declare is a conflict
+the `ident` and `text` placeholders matter only for a model hole of that kind. Using a kind the adapter doesn't declare is a conflict
 that names the ones it has:
 
 ```

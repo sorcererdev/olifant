@@ -5,10 +5,11 @@ import Data.Text (Text)
 import Olifant.Language.Diagnostics (CompilerSupport (..))
 import Olifant.Language.Elm (elmSupport)
 import Olifant.Language.Ghc (ghcSupport)
+import Olifant.Language.Pyright (pyrightSupport)
 import Olifant.Language.Rustc (rustcSupport)
 
 supports :: [CompilerSupport]
-supports = [elmSupport, ghcSupport, rustcSupport]
+supports = [elmSupport, ghcSupport, pyrightSupport, rustcSupport]
 
 supportFor :: Text -> Maybe CompilerSupport
 supportFor f = case [s | s <- supports, supportFormat s == f] of

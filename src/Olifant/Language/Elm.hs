@@ -70,11 +70,13 @@ elmSupport =
   CompilerSupport
     { supportFormat = "elm-json"
     , supportParse = parseElmReport
-    , supportPattern = qualifyPattern
+    , supportPattern = const qualifyPattern
     , supportVisible = \_ site constructor -> visibleAt site constructor
     , supportFunction = declarationAt
     , supportArmSeparator = ""
     , supportReadsStdout = False
+    , supportLoneArmSpaced = True
+    , supportSpans = Nothing
     }
 
 -- | @qualifyPattern site constructor pattern@: write the constructor (as

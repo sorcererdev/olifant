@@ -15,11 +15,13 @@ import Olifant.Anchor (RenderedAnchor (..), locIndent, locLine, locOpen, resolve
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Olifant.Template (Value (..))
 import Control.Monad (forM_)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
+import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
 import Olifant.Cli.Output (anchorsHuman)
 import Test.Hspec
@@ -125,6 +127,24 @@ spec = do
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
+  describe "the Python adapter (python-htmx)" $ do
+    let at syn lang file p = fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
+        lineOf needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines pythonModule))
+    it "(b) loads: hole kinds, a four-space indent, pyright-json" $ withPython $ \_ lang _ -> do
+      map fst (langHoles lang) `shouldMatchList` ["expr", "stmt", "block", "ident", "text"]
+      langIndent lang `shouldBe` "    "
+      fmap checkFormat (langCheck lang) `shouldBe` Just "pyright-json"
+    it "(c) end of union NAME goes after its last member, at its indentation" $ withPython $ \syn lang file ->
+      at syn lang file "end of union CreateBookingFailure" `shouldReturn` Right (lineOf "| PartyTooLarge" + 1, "    ")
+    it "(c) end of class NAME goes after the class's last statement" $ withPython $ \syn lang file ->
+      at syn lang file "end of class BookingService" `shouldReturn` Right (lineOf "return 1" + 1, "    ")
+    it "(c) end of function NAME goes after its last statement" $ withPython $ \syn lang file ->
+      at syn lang file "end of function status" `shouldReturn` Right (lineOf "return 422" + 1, "    ")
+    it "(c) end of match on NAME goes after the last case, whole" $ withPython $ \syn lang file ->
+      at syn lang file "end of match on f" `shouldReturn` Right (lineOf "return 422" + 1, "        ")
+    it "(c) end of imports goes after the last import" $ withPython $ \syn lang file ->
+      at syn lang file "end of imports" `shouldReturn` Right (lineOf "from dataclasses import dataclass" + 1, "")
+
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
@@ -170,6 +190,94 @@ spec = do
       fmap reportBroken (supportParse rustcSupport "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"code\":{\"code\":\"E0063\"},\"message\":\"missing field `email_sender` in initializer of `CancelInvoice`\",\"spans\":[{\"file_name\":\"billing/billing-service/src/service.rs\",\"line_start\":26,\"line_end\":26,\"is_primary\":true}],\"children\":[]}}\n{\"reason\":\"build-finished\",\"success\":false}\n")
         `shouldBe` Right [("billing/billing-service/src/service.rs", "missing field `email_sender` in initializer of `CancelInvoice`")]
     it "is a known format" $ fmap supportFormat (supportFor "rustc-json") `shouldBe` Just "rustc-json"
+  describe "pyright-json (Python, recorded from pyright)" $ do
+    let sample name = BS.readFile ("src/Olifant/Language/testdata/pyright/" <> name <> "/report.json")
+        sites r = [(missingFile m, fst (missingCase m), missingPatterns m) | m <- reportMissing r]
+    it "is a known format, read from stdout" $ do
+      fmap supportFormat (supportFor "pyright-json") `shouldBe` Just "pyright-json"
+      fmap supportReadsStdout (supportFor "pyright-json") `shouldBe` Just True
+    it "(a) a non-exhaustive match is a site at its `match` line, the class as a pattern" $ do
+      Right r <- parsePyrightReport <$> sample "union"
+      sites r `shouldBe` [("src/failures.py", 17, ["PartyTooLarge()"])]
+    it "(a) the function's \"must return on all code paths\" is the missing case's doing, not a broken file" $ do
+      Right r <- parsePyrightReport <$> sample "union"
+      reportBroken r `shouldBe` []
+    it "(b) an enum member is written as Enum.MEMBER" $ do
+      Right r <- parsePyrightReport <$> sample "enum"
+      sites r `shouldBe` [("src/colors.py", 9, ["Color.BLUE"])]
+    it "(c) any other error is a broken file" $ do
+      Right r <- parsePyrightReport <$> sample "broken"
+      (sites r, map fst (reportBroken r)) `shouldBe` ([], ["src/broken.py"])
+    it "(d) a pattern is written as the site spells the others: qualified when they are (Review Focus 1)" $ do
+      site <- TIO.readFile "src/Olifant/Language/testdata/pyright/qualified/src/web.py"
+      supportPattern pyrightSupport (missing "src/web.py" (4, 6) []) site "PartyTooLarge" "PartyTooLarge()" `shouldBe` "fx.PartyTooLarge()"
+      supportPattern pyrightSupport (missing "a.py" (0, 1) []) "match f:\n    case SlotTaken():\n" "PartyTooLarge" "PartyTooLarge()" `shouldBe` "PartyTooLarge()"
+    it "(python review I2) the qualifier is the site's own match's, not the first in the file" $ do
+      let file = T.unlines
+            [ "def is_ok(r):", "    match r:", "        case result.Ok():", "            return True", ""
+            , "def status(f):", "    match f:", "        case create_booking.SlotTaken():", "            return 409" ]
+      supportPattern pyrightSupport (missing "a.py" (6, 8) []) file "Cancelled" "Cancelled()" `shouldBe` "create_booking.Cancelled()"
+    it "(e) a clean run is an empty report" $
+      (parsePyrightReport <$> sample "clean") `shouldReturn` Right (CheckReport [] [] [])
+    it "(f) two matches lacking the same case are two sites" $ do
+      Right r <- parsePyrightReport <$> sample "two-matches"
+      sites r `shouldBe` [("src/failures.py", 17, ["PartyTooLarge()"]), ("src/failures.py", 23, ["PartyTooLarge()"])]
+      reportBroken r `shouldBe` []
+    it "(g) output that is not pyright's JSON is an error" $
+      parsePyrightReport "Traceback: oops" `shouldSatisfy` either (const True) (const False)
+    it "names the enclosing function: the nearest def at or above the line" $
+      supportFunction pyrightSupport "def a():\n    pass\n\ndef status(f):\n    match f:\n" 4 `shouldBe` "status"
+  describe "the program a check runs" $ do
+    it "skips `env` and its VAR=value arguments" $ do
+      checkProgram ["env", "UV_PROJECT_ENVIRONMENT=/c/venv", "uv", "run", "pyright"] `shouldBe` Just "uv"
+      checkProgram ["cargo", "check"] `shouldBe` Just "cargo"
+      checkProgram ["env", "A=1"] `shouldBe` Nothing
+    it "(Review Focus 3) a missing program behind `env` is a missing tool, not a failed check" $ do
+      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"env\", \"X=1\", \"olifant-no-such-tool\"]", "format = \"pyright-json\""])
+      r <- runCheck processChecker lang (M.fromList [("a.py", "x = 1\n")])
+      case r of
+        Left (CheckToolMissing why) -> why `shouldSatisfy` T.isInfixOf "olifant-no-such-tool"
+        other -> expectationFailure (show other)
+  describe "contextKey: one check environment per project and lockfile" $ do
+    let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""])
+        Just check = langCheck py
+        project lock src = M.fromList [("pyproject.toml", "[project]\nname = \"bistro\"\n"), ("uv.lock", lock), ("src/a.py", src)]
+    it "is the same for the same project, whatever its sources say" $
+      contextKey check (project "v1" "x = 1\n") `shouldBe` contextKey check (project "v1" "x = 2\n")
+    it "changes with the lockfile (or the project file)" $
+      contextKey check (project "v1" "x = 1\n") `shouldNotBe` contextKey check (project "v2" "x = 1\n")
+  describe "compileClean with pyright (a site but no broken file)" $
+    it "says which cases are missing, not an empty reason" $ do
+      let report = "{\"generalDiagnostics\": [{\"file\": \"a.py\", \"severity\": \"error\", \"rule\": \"reportMatchNotExhaustive\", \"message\": \"Cases within match statement do not exhaustively handle all values\\n  Unhandled type: \\\"Gone\\\"\", \"range\": {\"start\": {\"line\": 3, \"character\": 4}, \"end\": {\"line\": 3, \"character\": 9}}}]}"
+          Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", " <> T.pack (show ("printf '%s' '" <> T.unpack report <> "'; exit 1")) <> "]", "format = \"pyright-json\""])
+      r <- compileClean lang (M.fromList [("a.py", "x = 1\n")])
+      r `shouldSatisfy` either ("Gone()" `T.isInfixOf`) (const False)
+  describe "a check whose report cannot be read (python review I4)" $
+    it "says what the tool printed on stderr (uv offline, no lockfile)" $ do
+      let Right lang = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"sh\", \"-c\", \"echo 'error: No `uv.lock` found; run uv lock' >&2; exit 2\"]", "format = \"pyright-json\""])
+      r <- runCheck processChecker lang (M.fromList [("a.py", "x = 1\n")])
+      case r of
+        Left f -> describeCheckFailure f `shouldSatisfy` T.isInfixOf "No `uv.lock` found"
+        other -> expectationFailure (show other)
+  describe "a match's extent from its indentation (Python)" $ do
+    it "(a) the last line of the block under a line: blank lines don't extend it, a line back at its indentation ends it" $
+      indentBlockEnd ["def f(x):", "    match x:", "        case A():", "            return 1", "", "    return 2"] 1 `shouldBe` 3
+    it "a column-0 line inside a triple-quoted string does not end the block" $
+      indentBlockEnd ["    match x:", "        case A():", "            return \"\"\"one", "at column 0", "            \"\"\"", "    y = 1"] 0 `shouldBe` 4
+    it "(b) a last arm whose body spans lines (nested if, a multi-line call) ends at its last line (Review Focus 2)" $ do
+      src <- TIO.readFile "src/Olifant/Language/testdata/pyright/two-matches/src/failures.py"
+      indentBlockEnd (T.splitOn "\n" src) 23 `shouldBe` 30
+      indentBlockEnd (T.splitOn "\n" src) 17 `shouldBe` 19
+    it "(c) through the checker: each pyright site spans its match to the last arm (real pyright via uvx)" $
+      findExecutable "uvx" >>= \case
+        Nothing -> lookupEnv "OLIFANT_REQUIRE_TOOLS" >>= \case
+          Just "1" -> expectationFailure "required tool missing: uv (brew install uv)"
+          _ -> pendingWith "uv is not installed (brew install uv)"
+        Just _ -> do
+          let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uvx\", \"--quiet\", \"pyright==1.1.414\", \"--outputjson\"]", "context = [\"pyproject.toml\"]", "format = \"pyright-json\""])
+          files <- traverse (\f -> (f,) <$> TIO.readFile ("src/Olifant/Language/testdata/pyright/two-matches/" <> f)) ["pyproject.toml", "src/failures.py"]
+          r <- runCheck processChecker py (M.fromList files)
+          fmap (map (\m -> (missingFile m, missingCase m)) . reportMissing) r `shouldBe` Right [("src/failures.py", (17, 19)), ("src/failures.py", (23, 30))]
   describe "rustc-json sites (spec §5.6, fixtures captured from cargo 1.99)" $ do
     report <- runIO (BS.readFile "src/Olifant/Language/testdata/rustc-e0004.jsonl")
     let Right r = parseRustcReport report
@@ -186,7 +294,7 @@ spec = do
     it "has no broken files: E0004/E0005 are sites, not breakage" $
       reportBroken r `shouldBe` []
     it "writes patterns without the reference (match ergonomics)" $
-      supportPattern rustcSupport "" "Failure::D" "&Failure::D" `shouldBe` "Failure::D"
+      supportPattern rustcSupport (missing "a.rs" (0, 0) []) "" "Failure::D" "&Failure::D" `shouldBe` "Failure::D"
     it "sees Type::Variant (and Type.Variant) where that type is matched" $ do
       let [d] = site 11
       supportVisible rustcSupport d "" "Failure::D" `shouldBe` True
@@ -239,7 +347,7 @@ spec = do
       supportVisible g (at "SampleErrorish") "" "SampleError.SampleLocked" `shouldBe` False
       supportVisible g (at "RegionError") "" "SampleError.SampleLocked" `shouldBe` False
       supportVisible g (at "RegionError") "" "SampleLocked" `shouldBe` True
-      supportPattern g "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
+      supportPattern g (missing "a.hs" (0, 0) []) "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
     it "asks GHC not to truncate pattern lists (review M2)" $ do
       src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
       src `shouldSatisfy` T.isInfixOf "-fmax-uncovered-patterns="
@@ -332,6 +440,52 @@ withHaskell k =
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
 -- | The rust-htmx pack's adapter on one of its fixture's files, or pending.
+-- | A module with each Python target in it.
+pythonModule :: Text
+pythonModule =
+  T.unlines
+    [ "import fx"
+    , "from dataclasses import dataclass"
+    , ""
+    , ""
+    , "@dataclass(frozen=True)"
+    , "class SlotTaken:"
+    , "    reason: str"
+    , ""
+    , ""
+    , "type CreateBookingFailure = ("
+    , "    SlotTaken"
+    , "    | PartyTooLarge"
+    , ")"
+    , ""
+    , ""
+    , "class BookingService:"
+    , "    def __init__(self) -> None:"
+    , "        self.x = 1"
+    , ""
+    , "    def run(self) -> int:"
+    , "        return 1"
+    , ""
+    , ""
+    , "def status(f: CreateBookingFailure) -> int:"
+    , "    match f:"
+    , "        case SlotTaken():"
+    , "            return 409"
+    , "        case PartyTooLarge():"
+    , "            return 422"
+    ]
+
+-- | The python-htmx pack's adapter on 'pythonModule', or pending.
+withPython :: (Syntax IO -> Language -> Text -> Expectation) -> Expectation
+withPython k =
+  findExecutable "ast-grep" >>= \case
+    Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
+    Just _ -> do
+      src <- TIO.readFile "packs/python-htmx/languages/python.toml"
+      tmp <- getTemporaryDirectory
+      let Right lang = parseLanguage "python" "packs/python-htmx" src
+      k (astGrepSyntax (tmp </> "olifant-test-cache")) lang pythonModule
+
 withRustFile :: FilePath -> (Syntax IO -> Language -> Text -> Expectation) -> Expectation
 withRustFile rel k =
   findExecutable "ast-grep" >>= \case

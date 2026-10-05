@@ -61,6 +61,12 @@ spec = describe "olifant doctor (spec §4.7)" $ do
         probeFails = ports ["ast-grep", "cargo"] (Left "must not be called") []
     statusOf "model" (runIdentity (doctor probeFails (input claude))) `shouldBe` Just Warn
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
+  it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"env\", \"UV_PROJECT_ENVIRONMENT=/c/venv\", \"uv\", \"run\", \"pyright\"]", "format = \"pyright-json\""])
+        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local))
+        [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
+    checkStatus c `shouldBe` Bad
+    checkFix c `shouldSatisfy` maybe False ("brew install uv" `T.isInfixOf`)
   it "reports a broken language adapter or generator as an error" $ do
     let broken = DoctorInput (Just "/proj") ["p"] [] [("p/languages/x.toml", "bad grammar")] [("p/gen", "unknown key")]
         cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local))

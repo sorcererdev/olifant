@@ -20,7 +20,7 @@ ghcSupport =
   CompilerSupport
     { supportFormat = "ghc-json"
     , supportParse = parseGhcReport
-    , supportPattern = \_ _ p -> p
+    , supportPattern = \_ _ _ p -> p
     , supportVisible = \d _ constructor -> case (T.breakOnEnd "." constructor, missingType d) of
         (("", _), _) -> True
         (_, Nothing) -> True
@@ -28,6 +28,8 @@ ghcSupport =
     , supportFunction = declarationAt
     , supportArmSeparator = ""
     , supportReadsStdout = False
+    , supportLoneArmSpaced = True
+    , supportSpans = Nothing
     }
 
 data Diag = Diag {dFile :: FilePath, dStart :: Int, dEnd :: Int, dSeverity :: Text, dCode :: Maybe Int, dMessage :: Text}

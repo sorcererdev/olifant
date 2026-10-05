@@ -57,7 +57,7 @@ spec = do
     it "never descends into dependency and build directories" $
       withSystemTempDirectory "olifant" $ \dir -> do
         let ws = diskWorkspace dir
-        mapM_ (\p -> writeText ws p "x") ["src/a.hs", "node_modules/pkg/index.js", "target/debug/x", "elm-stuff/0.19/y", "dist-newstyle/z", ".git/HEAD"]
+        mapM_ (\p -> writeText ws p "x") ["src/a.hs", "node_modules/pkg/index.js", "target/debug/x", "elm-stuff/0.19/y", "dist-newstyle/z", ".git/HEAD", ".venv/lib/x.py", "src/__pycache__/a.pyc", ".pytest_cache/v"]
         listFiles ws "." `shouldReturn` ["src/a.hs"]
     it "lists what git considers part of the project, honouring .gitignore" $
       findExecutable "git" >>= \case

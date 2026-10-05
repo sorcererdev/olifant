@@ -1,0 +1,26 @@
+name = "Failure variant"
+description = "A new failure for a command: a frozen dataclass with a reason, its name a tab stop (a snippet, spec §4.9); failure-arms follows up"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/failure-variant --at src/bistro/booking/create_booking.py:31:1 --plan",
+]
+
+# At the cursor, PEP 8-spaced from the class above; naming it raises the
+# failure-arms follow-up (the union and every match).
+[[edits]]
+cursor = true
+text = "\n\n@dataclass(frozen=True)\nclass {= ? Name: ident | the failure, PascalCase =}:\n    reason: str"
+
+[holes.Name]
+source = "yours"
+
+# Anticipated on a blank line right after a failure (a frozen dataclass with
+# a reason) in a service's module.
+[applies_at]
+path    = "src/bistro/*/*.py"
+after   = { kind = "decorated_definition", regex = "reason: str", has = { kind = "class_definition" } }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line after a failure class"
+suggest = true
+label   = "Failure variant"

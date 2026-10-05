@@ -213,7 +213,9 @@ itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, J
           Right cs -> pure (Left ("matches " <> T.pack (show (length cs)) <> " places; it must match once", False))
   where
     failure f = (describeSyntaxFailure f, case f of SyntaxToolMissing _ -> True; SyntaxFailed _ -> False)
-    inside c m = matchStart m >= matchStart c && matchEnd m <= matchEnd c && m /= c
+    -- the items query already asks for a strict ancestor; an item may span its
+    -- container exactly (a Python function whose body is one `match`)
+    inside c m = matchStart m >= matchStart c && matchEnd m <= matchEnd c
     topLevel ms = [m | m <- ms, not (any (\o -> o /= m && matchStart o <= matchStart m && matchEnd m <= matchEnd o) ms)]
 
 -- | The container of a named target, as 0-based (start, end) lines (used by

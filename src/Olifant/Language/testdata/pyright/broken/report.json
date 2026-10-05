@@ -1,0 +1,30 @@
+{
+    "version": "1.1.414",
+    "time": "1791152318844",
+    "generalDiagnostics": [
+        {
+            "file": "src/broken.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['two']\" cannot be assigned to parameter \"b\" of type \"int\" in function \"add\"\n  \"Literal['two']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 5,
+                    "character": 18
+                },
+                "end": {
+                    "line": 5,
+                    "character": 23
+                }
+            },
+            "rule": "reportArgumentType"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 1,
+        "errorCount": 1,
+        "warningCount": 0,
+        "informationCount": 0,
+        "timeInSec": 0.07
+    }
+}
+

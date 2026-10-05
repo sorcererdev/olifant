@@ -9,7 +9,16 @@ import Olifant.Cursor
 import Olifant.Generator (EditWith (..), Generator, GeneratorId (..), GeneratorWith (..), SourceRef (..), parseGenerator)
 import Olifant.Template (Value (..), render)
 import Olifant.Template.Syntax (Template (..))
+import Data.Aeson (object, (.=))
+import Data.Functor.Identity (Identity (..), runIdentity)
+import Data.Text (Text)
+import Olifant.Language (Language, Match (..), Syntax (..), SyntaxFailure (..), parseLanguage)
 import Test.Hspec
+
+python :: Language
+python = l
+  where
+    Right l = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""])
 
 spec :: Spec
 spec = describe "Olifant.Cursor (snippets at the cursor, spec §5.3)" $ do
@@ -32,6 +41,18 @@ spec = describe "Olifant.Cursor (snippets at the cursor, spec §5.3)" $ do
       let Right g = load "text = \"#[error]\\n{= x =},\""
           [Cursor t] = genEdits g
       render (M.fromList [("x", VText "V")]) (indentTemplate "    " t) `shouldBe` Right "    #[error]\n    V,"
+  describe "afterIndent (a snippet anticipated after a node)" $
+    it "is the indentation of the node the cursor follows, not of the line above" $ do
+      let ls = ["@dataclass(frozen=True)", "class A:", "    reason: str", "", "type F = A"]
+          classAt = Syntax $ \_ _ _ -> Identity (Right [Match (0, 0) (2, 15) "@dataclass…"])
+      runIdentity (afterIndent classAt python (object ["kind" .= ("decorated_definition" :: Text)]) ls 4) `shouldBe` Right (Just "")
+      -- inside the node, it follows nothing
+      runIdentity (afterIndent classAt python (object ["kind" .= ("decorated_definition" :: Text)]) ls 2) `shouldBe` Right Nothing
+  describe "afterIndent without ast-grep (python review)" $
+    it "is the tool's failure, never a silent fallback to the line above's indentation" $ do
+      let missingTool = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed"))
+      runIdentity (afterIndent missingTool python (object ["kind" .= ("decorated_definition" :: Text)]) ["class A:", "    x: int", ""] 3)
+        `shouldBe` Left "ast-grep is not installed"
   describe "atCursor" $
     it "makes the cursor edit a replacement of the cursor's line, which must still read as it does" $ do
       let Right g = load "text = \"x\""

@@ -51,7 +51,12 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
               candidates = [(t, f) | (t, f, True) <- parsed]
               known = [(s', f') | (s', f', _) <- M.elems accepted]
               with cs = applyFills base (known ++ [(site t, f) | (t, f) <- cs])
-          (broken, note) <- checkFiles (with candidates) [site t | (t, _) <- candidates]
+          (broken0, note) <- checkFiles (with candidates) [site t | (t, _) <- candidates]
+          -- errors the files had with their placeholders are not the fills'
+          -- (python review I1); checked only when something is broken
+          already <- if M.null broken0 then pure M.empty else fst <$> checkFiles (with []) [site t | (t, _) <- candidates]
+          let notAlready = M.filter (not . null) . M.mapWithKey (\p es -> filter (`notElem` M.findWithDefault [] p already) es)
+              broken = notAlready broken0
           -- All together compile: every candidate stands. Otherwise each is
           -- checked alone beside what is already accepted, so a fill that
           -- breaks another file is the one blamed (review I5).
@@ -59,12 +64,13 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
             if M.null broken
               then pure [(t, f, Nothing) | (t, f) <- candidates]
               else forM candidates $ \(t, f) -> do
-                (alone, _) <- checkFiles (with [(t, f)]) [site t]
+                (alone0, _) <- checkFiles (with [(t, f)]) [site t]
+                let alone = notAlready alone0
                 pure (t, f, if M.null alone then Nothing else Just (T.intercalate "; " (concat (M.elems alone))))
           let good = [(t, f) | (t, f, Nothing) <- verdicts]
               compileFailed = [(t, f, why) | (t, f, Just why) <- verdicts]
           -- Each good alone may still clash together: then none of them stands.
-          (together, _) <- if M.null broken || null good then pure (M.empty, Nothing) else checkFiles (with good) [site t | (t, _) <- good]
+          (together, _) <- if M.null broken || null good then pure (M.empty, Nothing) else (\(b, n) -> (notAlready b, n)) <$> checkFiles (with good) [site t | (t, _) <- good]
           let clash = if M.null together then [] else [(t, f, "this fill and another do not compile together: " <> T.intercalate "; " (concat (M.elems together))) | (t, f) <- good]
               good' = if null clash then good else []
               accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
@@ -96,11 +102,13 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
 
     parses s f = case (languageFor (toolLanguages tools) (holeFile s), lookup (holeKind s) . langHoles =<< languageFor (toolLanguages tools) (holeFile s)) of
       (Just lang, Just k) ->
-        querySyntax (toolSyntax tools) lang (object ["kind" .= ("ERROR" :: Text)]) (T.replace "{= fill =}" f (kindWrap k)) >>= \case
+        querySyntax (toolSyntax tools) lang (object ["kind" .= ("ERROR" :: Text)]) (T.replace "{= fill =}" f (T.replace "{= fill|indent =}" (indented f) (kindWrap k))) >>= \case
           Right [] -> pure True
           Right _ -> pure False
           Left _ -> pure True -- no parser: the check decides
       _ -> pure True
+
+    indented f = T.intercalate "\n" [if T.null (T.strip l) then l else "    " <> l | l <- T.splitOn "\n" f]
 
     -- Broken files (with messages) among those holding these holes, by each
     -- language's check over the project as this plan has it.

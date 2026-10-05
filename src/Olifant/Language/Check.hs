@@ -8,9 +8,14 @@ module Olifant.Language.Check
   , describeCheckFailure
   , processChecker
   , compileClean
+  , checkProgram
+  , contextKey
   ) where
 
 import Control.Monad (forM_)
+import Data.Bits (xor)
+import Data.Word (Word64)
+import Numeric (showHex)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
@@ -54,10 +59,33 @@ processChecker = Checker $ \lang files -> case langCheck lang of
       Right (code, out, err, dir) -> case supportFor (checkFormat check) of
         Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
         Just support -> case supportParse support (if supportReadsStdout support then out else err) of
-          Left why -> Left (CheckFailed why)
+          -- what the tool said is the reason (uv offline, no lockfile: python review I4)
+          Left why
+            | code /= ExitSuccess, not (BS.null err) -> Left (CheckFailed (why <> "; it said: " <> T.strip (T.take 1000 (TE.decodeUtf8With lenientDecode err))))
+            | otherwise -> Left (CheckFailed why)
           Right (CheckReport [] [] [])
             | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
-          Right report -> Right (relativeTo dir report)
+          Right report -> Right (maybe id ($ files) (supportSpans support) (relativeTo dir report))
+
+-- | @{= context =}@ in a check command: a short hash of the check's context
+-- files (pyproject.toml, uv.lock…), so each project and lockfile gets its own
+-- environment in the cache, and a changed lock a fresh one.
+contextKey :: CheckDef -> Map FilePath Text -> Text
+contextKey check files =
+  let ctx = [(p, t) | (p, t) <- M.toAscList files, any (`matchesGlob` p) (checkContext check)]
+      bytes = BS.unpack (TE.encodeUtf8 (T.concat [T.pack p <> "\0" <> t <> "\0" | (p, t) <- ctx]))
+      fnv = foldl (\h b -> (h `xor` fromIntegral b) * 1099511628211) (14695981039346656037 :: Word64) bytes
+   in T.pack (take 12 (showHex fnv ""))
+
+-- | The program a check command runs: past a leading `env` and its
+-- `NAME=value` settings (`env UV_PROJECT_ENVIRONMENT=… uv run pyright` runs uv).
+checkProgram :: [Text] -> Maybe Text
+checkProgram = \case
+  "env" : rest -> case dropWhile ("=" `T.isInfixOf`) rest of
+    p : _ -> Just p
+    [] -> Nothing
+  p : _ -> Just p
+  [] -> Nothing
 
 -- | Whether the files compile cleanly (exit 0); pack tests use it to prove
 -- generated output builds.
@@ -74,17 +102,25 @@ compileClean lang files = case langCheck lang of
           | Right report <- supportParse support (if supportReadsStdout support then out else err)
           , not (null (reportBroken report)) ->
               T.unlines [T.pack f <> ": " <> t | (f, t) <- reportBroken report]
+          -- only missing cases (pyright reports them as errors): say which
+          | Right report <- supportParse support (if supportReadsStdout support then out else err)
+          , not (null (reportMissing report)) ->
+              T.unlines [T.pack (missingFile m) <> ":" <> T.pack (show (fst (missingCase m) + 1)) <> ": missing cases " <> T.intercalate ", " (missingPatterns m) | m <- reportMissing report]
         _ -> T.take 2000 (TE.decodeUtf8With lenientDecode err)
 
 -- | The argument @{= files =}@ expands to the sources the adapter's globs
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
 -- directory that outlives the scratch copy (cargo's `--target-dir`).
 runIn :: Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn lang check files = case checkCommand check of
-  [] -> pure (Left (CheckFailed "empty check command"))
-  (exe : args) ->
-    findExecutable (T.unpack exe) >>= \case
-      Nothing -> pure (Left (CheckToolMissing ("`" <> exe <> "` is not installed (needed to check " <> langName lang <> ")")))
+runIn lang check files = case (checkCommand check, checkProgram (checkCommand check)) of
+  ([], _) -> pure (Left (CheckFailed "empty check command"))
+  (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
+  (exe : args, Just program) ->
+    -- the program the command runs (`env VAR=… uv …` runs uv) must be installed
+    (findExecutable (T.unpack program) >>= \case
+      Nothing -> pure Nothing
+      Just _ -> findExecutable (T.unpack exe)) >>= \case
+      Nothing -> pure (Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to check " <> langName lang <> ")")))
       Just path -> withSystemTempDirectory "olifant-check" $ \tmp0 -> do
         tmp <- canonicalizePath tmp0
         forM_ (M.toList files) $ \(p, t) -> do
@@ -95,7 +131,7 @@ runIn lang check files = case checkCommand check of
         let sources = sort [p | p <- M.keys files, any (`matchesGlob` p) (langFiles lang)]
             expand a
               | T.strip a == "{= files =}" = sources
-              | otherwise = [T.unpack (T.replace "{= cache =}" (T.pack cache) a)]
+              | otherwise = [T.unpack (T.replace "{= context =}" (contextKey check files) (T.replace "{= cache =}" (T.pack cache) a))]
         ran <- runBytes path (concatMap expand args) (Just tmp) ""
         pure $ case ran of
           Left why -> Left (CheckFailed why)

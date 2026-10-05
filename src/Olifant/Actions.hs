@@ -18,6 +18,7 @@ import Data.Aeson qualified as J
 import Data.Aeson.KeyMap qualified as KM
 import Data.Char (isAlphaNum, isSpace)
 import Data.List (sortOn)
+import Data.Ord (Down (..))
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
@@ -76,7 +77,8 @@ data Nearby = Nearby {nbGenerator :: Text, nbLabel :: Text, nbWhy :: Text}
   deriving stock (Eq, Show)
 
 -- | How one generator relates to a file.
-data Candidate = Whole | Nodes [Match] | Near Text
+-- | 'After': the nodes an `after` rule found (the cursor follows one).
+data Candidate = Whole | Nodes [Match] | After [Match] | Near Text
 
 -- | Every generator whose `applies_at` matches @path@ at the 1-based
 -- (line, column), given the file's (possibly unsaved) text.
@@ -131,7 +133,12 @@ actionsAtWith useTrigger syntax langs queries paths readFile' gens path (line, c
       Nodes ms
         | node : _ <- sortOn size [m | m <- ms, matchStart m <= cursor, cursor <= matchEnd m] ->
             Just <$> offer queries paths readFile' path gid gen ap fromPath (Just node)
+      -- the nearest node the cursor's line follows, only blank lines between
+      After ms
+        | node : _ <- sortOn (Down . fst . matchEnd) [m | m <- ms, follows m] ->
+            Just <$> offer queries paths readFile' path gid gen ap fromPath (Just node)
       _ -> pure Nothing
+    follows m = fst (matchEnd m) < line - 1 && all (T.null . T.strip) (take (line - 2 - fst (matchEnd m)) (drop (fst (matchEnd m) + 1) (T.lines content)))
     -- A snippet's trigger (spec §4.9): the text before the cursor ends with
     -- it, and nothing but whitespace follows (the snippet replaces the line,
     -- review I1).
@@ -154,6 +161,8 @@ actionsInFile syntax langs queries paths readFile' gens path content = do
     one (gid, gen, ap, fromPath, cand) = case cand of
       Whole -> Left . pure . (`FileAction` Nothing) <$> offer queries paths readFile' path gid gen ap fromPath Nothing
       Nodes ms -> Left <$> traverse (\m -> (`FileAction` Just (range m)) <$> offer queries paths readFile' path gid gen ap fromPath (Just m)) ms
+      -- the line after each node (where the cursor would follow it)
+      After ms -> Left <$> traverse (\m -> (`FileAction` Just (lineAfter m)) <$> offer queries paths readFile' path gid gen ap fromPath (Just m)) ms
       -- Only when the path's values are real choices: lib.rs is not a
       -- command (review I4).
       Near why -> do
@@ -163,6 +172,11 @@ actionsInFile syntax langs queries paths readFile' gens path content = do
             then Right (Nearby gid (labelFor gen ap (M.fromList fromPath)) why)
             else Left []
     range m = Range (pos (matchStart m)) (pos (matchEnd m))
+    -- the blank lines after a node, 1-based (at least the first line after it)
+    lineAfter m =
+      let first = fst (matchEnd m) + 2
+          blanks = length (takeWhile (T.null . T.strip) (drop (first - 1) ls))
+       in Range (first, 1) (first + max 0 (blanks - 1), 1)
     pos (l, c) = (l + 1, 1 + BS.length (TE.encodeUtf8 (T.take c (maybe "" id (listToMaybe (drop l ls))))))
 
 -- | Each generator whose path matches, with what its rule finds in the text.
@@ -173,18 +187,20 @@ candidates syntax langs gens path content = catMaybes <$> traverse one gens
       Nothing -> pure Nothing
       Just ap -> case matchPathSlots (apPath ap) path of
         Nothing -> pure Nothing
-        Just fromPath -> fmap (\c -> Just (gid, gen, ap, fromPath, c)) $ case apNode ap of
-          Nothing -> pure Whole
-          -- The rule may use the path's slots ({= command|pascal =}).
-          Just rule -> case (languageFor langs path, renderRule env rule) of
-            (Just lang, Right r) ->
-              querySyntax syntax lang r content >>= \case
-                Right ms@(_ : _) -> pure (Nodes ms)
-                Right [] -> pure (Near (why ap (describeRule r)))
-                -- Not "none yet": the search itself failed (review I3).
-                Left failure -> pure (Near ("cannot search this file: " <> describeSyntaxFailure failure <> "; run `olifant doctor`"))
-            (_, r) -> pure (Near (why ap (either (const "a matching node") describeRule r)))
+        Just fromPath -> fmap (\c -> Just (gid, gen, ap, fromPath, c)) $ case (apNode ap, apAfter ap) of
+          (Just rule, _) -> search Nodes rule
+          (Nothing, Just rule) -> search After rule
+          (Nothing, Nothing) -> pure Whole
           where
+            -- The rule may use the path's slots ({= command|pascal =}).
+            search found rule = case (languageFor langs path, renderRule env rule) of
+              (Just lang, Right r) ->
+                querySyntax syntax lang r content >>= \case
+                  Right ms@(_ : _) -> pure (found ms)
+                  Right [] -> pure (Near (why ap (describeRule r)))
+                  -- Not "none yet": the search itself failed (review I3).
+                  Left failure -> pure (Near ("cannot search this file: " <> describeSyntaxFailure failure <> "; run `olifant doctor`"))
+              (_, r) -> pure (Near (why ap (either (const "a matching node") describeRule r)))
             env = M.fromList [(k, VText v) | (k, v) <- fromPath]
             why ap' fallback = fromMaybe fallback (either (const Nothing) Just . render env =<< apWhere ap')
 

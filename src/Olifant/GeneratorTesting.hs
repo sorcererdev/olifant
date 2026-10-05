@@ -12,6 +12,7 @@ module Olifant.GeneratorTesting
   ) where
 
 import Control.Monad (forM, forM_)
+import Data.Functor ((<&>))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
@@ -21,7 +22,8 @@ import Data.Time (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
-import Olifant.Cursor (atCursor, isSnippet)
+import Olifant.Cursor (afterIndent, afterRule, atCursorIndented, cursorIndent, isSnippet)
+import Olifant.Generator.Definition (AppliesAt (..), GeneratorWith (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (Generator)
 import Olifant.Language.Adapter (Language (..), languageFor)
@@ -75,25 +77,28 @@ runCase root syntax checker bless pc = do
           Right (ws, tools0, resolve, gen0) -> do
                    -- A snippet goes at the case's cursor; it is not re-run (its
                    -- line is the expansion now, so a second run is another snippet).
-                   (tools, gen) <- atCaseCursor ws checker at (tools0 {toolFiller = (\fills -> ModelFiller "recorded" 0 (replayFiller fills)) <$> replay}) gen0
-                   firstRun <- generate ws resolve tools [Step gen sets] now Apply
-                   secondRun <- if isSnippet gen0 then pure (fmap (\p -> p {planWrites = M.empty}) firstRun) else generate ws resolve tools [Step gen sets] now Apply
-                   case (firstRun, secondRun) of
-                     (Left err, _)
-                       | generationToolMissing err -> pure (CaseSkipped (describeGenerationError err))
-                       | otherwise -> pure (CaseFailed [describeGenerationError err])
-                     (Right plan, _)
-                       | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
-                       | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
-                     (Right plan, _)
-                       | Just _ <- replay, unfilled@(_ : _) <- [why | PlannedHole {phStatus = HoleUnfilled why} <- planHoles plan] -> pure (CaseFailed (nub unfilled))
-                     (Right plan, again) -> do
-                       snapshotProblems <- checkSnapshot (planWrites plan)
-                       let rerunProblems = case again of
-                             Right p | not (M.null (planWrites p)) -> ["re-running changed: " <> T.intercalate ", " (map T.pack (M.keys (planWrites p)))]
-                             Left err -> ["re-running failed: " <> describeGenerationError err]
-                             _ -> []
-                       pure (if null (snapshotProblems ++ rerunProblems) then CasePassed else CaseFailed (snapshotProblems ++ rerunProblems))
+                   placed <- atCaseCursor ws checker at (tools0 {toolFiller = (\fills -> ModelFiller "recorded" 0 (replayFiller fills)) <$> replay}) gen0
+                   case placed of
+                    Left why -> pure (CaseSkipped why)
+                    Right (tools, gen) -> do
+                     firstRun <- generate ws resolve tools [Step gen sets] now Apply
+                     secondRun <- if isSnippet gen0 then pure (fmap (\p -> p {planWrites = M.empty}) firstRun) else generate ws resolve tools [Step gen sets] now Apply
+                     case (firstRun, secondRun) of
+                       (Left err, _)
+                         | generationToolMissing err -> pure (CaseSkipped (describeGenerationError err))
+                         | otherwise -> pure (CaseFailed [describeGenerationError err])
+                       (Right plan, _)
+                         | hasConflicts plan, all conflictToolMissing (planConflicts plan) -> pure (CaseSkipped (T.intercalate "; " (map describeConflict (planConflicts plan))))
+                         | hasConflicts plan -> pure (CaseFailed (map describeConflict (planConflicts plan)))
+                       (Right plan, _)
+                         | Just _ <- replay, unfilled@(_ : _) <- [why | PlannedHole {phStatus = HoleUnfilled why} <- planHoles plan] -> pure (CaseFailed (nub unfilled))
+                       (Right plan, again) -> do
+                         snapshotProblems <- checkSnapshot (planWrites plan)
+                         let rerunProblems = case again of
+                               Right p | not (M.null (planWrites p)) -> ["re-running changed: " <> T.intercalate ", " (map T.pack (M.keys (planWrites p)))]
+                               Left err -> ["re-running failed: " <> describeGenerationError err]
+                               _ -> []
+                         pure (if null (snapshotProblems ++ rerunProblems) then CasePassed else CaseFailed (snapshotProblems ++ rerunProblems))
   where
     snapshotDir = caseDir pc </> "snapshot"
     checkSnapshot :: Map FilePath Text -> IO [Text]
@@ -141,14 +146,20 @@ preparePack root syntax checker packRoot pack generator overlay =
 
 -- | A case's cursor (`at`): the snippet placed there, and `uncovered`
 -- queries asking the compiler about the match there (spec §4.9).
-atCaseCursor :: Workspace IO -> Checker IO -> Maybe (FilePath, Int) -> Tools IO -> Generator -> IO (Tools IO, Generator)
+-- A failed search for an `after` node is the tool's failure (Left).
+atCaseCursor :: Workspace IO -> Checker IO -> Maybe (FilePath, Int) -> Tools IO -> Generator -> IO (Either Text (Tools IO, Generator))
 atCaseCursor ws checker at tools gen = case at of
-  Nothing -> pure (tools, gen)
+  Nothing -> pure (Right (tools, gen))
   Just (file, line) -> do
     text <- fromMaybe "" <$> readText ws file
     let unit = maybe "    " langIndent (languageFor (toolLanguages tools) file)
         tools' = tools {toolQueries = (toolQueries tools) {queryUncovered = uncoveredQuery checker (toolLanguages tools) ws file line}}
-    pure (tools', if isSnippet gen then atCursor unit file line (T.splitOn "\n" text) gen else gen)
+        ls = T.splitOn "\n" text
+    -- a snippet anticipated `after` a node takes that node's indentation
+    found <- case (afterRule =<< apAfter =<< genAppliesAt gen, languageFor (toolLanguages tools) file) of
+      (Just after, Just lang) -> afterIndent (toolSyntax tools) lang after ls line
+      _ -> pure (Right Nothing)
+    pure $ found <&> \ind -> (tools', if isSnippet gen then atCursorIndented (fromMaybe (cursorIndent unit ls line) ind) file line ls gen else gen)
 
 -- | A case's `at = "FILE:LINE:COL"`, if it has one.
 parseCaseCursor :: Text -> Either Text (Maybe (FilePath, Int))

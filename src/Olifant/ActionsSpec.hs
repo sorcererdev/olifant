@@ -109,6 +109,28 @@ spec = describe "olifant actions (spec §4.6)" $ do
           [ "description = \"A snippet\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
           , "[applies_at]", "path = \"**/*.rs\"" ]
     map actGenerator (at matches [("p/snippet", snippetHere), ("p/failure-arms", failureArms)] file (3, 6)) `shouldBe` ["p/failure-arms", "p/snippet"]
+  describe "after: the cursor follows a node (a snippet's anticipation, spec §4.9)" $ do
+    let afterClass = generator . T.unlines $
+          [ "description = \"A failure\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
+          , "[applies_at]", "path = \"**/*.rs\"", "after = { kind = \"class_definition\" }", "trigger = '^[[:space:]]*$'" ]
+        -- a class on 0-based lines 2–4
+        classAt = Syntax $ \_ _ _ -> Identity (Right [Match (2, 0) (4, 15) "class X:\n    reason: str"])
+        src = T.unlines ["import x", "", "class X:", "    reason: str", "    more: int", "", "", "def f(): pass"]
+        on line = runIdentity (actionsAt classAt [rust] noQueries [] (const (pure Nothing)) [("p/after", afterClass)] file (line, 1) src)
+    it "applies on the line right after the node, and after blank lines only" $ do
+      map actGenerator (on 6) `shouldBe` ["p/after"]
+      map actGenerator (on 7) `shouldBe` ["p/after"]
+    it "not inside the node, not before it, not past code that follows it" $ do
+      on 4 `shouldBe` []
+      on 1 `shouldBe` []
+      on 9 `shouldBe` []
+    it "--file: its range is every blank line that follows the node (where --at applies)" $
+      map faRange (fst (runIdentity (actionsInFile classAt [rust] noQueries [] (const (pure Nothing)) [("p/after", afterClass)] file src)))
+        `shouldBe` [Just (Range (6, 1) (7, 1))]
+    it "reads `after` and refuses it with `node`" $ do
+      let both = parseGenerator (GeneratorId "p/g") (T.unlines ["description = \"d\"", "language = \"x\"", "[applies_at]", "path = \"x\"", "node = { kind = \"a\" }", "after = { kind = \"b\" }"])
+      both `shouldSatisfy` either ("`after` or `node`" `T.isInfixOf`) (const False)
+      both `shouldSatisfy` either (not . ("`applies_at`: `applies_at`" `T.isInfixOf`)) (const False)
   describe "trigger: what was just typed (spec §4.9)" $ do
     let specCase = generator . T.unlines $
           [ "description = \"A spec case\"", "language = \"rust\""
@@ -223,6 +245,18 @@ spec = describe "olifant actions (spec §4.6)" $ do
             actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("rust-htmx/" <> gen, g)] path pos content
         cancel = "packs/rust-htmx/generators/wire-command/tests/cancel-invoice/given/billing/billing-service/src/cancel_invoice.rs"
         refund = "packs/rust-htmx/generators/failure-arms/tests/already-refunded/given/billing/billing-service/src/refund_invoice.rs"
+    it "(python) failure-variant follows a failure class, not a decorated function with a `reason: str` parameter" $ findExecutable "ast-grep" >>= \case
+      Nothing -> if strict then expectationFailure "ast-grep is required" else pendingWith "ast-grep is not installed"
+      Just _ -> do
+        tmp <- getTemporaryDirectory
+        let route = "@app.get(\"/\")\ndef f(reason: str) -> str:\n    return reason\n\n"
+            failure = "@dataclass(frozen=True)\nclass Gone:\n    reason: str\n\n"
+            offered path content = do
+              Right (ws, tools, _, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "failure-variant" [(path, content)]
+              paths <- listFiles ws "."
+              map actGenerator <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/failure-variant", g)] path (4, 1) content
+        offered "src/bistro/web/app.py" route `shouldReturn` []
+        offered "src/bistro/booking/create_booking.py" failure `shouldReturn` ["python-htmx/failure-variant"]
     it "offers wire-command on a field of the command's struct, not on another struct" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]

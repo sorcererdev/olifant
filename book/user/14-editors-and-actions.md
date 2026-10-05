@@ -5,10 +5,10 @@ conventions engine underneath it. The first editor is Neovim, with the `durandal
 plugin. It runs `olifant` for everything, so this chapter covers both halves: what the
 plugin does, and what Olifant gives an editor:
 
-- **`[applies_at]`** in a `generator.toml`: where in the code a generator applies, which
-  of its inputs the code there already gives, (`where`) what it looks for, in words,
-  (`suggest`) whether an editor may offer it unasked, and (`trigger`) what a snippet waits
-  for you to type;
+- **`[applies_at]`** in a `generator.toml`: where in the code a generator applies (inside
+  a node, or `after` one), which of its inputs the code there already gives, (`where`) what
+  it looks for, in words, (`suggest`) whether an editor may offer it unasked, and
+  (`trigger`) what a snippet waits for you to type;
 - **`olifant actions --at FILE:LINE:COL`**: the generators that apply at a cursor;
 - **`olifant actions --file FILE`**: every place in a file where one applies, and the
   generators that could apply but found nothing yet;
@@ -235,11 +235,12 @@ you fill in, or the model does. It is offered two ways:
   your line, and `Tab` takes it.
 - **Chosen**: it is a ⚡ item in your completion menu (nvim-cmp) and in `<leader>ma`.
 
-The packs in this repository have four:
+The packs in this repository have five:
 
 | snippet | where | offered | its holes |
 |---|---|---|---|
 | `rust-htmx/failure-variant` | a blank line in a command's `Failure` enum | anticipated | `message` and `Variant`, yours |
+| `python-htmx/failure-variant` | a blank line after a failure class ([below](#the-python-chain)) | anticipated | `Name`, yours |
 | `rust-htmx/match-arm` | a blank line in a `match` the compiler says lacks a case | anticipated (the first missing case) and in the menu (one item per case) | `status`, the model's |
 | `rust-htmx/add-port` | inside a command's struct | in the menu only, one item per port | none |
 | `olifant-dev/spec-case` | just after typing `it "` in a `*Spec.hs` | anticipated | `behaviour`, yours; `body`, derived (`pending`) |
@@ -554,6 +555,160 @@ Line 34 is the existing arm, `RefundInvoiceFailure::Unknown(_) => 500,`; at colu
 before the cursor is whitespace, so the trigger matches here too. Taken, the snippet would
 replace that line, not add one ([Rough edges](#rough-edges-of-snippets)).
 
+## The Python chain
+
+The same convention, in Python: a new failure for a command, then an arm for it in every
+`match` on the command's failures. In the python-htmx pack it is two generators, the
+`failure-variant` snippet ([below](#after-a-node-after)) and `failure-arms`, its follow-up,
+and Durandal chains them with no change of its own. Make a sandbox; `try-pack.sh` runs `uv
+sync` in it, so pyright and pytest are ready
+([chapter 10](10-testing-generators.md#trying-a-pack-by-hand-scriptstry-packsh)):
+
+```sh
+scripts/try-pack.sh python-htmx /tmp/olifant-py && cd /tmp/olifant-py
+```
+
+and give it a `[model]` ([chapter 12](12-holes-and-models.md#configuring-a-model)). The
+fixture is a restaurant's table bookings. `src/bistro/booking/create_booking.py` is a
+command: its input, its failures as frozen dataclasses with a `reason`, and their union,
+one member per line:
+
+```python
+@dataclass(frozen=True)
+class TableNotFound:
+    reason: str
+
+
+type CreateBookingFailure = (
+    SlotTaken
+    | PartyTooLarge
+    | TableNotFound
+)
+```
+
+and `src/bistro/web/failures.py` maps each failure to an HTTP status with a `match` that
+pyright, in strict mode, proves exhaustive. It names each failure through the command's
+module (`case create_booking.SlotTaken():`), so a new failure needs no import there.
+
+**In Neovim.** Open `create_booking.py`, put the cursor on `TableNotFound`'s `reason: str`,
+and press `o`, then `Esc`. The ghost is the new class, PEP 8-spaced: two blank lines (the
+first is your line, with `⚡ Tab: Failure variant` at its end), then
+
+```
+@dataclass(frozen=True)
+class ⟨Name⟩:
+    reason: str
+```
+
+`Tab` expands it with `Name` selected. Type `Cancelled` and `Tab` once more to leave the
+snippet. The cursor is still in the class, so the follow-up appears:
+
+```
+⚡ Tab: review Add Failure Arms (+1 line here, +2 in failures.py)
+```
+
+`Tab` opens the review: `| Cancelled` at the end of the union, and in `failures.py` the new
+arm, its value a model hole. `Tab` again applies it, the model fills the value, and pyright
+checks the fill with the rest:
+
+```diff
+         case create_booking.TableNotFound():
+             return 404
++        case create_booking.Cancelled():
++            return 503
+```
+
+`uv run pyright` reports `0 errors, 0 warnings, 0 informations`, and `uv run pytest -q`
+`13 passed`. As in Rust, the whole convention is a snippet, two `Tab`s and a review.
+
+**From the command line.** Each step is a command, as in Rust. With the blank line typed
+below `reason: str` (line 31) and not saved:
+
+```
+$ F=src/bistro/booking/create_booking.py
+$ buffer() { sed '30a\
+' $F; }
+$ buffer | olifant actions --at $F:31:1 --content - --json
+[{"choices":{},"generator":"python-htmx/failure-variant","label":"Failure variant","missing":[],"name":"Failure variant","sets":{},"snippet":true,"suggest":true,"trigger":true}]
+$ buffer | olifant gen python-htmx/failure-variant --at $F:31:1 --plan --json --no-fill --overlay $F | jq -c .snippet
+{"body":"\n\n@dataclass(frozen=True)\nclass ${1:Name}:\n    reason: str$0","file":"src/bistro/booking/create_booking.py","ghost":["","","@dataclass(frozen=True)","class ⟨Name⟩:","    reason: str"],"line":31}
+```
+
+Each took 0.06 seconds. With `Cancelled` named (the class on lines 33 to 35 of the buffer),
+the follow-up's background plan:
+
+```
+$ buffer | olifant actions --at $F:34:7 --content - --json
+[{"choices":{},"generator":"python-htmx/failure-arms","label":"Add Cancelled to every match","missing":[],"name":"Add Failure Arms","sets":{"command":"create_booking","failure":"Cancelled","service":"booking"},"snippet":false,"suggest":true,"trigger":false}]
+$ buffer | olifant gen python-htmx/failure-arms --set service=booking --set command=create_booking --set failure=Cancelled --plan --human --no-fill --overlay $F
+Plan: python-htmx/failure-arms (2 edits, 0 conflicts)
+  ~ src/bistro/booking/create_booking.py (+1 line at line 42)
+  ~ src/bistro/web/failures.py (+2 lines at line 19, compiler: create_booking_status)
+holes:
+  value (expr) src/bistro/web/failures.py:19  skipped: --no-fill
+
+--- src/bistro/booking/create_booking.py
+| Cancelled
+
+--- src/bistro/web/failures.py
+case create_booking.Cancelled():
+    return (_ for _ in ()).throw(NotImplementedError("olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms"))
+```
+
+(`buffer` here prints the file with the named class in it.) The plan took 1.7 seconds, most
+of it pyright finding the `match`. Saved and applied with the model:
+
+```
+$ olifant gen python-htmx/failure-arms --set service=booking --set command=create_booking --set failure=Cancelled --progress --human
+{"event":"check","language":"python"}
+{"event":"check","language":"python"}
+{"attempt":1,"event":"fill","holes":["value"],"model":"qwen3-coder:30b"}
+{"event":"check","language":"python"}
+{"attempt":1,"event":"filled","hole":"value"}
+python-htmx/failure-arms (2 edits, 0 conflicts)
+  ~ src/bistro/booking/create_booking.py (+1 line at line 42)
+  ~ src/bistro/web/failures.py (+2 lines at line 19, compiler: create_booking_status)
+holes:
+  value (expr) src/bistro/web/failures.py:19  filled by qwen3-coder:30b: 503
+```
+
+in 2.8 seconds. Run again, it changes nothing: the union already names `Cancelled` (its
+`unless`), and pyright finds no `match` without it:
+
+```
+$ olifant gen python-htmx/failure-arms --set service=booking --set command=create_booking --set failure=Cancelled --plan --human
+Plan: python-htmx/failure-arms (1 edit, 0 conflicts)
+  = src/bistro/booking/create_booking.py (skipped: unless: line 42 of src/bistro/booking/create_booking.py matches)
+```
+
+`failure-arms` differs from rust-htmx's in two ways. It has an `insert` as well as the
+`complete` edit, since a Python union is written by hand apart from its classes, and you
+wrote only the class. And its hole is `value`, not `status`, with the instruction "the value
+this match returns for … following the other arms": a second `match` on the union might map
+failures to messages, not statuses. Its `[applies_at]`:
+
+```toml
+# packs/python-htmx/generators/failure-arms/generator.toml (excerpt)
+# In an editor (olifant actions): on a failure class in a command module.
+[applies_at]
+path  = "src/bistro/{service}/{command}.py"
+node  = { kind = "class_definition", inside = { kind = "decorated_definition", regex = "frozen=True" }, not = { has = { field = "name", regex = "Input$" } } }
+bind  = { failure = "^class ([A-Za-z0-9_]+)" }
+where = "on a failure class of the {= command|pascal =} command"
+suggest = true
+label = "Add {= failure =} to every match"
+```
+
+The node is a frozen dataclass that is not the command's `…Input`. `service` and `command`
+are `one_of` queries (a folder with a `service.py`; that folder's modules, less `models.py`,
+`ports.py` and `service.py`), so `web/failures.py`, which the path also matches, is not a
+command and offers nothing.
+
+`durandal.nvim` runs this chain end to end against a real sandbox in
+`tests/e2e_python_spec.lua`: the ghost, the name, the follow-up, the model's fill, then
+`uv run pyright` and `uv run pytest`. It is skipped unless `DURANDAL_E2E_PY` names the
+sandbox: `DURANDAL_E2E_PY=/tmp/olifant-py make test`.
+
 ## `[applies_at]`: where a generator applies
 
 Here is `failure-arms`'s:
@@ -585,6 +740,7 @@ give is set, and the rest are asked for.
 | `where` | no | a template over the path's slots: what `node` looks for, in words, finishing "`GENERATOR` applies …" (`on a field of the {= command\|pascal =} struct`). Shown when the file has no such node yet ([below](#near-misses-where-and-nearby)). Defaults to a mechanical description of the rule |
 | `suggest` | no | `true` lets an editor offer the generator unasked, as ghost text or a follow-up ([above](#ghost-text-and-follow-ups)), wherever it applies with nothing `missing`. `actions` reports it as `"suggest"`. Default `false`: the generator is only in the menu |
 | `trigger` | no | a POSIX extended regex the text before the cursor must end with: what you type to anticipate a snippet (`'^[[:space:]]*it "'`). Only `actions --at` checks it; `--file` and `olifant complete` ignore it ([below](#writing-a-snippet)). `actions` reports whether there is one as `"trigger"` |
+| `after` | no | instead of `node`: an ast-grep rule for a node the cursor's line **follows**, with only blank lines between. It is where "the next one" goes: a blank line below the last failure class, which only the module contains ([below](#after-a-node-after)). `bind` reads the node it follows |
 
 The details:
 
@@ -664,7 +820,8 @@ generator `INVALID`, `gen` exits 1, and `olifant actions` leaves it out.
 | a Perl class in a `bind` regex | `` `bind.msg`: `^(\w+)` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \s or \w) `` |
 | a `suggest` that isn't a boolean | `` `suggest`: expected true or false, got a string `` |
 | a Perl class in a `trigger` | `` `trigger`: `\s+$` is not a valid regular expression (POSIX extended: use [[:space:]] and [a-z_0-9], not \s or \w) `` |
-| an unknown key | `` unknown key(s) `colour`; expected one of `path`, `node`, `bind`, `file`, `label`, `where`, `suggest`, `trigger` `` |
+| both `node` and `after` | `` `applies_at` takes `after` or `node`, not both (`node`: the cursor is inside one; `after`: it follows one) `` |
+| an unknown key | `` unknown key(s) `colour`; expected one of `path`, `node`, `after`, `bind`, `file`, `label`, `where`, `suggest`, `trigger` `` |
 
 (Each is prefixed with the file and `` `applies_at`: ``.)
 
@@ -813,6 +970,77 @@ line anywhere but in a `Failure` enum offers nothing. `spec-case` has none, so i
 (`**/*Spec.hs`) and its trigger decide. `add-port` has no trigger and no `suggest`: it is
 only ever chosen. Anticipation should be precise, not frequent (spec §4.9); when in doubt,
 leave a snippet in the menu.
+
+### After a node: `after`
+
+`trigger` narrows *where in a node* a snippet waits. Some snippets wait *after* a node
+instead: the next failure class goes on a blank line below the last one, and at a blank
+top-level line in Python, the only node containing the cursor is the module. So
+`[applies_at]` takes `after`, an ast-grep rule like `node`, in its place. Here is
+`python-htmx/failure-variant`, whole:
+
+```toml
+# packs/python-htmx/generators/failure-variant/generator.toml
+name = "Failure variant"
+description = "A new failure for a command: a frozen dataclass with a reason, its name a tab stop (a snippet, spec §4.9); failure-arms follows up"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/failure-variant --at src/bistro/booking/create_booking.py:31:1 --plan",
+]
+
+# At the cursor, PEP 8-spaced from the class above; naming it raises the
+# failure-arms follow-up (the union and every match).
+[[edits]]
+cursor = true
+text = "\n\n@dataclass(frozen=True)\nclass {= ? Name: ident | the failure, PascalCase =}:\n    reason: str"
+
+[holes.Name]
+source = "yours"
+
+# Anticipated on a blank line right after a failure (a frozen dataclass with
+# a reason) in a service's module.
+[applies_at]
+path    = "src/bistro/*/*.py"
+after   = { kind = "decorated_definition", regex = "reason: str" }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line after a failure class"
+suggest = true
+label   = "Failure variant"
+```
+
+- **The cursor's line follows the node** when it is below the node's last line and every
+  line between them is blank. So the line right after a failure class counts, and so does
+  the one after that, but not the class's own lines, and not a line past the `type` that
+  follows the classes. When several nodes qualify, the nearest one above is the one
+  followed (`bind` reads it).
+- **It is indented like the node it follows**, not like the line above the cursor: the line
+  above is the class's last field, `    reason: str`, four spaces deeper than the class.
+- **The snippet starts with two blank lines**, which PEP 8 asks for between top-level
+  definitions. `o` on `reason: str`, then `Esc`, leaves one blank line plus the two the file
+  already had below the class, so the new class ends up with exactly two above and two
+  below.
+- **`after` and `node` don't mix**: one says the cursor is inside such a node, the other
+  that it follows one. A generator with both fails to load.
+
+`after` is not Python's: any language's snippet, or any generator, can use it. In the
+python-htmx sandbox (`scripts/try-pack.sh python-htmx`), each failure class is followed by
+the `failure-variant` action:
+
+```
+$ olifant actions --file src/bistro/booking/create_booking.py --human
+19:1  Add SlotTaken to every match  (python-htmx/failure-arms)
+21:1  Failure variant  (python-htmx/failure-variant)
+24:1  Add PartyTooLarge to every match  (python-htmx/failure-arms)
+26:1  Failure variant  (python-htmx/failure-variant)
+29:1  Add TableNotFound to every match  (python-htmx/failure-arms)
+31:1  Failure variant  (python-htmx/failure-variant)
+```
+
+Each `Failure variant` range runs over the two blank lines below its class (`{"start":[31,1],
+"end":[32,1]}` for the last). In a file with no failure class, such as `web/failures.py`, it
+is a near miss: `nearby: python-htmx/failure-variant — on a blank line after a failure
+class`.
 
 ### What the compiler says is missing: `uncovered` queries
 
@@ -999,6 +1227,9 @@ $ olifant actions --file src/Olifant/Catalog.hs --human
   body, lines 24 to 29 above). `range` is `{"start": [LINE, COL], "end": [LINE, COL]}`, with 1-based lines and
   UTF-8 byte columns as `--at` takes them; `end` is just past the node (`Unknown(String)` on
   line 26 runs from column 5 to 20, the `,` after it).
+- **An `after` rule's action** has one entry per node it matches too, but its `range` is
+  where the cursor would follow the node: the blank lines after it, from the first to the
+  last, each at column 1, which is where `--at` applies ([above](#after-a-node-after)).
 - **A generator without `node`** applies to the whole file: one entry with `"range": null`,
   listed first. Its human line starts with `file` instead of `LINE:COL`:
 
