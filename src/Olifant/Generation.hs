@@ -45,7 +45,7 @@ import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless
 import Olifant.Language (Language (..), Match (..), Syntax (..), languageFor, matchesGlob)
 import Olifant.Holes (HoleSite (..), hasMarkers, matchesWithHoles, placeHoles, placeholderizeWith)
 import Olifant.Snippet (holeSource)
-import Olifant.Generation.FillPhase (applyFills, fillPhase)
+import Olifant.Generation.FillPhase (applyFills, fillPhase, splitImports)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
 import Olifant.Template (TemplateError, Value (..), describeTemplateError)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative)
@@ -202,10 +202,12 @@ generate ws resolve tools steps now mode =
       let filled = [(phSite h, f) | h <- holes, Just f <- [phFill h]]
           langOf = languageFor (toolLanguages tools)
           withFills imports p t = M.findWithDefault t p (applyFills imports (M.singleton p t) [(s {holeFile = p}, f) | (s, f) <- filled])
+          -- a fragment: each fill's code, its imports split off (shown nowhere)
+          fragment p t = M.findWithDefault t p (applyFills (const Nothing) (M.singleton p t) [(s {holeFile = p}, snd (splitImports (langImports =<< langOf (holeFile s)) f)) | (s, f) <- filled])
           shownFilled = [e {editAction = case editAction e of
                                WillCreate t -> WillCreate (withFills langOf (editPath e) t)
                                WillOverwrite t -> WillOverwrite (withFills langOf (editPath e) t)
-                               WillInsert n t -> WillInsert n (withFills (const Nothing) (editPath e) t)
+                               WillInsert n t -> WillInsert n (fragment (editPath e) t)
                                other -> other} | e <- shown]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before) (M.filter hasMarkers changed) Nothing
       when (mode == Apply && not (hasConflicts plan)) $

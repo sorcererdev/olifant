@@ -1375,8 +1375,9 @@ Then `generate` makes the shown edits match the writes:
 `shownFilled` applies `withFills` to every edit's text, so `--plan` shows the fill where
 the placeholder was. `withFills` is `applyFills` on that one text, so a created or
 overwritten file shows the fill's imports where they went and its continuation lines
-indented as written; an inserted fragment is shown with the code only (`const Nothing`
-for the imports).
+indented as written; an inserted fragment (`fragment`) is shown with each fill's code
+only, its import lines split off with `splitImports` (they appear in the file's imports in
+`planWrites`, not in the fragment).
 
 **The real filler** is in `Model.hs`. `parseModelConfig` (`:59`) reads `[model]`: `default`,
 `retries` (2), `timeout` (120 seconds) and `[model.backends.NAME]`, each a `Backend`

@@ -760,6 +760,23 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (ws, _) <- memoryWorkspace []
     Right plan <- generate ws noResolve tools [Step twice M.empty] now PlanOnly
     [t | e <- planEdits plan, WillCreate t <- [editAction e]] `shouldBe` ["a = 1\nb = 2\n"]
+  it "(m4) an inserted fragment shows the fill's code, not its imports (they go to the file's imports; review I4)" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "insert = \"src/c.py\"", "at = \"end of file\"", "text = \"NOW = {= ? now: expr | now =}\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("now", "from datetime import datetime\n\ndatetime.now()")]))
+        tools = (basicTools noSyntax compiles [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, _) <- memoryWorkspace [("src/c.py", "import os\n\nX = 1\n")]
+    Right plan <- generate ws noResolve tools [Step gen M.empty] now PlanOnly
+    [t | e <- planEdits plan, WillInsert _ t <- [editAction e]] `shouldBe` ["NOW = datetime.now()"]
+    M.lookup "src/c.py" (planWrites plan) `shouldBe` Just "import os\nfrom datetime import datetime\n\nX = 1\nNOW = datetime.now()\n"
   it "(m3) imports from one module merge into one line (the language's import_merge)" $ do
     let pyLang = l
           where
