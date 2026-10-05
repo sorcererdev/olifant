@@ -5,6 +5,7 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
+import Olifant.GitInit (gitInit)
 import Olifant.Cli (DoctorPorts (..), Runtime (..), parseDiffHunks, runCli)
 import Olifant.Model (probeBackend)
 import Data.Maybe (fromMaybe, isJust)
@@ -79,19 +80,4 @@ gitChanged dir ref = do
       pure $ case code of
         ExitSuccess -> Right (T.pack out)
         ExitFailure _ -> Left ("git " <> T.pack (unwords args) <> ": " <> T.strip (T.pack err))
-
--- | `olifant init`'s first commit: `git init` when there is no repository,
--- then everything added and committed.
-gitInit :: FilePath -> T.Text -> IO (Either T.Text ())
-gitInit dir message =
-  findExecutable "git" >>= \case
-    Nothing -> pure (Left "git is not installed")
-    Just git -> do
-      let run args = readProcessWithExitCode git (["-C", dir] ++ args) ""
-      (c1, _, e1) <- run ["init", "-q"]
-      (c2, _, e2) <- run ["add", "-A"]
-      (c3, _, e3) <- run ["commit", "-qm", T.unpack message]
-      pure $ case [e | (c, e) <- [(c1, e1), (c2, e2), (c3, e3)], c /= ExitSuccess] of
-        [] -> Right ()
-        e : _ -> Left (T.strip (T.pack e))
 

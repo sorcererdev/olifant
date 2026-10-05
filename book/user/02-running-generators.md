@@ -58,7 +58,9 @@ In order, it:
    holes are filled the way you set up ([chapter 12](12-holes-and-models.md)).
 4. **Runs the starter** with `name`, then sets up every owned region it made (as `sync
    --init`; python-htmx's `resources` list).
-5. **Commits**: `git init`, then a first commit `olifant init: PACK`.
+5. **Commits**: `git init`, then a first commit `olifant init: PACK`. Inside another
+   repository (a monorepo's `apps/`), it neither nests a repository nor commits: `note: no
+   first commit: it is inside the git repository at …; add and commit it there`.
 6. **Prints the next steps**, the starter's `next` lines.
 
 `--plan` shows the starter's plan and writes nothing; `--json` gives the plan as JSON.

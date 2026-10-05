@@ -61,6 +61,7 @@ library
     Olifant.Generator.Inputs
     Olifant.Generator.Load
     Olifant.Generator.Schema
+    Olifant.GitInit
     Olifant.GeneratorTesting
     Olifant.Glob
     Olifant.Holes
@@ -122,6 +123,7 @@ test-suite spec
     Olifant.Cli.Options
     Olifant.Cli.Output
     Olifant.CliSpec
+    Olifant.GitInitSpec
     Olifant.Cursor
     Olifant.CursorSpec
     Olifant.Doctor
@@ -143,6 +145,7 @@ test-suite spec
     Olifant.Generator.Inputs
     Olifant.Generator.Load
     Olifant.Generator.Schema
+    Olifant.GitInit
     Olifant.GeneratorSpec
     Olifant.GeneratorTesting
     Olifant.GeneratorTestingSpec
