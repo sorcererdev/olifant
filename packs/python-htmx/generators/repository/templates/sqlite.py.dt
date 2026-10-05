@@ -1,0 +1,51 @@
+"""{= Entity =}Repository in SQLite (stdlib sqlite3): one row per {= e =}, a column per field."""
+
+import sqlite3
+from typing import Any
+
+from {= pkg =}.models.{= e =} import {= Entity =}
+
+SCHEMA = """
+create table if not exists "{= e =}" (
+{=- for f in fields =}
+    "{= f.name =}" {= if f.scalar == "int" or f.scalar == "bool" =}integer{= elif f.scalar == "float" =}real{= else =}text{= end =} not null{= if loop.first =} primary key{= end =}{= if not loop.last =},{= end =}
+{=- end =}
+)
+"""
+COLUMNS = '{= for f in fields =}"{= f.name =}"{= if not loop.last =}, {= end =}{= end =}'
+VALUES = "{= for f in fields =}:{= f.name =}{= if not loop.last =}, {= end =}{= end =}"
+
+
+class Sqlite{= Entity =}Repository:
+    def __init__(self, path: str) -> None:
+        self._db = sqlite3.connect(path, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.execute(SCHEMA)
+
+    def get(self, {= for f in fields =}{= if loop.first =}{= f.name =}: {= f.type =}{= end =}{= end =}) -> {= Entity =} | None:
+        row = self._db.execute(f'select {COLUMNS} from "{= e =}" where "{= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =}" = ?', ({= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =},)).fetchone()
+        return _decode(row) if row else None
+
+    def save(self, {= e =}: {= Entity =}) -> None:
+        self._db.execute(f'insert or replace into "{= e =}" ({COLUMNS}) values ({VALUES})', _encode({= e =}))
+        self._db.commit()
+
+    def all(self) -> list[{= Entity =}]:
+        rows = self._db.execute(f'select {COLUMNS} from "{= e =}" order by "{= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =}"')
+        return [_decode(row) for row in rows]
+
+
+def _encode({= e =}: {= Entity =}) -> dict[str, Any]:
+    return {
+{=- for f in fields =}
+        "{= f.name =}": {= if f.scalar =}{= e =}.{= f.name =}{= else =}{= ? encode: expr | {= e =}.{= f.name =} (a {= f.type =}) as text for SQLite, in ISO formats where they exist, which the matching decode reads back =}{= end =},
+{=- end =}
+    }
+
+
+def _decode(row: sqlite3.Row) -> {= Entity =}:
+    return {= Entity =}(
+{=- for f in fields =}
+        {= f.name =}={= if f.scalar == "bool" =}bool(row["{= f.name =}"]){= elif f.scalar =}row["{= f.name =}"]{= else =}{= ? decode: expr | row["{= f.name =}"] (the text the matching encode wrote) back to a {= f.type =} =}{= end =},
+{=- end =}
+    )

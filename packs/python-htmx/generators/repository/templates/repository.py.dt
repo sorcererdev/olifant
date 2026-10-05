@@ -1,0 +1,17 @@
+"""Where {= Entity =}s are kept: by {= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =}, one each."""
+
+from typing import Protocol
+
+from {= pkg =}.models.{= e =} import {= Entity =}
+
+
+class {= Entity =}Repository(Protocol):
+    def get(self, {= for f in fields =}{= if loop.first =}{= f.name =}: {= f.type =}{= end =}{= end =}) -> {= Entity =} | None: ...
+
+    def save(self, {= e =}: {= Entity =}) -> None:
+        """Adds it, or replaces the one with its {= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =}."""
+        ...
+
+    def all(self) -> list[{= Entity =}]:
+        """Every one, in {= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =} order."""
+        ...

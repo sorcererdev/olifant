@@ -1,0 +1,73 @@
+name = "Repository"
+description = "A repository port for a model: its Protocol, an in-memory and a SQLite adapter beside it, and a contract test over both (passing once any value-field codecs are filled)"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/repository --set app=bistro --set service=booking --set entity=table",
+]
+
+# The model filling a value field's codec sees the service's models (a
+# Slot's fields, say).
+context = ["src/{= app =}/{= service|snake =}/models/*.py"]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service the model belongs to"
+
+[inputs.entity]
+type   = "enum"
+one_of = "models"
+prompt = "The model to keep (one of the service's models/)"
+
+[derive]
+Entity = "{= entity|pascal =}"
+e      = "{= entity|snake =}"
+port   = "{= entity|snake =}_repository"
+pkg    = "{= app =}.{= service|snake =}"
+dir    = "src/{= app =}/{= service|snake =}/ports/{= entity|snake =}_repository"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+[query.models]
+glob    = "src/{= app =}/{= service|snake =}/models/*.py"
+exclude = ["**/__init__.py"]
+value   = "file name"
+
+# The model's fields, in order: `name: type` lines of its class body. The
+# first is the key. `scalar` is the type when SQLite stores it as is.
+[query.fields]
+files = "src/{= app =}/{= service|snake =}/models/{= entity|snake =}.py"
+ast   = { kind = "assignment", has = { field = "type", kind = "type" }, inside = { kind = "expression_statement", inside = { kind = "block", inside = { kind = "class_definition" } } } }
+each  = { name = "^([a-z_][a-z_0-9]*):", type = "^[a-z_][a-z_0-9]*: ([^=]*[^= ])", scalar = "^[a-z_][a-z_0-9]*: (str|int|float|bool)( |$)" }
+
+[[edits]]
+create = "{= dir =}/__init__.py"
+text   = ""
+
+[[edits]]
+create   = "{= dir =}/{= port =}.py"
+template = "repository.py.dt"
+
+[[edits]]
+create   = "{= dir =}/in_memory_{= port =}.py"
+template = "in_memory.py.dt"
+
+[[edits]]
+create   = "{= dir =}/sqlite_{= port =}.py"
+template = "sqlite.py.dt"
+
+[[edits]]
+create   = "{= dir =}/{= port =}__test.py"
+template = "contract_test.py.dt"

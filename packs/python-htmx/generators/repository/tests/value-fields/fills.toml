@@ -1,0 +1,9 @@
+# Recorded from qwen3-coder:30b via Ollama (2026-10-05): two rounds; the
+# second added each decode's and sample's imports after "date is not defined".
+[fills]
+"encode[src/bistro/booking/ports/visit_repository/sqlite_visit_repository.py:46]" = "visit.day.isoformat()"
+"encode[src/bistro/booking/ports/visit_repository/sqlite_visit_repository.py:47]" = "f\"{visit.slot.day.isoformat()} {visit.slot.start.strftime('%H:%M')}\""
+"decode[src/bistro/booking/ports/visit_repository/sqlite_visit_repository.py:58]" = "from datetime import date\n\ndate.fromisoformat(row[\"day\"])"
+"decode[src/bistro/booking/ports/visit_repository/sqlite_visit_repository.py:59]" = "from datetime import date, time\nfrom bistro.booking.models.slot import Slot\n\nSlot(\n    day=date.fromisoformat(row[\"slot\"].split()[0]),\n    start=time.fromisoformat(row[\"slot\"].split()[1]),\n)"
+"sample[src/bistro/booking/ports/visit_repository/visit_repository__test.py:24]" = "from datetime import date\n\ndate(2023, 10, 5)"
+"sample[src/bistro/booking/ports/visit_repository/visit_repository__test.py:25]" = "from datetime import date, time\nfrom bistro.booking.models.slot import Slot\n\nSlot(day=date(2023, 10, 5), start=time(18, 30))"
