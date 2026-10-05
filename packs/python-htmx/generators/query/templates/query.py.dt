@@ -1,0 +1,21 @@
+"""{= ? purpose: text | what this query answers =}"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class {= Query =}Input:
+    {= ? field: ident | its first input =}: {= ? type: ident | that input's type =}
+
+
+@dataclass(frozen=True)
+class {= Query =}Result:
+    {= ? field: ident | its first input =}: {= ? type: ident | that input's type =}
+
+
+class {= Query =}:
+    def __init__(self) -> None:
+        pass
+
+    def handle(self, input: {= Query =}Input) -> {= Query =}Result:
+        raise NotImplementedError("{= Query =}.handle: write its first case in {= query_ =}__test.py, then this")

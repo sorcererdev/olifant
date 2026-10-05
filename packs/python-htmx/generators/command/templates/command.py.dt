@@ -1,0 +1,30 @@
+"""{= ? purpose: text | what this command does =}"""
+
+from dataclasses import dataclass
+
+from {= app =}.shared.result import Ok
+
+
+@dataclass(frozen=True)
+class {= Command =}Input:
+    {= ? field: ident | its first input =}: {= ? type: ident | that input's type =}
+
+
+@dataclass(frozen=True)
+class {= ? failure: ident | the first way it can fail =}:
+    reason: str
+
+
+type {= Command =}Failure = (
+    {= ? failure: ident | the first way it can fail =}
+)
+
+type {= Command =}Output = Ok[{= ? value: ident | what it returns when it succeeds =}] | {= Command =}Failure
+
+
+class {= Command =}:
+    def __init__(self) -> None:
+        pass
+
+    def handle(self, input: {= Command =}Input) -> {= Command =}Output:
+        raise NotImplementedError("{= Command =}.handle: write its first case in {= command_ =}__test.py, then this")

@@ -1,0 +1,11 @@
+from {= module =} import {= Query =}, {= Query =}Input, {= Query =}Result
+
+
+def query() -> {= Query =}:
+    return {= Query =}()
+
+
+def test_{= query_ =}_answers() -> None:
+    {= query_ =} = query()
+    result = {= query_ =}.handle({= Query =}Input({= ? field: ident | its first input =}="1"))
+    assert result == {= Query =}Result({= ? field: ident | its first input =}="1")
