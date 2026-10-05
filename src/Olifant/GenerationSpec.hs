@@ -760,6 +760,23 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (ws, _) <- memoryWorkspace []
     Right plan <- generate ws noResolve tools [Step twice M.empty] now PlanOnly
     [t | e <- planEdits plan, WillCreate t <- [editAction e]] `shouldBe` ["a = 1\nb = 2\n"]
+  it "(m3) imports from one module merge into one line (the language's import_merge)" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
+              , "[import_merge]", "pattern = \"^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$\"", "write = \"from {= module =} import {= names =}\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/c.py\"", "text = \"from x import Visit\\n\\nA = {= ? a: expr | a =}\\nB = {= ? b: expr | b =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("a", "from datetime import date\n\ndate.today()"), ("b", "from datetime import date, time\nfrom x import Slot, Visit\n\nSlot(date.today(), time(9))")]))
+        tools = (basicTools noSyntax compiles [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "from x import Visit, Slot\nfrom datetime import date, time\n\nA = date.today()\nB = Slot(date.today(), time(9))\n"
   it "(m2) with no imports in the file, a fill's imports go after its leading docstring and comments" $ do
     let pyLang = l
           where

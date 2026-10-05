@@ -200,11 +200,11 @@ generate ws resolve tools steps now mode =
       -- placed as they are written. A whole file shows a fill's imports where
       -- they went; an inserted fragment shows only the fill's code.
       let filled = [(phSite h, f) | h <- holes, Just f <- [phFill h]]
-          importsOf p = langImports =<< languageFor (toolLanguages tools) p
+          langOf = languageFor (toolLanguages tools)
           withFills imports p t = M.findWithDefault t p (applyFills imports (M.singleton p t) [(s {holeFile = p}, f) | (s, f) <- filled])
           shownFilled = [e {editAction = case editAction e of
-                               WillCreate t -> WillCreate (withFills importsOf (editPath e) t)
-                               WillOverwrite t -> WillOverwrite (withFills importsOf (editPath e) t)
+                               WillCreate t -> WillCreate (withFills langOf (editPath e) t)
+                               WillOverwrite t -> WillOverwrite (withFills langOf (editPath e) t)
                                WillInsert n t -> WillInsert n (withFills (const Nothing) (editPath e) t)
                                other -> other} | e <- shown]
           plan = Plan (GeneratorId (T.intercalate " + " ids)) (zip ids (map stepSets steps)) now shownFilled (map pointBackConflict (conflicts ++ holeConflicts)) (map snd unparsed ++ map pointBack (warnings ++ fillWarnings) ++ unsetWarnings) writes holes (M.fromList before) (M.filter hasMarkers changed) Nothing

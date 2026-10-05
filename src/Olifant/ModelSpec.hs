@@ -31,11 +31,14 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
   it "asks an openai-compatible endpoint for tagged blocks, with the rules and the holes" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") request)))
     mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"m\"", "\"role\":\"system\"", "<fill name=\\\"NAME\\\">", "status", "the HTTP status", "a.rs: BAD is not defined", "failure = too_late"]
-  it "says a fill may begin with imports only where the language moves them" $ do
-    let prompt r = userPrompt r
-        withImports = request {frHoles = [h {fhImports = True} | h <- frHoles request]}
-    prompt request `shouldNotSatisfy` T.isInfixOf "begin the fill with the import lines"
-    prompt withImports `shouldSatisfy` T.isInfixOf "begin the fill with the import lines"
+  it "says a fill may begin with imports only where the language moves them, once, and on a retry" $ do
+    let withImports = request {frHoles = [h {fhImports = True} | h <- frHoles request]}
+        rule = "start the fill with the import line"
+    userPrompt request `shouldNotSatisfy` T.isInfixOf rule
+    length (T.breakOnAll rule (userPrompt withImports)) `shouldBe` 1
+    -- the retry points at it (the previous fill failed)
+    userPrompt withImports `shouldSatisfy` T.isInfixOf "If it failed on a name that is not defined, add that name's import line first."
+    userPrompt request `shouldNotSatisfy` T.isInfixOf "add that name's import line first"
   it "shows related files (a fix's context, e.g. the port's trait) to the model" $ do
     let withContext = request {frContext = [("src/ports/invoice_repository.rs", "pub trait InvoiceRepository { async fn get(&self, id: Uuid) -> Option<Invoice>; }")]}
         body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") withContext)))

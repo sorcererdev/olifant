@@ -93,6 +93,19 @@ userPrompt req =
     ["Generator inputs:"]
       ++ ["  " <> k <> " = " <> v | (k, v) <- frInputs req]
       ++ concat [["", "Related file " <> T.pack p <> ":", "```", c, "```"] | (p, c) <- frContext req]
+      ++ ( if any fhImports (frHoles req)
+             then
+               [ ""
+               , "Imports: if your code uses a name its file does not import or define, start the fill with the import line;"
+               , "it is moved to the file's imports. For example, a fill that needs `date`:"
+               , "<fill name=\"x\">"
+               , "from datetime import date"
+               , ""
+               , "date.fromisoformat(text)"
+               , "</fill>"
+               ]
+             else []
+         )
       ++ concatMap hole (frHoles req)
       ++ ["", "Reply with " <> T.intercalate " " ["<fill name=\"" <> fhName h <> "\">…</fill>" | h <- frHoles req] <> "."]
   where
@@ -101,9 +114,8 @@ userPrompt req =
       , "Hole `" <> fhName h <> "` (kind: " <> fhKind h <> ") in " <> T.pack (fhFile h)
       , "Instruction: " <> fhInstruction h
       ]
-        ++ ["If the code needs a name the file does not import, begin the fill with the import lines; they are moved to the file's imports." | fhImports h]
         ++ ["The file around it:", "```", fhContext h, "```"]
-        ++ maybe [] (\(f, why) -> ["Your previous fill was:", "```", f, "```", "It failed: " <> why, "Fix it."]) (fhPrevious h)
+        ++ maybe [] (\(f, why) -> ["Your previous fill was:", "```", f, "```", "It failed: " <> why, "Fix it." <> (if fhImports h then " If it failed on a name that is not defined, add that name's import line first." else "")]) (fhPrevious h)
 
 requestBody :: Backend -> FillRequest -> Value
 requestBody b req = case b of

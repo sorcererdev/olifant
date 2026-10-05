@@ -12,6 +12,12 @@ branch = "case {= pattern =}:\n    {= body =}"
 # the file's imports.
 imports = "^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$"
 
+# `from datetime import time` joins `from datetime import date`: one line
+# per module.
+[import_merge]
+pattern = "^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$"
+write   = "from {= module =} import {= names =}"
+
 [check]
 command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
 context = ["pyproject.toml", "uv.lock"]

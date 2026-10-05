@@ -18,7 +18,8 @@ import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
-import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
+import Olifant.Template (Value (..), render)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import System.FilePath (splitDirectories)
 
 -- | A hole being tried: attempts so far and the previous (fill, why).
@@ -51,7 +52,7 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
               candidates = [(t, f) | (t, f, True) <- parsed]
               known = [(s', f') | (s', f', _) <- M.elems accepted]
-              with cs = applyFills importsOf base (known ++ [(site t, f) | (t, f) <- cs])
+              with cs = applyFills langOf base (known ++ [(site t, f) | (t, f) <- cs])
           (broken0, note) <- checkFiles (with candidates) [site t | (t, _) <- candidates]
           -- errors the files had with their placeholders are not the fills'
           -- (python review I1); checked only when something is broken
@@ -85,7 +86,7 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
             (_, why : _) -> h {phStatus = HoleUnfilled why}
             _ -> h
           warnings = ["holes were filled but not compile-checked: " <> n | n <- nub notes, not (M.null accepted)]
-       in (applyFills importsOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
+       in (applyFills langOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
 
     name = holeName . site
     site = phSite . tryHole
@@ -94,7 +95,8 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
       let s = site t
        in FillHole (holeName s) (holeKind s) (holeInstruction s) (holeFile s) (context s) (tryPrevious t) (isJust (importsOf (holeFile s)))
 
-    importsOf p = langImports =<< languageFor (toolLanguages tools) p
+    langOf = languageFor (toolLanguages tools)
+    importsOf p = langImports =<< langOf p
 
     -- The file around the hole (100 lines each side), the hole marked.
     context s =
@@ -136,18 +138,21 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
 -- earlier fills moved it; continuation lines take that line's indentation.
 --
 -- A fill's leading import lines (the language's `imports`) are not code for
--- the hole: each joins the file's imports, unless the file has it already.
-applyFills :: (FilePath -> Maybe Text) -> Map FilePath Text -> [(HoleSite, Text)] -> Map FilePath Text
-applyFills importsOf = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) files)
+-- the hole: each joins the file's imports, unless the file has it already
+-- (or, with `[import_merge]`, adds its new names to the line that imports
+-- from the same module).
+applyFills :: (FilePath -> Maybe Language) -> Map FilePath Text -> [(HoleSite, Text)] -> Map FilePath Text
+applyFills langOf = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) files)
   where
     fillIn s f t = case T.breakOn (holePlaceholder s) t of
       (_, "") -> t
       (before, after) ->
-        let (imports, code) = splitImports (importsOf (holeFile s)) f
+        let lang = langOf (holeFile s)
+            (imports, code) = splitImports (langImports =<< lang) f
             lineStart = snd (T.breakOnEnd "\n" before)
             indent = T.takeWhile (`elem` (" \t" :: String)) lineStart
             body = T.intercalate ("\n" <> indent) (T.splitOn "\n" (T.strip code))
-         in addImports (importsOf (holeFile s)) imports (before <> body <> T.drop (T.length (holePlaceholder s)) after)
+         in maybe id (\l -> addImports l imports) lang (before <> body <> T.drop (T.length (holePlaceholder s)) after)
 
 -- | A fill's leading import lines (blank lines between them dropped), and
 -- the code after them.
@@ -157,25 +162,45 @@ splitImports (Just re) f = go [] (T.splitOn "\n" f)
   where
     go acc (l : rest)
       | T.null (T.strip l) && not (null acc) = go acc rest
-      | isImport re l = go (acc ++ [T.strip l]) rest
+      | matches re l = go (acc ++ [T.strip l]) rest
     go acc rest = (acc, T.intercalate "\n" rest)
 
-isImport :: Text -> Text -> Bool
-isImport re l = maybe False (`matchTest` T.unpack (T.strip l)) (makeRegexM (T.unpack re) :: Maybe Regex)
+matches :: Text -> Text -> Bool
+matches re l = maybe False (`matchTest` T.unpack (T.strip l)) (makeRegexM (T.unpack re) :: Maybe Regex)
 
--- | New import lines after the file's last top-level import; with none,
--- after its leading comments and docstring, a blank line between.
-addImports :: Maybe Text -> [Text] -> Text -> Text
-addImports Nothing _ t = t
-addImports (Just re) new t = case filter (`notElem` ls) (nub new) of
-  [] -> t
-  fresh -> case [i | (i, l) <- zip [0 :: Int ..] ls, not (T.isPrefixOf " " l), not (T.isPrefixOf "\t" l), isImport re l] of
-    [] -> let (header, rest) = splitAt (headerEnd ls) ls
-           in T.intercalate "\n" (header ++ [""] ++ fresh ++ (if headOr "" rest == "" then rest else "" : rest))
-    is -> let (upTo, rest) = splitAt (last is + 1) ls in T.intercalate "\n" (upTo ++ fresh ++ rest)
+-- | The module and names of an import line, by `[import_merge]`.
+merging :: ImportMerge -> Text -> Maybe (Text, [Text])
+merging m l = case (makeRegexM (T.unpack (mergePattern m)) :: Maybe Regex) of
+  Nothing -> Nothing
+  Just re -> case matchM re (T.unpack l) of
+    Just (AllTextSubmatches (_ : modu : names : _)) -> Just (T.pack modu, filter (not . T.null) (map T.strip (T.splitOn "," (T.pack names))))
+    _ -> Nothing
+
+-- | Each import line the file lacks, in order: merged into the line that
+-- imports from its module (`[import_merge]`), or put after the file's last
+-- top-level import (with none, after its leading comments and docstring, a
+-- blank line between).
+addImports :: Language -> [Text] -> Text -> Text
+addImports lang new t = case langImports lang of
+  Nothing -> t
+  Just re -> T.intercalate "\n" (foldl (add re) (T.splitOn "\n" t) (nub new))
   where
-    ls = T.splitOn "\n" t
-    headOr d = \case [] -> d; x : _ -> x
+    topLevel l = not (T.isPrefixOf " " l) && not (T.isPrefixOf "\t" l)
+    add re ls line
+      | line `elem` ls = ls
+      | Just m <- langImportMerge lang
+      , Just (modu, names) <- merging m line
+      , (i, have) : _ <- [(i, ns) | (i, l) <- zip [0 :: Int ..] ls, topLevel l, Just (mo, ns) <- [merging m l], mo == modu] =
+          case filter (`notElem` have) names of
+            [] -> ls
+            more -> case render (M.fromList [("module", VText modu), ("names", VText (T.intercalate ", " (have ++ more)))]) (mergeWrite m) of
+              Right merged -> take i ls ++ [merged] ++ drop (i + 1) ls
+              Left _ -> ls
+      | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, topLevel l, matches re l] of
+          [] ->
+            let (header, rest) = splitAt (headerEnd ls) ls
+             in header ++ [""] ++ [line] ++ (case rest of "" : _ -> rest; _ -> "" : rest)
+          is -> let (upTo, rest) = splitAt (last is + 1) ls in upTo ++ [line] ++ rest
 
 -- | Lines at the top that are comments or a docstring: where a first import
 -- goes after.
@@ -187,7 +212,7 @@ headerEnd = go 0
       | Just q <- quote l = let n = closing q (T.drop 3 (T.strip l)) rest in go (i + 1 + n) (drop n rest)
     go i _ = i
     quote l = case T.take 3 (T.strip l) of
-      q | q `elem` ["\"\"\"", "'''"] -> Just q
+      q | q `elem` ["\"\"\"", "\'\'\'"] -> Just q
       _ -> Nothing
     -- lines after the opening one, up to and including the closing one
     closing q first rest

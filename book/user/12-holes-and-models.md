@@ -405,7 +405,13 @@ Like `--plan`, `--model` and `--no-fill` apply to the whole run, wherever they a
 **A request contains your code.** For every hole, the request holds up to 201 lines of the
 file the hole is in, as the plan would leave it, along with the generator's inputs, and
 the whole of each file the generator's `context` globs match (shown as "Related file …";
-a rule fix's `context` works the same way). With
+a rule fix's `context` works the same way). When a hole's language has `imports`
+([chapter 9](09-packs-and-language-adapters.md)), the message says once, with an example,
+that a fill may start with import lines, and a retry adds "If it failed on a name that is
+not defined, add that name's import line first." Measured on qwen3-coder:30b filling
+`python-htmx/repository`'s six codec holes: a one-line note per hole got no imports in
+three rounds (every decode failed on `date`); the rule with an example, plus the retry
+line, got all six in two rounds. With
 the `anthropic` backend, or any `openai-compatible` URL that isn't on your machine, that
 text leaves your machine. If your code must not, use a local model, or `--no-fill`. Here is
 the start of a real request body to Ollama:

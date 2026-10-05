@@ -5,6 +5,7 @@ module Olifant.Language.Adapter
   , TargetDef (..)
   , CheckDef (..)
   , HoleKind (..)
+  , ImportMerge (..)
   , parseLanguage
   , matchesGlob
   , languageFor
@@ -46,6 +47,9 @@ data Language = Language
   , langImports :: Maybe Text
   -- ^ `imports`: a POSIX expression matching one import line. A fill may
   -- begin with such lines; they join the file's imports
+  , langImportMerge :: Maybe ImportMerge
+  -- ^ `[import_merge]`: how an import of names from a module joins a line
+  -- that already imports from it
   }
   deriving stock (Show)
 
@@ -54,6 +58,12 @@ data Language = Language
 -- in ('kindWrap', containing the literal @{= fill =}@, or @{= fill|indent =}@
 -- for a body: every line one level in).
 data HoleKind = HoleKind {kindPlaceholder :: Template, kindWrap :: Text}
+  deriving stock (Show)
+
+-- | `[import_merge]`: 'mergePattern' matches an import line, its first group
+-- the module and its second the names (comma-separated); 'mergeWrite' writes
+-- a line from @module@ and @names@.
+data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
   deriving stock (Show)
 
 data Grammar = BuiltInGrammar Text | GrammarSource FilePath
@@ -68,7 +78,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -79,13 +89,21 @@ parseLanguage name packRoot src = do
   indent <- fromMaybe "    " <$> optional "indent" text top
   holes <- maybe [] M.toList <$> optional "holes" (table >=> traverse (\v -> table v >>= holeKindFrom)) top
   imports <- optional "imports" (text >=> \re -> maybe (Left ("`imports` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))) top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports)
+  importMerge <- optional "import_merge" (table >=> importMergeFrom) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importMerge)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)
       TTable t -> onlyKeys ["source"] t >> GrammarSource . (\s -> packRoot </> "languages" </> T.unpack s) <$> required "source" text t
       other -> Left ("expected a built-in grammar name or { source = \"dir\" }, got " <> describeTree other)
+    importMergeFrom t = do
+      onlyKeys ["pattern", "write"] t
+      re <- required "pattern" text t
+      _ <- maybe (Left ("`import_merge.pattern` is not a valid expression: " <> re)) (\(r :: Regex) -> Right r) (makeRegexM (T.unpack re))
+      write <- required "write" (text >=> tmpl) t
+      if freeVariables write `S.isSubsetOf` S.fromList ["module", "names"] then Right () else Left "`import_merge.write` may use only {= module =} and {= names =}"
+      pure (ImportMerge re write)
     holeKindFrom t = do
       onlyKeys ["placeholder", "wrap"] t
       ph <- required "placeholder" (text >=> tmpl) t
