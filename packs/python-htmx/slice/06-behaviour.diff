@@ -1,0 +1,346 @@
+diff --git a/src/bistro/booking/commands/cancel_booking.py b/src/bistro/booking/commands/cancel_booking.py
+index 528eec8..1f49e73 100644
+--- a/src/bistro/booking/commands/cancel_booking.py
++++ b/src/bistro/booking/commands/cancel_booking.py
+@@ -1,4 +1,4 @@
+-"""Cancel booking."""
++"""Cancel a booking."""
+ 
+ from dataclasses import dataclass
+ 
+@@ -29,4 +29,7 @@ class CancelBooking:
+         self.bookings = bookings
+ 
+     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:
+-        raise NotImplementedError("CancelBooking.handle: write its first case in cancel_booking__test.py, then this")
++        if self.bookings.get(input.id) is None:
++            return NotFound(f"there is no booking {input.id}")
++        self.bookings.remove(input.id)
++        return Ok(None)
+diff --git a/src/bistro/booking/commands/cancel_booking__test.py b/src/bistro/booking/commands/cancel_booking__test.py
+index 6dc5725..688d232 100644
+--- a/src/bistro/booking/commands/cancel_booking__test.py
++++ b/src/bistro/booking/commands/cancel_booking__test.py
+@@ -1,15 +1,23 @@
+-from bistro.booking.commands.cancel_booking import CancelBooking, CancelBookingInput
++from datetime import date, time
++
++from bistro.booking.commands.cancel_booking import CancelBooking, CancelBookingInput, NotFound
++from bistro.booking.models.booking import Booking
+ from bistro.shared.result import Ok
+ from bistro.booking.ports.booking_repository.in_memory_booking_repository import InMemoryBookingRepository
+ 
+ 
+-def command() -> CancelBooking:
++def command(bookings: InMemoryBookingRepository) -> CancelBooking:
+     return CancelBooking(
+-        bookings=InMemoryBookingRepository(),
++        bookings=bookings,
+     )
+ 
+ 
+-def test_cancel_booking_succeeds() -> None:
+-    cancel_booking = command()
+-    result = cancel_booking.handle(CancelBookingInput(id="1"))
+-    assert result == Ok(None)
++def test_cancels_a_booking() -> None:
++    bookings = InMemoryBookingRepository()
++    bookings.save(Booking(id="b1", table_id="t1", day=date(2026, 10, 9), start=time(19, 0), party=2, guest="Ada"))
++    assert command(bookings).handle(CancelBookingInput(id="b1")) == Ok(None)
++    assert bookings.all() == []
++
++
++def test_refuses_a_booking_that_does_not_exist() -> None:
++    assert command(InMemoryBookingRepository()).handle(CancelBookingInput(id="b9")) == NotFound("there is no booking b9")
+diff --git a/src/bistro/booking/commands/create_booking.py b/src/bistro/booking/commands/create_booking.py
+index 9e51928..f136934 100644
+--- a/src/bistro/booking/commands/create_booking.py
++++ b/src/bistro/booking/commands/create_booking.py
+@@ -1,7 +1,9 @@
+-"""Create booking."""
++"""Book a table for a party on a day at a time."""
+ 
+ from dataclasses import dataclass
++from datetime import date, time
+ 
++from bistro.booking.models.booking import Booking
+ from bistro.shared.result import Ok
+ from bistro.booking.ports.booking_repository.booking_repository import BookingRepository
+ from bistro.booking.ports.table_repository.table_repository import TableRepository
+@@ -10,19 +12,35 @@ from bistro.booking.ports.id_generator.id_generator import IdGenerator
+ 
+ @dataclass(frozen=True)
+ class CreateBookingInput:
+-    id: str
++    table_id: str
++    day: date
++    start: time
++    party: int
++    guest: str
+ 
+ 
+ @dataclass(frozen=True)
+-class NotFound:
++class TableNotFound:
++    reason: str
++
++
++@dataclass(frozen=True)
++class PartyTooLarge:
++    reason: str
++
++
++@dataclass(frozen=True)
++class SlotTaken:
+     reason: str
+ 
+ 
+ type CreateBookingFailure = (
+-    NotFound
++    TableNotFound
++    | PartyTooLarge
++    | SlotTaken
+ )
+ 
+-type CreateBookingOutput = Ok[None] | CreateBookingFailure
++type CreateBookingOutput = Ok[Booking] | CreateBookingFailure
+ 
+ 
+ class CreateBooking:
+@@ -33,4 +51,13 @@ class CreateBooking:
+         self.ids = ids
+ 
+     def handle(self, input: CreateBookingInput) -> CreateBookingOutput:
+-        raise NotImplementedError("CreateBooking.handle: write its first case in create_booking__test.py, then this")
++        table = self.tables.get(input.table_id)
++        if table is None:
++            return TableNotFound(f"there is no table {input.table_id}")
++        if input.party > table.seats:
++            return PartyTooLarge(f"table {table.id} seats {table.seats}, not {input.party}")
++        if any(b.table_id == table.id and b.day == input.day and b.start == input.start for b in self.bookings.all()):
++            return SlotTaken(f"table {table.id} is booked at {input.start:%H:%M}")
++        booking = Booking(id=self.ids.next_id(), table_id=table.id, day=input.day, start=input.start, party=input.party, guest=input.guest)
++        self.bookings.save(booking)
++        return Ok(booking)
+diff --git a/src/bistro/booking/commands/create_booking__test.py b/src/bistro/booking/commands/create_booking__test.py
+index 4debe89..d94cce1 100644
+--- a/src/bistro/booking/commands/create_booking__test.py
++++ b/src/bistro/booking/commands/create_booking__test.py
+@@ -1,19 +1,48 @@
+-from bistro.booking.commands.create_booking import CreateBooking, CreateBookingInput
++from datetime import date, time
++
++from bistro.booking.commands.create_booking import CreateBooking, CreateBookingInput, PartyTooLarge, SlotTaken, TableNotFound
++from bistro.booking.models.booking import Booking
++from bistro.booking.models.table import Table
+ from bistro.shared.result import Ok
+ from bistro.booking.ports.booking_repository.in_memory_booking_repository import InMemoryBookingRepository
+ from bistro.booking.ports.table_repository.in_memory_table_repository import InMemoryTableRepository
+ from bistro.booking.ports.id_generator.in_memory_id_generator import InMemoryIdGenerator
+ 
++DAY = date(2026, 10, 9)
++SEVEN = time(19, 0)
++
+ 
+ def command() -> CreateBooking:
++    tables = InMemoryTableRepository()
++    tables.save(Table(id="t1", seats=4))
+     return CreateBooking(
+         bookings=InMemoryBookingRepository(),
+-        tables=InMemoryTableRepository(),
++        tables=tables,
+         ids=InMemoryIdGenerator(),
+     )
+ 
+ 
+-def test_create_booking_succeeds() -> None:
++def ada(party: int = 2, table_id: str = "t1") -> CreateBookingInput:
++    return CreateBookingInput(table_id=table_id, day=DAY, start=SEVEN, party=party, guest="Ada")
++
++
++def test_books_a_free_table() -> None:
++    create_booking = command()
++    result = create_booking.handle(ada())
++    assert result == Ok(Booking(id="b1", table_id="t1", day=DAY, start=SEVEN, party=2, guest="Ada"))
++
++
++def test_refuses_a_table_that_does_not_exist() -> None:
++    create_booking = command()
++    assert create_booking.handle(ada(table_id="t9")) == TableNotFound("there is no table t9")
++
++
++def test_refuses_a_party_too_large() -> None:
++    create_booking = command()
++    assert create_booking.handle(ada(party=6)) == PartyTooLarge("table t1 seats 4, not 6")
++
++
++def test_refuses_a_taken_slot() -> None:
+     create_booking = command()
+-    result = create_booking.handle(CreateBookingInput(id="1"))
+-    assert result == Ok(None)
++    create_booking.handle(ada())
++    assert create_booking.handle(ada()) == SlotTaken("table t1 is booked at 19:00")
+diff --git a/src/bistro/booking/ports/booking_repository/booking_repository__test.py b/src/bistro/booking/ports/booking_repository/booking_repository__test.py
+index b928116..5af34e0 100644
+--- a/src/bistro/booking/ports/booking_repository/booking_repository__test.py
++++ b/src/bistro/booking/ports/booking_repository/booking_repository__test.py
+@@ -54,5 +54,8 @@ def test_lists_all_in_key_order(repository: BookingRepository) -> None:
+     assert repository.all() == [sample(FIRST), sample(SECOND)]
+ 
+ 
+-def test_remove(repository: BookingRepository) -> None:
+-    assert False, "BookingRepository.remove: write its contract"
++def test_removes_one(repository: BookingRepository) -> None:
++    repository.save(sample(FIRST))
++    repository.save(sample(SECOND))
++    repository.remove(FIRST)
++    assert repository.all() == [sample(SECOND)]
+diff --git a/src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py b/src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py
+index 9d223d6..ac1a87f 100644
+--- a/src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py
++++ b/src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py
+@@ -17,4 +17,4 @@ class InMemoryBookingRepository:
+         return [self._rows[k] for k in sorted(self._rows)]
+ 
+     def remove(self, id: str) -> None:
+-        raise NotImplementedError("olifant: body[src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py:20]: InMemoryBookingRepository's remove, keeping the BookingRepository contract")
++        self._rows.pop(id, None)
+diff --git a/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py b/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py
+index 5619069..d8ebb11 100644
+--- a/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py
++++ b/src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py
+@@ -39,7 +39,8 @@ class SqliteBookingRepository:
+         return [_decode(row) for row in rows]
+ 
+     def remove(self, id: str) -> None:
+-        raise NotImplementedError("olifant: body[src/bistro/booking/ports/booking_repository/sqlite_booking_repository.py:42]: SqliteBookingRepository's remove, keeping the BookingRepository contract")
++        self._db.execute('delete from "booking" where "id" = ?', (id,))
++        self._db.commit()
+ 
+ 
+ def _encode(booking: Booking) -> dict[str, Any]:
+diff --git a/src/bistro/booking/ports/id_generator/id_generator__test.py b/src/bistro/booking/ports/id_generator/id_generator__test.py
+index 69957bf..62717a2 100644
+--- a/src/bistro/booking/ports/id_generator/id_generator__test.py
++++ b/src/bistro/booking/ports/id_generator/id_generator__test.py
+@@ -18,5 +18,5 @@ def test_is_a_id_generator(adapter: IdGenerator) -> None:
+     assert isinstance(adapter, tuple(ADAPTERS))
+ 
+ 
+-def test_next_id(adapter: IdGenerator) -> None:
+-    assert False, "IdGenerator.next_id: write its contract"
++def test_next_id_is_new_each_time(adapter: IdGenerator) -> None:
++    assert adapter.next_id() != adapter.next_id()
+diff --git a/src/bistro/booking/queries/get_day_schedule.py b/src/bistro/booking/queries/get_day_schedule.py
+index be902d6..9e8c7d2 100644
+--- a/src/bistro/booking/queries/get_day_schedule.py
++++ b/src/bistro/booking/queries/get_day_schedule.py
+@@ -1,18 +1,24 @@
+-"""Get day schedule."""
++"""What a day looks like: every table, and that day's bookings."""
+ 
+ from dataclasses import dataclass
++from datetime import date
++
++from bistro.booking.models.booking import Booking
++from bistro.booking.models.table import Table
+ from bistro.booking.ports.table_repository.table_repository import TableRepository
+ from bistro.booking.ports.booking_repository.booking_repository import BookingRepository
+ 
+ 
+ @dataclass(frozen=True)
+ class GetDayScheduleInput:
+-    id: str
++    day: date
+ 
+ 
+ @dataclass(frozen=True)
+ class GetDayScheduleResult:
+-    id: str
++    day: date
++    tables: list[Table]
++    bookings: list[Booking]
+ 
+ 
+ class GetDaySchedule:
+@@ -22,4 +28,5 @@ class GetDaySchedule:
+         self.bookings = bookings
+ 
+     def handle(self, input: GetDayScheduleInput) -> GetDayScheduleResult:
+-        raise NotImplementedError("GetDaySchedule.handle: write its first case in get_day_schedule__test.py, then this")
++        bookings = [b for b in self.bookings.all() if b.day == input.day]
++        return GetDayScheduleResult(day=input.day, tables=self.tables.all(), bookings=sorted(bookings, key=lambda b: (b.start, b.table_id)))
+diff --git a/src/bistro/booking/queries/get_day_schedule__test.py b/src/bistro/booking/queries/get_day_schedule__test.py
+index 8e86034..949d79e 100644
+--- a/src/bistro/booking/queries/get_day_schedule__test.py
++++ b/src/bistro/booking/queries/get_day_schedule__test.py
+@@ -1,16 +1,24 @@
++from datetime import date, time
++
++from bistro.booking.models.booking import Booking
++from bistro.booking.models.table import Table
+ from bistro.booking.queries.get_day_schedule import GetDaySchedule, GetDayScheduleInput, GetDayScheduleResult
+ from bistro.booking.ports.table_repository.in_memory_table_repository import InMemoryTableRepository
+ from bistro.booking.ports.booking_repository.in_memory_booking_repository import InMemoryBookingRepository
+ 
+ 
+-def query() -> GetDaySchedule:
+-    return GetDaySchedule(
+-        tables=InMemoryTableRepository(),
+-        bookings=InMemoryBookingRepository(),
+-    )
++DAY = date(2026, 10, 9)
+ 
+ 
+-def test_get_day_schedule_answers() -> None:
+-    get_day_schedule = query()
+-    result = get_day_schedule.handle(GetDayScheduleInput(id="1"))
+-    assert result == GetDayScheduleResult(id="1")
++def test_lists_the_tables_and_that_days_bookings() -> None:
++    tables = InMemoryTableRepository()
++    tables.save(Table(id="t1", seats=4))
++    bookings = InMemoryBookingRepository()
++    ada = Booking(id="b1", table_id="t1", day=DAY, start=time(19, 0), party=2, guest="Ada")
++    bookings.save(ada)
++    bookings.save(Booking(id="b2", table_id="t1", day=date(2026, 10, 10), start=time(19, 0), party=2, guest="Grace"))
++    schedule = GetDaySchedule(
++        tables=tables,
++        bookings=bookings,
++    ).handle(GetDayScheduleInput(day=DAY))
++    assert schedule == GetDayScheduleResult(day=DAY, tables=[Table(id="t1", seats=4)], bookings=[ada])
+diff --git a/src/bistro/web/bookings/failures.py b/src/bistro/web/bookings/failures.py
+index c6cfcca..ecd97dc 100644
+--- a/src/bistro/web/bookings/failures.py
++++ b/src/bistro/web/bookings/failures.py
+@@ -6,11 +6,15 @@ from bistro.booking.commands import cancel_booking
+ 
+ def create_booking_status(failure: create_booking.CreateBookingFailure) -> int:
+     match failure:
+-        case create_booking.NotFound():
+-            return getattr(NotImplemented, "olifant: status[src/bistro/web/bookings/failures.py:10]: the HTTP status for create_booking.NotFound (an int: 404, 409, 422, …)")
++        case create_booking.TableNotFound():
++            return 404
++        case create_booking.PartyTooLarge():
++            return 422
++        case create_booking.SlotTaken():
++            return 409
+ 
+ 
+ def cancel_booking_status(failure: cancel_booking.CancelBookingFailure) -> int:
+     match failure:
+         case cancel_booking.NotFound():
+-            return getattr(NotImplemented, "olifant: status[src/bistro/web/bookings/failures.py:16]: the HTTP status for cancel_booking.NotFound (an int: 404, 409, 422, …)")
++            return 404
+diff --git a/src/bistro/web/bookings/routes__test.py b/src/bistro/web/bookings/routes__test.py
+index 8c63068..4750550 100644
+--- a/src/bistro/web/bookings/routes__test.py
++++ b/src/bistro/web/bookings/routes__test.py
+@@ -32,6 +32,6 @@ def client() -> TestClient:
+ 
+ 
+ def test_the_bookings_page_shows_it() -> None:
+-    response = client().get("/bookings", params={"id": "1"})
++    response = client().get("/bookings", params={"day": "2026-10-09"})
+     assert response.status_code == 200
+-    assert "what the bookings page shows" in response.text
++    assert "day=datetime.date(2026, 10, 9)" in response.text

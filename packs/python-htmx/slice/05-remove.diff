@@ -1,0 +1,10 @@
+diff --git a/src/bistro/booking/ports/booking_repository/booking_repository.py b/src/bistro/booking/ports/booking_repository/booking_repository.py
+index c8d25aa..edb1468 100644
+--- a/src/bistro/booking/ports/booking_repository/booking_repository.py
++++ b/src/bistro/booking/ports/booking_repository/booking_repository.py
+@@ -15,3 +15,5 @@ class BookingRepository(Protocol):
+     def all(self) -> list[Booking]:
+         """Every one, in id order."""
+         ...
++
++    def remove(self, id: str) -> None: ...

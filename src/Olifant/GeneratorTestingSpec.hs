@@ -285,6 +285,42 @@ spec = do
       compileClean python withHole >>= (`shouldSatisfy` either (T.isInfixOf "undefined_name") (const False))
       -- and the placeholder alone compiles (it stands for any type)
       compileClean python (M.insert "src/bistro/hole_probe.py" (T.replace ", undefined_name" ", 2" file) fixture) `shouldReturn` Right ()
+    -- The slice from an empty folder (north-star project 2, Task 11): init,
+    -- the generators and the recorded typing (scripts/slice-python.sh).
+    it "the python slice: from an empty folder, the stubs red, then green, check holding, and served" $ withUv $ do
+      (built, binOut, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
+      if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else do
+        let bin = T.unpack (T.strip (T.pack binOut))
+        withSystemTempDirectory "olifant-slice" $ \dir -> do
+          env <- getEnvironment
+          let stage s = readCreateProcessWithExitCode ((proc "scripts/slice-python.sh" [dir, s]) {env = Just (("OLIFANT", bin) : env)}) ""
+              app = dir </> "bistro"
+              uv args = readCreateProcessWithExitCode ((proc "uv" args) {cwd = Just app}) ""
+              failing out = [T.takeWhile (/= ' ') (T.drop 7 l) | l <- T.lines (T.pack out), "FAILED " `T.isPrefixOf` l]
+          (gens, _, gensErr) <- stage "gens"
+          (gens, gensErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (_, _, _) <- uv ["sync", "--quiet"]
+          (typed, typedOut, _) <- uv ["run", "--quiet", "pyright"]
+          (typed, typedOut) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (_, red, _) <- uv ["run", "--quiet", "pytest", "-q"]
+          failing red `shouldBe`
+            [ "src/bistro/booking/commands/cancel_booking__test.py::test_cancel_booking_succeeds"
+            , "src/bistro/booking/commands/create_booking__test.py::test_create_booking_succeeds"
+            , "src/bistro/booking/ports/booking_repository/booking_repository__test.py::test_remove[in_memory]"
+            , "src/bistro/booking/ports/booking_repository/booking_repository__test.py::test_remove[sqlite]"
+            , "src/bistro/booking/ports/id_generator/id_generator__test.py::test_next_id[InMemoryIdGenerator]"
+            , "src/bistro/booking/queries/get_day_schedule__test.py::test_get_day_schedule_answers"
+            , "src/bistro/web/bookings/routes__test.py::test_the_bookings_page_shows_it" ]
+          (behaviour, _, behaviourErr) <- stage "behaviour"
+          (behaviour, behaviourErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (green, greenOut, _) <- uv ["run", "--quiet", "pytest", "-q"]
+          (green, failing greenOut) `shouldBe` (ExitSuccess, [])
+          (typed2, typedOut2, _) <- uv ["run", "--quiet", "pyright"]
+          (typed2, typedOut2) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (checked, checkOut, _) <- readCreateProcessWithExitCode ((proc bin ["check", "--human"]) {cwd = Just app}) ""
+          (checked, T.isInfixOf "conventions hold (0 findings" (T.pack checkOut)) `shouldBe` (ExitSuccess, True)
+          (served, _, serveErr) <- stage "serve"
+          (served, serveErr) `shouldSatisfy` ((== ExitSuccess) . fst)
     it "its fixture is pyright-strict clean" $ withUv $ do
       fixture <- readTree "packs/python-htmx/fixtures/app"
       compileClean python fixture `shouldReturn` Right ()
