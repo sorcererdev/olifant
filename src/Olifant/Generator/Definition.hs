@@ -82,7 +82,10 @@ data UseStep = UseStep
   }
   deriving stock (Show)
 
-data Requires = Requires {requiresExists :: [Template], requiresHint :: Maybe Template}
+-- | 'requiresHolds' (key `holds`): a template over the inputs and queries;
+-- rendered empty, the generator refuses with the hint (a key that is not a
+-- str or an int, say).
+data Requires = Requires {requiresExists :: [Template], requiresHint :: Maybe Template, requiresHolds :: Maybe Template}
   deriving stock (Show)
 
 data EditWith src

@@ -366,6 +366,20 @@ hint = "Create the page first: olifant gen elm/page --set page={= page =}"
 Each path must exist on disk or be created earlier in the same plan. If not, the run is a
 conflict that prints the hint, so the hint should say how to fix it.
 
+`holds` is a condition: a template over the inputs, `[derive]` and `[query.*]` values. If it
+renders empty, the run is a conflict whose message is the hint. `python-htmx/repository`
+needs a `str` or `int` key:
+
+```toml
+[requires]
+holds = "{= for f in fields =}{= if loop.first and not f.nullable and (f.scalar == \"str\" or f.scalar == \"int\") =}yes{= end =}{= end =}"
+hint  = "a repository keys on the model's first field, which must be a str or an int{= for f in fields =}{= if loop.first =} (it is `{= f.name =}: {= f.type =}`){= end =}{= end =}: put the key first"
+```
+
+```
+python-htmx/repository: a repository keys on the model's first field, which must be a str or an int (it is `day: date`): put the key first
+```
+
 ## Edits
 
 Every `[[edits]]` entry is exactly one of `create`, `insert`, `complete` or `cursor`. Paths

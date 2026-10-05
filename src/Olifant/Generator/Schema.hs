@@ -80,6 +80,7 @@ generatorSchema =
       _ -> object []
     requiresProp = \case
       "exists" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"]]
+      "holds" -> object ["type" .= str "string", "description" .= str "A template over the inputs and queries; rendered empty, the generator refuses with the hint."]
       _ -> object ["type" .= str "string"]
     useProp = \case
       "generator" -> desc "string" "The generator to run (pack/name, or a name in the same pack)."

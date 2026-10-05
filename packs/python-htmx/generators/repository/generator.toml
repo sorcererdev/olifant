@@ -54,6 +54,12 @@ files = "src/{= app =}/{= service|snake =}/models/{= entity|snake =}.py"
 ast   = { kind = "assignment", has = { field = "type", kind = "type" }, inside = { kind = "expression_statement", inside = { kind = "block", inside = { kind = "class_definition" } } } }
 each  = { name = "^([a-z_][a-z_0-9]*):", type = "^[a-z_][a-z_0-9]*: ([^=]*[^= ])", scalar = "^[a-z_][a-z_0-9]*: (str|int|float|bool)([[:space:]]*\\|[[:space:]]*None)?([[:space:]]*=.*)?$", nullable = "\\|[[:space:]]*(None)([[:space:]]|=|$)" }
 
+# The key is the first field: a str or an int (stored as is, sorted, and
+# sampled as "1" or 1 in the contract test).
+[requires]
+holds = "{= for f in fields =}{= if loop.first and not f.nullable and (f.scalar == \"str\" or f.scalar == \"int\") =}yes{= end =}{= end =}"
+hint  = "a repository keys on the model's first field, which must be a str or an int{= for f in fields =}{= if loop.first =} (it is `{= f.name =}: {= f.type =}`){= end =}{= end =}: put the key first"
+
 [[edits]]
 create = "{= dir =}/__init__.py"
 text   = ""

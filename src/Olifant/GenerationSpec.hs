@@ -777,6 +777,18 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (ws, snap) <- memoryWorkspace []
     Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
     (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "from x import Visit, Slot\nfrom datetime import date, time\n\nA = date.today()\nB = Slot(date.today(), time(9))\n"
+  it "(p) [requires] holds: a template that renders empty refuses the plan, with the hint (review I3)" $ do
+    let gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[inputs.key]", "type = \"ident\""
+          , "[requires]", "holds = \"{= if key == \\\"id\\\" =}yes{= end =}\"", "hint = \"the key must be the id\""
+          , "[[edits]]", "create = \"src/K.elm\"", "text = \"k = 1\\n\"" ]
+        tools = basicTools noSyntax noChecker [holeLang]
+    (ws, _) <- memoryWorkspace []
+    Right refused <- generate ws noResolve tools [Step gen (M.fromList [("key", "day")])] now PlanOnly
+    map describeConflict (planConflicts refused) `shouldBe` ["test/gen: the key must be the id"]
+    Right fine <- generate ws noResolve tools [Step gen (M.fromList [("key", "id")])] now PlanOnly
+    planConflicts fine `shouldBe` []
   it "(m2) with no imports in the file, a fill's imports go after its leading docstring and comments" $ do
     let pyLang = l
           where

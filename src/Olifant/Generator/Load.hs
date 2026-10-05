@@ -128,7 +128,7 @@ createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "un
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
 completeKeys = ["complete", "where", "template", "text"]
 cursorKeys = ["cursor", "template", "text"]
-requiresKeys = ["exists", "hint"]
+requiresKeys = ["exists", "hint", "holds"]
 useKeys = ["generator", "for_each", "with"]
 
 -- | What a misplaced key usually means (measured: the keys models invent).
@@ -234,7 +234,8 @@ requiresFrom t = do
   onlyKeys requiresKeys t
   exists <- fromMaybe [] <$> optional "exists" (list (text >=> tmpl)) t
   hint <- optional "hint" (text >=> tmpl) t
-  pure (Requires exists hint)
+  holds <- optional "holds" (text >=> tmpl) t
+  pure (Requires exists hint holds)
 
 editFrom :: Table -> Either Text (EditWith SourceRef)
 editFrom t = case filter (`M.member` t) ["create", "insert", "complete", "cursor"] of

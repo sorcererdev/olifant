@@ -21,6 +21,7 @@ import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Olifant.Generation.Render (RenderedEdit (..), renderEdits)
@@ -59,6 +60,8 @@ type Choose m = [(FilePath, Text)] -> Map Text Text -> Generator -> m (Either Qu
 
 data PlanItem
   = PlanRequire StepPath [FilePath] (Maybe Text)
+  | -- | a `[requires] holds` that rendered empty: the hint
+    PlanRefuse StepPath Text
   | PlanEdit StepPath RenderedEdit
   | -- | globs of files the model sees when filling (a generator's `context`)
     PlanContext [Text]
@@ -88,11 +91,12 @@ expand resolve bindQ choose now prior ancestors path gen0 sets = do
   env <- if null (genQueries gen) then pure env0 else ExceptT (first (StepQuery path) <$> bindQ env0 (genQueries gen))
   rendered <- except (first (StepTemplate path) (renderEdits (genLanguage gen) env (genEdits gen)))
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
+  holds <- except (first (StepTemplate path) (traverse (render env) (requiresHolds =<< genRequires gen)))
   context <- except (first (StepTemplate path) (traverse (render env) (genContext gen)))
   let own = map (PlanEdit path) rendered
   -- Each use sees what the run, this generator and earlier uses create.
   nested <- foldM (\acc (k, u) -> (acc ++) <$> expandUse env (prior ++ created (own ++ acc)) k u) [] (zip [1 :: Int ..] (genUses gen))
-  pure ([PlanRequire path required hint | not (null required)] ++ [PlanContext context | not (null context)] ++ own ++ nested)
+  pure ([PlanRefuse path (fromMaybe "a requirement does not hold" hint) | Just h <- [holds], T.null (T.strip h)] ++ [PlanRequire path required hint | not (null required)] ++ [PlanContext context | not (null context)] ++ own ++ nested)
   where
     repeated u = length (filter ((== useGenerator u) . useGenerator) (genUses gen0)) > 1
     expandUse env seen k u = do
