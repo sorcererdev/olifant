@@ -143,7 +143,11 @@ resolveOne syntax lang anchor content = case anchor of
       itemsOfTarget syntax l (positionWords pos) ws content <&> \case
         Left (why, tool) -> Left (Miss used why tool)
         Right Nothing -> Left (miss "not found")
-        Right (Just (c, items)) -> place l pos c items
+        Right (Just (c, items)) -> (\loc -> if spaced then loc else loc {locSpacing = NoSpacing}) <$> place l pos c items
+      where
+        spaced = case [t | t <- langTargets l, Just _ <- [matchShape t ws]] of
+          t : _ -> targetSpaced t
+          [] -> True
     place l pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce

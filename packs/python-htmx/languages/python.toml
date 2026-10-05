@@ -93,8 +93,18 @@ container = { kind = "argument_list", inside = { kind = "call", has = { field = 
 items = { any = [{ kind = "keyword_argument" }, { kind = "identifier" }, { kind = "call" }, { kind = "attribute" }, { kind = "string" }, { kind = "integer" }, { kind = "float" }, { kind = "list" }, { kind = "dictionary" }, { kind = "tuple" }, { kind = "true" }, { kind = "false" }, { kind = "none" }, { kind = "list_splat" }, { kind = "dictionary_splat" }] }
 example = "end of call CancelBooking"
 
+# A function's parameters, one per line (`def floor_routes(\n    x: X,\n)`):
+# where `web-command` gives a router factory its command.
+[targets.parameters_in]
+phrase = "parameters in FUNCTION"
+container = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^{= FUNCTION =}$" } } }
+items = { any = [{ kind = "typed_parameter" }, { kind = "identifier" }, { kind = "default_parameter" }, { kind = "typed_default_parameter" }, { kind = "list_splat_pattern" }, { kind = "dictionary_splat_pattern" }] }
+example = "end of parameters in floor_routes"
+
 [targets.imports]
 phrase = "imports"
 container = { kind = "module" }
 items = { any = [{ kind = "import_statement" }, { kind = "import_from_statement" }, { kind = "future_import_statement" }] }
+# a blank line between imports separates groups: a new import joins the last
+spaced = false
 example = "end of imports"

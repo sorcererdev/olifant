@@ -596,6 +596,10 @@ A target is a phrase shape and two ast-grep rules:
 - `items`: a rule for the container's items. `start of` goes before the first, `end of` after
   the last, with the last item's indentation. `before`/`after` use the container itself.
 - `example`: shown by `olifant anchors`.
+- `spaced` (default `true`): when the items next to the new one are separated by a blank
+  line, the new one gets one too (Elm case branches, Rust methods). `false` where a blank
+  line means something else: Python's `imports` sets it, because a blank line there
+  separates import groups, and a new import joins the last group.
 
 The rules are ast-grep's rule language (`kind`, `regex`, `inside`, `has`, `not`, `any`,
 `stopBy`, `field`). Two idioms from the Elm adapter are worth copying:
