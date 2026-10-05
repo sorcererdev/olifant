@@ -169,6 +169,33 @@ spec = do
       -- the service's own modules are not commands (review: upgraded minor)
       (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
       others `shouldBe` []
+  describe "python-htmx rules (spec §5.9)" $
+    it "flags sqlite3 in a command, ports in the web, adapters outside main, raised failures; the fixture holds" $ do
+      tmp <- getTemporaryDirectory
+      rulesSrc <- TIO.readFile "packs/python-htmx/rules.toml"
+      langSrc <- TIO.readFile "packs/python-htmx/languages/python.toml"
+      let Right rules = parseRules rulesSrc
+          Right python = parseLanguage "python" "packs/python-htmx" langSrc
+          check path code = do
+            (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+            pure [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
+          command = "src/bistro/booking/commands/close_table.py"
+      check command "import sqlite3\n\n\ndef f() -> None:\n    db = sqlite3.connect(\"x\")\n    raise TableNotFound(\"t9\")\n"
+        `shouldReturn` [ ("commands-use-ports", Just 1, Warn, ["python-htmx/repository"])
+                       , ("commands-use-ports", Just 5, Warn, ["python-htmx/repository"])
+                       , ("failures-returned", Just 6, Hint, []) ]
+      check command "def f() -> None:\n    raise NotImplementedError(\"later\")\n" `shouldReturn` []
+      check "src/bistro/web/floor/routes.py" "from bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n"
+        `shouldReturn` [("web-uses-commands", Just 1, Warn, [])]
+      check "src/bistro/booking/queries/find_free_tables.py" "from bistro.booking.ports.table_repository.sqlite_table_repository import SqliteTableRepository\n"
+        `shouldReturn` [("adapters-in-main", Just 1, Warn, [])]
+      check "src/bistro/main.py" "from bistro.booking.ports.table_repository.sqlite_table_repository import SqliteTableRepository\n" `shouldReturn` []
+      check "src/bistro/booking/queries/find_free_tables__test.py" "from bistro.booking.ports.table_repository.in_memory_table_repository import InMemoryTableRepository\n" `shouldReturn` []
+      -- the fixture is the convention written down: it holds
+      fixture <- readTree "packs/python-htmx/fixtures/app"
+      let pys = [p | p <- M.keys fixture, ".py" `T.isSuffixOf` T.pack p]
+      (all', _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules pys (\p -> pure (M.lookup p fixture)) pys
+      map fRule all' `shouldBe` []
   describe "rust-htmx regions (spec §5.9)" $
     it "a command file created by hand gets its `pub mod` line; ports.rs lists the ports" $ do
       tmp <- getTemporaryDirectory

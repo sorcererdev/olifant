@@ -1,0 +1,58 @@
+# Conventions that hold themselves (spec §5.9). Rules warn and offer a fix;
+# they never edit code. Silence one place with
+#   # olifant:allow RULE — reason
+# or a whole file with `# olifant:allow-file RULE — reason` in its first lines;
+# a project can change severities or allow paths under [rules] in
+# .olifant/config.toml. `olifant check --report` lists every exception.
+
+# Commands and queries reach data through ports: sqlite3 belongs in an
+# adapter (ports/PORT/sqlite_PORT.py), which main.py chooses.
+[rules.commands-use-ports]
+files    = "src/{app}/{service}/{kind}/*.py"
+exclude  = ["**/__init__.py", "**/*__test.py"]
+match    = { any = [
+  { kind = "import_statement", regex = "sqlite3" },
+  { kind = "import_from_statement", regex = "^from sqlite3" },
+  { kind = "attribute", regex = "^sqlite3\\." },
+] }
+message  = "Commands and queries talk to ports, not the database (python-htmx: ports & adapters)"
+severity = "warn"
+
+[[rules.commands-use-ports.fixes]]
+generator = "python-htmx/repository"
+label     = "Add a repository (a port with in-memory and SQLite adapters)"
+with      = { app = "{= app =}", service = "{= service =}" }
+replace   = [
+  { enclosing = ["import_statement", "import_from_statement"], text = "" },
+]
+
+# The web goes through commands and queries: no ports, no database.
+[rules.web-uses-commands]
+files    = "src/{app}/web/**.py"
+exclude  = ["**/*__test.py"]
+match    = { any = [
+  { kind = "import_from_statement", regex = "\\.ports\\." },
+  { kind = "import_statement", regex = "sqlite3" },
+  { kind = "import_from_statement", regex = "^from sqlite3" },
+] }
+message  = "The web goes through commands and queries, not ports or the database (python-htmx)"
+severity = "warn"
+
+# Only main.py chooses adapters (and tests, their fakes); everything else
+# depends on a port's Protocol.
+[rules.adapters-in-main]
+files    = "src/{app}/**.py"
+exclude  = ["**/main.py", "**/*__test.py", "**/ports/**", "**/web/**"]
+match    = { kind = "import_from_statement", regex = "\\.ports\\.[a-z_0-9]+\\.(sqlite|in_memory)_" }
+message  = "Only main.py chooses adapters: depend on the port's Protocol (python-htmx)"
+severity = "warn"
+
+# A command returns its failures (they are its union's members); a raise
+# skips every caller's match. NotImplementedError and other *Error /
+# *Exception classes are not failures.
+[rules.failures-returned]
+files    = "src/{app}/{service}/commands/*.py"
+exclude  = ["**/__init__.py", "**/*__test.py"]
+match    = { kind = "raise_statement", regex = "^raise [A-Z][A-Za-z0-9_]*\\(", not = { regex = "^raise [A-Za-z0-9_]*(Error|Exception)\\(" } }
+message  = "Return the failure (it is in the command's union) rather than raise it"
+severity = "hint"
