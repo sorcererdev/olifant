@@ -20,7 +20,7 @@ def repository(request: pytest.FixtureRequest, tmp_path: Path) -> {= Entity =}Re
 def sample({= for f in fields =}{= if loop.first =}{= f.name =}: {= f.type =}{= end =}{= end =}) -> {= Entity =}:
     return {= Entity =}(
 {=- for f in fields =}
-        {= f.name =}={= if loop.first =}{= f.name =}{= elif f.scalar == "str" =}"{= f.name =}"{= elif f.scalar == "int" =}2{= elif f.scalar == "float" =}2.5{= elif f.scalar == "bool" =}True{= else =}{= ? sample: expr | a sample {= f.type =} =}{= end =},
+        {= f.name =}={= if loop.first =}{= f.name =}{= elif f.scalar == "str" =}"{= f.name =}"{= elif f.scalar == "int" =}2{= elif f.scalar == "float" =}2.5{= elif f.scalar == "bool" =}True{= else =}{= ? sample: expr | a sample {= f.type =}, not None (so its codec is tested) =}{= end =},
 {=- end =}
     )
 

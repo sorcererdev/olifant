@@ -1,0 +1,7 @@
+# Recorded from qwen3-coder:30b via Ollama (2026-10-05), except decode: qwen wrote
+# None if row["last_visit"] is None else date.fromisoformat(row["last_visit"]) three rounds
+# running without the date import; the import is added here by hand.
+[fills]
+"sample" = "from datetime import date\n\ndate.fromisoformat(\"2023-06-15\")"
+"encode" = "guest.last_visit.isoformat() if guest.last_visit is not None else None"
+"decode" = "from datetime import date\n\nNone if row[\"last_visit\"] is None else date.fromisoformat(row[\"last_visit\"])"

@@ -46,11 +46,13 @@ exclude = ["**/__init__.py"]
 value   = "file name"
 
 # The model's fields, in order: `name: type` lines of its class body. The
-# first is the key. `scalar` is the type when SQLite stores it as is.
+# first is the key. `scalar` is the type when SQLite stores it as is (the
+# whole annotation: `str | int` is not); `nullable` when it may be None
+# (its column takes NULL).
 [query.fields]
 files = "src/{= app =}/{= service|snake =}/models/{= entity|snake =}.py"
 ast   = { kind = "assignment", has = { field = "type", kind = "type" }, inside = { kind = "expression_statement", inside = { kind = "block", inside = { kind = "class_definition" } } } }
-each  = { name = "^([a-z_][a-z_0-9]*):", type = "^[a-z_][a-z_0-9]*: ([^=]*[^= ])", scalar = "^[a-z_][a-z_0-9]*: (str|int|float|bool)( |$)" }
+each  = { name = "^([a-z_][a-z_0-9]*):", type = "^[a-z_][a-z_0-9]*: ([^=]*[^= ])", scalar = "^[a-z_][a-z_0-9]*: (str|int|float|bool)([[:space:]]*\\|[[:space:]]*None)?([[:space:]]*=.*)?$", nullable = "\\|[[:space:]]*(None)([[:space:]]|=|$)" }
 
 [[edits]]
 create = "{= dir =}/__init__.py"

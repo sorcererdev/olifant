@@ -8,7 +8,7 @@ from {= pkg =}.models.{= e =} import {= Entity =}
 SCHEMA = """
 create table if not exists "{= e =}" (
 {=- for f in fields =}
-    "{= f.name =}" {= if f.scalar == "int" or f.scalar == "bool" =}integer{= elif f.scalar == "float" =}real{= else =}text{= end =} not null{= if loop.first =} primary key{= end =}{= if not loop.last =},{= end =}
+    "{= f.name =}" {= if f.scalar == "int" or f.scalar == "bool" =}integer{= elif f.scalar == "float" =}real{= else =}text{= end =}{= if not f.nullable =} not null{= end =}{= if loop.first =} primary key{= end =}{= if not loop.last =},{= end =}
 {=- end =}
 )
 """
@@ -46,6 +46,6 @@ def _encode({= e =}: {= Entity =}) -> dict[str, Any]:
 def _decode(row: sqlite3.Row) -> {= Entity =}:
     return {= Entity =}(
 {=- for f in fields =}
-        {= f.name =}={= if f.scalar == "bool" =}bool(row["{= f.name =}"]){= elif f.scalar =}row["{= f.name =}"]{= else =}{= ? decode: expr | row["{= f.name =}"] (the text the matching encode wrote) back to a {= f.type =} =}{= end =},
+        {= f.name =}={= if f.scalar == "bool" and f.nullable =}None if row["{= f.name =}"] is None else bool(row["{= f.name =}"]){= elif f.scalar == "bool" =}bool(row["{= f.name =}"]){= elif f.scalar =}row["{= f.name =}"]{= else =}{= ? decode: expr | row["{= f.name =}"] (the text the matching encode wrote) back to a {= f.type =} (a NULL, if it may be one, is None) =}{= end =},
 {=- end =}
     )
