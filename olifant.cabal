@@ -69,6 +69,7 @@ library
     Olifant.Language.AstGrep
     Olifant.Language.Check
     Olifant.Language.Diagnostics
+    Olifant.Language.Header
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Pyright
@@ -154,6 +155,7 @@ test-suite spec
     Olifant.Language.AstGrep
     Olifant.Language.Check
     Olifant.Language.Diagnostics
+    Olifant.Language.Header
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Pyright

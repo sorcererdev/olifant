@@ -107,4 +107,6 @@ container = { kind = "module" }
 items = { any = [{ kind = "import_statement" }, { kind = "import_from_statement" }, { kind = "future_import_statement" }] }
 # a blank line between imports separates groups: a new import joins the last
 spaced = false
+# in a file with none, the first goes under the docstring
+when_empty = "after header"
 example = "end of imports"

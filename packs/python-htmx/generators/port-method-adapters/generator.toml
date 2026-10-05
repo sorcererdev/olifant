@@ -1,0 +1,69 @@
+name = "Port method adapters"
+description = "A port's new method in each adapter beside it (its body a hole the model fills) and a red contract test for it"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/port-method-adapters --set app=bistro --set service=booking --set port=clock --set name=now --set signature=\"now(self) -> datetime\"",
+]
+
+# The models filling the bodies see the Protocol.
+context = ["src/{= app =}/{= service|snake =}/ports/{= port|snake =}/{= port|snake =}.py"]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.port]
+type   = "ident"
+prompt = "The port (its folder under ports/)"
+
+[inputs.name]
+type   = "ident"
+prompt = "The method"
+
+[inputs.signature]
+type   = "text"
+prompt = "Its signature, as the Protocol writes it (name(self, …) -> T)"
+
+[derive]
+dir   = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}"
+port_ = "{= port|snake =}"
+
+# The adapters beside the Protocol.
+[query.adapters]
+glob    = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}/*.py"
+exclude = ["**/__init__.py", "**/*__test.py", "**/{= port|snake =}.py"]
+
+# The Protocol's imports (its signatures' types), less Protocol itself.
+[query.imports]
+files = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}/{= port|snake =}.py"
+ast   = { any = [{ kind = "import_statement" }, { kind = "import_from_statement" }], not = { regex = "Protocol" } }
+
+# How the contract test takes an adapter (`adapter: Clock`).
+[query.subject]
+files = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}/{= port|snake =}__test.py"
+ast   = { kind = "typed_parameter", nthChild = 1, inside = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^test_" } } } }
+
+[[uses]]
+generator = "port-method-adapter"
+for_each  = "adapters"
+with      = { file = "{= item.path =}", dir = "{= dir =}", stem = "{= item.stem =}", name = "{= name =}", signature = "{= signature =}", port = "{= port =}", app = "{= app =}", service = "{= service =}" }
+
+[[edits]]
+insert = "{= dir =}/{= port_ =}__test.py"
+at     = "end of file"
+text   = "\n\ndef test_{= name =}({= for s in subject =}{= if loop.first =}{= s.text =}{= end =}{= end =}) -> None:\n    assert False, \"{= port|pascal =}.{= name =}: write its contract\""
+unless = { matches = "^def test_{= name =}\\(" }
+
+# Offered after you write a method in a port's Protocol.
+[applies_at]
+path    = "src/{app}/{service}/ports/{port}/{port}.py"
+node    = { kind = "function_definition", inside = { kind = "block", inside = { kind = "class_definition", has = { field = "superclasses", regex = "Protocol" } } } }
+bind    = { name = "^def ([a-z_][a-z_0-9]*)", signature = "^def (.*):[[:space:]]*\\.\\.\\.[[:space:]]*$" }
+where   = "on a method of a port's Protocol"
+suggest = true
+label   = "Add {= name =} to {= port =}'s adapters"

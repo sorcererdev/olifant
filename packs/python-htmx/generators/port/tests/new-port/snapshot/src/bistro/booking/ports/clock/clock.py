@@ -1,4 +1,4 @@
-"""purpose"""
+"""Clock."""
 
 from typing import Protocol
 

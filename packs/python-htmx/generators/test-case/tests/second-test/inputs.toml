@@ -1,0 +1,9 @@
+now = "2026-10-05T12:00:00Z"
+# The cursor: a blank line after the stub test. The new test arranges like
+# the first one and is red until written (two red: the stub and it).
+at = "src/bistro/booking/commands/cancel_booking__test.py:13:1"
+run_tests = true
+expect_failing = 2
+
+[inputs]
+test = "src/bistro/booking/commands/cancel_booking__test.py"

@@ -1,0 +1,31 @@
+name = "Next match arm"
+description = "An arm for a case pyright says this match lacks, written as the other arms are; its body is a hole the model fills (a snippet, spec §4.9)"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/match-arm --at src/bistro/web/floor/failures.py:11:1 --set pattern=cancel_booking.AlreadyCancelled() --plan",
+]
+
+# The cases the match at the cursor lacks, from pyright; editors offer the
+# first as ghost text and every one in the menu.
+[inputs.pattern]
+type   = "enum"
+one_of = "uncovered"
+prompt = "The case to add an arm for"
+
+[query.uncovered]
+uncovered = "."
+value     = "name"
+
+[[edits]]
+cursor = true
+text = "case {= pattern =}:\n    {= ? body: block | what this match does for {= pattern =}, following the other arms =}"
+
+# Anticipated on a blank line after a match's last arm.
+[applies_at]
+path    = "src/**.py"
+after   = { kind = "case_clause" }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line after a match's last case"
+suggest = true
+label   = "{= pattern =} arm"

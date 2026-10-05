@@ -1,0 +1,31 @@
+name = "Port method"
+description = "A method of a port's Protocol: name, parameters and return type tab stops (a snippet, spec §4.9); its adapters and contract test follow up"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/port-method --at src/bistro/booking/ports/clock/clock.py:8:1 --plan",
+]
+
+[[edits]]
+cursor = true
+text = "\ndef {= ? name: ident | the method =}(self{= ? params: text | , name: type, … =}) -> {= ? returns: text | what it returns =}: ..."
+
+[holes.name]
+source = "yours"
+
+[holes.params]
+source = "derived"
+value  = ""
+
+[holes.returns]
+source = "derived"
+value  = "None"
+
+# Anticipated on a blank line in a port's Protocol.
+[applies_at]
+path    = "src/*/*/ports/*/*.py"
+after   = { any = [{ kind = "function_definition" }, { kind = "expression_statement" }], inside = { kind = "block", inside = { kind = "class_definition", has = { field = "superclasses", regex = "Protocol" } } } }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line in a port's Protocol"
+suggest = true
+label   = "Port method"

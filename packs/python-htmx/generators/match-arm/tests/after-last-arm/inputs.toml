@@ -1,0 +1,7 @@
+now = "2026-10-05T12:00:00Z"
+# The cursor: a blank line after the generated failures.py's last arm; pyright
+# reports AlreadyCancelled as not handled there.
+at = "src/bistro/web/floor/failures.py:10:1"
+
+[inputs]
+pattern = "cancel_booking.AlreadyCancelled()"

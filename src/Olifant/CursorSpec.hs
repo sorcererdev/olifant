@@ -41,6 +41,10 @@ spec = describe "Olifant.Cursor (snippets at the cursor, spec §5.3)" $ do
       let Right g = load "text = \"#[error]\\n{= x =},\""
           [Cursor t] = genEdits g
       render (M.fromList [("x", VText "V")]) (indentTemplate "    " t) `shouldBe` Right "    #[error]\n    V,"
+    it "leaves an empty first line empty (a snippet that starts with a blank line)" $ do
+      let Right g = load "text = \"\\ndef {= x =}(self) -> None: ...\""
+          [Cursor t] = genEdits g
+      render (M.fromList [("x", VText "now")]) (indentTemplate "    " t) `shouldBe` Right "\n    def now(self) -> None: ..."
   describe "afterIndent (a snippet anticipated after a node)" $
     it "is the indentation of the node the cursor follows, not of the line above" $ do
       let ls = ["@dataclass(frozen=True)", "class A:", "    reason: str", "", "type F = A"]

@@ -1,0 +1,5 @@
+now = "2026-10-05T12:00:00Z"
+# The cursor: a blank line under the Protocol's docstring.
+at = "src/bistro/booking/ports/clock/clock.py:8:1"
+
+[inputs]

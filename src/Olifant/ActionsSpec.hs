@@ -268,10 +268,10 @@ spec = describe "olifant actions (spec §4.6)" $ do
         paths <- listFiles ws "."
         let lineOf needle = 1 + length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines content))
             col needle = 1 + T.length (fst (T.breakOn needle (T.lines content !! (lineOf needle - 1))))
-            at pos = map (\a -> (actLabel a, actSets a)) <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/wire", g)] path pos content
-        at (lineOf "tables: TableRepository", col "tables: TableRepository" + 2) `shouldReturn`
+            offeredAt pos = map (\a -> (actLabel a, actSets a)) <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/wire", g)] path pos content
+        offeredAt (lineOf "tables: TableRepository", col "tables: TableRepository" + 2) `shouldReturn`
           [("Wire tables (TableRepository)", [("app", "bistro"), ("command", "get_day_schedule"), ("kind", "queries"), ("param", "tables"), ("port", "TableRepository"), ("service", "booking")])]
-        at (lineOf "def handle", col "day: date" + 1) `shouldReturn` []
+        offeredAt (lineOf "def handle", col "day: date" + 1) `shouldReturn` []
     it "offers wire-command on a field of the command's struct, not on another struct" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]

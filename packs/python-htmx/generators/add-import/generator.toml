@@ -1,0 +1,21 @@
+name = "Add import"
+description = "An import line in a file, unless it is there; used by other generators"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/add-import --set file=src/bistro/main.py --set \"line=from datetime import datetime\"",
+]
+
+[inputs.file]
+type   = "text"
+prompt = "The file"
+
+[inputs.line]
+type   = "text"
+prompt = "The import line"
+
+[[edits]]
+insert = "{= file =}"
+at     = "end of imports"
+text   = "{= line =}"
+unless = { matches = "^{= line =}$" }

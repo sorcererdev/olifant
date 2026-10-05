@@ -149,6 +149,9 @@ spec = do
     it "(c) end of imports adds no blank line: one between import groups is grouping, not spacing" $ withPython $ \syn lang _ -> do
       let grouped = T.unlines ["from pathlib import Path", "", "from app.x import y", "", "", "def f() -> None:", "    pass"]
       fmap (fmap locSpacing) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] grouped) `shouldReturn` Right NoSpacing
+    it "(c) end of imports in a file with none goes after its docstring, a blank line before" $ withPython $ \syn lang _ -> do
+      let bare = T.unlines ["\"\"\"Clock in memory.\"\"\"", "", "", "class InMemoryClock:", "    pass"]
+      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] bare) `shouldReturn` Right (1, BlankBefore)
     it "(c) end of parameters in FUNCTION goes after its last parameter (python-pack: web-command)" $ withPython $ \syn lang file ->
       at syn lang file "end of parameters in floor_routes" `shouldReturn` Right (lineOf "find_free_tables: FindFreeTables," + 1, "    ")
     it "(c) end of call NAME (anywhere in the file) goes after its last argument" $ withPython $ \syn lang file ->

@@ -1,0 +1,12 @@
+now = "2026-10-05T12:00:00Z"
+# Clock gained now(): the in-memory adapter gets it (the model fills its
+# body; datetime imported), and the contract test a red stub for it.
+run_tests = true
+expect_failing = 1
+
+[inputs]
+app = "bistro"
+service = "booking"
+port = "clock"
+name = "now"
+signature = "now(self) -> datetime"

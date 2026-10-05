@@ -51,5 +51,7 @@ template = "contract_test.py.dt"
 # main.py is left alone: an adapter nothing uses would be an unused variable
 # (pyright strict). `wire` adds it when a command first takes the port.
 
+# The docstring starts as the port's name in words: a tab stop to say more.
 [holes.purpose]
-source = "yours"
+source = "derived"
+value  = "{= port|sentence =}."
