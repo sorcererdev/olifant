@@ -1,7 +1,7 @@
-"""Ids b1, b2, …: predictable, for tests and demos."""
+"""IdGenerator in memory: ids b1, b2, …, predictable, for tests and demos."""
 
 
-class SequentialIdGenerator:
+class InMemoryIdGenerator:
     def __init__(self) -> None:
         self._n = 0
 

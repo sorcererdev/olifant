@@ -144,6 +144,12 @@ spec = do
       at syn lang file "end of match on f" `shouldReturn` Right (lineOf "return 422" + 1, "        ")
     it "(c) end of imports goes after the last import" $ withPython $ \syn lang file ->
       at syn lang file "end of imports" `shouldReturn` Right (lineOf "from dataclasses import dataclass" + 1, "")
+    it "(c) end of call NAME in FUNCTION goes after its last argument (python-pack: wire)" $ withPython $ \syn lang file ->
+      at syn lang file "end of call CreateBooking in create" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
+    it "(c) end of call NAME (anywhere in the file) goes after its last argument" $ withPython $ \syn lang file ->
+      at syn lang file "end of call CreateBooking" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
+    it "(c) end of call NAME in FUNCTION opens an empty argument list" $ withPython $ \syn lang file ->
+      fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
 
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
@@ -465,6 +471,14 @@ pythonModule =
     , ""
     , "    def run(self) -> int:"
     , "        return 1"
+    , ""
+    , ""
+    , "def create(db_path: str) -> int:"
+    , "    create_booking = CreateBooking("
+    , "        bookings=booking_repository,"
+    , "    )"
+    , "    cancel_booking = CancelBooking()"
+    , "    return 1"
     , ""
     , ""
     , "def status(f: CreateBookingFailure) -> int:"

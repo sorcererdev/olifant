@@ -24,7 +24,7 @@ type {= Command =}Output = Ok[{= ? value: ident | what it returns when it succee
 
 class {= Command =}:
     def __init__(self) -> None:
-        pass
+        """Takes the ports it uses; main.py passes their adapters."""
 
     def handle(self, input: {= Command =}Input) -> {= Command =}Output:
         raise NotImplementedError("{= Command =}.handle: write its first case in {= command_ =}__test.py, then this")

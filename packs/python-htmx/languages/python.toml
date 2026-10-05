@@ -76,6 +76,23 @@ container = { kind = "block", inside = { kind = "match_statement", has = { field
 items = { kind = "case_clause" }
 example = "end of match on failure"
 
+# A call's arguments, one per line (`CreateBooking(\n    bookings=…,\n)`), in
+# a function: where `wire` passes a command its adapters. An empty `X()`
+# opens.
+[targets.call_in]
+phrase = "call NAME in FUNCTION"
+container = { kind = "argument_list", inside = { kind = "call", has = { field = "function", regex = "^{= NAME =}$" }, inside = { kind = "function_definition", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
+items = { any = [{ kind = "keyword_argument" }, { kind = "identifier" }, { kind = "call" }, { kind = "attribute" }, { kind = "string" }, { kind = "integer" }, { kind = "float" }, { kind = "list" }, { kind = "dictionary" }, { kind = "tuple" }, { kind = "true" }, { kind = "false" }, { kind = "none" }, { kind = "list_splat" }, { kind = "dictionary_splat" }] }
+example = "end of call CreateBooking in create"
+
+# The same, anywhere in the file (it must be the only call to NAME): where
+# `wire` passes a fake in a test.
+[targets.call]
+phrase = "call NAME"
+container = { kind = "argument_list", inside = { kind = "call", has = { field = "function", regex = "^{= NAME =}$" } } }
+items = { any = [{ kind = "keyword_argument" }, { kind = "identifier" }, { kind = "call" }, { kind = "attribute" }, { kind = "string" }, { kind = "integer" }, { kind = "float" }, { kind = "list" }, { kind = "dictionary" }, { kind = "tuple" }, { kind = "true" }, { kind = "false" }, { kind = "none" }, { kind = "list_splat" }, { kind = "dictionary_splat" }] }
+example = "end of call CancelBooking"
+
 [targets.imports]
 phrase = "imports"
 container = { kind = "module" }

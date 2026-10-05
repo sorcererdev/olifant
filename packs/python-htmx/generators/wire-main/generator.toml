@@ -1,0 +1,61 @@
+name = "Wire Main"
+description = "main.py passes a command its port's adapter (SQLite if the port has one, else in memory), adding the adapter once; used by wire"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/wire-main --set app=bistro --set service=booking --set command=get_day_schedule --set param=tables --set port=TableRepository",
+]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command or query main.py builds"
+
+[inputs.param]
+type   = "ident"
+prompt = "The __init__ parameter"
+
+[inputs.port]
+type   = "ident"
+prompt = "Its port"
+
+[derive]
+main    = "src/{= app =}/main.py"
+Port    = "{= port|pascal =}"
+port_   = "{= port|snake =}"
+ports   = "{= app =}.{= service|snake =}.ports.{= port|snake =}"
+
+# The adapter main.py uses: SQLite when the port has one (given the
+# database path), else another real one beside it (uuid_id_generator.py),
+# else the in-memory one.
+[query.sqlite]
+glob = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}/sqlite_{= port|snake =}.py"
+
+[query.others]
+glob    = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}/*.py"
+exclude = ["**/__init__.py", "**/*__test.py", "**/{= port|snake =}.py", "**/in_memory_*.py", "**/sqlite_*.py"]
+
+[[edits]]
+insert = "{= main =}"
+at     = "end of imports"
+text   = "from {= ports =}.{= if sqlite =}sqlite_{= port_ =} import Sqlite{= Port =}{= elif others =}{= for o in others =}{= if loop.first =}{= o.stem =} import {= o.stem|pascal =}{= end =}{= end =}{= else =}in_memory_{= port_ =} import InMemory{= Port =}{= end =}"
+unless = { matches = "^    {= port_ =} = " }
+
+# one adapter per port, however many commands use it
+[[edits]]
+insert = "{= main =}"
+at     = "after first line matching ^    # adapters"
+text   = "{= port_ =} = {= if sqlite =}Sqlite{= Port =}(db_path){= elif others =}{= for o in others =}{= if loop.first =}{= o.stem|pascal =}(){= end =}{= end =}{= else =}InMemory{= Port =}(){= end =}"
+unless = { matches = "^    {= port_ =} = " }
+
+[[edits]]
+insert = "{= main =}"
+at     = "end of call {= command|pascal =} in create"
+text   = "{= param =}={= port_ =},"

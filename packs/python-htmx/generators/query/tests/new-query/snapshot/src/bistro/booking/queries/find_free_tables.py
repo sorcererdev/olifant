@@ -15,7 +15,7 @@ class FindFreeTablesResult:
 
 class FindFreeTables:
     def __init__(self) -> None:
-        pass
+        """Takes the ports it uses; main.py passes their adapters."""
 
     def handle(self, input: FindFreeTablesInput) -> FindFreeTablesResult:
         raise NotImplementedError("FindFreeTables.handle: write its first case in find_free_tables__test.py, then this")

@@ -15,7 +15,7 @@ class {= Query =}Result:
 
 class {= Query =}:
     def __init__(self) -> None:
-        pass
+        """Takes the ports it uses; main.py passes their adapters."""
 
     def handle(self, input: {= Query =}Input) -> {= Query =}Result:
         raise NotImplementedError("{= Query =}.handle: write its first case in {= query_ =}__test.py, then this")

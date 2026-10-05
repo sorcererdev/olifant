@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from bistro.booking.commands.create_booking import CreateBooking
 from bistro.booking.models.table import Table
 from bistro.booking.ports.booking_repository.in_memory_booking_repository import InMemoryBookingRepository
-from bistro.booking.ports.id_generator.sequential_id_generator import SequentialIdGenerator
+from bistro.booking.ports.id_generator.in_memory_id_generator import InMemoryIdGenerator
 from bistro.booking.queries.get_day_schedule import GetDaySchedule
 from bistro.web.bookings.routes import bookings_routes
 
@@ -14,8 +14,13 @@ def client() -> TestClient:
     app = FastAPI()
     app.include_router(
         bookings_routes(
-            get_day_schedule=GetDaySchedule(bookings=bookings),
-            create_booking=CreateBooking(bookings=bookings, ids=SequentialIdGenerator()),
+            get_day_schedule=GetDaySchedule(
+                bookings=bookings,
+            ),
+            create_booking=CreateBooking(
+                bookings=bookings,
+                ids=InMemoryIdGenerator(),
+            ),
         )
     )
     return TestClient(app)

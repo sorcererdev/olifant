@@ -21,8 +21,13 @@ def create(db_path: str = "bistro.sqlite3") -> FastAPI:
     booking_repository.add_tables([Table(id="t1", seats=2), Table(id="t2", seats=4), Table(id="t3", seats=6)])
     id_generator = UuidIdGenerator()
     # commands and queries
-    create_booking = CreateBooking(bookings=booking_repository, ids=id_generator)
-    get_day_schedule = GetDaySchedule(bookings=booking_repository)
+    create_booking = CreateBooking(
+        bookings=booking_repository,
+        ids=id_generator,
+    )
+    get_day_schedule = GetDaySchedule(
+        bookings=booking_repository,
+    )
     # routers
     routers: list[APIRouter] = []
     routers.append(bookings_routes(get_day_schedule=get_day_schedule, create_booking=create_booking))

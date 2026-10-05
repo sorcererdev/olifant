@@ -11,7 +11,7 @@ from bistro.booking.models.booking import Booking
 from bistro.booking.models.slot import Slot
 from bistro.booking.models.table import Table
 from bistro.booking.ports.booking_repository.in_memory_booking_repository import InMemoryBookingRepository
-from bistro.booking.ports.id_generator.sequential_id_generator import SequentialIdGenerator
+from bistro.booking.ports.id_generator.in_memory_id_generator import InMemoryIdGenerator
 from bistro.shared.result import Ok
 
 SEVEN = Slot(day=date(2026, 10, 9), start=time(19, 0))
@@ -19,7 +19,11 @@ SEVEN = Slot(day=date(2026, 10, 9), start=time(19, 0))
 
 def command() -> tuple[CreateBooking, InMemoryBookingRepository]:
     bookings = InMemoryBookingRepository(tables=[Table(id="t1", seats=4)])
-    return CreateBooking(bookings=bookings, ids=SequentialIdGenerator()), bookings
+    create = CreateBooking(
+        bookings=bookings,
+        ids=InMemoryIdGenerator(),
+    )
+    return create, bookings
 
 
 def test_books_a_free_slot() -> None:

@@ -1,5 +1,6 @@
 """A BookingRepository in memory: for tests and the first run."""
 
+from collections.abc import Iterable
 from datetime import date
 
 from bistro.booking.models.booking import Booking
@@ -8,7 +9,7 @@ from bistro.booking.models.table import Table
 
 
 class InMemoryBookingRepository:
-    def __init__(self, tables: list[Table]) -> None:
+    def __init__(self, tables: Iterable[Table] = ()) -> None:
         self._tables = {t.id: t for t in tables}
         self._bookings: list[Booking] = []
 

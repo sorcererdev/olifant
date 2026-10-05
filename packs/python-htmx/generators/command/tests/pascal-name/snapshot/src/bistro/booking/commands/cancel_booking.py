@@ -24,7 +24,7 @@ type CancelBookingOutput = Ok[None] | CancelBookingFailure
 
 class CancelBooking:
     def __init__(self) -> None:
-        pass
+        """Takes the ports it uses; main.py passes their adapters."""
 
     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:
         raise NotImplementedError("CancelBooking.handle: write its first case in cancel_booking__test.py, then this")
