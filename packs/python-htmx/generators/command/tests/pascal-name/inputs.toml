@@ -1,0 +1,9 @@
+now = "2026-10-05T12:00:00Z"
+# Any spelling of the name gives the same files (Review Focus 2).
+run_tests = true
+expect_failing = 1
+
+[inputs]
+app = "bistro"
+service = "booking"
+command = "CancelBooking"

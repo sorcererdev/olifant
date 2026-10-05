@@ -31,7 +31,7 @@ spec = do
   describe "render" $ do
     it "renders every case" $
       map (`render` name "blog_post") allCases
-        `shouldBe` ["blog_post", "blog-post", "BlogPost", "blogPost", "BLOG_POST", "Blog Post", "blog post"]
+        `shouldBe` ["blog_post", "blog-post", "BlogPost", "blogPost", "BLOG_POST", "Blog Post", "blog post", "Blog post"]
     it "round-trips through every case" $ hedgehog $ do
       ws <- forAll (Gen.list (Range.linear 1 4) (Gen.text (Range.linear 2 8) Gen.lower))
       c <- forAll (Gen.element allCases)

@@ -23,6 +23,12 @@ One command created the page module and wired it into seven places across `Main.
 and `view` branches, plus the route and its URL parser. It also added the new message and
 its `update` branch. The result compiles.
 
+It can also start from nothing. `olifant init --pack python-htmx bistro` makes a running
+web app (uv, pytest and pyright strict, FastAPI and htmx), its tests green and its first
+commit made; from there each generator adds a piece of the architecture, a command with
+its red test stub or a repository with its passing contract test ([chapter
+2](02-running-generators.md#start-a-project-olifant-init)).
+
 ## The pieces
 
 - **A generator** is one convention, written down as data: `elm/page` knows how *this

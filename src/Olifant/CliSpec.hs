@@ -87,9 +87,31 @@ runInWith syntax dir stdinText files tty args = do
         , rtChecker = noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
+        , rtGitInit = \_ _ -> pure (Right ())
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
+
+-- | `olifant init` from /w, with a user config at /u and git calls recorded.
+runInit :: [(FilePath, Text)] -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text, [(FilePath, Text)])
+runInit files args = do
+  (root, snapshot) <- memoryWorkspace files
+  out <- newIORef ""
+  err <- newIORef ""
+  gits <- newIORef []
+  code <-
+    runCli
+      Runtime
+        { rtRoot = root, rtProjectDir = "/w", rtUserConfigDir = Just "/u", rtHomeDir = Nothing
+        , rtReadStdin = pure "", rtNow = pure fixedNow, rtStdoutIsTty = False
+        , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
+        , rtSyntax = noSyntax, rtChecker = noChecker
+        , rtGitChanged = \_ _ -> pure (Right ([], []))
+        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
+        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure (Right ())
+        }
+      args
+  (,,,,) code <$> readIORef out <*> readIORef err <*> snapshot <*> readIORef gits
 
 jsonAt :: [Text] -> Text -> Maybe Value
 jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
@@ -248,6 +270,61 @@ runCliSpec = describe "runCli" $ do
     human `shouldSatisfy` T.isInfixOf "service=billing:  query failed:"
     (_, json, _, _) <- runWith "" files False ["show", "q"]
     json `shouldSatisfy` T.isInfixOf "\"errors\":{\"billing\":"
+  describe "olifant init (north-star project 2 §1)" $ do
+    let starter = T.unlines
+          [ "description = \"A project\"", "language = \"x\"", "starter = true"
+          , "next = [\"uv sync\", \"run {= name =}\"]"
+          , "[inputs.name]", "type = \"ident\""
+          , "[[edits]]", "create = \"src/{= name =}/app.x\"", "text = \"app {= name =}\\n\""
+          , "[[edits]]", "create = \"src/{= name =}/home.x\"", "text = \"home\\n\"" ]
+        pack = [("/packs/p/generators/project/generator.toml", starter)
+               , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n")
+               , ("/packs/p/regions.toml", "[regions.links]\nfile = \"src/*/home.x\"\nquery = { glob = \"src/*/*.x\" }\nitem = \"{= stem =}\"\ninit_at = \"end of file\"\n")]
+    it "(a) makes a project from the pack's starter: config, files, fences, a first commit, next steps" $ do
+      (code, out, err, files, gits) <- runInit pack ["init", "--pack", "/packs/p", "bistro", "--human"]
+      (code, err) `shouldBe` (ExitSuccess, "")
+      M.lookup "/w/bistro/.olifant/config.toml" files `shouldSatisfy` maybe False ("p = { path = \"/packs/p\" }" `T.isInfixOf`)
+      M.lookup "/w/bistro/src/bistro/app.x" files `shouldBe` Just "app bistro\n"
+      gits `shouldBe` [("/w/bistro", "olifant init: p")]
+      out `shouldSatisfy` T.isInfixOf "uv sync"
+      out `shouldSatisfy` T.isInfixOf "run bistro"
+      -- (g) the region fenced in the file the starter wrote
+      M.lookup "/w/bistro/src/bistro/home.x" files `shouldSatisfy` maybe False ("olifant:region links" `T.isInfixOf`)
+    it "(b) refuses a folder that is not empty, naming what is there" $ do
+      (code, _, err, files, gits) <- runInit (("/w/bistro/README.md", "hi") : pack) ["init", "--pack", "/packs/p", "bistro", "--human"]
+      code `shouldBe` ExitFailure 2
+      err `shouldSatisfy` T.isInfixOf "bistro is not empty (README.md)"
+      M.member "/w/bistro/.olifant/config.toml" files `shouldBe` False
+      gits `shouldBe` []
+    it "(c) a folder holding only .git is empty enough (Review Focus 1)" $ do
+      (code, _, _, files, _) <- runInit (("/w/bistro/.git/HEAD", "ref") : pack) ["init", "--pack", "/packs/p", "bistro", "--human"]
+      code `shouldBe` ExitSuccess
+      M.member "/w/bistro/src/bistro/app.x" files `shouldBe` True
+    it "(d) a pack by name from the user config, and the user's default model copied" $ do
+      let user = ("/u/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[model]\ndefault = \"local\"\n\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://x/v1\"\nmodel = \"m\"\n")
+      (code, _, err, files, _) <- runInit (user : pack) ["init", "--pack", "p", "bistro", "--human"]
+      (code, err) `shouldBe` (ExitSuccess, "")
+      let config = M.findWithDefault "" "/w/bistro/.olifant/config.toml" files
+      config `shouldSatisfy` T.isInfixOf "[model.backends.local]"
+      config `shouldSatisfy` T.isInfixOf "default = \"local\""
+    it "(d) an unknown pack name says which are known and how to add one" $ do
+      (code, _, err, _, _) <- runInit pack ["init", "--pack", "nope", "bistro", "--human"]
+      code `shouldBe` ExitFailure 2
+      err `shouldSatisfy` T.isInfixOf "no pack `nope`"
+    it "(e) a pack without exactly one starter is refused" $ do
+      let noStarter = [(p, if "generator.toml" `T.isSuffixOf` T.pack p then T.replace "starter = true\n" "" t else t) | (p, t) <- pack]
+      (code, _, err, files, _) <- runInit noStarter ["init", "--pack", "/packs/p", "bistro", "--human"]
+      code `shouldBe` ExitFailure 2
+      err `shouldSatisfy` T.isInfixOf "has no starter generator (starter = true)"
+      -- nothing written: the folder is as it was
+      M.member "/w/bistro/.olifant/config.toml" files `shouldBe` False
+    it "(f) --plan writes nothing and says what it would do" $ do
+      (code, out, _, files, gits) <- runInit pack ["init", "--pack", "/packs/p", "bistro", "--plan", "--human"]
+      code `shouldBe` ExitSuccess
+      out `shouldSatisfy` T.isInfixOf "src/bistro/app.x"
+      out `shouldSatisfy` T.isInfixOf ".olifant/config.toml"
+      M.member "/w/bistro/src/bistro/app.x" files `shouldBe` False
+      gits `shouldBe` []
   it "plans against an unsaved buffer with --overlay, writing nothing (spec §4.8)" $ do
     let gen = T.unlines
           [ "description = \"d\"", "language = \"x\"", "[inputs.name]", "type = \"ident\""

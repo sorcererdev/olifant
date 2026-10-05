@@ -1,0 +1,8 @@
+
+
+def {= command_ =}_status(failure: {= command_ =}.{= Command =}Failure) -> int:
+    match failure:
+{=- for f in failures =}
+        case {= command_ =}.{= f.text =}():
+            return {= ? status: expr | the HTTP status for {= command_ =}.{= f.text =} (an int: 404, 409, 422, …) =}
+{=- end =}

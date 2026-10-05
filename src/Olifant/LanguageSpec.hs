@@ -11,7 +11,7 @@ import Data.List (nub)
 import Data.Maybe (isJust)
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
-import Olifant.Anchor (RenderedAnchor (..), locIndent, locLine, locOpen, resolveLayers)
+import Olifant.Anchor (RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
@@ -144,6 +144,20 @@ spec = do
       at syn lang file "end of match on f" `shouldReturn` Right (lineOf "return 422" + 1, "        ")
     it "(c) end of imports goes after the last import" $ withPython $ \syn lang file ->
       at syn lang file "end of imports" `shouldReturn` Right (lineOf "from dataclasses import dataclass" + 1, "")
+    it "(c) end of call NAME in FUNCTION goes after its last argument (python-pack: wire)" $ withPython $ \syn lang file ->
+      at syn lang file "end of call CreateBooking in create" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
+    it "(c) end of imports adds no blank line: one between import groups is grouping, not spacing" $ withPython $ \syn lang _ -> do
+      let grouped = T.unlines ["from pathlib import Path", "", "from app.x import y", "", "", "def f() -> None:", "    pass"]
+      fmap (fmap locSpacing) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] grouped) `shouldReturn` Right NoSpacing
+    it "(c) end of imports in a file with none goes after its docstring, a blank line before" $ withPython $ \syn lang _ -> do
+      let bare = T.unlines ["\"\"\"Clock in memory.\"\"\"", "", "", "class InMemoryClock:", "    pass"]
+      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] bare) `shouldReturn` Right (1, BlankBefore)
+    it "(c) end of parameters in FUNCTION goes after its last parameter (python-pack: web-command)" $ withPython $ \syn lang file ->
+      at syn lang file "end of parameters in floor_routes" `shouldReturn` Right (lineOf "find_free_tables: FindFreeTables," + 1, "    ")
+    it "(c) end of call NAME (anywhere in the file) goes after its last argument" $ withPython $ \syn lang file ->
+      at syn lang file "end of call CreateBooking" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
+    it "(c) end of call NAME in FUNCTION opens an empty argument list" $ withPython $ \syn lang file ->
+      fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
 
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
@@ -465,6 +479,20 @@ pythonModule =
     , ""
     , "    def run(self) -> int:"
     , "        return 1"
+    , ""
+    , ""
+    , "def floor_routes("
+    , "    find_free_tables: FindFreeTables,"
+    , ") -> int:"
+    , "    return 1"
+    , ""
+    , ""
+    , "def create(db_path: str) -> int:"
+    , "    create_booking = CreateBooking("
+    , "        bookings=booking_repository,"
+    , "    )"
+    , "    cancel_booking = CancelBooking()"
+    , "    return 1"
     , ""
     , ""
     , "def status(f: CreateBookingFailure) -> int:"

@@ -40,6 +40,7 @@ generatorSchema =
           ]
       "uses" -> object ["type" .= str "array", "description" .= str "[[uses]]: run other generators as part of this one.", "items" .= object ["type" .= str "object", "additionalProperties" .= False, "required" .= (["generator"] :: [Text]), "properties" .= props useKeys useProp]]
       "examples" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"], "description" .= str "Real commands, printed by show (agents copy them)."]
+      "context" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"], "description" .= str "Globs (templates over the inputs) of files the model sees when it fills this generator's holes, e.g. the models a codec reads."]
       "name" -> object ["type" .= str "string", "description" .= str "What editors show for this generator (\"Add Command Dependency\"); default: from the id."]
       "applies_at" -> object ["type" .= str "object", "description" .= str "Where this generator applies, for editors (olifant actions): path = \"{slot}/…\" (slots bind inputs), node = an ast-grep rule the cursor must be inside, bind = { input = \"regex\" } over that node's text, label = a template, where = what the rule looks for in words (shown when nothing applies), suggest = true lets editors offer it unasked (ghost text or a follow-up), trigger = a POSIX regex the text before the cursor must end with (a snippet's anticipation), after = an ast-grep rule the cursor's line must follow (only blank lines between; instead of node)."]
       "query" -> object ["type" .= str "object", "description" .= str "[query.NAME]: bind NAME to records from a glob, command or AST query; value = \"file name\" | \"parent folder\" | \"path\" | a field | a template, for an enum that is one_of it (see the user book, chapter 6).", "additionalProperties" .= object ["type" .= str "object"]]
@@ -79,6 +80,7 @@ generatorSchema =
       _ -> object []
     requiresProp = \case
       "exists" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"]]
+      "holds" -> object ["type" .= str "string", "description" .= str "A template over the inputs and queries; rendered empty, the generator refuses with the hint."]
       _ -> object ["type" .= str "string"]
     useProp = \case
       "generator" -> desc "string" "The generator to run (pack/name, or a name in the same pack)."

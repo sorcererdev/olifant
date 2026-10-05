@@ -2,6 +2,7 @@
 -- template and exemplar sources into a runnable 'Generator'.
 module Olifant.Catalog
   ( Catalog
+  , packsFromConfig
   , catalogEntries
   , catalogProject
   , catalogPacks

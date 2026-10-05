@@ -18,6 +18,53 @@ Generators from packs are named `pack/name`; your project's own generators (in
 `.olifant/generators/`) have no prefix. `olifant list --detail` also prints every
 generator's inputs, which saves a round of `show` calls.
 
+## Start a project: `olifant init`
+
+`olifant init --pack PACK NAME` makes a new project from nothing: a running skeleton, its
+tests green, ready for the pack's generators.
+
+```
+$ olifant init --pack ~/projects/olifant/packs/python-htmx bistro --human
+python-htmx/project (14 edits, 0 conflicts)
+  + pyproject.toml (32 lines)
+  + uv.lock (525 lines)
+  + .gitignore (4 lines)
+  …
+  + src/bistro/main.py (17 lines)
+  + src/bistro/main__test.py (18 lines)
+  + src/bistro/web/app.py (23 lines)
+  + src/bistro/web/app__test.py (9 lines)
+  + src/bistro/web/resources.py (4 lines)
+  + src/bistro/web/templates/base.html (19 lines)
+  + src/bistro/web/templates/home.html (7 lines)
+
+bistro is ready. Next:
+  cd bistro
+  uv sync
+  uv run pytest
+  uv run uvicorn --factory --app-dir src bistro.main:create --reload
+```
+
+In order, it:
+
+1. **Checks the folder.** `NAME` (or `--dir DIR`) must not exist, or be empty; a folder
+   holding only `.git` counts as empty. Otherwise it stops before writing anything:
+   `error: full is not empty (notes.txt)`.
+2. **Finds the pack.** `--pack` is a pack's directory, or a name under `[packs]` in
+   `~/.config/olifant/config.toml`. An unknown one: `error: no pack \`nope\`` with how to
+   add it. The pack must have exactly one **starter** (a generator with `starter = true`,
+   [chapter 7](07-writing-a-generator.md)); it is found before anything is written.
+3. **Writes `.olifant/config.toml`**: the pack, and your user config's `[model]` tables, so
+   holes are filled the way you set up ([chapter 12](12-holes-and-models.md)).
+4. **Runs the starter** with `name`, then sets up every owned region it made (as `sync
+   --init`; python-htmx's `resources` list).
+5. **Commits**: `git init`, then a first commit `olifant init: PACK`. Inside another
+   repository (a monorepo's `apps/`), it neither nests a repository nor commits: `note: no
+   first commit: it is inside the git repository at …; add and commit it there`.
+6. **Prints the next steps**, the starter's `next` lines.
+
+`--plan` shows the starter's plan and writes nothing; `--json` gives the plan as JSON.
+
 ## What does it need? `olifant show`
 
 ```

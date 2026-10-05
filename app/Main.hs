@@ -5,6 +5,7 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
+import Olifant.GitInit (gitInit)
 import Olifant.Cli (DoctorPorts (..), Runtime (..), parseDiffHunks, runCli)
 import Olifant.Model (probeBackend)
 import Data.Maybe (fromMaybe, isJust)
@@ -45,6 +46,7 @@ main = do
         , rtReadStdin = readStdin
         , rtNow = getCurrentTime
         , rtStdoutIsTty = tty
+        , rtGitInit = gitInit
         , rtOut = TIO.putStr
         , rtErr = TIO.hPutStr stderr
         , rtSyntax = astGrepSyntax cache
@@ -78,3 +80,4 @@ gitChanged dir ref = do
       pure $ case code of
         ExitSuccess -> Right (T.pack out)
         ExitFailure _ -> Left ("git " <> T.pack (unwords args) <> ": " <> T.strip (T.pack err))
+

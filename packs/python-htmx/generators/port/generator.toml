@@ -1,0 +1,57 @@
+name = "Port"
+description = "A port of a service: a Protocol in ports/NAME/, an in-memory adapter beside it, and a contract test (passing)"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/port --set app=bistro --set service=booking --set port=clock",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service the port belongs to"
+
+[inputs.port]
+type   = "ident"
+prompt = "The port (clock, email_sender, …)"
+
+[derive]
+dir    = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}"
+module = "{= app =}.{= service|snake =}.ports.{= port|snake =}"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/ports"
+value = "parent folder"
+
+[[edits]]
+create = "{= dir =}/__init__.py"
+text   = ""
+
+[[edits]]
+create   = "{= dir =}/{= port|snake =}.py"
+template = "port.py.dt"
+
+[[edits]]
+create   = "{= dir =}/in_memory_{= port|snake =}.py"
+template = "in_memory.py.dt"
+
+[[edits]]
+create   = "{= dir =}/{= port|snake =}__test.py"
+template = "contract_test.py.dt"
+
+# main.py is left alone: an adapter nothing uses would be an unused variable
+# (pyright strict). `wire` adds it when a command first takes the port.
+
+# The docstring starts as the port's name in words: a tab stop to say more.
+[holes.purpose]
+source = "derived"
+value  = "{= port|sentence =}."

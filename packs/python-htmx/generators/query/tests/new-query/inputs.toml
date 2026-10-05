@@ -1,0 +1,9 @@
+now = "2026-10-05T12:00:00Z"
+# A behaviour stub: its one test fails until the case and handle are written.
+run_tests = true
+expect_failing = 1
+
+[inputs]
+app = "bistro"
+service = "booking"
+query = "find_free_tables"

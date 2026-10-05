@@ -1,0 +1,39 @@
+diff --git a/src/bistro/booking/commands/cancel_booking.py b/src/bistro/booking/commands/cancel_booking.py
+index b231c18..1166cbb 100644
+--- a/src/bistro/booking/commands/cancel_booking.py
++++ b/src/bistro/booking/commands/cancel_booking.py
+@@ -23,7 +23,7 @@ type CancelBookingOutput = Ok[None] | CancelBookingFailure
+ 
+ 
+ class CancelBooking:
+-    def __init__(self) -> None:
++    def __init__(self, bookings: BookingRepository) -> None:
+         """Takes the ports it uses; main.py passes their adapters."""
+ 
+     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:
+diff --git a/src/bistro/booking/commands/create_booking.py b/src/bistro/booking/commands/create_booking.py
+index ef934cc..6040e27 100644
+--- a/src/bistro/booking/commands/create_booking.py
++++ b/src/bistro/booking/commands/create_booking.py
+@@ -23,7 +23,7 @@ type CreateBookingOutput = Ok[None] | CreateBookingFailure
+ 
+ 
+ class CreateBooking:
+-    def __init__(self) -> None:
++    def __init__(self, bookings: BookingRepository, tables: TableRepository, ids: IdGenerator) -> None:
+         """Takes the ports it uses; main.py passes their adapters."""
+ 
+     def handle(self, input: CreateBookingInput) -> CreateBookingOutput:
+diff --git a/src/bistro/booking/queries/get_day_schedule.py b/src/bistro/booking/queries/get_day_schedule.py
+index 7168d9f..755bfed 100644
+--- a/src/bistro/booking/queries/get_day_schedule.py
++++ b/src/bistro/booking/queries/get_day_schedule.py
+@@ -14,7 +14,7 @@ class GetDayScheduleResult:
+ 
+ 
+ class GetDaySchedule:
+-    def __init__(self) -> None:
++    def __init__(self, tables: TableRepository, bookings: BookingRepository) -> None:
+         """Takes the ports it uses; main.py passes their adapters."""
+ 
+     def handle(self, input: GetDayScheduleInput) -> GetDayScheduleResult:

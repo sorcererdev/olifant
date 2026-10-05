@@ -1,0 +1,10 @@
+diff --git a/src/bistro/booking/ports/id_generator/id_generator.py b/src/bistro/booking/ports/id_generator/id_generator.py
+index 07a5ee6..47d55d8 100644
+--- a/src/bistro/booking/ports/id_generator/id_generator.py
++++ b/src/bistro/booking/ports/id_generator/id_generator.py
+@@ -5,3 +5,5 @@ from typing import Protocol
+ 
+ class IdGenerator(Protocol):
+     """Its methods come from the port-method snippet; each adapter follows."""
++
++    def next_id(self) -> str: ...

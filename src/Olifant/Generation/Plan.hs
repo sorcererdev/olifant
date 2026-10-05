@@ -90,6 +90,8 @@ data Conflict
     RegionBroken Text FilePath Text
   | UnsafePath Int FilePath
   | RequirementUnmet [Text] [FilePath] (Maybe Text)
+  | -- | a `[requires] holds` that does not: the step and the hint
+    RequirementRefused [Text] Text
   | -- | edit, path, why it cannot be written (a directory, non-text file, or a file where a directory must be)
     TargetUnusable Int FilePath Text
   | -- | a hole that cannot be placed (no adapter, unknown kind)
@@ -110,6 +112,7 @@ describeConflict = \case
   TargetUnusable n p why -> edit n <> "cannot write " <> T.pack p <> ": " <> why
   HoleProblem why -> "hole: " <> why
   RequirementUnmet step ps hint -> T.intercalate " › " step <> ": required files missing: " <> T.intercalate ", " (map T.pack ps) <> maybe "" (". " <>) hint
+  RequirementRefused step why -> T.intercalate " › " step <> ": " <> why
   where
     edit n = "edit " <> T.pack (show n) <> ": "
 

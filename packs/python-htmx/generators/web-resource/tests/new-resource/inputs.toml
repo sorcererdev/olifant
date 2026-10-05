@@ -1,0 +1,13 @@
+now = "2026-10-05T12:00:00Z"
+# A floor resource over a new query and a command with a port: the routes,
+# its stub, main.py building both (the command with its adapter) and routing
+# them. Red: the routes stub and the query's and command's own stubs.
+run_tests = true
+expect_failing = 3
+
+[inputs]
+app = "bistro"
+service = "booking"
+resource = "floor"
+query = "find_free_tables"
+commands = "cancel_booking"

@@ -163,7 +163,7 @@ From the bottom up:
 | **Toml** | TOML parsed into a small `Tree`, plus decoders with readable errors; the only module that knows the `toml-parser` API | `Toml.hs`: `Tree`, `Table`, `parseToml`, `keyOrder`, `required`, `optional`, `inKey`, `text`, `list`, `table`, `onlyKeys` | Suggest |
 | **Glob** | `**` / `*` path globs | `Glob.hs`: `matchesGlob`, `globPrefix` | none |
 | **Template** | The `{= … =}` language, holes included: parse, render, exemplars | `Template.hs` over `Template/{Syntax,Parse,Render,Value,Exemplar,Error}`: `Template`, `parseTemplate`, `render`, `evaluate`, `Value`, `Env`, `exemplar`, `freeVariables` | Naming, Suggest |
-| **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`, `Diagnostics`, `Support`: `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`, `compileClean`, `CompilerSupport`, `typeNames`, `supportFor`. `checkProgram`, `indentBlockEnd`. `Language.Elm`, `Language.Ghc`, `Language.Pyright` and `Language.Rustc` (one `CompilerSupport` record each, spec §5.6) and `Language.AstGrep` (the ast-grep adapter) are internal; only `AstGrep` is imported directly, by `Main`. `HoleKind` is an adapter's `[holes.KIND]` | Glob, Process, Template, Toml |
+| **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`, `Diagnostics`, `Support` (`Language.Header`'s `headerEnd`, a file's leading comments and docstring, is used by the anchors and the fill phase): `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`, `compileClean`, `CompilerSupport`, `typeNames`, `supportFor`. `checkProgram`, `indentBlockEnd`. `Language.Elm`, `Language.Ghc`, `Language.Pyright` and `Language.Rustc` (one `CompilerSupport` record each, spec §5.6) and `Language.AstGrep` (the ast-grep adapter) are internal; only `AstGrep` is imported directly, by `Main`. `HoleKind` is an adapter's `[holes.KIND]` | Glob, Process, Template, Toml |
 | **Process** | Run an external program with byte stdin/stdout/stderr; never throws | `Process.hs`: `runBytes` | none |
 | **Fill** | The **Filler** port: what a model is asked for typed holes, and what it answers | `Fill.hs`: `FillHole`, `FillRequest`, `Filler`, `ModelFiller` | none |
 | **Model** | `[model]` config and the real fillers: request and reply formats per backend, called with `curl` | `Model.hs`: `Backend`, `ModelConfig`, `parseModelConfig`, `backendKinds`, `backendModel`, `systemPrompt`, `userPrompt`, `requestBody`, `decodeFills`, `curlFiller`, `probeBackend` | Fill, Process, Toml |
@@ -795,11 +795,17 @@ expand resolve bindQ choose now prior ancestors path gen0 sets = do
   env <- if null (genQueries gen) then pure env0 else ExceptT (first (StepQuery path) <$> bindQ env0 (genQueries gen))
   rendered <- except (first (StepTemplate path) (renderEdits (genLanguage gen) env (genEdits gen)))
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
+  context <- except (first (StepTemplate path) (traverse (render env) (genContext gen)))
   let own = map (PlanEdit path) rendered
   -- Each use sees what the run, this generator and earlier uses create.
   nested <- foldM (\acc (k, u) -> (acc ++) <$> expandUse env (prior ++ created (own ++ acc)) k u) [] (zip [1 :: Int ..] (genUses gen))
-  pure ([PlanRequire path required hint | not (null required)] ++ own ++ nested)
+  pure ([PlanRequire path required hint | not (null required)] ++ [PlanContext context | not (null context)] ++ own ++ nested)
 ```
+
+A `PlanContext` carries a generator's `context` globs, rendered with its inputs. The planner
+skips it; `generate` collects every step's globs, reads the files they match (only when
+some hole goes to the model) and appends them to the tools' `toolFillContext`, which the
+fill phase sends as "Related file …".
 
 - **`choose`** resolves the generator's `one_of` enums for this step (above), given `prior`,
   the files the run has created so far, and the step's `sets`. Only then can its inputs be
@@ -935,7 +941,12 @@ phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on 
   the container's own range. Back in `resolveOne`'s `where`, `place` (`:147`) picks
   the line after the last item, indented like it — and sets `locSpacing`: if the container's
   existing items are separated by a blank line, `place` copies that spacing onto the new one
-  (`BlankAfter` for `start of`, `BlankBefore` for `end of`; spec §5.2).
+  (`BlankAfter` for `start of`, `BlankBefore` for `end of`; spec §5.2). `named`, which
+  calls `place`, drops that spacing for a target with `targetSpaced = False` (key `spaced`;
+  Python's `imports`, where a blank line separates groups), and for a target with no items
+  and `targetWhenEmpty = Just "after header"` (Python's `imports` again) it places the text
+  at `headerEnd` (after the leading comments and docstring) with `BlankBefore`, instead of
+  missing.
 - **An empty container.** `place` has a third case, for `end of`/`start of` against a target
   whose `items` come back `[]` (spec §7.1). It opens the container only when it is bracketed
   (`()`, `{}`, `[]`; anything else, a whole file say, misses with "has no items to insert
@@ -1345,18 +1356,28 @@ accepted in a round (`:72`), `Unfilled` for each hole still failing when the rou
 those holes `HoleFilled model attempts` with their fill, marks the others `HoleUnfilled`
 with their last reason, and turns the notes into the warning "holes were filled but not
 compile-checked: …" (`:76`). `applyFills` finds each placeholder by its text and indents a
-multi-line fill's continuation lines like the placeholder's line.
+multi-line fill's continuation lines like the placeholder's line. When the file's language
+has `imports`, `splitImports` takes the fill's leading import lines off first and
+`addImports` puts each one the file lacks after its last top-level import (or after the
+leading comments and docstring, `headerEnd`). `parses` checks only the code part, and
+`FillHole`'s `fhImports` tells the model it may send imports (`Model.hs` adds the line to
+that hole's prompt).
 
 Then `generate` makes the shown edits match the writes:
 
 ```haskell
--- src/Olifant/Generation.hs:167
-      let filled = [(holePlaceholder (phSite h), f) | h <- holes, Just f <- [phFill h]]
-          withFills t = foldl (\acc (ph, f) -> T.replace ph f acc) t filled
+-- src/Olifant/Generation.hs
+      let filled = [(phSite h, f) | h <- holes, Just f <- [phFill h]]
+          importsOf p = langImports =<< languageFor (toolLanguages tools) p
+          withFills imports p t = M.findWithDefault t p (applyFills imports (M.singleton p t) [(s {holeFile = p}, f) | (s, f) <- filled])
 ```
 
-`shownFilled` (`:169`) applies `withFills` to every edit's text, so `--plan` shows the fill
-where the placeholder was.
+`shownFilled` applies `withFills` to every edit's text, so `--plan` shows the fill where
+the placeholder was. `withFills` is `applyFills` on that one text, so a created or
+overwritten file shows the fill's imports where they went and its continuation lines
+indented as written; an inserted fragment (`fragment`) is shown with each fill's code
+only, its import lines split off with `splitImports` (they appear in the file's imports in
+`planWrites`, not in the fragment).
 
 **The real filler** is in `Model.hs`. `parseModelConfig` (`:59`) reads `[model]`: `default`,
 `retries` (2), `timeout` (120 seconds) and `[model.backends.NAME]`, each a `Backend`
@@ -1766,8 +1787,10 @@ where `ws` is the project with the overlay or `--content -` text laid over it. `
 adapter and the check's `context` cover (pruned directories left out), placeholderizes their
 holes and runs the check through the **Checker** port. `uncoveredAt` (`:31`) reads the
 report's missing-case sites in that file that start at or above the cursor's line, takes the
-latest, strips a leading `&` or `&mut ` from each pattern, and keeps those matching the
-regex. Each becomes a record `{name = pattern}`.
+latest, writes each pattern as the site writes it (its first argument: the compiler
+support's `supportPattern`, given the site and the file's source; rustc's drops a leading
+`&` or `&mut `, pyright's qualifies `A()` as `create_booking.A()` when the other arms do),
+and keeps those matching the regex. Each becomes a record `{name = pattern}`.
 
 **Tests.** `parseCase` reads a case's `at`. `runCase` passes it
 to `atCaseCursor` (`GeneratorTesting.hs:145`), which places a snippet as `placeCursor` does,
@@ -1951,6 +1974,27 @@ an earlier one with its id), reads `[rules]` into `catalogRulesConfig`, and runs
 `checkFixes` once the generators are known. A file that doesn't parse is in
 `catalogBrokenRules` with its path; a rule with a bad `fix` is there as `rules.toml` with
 the rule's id.
+
+### `olifant init` (`runInit`, `Cli.hs:92`)
+
+`runCli` handles `InitCmd` before it looks for a project (there is none yet). `runInit`:
+
+1. resolves `--pack`: a directory, or a name in the user config's `[packs]`
+   (`packsFromConfig`, exported by `Catalog`);
+2. refuses a target folder with anything but `.git` in it, through the root workspace
+   (`rtRoot`), naming what is there;
+3. opens the pack's catalog and finds its one starter (`genStarter`) **before** writing
+   anything, so a pack with none, or two, leaves no `.olifant/` behind;
+4. writes `.olifant/config.toml`: the `[packs]` line, then the user config's `[model]`
+   tables copied as text (`modelTables`);
+5. opens the new project's catalog and runs the starter through `runSteps` with `name`,
+   like a `gen`; then `initFences` sets up every region instance the starter's files made;
+6. calls the runtime's `rtGitInit dir "olifant init: PACK"` (`Main.gitInit`: `git init`,
+   `git add -A`, `git commit`; in tests a recorder), and prints the starter's `genNext`
+   lines rendered with `name`.
+
+`--plan` stops after step 5's plan, writing nothing. `GeneratorTesting` skips the fixture
+for a starter's case (`genStarter`): a starter makes a project from nothing.
 
 ### `olifant check` (`Cli.hs:177`)
 

@@ -16,6 +16,7 @@ module Olifant.Anchor.Resolve
   , describeMisses
   ) where
 
+import Olifant.Language.Header (headerEnd)
 import Data.Aeson (object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Char (isAlphaNum)
@@ -143,7 +144,14 @@ resolveOne syntax lang anchor content = case anchor of
       itemsOfTarget syntax l (positionWords pos) ws content <&> \case
         Left (why, tool) -> Left (Miss used why tool)
         Right Nothing -> Left (miss "not found")
-        Right (Just (c, items)) -> place l pos c items
+        Right (Just (_, []))
+          | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] ->
+              Right ((located (headerEnd ls) "" (regionOf 0 (max 0 (length ls - 1)))) {locSpacing = BlankBefore})
+        Right (Just (c, items)) -> (\loc -> if maybe True targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l pos c items
+      where
+        target = case [t | t <- langTargets l, Just _ <- [matchShape t ws]] of
+          t : _ -> Just t
+          [] -> Nothing
     place l pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce

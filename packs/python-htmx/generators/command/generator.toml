@@ -1,0 +1,71 @@
+name = "Command"
+description = "A command of a service: commands/NAME.py (its Input, a failure in a one-per-line union, handle) and NAME__test.py, a failing stub wired up, ready for the first case"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/command --set app=bistro --set service=booking --set command=cancel_booking",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service it belongs to"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command, a verb phrase (cancel_booking, close_table, …)"
+
+[derive]
+Command = "{= command|pascal =}"
+command_ = "{= command|snake =}"
+dir     = "src/{= app =}/{= service|snake =}/commands"
+module  = "{= app =}.{= service|snake =}.commands.{= command|snake =}"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+[[edits]]
+create    = "{= dir =}/__init__.py"
+text      = ""
+on_exists = "skip"
+
+[[edits]]
+create   = "{= dir =}/{= command_ =}.py"
+template = "command.py.dt"
+
+[[edits]]
+create   = "{= dir =}/{= command_ =}__test.py"
+template = "command__test.py.dt"
+
+# The docstring starts as the name in words: a tab stop to say more.
+[holes.purpose]
+source = "derived"
+value  = "{= command|sentence =}."
+
+# The first input field, the success value and the stub's input: valid code
+# to start from (tab stops in an editor), until the first real case.
+[holes.field]
+source = "derived"
+value  = "id"
+
+[holes.type]
+source = "derived"
+value  = "str"
+
+[holes.value]
+source = "derived"
+value  = "None"
+
+[holes.failure]
+source = "derived"
+value  = "NotFound"

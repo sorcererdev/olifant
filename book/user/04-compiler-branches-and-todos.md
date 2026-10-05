@@ -379,7 +379,7 @@ fills differ by site, and each arm goes after its `match`'s last line:
 ```
 
 Without a model, each value is a placeholder that type-checks and raises if it runs,
-`(_ for _ in ()).throw(NotImplementedError("olifant: value: …"))`. [Chapter
+`getattr(NotImplemented, "olifant: value: …")`. [Chapter
 14](14-editors-and-actions.md#the-python-chain) runs the generator as an editor does.
 
 ## When Olifant refuses to guess

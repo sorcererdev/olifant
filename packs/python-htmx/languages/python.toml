@@ -8,17 +8,27 @@ grammar = "python"
 indent = "    "
 placeholder = 'raise NotImplementedError("{= message|python_string =}")'
 branch = "case {= pattern =}:\n    {= body =}"
+# A fill may begin with import lines (a decode that needs `date`): they join
+# the file's imports.
+imports = "^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$"
+
+# `from datetime import time` joins `from datetime import date`: one line
+# per module.
+[import_merge]
+pattern = "^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$"
+write   = "from {= module =} import {= names =}"
 
 [check]
 command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
 context = ["pyproject.toml", "uv.lock"]
 format  = "pyright-json"
 
-# Hole kinds (spec §6.3). An expression placeholder is a value of type Never
-# (it fits any type under pyright strict, needs no import) that raises with
-# the hole's message if it is ever run.
+# Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
+# result), so it fits any type under pyright strict and needs no import; it
+# raises with the hole's message if it is ever run. Not Never: pyright skips
+# code after a Never as unreachable, which would leave a later fill unchecked.
 [holes.expr]
-placeholder = '(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}"))'
+placeholder = 'getattr(NotImplemented, "olifant: {= hole =}: {= instruction|python_string =}")'
 wrap = "def __olifant():\n    return {= fill =}"
 
 [holes.stmt]
@@ -66,8 +76,37 @@ container = { kind = "block", inside = { kind = "match_statement", has = { field
 items = { kind = "case_clause" }
 example = "end of match on failure"
 
+# A call's arguments, one per line (`CreateBooking(\n    bookings=…,\n)`), in
+# a function: where `wire` passes a command its adapters. An empty `X()`
+# opens.
+[targets.call_in]
+phrase = "call NAME in FUNCTION"
+container = { kind = "argument_list", inside = { kind = "call", has = { field = "function", regex = "^{= NAME =}$" }, inside = { kind = "function_definition", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
+items = { any = [{ kind = "keyword_argument" }, { kind = "identifier" }, { kind = "call" }, { kind = "attribute" }, { kind = "string" }, { kind = "integer" }, { kind = "float" }, { kind = "list" }, { kind = "dictionary" }, { kind = "tuple" }, { kind = "true" }, { kind = "false" }, { kind = "none" }, { kind = "list_splat" }, { kind = "dictionary_splat" }] }
+example = "end of call CreateBooking in create"
+
+# The same, anywhere in the file (it must be the only call to NAME): where
+# `wire` passes a fake in a test.
+[targets.call]
+phrase = "call NAME"
+container = { kind = "argument_list", inside = { kind = "call", has = { field = "function", regex = "^{= NAME =}$" } } }
+items = { any = [{ kind = "keyword_argument" }, { kind = "identifier" }, { kind = "call" }, { kind = "attribute" }, { kind = "string" }, { kind = "integer" }, { kind = "float" }, { kind = "list" }, { kind = "dictionary" }, { kind = "tuple" }, { kind = "true" }, { kind = "false" }, { kind = "none" }, { kind = "list_splat" }, { kind = "dictionary_splat" }] }
+example = "end of call CancelBooking"
+
+# A function's parameters, one per line (`def floor_routes(\n    x: X,\n)`):
+# where `web-command` gives a router factory its command.
+[targets.parameters_in]
+phrase = "parameters in FUNCTION"
+container = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^{= FUNCTION =}$" } } }
+items = { any = [{ kind = "typed_parameter" }, { kind = "identifier" }, { kind = "default_parameter" }, { kind = "typed_default_parameter" }, { kind = "list_splat_pattern" }, { kind = "dictionary_splat_pattern" }] }
+example = "end of parameters in floor_routes"
+
 [targets.imports]
 phrase = "imports"
 container = { kind = "module" }
 items = { any = [{ kind = "import_statement" }, { kind = "import_from_statement" }, { kind = "future_import_statement" }] }
+# a blank line between imports separates groups: a new import joins the last
+spaced = false
+# in a file with none, the first goes under the docstring
+when_empty = "after header"
 example = "end of imports"

@@ -1,0 +1,26 @@
+diff --git a/src/bistro/booking/models/booking.py b/src/bistro/booking/models/booking.py
+index 8930364..cd002f8 100644
+--- a/src/bistro/booking/models/booking.py
++++ b/src/bistro/booking/models/booking.py
+@@ -1,6 +1,12 @@
+ from dataclasses import dataclass
++from datetime import date, time
+ 
+ 
+ @dataclass(frozen=True)
+ class Booking:
+     id: str
++    table_id: str
++    day: date
++    start: time
++    party: int
++    guest: str
+diff --git a/src/bistro/booking/models/table.py b/src/bistro/booking/models/table.py
+index d3b513f..d6d3319 100644
+--- a/src/bistro/booking/models/table.py
++++ b/src/bistro/booking/models/table.py
+@@ -4,3 +4,4 @@ from dataclasses import dataclass
+ @dataclass(frozen=True)
+ class Table:
+     id: str
++    seats: int

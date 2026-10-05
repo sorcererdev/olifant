@@ -1,0 +1,17 @@
+"""{= Entity =}Repository in memory: for tests, and until a real adapter exists."""
+
+from {= pkg =}.models.{= e =} import {= Entity =}
+
+
+class InMemory{= Entity =}Repository:
+    def __init__(self) -> None:
+        self._rows: dict[{= for f in fields =}{= if loop.first =}{= f.type =}{= end =}{= end =}, {= Entity =}] = {}
+
+    def get(self, {= for f in fields =}{= if loop.first =}{= f.name =}: {= f.type =}{= end =}{= end =}) -> {= Entity =} | None:
+        return self._rows.get({= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =})
+
+    def save(self, {= e =}: {= Entity =}) -> None:
+        self._rows[{= e =}.{= for f in fields =}{= if loop.first =}{= f.name =}{= end =}{= end =}] = {= e =}
+
+    def all(self) -> list[{= Entity =}]:
+        return [self._rows[k] for k in sorted(self._rows)]

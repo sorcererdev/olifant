@@ -23,7 +23,7 @@ newtype Name = Name [Text]
 nameWords :: Name -> [Text]
 nameWords (Name ws) = ws
 
-data Case = Snake | Kebab | Pascal | Camel | Constant | Title | LowerWords
+data Case = Snake | Kebab | Pascal | Camel | Constant | Title | LowerWords | Sentence
   deriving stock (Eq, Show, Enum, Bounded)
 
 allCases :: [Case]
@@ -38,6 +38,7 @@ caseName = \case
   Constant -> "constant"
   Title -> "title"
   LowerWords -> "lower_words"
+  Sentence -> "sentence"
 
 caseFromText :: Text -> Maybe Case
 caseFromText t = lookup t [(caseName c, c) | c <- allCases]
@@ -89,6 +90,9 @@ render c (Name ws) = case c of
   Constant -> T.toUpper (T.intercalate "_" ws)
   Title -> T.unwords (map capitalise ws)
   LowerWords -> T.unwords ws
+  Sentence -> case ws of
+    [] -> ""
+    (w : rest) -> T.unwords (capitalise w : rest)
 
 capitalise :: Text -> Text
 capitalise w = case T.uncons w of

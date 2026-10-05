@@ -1,0 +1,12 @@
+now = "2026-10-05T12:00:00Z"
+# GetDaySchedule takes IdGenerator, which CreateBooking already uses: one
+# adapter line in main.py, passed to both (Review Focus 3).
+run_tests = true
+
+[inputs]
+app = "bistro"
+service = "booking"
+kind = "queries"
+command = "get_day_schedule"
+param = "ids"
+port = "IdGenerator"

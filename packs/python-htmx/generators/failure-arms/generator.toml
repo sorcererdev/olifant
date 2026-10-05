@@ -3,8 +3,13 @@ description = "A new failure of a command: add it to the command's failure union
 language = "python"
 version = 1
 examples = [
-  "olifant gen python-htmx/failure-arms --set service=booking --set command=create_booking --set failure=Cancelled",
+  "olifant gen python-htmx/failure-arms --set app=bistro --set service=booking --set command=create_booking --set failure=Cancelled",
 ]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
 
 [inputs.service]
 type   = "enum"
@@ -22,17 +27,22 @@ prompt = "The failure class you added (Cancelled)"
 
 [derive]
 Failure = "{= command|pascal =}Failure"
-command_file = "src/bistro/{= service|snake =}/{= command|snake =}.py"
+command_file = "src/{= app =}/{= service|snake =}/commands/{= command|snake =}.py"
 
-# Every service: a folder with a service.py.
-[query.services]
-glob  = "src/bistro/*/service.py"
+# The app: the folder under src/ with the composition root.
+[query.apps]
+glob  = "src/*/main.py"
 value = "parent folder"
 
-# The service's commands: its modules, less its own models, ports and service.
+# Every service: a folder with commands/.
+[query.services]
+glob  = "src/{= app =}/*/commands"
+value = "parent folder"
+
+# The service's commands: the modules in its commands/, less their tests.
 [query.commands]
-glob    = "src/bistro/{= service|snake =}/*.py"
-exclude = ["**/__init__.py", "**/models.py", "**/ports.py", "**/service.py"]
+glob    = "src/{= app =}/{= service|snake =}/commands/*.py"
+exclude = ["**/__init__.py", "**/*__test.py"]
 value   = "file name"
 
 # 1: the union gains the failure (unless a member line already names it).
@@ -51,7 +61,7 @@ text     = "case {= pattern =}:\n    {= ? body: block | the body of this arm for
 
 # In an editor (olifant actions): on a failure class in a command module.
 [applies_at]
-path  = "src/bistro/{service}/{command}.py"
+path  = "src/{app}/{service}/commands/{command}.py"
 node  = { kind = "class_definition", inside = { kind = "decorated_definition", regex = "frozen=True" }, not = { has = { field = "name", regex = "Input$" } } }
 bind  = { failure = "^class ([A-Za-z0-9_]+)" }
 where = "on a failure class of the {= command|pascal =} command"

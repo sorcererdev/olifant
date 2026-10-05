@@ -1,0 +1,50 @@
+name = "Service"
+description = "A new service: a package with models/, ports/, commands/ and queries/ (python-htmx layout)"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/service --set app=bistro --set service=kitchen",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service (kitchen, booking, …)"
+
+[derive]
+dir = "src/{= app =}/{= service|snake =}"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+# Packages only: what goes in them comes from model, port, repository,
+# command and query. Again: nothing changes.
+[[edits]]
+create    = "{= dir =}/__init__.py"
+text      = ""
+on_exists = "skip"
+
+[[edits]]
+create    = "{= dir =}/models/__init__.py"
+text      = ""
+on_exists = "skip"
+
+[[edits]]
+create    = "{= dir =}/ports/__init__.py"
+text      = ""
+on_exists = "skip"
+
+[[edits]]
+create    = "{= dir =}/commands/__init__.py"
+text      = ""
+on_exists = "skip"
+
+[[edits]]
+create    = "{= dir =}/queries/__init__.py"
+text      = ""
+on_exists = "skip"

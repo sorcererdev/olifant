@@ -152,6 +152,9 @@ spec = do
   describe "rust_string" $
     it "escapes text for the inside of a Rust format-string literal" $
       renderWith [("t", VText "Rec { .. } \"late\" \\n")] "{= t|rust_string =}" `shouldBe` Right "Rec {{ .. }} \\\"late\\\" \\\\n"
+  describe "basename" $
+    it "is a path's last segment: a resource's folder name" $
+      renderWith [("d", VText "src/bistro/web/bookings")] "{= d|basename =}" `shouldBe` Right "bookings"
   describe "indent" $
     it "indents every non-empty line one level (four spaces): a body under a def" $
       renderWith [("t", VText "x = 1\n\nreturn x")] "{= t|indent =}" `shouldBe` Right "    x = 1\n\n    return x"

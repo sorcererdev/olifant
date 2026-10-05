@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Bookings — {{ day }}{% endblock %}
+{% block content %}
+  <h1>Bookings — {{ day }}</h1>
+  <table>
+    <tr><th>Time</th>{% for table in tables %}<th>{{ table.id }} ({{ table.seats }})</th>{% endfor %}</tr>
+    {% for slot in slots %}
+    <tr>
+      <th>{{ slot.strftime("%H:%M") }}</th>
+      {% for table in tables %}
+        {% set booking = bookings.get((table.id, slot)) %}
+        <td class="{{ 'booked' if booking else '' }}">
+          {% if booking %}{% include "booking.html" %}{% else %}
+          <form hx-post="/bookings/create_booking" hx-target="closest td" hx-swap="innerHTML">
+            <input type="hidden" name="table_id" value="{{ table.id }}">
+            <input type="hidden" name="day" value="{{ day }}">
+            <input type="hidden" name="start" value="{{ slot.strftime('%H:%M') }}">
+            <input name="guest" placeholder="Guest" size="6" required>
+            <input name="party" type="number" min="1" value="2" style="width:3rem">
+            <button>Book</button>
+          </form>
+          {% endif %}
+        </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </table>
+{% endblock %}

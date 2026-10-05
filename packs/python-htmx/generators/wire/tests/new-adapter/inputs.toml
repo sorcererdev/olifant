@@ -1,0 +1,13 @@
+now = "2026-10-05T12:00:00Z"
+# GetDaySchedule (built and routed in main.py) takes a new port with a SQLite
+# adapter: main.py gains the adapter and passes it; the query keeps it; its
+# test passes a fake. The fixture's tests stay green.
+run_tests = true
+
+[inputs]
+app = "bistro"
+service = "booking"
+kind = "queries"
+command = "get_day_schedule"
+param = "tables"
+port = "TableRepository"

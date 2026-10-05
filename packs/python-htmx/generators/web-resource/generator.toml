@@ -1,0 +1,121 @@
+name = "Web Resource"
+description = "A web resource: web/RESOURCE/ with routes (the page from a query; a POST per command), failures, templates, a failing stub test wired up; main.py builds and routes it; the home page links it"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/web-resource --set app=bistro --set service=booking --set resource=floor --set query=find_free_tables --set commands=cancel_booking",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service whose query and commands it shows"
+
+[inputs.resource]
+type   = "ident"
+prompt = "The resource, its path (/floor, /bookings, …)"
+
+[inputs.query]
+type   = "enum"
+one_of = "queries"
+prompt = "The query its page shows"
+
+[inputs.commands]
+type     = "list"
+of       = "ident"
+optional = true
+prompt   = "The commands it takes, comma separated (cancel_booking, …); more later with web-command"
+
+[derive]
+Resource  = "{= resource|pascal =}"
+resource_ = "{= resource|snake =}"
+Query     = "{= query|pascal =}"
+query_    = "{= query|snake =}"
+pkg       = "{= app =}.{= service|snake =}"
+web       = "src/{= app =}/web/{= resource|snake =}"
+routes_f  = "{= resource|snake =}_routes"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/queries"
+value = "parent folder"
+
+[query.queries]
+glob    = "src/{= app =}/{= service|snake =}/queries/*.py"
+exclude = ["**/__init__.py", "**/*__test.py"]
+value   = "file name"
+
+# the query's Input fields: the page's parameters (in its test)
+[query.params]
+files = "src/{= app =}/{= service|snake =}/queries/{= query|snake =}.py"
+ast   = { kind = "assignment", has = { field = "type", kind = "type" }, inside = { kind = "expression_statement", inside = { kind = "block", inside = { kind = "class_definition", has = { field = "name", regex = "^{= query|pascal =}Input$" } } } } }
+each  = { name = "^([a-z_][a-z_0-9]*):" }
+
+# the query's ports, faked in the routes test
+[query.deps]
+files = "src/{= app =}/{= service|snake =}/queries/{= query|snake =}.py"
+ast   = { kind = "typed_parameter", inside = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^__init__$" } } } }
+each  = { name = "^([a-z_][a-z_0-9]*)", port = ":[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)" }
+
+[[edits]]
+create = "{= web =}/__init__.py"
+text   = ""
+
+[[edits]]
+create   = "{= web =}/routes.py"
+template = "routes.py.dt"
+
+[[edits]]
+create   = "{= web =}/templates/page.html"
+template = "page.html.dt"
+
+[[edits]]
+create = "{= web =}/templates/done.html"
+text   = "{# {= resource|sentence =}: a command's success (its Ok value) #}\n<p class=\"done\">Done: {{ value }}</p>\n"
+
+[[edits]]
+create = "{= web =}/templates/failure.html"
+text   = "{# {= resource|sentence =}: a command's failure (its reason) #}\n<p class=\"failure\">{{ reason }}</p>\n"
+
+[[edits]]
+create   = "{= web =}/routes__test.py"
+template = "routes__test.py.dt"
+
+[[uses]]
+generator = "wire-test"
+for_each  = "deps"
+with      = { app = "{= app =}", service = "{= service =}", test = "{= web =}/routes__test.py", command = "{= query =}", param = "{= item.name =}", port = "{= item.port =}" }
+
+# main.py: builds the query, routes the resource
+[[edits]]
+insert = "src/{= app =}/main.py"
+at     = "end of imports"
+text   = "from {= app =}.web.{= resource_ =}.routes import {= routes_f =}"
+unless = { matches = "import {= routes_f =}$" }
+
+[[edits]]
+insert = "src/{= app =}/main.py"
+at     = "before first line matching ^    return create_app"
+text   = "routers.append({= routes_f =}(\n    {= query_ =}={= query_ =},\n))"
+unless = { matches = "{= routes_f =}\\(" }
+
+[[uses]]
+generator = "build-in-main"
+with      = { app = "{= app =}", service = "{= service =}", kind = "queries", command = "{= query =}" }
+
+[[uses]]
+generator = "web-command"
+for_each  = "commands"
+with      = { app = "{= app =}", service = "{= service =}", resource = "{= resource =}", command = "{= item =}" }
+
+[holes.shows]
+source = "derived"
+value  = "what the {= resource|lower_words =} page shows"

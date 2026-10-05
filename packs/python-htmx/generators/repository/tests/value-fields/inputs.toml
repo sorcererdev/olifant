@@ -1,0 +1,10 @@
+now = "2026-10-05T12:00:00Z"
+# Value fields (day: date, slot: Slot) are stored as text through holes the
+# model fills (fills.toml); every column type appears. After the fills its
+# contract test passes (Review Focus 5).
+run_tests = true
+
+[inputs]
+app = "bistro"
+service = "booking"
+entity = "visit"

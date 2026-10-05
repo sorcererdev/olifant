@@ -5,6 +5,7 @@ module Olifant.Language.Adapter
   , TargetDef (..)
   , CheckDef (..)
   , HoleKind (..)
+  , ImportMerge (..)
   , parseLanguage
   , matchesGlob
   , languageFor
@@ -26,6 +27,7 @@ import Olifant.Language.Support (knownFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
 import Olifant.Toml
+import Text.Regex.TDFA (Regex, makeRegexM)
 import System.FilePath ((</>))
 
 data Language = Language
@@ -42,6 +44,12 @@ data Language = Language
   -- an empty container is opened
   , langHoles :: [(Text, HoleKind)]
   -- ^ `[holes.KIND]` (spec §6.3): the hole kinds this language supports
+  , langImports :: Maybe Text
+  -- ^ `imports`: a POSIX expression matching one import line. A fill may
+  -- begin with such lines; they join the file's imports
+  , langImportMerge :: Maybe ImportMerge
+  -- ^ `[import_merge]`: how an import of names from a module joins a line
+  -- that already imports from it
   }
   deriving stock (Show)
 
@@ -52,10 +60,23 @@ data Language = Language
 data HoleKind = HoleKind {kindPlaceholder :: Template, kindWrap :: Text}
   deriving stock (Show)
 
+-- | `[import_merge]`: 'mergePattern' matches an import line, its first group
+-- the module and its second the names (comma-separated); 'mergeWrite' writes
+-- a line from @module@ and @names@.
+data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
+  deriving stock (Show)
+
 data Grammar = BuiltInGrammar Text | GrammarSource FilePath
   deriving stock (Eq, Show)
 
-data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targetItems :: Rule, targetExample :: Text}
+-- | 'targetSpaced' (key `spaced`, default true): copy a blank line between
+-- the items next to the new one. False where a blank line means something
+-- else (Python's import groups).
+--
+-- 'targetWhenEmpty' (key `when_empty`): with no items and no brackets to
+-- open, `"after header"` puts the text after the file's leading comments
+-- and docstring (Python's imports in a file with none).
+data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targetItems :: Rule, targetExample :: Text, targetSpaced :: Bool, targetWhenEmpty :: Maybe Text}
   deriving stock (Show)
 
 data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text}
@@ -64,7 +85,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -74,13 +95,22 @@ parseLanguage name packRoot src = do
   check <- optional "check" (table >=> checkFrom) top
   indent <- fromMaybe "    " <$> optional "indent" text top
   holes <- maybe [] M.toList <$> optional "holes" (table >=> traverse (\v -> table v >>= holeKindFrom)) top
-  pure (Language name files comment grammar targets placeholder branch check indent holes)
+  imports <- optional "imports" (text >=> \re -> maybe (Left ("`imports` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))) top
+  importMerge <- optional "import_merge" (table >=> importMergeFrom) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importMerge)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)
       TTable t -> onlyKeys ["source"] t >> GrammarSource . (\s -> packRoot </> "languages" </> T.unpack s) <$> required "source" text t
       other -> Left ("expected a built-in grammar name or { source = \"dir\" }, got " <> describeTree other)
+    importMergeFrom t = do
+      onlyKeys ["pattern", "write"] t
+      re <- required "pattern" text t
+      _ <- maybe (Left ("`import_merge.pattern` is not a valid expression: " <> re)) (\(r :: Regex) -> Right r) (makeRegexM (T.unpack re))
+      write <- required "write" (text >=> tmpl) t
+      if freeVariables write `S.isSubsetOf` S.fromList ["module", "names"] then Right () else Left "`import_merge.write` may use only {= module =} and {= names =}"
+      pure (ImportMerge re write)
     holeKindFrom t = do
       onlyKeys ["placeholder", "wrap"] t
       ph <- required "placeholder" (text >=> tmpl) t
@@ -90,12 +120,14 @@ parseLanguage name packRoot src = do
         then Right (HoleKind ph wrap)
         else Left "`wrap` must contain {= fill =} (or {= fill|indent =}, one level in), where the fill goes"
     targetFrom t = do
-      onlyKeys ["phrase", "container", "items", "example"] t
+      onlyKeys ["phrase", "container", "items", "example", "spaced", "when_empty"] t
       TargetDef
         <$> (T.words <$> required "phrase" text t)
         <*> required "container" ruleFromTree t
         <*> required "items" ruleFromTree t
         <*> required "example" text t
+        <*> (fromMaybe True <$> optional "spaced" bool t)
+        <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
     checkFrom t = do
       onlyKeys ["command", "context", "format"] t
       format <- required "format" text t

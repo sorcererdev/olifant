@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -16,8 +16,11 @@ import Olifant.Fill
 import Olifant.Generation.Plan (HoleStatus (..), PlannedHole (..))
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..))
+import Olifant.Language.Header (headerEnd)
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
+import Olifant.Template (Value (..), render)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import System.FilePath (splitDirectories)
 
 -- | A hole being tried: attempts so far and the previous (fill, why).
@@ -46,11 +49,11 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
           let noFill = [(t, "the model returned no fill for `" <> name t <> "`") | t <- tried, M.notMember (name t) fills]
               offered = [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]]
               escaped = [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
-          parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) f
+          parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) (snd (splitImports (importsOf (holeFile (site t))) f))
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
               candidates = [(t, f) | (t, f, True) <- parsed]
               known = [(s', f') | (s', f', _) <- M.elems accepted]
-              with cs = applyFills base (known ++ [(site t, f) | (t, f) <- cs])
+              with cs = applyFills langOf base (known ++ [(site t, f) | (t, f) <- cs])
           (broken0, note) <- checkFiles (with candidates) [site t | (t, _) <- candidates]
           -- errors the files had with their placeholders are not the fills'
           -- (python review I1); checked only when something is broken
@@ -84,14 +87,17 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
             (_, why : _) -> h {phStatus = HoleUnfilled why}
             _ -> h
           warnings = ["holes were filled but not compile-checked: " <> n | n <- nub notes, not (M.null accepted)]
-       in (applyFills base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
+       in (applyFills langOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
 
     name = holeName . site
     site = phSite . tryHole
 
     fillHole t =
       let s = site t
-       in FillHole (holeName s) (holeKind s) (holeInstruction s) (holeFile s) (context s) (tryPrevious t)
+       in FillHole (holeName s) (holeKind s) (holeInstruction s) (holeFile s) (context s) (tryPrevious t) (isJust (importsOf (holeFile s)))
+
+    langOf = languageFor (toolLanguages tools)
+    importsOf p = langImports =<< langOf p
 
     -- The file around the hole (100 lines each side), the hole marked.
     context s =
@@ -131,16 +137,72 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
 -- | Every fill in place of its placeholder. Placeholders name their hole
 -- (adapters must use @{= hole =}@), so each is found by its text wherever
 -- earlier fills moved it; continuation lines take that line's indentation.
-applyFills :: Map FilePath Text -> [(HoleSite, Text)] -> Map FilePath Text
-applyFills = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) files)
+--
+-- A fill's leading import lines (the language's `imports`) are not code for
+-- the hole: each joins the file's imports, unless the file has it already
+-- (or, with `[import_merge]`, adds its new names to the line that imports
+-- from the same module).
+applyFills :: (FilePath -> Maybe Language) -> Map FilePath Text -> [(HoleSite, Text)] -> Map FilePath Text
+applyFills langOf = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) files)
   where
     fillIn s f t = case T.breakOn (holePlaceholder s) t of
       (_, "") -> t
       (before, after) ->
-        let lineStart = snd (T.breakOnEnd "\n" before)
+        let lang = langOf (holeFile s)
+            (imports, code) = splitImports (langImports =<< lang) f
+            lineStart = snd (T.breakOnEnd "\n" before)
             indent = T.takeWhile (`elem` (" \t" :: String)) lineStart
-            body = T.intercalate ("\n" <> indent) (T.splitOn "\n" (T.strip f))
-         in before <> body <> T.drop (T.length (holePlaceholder s)) after
+            body = T.intercalate ("\n" <> indent) (T.splitOn "\n" (T.strip code))
+         in maybe id (\l -> addImports l imports) lang (before <> body <> T.drop (T.length (holePlaceholder s)) after)
+
+-- | A fill's leading import lines (blank lines between them dropped), and
+-- the code after them.
+splitImports :: Maybe Text -> Text -> ([Text], Text)
+splitImports Nothing f = ([], f)
+splitImports (Just re) f = go [] (T.splitOn "\n" f)
+  where
+    go acc (l : rest)
+      | T.null (T.strip l) && not (null acc) = go acc rest
+      | matches re l = go (acc ++ [T.strip l]) rest
+    go acc rest = (acc, T.intercalate "\n" rest)
+
+matches :: Text -> Text -> Bool
+matches re l = maybe False (`matchTest` T.unpack (T.strip l)) (makeRegexM (T.unpack re) :: Maybe Regex)
+
+-- | The module and names of an import line, by `[import_merge]`.
+merging :: ImportMerge -> Text -> Maybe (Text, [Text])
+merging m l = case (makeRegexM (T.unpack (mergePattern m)) :: Maybe Regex) of
+  Nothing -> Nothing
+  Just re -> case matchM re (T.unpack l) of
+    Just (AllTextSubmatches (_ : modu : names : _)) -> Just (T.pack modu, filter (not . T.null) (map T.strip (T.splitOn "," (T.pack names))))
+    _ -> Nothing
+
+-- | Each import line the file lacks, in order: merged into the line that
+-- imports from its module (`[import_merge]`), or put after the file's last
+-- top-level import (with none, after its leading comments and docstring, a
+-- blank line between).
+addImports :: Language -> [Text] -> Text -> Text
+addImports lang new t = case langImports lang of
+  Nothing -> t
+  Just re -> T.intercalate "\n" (foldl (add re) (T.splitOn "\n" t) (nub new))
+  where
+    topLevel l = not (T.isPrefixOf " " l) && not (T.isPrefixOf "\t" l)
+    add re ls line
+      | line `elem` ls = ls
+      | Just m <- langImportMerge lang
+      , Just (modu, names) <- merging m line
+      , (i, have) : _ <- [(i, ns) | (i, l) <- zip [0 :: Int ..] ls, topLevel l, Just (mo, ns) <- [merging m l], mo == modu] =
+          case filter (`notElem` have) names of
+            [] -> ls
+            more -> case render (M.fromList [("module", VText modu), ("names", VText (T.intercalate ", " (have ++ more)))]) (mergeWrite m) of
+              Right merged -> take i ls ++ [merged] ++ drop (i + 1) ls
+              Left _ -> ls
+      | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, topLevel l, matches re l] of
+          [] ->
+            let (header, rest) = splitAt (headerEnd ls) ls
+             in header ++ [""] ++ [line] ++ (case rest of "" : _ -> rest; _ -> "" : rest)
+          is -> let (upTo, rest) = splitAt (last is + 1) ls in upTo ++ [line] ++ rest
+
 
 -- | Why a fill cannot stand in its hole before any parse: it unbalances
 -- brackets (it would close the code around it), or it is a placeholder.

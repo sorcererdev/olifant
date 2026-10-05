@@ -1,0 +1,26 @@
+"""{= resource|sentence =} on the web: the page (from {= query_ =}), and a route per command (htmx)."""
+
+from pathlib import Path
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+{= if commands =}from pydantic import TypeAdapter, ValidationError
+{= end =}
+from {= pkg =}.queries.{= query_ =} import {= Query =}, {= Query =}Input
+
+HERE = Path(__file__).parent
+TEMPLATES = Jinja2Templates(directory=[HERE / "templates", HERE.parent / "templates"])
+
+
+def {= routes_f =}(
+    {= query_ =}: {= Query =},
+) -> APIRouter:
+    router = APIRouter(prefix="/{= resource_ =}")
+
+    @router.get("", response_class=HTMLResponse)
+    def page(request: Request, input: Annotated[{= Query =}Input, Depends()]) -> HTMLResponse:
+        return TEMPLATES.TemplateResponse(request, "page.html", {"result": {= query_ =}.handle(input)})
+
+    return router

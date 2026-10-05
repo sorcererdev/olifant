@@ -260,6 +260,9 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `language` | yes | names the language adapter whose `[check]` runs this generator's `complete` edits (chapter 4); otherwise informational |
 | `version` | no (1) | shown in `show --json`; nothing else reads it yet |
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
+| `starter` | no (false) | `true` makes this the pack's project generator, the one `olifant init` runs ([chapter 2](02-running-generators.md#start-a-project-olifant-init)). Its first input is `name`. One per pack |
+| `next` | no | for a starter: what to run after `olifant init`, rendered with `name` and printed as the next steps (`next = ["uv sync", "uv run pytest"]`). Only a starter may have it |
+| `context` | no | globs (templates over the inputs) of files the model sees when it fills this generator's holes: `context = ["src/{= app =}/{= service\|snake =}/models/*.py"]` lets `python-htmx/repository`'s codec holes see what a `Slot` is ([chapter 12](12-holes-and-models.md#what-is-sent-to-the-model)) |
 | `[inputs.*]`, `[derive]`, `[requires]`, `[[edits]]`, `[[uses]]` | no | below; `[[uses]]` is [chapter 8](08-composing-generators.md) |
 | `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)); an enum that is `one_of` it takes its choices from it, with `value` saying which part of each record ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) |
 | `[applies_at]` | no | where in the code the generator applies, for editors: `path` (a pattern whose `{slot}`s bind inputs), `node` (an ast-grep rule the cursor must be inside), `bind` (inputs from regexes over that node's text), `file` (an input that takes the file's path), `after` (instead of `node`: an ast-grep rule for a node the cursor's line follows, with only blank lines between), `label`, `where`, `suggest` and, for a snippet, `trigger` (what the text before the cursor must end with). `olifant actions` reads it ([chapter 14](14-editors-and-actions.md#applies_at-where-a-generator-applies)) |
@@ -362,6 +365,20 @@ hint = "Create the page first: olifant gen elm/page --set page={= page =}"
 
 Each path must exist on disk or be created earlier in the same plan. If not, the run is a
 conflict that prints the hint, so the hint should say how to fix it.
+
+`holds` is a condition: a template over the inputs, `[derive]` and `[query.*]` values. If it
+renders empty, the run is a conflict whose message is the hint. `python-htmx/repository`
+needs a `str` or `int` key:
+
+```toml
+[requires]
+holds = "{= for f in fields =}{= if loop.first and not f.nullable and (f.scalar == \"str\" or f.scalar == \"int\") =}yes{= end =}{= end =}"
+hint  = "a repository keys on the model's first field, which must be a str or an int{= for f in fields =}{= if loop.first =} (it is `{= f.name =}: {= f.type =}`){= end =}{= end =}: put the key first"
+```
+
+```
+python-htmx/repository: a repository keys on the model's first field, which must be a str or an int (it is `day: date`): put the key first
+```
 
 ## Edits
 
@@ -646,6 +663,7 @@ The case filters, from `src/Olifant/Naming.hs`, applied to `BlogPost`:
 | `constant` | `BLOG_POST` |
 | `title` | `Blog Post` |
 | `lower_words` | `blog post` |
+| `sentence` | `Blog post` (a docstring's first words: `"""{= command\|sentence =}."""` → `"""Cancel booking."""`) |
 
 The others, from `src/Olifant/Template/Render.hs`:
 

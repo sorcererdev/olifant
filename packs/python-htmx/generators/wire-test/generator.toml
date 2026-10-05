@@ -1,0 +1,46 @@
+name = "Wire Test"
+description = "A test that builds a command passes a fake for its new port (the port's in-memory adapter); used by wire"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/wire-test --set app=bistro --set service=booking --set test=src/bistro/web/bookings/routes__test.py --set command=get_day_schedule --set param=tables --set port=TableRepository",
+]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.test]
+type   = "text"
+prompt = "The test file that builds the command"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command or query it builds"
+
+[inputs.param]
+type   = "ident"
+prompt = "The __init__ parameter"
+
+[inputs.port]
+type   = "ident"
+prompt = "Its port"
+
+[derive]
+Port  = "{= port|pascal =}"
+
+[[edits]]
+insert = "{= test =}"
+at     = "end of imports"
+text   = "from {= app =}.{= service|snake =}.ports.{= port|snake =}.in_memory_{= port|snake =} import InMemory{= Port =}"
+unless = { matches = "^from [A-Za-z0-9_.]+ import .*InMemory{= Port =}([^A-Za-z0-9_]|$)" }
+
+# (re-runs find it in place; another call's `ids=` is not this one's)
+[[edits]]
+insert = "{= test =}"
+at     = "end of call {= command|pascal =}"
+text   = "{= param =}=InMemory{= Port =}(),"

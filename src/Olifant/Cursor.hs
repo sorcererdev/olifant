@@ -39,10 +39,13 @@ cursorIndent unit ls n = case drop (n - 1) ls of
 
 -- | Indent every non-empty line the template renders: literal text gets the
 -- indent after each newline (unless another newline follows), and so does
--- the start.
+-- the start, unless the template starts with a newline (an empty line).
 indentTemplate :: Text -> Template -> Template
-indentTemplate ind (Template src segs) = Template src (Lit ind : go segs)
+indentTemplate ind (Template src segs) = Template src (start (go segs))
   where
+    start = \case
+      Lit t : rest | "\n" `T.isPrefixOf` t -> Lit t : rest
+      pieces -> Lit ind : pieces
     go = \case
       [] -> []
       Lit t : rest -> Lit (T.intercalate "\n" (indentRest (not (null rest)) (T.splitOn "\n" t))) : go rest

@@ -1,0 +1,95 @@
+name = "Wire"
+description = "Wire a command's (or query's) new port: the module keeps it, every test that builds it passes a fake, and main.py (when it builds it) passes the adapter, adding it once"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/wire --set app=bistro --set service=booking --set kind=queries --set command=get_day_schedule --set param=tables --set port=TableRepository",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service"
+
+[inputs.kind]
+type    = "enum"
+choices = ["commands", "queries"]
+prompt  = "A command or a query"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command or query (its module's name)"
+
+[inputs.param]
+type   = "ident"
+prompt = "The __init__ parameter (bookings, …)"
+
+[inputs.port]
+type   = "ident"
+prompt = "Its port (BookingRepository, …)"
+
+[derive]
+Command = "{= command|pascal =}"
+module  = "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}.py"
+Port    = "{= port|pascal =}"
+port_   = "{= port|snake =}"
+ports   = "{= app =}.{= service|snake =}.ports.{= port|snake =}"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+# main.py builds the command already (a route uses it): then it passes the
+# adapter too. Otherwise main.py is left alone (an adapter nothing uses
+# would be an unused variable); the web resource that routes to the
+# command builds it, with its ports.
+[query.built]
+files = "src/{= app =}/main.py"
+ast   = { kind = "assignment", has = { field = "left", regex = "^{= command|snake =}$" } }
+
+# the module keeps the port
+[[edits]]
+insert = "{= module =}"
+at     = "end of imports"
+text   = "from {= ports =}.{= port_ =} import {= Port =}"
+unless = { matches = "^from [A-Za-z0-9_.]+ import .*{= Port =}([^A-Za-z0-9_]|$)" }
+
+[[edits]]
+insert = "{= module =}"
+at     = "end of function __init__"
+text   = "self.{= param =} = {= param =}"
+unless = { matches = "^[[:space:]]*self\\.{= param =} = " }
+
+# Every test that builds it (its own stub's factory, a route's test, …)
+# passes a fake.
+[query.tests]
+files = "src/{= app =}/**/*__test.py"
+ast   = { kind = "call", has = { field = "function", regex = "^{= command|pascal =}$" } }
+
+[[uses]]
+generator = "wire-test"
+for_each  = "tests"
+with      = { app = "{= app =}", service = "{= service =}", test = "{= item.path =}", command = "{= command =}", param = "{= param =}", port = "{= port =}" }
+
+[[uses]]
+generator = "wire-main"
+for_each  = "built"
+with      = { app = "{= app =}", service = "{= service =}", command = "{= command =}", param = "{= param =}", port = "{= port =}" }
+
+# In an editor: on a parameter of a command's or query's __init__.
+[applies_at]
+path    = "src/{app}/{service}/{kind}/{command}.py"
+node    = { kind = "typed_parameter", inside = { kind = "function_definition", has = { field = "name", regex = "^__init__$" }, stopBy = "end" } }
+bind    = { param = "^([a-z_][a-z_0-9]*)", port = ":[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)" }
+where   = "on a parameter of a command's or query's __init__"
+suggest = true
+label   = "Wire {= param =} ({= port|pascal =})"

@@ -1,0 +1,18 @@
+"""Every {= port|pascal =} adapter keeps the same contract."""
+
+import pytest
+
+from {= module =}.{= port|snake =} import {= port|pascal =}
+from {= module =}.in_memory_{= port|snake =} import InMemory{= port|pascal =}
+
+ADAPTERS: list[type[{= port|pascal =}]] = [InMemory{= port|pascal =}]
+
+
+@pytest.fixture(params=ADAPTERS)
+def adapter(request: pytest.FixtureRequest) -> {= port|pascal =}:
+    made: {= port|pascal =} = request.param()
+    return made
+
+
+def test_is_a_{= port|snake =}(adapter: {= port|pascal =}) -> None:
+    assert isinstance(adapter, tuple(ADAPTERS))

@@ -137,7 +137,8 @@ preparePack root syntax checker packRoot pack generator overlay =
           Left err -> pure (Left (describeCatalogError err))
           Right gen -> do
             let fixtureDir = packRoot </> "fixtures" </> "app"
-            fixturePaths <- listFiles root fixtureDir
+            -- a starter makes a project from nothing: no fixture under it
+            fixturePaths <- if genStarter gen then pure [] else listFiles root fixtureDir
             fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
             (ws, _) <- memoryWorkspace (M.toList (M.fromList overlay `M.union` M.fromList fixture))
             let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat), queryUncovered = \_ -> pure (Right [])}

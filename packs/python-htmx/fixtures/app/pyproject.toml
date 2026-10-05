@@ -24,8 +24,9 @@ package = false
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src", "tests"]
+include = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["src"]
 pythonpath = ["src"]
+python_files = ["*__test.py"]

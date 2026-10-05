@@ -1,0 +1,21 @@
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from {= pkg =}.queries.{= query_ =} import {= Query =}
+from {= app =}.web.{= resource_ =}.routes import {= routes_f =}
+
+
+def client() -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        {= routes_f =}(
+            {= query_ =}={= Query =}(),
+        )
+    )
+    return TestClient(app)
+
+
+def test_the_{= resource_ =}_page_shows_it() -> None:
+    response = client().get("/{= resource_ =}", params={{=- for p in params =}"{= p.name =}": "1"{= if not loop.last =}, {= end =}{= end =}})
+    assert response.status_code == 200
+    assert "{= ? shows: text | what the page shows =}" in response.text

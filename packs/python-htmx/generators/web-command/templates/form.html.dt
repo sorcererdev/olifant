@@ -1,0 +1,8 @@
+  <form hx-post="/{= resource|snake =}/{= command_ =}" hx-target="next .outcome" hx-swap="innerHTML">
+    <h2>{= command|sentence =}</h2>
+{=- for f in fields =}
+    <input name="{= f.name =}" placeholder="{= f.name|lower_words =}" required>
+{=- end =}
+    <button>{= command|sentence =}</button>
+  </form>
+  <div class="outcome"></div>

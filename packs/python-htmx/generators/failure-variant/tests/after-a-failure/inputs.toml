@@ -1,6 +1,6 @@
 now = "2026-10-04T12:00:00Z"
 # The cursor: the blank line `o` made below the last failure's `reason: str`.
-at = "src/bistro/booking/create_booking.py:31:1"
+at = "src/bistro/booking/commands/create_booking.py:33:1"
 
 # Run `OLIFANT_BLESS=1 cabal test` to record snapshot/ from the output.
 [inputs]

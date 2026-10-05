@@ -10,7 +10,7 @@ import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
 import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, completionsAt, matchPathSlots)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
-import Control.Monad (when)
+import Control.Monad (forM_, unless, when)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Snippet (Snippet, snippetOf)
 import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
@@ -41,7 +41,7 @@ import Olifant.Generator (AppliesAt (..), Generator, generatorName, replaceGener
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
-import System.FilePath (makeRelative, normalise, takeBaseName, takeDirectory, (</>))
+import System.FilePath (makeRelative, normalise, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -60,6 +60,9 @@ data Runtime = Runtime
   , -- | lines changed since a git ref (file, 1-based inclusive ranges) and
     -- untracked files, for `check --changed-since`
     rtGitChanged :: FilePath -> Text -> IO (Either Text ([(FilePath, [(Int, Int)])], [FilePath]))
+  , -- | a first commit of everything in a directory, `git init` first if
+    -- needed (`olifant init`)
+    rtGitInit :: FilePath -> Text -> IO (Either Text ())
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -68,6 +71,9 @@ runCli rt args = case parseOptions args of
   Left (text, _)
     | wantsJson -> rtOut rt (encodeJson (errorJson "usage" (T.strip text) []) <> "\n") >> pure (ExitFailure 2)
     | otherwise -> rtErr rt text >> pure (ExitFailure 2)
+  -- `init` makes a project: there is none to open yet
+  Right opts | InitCmd pack name dir plan <- optCommand opts ->
+    runInit rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) pack name dir plan
   Right opts -> do
     let fmt = fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)
         cwd = rtProjectDir rt
@@ -78,6 +84,74 @@ runCli rt args = case parseOptions args of
       Right cat -> runCommand rt' cwd fmt cat (optCommand opts)
   where
     wantsJson = "--json" `elem` args || (not (rtStdoutIsTty rt) && "--human" `notElem` args)
+
+-- | `olifant init` (north-star project 2 §1): a project from a pack's starter,
+-- in an empty folder. The pack is a directory, or a name under [packs] in
+-- the user config; the user's [model] comes along; regions are fenced; a
+-- first commit is made; the starter's `next` lines say what to run.
+runInit :: Runtime -> Format -> Text -> Text -> Maybe FilePath -> Bool -> IO ExitCode
+runInit rt fmt pack name dirArg plan = do
+  let cwd = rtProjectDir rt
+      ws = rtRoot rt
+      dir = normalise (cwd </> fromMaybe (T.unpack name) dirArg)
+      shown = T.pack (makeRelative cwd dir)
+  -- a folder holding only .git (a person ran `git init` first) counts as empty
+  present <- filter (notElem ".git" . splitDirectories) <$> listFiles ws dir
+  userConfig <- maybe (pure Nothing) (\u -> readText ws (u </> "config.toml")) (rtUserConfigDir rt)
+  let userPacks = [(n, normalise (fromMaybe "." (rtUserConfigDir rt) </> p)) | Just src <- [userConfig], Right ps <- [packsFromConfig src], (n, p) <- ps]
+      asPath = normalise (cwd </> T.unpack pack)
+  isDir <- (== Directory) <$> inspectPath ws asPath
+  let resolved
+        | isDir = Just (T.pack (takeFileName asPath), asPath)
+        | otherwise = (pack,) <$> lookup pack userPacks
+  case (present, resolved) of
+    (_ : _, _) -> failWith rt fmt 2 "usage" (shown <> " is not empty (" <> T.intercalate ", " (map T.pack (take 3 present)) <> (if length present > 3 then ", …" else "") <> ")") (Just "init needs an empty folder (or one holding only .git)") []
+    (_, Nothing) -> failWith rt fmt 2 "usage" ("no pack `" <> pack <> "`" <> (if null userPacks then "" else " (known: " <> T.intercalate ", " (map fst userPacks) <> ")")) (Just "give a pack's directory, or add it under [packs] in ~/.config/olifant/config.toml") []
+    ([], Just (packName, packPath)) -> do
+      let config = "[packs]\n" <> packName <> " = { path = \"" <> T.pack packPath <> "\" }\n" <> maybe "" modelTables userConfig
+          rt' = rt {rtProjectDir = dir}
+      -- the starter is found before anything is written: a refused init
+      -- leaves the folder as it was
+      openPackCatalog ws [(packName, packPath)] >>= \case
+        Left err -> catalogFailure rt fmt err
+        Right packOnly -> case [e | e <- catalogEntries packOnly, entryPack e == Just packName, genStarter (entryDefinition e)] of
+          [] -> failWith rt fmt 2 "usage" ("pack " <> packName <> " has no starter generator (starter = true)") Nothing []
+          entry : more@(_ : _) -> failWith rt fmt 2 "usage" ("pack " <> packName <> " has several starters: " <> T.intercalate ", " (map (generatorIdText . entryId) (entry : more))) Nothing []
+          [entry] -> do
+            unless plan (writeText ws (dir </> ".olifant" </> "config.toml") config)
+            -- the project's own catalog: the user's model, the pack's regions
+            opened <- if plan then pure (Right packOnly) else openProjectCatalog ws (CatalogPaths dir (rtUserConfigDir rt) (rtHomeDir rt))
+            case opened of
+              Left err -> catalogFailure rt fmt err
+              Right cat ->
+                loadGenerator (rtRoot rt) (rtSyntax rt) cat entry >>= \case
+                  Left err -> catalogFailure rt fmt err
+                  Right gen -> do
+                    when (plan && fmt == Human) (rtOut rt ("would write " <> T.pack (makeRelative cwd (dir </> ".olifant" </> "config.toml")) <> " (pack " <> packName <> ")\n"))
+                    code <- runSteps rt' dir fmt cat (GenOptions [] Nothing plan Nothing Nothing False False Nothing Nothing) [] [Step gen (M.fromList [("name", name)])]
+                    if code /= ExitSuccess || plan
+                      then pure code
+                      else do
+                        -- every region whose files the starter wrote gets its fences
+                        let project = within dir ws
+                            tools = projectTools rt' cat
+                        universe <- listFiles project "."
+                        forM_ (catalogRegions cat) $ \def ->
+                          forM_ (regionInstances universe def) (initFences project tools)
+                        committed <- rtGitInit rt dir ("olifant init: " <> packName)
+                        let nexts = [t | tm <- genNext gen, Right t <- [render (M.fromList [("name", Tm.VText name)]) tm]]
+                        when (fmt == Human) $ do
+                          either (\why -> rtErr rt ("note: no first commit: " <> why <> "\n")) (const (pure ())) committed
+                          rtOut rt (T.unlines (("\n" <> shown <> " is ready. Next:") : ["  cd " <> shown] ++ map ("  " <>) nexts))
+                        pure ExitSuccess
+  where
+    -- the user config's [model] tables, as written
+    modelTables src =
+      let keep (inModel, acc) l
+            | "[" `T.isPrefixOf` T.stripStart l = let m = "[model" `T.isPrefixOf` T.stripStart l in (m, if m then acc ++ [l] else acc)
+            | otherwise = (inModel, if inModel then acc ++ [l] else acc)
+          ls = snd (foldl keep (False, []) (T.lines src))
+       in if null ls then "" else "\n" <> T.unlines ls
 
 -- | The project is the nearest directory, from where Olifant runs upwards,
 -- that has a `.olifant` directory; with none, where it runs. The search
@@ -140,6 +214,8 @@ skeletonGenerator name lang =
 -- FILE`) are relative to it, while generators work in the project root.
 runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt cwd fmt cat = \case
+  -- handled before a project is opened (runCli); here for completeness
+  InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
   ListCmd detail -> do
     -- Sources and fixed targets are checked here, so a broken generator shows
     -- as INVALID before anyone runs it.

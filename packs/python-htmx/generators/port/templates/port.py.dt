@@ -1,0 +1,7 @@
+"""{= ? purpose: text | what this port does for the service =}"""
+
+from typing import Protocol
+
+
+class {= port|pascal =}(Protocol):
+    """Its methods come from the port-method snippet; each adapter follows."""

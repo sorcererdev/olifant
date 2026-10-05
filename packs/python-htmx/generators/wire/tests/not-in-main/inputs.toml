@@ -1,0 +1,13 @@
+now = "2026-10-05T12:00:00Z"
+# A new command (not built in main.py yet) takes a port: the module keeps it
+# and its test passes a fake; main.py is left alone. The stub still fails.
+run_tests = true
+expect_failing = 1
+
+[inputs]
+app = "bistro"
+service = "booking"
+kind = "commands"
+command = "cancel_booking"
+param = "bookings"
+port = "BookingRepository"

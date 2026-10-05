@@ -1,0 +1,54 @@
+name = "Port method adapter"
+description = "One adapter gets a port's new method, its body a hole the model fills, and the Protocol's imports; used by port-method-adapters"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/port-method-adapter --set app=bistro --set service=booking --set port=clock --set dir=src/bistro/booking/ports/clock --set stem=in_memory_clock --set file=src/bistro/booking/ports/clock/in_memory_clock.py --set name=now --set signature=\"now(self) -> datetime\"",
+]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.port]
+type   = "ident"
+prompt = "The port"
+
+[inputs.dir]
+type   = "text"
+prompt = "The port's folder"
+
+[inputs.file]
+type   = "text"
+prompt = "The adapter's file"
+
+[inputs.stem]
+type   = "ident"
+prompt = "The adapter's module name"
+
+[inputs.name]
+type   = "ident"
+prompt = "The method"
+
+[inputs.signature]
+type   = "text"
+prompt = "Its signature"
+
+[query.imports]
+files = "{= dir =}/{= port|snake =}.py"
+ast   = { any = [{ kind = "import_statement" }, { kind = "import_from_statement" }], not = { regex = "Protocol" } }
+
+[[uses]]
+generator = "add-import"
+for_each  = "imports"
+with      = { file = "{= file =}", line = "{= item.text =}" }
+
+[[edits]]
+insert = "{= file =}"
+at     = "end of class {= stem|pascal =}"
+text   = "\ndef {= signature =}:\n    {= ? body: block | {= stem|pascal =}'s {= name =}, keeping the {= port|pascal =} contract =}"
+unless = { matches = "^    def {= name =}\\(" }

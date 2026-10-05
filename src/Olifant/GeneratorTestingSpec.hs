@@ -11,7 +11,8 @@ import Olifant.Generation (describeConflict, PlannedEdit (..), HoleStatus (..), 
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -25,6 +26,8 @@ import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
 import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
+import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
+import System.Directory (canonicalizePath)
 import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
@@ -166,6 +169,33 @@ spec = do
       -- the service's own modules are not commands (review: upgraded minor)
       (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
       others `shouldBe` []
+  describe "python-htmx rules (spec §5.9)" $
+    it "flags sqlite3 in a command, ports in the web, adapters outside main, raised failures; the fixture holds" $ do
+      tmp <- getTemporaryDirectory
+      rulesSrc <- TIO.readFile "packs/python-htmx/rules.toml"
+      langSrc <- TIO.readFile "packs/python-htmx/languages/python.toml"
+      let Right rules = parseRules rulesSrc
+          Right python = parseLanguage "python" "packs/python-htmx" langSrc
+          check path code = do
+            (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+            pure [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
+          command = "src/bistro/booking/commands/close_table.py"
+      check command "import sqlite3\n\n\ndef f() -> None:\n    db = sqlite3.connect(\"x\")\n    raise TableNotFound(\"t9\")\n"
+        `shouldReturn` [ ("commands-use-ports", Just 1, Warn, ["python-htmx/repository"])
+                       , ("commands-use-ports", Just 5, Warn, ["python-htmx/repository"])
+                       , ("failures-returned", Just 6, Hint, []) ]
+      check command "def f() -> None:\n    raise NotImplementedError(\"later\")\n" `shouldReturn` []
+      check "src/bistro/web/floor/routes.py" "from bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n"
+        `shouldReturn` [("web-uses-commands", Just 1, Warn, [])]
+      check "src/bistro/booking/queries/find_free_tables.py" "from bistro.booking.ports.table_repository.sqlite_table_repository import SqliteTableRepository\n"
+        `shouldReturn` [("adapters-in-main", Just 1, Warn, [])]
+      check "src/bistro/main.py" "from bistro.booking.ports.table_repository.sqlite_table_repository import SqliteTableRepository\n" `shouldReturn` []
+      check "src/bistro/booking/queries/find_free_tables__test.py" "from bistro.booking.ports.table_repository.in_memory_table_repository import InMemoryTableRepository\n" `shouldReturn` []
+      -- the fixture is the convention written down: it holds
+      fixture <- readTree "packs/python-htmx/fixtures/app"
+      let pys = [p | p <- M.keys fixture, ".py" `T.isSuffixOf` T.pack p]
+      (all', _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules pys (\p -> pure (M.lookup p fixture)) pys
+      map fRule all' `shouldBe` []
   describe "rust-htmx regions (spec §5.9)" $
     it "a command file created by hand gets its `pub mod` line; ports.rs lists the ports" $ do
       tmp <- getTemporaryDirectory
@@ -221,6 +251,76 @@ spec = do
         withUv k = findExecutable "uv" >>= \case
           Nothing -> missingTool strict "uv is not installed (brew install uv)"
           Just _ -> k
+    it "olifant init makes a project where pytest and pyright are green (north-star project 2 §1)" $ withUv $ do
+      tmp <- getTemporaryDirectory
+      withSystemTempDirectory "olifant-init" $ \dir0 -> do
+        dir <- canonicalizePath dir0
+        packs <- canonicalizePath "packs/python-htmx"
+        let rt = Runtime
+              { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
+              , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 4) 0), rtStdoutIsTty = False
+              , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processChecker
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
+              , rtGitInit = \_ _ -> pure (Right ()) }
+        runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
+        env <- getEnvironment
+        let project = dir </> "demo"
+            uv args = readCreateProcessWithExitCode ((proc "uv" args) {cwd = Just project, env = Just (("UV_PROJECT_ENVIRONMENT", tmp </> "olifant-test-cache" </> "init-venv") : env)}) ""
+        (synced, _, syncErr) <- uv ["sync", "--quiet"]
+        (synced, syncErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+        (tested, out, _) <- uv ["run", "--quiet", "pytest", "-q"]
+        (tested, T.isInfixOf "3 passed" (T.pack out)) `shouldBe` (ExitSuccess, True)
+        (typed, typedOut, _) <- uv ["run", "--quiet", "pyright"]
+        (typed, typedOut) `shouldSatisfy` ((== ExitSuccess) . fst)
+    -- An unfilled expr hole must not hide the code after it: a placeholder
+    -- typed Never made pyright skip the rest as unreachable, so a second
+    -- hole's fill went unchecked (python-pack Task 5).
+    it "an unfilled expr hole leaves the code after it checked" $ withUv $ do
+      fixture <- readTree "packs/python-htmx/fixtures/app"
+      let Just k = lookup "expr" (langHoles python)
+          Right ph = render (M.fromList [("hole", VText "a"), ("instruction", VText "the first")]) (kindPlaceholder k)
+          file = "def pair() -> tuple[int, int]:\n    return (" <> ph <> ", undefined_name)\n"
+          withHole = M.insert "src/bistro/hole_probe.py" file fixture
+      compileClean python withHole >>= (`shouldSatisfy` either (T.isInfixOf "undefined_name") (const False))
+      -- and the placeholder alone compiles (it stands for any type)
+      compileClean python (M.insert "src/bistro/hole_probe.py" (T.replace ", undefined_name" ", 2" file) fixture) `shouldReturn` Right ()
+    -- The slice from an empty folder (north-star project 2, Task 11): init,
+    -- the generators and the recorded typing (scripts/slice-python.sh).
+    it "the python slice: from an empty folder, the stubs red, then green, check holding, and served" $ withUv $ do
+      (built, binOut, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
+      if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else do
+        let bin = T.unpack (T.strip (T.pack binOut))
+        withSystemTempDirectory "olifant-slice" $ \dir -> do
+          env <- getEnvironment
+          let stage s = readCreateProcessWithExitCode ((proc "scripts/slice-python.sh" [dir, s]) {env = Just (("OLIFANT", bin) : env)}) ""
+              app = dir </> "bistro"
+              uv args = readCreateProcessWithExitCode ((proc "uv" args) {cwd = Just app}) ""
+              failing out = [T.takeWhile (/= ' ') (T.drop 7 l) | l <- T.lines (T.pack out), "FAILED " `T.isPrefixOf` l]
+          (gens, _, gensErr) <- stage "gens"
+          (gens, gensErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (_, _, _) <- uv ["sync", "--quiet"]
+          (typed, typedOut, _) <- uv ["run", "--quiet", "pyright"]
+          (typed, typedOut) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (_, red, _) <- uv ["run", "--quiet", "pytest", "-q"]
+          failing red `shouldBe`
+            [ "src/bistro/booking/commands/cancel_booking__test.py::test_cancel_booking_succeeds"
+            , "src/bistro/booking/commands/create_booking__test.py::test_create_booking_succeeds"
+            , "src/bistro/booking/ports/booking_repository/booking_repository__test.py::test_remove[in_memory]"
+            , "src/bistro/booking/ports/booking_repository/booking_repository__test.py::test_remove[sqlite]"
+            , "src/bistro/booking/ports/id_generator/id_generator__test.py::test_next_id[InMemoryIdGenerator]"
+            , "src/bistro/booking/queries/get_day_schedule__test.py::test_get_day_schedule_answers"
+            , "src/bistro/web/bookings/routes__test.py::test_the_bookings_page_shows_it" ]
+          (behaviour, _, behaviourErr) <- stage "behaviour"
+          (behaviour, behaviourErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (green, greenOut, _) <- uv ["run", "--quiet", "pytest", "-q"]
+          (green, failing greenOut) `shouldBe` (ExitSuccess, [])
+          (typed2, typedOut2, _) <- uv ["run", "--quiet", "pyright"]
+          (typed2, typedOut2) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (checked, checkOut, _) <- readCreateProcessWithExitCode ((proc bin ["check", "--human"]) {cwd = Just app}) ""
+          (checked, T.isInfixOf "conventions hold (0 findings" (T.pack checkOut)) `shouldBe` (ExitSuccess, True)
+          (served, _, serveErr) <- stage "serve"
+          (served, serveErr) `shouldSatisfy` ((== ExitSuccess) . fst)
     it "its fixture is pyright-strict clean" $ withUv $ do
       fixture <- readTree "packs/python-htmx/fixtures/app"
       compileClean python fixture `shouldReturn` Right ()
@@ -232,10 +332,34 @@ spec = do
         env <- getEnvironment
         (code, out, err) <- readCreateProcessWithExitCode ((proc "uv" ["run", "--quiet", "--frozen", "pytest", "-q"]) {cwd = Just dir, env = Just (("UV_PROJECT_ENVIRONMENT", tmp </> "olifant-test-cache" </> "python-fixture-venv") : env)}) ""
         (code, out <> err) `shouldSatisfy` ((== ExitSuccess) . fst)
+    -- the test policy: a case marked `run_tests = true` runs its project's
+    -- tests; exactly `expect_failing = N` of them fail (0: boilerplate passes;
+    -- a stub of behaviour fails until written)
+    testedCases <- runIO (filterM (\c -> T.isInfixOf "\nrun_tests = true" . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) [c | c <- cases, casePack c == "python-htmx"])
+    forM_ testedCases $ \c ->
+      it ("tests keep the test policy: " <> T.unpack (caseName c)) $ withUv $ do
+        inputs <- TIO.readFile (caseDir c </> "inputs.toml")
+        let expected = case [n | l <- T.lines inputs, Just rest <- [T.stripPrefix "expect_failing = " l], [(n, "")] <- [reads (T.unpack rest)]] of
+              n : _ -> n
+              [] -> 0 :: Int
+        starter <- T.isInfixOf "\nstarter = true" <$> TIO.readFile (casePackRoot c </> "generators" </> T.unpack (caseGenerator c) </> "generator.toml")
+        fixture <- if starter then pure M.empty else readTree "packs/python-htmx/fixtures/app"
+        given <- readTree (caseDir c </> "given")
+        snapshot <- readTree (caseDir c </> "snapshot")
+        tmp <- getTemporaryDirectory
+        withSystemTempDirectory "olifant-py-case" $ \dir -> do
+          forM_ (M.toList (M.unions [snapshot, given, fixture])) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+          env <- getEnvironment
+          (_, out, _) <- readCreateProcessWithExitCode ((proc "uv" ["run", "--quiet", "--frozen", "pytest", "-q", "-p", "no:cacheprovider"]) {cwd = Just dir, env = Just (("UV_PROJECT_ENVIRONMENT", tmp </> "olifant-test-cache" </> "python-case-venv") : env)}) ""
+          -- pytest's short summary has one FAILED line per failing test
+          let failedCount = length [() | l <- T.lines (T.pack out), "FAILED " `T.isPrefixOf` l]
+          (failedCount, T.takeEnd 600 (T.pack out)) `shouldSatisfy` ((== expected) . fst)
     snippetCases <- runIO (filterM (\c -> T.isInfixOf "\nat = " . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) cases)
     forM_ [c | c <- cases, casePack c == "python-htmx", c `notElem` snippetCases] $ \c ->
       it ("output type-checks: " <> T.unpack (caseName c)) $ withUv $ do
-        fixture <- readTree "packs/python-htmx/fixtures/app"
+        -- a starter's project stands alone: no fixture under it
+        starter <- T.isInfixOf "\nstarter = true" <$> TIO.readFile (casePackRoot c </> "generators" </> T.unpack (caseGenerator c) </> "generator.toml")
+        fixture <- if starter then pure M.empty else readTree "packs/python-htmx/fixtures/app"
         given <- readTree (caseDir c </> "given")
         snapshot <- readTree (caseDir c </> "snapshot")
         compileClean python (M.unions [snapshot, given, fixture]) `shouldReturn` Right ()

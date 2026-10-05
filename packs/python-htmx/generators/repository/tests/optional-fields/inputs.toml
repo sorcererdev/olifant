@@ -1,0 +1,10 @@
+now = "2026-10-05T12:00:00Z"
+# Optional fields (review I2): `str | None` and `bool | None` are nullable
+# columns stored as they are; `date | None` goes through codec holes, its
+# column nullable; `visits: int = 0` is a plain int.
+run_tests = true
+
+[inputs]
+app = "bistro"
+service = "booking"
+entity = "guest"

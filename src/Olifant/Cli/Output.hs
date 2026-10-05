@@ -284,6 +284,7 @@ conflictCode = \case
   RegionBroken {} -> "region_broken"
   UnsafePath {} -> "unsafe_path"
   RequirementUnmet {} -> "requires_unmet"
+  RequirementRefused {} -> "requires_unmet"
   TargetUnusable {} -> "target_unusable"
   HoleProblem {} -> "hole_problem"
 

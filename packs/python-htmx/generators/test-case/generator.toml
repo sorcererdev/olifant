@@ -1,0 +1,38 @@
+name = "Test case"
+description = "The next test in a __test.py: its behaviour a tab stop, arranged like the file's first test, red until written (a snippet, spec §4.9)"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/test-case --at src/bistro/booking/commands/cancel_booking__test.py:14:1 --set test=src/bistro/booking/commands/cancel_booking__test.py --plan",
+]
+
+[inputs.test]
+type   = "text"
+prompt = "The test file (editors give the open file)"
+
+# How the file's first test arranges its subject (`cancel_booking = command()`).
+[query.arrange]
+files = "{= test =}"
+ast   = { kind = "expression_statement", nthChild = 1, inside = { kind = "block", inside = { kind = "function_definition", has = { field = "name", regex = "^test_" } } } }
+
+[[edits]]
+cursor = true
+text = "\n\ndef test_{= ? behaviour: ident | what it checks, in words =}() -> None:\n{= for a in arrange =}{= if loop.first =}    {= a.text =}\n{= end =}{= end =}    {= ? check: text | act, then assert =}"
+
+[holes.behaviour]
+source = "yours"
+
+# Red until written: the tab stop starts as a failing assert.
+[holes.check]
+source = "derived"
+value  = "assert False, \"write this test\""
+
+# Anticipated on a blank line after a test.
+[applies_at]
+path    = "src/**__test.py"
+file    = "test"
+after   = { kind = "function_definition", has = { field = "name", regex = "^test_" } }
+trigger = "^[[:space:]]*$"
+where   = "on a blank line after a test"
+suggest = true
+label   = "Test case"

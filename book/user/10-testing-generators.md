@@ -187,12 +187,12 @@ it follows one. `after-a-failure`'s snapshot has the new class at column 0, belo
 four-space `reason: str`, with two blank lines above it and two below:
 
 ```
-$ diff given/src/bistro/booking/create_booking.py snapshot/src/bistro/booking/create_booking.py
-32a33,35
+$ diff given/src/bistro/booking/commands/create_booking.py snapshot/src/bistro/booking/commands/create_booking.py
+34a35,37
 > @dataclass(frozen=True)
 > class Name:
 >     reason: str
-33a37
+35a39
 > 
 ```
 
@@ -315,28 +315,31 @@ plan's last line, left out here
 ### The Python pack
 
 `python-htmx`'s fixture (`packs/python-htmx/fixtures/app/`) is a small, real app: a
-restaurant's table bookings, in a ports-and-adapters shape, which is the architecture the
-pack's generators reproduce.
+restaurant's table bookings, in the layout the pack's generators write.
 
 ```
-pyproject.toml                       uv project: FastAPI, Jinja, uvicorn; dev: pyright, pytest;
-                                     [tool.pyright] typeCheckingMode = "strict"
+pyproject.toml                 uv project: FastAPI, Jinja, uvicorn, python-multipart; dev:
+                               pyright, pytest; pyright strict; tests are src/**/*__test.py
 uv.lock
 src/bistro/
-  booking/                           a service
-    models.py                        frozen dataclasses: Table, Slot, Booking
-    ports.py                         Protocols: BookingRepository, IdGenerator
-    create_booking.py                a command: its input, its failures, their union, handle()
-    service.py                       BookingService: its commands, wired to its ports
-  shared/result.py                   Ok[T]
-  adapters/                          in-memory and SQLite repositories; sequential and UUID ids
+  booking/                     a service: no service.py, just these folders
+    models/                    one frozen dataclass per module: table, slot, booking
+    ports/                     one folder per port: its Protocol and its adapters beside it
+      booking_repository/      booking_repository.py (the Protocol), in_memory_…, sqlite_…,
+                               booking_repository__test.py (one contract test, both adapters)
+      id_generator/            id_generator.py, in_memory_id_generator.py, uuid_id_generator.py
+    commands/                  create_booking.py (Input, failures, their union, handle) and
+                               create_booking__test.py beside it
+    queries/                   get_day_schedule.py and its test
+  shared/result.py             Ok[T]
   web/
-    app.py                           FastAPI routes; the day's grid and htmx fragments
-    failures.py                      each failure as an HTTP status: an exhaustive match
-    templates/
-  main.py                            the composition root: SQLite, the service, the app
-tests/                               the command, both repositories (one shared contract
-                                     test), and the route
+    app.py                     create_app(routers): the home page, then each resource's routes
+    resources.py               RESOURCES, a region kept equal to web/*/routes.py
+    templates/                 base.html (htmx), home.html
+    bookings/                  routes.py (bookings_routes(query, command)), failures.py,
+                               templates/, routes__test.py
+  main.py                      the composition root: adapters, then commands and queries,
+                               then routers; nothing runs at import
 ```
 
 Its conventions are what the generators rely on:
@@ -347,43 +350,90 @@ Its conventions are what the generators rely on:
   (`union NAME`, [chapter 9](09-packs-and-language-adapters.md#a-fourth-example-python)).
 - **A site names a failure through its command's module** (`create_booking.SlotTaken`, or an
   alias's `cb.SlotTaken`), so a new failure needs no import anywhere.
+- **Calls are one argument per line** where generators add arguments (`main.py`'s
+  constructions, a test's factory): Olifant inserts whole lines.
+- **A port's fake is `in_memory_<port>.py` and builds with no arguments**, so any test can
+  pass one.
 
-It runs: `uv run uvicorn --factory --app-dir src bistro.main:create --reload`, then http://localhost:8000/ shows the
-day's grid, one booking form per table and half-hour slot. A booking answers 201, and the
-same slot again 409, from `failures.py`'s `match`.
+It runs: `uv run uvicorn --factory --app-dir src bistro.main:create --reload`, then
+http://localhost:8000/ links each resource; /bookings shows the day's grid. A booking
+answers 201, and the same slot again 409, from `failures.py`'s `match`.
 
 Since the fixture *is* the architecture, the **"python pack"** group checks it as well as
 the cases' output:
 
 ```
-$ cabal test --test-show-details=direct --test-options='--match "python"'
+$ cabal test --test-show-details=direct --test-options='--match "python pack"'
 …
   python pack
+    olifant init makes a project where pytest and pyright are green (north-star project 2 §1) [✔]
+    an unfilled expr hole leaves the code after it checked [✔]
+    the python slice: from an empty folder, the stubs red, then green, check holding, and served [✔]
     its fixture is pyright-strict clean [✔]
     its fixture's own tests pass [✔]
-    output type-checks: python-htmx/failure-arms/new-failure [✔]
-    output type-checks: python-htmx/failure-arms/qualified [✔]
-    output type-checks: python-htmx/failure-arms/two-matches [✔]
+    tests keep the test policy: python-htmx/command/new-command [✔]
+    …
+    output type-checks: python-htmx/web-resource/new-resource [✔]
 …
 ```
 
-- **Pyright-strict clean.** The fixture goes to `compileClean` with the pack's Python adapter,
-  so the check is the adapter's own: `uv run pyright --outputjson`, its environment in
-  `~/.cache/olifant/check/python/venv`.
-- **Its own tests pass.** The fixture is copied to a temp directory and `uv run --frozen
-  pytest -q` runs there, with its environment in the temp directory's
-  `olifant-test-cache/python-fixture-venv`. A fixture whose tests fail fails here, with
-  pytest's output.
+- **Pyright-strict clean** and **its own tests pass**: the fixture through the adapter's
+  `[check]`, and `uv run --frozen pytest -q` in a temp copy.
 - **Output type-checks.** Each case that is not a snippet: the fixture, its `given/` and its
-  snapshot, through pyright, as "rust pack output compiles" does with cargo. A case whose
-  arm pyright rejects fails, even when the snapshot matches.
+  snapshot, through pyright. A starter's case (`starter = true`) is checked alone, with no
+  fixture under it.
+- **Tests keep the test policy** (the pack's rule: boilerplate comes with passing tests,
+  behaviour with a red stub wired up). A case whose `inputs.toml` says `run_tests = true`
+  has its project's tests run (fixture, `given/`, snapshot); exactly `expect_failing = N`
+  of them must fail (default 0). The `port` and `repository` cases expect 0 (their contract
+  tests pass as made); `command`, `query` and `web-resource` expect their stubs:
 
-The `failure-arms` cases cover the sites the conventions allow: `new-failure` (the
-fixture's one `match`), `qualified` (a `failures.py` that imports the module as `cb`, so the
-arm is `case cb.Cancelled():`) and `two-matches` (a second `match` that returns messages,
-whose arm spans several lines; its recorded fills are `400` and `"Your booking was
-cancelled"`, one per site). Each needs `uv`; without it, the group is pending with `uv is not
-installed (brew install uv)`.
+  ```toml
+  # packs/python-htmx/generators/command/tests/new-command/inputs.toml
+  now = "2026-10-05T12:00:00Z"
+  # A behaviour stub: its one test fails until the case and handle are written.
+  run_tests = true
+  expect_failing = 1
+  ```
+
+- **`olifant init` makes a green project**: the starter, then `uv sync`, `pytest` (3 pass)
+  and `pyright`, in a temp directory.
+- **An unfilled expr hole leaves the code after it checked.** The placeholder must stand for
+  any type *and* not hide what follows ([chapter 9](09-packs-and-language-adapters.md#hole-kinds-holeskind)).
+- **The python slice** runs `scripts/slice-python.sh` (below).
+
+Each needs `uv`; without it, the group is pending with `uv is not installed (brew install
+uv)`.
+
+### The slice: a whole app from an empty folder
+
+`scripts/slice-python.sh DIR STAGE` builds table bookings the way a person would with this
+pack, in about five seconds, each step a commit:
+
+```
+olifant init: python-htmx           typed: 04-ports              (each __init__'s ports)
+service and models                  wired                        (wire, per parameter)
+typed: 01-fields                    the bookings resource        (web-resource, two commands)
+repositories and a port             typed: 05-remove             (a port method)
+typed: 02-next-id                   remove in the adapters       (port-method-adapters)
+next_id in the adapters             typed: 06-behaviour          (the tests and handle bodies)
+typed: 03-holes                     (what the model fills: codecs, next_id, statuses)
+commands and a query
+```
+
+What a person types is recorded as `packs/python-htmx/slice/*.diff`, applied between the
+generator calls, because the generators read it (the repository reads the model's fields,
+`wire` the `__init__`'s parameters). The script runs with `--no-fill`; `03-holes` and the
+behaviour patch carry what a model fills, so the run needs no Ollama. The stages:
+
+- **`gens`**: pyright clean, and the red tests are exactly the stubs, by name (seven: two
+  commands, the query, the routes, the `next_id` contract and `remove`'s, once per adapter);
+- **`behaviour`**: 31 green, pyright clean, `olifant check` holds;
+- **`serve`**: uvicorn answers `GET /bookings?day=2026-10-09` with 200.
+
+The spec test runs all three with the freshly built binary (`cabal list-bin olifant`). To
+try it by hand: `OLIFANT=$(cabal list-bin olifant) scripts/slice-python.sh /tmp/slice gens`,
+then `cd /tmp/slice/bistro && git log --oneline`.
 
 ## Holes: `fills.toml` and placeholder output
 
@@ -440,9 +490,9 @@ a `Debug.todo` message with an unescaped quote, fails here. It uses the pack's o
 and compiler (Elm and `elm` for the Elm pack, Python and `uv` for python-htmx, Rust and
 `cargo` otherwise). It is meant to be pending when that compiler is missing, like the other
 compile groups, but today it fails instead ([below](#other-limits-of-pack-tests)).
-For python-htmx this is where the `Never` placeholder
-(`(_ for _ in ()).throw(NotImplementedError(…))`) proves itself: in `failures.py` it stands
-for an `int`, under strict pyright, with no import.
+For python-htmx this is where the `Any` placeholder
+(`getattr(NotImplemented, "olifant: …")`) proves itself: in `failures.py` it stands for an
+`int`, under strict pyright, with no import, and the code after it is still checked.
 
 ## Writing a new generator, test first
 

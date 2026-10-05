@@ -224,6 +224,8 @@ example   = "end of struct BillingService"
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
 | `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
+| `imports` | a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check |
+| `[import_merge]` | with `imports`: `pattern` (an expression whose first group is the module and second the comma-separated names) and `write` (a template of `module` and `names`). An import of names from a module the file already imports from adds the new names to that line instead of writing a second one: `from datetime import date` + a fill's `from datetime import date, time` → `from datetime import date, time`. Python's: `pattern = "^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$"`, `write = "from {= module =} import {= names =}"` |
 | `[targets.*]` | the `at` targets (below) |
 
 There used to be a `qualify` key (`qualify = "elm"`) for Elm's module rules. It is retired:
@@ -390,11 +392,14 @@ $ olifant anchors python --human
 python: at = "<start of|end of|before|after> <target>"
 
 targets:
-  class NAME     e.g. end of class BookingService
-  function NAME  e.g. end of function create_app
-  imports        e.g. end of imports
-  match on NAME  e.g. end of match on failure
-  union NAME     e.g. end of union CreateBookingFailure
+  call NAME               e.g. end of call CancelBooking
+  call NAME in FUNCTION   e.g. end of call CreateBooking in create
+  class NAME              e.g. end of class BookingService
+  function NAME           e.g. end of function create_app
+  imports                 e.g. end of imports
+  match on NAME           e.g. end of match on failure
+  parameters in FUNCTION  e.g. end of parameters in floor_routes
+  union NAME              e.g. end of union CreateBookingFailure
 
 built in (any file):
   before|after marker TEXT
@@ -418,8 +423,8 @@ The whole union is the target's one item, so `end of` goes after its last line, 
 indentation:
 
 ```
-$ olifant where src/bistro/booking/create_booking.py "end of union CreateBookingFailure" --human
-src/bistro/booking/create_booking.py:37
+$ olifant where src/bistro/booking/commands/create_booking.py "end of union CreateBookingFailure" --human
+src/bistro/booking/commands/create_booking.py:39
         SlotTaken
         | PartyTooLarge
         | TableNotFound
@@ -435,14 +440,14 @@ unions the long way. `match on NAME` is a `match` on the subject `NAME`, its ite
 fixture's `failures.py`:
 
 ```
-$ olifant where src/bistro/web/failures.py "end of match on failure" --human
-src/bistro/web/failures.py:18
+$ olifant where src/bistro/web/bookings/failures.py "end of match on failure" --human
+src/bistro/web/bookings/failures.py:18
                 return 422
             case create_booking.TableNotFound():
                 return 404
   ▶         (inserted here)
-$ olifant where src/bistro/web/failures.py "end of function create_booking_status" --human
-src/bistro/web/failures.py:18
+$ olifant where src/bistro/web/bookings/failures.py "end of function create_booking_status" --human
+src/bistro/web/bookings/failures.py:18
                 return 422
             case create_booking.TableNotFound():
                 return 404
@@ -534,11 +539,12 @@ expression's `throw`:
 
 ```toml
 # packs/python-htmx/languages/python.toml
-# Hole kinds (spec §6.3). An expression placeholder is a value of type Never
-# (it fits any type under pyright strict, needs no import) that raises with
-# the hole's message if it is ever run.
+# Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
+# result), so it fits any type under pyright strict and needs no import; it
+# raises with the hole's message if it is ever run. Not Never: pyright skips
+# code after a Never as unreachable, which would leave a later fill unchecked.
 [holes.expr]
-placeholder = '(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}"))'
+placeholder = 'getattr(NotImplemented, "olifant: {= hole =}: {= instruction|python_string =}")'
 wrap = "def __olifant():\n    return {= fill =}"
 
 [holes.stmt]
@@ -550,16 +556,21 @@ placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|py
 wrap = "def __olifant():\n{= fill =}"
 ```
 
-`(_ for _ in ()).throw(…)` has type `Never`, which pyright accepts as any type: as a
+`getattr(NotImplemented, "…")` has type `Any`, which pyright accepts as any type: as a
 `return` value, an argument or a dataclass field's default. Run, it raises
-`NotImplementedError` with the hole's message. `stmt` and `block` are a plain `raise` on a
+`AttributeError` naming the hole (`'NotImplementedType' object has no attribute 'olifant: value: …'`).
+It is deliberately not `Never` (a `raise` inside an expression, such as
+`(_ for _ in ()).throw(…)`, the first version): pyright treats the code after a `Never` as
+unreachable and checks none of it, so in `Visit(day=<hole>, slot=<fill>)` a wrong fill for
+`slot` passed its check. A placeholder must stand for any type *and* leave the code around
+it checked. `stmt` and `block` are a plain `raise` on a
 line of its own. Python also has `ident` (`wrap = "class {= fill =}: ..."`) and `text`
 (`wrap = "__olifant = \"{= fill =}\""`), for snippets' tab stops. In a plan, an unfilled
 `value` hole of `failure-arms` reads:
 
 ```python
 case create_booking.Cancelled():
-    return (_ for _ in ()).throw(NotImplementedError("olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms"))
+    return getattr(NotImplemented, "olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms")
 ```
 
 A tab stop that is yours or derived is written as its name or value, not its placeholder, so
@@ -588,6 +599,10 @@ A target is a phrase shape and two ast-grep rules:
 - `items`: a rule for the container's items. `start of` goes before the first, `end of` after
   the last, with the last item's indentation. `before`/`after` use the container itself.
 - `example`: shown by `olifant anchors`.
+- `spaced` (default `true`): when the items next to the new one are separated by a blank
+  line, the new one gets one too (Elm case branches, Rust methods). `false` where a blank
+  line means something else: Python's `imports` sets it, because a blank line there
+  separates import groups, and a new import joins the last group.
 
 The rules are ast-grep's rule language (`kind`, `regex`, `inside`, `has`, `not`, `any`,
 `stopBy`, `field`). Two idioms from the Elm adapter are worth copying:
@@ -599,6 +614,56 @@ The rules are ast-grep's rule language (`kind`, `regex`, `inside`, `has`, `not`,
 
 ast-grep needs a `kind` on every item rule, which is why `list in FUNCTION` lists every
 expression kind a list element can be.
+
+`call NAME` and `call NAME in FUNCTION` are a call's arguments (`wire` passes a command
+its adapter in `main.py`, a fake in a test); `parameters in FUNCTION` a function's
+parameters (`web-command` gives a router factory its command). All three want one item per
+line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a blank line
+between imports is a group, so a new import joins the last group) and `when_empty = "after
+header"` (in a file with no imports, the first goes under the docstring).
+
+## The python-htmx pack
+
+`python-htmx` builds a ports-and-adapters web app: Python 3.12+, FastAPI and htmx with
+Jinja, uv, pytest, pyright strict, SQLite through the standard library. `olifant init
+--pack python-htmx NAME` starts one ([chapter 2](02-running-generators.md#start-a-project-olifant-init));
+its fixture is the layout written down ([chapter 10](10-testing-generators.md#the-python-pack)).
+
+**The test policy.** A generator that writes something known and purely boilerplate ships
+passing tests; one that writes behaviour you decide ships a failing stub test, already
+wired up, ready for the first case. Snippets add the next case.
+
+| generator | writes | its tests |
+|---|---|---|
+| `project` (the starter) | `pyproject.toml`, `uv.lock`, `main.py`, `web/app.py`, base and home templates | 3 passing |
+| `service` | a service's packages: `models/`, `ports/`, `commands/`, `queries/` | none |
+| `model` | `models/NAME.py`, a frozen dataclass; its first field a tab stop | none |
+| `port` | `ports/PORT/`: the Protocol, an in-memory adapter, a contract test | passing |
+| `repository` | `ports/E_repository/`: Protocol (`get`, `save`, `all`), in-memory and SQLite adapters from the model's fields (a value field such as `date` goes through encode/decode holes the model fills), contract test over both | passing |
+| `command` | `commands/NAME.py`: Input, a first failure in a one-per-line union, `handle` | a red stub |
+| `query` | `queries/NAME.py`: Input, Result, `handle` | a red stub |
+| `wire` (follow-up) | on an `__init__` parameter: the module keeps the port; every test that builds it passes the fake; `main.py`, if it builds it, passes the adapter, added once | the existing ones |
+| `web-resource` | `web/RESOURCE/`: the page from a query, a route per command (`web-command`), templates, `failures.py`; `main.py` builds and routes them; the home page links it | a red stub |
+| `failure-arms`, `failure-variant`, `match-arm`, `test-case`, `port-method`, `port-method-adapters` | snippets and follow-ups ([chapter 14](14-editors-and-actions.md#the-python-htmx-snippets)) | a red stub where they add behaviour |
+
+`build-in-main`, `wire-main`, `wire-test`, `web-command`, `port-method-adapter` and
+`add-import` are the pieces the others use; each runs on its own too.
+
+**`main.py` builds what is routed.** A command or query is built in `main.py` when a web
+resource routes it (an adapter or a command nothing uses would be an unused variable, which
+pyright strict rejects). `wire` then keeps `main.py` in step as ports are added. The
+adapter is the port's SQLite one (given the database path) when it has one, else another
+real one beside it, else the fake.
+
+**The region.** `web/resources.py`'s `RESOURCES` lists every `web/*/routes.py`; the home
+page links each. (It lives in Python, not in `home.html`, because a region's fences are
+comments and an HTML comment cannot end a line the way `#` does.)
+
+**The rules** (`packs/python-htmx/rules.toml`, [chapter 15](15-conventions-that-hold.md)):
+`commands-use-ports` (no `sqlite3` in a command or query; the fix adds a repository),
+`web-uses-commands` (no ports or `sqlite3` in `web/`), `adapters-in-main` (only `main.py`
+and tests import adapters) and `failures-returned` (a hint: return a failure, don't raise
+it).
 
 ## Adding a target, and testing it with `olifant where`
 

@@ -1,0 +1,8 @@
+now = "2026-10-05T12:00:00Z"
+# Boilerplate: its contract test passes.
+run_tests = true
+
+[inputs]
+app = "bistro"
+service = "booking"
+port = "clock"

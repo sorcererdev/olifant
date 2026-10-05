@@ -1,0 +1,63 @@
+name = "Query"
+description = "A query of a service: queries/NAME.py (its Input, its Result, handle; no failures) and NAME__test.py, a failing stub wired up, ready for the first case"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/query --set app=bistro --set service=booking --set query=find_free_tables",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service it belongs to"
+
+[inputs.query]
+type   = "ident"
+prompt = "The query, what it answers (find_free_tables, get_day_schedule, …)"
+
+[derive]
+Query  = "{= query|pascal =}"
+query_ = "{= query|snake =}"
+dir    = "src/{= app =}/{= service|snake =}/queries"
+module = "{= app =}.{= service|snake =}.queries.{= query|snake =}"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+[[edits]]
+create    = "{= dir =}/__init__.py"
+text      = ""
+on_exists = "skip"
+
+[[edits]]
+create   = "{= dir =}/{= query_ =}.py"
+template = "query.py.dt"
+
+[[edits]]
+create   = "{= dir =}/{= query_ =}__test.py"
+template = "query__test.py.dt"
+
+# The docstring starts as the name in words: a tab stop to say more.
+[holes.purpose]
+source = "derived"
+value  = "{= query|sentence =}."
+
+# The first input and result fields: valid code to start from (tab stops in
+# an editor), until the first real case.
+[holes.field]
+source = "derived"
+value  = "id"
+
+[holes.type]
+source = "derived"
+value  = "str"

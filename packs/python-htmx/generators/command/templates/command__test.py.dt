@@ -1,0 +1,12 @@
+from {= module =} import {= Command =}, {= Command =}Input
+from {= app =}.shared.result import Ok
+
+
+def command() -> {= Command =}:
+    return {= Command =}()
+
+
+def test_{= command_ =}_succeeds() -> None:
+    {= command_ =} = command()
+    result = {= command_ =}.handle({= Command =}Input({= ? field: ident | its first input =}="1"))
+    assert result == Ok(None)
