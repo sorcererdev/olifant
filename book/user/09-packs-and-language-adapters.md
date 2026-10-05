@@ -392,11 +392,14 @@ $ olifant anchors python --human
 python: at = "<start of|end of|before|after> <target>"
 
 targets:
-  class NAME     e.g. end of class BookingService
-  function NAME  e.g. end of function create_app
-  imports        e.g. end of imports
-  match on NAME  e.g. end of match on failure
-  union NAME     e.g. end of union CreateBookingFailure
+  call NAME               e.g. end of call CancelBooking
+  call NAME in FUNCTION   e.g. end of call CreateBooking in create
+  class NAME              e.g. end of class BookingService
+  function NAME           e.g. end of function create_app
+  imports                 e.g. end of imports
+  match on NAME           e.g. end of match on failure
+  parameters in FUNCTION  e.g. end of parameters in floor_routes
+  union NAME              e.g. end of union CreateBookingFailure
 
 built in (any file):
   before|after marker TEXT
@@ -420,8 +423,8 @@ The whole union is the target's one item, so `end of` goes after its last line, 
 indentation:
 
 ```
-$ olifant where src/bistro/booking/create_booking.py "end of union CreateBookingFailure" --human
-src/bistro/booking/create_booking.py:37
+$ olifant where src/bistro/booking/commands/create_booking.py "end of union CreateBookingFailure" --human
+src/bistro/booking/commands/create_booking.py:39
         SlotTaken
         | PartyTooLarge
         | TableNotFound
@@ -437,14 +440,14 @@ unions the long way. `match on NAME` is a `match` on the subject `NAME`, its ite
 fixture's `failures.py`:
 
 ```
-$ olifant where src/bistro/web/failures.py "end of match on failure" --human
-src/bistro/web/failures.py:18
+$ olifant where src/bistro/web/bookings/failures.py "end of match on failure" --human
+src/bistro/web/bookings/failures.py:18
                 return 422
             case create_booking.TableNotFound():
                 return 404
   ▶         (inserted here)
-$ olifant where src/bistro/web/failures.py "end of function create_booking_status" --human
-src/bistro/web/failures.py:18
+$ olifant where src/bistro/web/bookings/failures.py "end of function create_booking_status" --human
+src/bistro/web/bookings/failures.py:18
                 return 422
             case create_booking.TableNotFound():
                 return 404
@@ -611,6 +614,56 @@ The rules are ast-grep's rule language (`kind`, `regex`, `inside`, `has`, `not`,
 
 ast-grep needs a `kind` on every item rule, which is why `list in FUNCTION` lists every
 expression kind a list element can be.
+
+`call NAME` and `call NAME in FUNCTION` are a call's arguments (`wire` passes a command
+its adapter in `main.py`, a fake in a test); `parameters in FUNCTION` a function's
+parameters (`web-command` gives a router factory its command). All three want one item per
+line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a blank line
+between imports is a group, so a new import joins the last group) and `when_empty = "after
+header"` (in a file with no imports, the first goes under the docstring).
+
+## The python-htmx pack
+
+`python-htmx` builds a ports-and-adapters web app: Python 3.12+, FastAPI and htmx with
+Jinja, uv, pytest, pyright strict, SQLite through the standard library. `olifant init
+--pack python-htmx NAME` starts one ([chapter 2](02-running-generators.md#start-a-project-olifant-init));
+its fixture is the layout written down ([chapter 10](10-testing-generators.md#the-python-pack)).
+
+**The test policy.** A generator that writes something known and purely boilerplate ships
+passing tests; one that writes behaviour you decide ships a failing stub test, already
+wired up, ready for the first case. Snippets add the next case.
+
+| generator | writes | its tests |
+|---|---|---|
+| `project` (the starter) | `pyproject.toml`, `uv.lock`, `main.py`, `web/app.py`, base and home templates | 3 passing |
+| `service` | a service's packages: `models/`, `ports/`, `commands/`, `queries/` | none |
+| `model` | `models/NAME.py`, a frozen dataclass; its first field a tab stop | none |
+| `port` | `ports/PORT/`: the Protocol, an in-memory adapter, a contract test | passing |
+| `repository` | `ports/E_repository/`: Protocol (`get`, `save`, `all`), in-memory and SQLite adapters from the model's fields (a value field such as `date` goes through encode/decode holes the model fills), contract test over both | passing |
+| `command` | `commands/NAME.py`: Input, a first failure in a one-per-line union, `handle` | a red stub |
+| `query` | `queries/NAME.py`: Input, Result, `handle` | a red stub |
+| `wire` (follow-up) | on an `__init__` parameter: the module keeps the port; every test that builds it passes the fake; `main.py`, if it builds it, passes the adapter, added once | the existing ones |
+| `web-resource` | `web/RESOURCE/`: the page from a query, a route per command (`web-command`), templates, `failures.py`; `main.py` builds and routes them; the home page links it | a red stub |
+| `failure-arms`, `failure-variant`, `match-arm`, `test-case`, `port-method`, `port-method-adapters` | snippets and follow-ups ([chapter 14](14-editors-and-actions.md#the-python-htmx-snippets)) | a red stub where they add behaviour |
+
+`build-in-main`, `wire-main`, `wire-test`, `web-command`, `port-method-adapter` and
+`add-import` are the pieces the others use; each runs on its own too.
+
+**`main.py` builds what is routed.** A command or query is built in `main.py` when a web
+resource routes it (an adapter or a command nothing uses would be an unused variable, which
+pyright strict rejects). `wire` then keeps `main.py` in step as ports are added. The
+adapter is the port's SQLite one (given the database path) when it has one, else another
+real one beside it, else the fake.
+
+**The region.** `web/resources.py`'s `RESOURCES` lists every `web/*/routes.py`; the home
+page links each. (It lives in Python, not in `home.html`, because a region's fences are
+comments and an HTML comment cannot end a line the way `#` does.)
+
+**The rules** (`packs/python-htmx/rules.toml`, [chapter 15](15-conventions-that-hold.md)):
+`commands-use-ports` (no `sqlite3` in a command or query; the fix adds a repository),
+`web-uses-commands` (no ports or `sqlite3` in `web/`), `adapters-in-main` (only `main.py`
+and tests import adapters) and `failures-returned` (a hint: return a failure, don't raise
+it).
 
 ## Adding a target, and testing it with `olifant where`
 

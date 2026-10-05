@@ -260,6 +260,8 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `language` | yes | names the language adapter whose `[check]` runs this generator's `complete` edits (chapter 4); otherwise informational |
 | `version` | no (1) | shown in `show --json`; nothing else reads it yet |
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
+| `starter` | no (false) | `true` makes this the pack's project generator, the one `olifant init` runs ([chapter 2](02-running-generators.md#start-a-project-olifant-init)). Its first input is `name`. One per pack |
+| `next` | no | for a starter: what to run after `olifant init`, rendered with `name` and printed as the next steps (`next = ["uv sync", "uv run pytest"]`). Only a starter may have it |
 | `context` | no | globs (templates over the inputs) of files the model sees when it fills this generator's holes: `context = ["src/{= app =}/{= service\|snake =}/models/*.py"]` lets `python-htmx/repository`'s codec holes see what a `Slot` is ([chapter 12](12-holes-and-models.md#what-is-sent-to-the-model)) |
 | `[inputs.*]`, `[derive]`, `[requires]`, `[[edits]]`, `[[uses]]` | no | below; `[[uses]]` is [chapter 8](08-composing-generators.md) |
 | `[query.*]` | no | binds a query's records to a name, after inputs and `[derive]` ([chapter 6](06-queries-and-choices.md#queries-in-generators-queryname)); an enum that is `one_of` it takes its choices from it, with `value` saying which part of each record ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) |

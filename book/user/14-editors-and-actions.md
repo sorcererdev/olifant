@@ -569,7 +569,7 @@ scripts/try-pack.sh python-htmx /tmp/olifant-py && cd /tmp/olifant-py
 ```
 
 and give it a `[model]` ([chapter 12](12-holes-and-models.md#configuring-a-model)). The
-fixture is a restaurant's table bookings. `src/bistro/booking/create_booking.py` is a
+fixture is a restaurant's table bookings. `src/bistro/booking/commands/create_booking.py` is a
 command: its input, its failures as frozen dataclasses with a `reason`, and their union,
 one member per line:
 
@@ -586,7 +586,7 @@ type CreateBookingFailure = (
 )
 ```
 
-and `src/bistro/web/failures.py` maps each failure to an HTTP status with a `match` that
+and `src/bistro/web/bookings/failures.py` maps each failure to an HTTP status with a `match` that
 pyright, in strict mode, proves exhaustive. It names each failure through the command's
 module (`case create_booking.SlotTaken():`), so a new failure needs no import there.
 
@@ -625,13 +625,13 @@ checks the fill with the rest:
 below `reason: str` (line 31) and not saved:
 
 ```
-$ F=src/bistro/booking/create_booking.py
+$ F=src/bistro/booking/commands/create_booking.py
 $ buffer() { sed '30a\
 ' $F; }
 $ buffer | olifant actions --at $F:31:1 --content - --json
 [{"choices":{},"generator":"python-htmx/failure-variant","label":"Failure variant","missing":[],"name":"Failure variant","sets":{},"snippet":true,"suggest":true,"trigger":true}]
 $ buffer | olifant gen python-htmx/failure-variant --at $F:31:1 --plan --json --no-fill --overlay $F | jq -c .snippet
-{"body":"\n\n@dataclass(frozen=True)\nclass ${1:Name}:\n    reason: str$0","file":"src/bistro/booking/create_booking.py","ghost":["","","@dataclass(frozen=True)","class ⟨Name⟩:","    reason: str"],"line":31}
+{"body":"\n\n@dataclass(frozen=True)\nclass ${1:Name}:\n    reason: str$0","file":"src/bistro/booking/commands/create_booking.py","ghost":["","","@dataclass(frozen=True)","class ⟨Name⟩:","    reason: str"],"line":31}
 ```
 
 Each took 0.06 seconds. With `Cancelled` named (the class on lines 33 to 35 of the buffer),
@@ -642,15 +642,15 @@ $ buffer | olifant actions --at $F:34:7 --content - --json
 [{"choices":{},"generator":"python-htmx/failure-arms","label":"Add Cancelled to every match","missing":[],"name":"Add Failure Arms","sets":{"command":"create_booking","failure":"Cancelled","service":"booking"},"snippet":false,"suggest":true,"trigger":false}]
 $ buffer | olifant gen python-htmx/failure-arms --set service=booking --set command=create_booking --set failure=Cancelled --plan --human --no-fill --overlay $F
 Plan: python-htmx/failure-arms (2 edits, 0 conflicts)
-  ~ src/bistro/booking/create_booking.py (+1 line at line 42)
-  ~ src/bistro/web/failures.py (+2 lines at line 19, compiler: create_booking_status)
+  ~ src/bistro/booking/commands/create_booking.py (+1 line at line 42)
+  ~ src/bistro/web/bookings/failures.py (+2 lines at line 19, compiler: create_booking_status)
 holes:
-  value (expr) src/bistro/web/failures.py:19  skipped: --no-fill
+  value (expr) src/bistro/web/bookings/failures.py:19  skipped: --no-fill
 
---- src/bistro/booking/create_booking.py
+--- src/bistro/booking/commands/create_booking.py
 | Cancelled
 
---- src/bistro/web/failures.py
+--- src/bistro/web/bookings/failures.py
 case create_booking.Cancelled():
     return getattr(NotImplemented, "olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms")
 ```
@@ -666,10 +666,10 @@ $ olifant gen python-htmx/failure-arms --set service=booking --set command=creat
 {"event":"check","language":"python"}
 {"attempt":1,"event":"filled","hole":"value"}
 python-htmx/failure-arms (2 edits, 0 conflicts)
-  ~ src/bistro/booking/create_booking.py (+1 line at line 42)
-  ~ src/bistro/web/failures.py (+2 lines at line 19, compiler: create_booking_status)
+  ~ src/bistro/booking/commands/create_booking.py (+1 line at line 42)
+  ~ src/bistro/web/bookings/failures.py (+2 lines at line 19, compiler: create_booking_status)
 holes:
-  value (expr) src/bistro/web/failures.py:19  filled by qwen3-coder:30b: 503
+  value (expr) src/bistro/web/bookings/failures.py:19  filled by qwen3-coder:30b: 503
 ```
 
 in 2.8 seconds. Run again, it changes nothing: the union already names `Cancelled` (its
@@ -678,7 +678,7 @@ in 2.8 seconds. Run again, it changes nothing: the union already names `Cancelle
 ```
 $ olifant gen python-htmx/failure-arms --set service=booking --set command=create_booking --set failure=Cancelled --plan --human
 Plan: python-htmx/failure-arms (1 edit, 0 conflicts)
-  = src/bistro/booking/create_booking.py (skipped: unless: line 42 of src/bistro/booking/create_booking.py matches)
+  = src/bistro/booking/commands/create_booking.py (skipped: unless: line 42 of src/bistro/booking/commands/create_booking.py matches)
 ```
 
 `failure-arms` differs from rust-htmx's in two ways. It has an `insert` as well as the
@@ -691,7 +691,7 @@ failures to messages, not statuses. Its `[applies_at]`:
 # packs/python-htmx/generators/failure-arms/generator.toml (excerpt)
 # In an editor (olifant actions): on a failure class in a command module.
 [applies_at]
-path  = "src/bistro/{service}/{command}.py"
+path  = "src/{app}/{service}/commands/{command}.py"
 node  = { kind = "class_definition", inside = { kind = "decorated_definition", regex = "frozen=True" }, not = { has = { field = "name", regex = "Input$" } } }
 bind  = { failure = "^class ([A-Za-z0-9_]+)" }
 where = "on a failure class of the {= command|pascal =} command"
@@ -699,15 +699,54 @@ suggest = true
 label = "Add {= failure =} to every match"
 ```
 
-The node is a frozen dataclass that is not the command's `…Input`. `service` and `command`
-are `one_of` queries (a folder with a `service.py`; that folder's modules, less `models.py`,
-`ports.py` and `service.py`), so `web/failures.py`, which the path also matches, is not a
-command and offers nothing.
+The node is a frozen dataclass that is not the command's `…Input`. The path is a command
+module (`commands/NAME.py`), and `command` is a `one_of` query over the service's
+`commands/` less its tests, so `web/bookings/failures.py` is not a command and offers
+nothing.
 
 `durandal.nvim` runs this chain end to end against a real sandbox in
 `tests/e2e_python_spec.lua`: the ghost, the name, the follow-up, the model's fill, then
 `uv run pyright` and `uv run pytest`. It is skipped unless `DURANDAL_E2E_PY` names the
 sandbox: `DURANDAL_E2E_PY=/tmp/olifant-py make test`.
+
+## The python-htmx snippets
+
+Beside `failure-variant` and `failure-arms`, the pack anticipates the next piece wherever
+its conventions make it predictable. Each is a ghost on a blank line (Tab to take it, Tab
+to walk its stops) and in the ⚡ menu.
+
+- **`test-case`**, on a blank line after a test in a `*__test.py`:
+
+  ```python
+  def test_⟨behaviour⟩() -> None:
+      create_booking = command()
+      assert False, "write this test"
+  ```
+
+  The arrange line is the file's first test's first statement, so a new test starts
+  where the others do. The last line is a tab stop that starts red: TDD's first step is
+  already taken.
+- **`match-arm`**, on a blank line after a `match`'s last case: the case pyright says is
+  missing, written as the other arms write theirs (`case cancel_booking.AlreadyCancelled():`,
+  qualified through the command's module), its body a hole the model fills.
+- **`port-method`**, on a blank line in a port's Protocol: `def ⟨name⟩(self⟨, params⟩) ->
+  ⟨None⟩: ...`, valid as typed.
+- **`port-method-adapters`**, the follow-up on a Protocol's method: each adapter beside the
+  Protocol gets the method, its body a hole the model fills (with the Protocol's imports),
+  and the contract test a red `test_NAME`.
+- **`wire`**, the follow-up on a parameter of a command's or query's `__init__` (type
+  `bookings: BookingRepository` and Tab): the module keeps the port, every test that builds
+  the command passes its fake, and `main.py`, when it builds the command, passes the
+  adapter.
+
+A model's fill may start with import lines, which join the file's imports
+([chapter 12](12-holes-and-models.md#what-is-sent-to-the-model)): a decode that needs
+`date` brings `from datetime import date`.
+
+The end-to-end test in durandal.nvim (`tests/e2e_python_spec.lua`) does this from nothing:
+`olifant init`, a command and its red stub, the test-case ghost on the line below the stub
+(arranged as `create_booking = command()`), the new test typed, both red, `handle`
+written, then five green and pyright clean.
 
 ## `[applies_at]`: where a generator applies
 
@@ -986,7 +1025,7 @@ description = "A new failure for a command: a frozen dataclass with a reason, it
 language = "python"
 version = 1
 examples = [
-  "olifant gen python-htmx/failure-variant --at src/bistro/booking/create_booking.py:31:1 --plan",
+  "olifant gen python-htmx/failure-variant --at src/bistro/booking/commands/create_booking.py:33:1 --plan",
 ]
 
 # At the cursor, PEP 8-spaced from the class above; naming it raises the
@@ -1028,17 +1067,21 @@ python-htmx sandbox (`scripts/try-pack.sh python-htmx`), each failure class is f
 the `failure-variant` action:
 
 ```
-$ olifant actions --file src/bistro/booking/create_booking.py --human
-19:1  Add SlotTaken to every match  (python-htmx/failure-arms)
-21:1  Failure variant  (python-htmx/failure-variant)
-24:1  Add PartyTooLarge to every match  (python-htmx/failure-arms)
-26:1  Failure variant  (python-htmx/failure-variant)
-29:1  Add TableNotFound to every match  (python-htmx/failure-arms)
-31:1  Failure variant  (python-htmx/failure-variant)
+$ olifant actions --file src/bistro/booking/commands/create_booking.py --human
+21:1  Add SlotTaken to every match  (python-htmx/failure-arms)
+23:1  Failure variant  (python-htmx/failure-variant)
+26:1  Add PartyTooLarge to every match  (python-htmx/failure-arms)
+28:1  Failure variant  (python-htmx/failure-variant)
+31:1  Add TableNotFound to every match  (python-htmx/failure-arms)
+33:1  Failure variant  (python-htmx/failure-variant)
+45:24  Wire bookings (BookingRepository)  (python-htmx/wire)
+45:53  Wire ids (IdGenerator)  (python-htmx/wire)
 ```
 
-Each `Failure variant` range runs over the two blank lines below its class (`{"start":[31,1],
-"end":[32,1]}` for the last). In a file with no failure class, such as `web/failures.py`, it
+Each `Failure variant` range runs over the two blank lines below its class (`{"start":[33,1],
+"end":[34,1]}` for the last). The `Wire` lines are `wire` on each `__init__` parameter
+([above](#the-python-htmx-snippets)). In a file with no failure class, such as
+`web/bookings/failures.py`, it
 is a near miss: `nearby: python-htmx/failure-variant — on a blank line after a failure
 class`.
 

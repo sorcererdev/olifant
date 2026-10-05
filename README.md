@@ -13,7 +13,10 @@ editor or the command line, with AI only in small, typed, checked gaps. The huma
   compile-checked, retried with the compiler's message, and otherwise left as a compiling
   placeholder. Without a model, everything still works.
 - **Packs** bundle generators and language adapters for a stack (Elm, Rust/axum/htmx,
-  Haskell, …), each tested against a fixture app.
+  Python/FastAPI/htmx, Haskell, …), each tested against a fixture app.
+- **From nothing:** `olifant init --pack python-htmx bistro` makes a running app, tests
+  green; each generator then adds a piece of a ports-and-adapters architecture, with
+  passing tests for boilerplate and a red stub for behaviour you write.
 
 **Status:** an early, private prototype, changing fast.
 
@@ -24,6 +27,10 @@ brew install ghc cabal-install ast-grep elm        # plus rustup for the Rust pa
 cabal build && scripts/install-olifant.sh          # olifant on your PATH
 scripts/try-pack.sh rust-htmx /tmp/try-rust        # a sandbox of the Rust pack's fixture app
 cd /tmp/try-rust && olifant list && olifant show rust-htmx/command-dependency
+
+brew install uv                                    # for the Python pack
+olifant init --pack packs/python-htmx bistro --dir /tmp/bistro   # a new app, tests green
+OLIFANT=$(cabal list-bin olifant) scripts/slice-python.sh /tmp/slice gens   # a whole slice, step by step
 ```
 
 The **[books](book/README.md)** are the documentation: the user book (from running a
