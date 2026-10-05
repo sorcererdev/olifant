@@ -84,7 +84,7 @@ The kinds in this repository's packs:
 | Elm (`elm`) | `expr` | `Debug.todo "olifant: {= hole =}: {= instruction\|escaped =}"` | `olifantHole =` / `    {= fill =}` |
 | Haskell (`olifant-dev`) | `expr` | `error "olifant: {= hole =}: {= instruction\|escaped =}"` | `olifantHole = {= fill =}` |
 | | `text` | `{= hole =}` | `olifantHole = "{= fill =}"` |
-| Python (`python-htmx`) | `expr` | `(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction\|python_string =}"))` | `def __olifant():` / `    return {= fill =}` |
+| Python (`python-htmx`) | `expr` | `getattr(NotImplemented, "olifant: {= hole =}: {= instruction\|python_string =}")` | `def __olifant():` / `    return {= fill =}` |
 | | `stmt`, `block` | `raise NotImplementedError("olifant: {= hole =}: {= instruction\|python_string =}")` | `def __olifant():` / `{= fill =}` |
 | | `ident` | `{= hole =}` | `class {= fill =}: ...` |
 | | `text` | `{= hole =}` | `__olifant = "{= fill =}"` |

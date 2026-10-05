@@ -652,7 +652,7 @@ holes:
 
 --- src/bistro/web/failures.py
 case create_booking.Cancelled():
-    return (_ for _ in ()).throw(NotImplementedError("olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms"))
+    return getattr(NotImplemented, "olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms")
 ```
 
 (`buffer` here prints the file with the named class in it.) The plan took 1.7 seconds, most

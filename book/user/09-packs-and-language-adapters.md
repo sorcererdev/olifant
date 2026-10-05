@@ -535,11 +535,12 @@ expression's `throw`:
 
 ```toml
 # packs/python-htmx/languages/python.toml
-# Hole kinds (spec §6.3). An expression placeholder is a value of type Never
-# (it fits any type under pyright strict, needs no import) that raises with
-# the hole's message if it is ever run.
+# Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
+# result), so it fits any type under pyright strict and needs no import; it
+# raises with the hole's message if it is ever run. Not Never: pyright skips
+# code after a Never as unreachable, which would leave a later fill unchecked.
 [holes.expr]
-placeholder = '(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}"))'
+placeholder = 'getattr(NotImplemented, "olifant: {= hole =}: {= instruction|python_string =}")'
 wrap = "def __olifant():\n    return {= fill =}"
 
 [holes.stmt]
@@ -551,16 +552,21 @@ placeholder = 'raise NotImplementedError("olifant: {= hole =}: {= instruction|py
 wrap = "def __olifant():\n{= fill =}"
 ```
 
-`(_ for _ in ()).throw(…)` has type `Never`, which pyright accepts as any type: as a
+`getattr(NotImplemented, "…")` has type `Any`, which pyright accepts as any type: as a
 `return` value, an argument or a dataclass field's default. Run, it raises
-`NotImplementedError` with the hole's message. `stmt` and `block` are a plain `raise` on a
+`AttributeError` naming the hole (`'NotImplementedType' object has no attribute 'olifant: value: …'`).
+It is deliberately not `Never` (a `raise` inside an expression, such as
+`(_ for _ in ()).throw(…)`, the first version): pyright treats the code after a `Never` as
+unreachable and checks none of it, so in `Visit(day=<hole>, slot=<fill>)` a wrong fill for
+`slot` passed its check. A placeholder must stand for any type *and* leave the code around
+it checked. `stmt` and `block` are a plain `raise` on a
 line of its own. Python also has `ident` (`wrap = "class {= fill =}: ..."`) and `text`
 (`wrap = "__olifant = \"{= fill =}\""`), for snippets' tab stops. In a plan, an unfilled
 `value` hole of `failure-arms` reads:
 
 ```python
 case create_booking.Cancelled():
-    return (_ for _ in ()).throw(NotImplementedError("olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms"))
+    return getattr(NotImplemented, "olifant: value: the value this match returns for create_booking.Cancelled(), following the other arms")
 ```
 
 A tab stop that is yours or derived is written as its name or value, not its placeholder, so

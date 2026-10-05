@@ -11,7 +11,8 @@ import Olifant.Generation (describeConflict, PlannedEdit (..), HoleStatus (..), 
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -245,6 +246,18 @@ spec = do
         (tested, T.isInfixOf "3 passed" (T.pack out)) `shouldBe` (ExitSuccess, True)
         (typed, typedOut, _) <- uv ["run", "--quiet", "pyright"]
         (typed, typedOut) `shouldSatisfy` ((== ExitSuccess) . fst)
+    -- An unfilled expr hole must not hide the code after it: a placeholder
+    -- typed Never made pyright skip the rest as unreachable, so a second
+    -- hole's fill went unchecked (python-pack Task 5).
+    it "an unfilled expr hole leaves the code after it checked" $ withUv $ do
+      fixture <- readTree "packs/python-htmx/fixtures/app"
+      let Just k = lookup "expr" (langHoles python)
+          Right ph = render (M.fromList [("hole", VText "a"), ("instruction", VText "the first")]) (kindPlaceholder k)
+          file = "def pair() -> tuple[int, int]:\n    return (" <> ph <> ", undefined_name)\n"
+          withHole = M.insert "src/bistro/hole_probe.py" file fixture
+      compileClean python withHole >>= (`shouldSatisfy` either (T.isInfixOf "undefined_name") (const False))
+      -- and the placeholder alone compiles (it stands for any type)
+      compileClean python (M.insert "src/bistro/hole_probe.py" (T.replace ", undefined_name" ", 2" file) fixture) `shouldReturn` Right ()
     it "its fixture is pyright-strict clean" $ withUv $ do
       fixture <- readTree "packs/python-htmx/fixtures/app"
       compileClean python fixture `shouldReturn` Right ()

@@ -28,6 +28,7 @@ import Data.Aeson (object, (.=))
 import Data.Functor ((<&>))
 import Data.List (isPrefixOf, nub, sortOn)
 import Data.Map.Strict qualified as M
+import Data.Maybe (catMaybes)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -41,8 +42,8 @@ import Olifant.Generation.Planner (decideItems)
 import Olifant.Generation.Tools
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
 import Olifant.Generator (EnvError, GeneratorId (..), GeneratorWith (..), Unless (..), describeEnvError, needsChoices, withChoices)
-import Olifant.Language (Language (..), Match (..), Syntax (..), languageFor)
-import Olifant.Holes (HoleSite (..), hasMarkers, matchesWithHoles, placeHoles, placeholderize)
+import Olifant.Language (Language (..), Match (..), Syntax (..), languageFor, matchesGlob)
+import Olifant.Holes (HoleSite (..), hasMarkers, matchesWithHoles, placeHoles, placeholderizeWith)
 import Olifant.Snippet (holeSource)
 import Olifant.Generation.FillPhase (applyFills, fillPhase)
 import Olifant.Query (QueryFailure (..), failed, renderQuery, runQuery)
@@ -73,10 +74,11 @@ sameWithHoles :: Maybe (Maybe Text) -> Maybe (Maybe Text) -> Bool
 sameWithHoles (Just (Just new)) (Just (Just actual)) = matchesWithHoles new actual
 sameWithHoles a b = a == b
 
--- | An edit's text as written: holes as their placeholders.
-showHoles :: [Language] -> PlannedEdit -> PlannedEdit
-showHoles langs e =
-  let shown t = M.findWithDefault t (editPath e) (placeholderize langs (M.singleton (editPath e) t))
+-- | An edit's text as written: holes as their placeholders (by the names
+-- the plan gave them).
+showHoles :: [Language] -> [HoleSite] -> PlannedEdit -> PlannedEdit
+showHoles langs sites e =
+  let shown = placeholderizeWith langs sites (editPath e)
    in e {editAction = case editAction e of
             WillCreate t -> WillCreate (shown t)
             WillOverwrite t -> WillOverwrite (shown t)
@@ -141,7 +143,7 @@ generate ws resolve tools steps now mode =
             Left problems -> (changed, map HoleProblem problems, [])
             -- a tab stop (yours, derived) is the person's, never the model's (spec §4.9)
             Right (files, hs) -> (files, [], [PlannedHole h (case snd (holeSource (holeKind h)) of "model" -> HoleUnfilled "no model is configured"; src -> HoleSkipped ("a tab stop (" <> src <> ")")) Nothing | h <- hs])
-          shown = map (showHoles (toolLanguages tools)) edits
+          shown = map (showHoles (toolLanguages tools) (map phSite holes0)) edits
       -- The fill phase (spec §6.4): only with a model, and only when nothing
       -- else went wrong.
       -- Each written file's previous text, for editors: compiler-found files
@@ -151,7 +153,12 @@ generate ws resolve tools steps now mode =
         if null (conflicts ++ holeConflicts)
           then do
             let forModel = [h | h@(PlannedHole _ (HoleUnfilled _) _) <- holes0]
-            (w, filled, fw) <- fillPhase ws tools (concatMap (M.toList . stepSets) steps) placed forModel
+                globs = nub [g | PlanContext gs <- items, g <- gs]
+            -- the generators' `context`: files the model sees beside the holes
+            related <- if null globs || null forModel then pure [] else do
+              paths <- listFiles ws "."
+              fmap catMaybes . forM [p | p <- paths, any (`matchesGlob` p) globs] $ \p -> fmap (p,) <$> readText ws p
+            (w, filled, fw) <- fillPhase ws tools {toolFillContext = toolFillContext tools ++ related} (concatMap (M.toList . stepSets) steps) placed forModel
             let byName = [(holeName (phSite h), h) | h <- filled]
             pure (w, [maybe h id (lookup (holeName (phSite h)) byName) | h <- holes0], fw)
           else pure (placed, holes0, [])

@@ -739,6 +739,27 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     -- the model is told it may (the language allows it)
     reqs <- readIORef calls
     map fhImports (concatMap frHoles reqs) `shouldBe` [True]
+  it "(n) shows the model the files its generator's `context` names (python-pack: a codec needs the field's type)" $ do
+    let gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "context = [\"src/{= m =}/*.elm\"]"
+          , "[inputs.m]", "type = \"ident\""
+          , "[[edits]]", "create = \"src/V.elm\"", "text = \"v = {= ? val: expr | the value =}\\n\"" ]
+    calls <- newIORef []
+    let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> pure (Right (M.fromList [("val", "1")]))
+        tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, _) <- memoryWorkspace [("src/models/Slot.elm", "type alias Slot = { day : Int }\n"), ("src/other/X.elm", "x = 1\n")]
+    Right _ <- generate ws noResolve tools [Step gen (M.fromList [("m", "models")])] now Apply
+    map frContext <$> readIORef calls `shouldReturn` [[("src/models/Slot.elm", "type alias Slot = { day : Int }\n")]]
+  it "(o) shows repeated holes' fills in the plan's edits, as written (python-pack: a codec per value field)" $ do
+    let twice = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "create = \"src/T.elm\"", "text = \"a = {= ? v: expr | the first =}\\nb = {= ? v: expr | the second =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("v[src/T.elm:1]", "1"), ("v[src/T.elm:2]", "2")]))
+        tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, _) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step twice M.empty] now PlanOnly
+    [t | e <- planEdits plan, WillCreate t <- [editAction e]] `shouldBe` ["a = 1\nb = 2\n"]
   it "(m2) with no imports in the file, a fill's imports go after its leading docstring and comments" $ do
     let pyLang = l
           where

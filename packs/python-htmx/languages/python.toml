@@ -17,11 +17,12 @@ command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv",
 context = ["pyproject.toml", "uv.lock"]
 format  = "pyright-json"
 
-# Hole kinds (spec §6.3). An expression placeholder is a value of type Never
-# (it fits any type under pyright strict, needs no import) that raises with
-# the hole's message if it is ever run.
+# Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
+# result), so it fits any type under pyright strict and needs no import; it
+# raises with the hole's message if it is ever run. Not Never: pyright skips
+# code after a Never as unreachable, which would leave a later fill unchecked.
 [holes.expr]
-placeholder = '(_ for _ in ()).throw(NotImplementedError("olifant: {= hole =}: {= instruction|python_string =}"))'
+placeholder = 'getattr(NotImplemented, "olifant: {= hole =}: {= instruction|python_string =}")'
 wrap = "def __olifant():\n    return {= fill =}"
 
 [holes.stmt]

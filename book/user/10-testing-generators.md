@@ -440,9 +440,9 @@ a `Debug.todo` message with an unescaped quote, fails here. It uses the pack's o
 and compiler (Elm and `elm` for the Elm pack, Python and `uv` for python-htmx, Rust and
 `cargo` otherwise). It is meant to be pending when that compiler is missing, like the other
 compile groups, but today it fails instead ([below](#other-limits-of-pack-tests)).
-For python-htmx this is where the `Never` placeholder
-(`(_ for _ in ()).throw(NotImplementedError(…))`) proves itself: in `failures.py` it stands
-for an `int`, under strict pyright, with no import.
+For python-htmx this is where the `Any` placeholder
+(`getattr(NotImplemented, "olifant: …")`) proves itself: in `failures.py` it stands for an
+`int`, under strict pyright, with no import, and the code after it is still checked.
 
 ## Writing a new generator, test first
 

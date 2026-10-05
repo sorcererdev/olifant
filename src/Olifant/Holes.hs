@@ -8,11 +8,12 @@ module Olifant.Holes
   , splitMarkers
   , hasMarkers
   , placeholderize
+  , placeholderizeWith
   , placeHoles
   , matchesWithHoles
   ) where
 
-import Data.List (sortOn)
+import Data.List (mapAccumL, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -75,6 +76,29 @@ placeholderize langs = M.mapWithKey $ \p t -> case languageFor langs p of
   _ -> t
   where
     marker m = open <> markerName m <> "|" <> markerKind m <> "|" <> markerInstruction m <> close
+
+-- | An edit's text as the plan shows it: each marker as the placeholder of
+-- its hole among @sites@ (the named holes of the whole plan), so a repeated
+-- name shows as written ("v[file:line]"). The site is the one in @path@ with
+-- the marker's name and instruction; the k-th such marker in the text is the
+-- k-th such site by line. A marker with no site keeps its own name.
+placeholderizeWith :: [Language] -> [HoleSite] -> FilePath -> Text -> Text
+placeholderizeWith langs sites path t
+  | not (hasMarkers t) = t
+  | otherwise = T.concat (snd (mapAccumL piece M.empty (splitMarkers t)))
+  where
+    piece seen = \case
+      Right x -> (seen, x)
+      Left m ->
+        let key = (markerName m, markerInstruction m)
+            k = M.findWithDefault (0 :: Int) key seen
+            matching = sortOn holeLine [s | s <- sites, holeFile s == path, T.takeWhile (/= '[') (holeName s) == markerName m, holeInstruction s == markerInstruction m]
+         in (M.insert key (k + 1) seen, case drop k matching of
+              s : _ -> holePlaceholder s
+              [] -> own m)
+    own m =
+      let text = open <> markerName m <> "|" <> markerKind m <> "|" <> markerInstruction m <> close
+       in M.findWithDefault text path (placeholderize langs (M.singleton path text))
 
 -- | Name every hole in @files@ (a name used more than once gets
 -- "[file:line]") and write its placeholder. Problems: a file with markers
