@@ -11,7 +11,7 @@ import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar
 import Control.Lens ((%~), (&), (?~), (^.))
 import Control.Monad (forM_)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Aeson (Value (Bool, Number, Object, String), object, (.=))
+import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -27,7 +27,7 @@ import Language.LSP.Protocol.Types
 import Language.LSP.Server
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
-import Olifant.Actions (Action (..))
+import Olifant.Actions (Action (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
@@ -124,6 +124,37 @@ handlers env =
               -- a snippet's body (tab stops) rides along for editors that expand it
               Right (edits, snippet) -> respond (Right (action & L.edit ?~ workspaceEdit edits & L.data_ %~ fmap (withSnippet snippet)))
           _ -> respond (Right action)
+    , -- ⚡ at the end of each line with actions; the hint opens the menu there
+      requestHandler SMethod_TextDocumentInlayHint $ \req respond -> do
+        let Range (Position from _) (Position to _) = req ^. L.params . L.range
+            uri = req ^. L.params . L.textDocument . L.uri
+        hints <- case uriToFilePath uri of
+          Nothing -> pure []
+          Just path -> liftIO $ do
+            (lines', _) <- withSnapshot env (hintsFor path)
+            text <- documentText env path
+            let ls = T.splitOn "\n" text
+            pure
+              [ InlayHint (Position (fromIntegral l0) (fromIntegral (utf16 (lineAt ls l0)))) (InR [InlayHintLabelPart label Nothing Nothing (Just (Command label "olifant.showActions" (Just [toJSON uri, toJSON (Position (fromIntegral l0) 0)])))]) Nothing Nothing Nothing (Just True) Nothing Nothing
+              | LineHint line acts <- lines'
+              , let l0 = line - 1
+              , fromIntegral from <= l0 && l0 <= fromIntegral to
+              , let plain = [a | (a, False) <- acts]
+              , first : rest <- [plain]
+              , let label = "⚡ " <> actLabel first <> (if null rest then "" else " +" <> T.pack (show (length rest)))
+              ]
+        respond (Right (InL hints))
+    , -- the generators that nearly apply in this file, and why not
+      requestHandler SMethod_TextDocumentHover $ \req respond -> do
+        let Position l _ = req ^. L.params . L.position
+        hover <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure Nothing
+          Just path -> liftIO $ do
+            (lines', near) <- withSnapshot env (hintsFor path)
+            let here = concat [map fst acts | LineHint line acts <- lines', line == fromIntegral l + 1]
+                text = T.intercalate "\n\n" (["⚡ " <> actLabel a <> " (" <> actGenerator a <> ")" | a <- here] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near])
+            pure (if T.null text then Nothing else Just (Hover (InL (MarkupContent MarkupKind_Markdown text)) Nothing))
+        respond (Right (maybe (InR Null) InL hover))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \_ respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))
@@ -268,6 +299,12 @@ workspaceEdit edits = WorkspaceEdit Nothing (Just (concatMap change edits)) anno
           text = if several then InR (AnnotatedTextEdit range (feText e) plan) else InL (TextEdit range (feText e))
           edit = TextDocumentEdit (OptionalVersionedTextDocumentIdentifier uri (maybe (InR Null) (InL . fromIntegral) (feVersion e))) [text]
        in [InR (InL (CreateFile (if several then Just plan else Nothing) AString uri Nothing)) | feCreate e] ++ [InL edit]
+
+lineAt :: [T.Text] -> Int -> T.Text
+lineAt ls n = fromMaybe "" (listToMaybe (drop n ls))
+
+utf16 :: T.Text -> Int
+utf16 = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0
 
 -- | A document's text: the editor's when it is open, else disk's.
 documentText :: Env -> FilePath -> IO T.Text

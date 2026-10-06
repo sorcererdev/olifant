@@ -53,6 +53,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
       lookupKey "documents" state `shouldBe` Just (Array (pure doc))
   fixesSpec
   actionsSpec
+  hintsSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -172,6 +173,48 @@ actionsSpec = describe "⚡ actions at the cursor" $ do
       case named "Add a port" actions of
         a : _ -> (a ^. L.data_ >>= lookupKey "choices" >>= lookupKey "port") `shouldSatisfy` maybe False (\case Array xs -> String "table_repository" `elem` xs; _ -> False)
         [] -> expectationFailure "no action"
+
+-- | ⚡ hints and near misses (Task 11).
+hintsSpec :: Spec
+hintsSpec = describe "⚡ hints and near misses" $ do
+  let whole = Range (Position 0 0) (Position 200 0)
+  it "(a) hints a line's actions at its end, the hint opening the ⚡ menu there" $ do
+    files <- readTree "packs/python-htmx/generators/add-dependency/tests/inline/given"
+    withPython (M.toList files) $ \ports dir -> do
+      (hints, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/cancel_booking.py" "python"
+        request SMethod_TextDocumentInlayHint (InlayHintParams Nothing doc whole) >>= \case
+          TResponseMessage _ _ (Right (InL hs)) -> pure hs
+          other -> fail (show other)
+      let at25 = [h | h <- hints, h ^. L.position . L.line == 25]
+      case at25 of
+        [h] -> case h ^. L.label of
+          InR [part] -> do
+            (part ^. L.value) `shouldSatisfy` T.isPrefixOf "⚡ Add a port"
+            fmap (^. L.command) (part ^. L.command) `shouldBe` Just "olifant.showActions"
+          other -> expectationFailure ("label: " <> show other)
+        other -> expectationFailure ("hints on line 26: " <> show other)
+  it "(b) says on hover which generators nearly apply, and why not" $
+    withPython [] $ \ports dir -> do
+      (hover, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/main.py" "python"
+        getHover doc (Position 0 0)
+      case hover of
+        Just h | InL (MarkupContent _ text) <- h ^. L.contents -> text `shouldSatisfy` T.isInfixOf "nearby: python-htmx/match-arm — on a blank line after a match's last case"
+        other -> expectationFailure ("hover: " <> show other)
+  it "(c) gives a file in no project no hints and no hover (Review Focus 2)" $
+    withPython [] $ \ports dir -> do
+      createDirectoryIfMissing True (dir </> "outside")
+      TIO.writeFile (dir </> "outside/notes.py") "x = 1\n"
+      removeFile (dir </> ".olifant/config.toml") >> removeDirectory (dir </> ".olifant")
+      ((hints, hover), _) <- inProcessWith ports dir $ do
+        doc <- openDoc "outside/notes.py" "python"
+        hs <- request SMethod_TextDocumentInlayHint (InlayHintParams Nothing doc whole) >>= \case
+          TResponseMessage _ _ (Right (InL hs)) -> pure hs
+          TResponseMessage _ _ (Right (InR _)) -> pure []
+          other -> fail (show other)
+        (hs,) <$> getHover doc (Position 0 0)
+      (length hints, hover) `shouldBe` (0, Nothing)
 
 -- | The versions an action's edit is for, in one document.
 editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]
