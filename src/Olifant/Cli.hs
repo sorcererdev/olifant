@@ -3,7 +3,7 @@
 module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) where
 
 import Control.Applicative ((<|>))
-import Olifant.Fill (ModelFiller (..))
+import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Rules (Exception (..), FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, suggestChoice)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
@@ -146,7 +146,7 @@ runInit rt fmt pack name dirArg plan = do
                                     _ -> Array (pure (String w))
                                in TE.decodeUtf8 (BL.toStrict (encode (Object (KM.insert "warnings" ws' o)))) <> "\n"
                             _ -> out
-                    code <- runSteps rtRun dir fmt cat (GenOptions [] Nothing plan Nothing Nothing False False Nothing Nothing) [] [Step gen (M.fromList [("name", name)])]
+                    code <- runSteps rtRun dir fmt cat (GenOptions [] Nothing plan Nothing Nothing False False Nothing Nothing Nothing) [] [Step gen (M.fromList [("name", name)])]
                     if code /= ExitSuccess || plan
                       then release Nothing >> pure code
                       else do
@@ -572,7 +572,13 @@ runSteps rt cwd fmt cat g context steps = do
     Just f -> do
       text <- rtReadStdin rt
       pure (Right (overlay (makeRelative (rtProjectDir rt) (normalise (cwd </> f))) text project))
-  case (overlaid, modelFor cat g) of
+  -- `--fills FILE`: recorded fills stand in for the model
+  chosen <- case genFills g of
+    Nothing -> pure (modelFor cat g)
+    Just f -> readText (rtRoot rt) (normalise (cwd </> f)) <&> \case
+      Nothing -> Left ("--fills " <> T.pack f <> ": no such file")
+      Just src -> (\fills -> Just (ModelFiller "recorded" 0 (replayFiller fills))) <$> parseFills src
+  case (overlaid, chosen) of
    (Left why, _) -> failWith rt fmt 2 "usage" why Nothing []
    (Right ws, filler0) -> case filler0 of
              Left why -> failWith rt fmt 2 "usage" why Nothing []

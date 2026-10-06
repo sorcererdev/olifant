@@ -315,6 +315,13 @@ spec = do
             , "src/bistro/web/bookings/routes__test.py::test_the_bookings_page_shows_it" ]
           (behaviour, _, behaviourErr) <- stage "behaviour"
           (behaviour, behaviourErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (_, cancelRed, _) <- uv ["run", "--quiet", "pytest", "-q"]
+          failing cancelRed `shouldBe`
+            [ "src/bistro/booking/commands/cancel_booking__test.py::test_cancels_a_booking"
+            , "src/bistro/booking/commands/cancel_booking__test.py::test_refuses_a_booking_that_does_not_exist" ]
+          -- handle-body writes it (a recorded fill), verified by its tests
+          (filled, _, fillErr) <- stage "fill"
+          (filled, fillErr) `shouldSatisfy` ((== ExitSuccess) . fst)
           (green, greenOut, _) <- uv ["run", "--quiet", "pytest", "-q"]
           (green, failing greenOut) `shouldBe` (ExitSuccess, [])
           (typed2, typedOut2, _) <- uv ["run", "--quiet", "pyright"]

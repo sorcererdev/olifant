@@ -1,0 +1,4 @@
+# Recorded from qwen3-coder:30b via Ollama (2026-10-06): cancel_booking.handle, round 1,
+# verified by cancel_booking__test.py. Replayed by scripts/slice-python.sh fill (gen --fills).
+[fills]
+"body" = "booking = self.bookings.get(input.id)\nif booking is None:\n    return NotFound(f\"there is no booking {input.id}\")\nself.bookings.remove(input.id)\nreturn Ok(None)"

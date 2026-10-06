@@ -151,6 +151,11 @@ planOutputSpec = describe "planHuman" $ do
           , ("/proj/.olifant/generators/h/generator.toml", "description = \"h\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"out.x\"\ntext = \"v = {= ? val: expr | a value =}\\n\"\n")
           ]
         anthropic = "[model]\ndefault = \"claude\"\n[model.backends.claude]\nkind = \"anthropic\"\nmodel = \"claude-x\"\napi_key_env = \"OLIFANT_TEST_NO_SUCH_KEY\"\n"
+    it "--fills FILE replays recorded fills as the model (pack-opens: the slice)" $ do
+      let recorded = ("/proj/fills.toml", "[fills]\nval = \"42\"\n")
+      (code, _, err, files) <- runWith "" (recorded : holeProject "") False ["gen", "h", "--fills", "fills.toml"]
+      (code, err) `shouldBe` (ExitSuccess, "")
+      M.lookup "/proj/out.x" files `shouldBe` Just "v = 42\n"
     it "leaves placeholders with --no-fill, even with a model configured" $ do
       (code, out, _, files) <- runWith "" (holeProject anthropic) False ["gen", "h", "--no-fill"]
       code `shouldBe` ExitSuccess

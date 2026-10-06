@@ -1,5 +1,5 @@
 diff --git a/src/bistro/booking/commands/cancel_booking.py b/src/bistro/booking/commands/cancel_booking.py
-index 528eec8..1f49e73 100644
+index 528eec8..791665a 100644
 --- a/src/bistro/booking/commands/cancel_booking.py
 +++ b/src/bistro/booking/commands/cancel_booking.py
 @@ -1,4 +1,4 @@
@@ -8,15 +8,6 @@ index 528eec8..1f49e73 100644
  
  from dataclasses import dataclass
  
-@@ -29,4 +29,7 @@ class CancelBooking:
-         self.bookings = bookings
- 
-     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:
--        raise NotImplementedError("CancelBooking.handle: write its first case in cancel_booking__test.py, then this")
-+        if self.bookings.get(input.id) is None:
-+            return NotFound(f"there is no booking {input.id}")
-+        self.bookings.remove(input.id)
-+        return Ok(None)
 diff --git a/src/bistro/booking/commands/cancel_booking__test.py b/src/bistro/booking/commands/cancel_booking__test.py
 index 6dc5725..688d232 100644
 --- a/src/bistro/booking/commands/cancel_booking__test.py

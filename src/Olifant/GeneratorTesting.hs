@@ -27,7 +27,7 @@ import Olifant.Generator.Definition (AppliesAt (..), GeneratorWith (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (Generator)
 import Olifant.Language.Adapter (Language (..), languageFor)
-import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
+import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Data.List (nub)
 import Olifant.Anchor (astQueries)
 import Olifant.Query (Queries (..), processCommand)
@@ -165,19 +165,6 @@ atCaseCursor ws checker at tools gen = case at of
 -- | A case's `at = "FILE:LINE:COL"`, if it has one.
 parseCaseCursor :: Text -> Either Text (Maybe (FilePath, Int))
 parseCaseCursor src = (\(_, _, at) -> at) <$> parseCase src
-
--- | `[fills]` in a case's `fills.toml`: hole name = recorded code.
-parseFills :: Text -> Either Text (Map Text Text)
-parseFills src = do
-  top <- Toml.parseToml src
-  fills <- fromMaybe M.empty <$> Toml.optional "fills" Toml.table top
-  traverse Toml.text fills
-
--- | Recorded fills as a model: every hole asked for must have one.
-replayFiller :: Monad m => Map Text Text -> Filler m
-replayFiller fills = Filler $ \req -> pure $ case [fhName h | h <- frHoles req, M.notMember (fhName h) fills] of
-  [] -> Right fills
-  missing -> Left (T.intercalate "; " ["no recorded fill for `" <> n <> "` in fills.toml" | n <- missing])
 
 -- | A case's `inputs.toml`: `now` and the `[inputs]` values.
 parseCaseInputs :: Text -> Either Text (UTCTime, Map Text Text)

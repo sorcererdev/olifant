@@ -6,9 +6,15 @@ module Olifant.Fill
   , FillRequest (..)
   , Filler (..)
   , ModelFiller (..)
+  , parseFills
+  , replayFiller
   ) where
 
 import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as M
+import Data.Maybe (fromMaybe)
+import Data.Text qualified as T
+import Olifant.Toml qualified as Toml
 import Data.Text (Text)
 
 -- | One hole as the model sees it: what it is, the file around it with the
@@ -35,3 +41,16 @@ newtype Filler m = Filler {runFill :: FillRequest -> m (Either Text (Map Text Te
 
 -- | A configured model: its name (for the plan), retries, and its port.
 data ModelFiller m = ModelFiller {mfName :: Text, mfRetries :: Int, mfFiller :: Filler m}
+
+-- | `[fills]` in a `fills.toml`: hole name = recorded code.
+parseFills :: Text -> Either Text (Map Text Text)
+parseFills src = do
+  top <- Toml.parseToml src
+  fills <- fromMaybe M.empty <$> Toml.optional "fills" Toml.table top
+  traverse Toml.text fills
+
+-- | Recorded fills as a model: every hole asked for must have one.
+replayFiller :: Monad m => Map Text Text -> Filler m
+replayFiller fills = Filler $ \req -> pure $ case [fhName h | h <- frHoles req, M.notMember (fhName h) fills] of
+  [] -> Right fills
+  missing -> Left (T.intercalate "; " ["no recorded fill for `" <> n <> "` in fills.toml" | n <- missing])
