@@ -784,6 +784,14 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       [fmap (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [Just "the tests failed:"]
       -- {= cache =} and {= context =} reach the verifier, which expands them
       take 1 <$> readIORef seen `shouldReturn` [["run-tests", "src/V.elm", "{= cache =}/venv-{= context =}"]]
+    it "(d) review I3: tests that cannot run are not the fill's fault: one attempt, no retry" $ do
+      calls <- newIORef (0 :: Int)
+      let filler = Filler $ \_ -> modifyIORef' calls (+ 1) >> pure (Right (M.fromList [("v", "GOOD")]))
+          tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler)}
+      (ws, _) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+      [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "could not run" `T.isInfixOf` why; _ -> False)
+      readIORef calls `shouldReturn` 1
     it "(c) retries run out: the placeholder stays, the reason is the output" $ do
       seen <- newIORef []
       let filler = Filler $ \_ -> pure (Right (M.fromList [("v", "WRONG")]))

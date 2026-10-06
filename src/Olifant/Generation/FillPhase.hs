@@ -32,18 +32,26 @@ fillPhase :: Monad m => Workspace m -> Tools m -> Map Text [Text] -> [(Text, Tex
 fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   Nothing -> pure (base, holes, [])
   Just _ | null holes -> pure (base, holes, [])
-  Just mf -> loop mf 1 M.empty [] [Try h 0 Nothing | h <- holes]
+  Just mf -> loop mf 1 M.empty [] [] [Try h 0 Nothing | h <- holes]
   where
     -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
-    loop mf r accepted notes pending = do
+    -- @stuck@: holes given up on for a reason no retry can change (their
+    -- tests could not run at all: review I3)
+    loop mf r accepted notes stuck pending = do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
       reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools))
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
-          next accepted' notes' failed
+          next accepted' notes' failed0
             | null failed || r >= 1 + max 0 (mfRetries mf) = do
-                forM_ failed (\(t, why) -> toolProgress tools (Unfilled (name t) why))
-                pure (finish mf accepted' notes' failed)
-            | otherwise = loop mf (r + 1) accepted' notes' (map fst failed)
+                forM_ (failed ++ newlyStuck) (\(t, why) -> toolProgress tools (Unfilled (name t) why))
+                pure (finish mf accepted' notes' (failed ++ stuck ++ newlyStuck))
+            | otherwise = do
+                forM_ newlyStuck (\(t, why) -> toolProgress tools (Unfilled (name t) why))
+                loop mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed)
+            where
+              unrunnable (_, why) = "the tests could not run" `T.isPrefixOf` why
+              newlyStuck = filter unrunnable failed0
+              failed = filter (not . unrunnable) failed0
       case reply of
         -- An unreadable reply is a failed attempt, retried like any other.
         Left why -> next accepted notes [(t, why) | t <- tried]
