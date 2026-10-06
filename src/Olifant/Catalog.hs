@@ -6,6 +6,7 @@ module Olifant.Catalog
   , catalogEntries
   , catalogProject
   , catalogPacks
+  , catalogPackRoots
   , catalogBroken
   , catalogLanguages
   , catalogBrokenLanguages
@@ -96,6 +97,8 @@ data Catalog = Catalog
   , -- | how each pack's conventions map onto the shared project model (its `model.toml`)
     catalogModelMaps :: [ModelMap]
   , catalogBrokenModelMaps :: [(FilePath, Text)]
+  , -- | where each pack is (resolved): the language server watches them
+    catalogPackRoots :: [FilePath]
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -235,7 +238,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks]
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs)
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),

@@ -14,7 +14,10 @@ module Olifant.Server
   , projectFor
   , workspaceOf
   , catalogChanged
+  , filesChanged
   , slotOf
+  , fileSaved
+  , memo
   , FileEdit (..)
   , editsOfPlan
   , smallestChange

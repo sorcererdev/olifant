@@ -16,7 +16,7 @@ import Olifant.Generator (replaceGenerator)
 import Olifant.Language (HoleKind (..), Language (..), languageFor)
 import Olifant.Server.Actions (fillerFor)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.State (ServerState (..), memo, projectFor)
 import Olifant.Template (Value (..), describeTemplateError, parseTemplate, render)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, (</>))
@@ -42,7 +42,7 @@ holesFor path s =
 
 -- | The hole on a line of a file, if there is one.
 holeAt :: FilePath -> Int -> ServerState -> IO (ServerState, Maybe (FilePath, Project, Hole))
-holeAt path line s =
+holeAt path line = memo "hole" path (T.pack (show line)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (root, project)) -> do

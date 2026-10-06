@@ -9,7 +9,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
-import Control.Monad (forM_, void)
+import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -25,6 +25,7 @@ import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Proxy (Proxy (..))
 import Data.Scientific (toBoundedInteger)
 import Language.LSP.Protocol.Lens qualified as L
@@ -37,14 +38,14 @@ import Olifant.App (Ports (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Cli.Output (doctorJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, showGenerator, subsOf)
-import Olifant.Catalog (describeCatalogError)
+import Olifant.Catalog (catalogPackRoots, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
 import Olifant.Workspace (Workspace (..))
 import Olifant.Server
-import System.FilePath (splitDirectories, joinPath)
+import System.FilePath ((</>))
 
 -- | The server's state behind a lock, its background jobs, the plans of
 -- the suggestions it has offered (by id, for `olifant/plan`), and whether
@@ -55,6 +56,8 @@ data Env = Env
   , envJobs :: Jobs
   , envOffered :: IORef (Int, M.Map Int Offered)
   , envDebug :: IORef Bool
+  , -- | the globs the client already watches for us
+    envWatched :: IORef (S.Set T.Text)
   }
 
 -- | A suggestion's plan, for the document version it was planned against.
@@ -100,7 +103,7 @@ advertise out
 
 serverDefinition :: Ports -> IO (ServerDefinition ())
 serverDefinition ports = do
-  env <- Env ports <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False
+  env <- Env ports <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -136,10 +139,15 @@ configure env = \case
 handlers :: Env -> Handlers (LspM ())
 handlers env =
   mconcat
-    [ notificationHandler SMethod_Initialized (\_ -> pure ())
+    [ -- watch every project's `.olifant/`; packs are watched as projects load
+      notificationHandler SMethod_Initialized (\_ -> watch env ["**/.olifant/**"])
     , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
         let item = msg ^. L.params . L.textDocument
-        atPath (item ^. L.uri) $ \path -> update env (openDoc path (fromIntegral (item ^. L.version)) (item ^. L.text))
+        atPath (item ^. L.uri) $ \path -> do
+          update env (openDoc path (fromIntegral (item ^. L.version)) (item ^. L.text))
+          -- its project loads now; watch its packs
+          found <- liftIO (withSnapshot env (projectFor path))
+          watch env [T.pack (r </> "**") | Just (_, p) <- [found], r <- catalogPackRoots (prCatalog p)]
     , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
         let uri = msg ^. L.params . L.textDocument . L.uri
         getVirtualFile (toNormalizedUri uri) >>= \case
@@ -159,6 +167,7 @@ handlers env =
       -- file's came with willSaveWaitUntil)
       notificationHandler SMethod_TextDocumentDidSave $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) $ \path -> do
+          update env fileSaved
           edits <- liftIO (withSnapshot env (regionEdits path))
           case filter ((/= path) . fePath) edits of
             [] -> pure ()
@@ -201,12 +210,6 @@ handlers env =
         other -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("no command " <> other) Nothing))
     , notificationHandler SMethod_WorkspaceDidChangeWorkspaceFolders (\_ -> pure ())
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
-    , -- a project's `.olifant/` changed: reload that project
-      notificationHandler SMethod_WorkspaceDidChangeWatchedFiles $ \msg ->
-        forM_ (msg ^. L.params . L.changes) $ \ev ->
-          atPath (ev ^. L.uri) $ \path -> case projectOfConfig path of
-            Just root -> liftIO (modifyMVar_ (envState env) (catalogChanged root))
-            Nothing -> pure ()
     , -- rule findings, pulled (spec §2)
       requestHandler SMethod_TextDocumentDiagnostic $ \req respond -> do
         items <- maybe (pure []) (liftIO . fmap (map fst) . diagnosticsOf env) (uriToFilePath (req ^. L.params . L.textDocument . L.uri))
@@ -336,7 +339,19 @@ debugState env = modifyMVar (envState env) $ \s0 -> do
                          (s'', found) <- projectFor path s'
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
-  pure (s, object ["documents" .= rows])
+  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s)])
+
+-- | Ask the client to watch more files (dynamic registration: the protocol
+-- has no static capability for it), once per glob; a change reloads the
+-- projects whose `.olifant/` or packs hold it.
+watch :: Env -> [T.Text] -> LspM () ()
+watch env globs = do
+  fresh <- liftIO (atomicModifyIORef' (envWatched env) (\seen -> let new = filter (`S.notMember` seen) globs in (foldr S.insert seen new, new)))
+  if null fresh
+    then pure ()
+    else void $
+      registerCapability mempty SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesRegistrationOptions [FileSystemWatcher (GlobPattern (InL (Pattern g))) Nothing | g <- fresh]) $ \msg ->
+        liftIO (modifyMVar_ (envState env) (filesChanged [p | ev <- msg ^. L.params . L.changes, Just p <- [uriToFilePath (ev ^. L.uri)]]))
 
 -- | The project of the document a request names (`textDocument.uri`).
 projectOfRequest :: Env -> Value -> IO (Maybe Project)
@@ -390,7 +405,16 @@ withSnapshot :: Env -> (ServerState -> IO (ServerState, a)) -> IO a
 withSnapshot env work = do
   before <- readMVar (envState env)
   (after, a) <- work before
-  modifyMVar_ (envState env) (\now -> pure now {ssProjects = M.union (ssProjects now) (ssProjects after)})
+  let loaded = M.filter (> 0) (M.unionWith (-) (ssLoads after) (ssLoads before))
+  modifyMVar_ (envState env) $ \now ->
+    pure
+      now
+        { ssProjects = M.union (ssProjects now) (ssProjects after)
+        , ssLoads = M.unionWith (+) (ssLoads now) loaded
+        , -- what it worked out stands only if nothing changed meanwhile
+          ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
+        , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
+        }
   pure a
 
 -- | A file's findings as diagnostics (with the finding each is).
@@ -616,8 +640,3 @@ update env f = liftIO (modifyMVar_ (envState env) (pure . f))
 atPath :: Applicative m => Uri -> (FilePath -> m ()) -> m ()
 atPath uri act = maybe (pure ()) act (uriToFilePath uri)
 
--- | `/root/.olifant/config.toml` → `/root`.
-projectOfConfig :: FilePath -> Maybe FilePath
-projectOfConfig path
-  | "/.olifant/" `isInfixOf` path = Just (joinPath (takeWhile (/= ".olifant") (splitDirectories path)))
-  | otherwise = Nothing

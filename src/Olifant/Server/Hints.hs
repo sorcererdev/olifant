@@ -8,7 +8,7 @@ import Data.Map.Strict qualified as M
 import Olifant.Actions (Action (..), FileAction (..), Nearby, Range (..))
 import Olifant.App (actionsIn, generatorsOf)
 import Olifant.Cursor (isSnippet)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.State (ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | A line's ⚡ hint: its line (1-based), the actions there (snippets
@@ -19,7 +19,7 @@ data LineHint = LineHint {lhLine :: Int, lhActions :: [(Action, Bool)]}
 -- | Every line of a file with actions (whole-file actions are never
 -- hinted), and the generators that nearly apply; nothing in no project.
 hintsFor :: FilePath -> ServerState -> IO (ServerState, ([LineHint], [Nearby]))
-hintsFor path s =
+hintsFor path = memo "hints" path "" $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', ([], []))
     (s', Just (root, project)) -> do

@@ -70,6 +70,8 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   followupsSpec
   holesSpec
   pickerSpec
+  conventionsSpec
+  scaleSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -435,6 +437,131 @@ pickerSpec = describe "regions on save, the generator picker, commands" $ do
           TResponseMessage _ _ (Right (InL r)) -> pure r
           other -> fail (show other)
       (lookupKey "checks" v) `shouldSatisfy` maybe False (\case Array cs -> not (null cs); _ -> False)
+
+-- | Many projects, many conventions, one session (Task 16).
+conventionsSpec :: Spec
+conventionsSpec = describe "many conventions in one session" $ do
+  let generatorsOf' doc =
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure [i | Just (Array gs) <- [lookupKey "generators" v], Object g <- foldr (:) [] gs, Just (String i) <- [KM.lookup "id" g]]
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      descriptions doc =
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure [d | Just (Array gs) <- [lookupKey "generators" v], Object g <- foldr (:) [] gs, Just (String d) <- [KM.lookup "description" g]]
+          TResponseMessage _ _ (Left err) -> fail (show err)
+  it "(a) gives each file its own project's conventions: a Python app and a Rust app side by side" $
+    withProjects [("py", "python-htmx", "packs/python-htmx/fixtures/app"), ("rs", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
+      ((py, rs), _) <- inProcessWith ports root $ do
+        a <- openDoc "py/src/bistro/main.py" "python"
+        b <- openDoc "rs/billing/billing-service/src/cancel_invoice.rs" "rust"
+        (,) <$> generatorsOf' a <*> generatorsOf' b
+      py `shouldSatisfy` (\gs -> not (null gs) && all ("python-htmx/" `T.isPrefixOf`) gs)
+      rs `shouldSatisfy` (\gs -> not (null gs) && all ("rust-htmx/" `T.isPrefixOf`) gs)
+  it "(b) keeps two copies of a pack apart: each project sees its own" $
+    withPackCopies $ \ports root packB -> do
+      createDirectoryIfMissing True (packB </> "generators/extra")
+      TIO.writeFile (packB </> "generators/extra/generator.toml") "description = \"only in the second copy\"\nlanguage = \"python\"\n[[edits]]\ncreate = \"x.py\"\ntext = \"x = 1\\n\"\n"
+      ((one, two), _) <- inProcessWith ports root $ do
+        a <- openDoc "one/src/bistro/main.py" "python"
+        b <- openDoc "two/src/bistro/main.py" "python"
+        (,) <$> generatorsOf' a <*> generatorsOf' b
+      (one, two) `shouldSatisfy` (\(xs, ys) -> "python-htmx/extra" `notElem` xs && "python-htmx/extra" `elem` ys)
+  it "(c) reloads only the projects that use a pack when its files change" $
+    withPackCopies $ \ports root packB -> do
+      let gen = packB </> "generators/command/generator.toml"
+      ((before, after, loads), _) <- inProcessWith ports root $ do
+        a <- openDoc "one/src/bistro/main.py" "python"
+        b <- openDoc "two/src/bistro/main.py" "python"
+        before <- descriptions b
+        liftIO (TIO.readFile gen >>= TIO.writeFile gen . T.replace "description = \"" "description = \"Changed: ")
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri gen) FileChangeType_Changed])
+        after <- descriptions b
+        _ <- descriptions a
+        (before, after,) . lookupKey "projects" <$> debugState
+      before `shouldNotSatisfy` any ("Changed: " `T.isPrefixOf`)
+      after `shouldSatisfy` any ("Changed: " `T.isPrefixOf`)
+      loads `shouldBe` Just (object [Key.fromString (root </> "one") .= (1 :: Int), Key.fromString (root </> "two") .= (2 :: Int)])
+
+-- | A plain LSP client (no olifant/* methods), and latency at scale.
+scaleSpec :: Spec
+scaleSpec = describe "a plain client; latency at 5,000 files" $ do
+  it "(d) serves a client that knows only standard LSP: diagnostics, a quickfix, a refactor, a completion" $
+    withPython [("src/bistro/booking/commands/close_table.py", "import sqlite3\n\n\ndef f() -> None:\n    pass\n")] $ \ports dir -> do
+      ((ds, fixes, refactors, completions), _) <- inProcessWith ports dir $ do
+        bad <- openDoc "src/bistro/booking/commands/close_table.py" "python"
+        ds <- pullDiagnostics bad
+        fixes <- getCodeActions bad (Range (Position 0 0) (Position 0 5))
+        query <- openDoc "src/bistro/booking/queries/get_day_schedule.py" "python"
+        refactors <- getCodeActions query (Range (Position 18 30) (Position 18 30))
+        test <- openDoc "src/bistro/booking/commands/create_booking__test.py" "python"
+        completions <- getCompletions test (Position 34 0)
+        resolved <- case [a | InR a <- refactors, a ^. L.kind == Just CodeActionKind_RefactorRewrite, maybe False (\d -> lookupKey "missing" d == Just (Array mempty)) (a ^. L.data_)] of
+          a : _ -> Just <$> resolveCodeAction a
+          [] -> pure Nothing
+        pure (ds, [a | InR a <- fixes, a ^. L.kind == Just CodeActionKind_QuickFix], fmap (^. L.edit) resolved, completions)
+      (null ds, null fixes, refactors, null completions) `shouldSatisfy` (\(a, b, c, d) -> not a && not b && maybe False (/= Nothing) c && not d)
+  it "(e) answers fast in a project of 5,000 files: the first request, then from warm" $
+    withPython [] $ \ports dir -> do
+      forM_ [1 .. 5000 :: Int] $ \i -> do
+        let p = dir </> "src/bistro/bulk" </> ("m" <> show (i `div` 100)) </> ("mod_" <> show i <> ".py")
+        createDirectoryIfMissing True (takeDirectory p)
+        TIO.writeFile p ("x_" <> T.pack (show i) <> " = " <> T.pack (show i) <> "\n")
+      let query = "src/bistro/booking/queries/get_day_schedule.py"
+          test = "src/bistro/booking/commands/create_booking__test.py"
+          timed act = do
+            t0 <- liftIO getCurrentTime
+            _ <- act
+            t1 <- liftIO getCurrentTime
+            pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+          median xs = sort xs !! (length xs `div` 2)
+      ((firstMs, actionsMs, hintsMs, completionMs), _) <- inProcessWith ports dir $ do
+        doc <- openDoc query "python"
+        firstMs <- timed (getCodeActions doc (Range (Position 18 4) (Position 18 4)))
+        actionsMs <- forM [1 .. 20 :: Int] (const (timed (getCodeActions doc (Range (Position 18 4) (Position 18 4)))))
+        hintsMs <- forM [1 .. 20 :: Int] (const (timed (request SMethod_TextDocumentInlayHint (InlayHintParams Nothing doc (Range (Position 0 0) (Position 200 0))))))
+        t <- openDoc test "python"
+        completionMs <- forM [1 .. 20 :: Int] (const (timed (getCompletions t (Position 34 0))))
+        -- after each edit nothing is cached: what typing costs
+        editedMs <- forM [1 .. 10 :: Int] $ \i -> do
+          changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing ("# edit " <> T.pack (show i) <> "\n")))]
+          timed (request SMethod_TextDocumentInlayHint (InlayHintParams Nothing doc (Range (Position 0 0) (Position 200 0))))
+        liftIO (putStrLn ("      inlay hints just after an edit: median " <> show (round (median editedMs) :: Int) <> " ms, max " <> show (round (maximum editedMs) :: Int) <> " ms"))
+        pure (firstMs, actionsMs, hintsMs, completionMs)
+      let line name xs = "      " <> name <> ": median " <> show (round (median xs) :: Int) <> " ms, max " <> show (round (maximum xs) :: Int) <> " ms"
+      liftIO (mapM_ putStrLn ["      first request (loads the project): " <> show (round firstMs :: Int) <> " ms", line "code actions" actionsMs, line "inlay hints" hintsMs, line "completion" completionMs])
+      firstMs `shouldSatisfy` (< 500)
+      (median actionsMs, median hintsMs, median completionMs) `shouldSatisfy` (\(a, h, c) -> a < 50 && h < 50 && c < 50)
+
+-- | Projects side by side under one root: (folder, pack, fixture app).
+withProjects :: [(FilePath, Text, FilePath)] -> (Ports -> FilePath -> IO a) -> IO a
+withProjects projects act = do
+  tmp <- getTemporaryDirectory
+  withSystemTempDirectory "olifant-lsp-many" $ \root0 -> do
+    root <- canonicalizePath root0
+    forM_ projects $ \(folder, pack, fixture) -> do
+      packDir <- canonicalizePath ("packs" </> T.unpack pack)
+      files <- readTree fixture
+      forM_ (M.toList files) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (root </> folder </> p)) >> TIO.writeFile (root </> folder </> p) t
+      createDirectoryIfMissing True (root </> folder </> ".olifant")
+      TIO.writeFile (root </> folder </> ".olifant/config.toml") ("[packs]\n" <> pack <> " = { path = \"" <> T.pack packDir <> "\" }\n")
+    act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")} root
+
+-- | Two python-htmx apps, "one" and "two", each on its own copy of the
+-- pack (the second copy's path given, to change it).
+withPackCopies :: (Ports -> FilePath -> FilePath -> IO a) -> IO a
+withPackCopies act = do
+  tmp <- getTemporaryDirectory
+  pack <- readTree "packs/python-htmx"
+  fixture <- readTree "packs/python-htmx/fixtures/app"
+  withSystemTempDirectory "olifant-lsp-copies" $ \root0 -> do
+    root <- canonicalizePath root0
+    forM_ ["one", "two"] $ \name -> do
+      let packDir = root </> ("pack-" <> name)
+      forM_ (M.toList pack) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (packDir </> p)) >> TIO.writeFile (packDir </> p) t
+      forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (root </> name </> p)) >> TIO.writeFile (root </> name </> p) t
+      createDirectoryIfMissing True (root </> name </> ".olifant")
+      TIO.writeFile (root </> name </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack packDir <> "\" }\n")
+    act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")} root (root </> "pack-two")
 
 -- | The versions an action's edit is for, in one document.
 editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]

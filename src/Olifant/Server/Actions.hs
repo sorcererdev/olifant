@@ -16,13 +16,13 @@ import Olifant.Generation (Plan (..), ProgressEvent (..), Step (..), describeCon
 import Olifant.Workspace (Workspace (..))
 import Olifant.Snippet (Snippet)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Server.State (ServerConfig (..), ServerState (..), projectFor)
+import Olifant.Server.State (ServerConfig (..), ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The actions at a position (1-based line, 1-based byte column) of a
 -- file, each with whether it is a snippet; none in no project.
 actionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
-actionsFor path pos s =
+actionsFor path pos = memo "actions" path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
     (s', Just (root, project)) -> do

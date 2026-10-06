@@ -11,13 +11,13 @@ import Olifant.Catalog (describeCatalogError)
 import Olifant.Generation (Plan (..), describeConflict, describeGenerationError)
 import Olifant.Rules (Finding)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.State (ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The rules' findings in a file (project-relative paths in them); none
 -- for a file in no project.
 findingsFor :: FilePath -> ServerState -> IO (ServerState, [Finding])
-findingsFor path s =
+findingsFor path = memo "findings" path "" $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
     (s', Just (root, project)) -> (s',) . fst <$> findings (ssPorts s') project [makeRelative root path]

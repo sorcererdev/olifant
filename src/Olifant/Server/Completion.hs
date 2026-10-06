@@ -10,14 +10,15 @@ import Olifant.App (actionsAt', completeAt, generatorsOf)
 import Olifant.Cursor (isSnippet)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..))
 import Olifant.Server.Actions (actionEdits)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.State (ServerState (..), memo, projectFor)
+import Data.Text qualified as T
 import Olifant.Snippet (Snippet (..))
 import System.FilePath (makeRelative)
 
 -- | The snippets at a position (1-based line, 1-based byte column), each
 -- with its placed body; nothing in no project.
 completionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Completion, Snippet)])
-completionsFor path pos s =
+completionsFor path pos = memo "completions" path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
     (s', Just (root, project)) -> do
@@ -29,7 +30,7 @@ completionsFor path pos s =
 -- that applies there (its missing inputs set to their first choice),
 -- placed on the cursor's line and short enough to show (8 lines at most).
 ghostFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, Maybe Snippet)
-ghostFor path pos@(line, _) s =
+ghostFor path pos@(line, _) = memo "ghost" path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (root, project)) -> do
