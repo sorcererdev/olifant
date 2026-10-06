@@ -314,19 +314,30 @@ handlers env =
         found <- maybe (pure Nothing) (liftIO . withSnapshot env . fileActionsFor) path
         respond (Right (maybe (fileActionsJson [] [] []) (\(gens, acts, near) -> fileActionsJson gens acts near) found))
     , -- an offered suggestion's plan, while its document is as it was
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) $ \req respond -> do
+      -- (`fill`: planned again with the model, as accepting it does)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) $ \req respond -> inBackground respond $ do
         let wanted = case req ^. L.params of
               Object o | Just (Number n) <- KM.lookup "planId" o -> toBoundedInteger n
               _ -> Nothing
+            fill = case req ^. L.params of
+              Object o -> KM.lookup "fill" o == Just (Bool True)
+              _ -> False
         offered <- liftIO ((\(_, m) -> (`M.lookup` m) =<< wanted) <$> readIORef (envOffered env))
         s <- liftIO (readMVar (envState env))
         case offered of
           Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
           Just o
             | fmap fst (M.lookup (ofPath o) (ssDocs s)) /= Just (ofVersion o) -> respond (Left (TResponseError (InL LSPErrorCodes_ContentModified) "the document changed since this was suggested" Nothing))
-            | otherwise ->
+            | not fill ->
                 let sg = ofSuggestion o
                  in respond (Right (object ["plan" .= planJson False (sgPlan sg), "edit" .= workspaceEdit (editsOfPlan s (sgRoot sg) (sgPlan sg))]))
+            | otherwise -> do
+                let sg = ofSuggestion o
+                planProgress (sgLabel sg) (\progress -> withSnapshot env (actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg))) >>= \case
+                  Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+                  Right (root, plan) -> do
+                    now <- liftIO (readMVar (envState env))
+                    respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan now root plan)]))
     , -- the holes left in the project of a document: where, which, what for
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) $ \req respond -> do
         let path = case req ^. L.params of

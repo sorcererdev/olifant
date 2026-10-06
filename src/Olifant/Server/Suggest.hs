@@ -30,6 +30,10 @@ data Suggestion = Suggestion
   , sgLines :: [Text]
   , sgRoot :: FilePath
   , sgPlan :: Plan
+  , -- | what was planned, and at which line: to plan it again, filled
+    sgGenerator :: Text
+  , sgSets :: [(Text, Text)]
+  , sgAt :: Int
   }
 
 -- | What follows from an edit at a line (1-based) of a file; nothing when
@@ -61,8 +65,8 @@ suggestionFor path line s =
               , let inserted = T.lines (feText e)
               , length inserted <= 8
               , l1 + 1 `elem` [line, line + 1] ->
-                  Suggestion "ghost" (actLabel a) "" (l1 + 1) inserted r plan
-            _ -> Suggestion "followup" (actLabel a) (summary r plan) line [] r plan
+                  Suggestion "ghost" (actLabel a) "" (l1 + 1) inserted r plan (actGenerator a) (actSets a) line
+            _ -> Suggestion "followup" (actLabel a) (summary r plan) line [] r plan (actGenerator a) (actSets a) line
       (s',) <$> try candidates
   where
     summary root plan =

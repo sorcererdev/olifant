@@ -363,6 +363,27 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
             _ -> []
       T.concat texts `shouldSatisfy` T.isInfixOf "Cancelled"
       (lookupKey "plan" planned >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> not (null fs); _ -> False)
+  it "(d) gives the plan again filled by the model, when asked (accepting a suggestion)" $ do
+    recorded <- (</> "olifant-followup-fills.toml") <$> getTemporaryDirectory
+    TIO.writeFile recorded "[fills]\n"
+    withPythonChecked [] $ \ports dir -> do
+      (statuses, _) <- inProcessWithConfig [("fills", String (T.pack recorded))] ports dir $ do
+        doc <- openDoc command "python"
+        typeFailure doc
+        v <- suggestion
+        let ask fill = request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= lookupKey "planId" v, "fill" .= fill]) >>= \case
+              TResponseMessage _ _ (Right p) -> pure p
+              TResponseMessage _ _ (Left err) -> fail (show err)
+            holesOf p = case lookupKey "plan" p >>= lookupKey "holes" of
+              Just (Array hs) -> [h | Object h <- foldr (:) [] hs]
+              _ -> []
+        unfilled <- ask False
+        -- the model's answer for each of its holes
+        liftIO . TIO.writeFile recorded . T.unlines $ "[fills]" : ["\"" <> n <> "\" = \"return 409\"" | h <- holesOf unfilled, Just (String n) <- [KM.lookup "name" h]]
+        filled <- ask True
+        pure ([KM.lookup "status" h | h <- holesOf unfilled], [KM.lookup "status" h | h <- holesOf filled])
+      fst statuses `shouldSatisfy` (\ss -> not (null ss) && all (/= Just (String "filled")) ss)
+      snd statuses `shouldSatisfy` (\ss -> not (null ss) && all (== Just (String "filled")) ss)
   it "(c) drops the suggestion of a version typed over before it settled" $
     withPythonChecked [] $ \ports dir -> do
       ((v, version), _) <- inProcessWith ports dir $ do
