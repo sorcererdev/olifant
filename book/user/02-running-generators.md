@@ -222,7 +222,7 @@ and after the plan (`before` is `null` for a new file), which is what an editor 
 buffer changes ([chapter 14](14-editors-and-actions.md#plans-for-editors-files)). An
 applied run has no `files`.
 
-## Holes and models: `--model`, `--no-fill`
+## Holes and models: `--model`, `--no-fill`, `--fills`
 
 Some generators leave a small typed gap, a **hole**, for a model to fill: `elm/msg` does
 when you give it an `intent`. With a model configured under `[model]` in
@@ -251,6 +251,11 @@ except for a snippet's tab stops, [below](#a-snippet-at-the-cursor---at).)
 Both apply to the whole run, like `--plan`. `--plan` does run the model, so it shows the
 fills it would write. [Chapter 13](13-tutorial-holes.md) is a tutorial with a local
 model.
+
+`--fills FILE` stands a recorded `[fills]` table (hole name = code, as a case's
+`fills.toml`) in for the model: every hole the plan asks for must be in it. It still goes
+through the checks, `verify` included, so a recorded fill is judged like a live one. The
+python slice uses it to replay what qwen3-coder:30b wrote, without Ollama.
 
 ## Progress: `--progress`
 

@@ -1375,7 +1375,14 @@ per step into `PlanVerify` items, handed to `fillPhase` as a map by bare hole na
 after the compile check: `projectFiles` gathers what a check sees, and the **Verifier** port
 (`Language.Check`: `runVerify`; `processVerifierWith secs` runs the command in a scratch copy
 through `Process.runBytesWithin`, which polls for exit so it can stop a long run under the
-non-threaded runtime) decides; a failure is a retry reason "the tests failed: …".
+non-threaded runtime) decides; a failure is a retry reason "the tests failed: …". Before
+any of this, layout is repaired: `applyFills` places `dedented` lines (common indent
+dropped), and a candidate failing to compile whose first line is bare and the rest one
+level in is tried `reindented`, kept only if it then compiles. `Snippet.snippetOf` places a
+model fill the same way (shared `Holes.dedented`, continuation lines at the marker line's
+indent), so the editor's snippet matches the written file. `gen --fills FILE` makes the
+filler `replayFiller` over `parseFills` (both in `Olifant.Fill`, shared with the case
+harness).
 
 Then `generate` makes the shown edits match the writes:
 
