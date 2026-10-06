@@ -63,6 +63,8 @@ data Runtime = Runtime
   , -- | a first commit of everything in a directory, `git init` first if
     -- needed (`olifant init`)
     rtGitInit :: FilePath -> Text -> IO (Either Text ())
+  , -- | runs a hole's `verify` command (its tests) in a scratch copy
+    rtVerifier :: Verifier IO
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -749,7 +751,7 @@ noFill p = p {planHoles = [h {phStatus = HoleSkipped "--no-fill"} | h <- planHol
 -- | The tools a command in this project uses: the runtime's syntax and
 -- checker, the catalog's languages and regions, and the project's queries.
 projectTools :: Runtime -> Catalog -> Tools IO
-projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries rt cat}
+projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries rt cat, toolVerifier = rtVerifier rt}
 
 -- | Queries run in the project: commands in its root, AST queries over its
 -- files with the catalog's language adapters.
@@ -840,3 +842,4 @@ progressJson = \case
   Filled hole attempt -> object ["event" .= ("filled" :: Text), "hole" .= hole, "attempt" .= attempt]
   Unfilled hole why -> object ["event" .= ("unfilled" :: Text), "hole" .= hole, "why" .= why]
   AutoImported hole line -> object ["event" .= ("auto_import" :: Text), "hole" .= hole, "import" .= line]
+  Verifying hole -> object ["event" .= ("verify" :: Text), "hole" .= hole]

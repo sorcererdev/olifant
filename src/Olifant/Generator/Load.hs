@@ -62,13 +62,15 @@ parseGenerator gid src = do
     _ -> Right ()
   appliesAt <- optional "applies_at" (table >=> appliesAtFrom (map inputName inputs')) top
   name <- optional "name" text top
-  holes <- maybe (Right []) (traverse (\(k, v) -> inKey ("holes." <> k) ((k,) <$> (table v >>= holeSourceFrom))) . M.toList) =<< optional "holes" (shaped "[holes.NAME] tables, one per hole" table) top
+  holeTables <- maybe (Right []) (pure . M.toList) =<< optional "holes" (shaped "[holes.NAME] tables, one per hole" table) top
+  holes <- traverse (\(k, v) -> inKey ("holes." <> k) ((k,) <$> (table v >>= holeSourceFrom))) holeTables
+  verify <- fmap concat . traverse (\(k, v) -> inKey ("holes." <> k) (table v >>= \t -> maybe [] (\vs -> [(k, vs)]) <$> optional "verify" (list (text >=> tmpl)) t)) $ holeTables
   -- `starter`: the pack's project generator; `next`: what to run after `olifant init`
   starter <- fromMaybe False <$> optional "starter" bool top
   next <- fromMaybe [] <$> optional "next" (list (text >=> tmpl)) top
   when (not starter && not (null next)) (Left "`next` lists what to run after `olifant init`: it belongs to a starter (`starter = true`)")
   context <- fromMaybe [] <$> optional "context" (list (text >=> tmpl)) top
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes starter next context)
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes starter next context verify)
   where
     queryWithValue v = do
       t <- table v
@@ -216,8 +218,10 @@ deriveFrom tbl = traverse (\(k, v) -> inKey ("derive." <> k) ((,) k <$> (text v 
 
 holeSourceFrom :: Table -> Either Text HoleSource
 holeSourceFrom t = do
-  onlyKeys ["source", "value"] t
-  required "source" text t >>= \case
+  onlyKeys ["source", "value", "verify"] t
+  src <- required "source" text t
+  when (src /= "model" && M.member "verify" t) (Left "`verify` is for model holes: a command the model's fill must pass")
+  pure src >>= \case
     "yours" -> Right Yours
     "model" -> Right Model
     "derived" -> Derived <$> required "value" (text >=> tmpl) t

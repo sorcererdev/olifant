@@ -62,6 +62,8 @@ data PlanItem
   = PlanRequire StepPath [FilePath] (Maybe Text)
   | -- | a `[requires] holds` that rendered empty: the hint
     PlanRefuse StepPath Text
+  | -- | a hole's `verify` command, rendered (the hole's name, argv)
+    PlanVerify Text [Text]
   | PlanEdit StepPath RenderedEdit
   | -- | globs of files the model sees when filling (a generator's `context`)
     PlanContext [Text]
@@ -93,10 +95,11 @@ expand resolve bindQ choose now prior ancestors path gen0 sets = do
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
   holds <- except (first (StepTemplate path) (traverse (render env) (requiresHolds =<< genRequires gen)))
   context <- except (first (StepTemplate path) (traverse (render env) (genContext gen)))
+  verifies <- except (first (StepTemplate path) (traverse (\(n, ts) -> (n,) <$> traverse (render env) ts) (genVerify gen)))
   let own = map (PlanEdit path) rendered
   -- Each use sees what the run, this generator and earlier uses create.
   nested <- foldM (\acc (k, u) -> (acc ++) <$> expandUse env (prior ++ created (own ++ acc)) k u) [] (zip [1 :: Int ..] (genUses gen))
-  pure ([PlanRefuse path (fromMaybe "a requirement does not hold" hint) | Just h <- [holds], T.null (T.strip h)] ++ [PlanRequire path required hint | not (null required)] ++ [PlanContext context | not (null context)] ++ own ++ nested)
+  pure ([PlanRefuse path (fromMaybe "a requirement does not hold" hint) | Just h <- [holds], T.null (T.strip h)] ++ [PlanRequire path required hint | not (null required)] ++ [PlanContext context | not (null context)] ++ [PlanVerify n argv | (n, argv) <- verifies] ++ own ++ nested)
   where
     repeated u = length (filter ((== useGenerator u) . useGenerator) (genUses gen0)) > 1
     expandUse env seen k u = do

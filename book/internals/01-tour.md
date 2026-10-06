@@ -1370,7 +1370,12 @@ that hole's prompt). After a round's check, `autoImport` looks at files whose ev
 is an undefined name (the support's `supportUndefined`); `importFor` scans the project's
 files of that language for the one import line binding the name (through `merging` and
 `import M( as N)?`), and each candidate using the name is prefixed with it and judged again
-in the same round (`AutoImported` progress).
+in the same round (`AutoImported` progress). A hole with `verify` (`genVerify`, rendered
+per step into `PlanVerify` items, handed to `fillPhase` as a map by bare hole name) is run
+after the compile check: `projectFiles` gathers what a check sees, and the **Verifier** port
+(`Language.Check`: `runVerify`; `processVerifierWith secs` runs the command in a scratch copy
+through `Process.runBytesWithin`, which polls for exit so it can stop a long run under the
+non-threaded runtime) decides; a failure is a retry reason "the tests failed: …".
 
 Then `generate` makes the shown edits match the writes:
 

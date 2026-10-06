@@ -10,6 +10,7 @@ import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Char (isAlphaNum)
+import Data.Functor ((<&>))
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -27,8 +28,8 @@ import System.FilePath (splitDirectories)
 -- | A hole being tried: attempts so far and the previous (fill, why).
 data Try = Try {tryHole :: PlannedHole, tryAttempts :: Int, tryPrevious :: Maybe (Text, Text)}
 
-fillPhase :: Monad m => Workspace m -> Tools m -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
-fillPhase ws tools inputs base holes = case toolFiller tools of
+fillPhase :: Monad m => Workspace m -> Tools m -> Map Text [Text] -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
+fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   Nothing -> pure (base, holes, [])
   Just _ | null holes -> pure (base, holes, [])
   Just mf -> loop mf 1 M.empty [] [Try h 0 Nothing | h <- holes]
@@ -86,9 +87,22 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
           -- Each good alone may still clash together: then none of them stands.
           (together, _) <- if M.null broken || null good then pure (M.empty, Nothing) else (\(b, n) -> (notAlready b, n)) <$> checkFiles (with good) [site t | (t, _) <- good]
           let clash = if M.null together then [] else [(t, f, "this fill and another do not compile together: " <> T.intercalate "; " (concat (M.elems together))) | (t, f) <- good]
-              good' = if null clash then good else []
+              stood = if null clash then good else []
+          -- A hole with `verify`: its fill must also pass that command (its
+          -- tests), run over the files with every standing fill in place.
+          verified <- forM stood $ \(t, f) -> case (M.lookup (bare (name t)) verifyFor, langOf (holeFile (site t))) of
+            (Just argv, Just lang) -> do
+              toolProgress tools (Verifying (name t))
+              everything <- projectFiles (with stood) lang
+              runVerify (toolVerifier tools) lang argv everything <&> \case
+                Right (True, _) -> (t, f, Nothing)
+                Right (False, out) -> (t, f, Just ("the tests failed:\n" <> T.intercalate "\n" (lastN 40 (T.lines out))))
+                Left why -> (t, f, Just ("the tests could not run: " <> describeCheckFailure why))
+            _ -> pure (t, f, Nothing)
+          let good' = [(t, f) | (t, f, Nothing) <- verified]
+              verifyFailed = [(t, f, why) | (t, f, Just why) <- verified]
               accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
-              failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash]
+              failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash ++ verifyFailed]
           forM_ good' (\(t, _) -> toolProgress tools (Filled (name t) (tryAttempts t)))
           next accepted' (maybe notes (: notes) note) failed
 
@@ -101,6 +115,9 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
        in (applyFills langOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
 
     name = holeName . site
+    -- a repeated hole's name less its "[file:line]"
+    bare = T.takeWhile (/= '[')
+    lastN n xs = drop (length xs - n) xs
     site = phSite . tryHole
 
     -- Each candidate whose file's errors are all undefined names gets, for
@@ -170,12 +187,16 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
       let names = nub [langName l | s <- sites, Just l <- [languageFor (toolLanguages tools) (holeFile s)], isJust (langCheck l)]
           langs = [l | l <- toolLanguages tools, langName l `elem` names]
       foldM (\(acc, note) lang -> (\(b, n) -> (M.unionWith (++) acc b, maybe note Just n)) <$> checkLang files lang) (M.empty, Nothing) langs
-    checkLang files lang = do
+    -- The language's files and its check's context, from disk, with the
+    -- plan's versions over them: what a check (or a verify) runs over.
+    projectFiles files lang = do
       paths <- listFiles ws "."
       let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
           wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
       disk <- forM (filter wanted paths) (\p -> (p,) <$> readText ws p)
-      let all' = M.union (M.filterWithKey (\p _ -> wanted p) files) (M.fromList [(p, t) | (p, Just t) <- disk])
+      pure (M.union (M.filterWithKey (\p _ -> wanted p) files) (M.fromList [(p, t) | (p, Just t) <- disk]))
+    checkLang files lang = do
+      all' <- projectFiles files lang
       toolProgress tools (Checking (langName lang))
       runCheck (toolChecker tools) lang all' >>= \case
         Left f -> pure (M.empty, Just (describeCheckFailure f)) -- parse validation stands; the plan says so

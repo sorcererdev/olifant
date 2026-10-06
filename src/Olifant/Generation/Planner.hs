@@ -43,6 +43,7 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
           [] -> acc
           missing -> (current, edits, RequirementUnmet path missing hint : conflicts, n)
       PlanContext _ -> pure acc
+      PlanVerify _ _ -> pure acc
       PlanRefuse path why -> pure (current, edits, RequirementRefused path why : conflicts, n)
       -- `complete` edits are planned later, by the check loop.
       PlanEdit _ (RenderedComplete _) -> pure acc

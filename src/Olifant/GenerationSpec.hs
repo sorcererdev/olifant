@@ -760,6 +760,36 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (ws, _) <- memoryWorkspace []
     Right plan <- generate ws noResolve tools [Step twice M.empty] now PlanOnly
     [t | e <- planEdits plan, WillCreate t <- [editAction e]] `shouldBe` ["a = 1\nb = 2\n"]
+  describe "verify (a hole's fill must pass a command: its tests)" $ do
+    let gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "create = \"src/V.elm\"", "text = \"v = {= ? v: expr | the value =}\\n\""
+          , "[holes.v]", "source = \"model\"", "verify = [\"run-tests\", \"src/V.elm\"]" ]
+        -- passes when the file holds GOOD; says why otherwise
+        verifier seen = Verifier $ \_ argv files -> do
+          modifyIORef' seen (++ [argv])
+          pure (Right (if any ("GOOD" `T.isInfixOf`) (M.elems files) then (True, "ok") else (False, "FAILED test_v - expected GOOD")))
+    it "(b) a fill that compiles but fails verify is retried with the output" $ do
+      seen <- newIORef []
+      calls <- newIORef []
+      script <- newIORef [Right (M.fromList [("v", "WRONG")]), Right (M.fromList [("v", "GOOD")])]
+      let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> atomicModifyIORef' script (\case [] -> ([], Left "no more"); (r : rs) -> (rs, r))
+          tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler), toolVerifier = verifier seen}
+      (ws, snap) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+      [(holeName (phSite h), phStatus h) | h <- planHoles plan] `shouldBe` [("v", HoleFilled "fake" 2)]
+      (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = GOOD\n"
+      reqs <- readIORef calls
+      [fmap (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [Just "the tests failed:"]
+      take 1 <$> readIORef seen `shouldReturn` [["run-tests", "src/V.elm"]]
+    it "(c) retries run out: the placeholder stays, the reason is the output" $ do
+      seen <- newIORef []
+      let filler = Filler $ \_ -> pure (Right (M.fromList [("v", "WRONG")]))
+          tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 1 filler), toolVerifier = verifier seen}
+      (ws, snap) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+      [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "FAILED test_v" `T.isInfixOf` why; _ -> False)
+      (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = Debug.todo \"olifant: v\"\n"
   describe "auto-import (a name another file imports, no model round)" $ do
     let pyLang = l
           where

@@ -11,6 +11,8 @@ import Olifant.Generation (describeConflict, PlannedEdit (..), HoleStatus (..), 
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
+import Olifant.Generation.Tools (Verifier (..))
+import Olifant.Language.Check (noVerifier, processVerifierWith)
 import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
 import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
@@ -262,7 +264,7 @@ spec = do
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processChecker
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-              , rtGitInit = \_ _ -> pure (Right ()) }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
         let project = dir </> "demo"
@@ -321,6 +323,11 @@ spec = do
           (checked, T.isInfixOf "conventions hold (0 findings" (T.pack checkOut)) `shouldBe` (ExitSuccess, True)
           (served, _, serveErr) <- stage "serve"
           (served, serveErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+    it "verify: a command that runs too long is stopped and says so (Review Focus 4)" $ do
+      r <- runVerify (processVerifierWith 1) python ["sleep", "30"] (M.fromList [("src/a.py", "x = 1\n")])
+      r `shouldBe` Right (False, "the tests timed out (1 s)")
+      ok <- runVerify (processVerifierWith 10) python ["true"] (M.fromList [("src/a.py", "x = 1\n")])
+      fmap fst ok `shouldBe` Right True
     it "its fixture is pyright-strict clean" $ withUv $ do
       fixture <- readTree "packs/python-htmx/fixtures/app"
       compileClean python fixture `shouldReturn` Right ()

@@ -19,7 +19,7 @@ import Data.Aeson (encode)
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
-import Olifant.Language (Syntax, noChecker, noSyntax)
+import Olifant.Language (Syntax, noChecker, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -87,7 +87,7 @@ runInWith syntax dir stdinText files tty args = do
         , rtChecker = noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
-        , rtGitInit = \_ _ -> pure (Right ())
+        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
@@ -108,7 +108,7 @@ runInit files args = do
         , rtSyntax = noSyntax, rtChecker = noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
         , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure (Right ())
+        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure (Right ()), rtVerifier = noVerifier
         }
       args
   (,,,,) code <$> readIORef out <*> readIORef err <*> snapshot <*> readIORef gits
