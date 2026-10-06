@@ -403,6 +403,17 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
       lookupKey "label" v `shouldBe` Just (String "Add Cancelled to every match")
       lookupKey "planId" v `shouldSatisfy` (/= Nothing)
       (lookupKey "plan" v >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> not (null fs); _ -> False)
+  it "(f) keeps every plan offered for the document as it is (a push and a pull both resolve)" $
+    withPythonChecked [] $ \ports dir -> do
+      (planned, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        typeFailure doc
+        pushed <- suggestion
+        _ <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "line" .= (35 :: Int)])
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= lookupKey "planId" pushed]) >>= \case
+          TResponseMessage _ _ (Right p) -> pure (Right p)
+          TResponseMessage _ _ (Left err) -> pure (Left (show err))
+      either expectationFailure (\p -> lookupKey "plan" p `shouldSatisfy` (/= Nothing)) planned
   it "(c) drops the suggestion of a version typed over before it settled" $
     withPythonChecked [] $ \ports dir -> do
       ((v, version), _) <- inProcessWith ports dir $ do

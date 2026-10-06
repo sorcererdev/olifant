@@ -430,11 +430,13 @@ suggestLater env lspEnv path version line = do
         runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version n sg)
       _ -> pure ()
 
--- | Keep a suggestion's plan for `olifant/plan` (the file's newest only):
--- its id.
+-- | Keep a suggestion's plan for `olifant/plan`, while its file is at
+-- that version (a file's offers for older versions go): its id.
 offer :: Env -> FilePath -> Int -> Suggestion -> IO Int
 offer env path version sg =
-  atomicModifyIORef' (envOffered env) (\(k, m) -> ((k + 1, M.insert (k + 1) (Offered path version sg) (M.filter ((/= path) . ofPath) m)), k + 1))
+  atomicModifyIORef' (envOffered env) $ \(k, m) ->
+    let current = M.filter (\o -> ofPath o /= path || ofVersion o >= version) m
+     in ((k + 1, M.insert (k + 1) (Offered path version sg) current), k + 1)
 
 -- | A suggestion as editors read it (olifant/suggestion, olifant/suggest).
 suggestionFields :: FilePath -> Int -> Int -> Suggestion -> [(Key.Key, Value)]
