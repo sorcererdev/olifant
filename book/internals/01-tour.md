@@ -2202,6 +2202,16 @@ In the server, the token travels with the state: `withSnapshot` hands the work i
 `PlanOptions`. A suggestion job's token is the one `Jobs.submit` trips when the next edit
 supersedes it; a background request's is the one `$/cancelRequest` trips.
 
+### Running the specs
+
+`src/SpecHook.hs` marks every spec `parallel`, and the suite runs with `-N`: most specs wait on
+compilers, pyright and models, not the CPU, so the 1,000 run in about 35 s instead of three
+minutes. A spec that measures time is marked `sequential` where it is. Specs share no global
+state but the tools' caches, which are safe to share: ast-grep grammars are built under a name of
+their own, then renamed; pyright's venv is uv's, which locks it; cargo's target dir is an
+`exclusive` check's slot (`Check.inSlot`). A new spec that needs something process-wide (the
+working directory, an environment variable) must be `sequential`.
+
 ### Testing the server
 
 `LspSpec` drives the real server in-process over pipes with `lsp-test`, on fixture projects

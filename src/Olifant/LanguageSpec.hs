@@ -18,7 +18,9 @@ import System.Directory (findExecutable, getTemporaryDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Olifant.Template (Value (..))
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (forM_)
+import System.IO.Temp (withSystemTempDirectory)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
 import Olifant.Language.Header (headerEnd)
@@ -107,6 +109,11 @@ spec = do
   describe "the Elm adapter (ast-grep, fixture Main.elm)" $ do
     let at syn elm file p = fmap (fmap locLine) (resolveLayers syn (Just elm) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "a grammar built by several queries at once, on a cold cache, serves them all (parallel tests, the server's threads)" $ withAstGrep $ \_ elm file ->
+      forM_ [1 .. 3 :: Int] $ \_ -> withSystemTempDirectory "olifant-cold-cache" $ \cold -> do
+        let syn = astGrepSyntax cold
+        answers <- mapConcurrently (const (at syn elm file "end of type Page")) [1 .. 8 :: Int]
+        answers `shouldBe` replicate 8 (Right (lineOf file "| SamplePage SamplePage.Model" + 1))
     it "end of type Page goes after the last variant" $ withAstGrep $ \syn elm file ->
       at syn elm file "end of type Page" `shouldReturn` Right (lineOf file "| SamplePage SamplePage.Model" + 1)
     it "end of case in update skips the catch-all and the nested case" $ withAstGrep $ \syn elm file ->
@@ -312,6 +319,25 @@ spec = do
       let Right rust = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"cargo\"]", "context = [\"**/Cargo.toml\"]", "root = [\"Cargo.toml\"]", "root_pick = \"outermost\"", "format = \"rustc-json\""])
       fst (checkScope rust ["Cargo.toml", "crates/a/Cargo.toml", "crates/a/src/lib.rs"] ["crates/a/src/lib.rs"]) `shouldBe` ""
       fst (checkScope rust ["svc/Cargo.toml", "svc/crates/a/Cargo.toml", "svc/crates/a/src/lib.rs"] ["svc/crates/a/src/lib.rs"]) `shouldBe` "svc"
+    it "reads `exclusive`: a check whose tool keeps a build cache (cargo) gets a cache no other check uses meanwhile" $ do
+      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
+      fmap (fmap checkExclusive . langCheck) (parsed ["exclusive = true"]) `shouldBe` Right (Just True)
+      fmap (fmap checkExclusive . langCheck) (parsed []) `shouldBe` Right (Just False)
+      rust <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
+      fmap (fmap checkExclusive . langCheck) (parseLanguage "rust" "packs/rust-htmx" rust) `shouldBe` Right (Just True)
+    it "runs exclusive checks of a workspace in parallel, never two in one cache at once" $
+      withSystemTempDirectory "olifant-exclusive" $ \dir -> do
+        let log' = dir </> "log"
+            command = "[\"sh\", \"-c\", \"echo start {= cache =} >> " <> T.pack log' <> "; sleep 0.3; echo end {= cache =} >> " <> T.pack log' <> "\"]"
+            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = " <> command, "format = \"rustc-json\"", "exclusive = true"])
+        _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1 .. 6 :: Int]
+        events <- map words . lines <$> readFile log'
+        -- in each cache, a run ends before the next starts
+        let byCache = M.fromListWith (flip (++)) [(c, [e]) | [e, c] <- events]
+        M.elems byCache `shouldSatisfy` all (\es -> es == concat (replicate (length es `div` 2) ["start", "end"]))
+        -- and several caches were in use at once
+        M.size byCache `shouldSatisfy` (> 1)
+        length events `shouldBe` 12
     it "runs the checker inside the package and reports project paths" $ do
       seen <- newIORef []
       let checker = Checker $ \_ files -> do

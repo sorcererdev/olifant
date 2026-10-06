@@ -91,7 +91,9 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- its report format, and the files that mark a package's root (`root`):
 -- a check runs in the judged file's package, the nearest folder holding one
 -- (`root_pick = "outermost"`: the outermost, a Cargo workspace).
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool}
+-- @checkExclusive@: the tool keeps a build cache (cargo's target dir), so
+-- each check gets a cache no other check uses while it runs (a slot).
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool}
   deriving stock (Eq, Show)
 
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
@@ -144,7 +146,7 @@ parseLanguage name packRoot src = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     checkFrom t = do
-      onlyKeys ["command", "context", "format", "root", "root_pick"] t
+      onlyKeys ["command", "context", "format", "root", "root_pick", "exclusive"] t
       format <- required "format" text t
       if format `elem` knownFormats
         then Right ()
@@ -156,6 +158,7 @@ parseLanguage name packRoot src = do
               Just "nearest" -> Right False
               Just "outermost" -> Right True
               Just other -> Left ("`root_pick`: expected \"nearest\" or \"outermost\", got `" <> other <> "`"))
+        <*> (fromMaybe False <$> optional "exclusive" bool t)
 
 targetPhrase :: TargetDef -> Text
 targetPhrase = T.unwords . targetShape

@@ -380,7 +380,7 @@ spec = do
       Right (tools, g) <- atCaseCursor ws noChecker (Just (moved, line)) tools0 g0
       Right plan <- generate ws resolve tools [Step g (M.fromList [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "close_table")])] (UTCTime (fromGregorian 2026 10 6) 0) PlanOnly
       map describeConflict (planConflicts plan) `shouldSatisfy` any ("write close_table__test.py first" `T.isInfixOf`)
-    it "a cancelled command is killed at once, its process gone (olifant lsp)" $
+    sequential . it "a cancelled command is killed at once, its process gone (olifant lsp)" $
       withSystemTempDirectory "olifant-cancel" $ \dir -> do
         (token, stop) <- newCancel
         _ <- forkIO (threadDelay 200000 >> stop)

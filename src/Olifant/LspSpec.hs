@@ -367,7 +367,7 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
       BSL.hPut inWrite ("Content-Length: " <> BSL8.pack (show (BSL.length body)) <> "\r\n\r\n" <> body) >> hFlush inWrite
       response <- readMessage outRead
       (Aeson.decode response >>= lookupKey "result" >>= lookupKey "capabilities" >>= lookupKey "inlineCompletionProvider") `shouldBe` Just (Bool True)
-  it "(e) answers an inline completion within 150 ms once warm (median of 20)" $
+  sequential . it "(e) answers an inline completion within 150 ms once warm (median of 20)" $
     withPython [] $ \ports dir -> do
       (times, _) <- inProcessWith ports dir $ do
         doc <- openDoc test "python"
@@ -811,7 +811,7 @@ conventionsSpec = describe "many conventions in one session" $ do
 
 -- | A plain LSP client (no olifant/* methods), and latency at scale.
 scaleSpec :: Spec
-scaleSpec = describe "a plain client; latency at 5,000 files" $ do
+scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
   it "(d) serves a client that knows only standard LSP: diagnostics, a quickfix, a refactor, a completion" $
     withPython [("src/bistro/booking/commands/close_table.py", "import sqlite3\n\n\ndef f() -> None:\n    pass\n")] $ \ports dir -> do
       ((ds, fixes, refactors, completions), _) <- inProcessWith ports dir $ do
@@ -931,7 +931,7 @@ concurrencySpec = describe "slow work, and requests meanwhile" $ do
             liftIO (void (tryPutMVar gate ()))
             pure (winner :: Text)
           first `shouldBe` "other"
-  it "answers other requests while a slow resolve (a 2 s check) runs" $ do
+  sequential . it "answers other requests while a slow resolve (a 2 s check) runs" $ do
     fills <- canonicalizePath "packs/python-htmx/generators/handle-body/tests/create-booking/fills.toml"
     let slowCheck = Checker (\_ _ -> threadDelay 2000000 >> pure (Right (CheckReport [] [] [])))
     withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
