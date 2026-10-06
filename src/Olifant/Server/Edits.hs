@@ -9,6 +9,7 @@ module Olifant.Server.Edits
   , editsOfPlan
   , smallestChange
   , editorPosition
+  , bytePosition
   ) where
 
 import Data.ByteString qualified as BS
@@ -74,6 +75,15 @@ smallestChange old new =
 editorPosition :: Text -> (Int, Int) -> (Int, Int)
 editorPosition lineText (line, byteCol) =
   (line - 1, utf16Length (TE.decodeUtf8Lenient (BS.take (byteCol - 1) (TE.encodeUtf8 lineText))))
+
+-- | An editor position (0-based line, UTF-16 column) as Olifant's (1-based
+-- line, 1-based UTF-8 byte column), given the line's text.
+bytePosition :: Text -> (Int, Int) -> (Int, Int)
+bytePosition lineText (line, col) = (line + 1, 1 + BS.length (TE.encodeUtf8 (takeUtf16 col lineText)))
+  where
+    takeUtf16 n t = case T.uncons t of
+      Just (c, rest) | n > 0 -> T.cons c (takeUtf16 (n - (if fromEnum c > 0xFFFF then 2 else 1)) rest)
+      _ -> ""
 
 utf16Length :: Text -> Int
 utf16Length = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0

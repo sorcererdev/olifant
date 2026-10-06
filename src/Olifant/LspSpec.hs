@@ -52,6 +52,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
       let doc = object ["path" .= (dir </> "src/x.py"), "version" .= version, "project" .= dir]
       lookupKey "documents" state `shouldBe` Just (Array (pure doc))
   fixesSpec
+  actionsSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -119,6 +120,63 @@ fixesSpec = describe "rule findings and their fixes" $ do
         (,) <$> pullDiagnostics doc <*> getCodeActions doc (Range (Position 0 0) (Position 0 5))
       (ds, length as) `shouldBe` ([], 0)
 
+-- | The ⚡ actions at a cursor (Task 10): refactor code actions resolved to
+-- their plan at the cursor.
+actionsSpec :: Spec
+actionsSpec = describe "⚡ actions at the cursor" $ do
+  let command = "src/bistro/booking/commands/cancel_booking.py"
+      atInit = Range (Position 25 8) (Position 25 8)
+      refactors doc = (\as -> [a | InR a <- as, a ^. L.kind == Just CodeActionKind_RefactorRewrite]) <$> getCodeActions doc atInit
+      named t = filter ((== t) . (^. L.title))
+      given = readTree "packs/python-htmx/generators/add-dependency/tests/inline/given"
+  it "(a) offers the actions at the cursor, with the choices they need" $ do
+    files <- given
+    withPython (M.toList files) $ \ports dir -> do
+      (actions, _) <- inProcessWith ports dir (openDoc command "python" >>= refactors)
+      case named "Add a port" actions of
+        a : _ -> do
+          (a ^. L.data_ >>= lookupKey "missing") `shouldBe` Just (toJSON ["port" :: Text])
+          (a ^. L.data_ >>= lookupKey "choices" >>= lookupKey "port") `shouldSatisfy` maybe False (\case Array xs -> String "booking_repository" `elem` xs; _ -> False)
+        [] -> expectationFailure ("no \"Add a port\" among " <> show (map (^. L.title) actions))
+  it "(b) resolves to the plan's edits in every file it changes, asking to confirm them" $ do
+    files <- given
+    withPython (M.toList files) $ \ports dir -> do
+      (resolved, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        actions <- refactors doc
+        case named "Add a port" actions of
+          a : _ -> resolveCodeAction (withSet "port" "booking_repository" a)
+          [] -> fail "no action"
+      let edited = [te ^. L.textDocument . L.uri | Just e <- [resolved ^. L.edit], Just cs <- [e ^. L.documentChanges], InL te <- cs]
+      length edited `shouldSatisfy` (> 1)
+      T.concat (editTexts resolved) `shouldSatisfy` T.isInfixOf "booking_repository: BookingRepository"
+      (resolved ^. L.edit >>= (^. L.changeAnnotations)) `shouldSatisfy` maybe False (any (\c -> c ^. L.needsConfirmation == Just True))
+  it "(c) resolves against the document as it is now (Review Focus 1)" $ do
+    files <- given
+    withPython (M.toList files) $ \ports dir -> do
+      ((versions, current), _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        actions <- refactors doc
+        changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+        VersionedTextDocumentIdentifier _ v <- getVersionedDoc doc
+        case named "Add a port" actions of
+          a : _ -> (,v) . editVersionsOf (filePathToUri (dir </> command)) <$> resolveCodeAction (withSet "port" "booking_repository" a)
+          [] -> fail "no action"
+      versions `shouldBe` [InL current]
+  it "(d) sees an unsaved file in another buffer: a new port is a choice at once" $ do
+    files <- given
+    withPython (M.toList files) $ \ports dir -> do
+      (actions, _) <- inProcessWith ports dir $ do
+        _ <- createDoc "src/bistro/booking/ports/table_repository/__init__.py" "python" ""
+        openDoc command "python" >>= refactors
+      case named "Add a port" actions of
+        a : _ -> (a ^. L.data_ >>= lookupKey "choices" >>= lookupKey "port") `shouldSatisfy` maybe False (\case Array xs -> String "table_repository" `elem` xs; _ -> False)
+        [] -> expectationFailure "no action"
+
+-- | The versions an action's edit is for, in one document.
+editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]
+editVersionsOf uri a = [te ^. L.textDocument . L.version | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, te ^. L.textDocument . L.uri == uri]
+
 pullDiagnostics :: TextDocumentIdentifier -> Session [Diagnostic]
 pullDiagnostics doc =
   request SMethod_TextDocumentDiagnostic (DocumentDiagnosticParams Nothing Nothing doc Nothing Nothing) >>= \case
@@ -134,7 +192,11 @@ withSet k v a = a & L.data_ %~ fmap (\case
 
 -- | Every text an action's edit inserts.
 editTexts :: CodeAction -> [Text]
-editTexts a = [t ^. L.newText | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, InL t <- te ^. L.edits]
+editTexts a = [either (^. L.newText) (^. L.newText) (toEither t) | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, t <- te ^. L.edits]
+  where
+    toEither = \case
+      InL x -> Left x
+      InR y -> Right y
 
 -- | The versions an action's edit is for.
 editVersions :: CodeAction -> [Int32 |? Null]
