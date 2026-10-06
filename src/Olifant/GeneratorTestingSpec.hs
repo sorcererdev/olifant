@@ -323,6 +323,15 @@ spec = do
           (checked, T.isInfixOf "conventions hold (0 findings" (T.pack checkOut)) `shouldBe` (ExitSuccess, True)
           (served, _, serveErr) <- stage "serve"
           (served, serveErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+    it "handle-body refuses a command with no __test.py beside it (Review Focus 5)" $ do
+      tmp <- getTemporaryDirectory
+      given <- TIO.readFile "packs/python-htmx/generators/handle-body/tests/create-booking/given/src/bistro/booking/commands/create_booking.py"
+      let moved = "src/bistro/booking/commands/close_table.py"
+      Right (ws, tools0, resolve, g0) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "handle-body" [(moved, given)]
+      let line = 1 + length (takeWhile (not . T.isInfixOf "raise NotImplementedError") (T.lines given))
+      Right (tools, g) <- atCaseCursor ws noChecker (Just (moved, line)) tools0 g0
+      Right plan <- generate ws resolve tools [Step g (M.fromList [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "close_table")])] (UTCTime (fromGregorian 2026 10 6) 0) PlanOnly
+      map describeConflict (planConflicts plan) `shouldSatisfy` any ("write close_table__test.py first" `T.isInfixOf`)
     it "verify: a command that runs too long is stopped and says so (Review Focus 4)" $ do
       r <- runVerify (processVerifierWith 1) python ["sleep", "30"] (M.fromList [("src/a.py", "x = 1\n")])
       r `shouldBe` Right (False, "the tests timed out (1 s)")

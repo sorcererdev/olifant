@@ -95,7 +95,9 @@ expand resolve bindQ choose now prior ancestors path gen0 sets = do
   (required, hint) <- except (first (StepTemplate path) (renderRequires env (genRequires gen)))
   holds <- except (first (StepTemplate path) (traverse (render env) (requiresHolds =<< genRequires gen)))
   context <- except (first (StepTemplate path) (traverse (render env) (genContext gen)))
-  verifies <- except (first (StepTemplate path) (traverse (\(n, ts) -> (n,) <$> traverse (render env) ts) (genVerify gen)))
+  -- {= cache =} and {= context =} are the verifier's to expand (as a check's)
+  let verifyEnv = M.union env (M.fromList [("cache", VText "{= cache =}"), ("context", VText "{= context =}")])
+  verifies <- except (first (StepTemplate path) (traverse (\(n, ts) -> (n,) <$> traverse (render verifyEnv) ts) (genVerify gen)))
   let own = map (PlanEdit path) rendered
   -- Each use sees what the run, this generator and earlier uses create.
   nested <- foldM (\acc (k, u) -> (acc ++) <$> expandUse env (prior ++ created (own ++ acc)) k u) [] (zip [1 :: Int ..] (genUses gen))

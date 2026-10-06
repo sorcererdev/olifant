@@ -280,6 +280,13 @@ the plan warns: "holes were filled but not compile-checked: …". The point of t
 to reject a wrong fill, not to stop a generation because a tool is missing.
 
 
+**Layout is repaired, not retried.** A fill's lines lose their common indentation before
+they are placed (a model may write at the hole's absolute column), and a fill whose first
+line is bare while the rest sit one level in (written as if the first line were at the
+marker) is read one level up when that alone compiles. Measured on `handle-body`: every
+failed qwen3-coder:30b attempt was one of these two layouts, and the model repeated it on
+retry; with both repaired, every handler was green in one round.
+
 **Verify: a fill must pass a command.** A model hole may name a command its fill must pass,
 usually its tests:
 

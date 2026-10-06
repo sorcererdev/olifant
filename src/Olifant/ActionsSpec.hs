@@ -285,6 +285,19 @@ spec = describe "olifant actions (spec §4.6)" $ do
             offeredAt pos = map (\a -> (actLabel a, actSets a)) <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/add-dependency", g)] path pos content
         offeredAt (lineOf "def __init__", 9) `shouldReturn` [("Add a port", [("app", "bistro"), ("command", "cancel_booking"), ("kind", "commands"), ("service", "booking")])]
         offeredAt (lineOf "def handle", 9) `shouldReturn` []
+    it "(python) offers handle-body on handle's raise, not on another method's" $ findExecutable "ast-grep" >>= \case
+      Nothing -> if strict then expectationFailure "ast-grep is required" else pendingWith "ast-grep is not installed"
+      Just _ -> do
+        tmp <- getTemporaryDirectory
+        given <- TIO.readFile "packs/python-htmx/generators/handle-body/tests/create-booking/given/src/bistro/booking/commands/create_booking.py"
+        let path = "src/bistro/booking/commands/create_booking.py"
+            content = given <> "\n    def other(self) -> None:\n        raise NotImplementedError(\"later\")\n"
+        Right (ws, tools, _, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "handle-body" [(path, content)]
+        paths <- listFiles ws "."
+        let lineOf needle = 1 + length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines content))
+            offeredAt pos = map actLabel <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/handle-body", g)] path pos content
+        offeredAt (lineOf "CreateBooking.handle: write", 9) `shouldReturn` ["Write handle with the model (until its tests pass)"]
+        offeredAt (lineOf "\"later\"", 9) `shouldReturn` []
     it "offers wire-command on a field of the command's struct, not on another struct" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]

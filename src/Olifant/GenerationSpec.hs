@@ -764,7 +764,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     let gen = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"elm\""
           , "[[edits]]", "create = \"src/V.elm\"", "text = \"v = {= ? v: expr | the value =}\\n\""
-          , "[holes.v]", "source = \"model\"", "verify = [\"run-tests\", \"src/V.elm\"]" ]
+          , "[holes.v]", "source = \"model\"", "verify = [\"run-tests\", \"src/V.elm\", \"{= cache =}/venv-{= context =}\"]" ]
         -- passes when the file holds GOOD; says why otherwise
         verifier seen = Verifier $ \_ argv files -> do
           modifyIORef' seen (++ [argv])
@@ -781,7 +781,8 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = GOOD\n"
       reqs <- readIORef calls
       [fmap (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [Just "the tests failed:"]
-      take 1 <$> readIORef seen `shouldReturn` [["run-tests", "src/V.elm"]]
+      -- {= cache =} and {= context =} reach the verifier, which expands them
+      take 1 <$> readIORef seen `shouldReturn` [["run-tests", "src/V.elm", "{= cache =}/venv-{= context =}"]]
     it "(c) retries run out: the placeholder stays, the reason is the output" $ do
       seen <- newIORef []
       let filler = Filler $ \_ -> pure (Right (M.fromList [("v", "WRONG")]))
@@ -790,6 +791,38 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
       [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "FAILED test_v" `T.isInfixOf` why; _ -> False)
       (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = Debug.todo \"olifant: v\"\n"
+  it "(q) a block whose continuation lines came one level too deep is read one level up, when that compiles (pack-opens)" $ do
+    let blockLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/f.py\"", "text = \"def f():\\n    {= ? body: block | the body =}\\n\"" ]
+        -- pyright's complaint: a line indented past its block
+        indentation = Checker $ \_ files -> pure (Right (CheckReport [] [(p, "Unexpected indentation") | (p, t) <- M.toList files, any ("        if" `T.isPrefixOf`) (T.lines t)] []))
+        filler = Filler $ \_ -> pure (Right (M.fromList [("body", "x = 1\n    if x:\n        y = 2")]))
+        tools = (basicTools noSyntax indentation [blockLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+    [phStatus h | h <- planHoles plan] `shouldBe` [HoleFilled "fake" 1]
+    (M.lookup "src/f.py" <$> snap) `shouldReturn` Just "def f():\n    x = 1\n    if x:\n        y = 2\n"
+  it "(r) a fill written at its absolute column is placed by its own relative indentation (pack-opens)" $ do
+    let blockLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/f.py\"", "text = \"def f():\\n    {= ? body: block | the body =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("body", "\n        x = 1\n        if x:\n            y = 2\n")]))
+        tools = (basicTools noSyntax noChecker [blockLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/f.py" <$> snap) `shouldReturn` Just "def f():\n    x = 1\n    if x:\n        y = 2\n"
   describe "auto-import (a name another file imports, no model round)" $ do
     let pyLang = l
           where

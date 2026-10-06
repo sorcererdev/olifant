@@ -1,0 +1,11 @@
+now = "2026-10-06T12:00:00Z"
+# The fixture's create_booking with handle's body gone: the model writes it
+# until create_booking__test.py passes (verify runs the real pytest).
+at = "src/bistro/booking/commands/create_booking.py:50:9"
+run_tests = true
+
+[inputs]
+app = "bistro"
+service = "booking"
+kind = "commands"
+command = "create_booking"

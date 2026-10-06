@@ -66,12 +66,26 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           -- name not defined, a candidate using that name gets the one import
           -- line in the project that binds it, and all are judged again.
           imported <- if M.null broken1 then pure candidates0 else autoImport broken1 candidates0
-          (candidates, broken, note) <-
+          (candidatesA, brokenA, noteA) <-
             if map snd imported == map snd candidates0
               then pure (candidates0, broken1, note0)
               else do
                 (b, n) <- checkFiles (with imported) [site t | (t, _) <- imported]
                 pure (imported, notAlready b, n)
+          -- A block whose first line came unindented and the rest one level
+          -- in (written as if the first line sat at the marker's column): read
+          -- one level up, when that alone compiles.
+          rescued <- if M.null brokenA then pure candidatesA else forM candidatesA $ \(t, f) -> case reindented f of
+            Just f' | M.member (holeFile (site t)) brokenA -> do
+              (b, _) <- checkFiles (with [(t, f')]) [site t]
+              pure (if M.null (notAlready b) then (t, f') else (t, f))
+            _ -> pure (t, f)
+          (candidates, broken, note) <-
+            if map snd rescued == map snd candidatesA
+              then pure (candidatesA, brokenA, noteA)
+              else do
+                (b, n) <- checkFiles (with rescued) [site t | (t, _) <- rescued]
+                pure (rescued, notAlready b, n)
           -- All together compile: every candidate stands. Otherwise each is
           -- checked alone beside what is already accepted, so a fill that
           -- breaks another file is the one blamed (review I5).
@@ -220,7 +234,7 @@ applyFills langOf = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) f
             (imports, code) = splitImports (langImports =<< lang) f
             lineStart = snd (T.breakOnEnd "\n" before)
             indent = T.takeWhile (`elem` (" \t" :: String)) lineStart
-            body = T.intercalate ("\n" <> indent) (T.splitOn "\n" (T.strip code))
+            body = T.intercalate ("\n" <> indent) (dedented code)
          in maybe id (\l -> addImports l imports) lang (before <> body <> T.drop (T.length (holePlaceholder s)) after)
 
 -- | A fill's leading import lines (blank lines between them dropped), and
@@ -292,3 +306,29 @@ escapes f
       '\\' : _ : rest -> skipString rest
       '"' : rest -> rest
       _ : rest -> skipString rest
+
+-- | A fill whose first line is unindented while every other non-blank line
+-- is indented at least @c > 0@: those lines @c@ less (Nothing otherwise).
+reindented :: Text -> Maybe Text
+reindented f = case T.lines (T.dropWhile (== '\n') f) of
+  first : rest@(_ : _)
+    | indentOf first == 0
+    , ns@(_ : _) <- [indentOf l | l <- rest, not (T.null (T.strip l))]
+    , c <- minimum ns
+    , c > 0 ->
+        Just (T.intercalate "\n" (first : [T.drop c l | l <- rest]))
+  _ -> Nothing
+  where
+    indentOf = T.length . T.takeWhile (== ' ')
+
+-- | A fill's lines less their common indentation, blank lines at either end
+-- dropped (a model may write at the hole's absolute column).
+dedented :: Text -> [Text]
+dedented f =
+  let ls = dropWhileEnd' (T.null . T.strip) (dropWhile (T.null . T.strip) (T.splitOn "\n" f))
+      common = case [T.length (T.takeWhile (== ' ') l) | l <- ls, not (T.null (T.strip l))] of
+        [] -> 0
+        ns -> minimum ns
+   in [if T.null (T.strip l) then "" else T.stripEnd (T.drop common l) | l <- ls]
+  where
+    dropWhileEnd' p = reverse . dropWhile p . reverse
