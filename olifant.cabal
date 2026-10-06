@@ -92,6 +92,8 @@ library
     Olifant.Process.Cancel
     Olifant.ProjectModel
     Olifant.Query
+    Olifant.Recognize
+    Olifant.Recognize.Shape
     Olifant.Region
     Olifant.Rules
     Olifant.Server
@@ -207,6 +209,9 @@ test-suite spec
     Olifant.ProjectModelSpec
     Olifant.Query
     Olifant.QuerySpec
+    Olifant.Recognize
+    Olifant.Recognize.Shape
+    Olifant.RecognizeSpec
     Olifant.Region
     Olifant.RegionSpec
     Olifant.Rules

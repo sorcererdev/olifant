@@ -55,6 +55,9 @@ data Language = Language
   , langImportMerge :: Maybe ImportMerge
   -- ^ `[import_merge]`: how an import of names from a module joins a line
   -- that already imports from it
+  , langKeywords :: [Text]
+  -- ^ `keywords`: the language's reserved words, which recognition keeps
+  -- as they are (names become their case shape)
   }
   deriving stock (Show)
 
@@ -99,7 +102,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -113,7 +116,8 @@ parseLanguage name packRoot src = do
   importMerge <- optional "import_merge" (table >=> importMergeFrom) top
   separator <- optional "separator" text top
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge)
+  keywords <- fromMaybe [] <$> optional "keywords" (list text) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
