@@ -13,10 +13,12 @@ Why a server rather than the CLI per keystroke:
 - **It remembers.** Each project's catalog, its file listing, and every answer are cached until
   something changes them. From the caches, every request answers in under a millisecond; the
   first request in a project of 5,000 files takes about 175 ms (measured in Task 16).
-- **Newer work supersedes older.** A suggestion waiting out the debounce is dropped when you
-  type again, and an answer for an older version of a buffer is never shown. (Work already
-  running finishes first: stopping its child processes — cargo, pyright, uv, curl — is built
-  into the engine (`Cancel`) but not yet wired to the server's jobs.)
+- **It cancels.** The next edit supersedes a suggestion still being worked out, and an
+  editor's `$/cancelRequest` stops a request running in the background (a ⚡ action being
+  resolved, a snippet being filled). Either way the work's child processes — cargo, pyright,
+  uv, curl — are killed. An answer for an older version of a buffer is never shown, and the
+  edits the server returns carry the version they were planned against, so an editor refuses
+  them once you have typed on.
 - **Any editor can use it.** Neovim first (durandal.nvim); the protocol is the same for the
   rest.
 
@@ -60,11 +62,13 @@ regions.
   generators; a project with its own copy has its own.
 - **A file in no project** gets nothing: every request answers empty, never an error.
 
-The server loads a project the first time one of its files opens, then watches its `.olifant/`
-and its packs (it asks the editor to, with `workspace/didChangeWatchedFiles`). Editing a
-`generator.toml`, `rules.toml` or `config.toml` reloads the projects that use it. A project
-whose configuration no longer loads (a broken `generator.toml`) keeps serving its last good
-catalog; `olifant check` or `olifant doctor` in a terminal says why.
+The server loads a project the first time one of its files opens, then asks the editor to watch
+its files and its packs (`workspace/didChangeWatchedFiles`, each relative to its own folder, so
+a project in another repository is watched too). Editing a `generator.toml`, `rules.toml` or
+`config.toml` reloads the projects that use it; files changed outside the editor (by `olifant
+gen` in a terminal, or an agent) are seen at once. A project whose configuration no longer loads
+(a broken `generator.toml`) keeps serving its last good catalog, if it had one, and every one of
+its files gets an error at the top saying why, until the configuration loads again.
 
 ## What it answers
 
@@ -134,12 +138,17 @@ of the language in the project. The CLI gets this too.
 
 - **`:checkhealth durandal`** says whether the server runs, which projects it holds (and how
   often each was loaded), then the doctor's checks from the server.
-- **"olifant lsp stopped"**: the server exited. Its stderr is in Neovim's LSP log
-  (`:lua vim.cmd.edit(vim.lsp.get_log_path())`). `:LspRestart olifant`, or restart Neovim.
+- **"olifant lsp stopped"**: the server exited (a request that fails answers an error instead;
+  this is a crash or a kill). Its stderr is in Neovim's LSP log
+  (`:lua vim.cmd.edit(vim.lsp.get_log_path())`). Opening a file of a project starts it again,
+  and the features come back; so does `:LspRestart olifant`.
+- **"this project's Olifant configuration does not load: …"** at the top of a file: what the
+  message says is wrong (a `config.toml`, `generator.toml` or `rules.toml`). `:checkhealth
+  durandal` shows it too. Save the fix; the server loads the project again.
 - **Nothing in a file**: is it in a project? The nearest `.olifant/` above it decides. A file
   in no project gets nothing, by design.
 - **A change to a generator is not seen**: the editor must support dynamic registration of
-  watched files (Neovim 0.11+ does). Reopen the file to be sure.
+  watched files with relative patterns (Neovim 0.11+ does). Reopen the file to be sure.
 - **Slow ghost text or hints after an edit**: what typing costs is one ast-grep run per
   generator's `[applies_at]`, about 90–100 ms per file on the fixtures; from the caches it is
   under a millisecond.

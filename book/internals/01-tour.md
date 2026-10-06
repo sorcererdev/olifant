@@ -2117,7 +2117,8 @@ build in-memory ones. The CLI and the server never import each other's code: the
 - **`ssDocs`**: every open document's version and text. `workspaceOf` lays them over the disk
   (`overlayMany`), so every engine call reads unsaved buffers.
 - **`ssProjects`**: one slot per project root, `Loaded Project` or `Broken why lastGood` — a
-  project whose configuration stops loading keeps serving its last good catalog. `projectFor
+  project whose configuration stops loading keeps serving its last good catalog, and `brokenFor`
+  gives the reason, which `Lsp` puts at the top of each of its files' diagnostics. `projectFor
   file` finds the nearest root (`nearestProject`) and loads it on first use. Packs come from
   a shared cache keyed by (pack name, resolved folder), with a fingerprint, so projects using
   the same pack folder parse it once and a project with its own copy has its own.
@@ -2126,6 +2127,7 @@ build in-memory ones. The CLI and the server never import each other's code: the
   file, position) for the current generation. `ssListings` caches each project's file list
   until files may have come or gone (`ssFilesStamp`: saves and watched-file events).
 - **`ssConfig`**: the client's `initializationOptions` (debounce, model, fills).
+- **`ssCancel`**: the token of the work the state was handed to (below).
 
 Each feature is a function `… -> ServerState -> IO (ServerState, answer)` in its own module
 (`Server/Actions.hs`, `Fixes.hs`, `Hints.hs`, `Completion.hs`, `Suggest.hs`, `Holes.hs`,
@@ -2140,25 +2142,32 @@ job and starts this one after the delay; a job superseded before it starts never
 
 ### `Lsp`: the adapter
 
-`Lsp.hs` holds an `Env` (the state in an `MVar`, the jobs, the ports) and one handler per
-method. The pattern of most:
+`Lsp.hs` holds an `Env` (the state in an `MVar`, the jobs, the ports, the running requests,
+and the token of the work at hand) and one handler per method, each `guarded`: `lsp` runs
+handlers on its message loop without catching, so an exception would end the process; a guarded
+request answers an internal error instead. The pattern of most:
 
 - **`withSnapshot env work`**: run `work` on the state as it is now, without holding the
   lock; afterwards merge back what the work loaded (projects, caches) and never undo documents
-  that changed meanwhile.
+  that changed meanwhile. `withPlanned` also returns the state a plan was made on: its edits
+  are stamped with that state's document versions, never the versions current when it answers,
+  so an editor refuses them once the buffer moved on.
 - **`inBackground`**: slow requests (`codeAction/resolve`, `completionItem/resolve`,
-  `olifant/plan` with `fill`) run in their own thread, under work-done progress, so the
+  `olifant/plan`, `olifant/suggest`) run in their own thread, under work-done progress, so the
   server's loop keeps reading (and other requests keep being answered) while a model fills a
-  hole. An exception becomes an error response.
+  hole. Each runs under its own `Cancel`, kept by request id in `envRunning`; the client's
+  `$/cancelRequest` trips it. An exception becomes an error response.
 - **Suggestions are pushed.** An edit (`didChange`) submits a debounced job that plans the
   edited line; its result is pushed as `olifant/suggestion` with a `planId`, kept per document
   version, and fetched with `olifant/plan`. `olifant/suggest` asks the same for the cursor's
   line.
 - **Plans reuse `Output`.** A resolved action carries `data.plan`, the exact JSON `gen --plan
   --json` prints, so a client renders the review it already knows.
-- **Watching.** The server asks the client to watch `**/.olifant/**` at start, and each pack's
-  folder as a project loads (dynamic registration); a change reloads the projects that use
-  it.
+- **Watching.** The server asks the client to watch `**/.olifant/**` at start, and, as each
+  project loads, its root and its packs' folders as `RelativePattern`s (`**/*` under each):
+  an editor scopes a plain glob to the workspace folders it had when it registered it, which
+  would miss a second project and packs elsewhere. Any change bumps the listing stamp and
+  the generation; a change under `.olifant/` or a pack reloads the projects that use it.
 - **`initializationOptions`** are read in `configure`; `inlineCompletionProvider` is added to
   the initialize response by hand (`prepareOutwards`), since `lsp-types` 2.4 predates it.
 
@@ -2175,11 +2184,16 @@ failed query becomes a `problem`, not a failure: a partial model beats none in a
 
 `Process/Cancel.hs` is a token: `newCancel` gives the token and the action that trips it;
 `neverCancel` is the CLI's. `runBytesCancellable` polls it while a child runs and, when it
-trips, kills the child's process group (cargo's rustc, uv's python); the checker
-(`processCheckerWith`), the verifier (`processVerifierCancellable`) and `planWith`
-(`poCancelled`) accept one. The server's jobs hold tokens, but nothing yet passes them into the
-running work: a superseded job is skipped if it has not started, and an answer for an older
-document version is dropped, but work already running finishes.
+trips, kills the child's process group (cargo's rustc, uv's python). The ports' checker and
+verifier take one (`pChecker`, `pVerifier :: Cancel -> …`; `Main` passes `processCheckerWith`
+and `processVerifierCancellable`), and so does a plan (`poCancel`): `planWith` gives it to the
+checks, the verifies, the `uncovered` queries and the model filler (`modelFillerWith`, curl),
+and the fill loop stops between holes.
+
+In the server, the token travels with the state: `withSnapshot` hands the work its snapshot with
+`ssCancel` set from the `Env` it was given, and the feature functions put it in their
+`PlanOptions`. A suggestion job's token is the one `Jobs.submit` trips when the next edit
+supersedes it; a background request's is the one `$/cancelRequest` trips.
 
 ### Testing the server
 
