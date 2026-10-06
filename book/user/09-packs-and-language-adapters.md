@@ -678,8 +678,11 @@ rewrite = [["__test\\.py$", ".py"]]
 - **Kinds**: `service`, `command`, `query`, `port`, `adapter`, `resource`, `model`, `test`,
   `page`, or the pack's own, namespaced (`elm:route`, `haskell:unit`). Any other word is a
   load error.
-- **Ids** are the project's name (its root folder's name), a colon, and the rendered id:
+- **Ids** are the project's name, a colon, and the rendered id:
   `bistro:booking/commands/create_booking`. They do not depend on the order files are listed in.
+  The name is `name` at the top of `.olifant/config.toml` (`name = "bistro"`), else the root
+  folder's name; give one when two projects' folders have the same name, or when the folder's
+  name is not the project's.
 - **`[[relations]]`**: a `kind` (`uses`, `implements`, `calls`, `covers`), from each element
   of a kind (`from = "adapter"`, the templates read its record), or from each record of a
   `query` (`from` renders the element's id). The target is one of `to` (an id), `to_path` (an

@@ -6,7 +6,7 @@ module Olifant.Process (runBytes, runBytesWithin, Outcome (..), runBytesCancella
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (IOException, SomeException, displayException, evaluate, try)
+import Control.Exception (IOException, SomeAsyncException, SomeException, displayException, evaluate, fromException, onException, try, tryJust)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
@@ -68,7 +68,9 @@ data Outcome = Finished ExitCode ByteString ByteString | TimedOut | Cancelled
 -- tools it started (pyright under uv, a model call) stop too.
 runBytesCancellable :: Cancel -> Maybe Int -> FilePath -> [String] -> Maybe FilePath -> ByteString -> IO (Either Text Outcome)
 runBytesCancellable token secs exe args dir input = do
-  result <- try $ do
+  -- only failures are answers; an interruption of this thread (a client's
+  -- cancel) kills the group below and goes on
+  result <- tryJust synchronous $ do
     (Just hin, Just hout, Just herr, ph) <-
       createProcess (proc exe args) {cwd = dir, std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe, create_group = True}
     mapM_ (`hSetBinaryMode` True) [hin, hout, herr]
@@ -89,11 +91,13 @@ runBytesCancellable token secs exe args dir input = do
               False
                 | maybe False (\s -> ticks >= s * 20) secs -> pure (Left TimedOut)
                 | otherwise -> threadDelay 50000 >> poll (ticks + 1 :: Int)
-    poll 0 >>= \case
+        stopGroup = do
+          _ <- try (interruptProcessGroupOf ph) :: IO (Either SomeException ())
+          _ <- try (getPid ph >>= mapM_ (signalProcessGroup sigKILL)) :: IO (Either SomeException ())
+          terminateProcess ph
+    (poll 0 `onException` (stopGroup >> try (waitForProcess ph) :: IO (Either SomeException ExitCode))) >>= \case
       Left stopped -> do
-        _ <- try (interruptProcessGroupOf ph) :: IO (Either SomeException ())
-        _ <- try (getPid ph >>= mapM_ (signalProcessGroup sigKILL)) :: IO (Either SomeException ())
-        terminateProcess ph
+        stopGroup
         _ <- waitForProcess ph
         _ <- takeMVar outV
         _ <- takeMVar errV
@@ -106,5 +110,11 @@ runBytesCancellable token secs exe args dir input = do
           (Left x, _) -> Left (firstLine (displayException x))
           (_, Left x) -> Left (firstLine (displayException x))
   pure $ case result of
-    Left (x :: SomeException) -> Left (T.pack exe <> ": " <> firstLine (displayException x))
+    Left x -> Left (T.pack exe <> ": " <> firstLine (displayException x))
     Right r -> r
+
+-- | A failure to answer, not an interruption of the thread (which must go on).
+synchronous :: SomeException -> Maybe SomeException
+synchronous e = case fromException e :: Maybe SomeAsyncException of
+  Just _ -> Nothing
+  Nothing -> Just e

@@ -8,11 +8,11 @@
 module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, neverCancel, newCancel)
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
-import Control.Monad (void)
+import Control.Monad (unless, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -63,6 +63,9 @@ data Env = Env
     envWatched :: IORef (S.Set T.Text)
   , -- | the requests running in the background, by id: how to cancel each
     envRunning :: IORef (M.Map T.Text (IO ()))
+  , -- | the other files' region edits a save's willSaveWaitUntil worked
+    -- out, for its didSave to send (one refresh per save)
+    envSaving :: IORef (M.Map FilePath [FileEdit])
   , -- | the token of the work this Env was handed to (a job, a request);
     -- the work's snapshots carry it (`ssCancel`)
     envCancel :: Cancel
@@ -106,12 +109,15 @@ advertise out
       Just (Object o)
         | Just (Object result) <- KM.lookup "result" o
         , Just (Object caps) <- KM.lookup "capabilities" result ->
-            Aeson.encode (Object (KM.insert "result" (Object (KM.insert "capabilities" (Object (KM.insert "inlineCompletionProvider" (Bool True) caps)) result)) o))
+            -- inline completion (lsp-types predates it); no semantic tokens,
+            -- which lsp advertises by default though nothing answers them
+            let caps' = KM.delete "semanticTokensProvider" (KM.insert "inlineCompletionProvider" (Bool True) caps)
+             in Aeson.encode (Object (KM.insert "result" (Object (KM.insert "capabilities" (Object caps') result)) o))
       _ -> out
 
 serverDefinition :: Ports -> IO (ServerDefinition ())
 serverDefinition ports = do
-  env <- Env ports <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> pure neverCancel
+  env <- Env ports <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -200,14 +206,21 @@ handlers env =
       notificationHandler SMethod_TextDocumentDidSave $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) $ \path -> do
           update env fileSaved
-          edits <- liftIO (withSnapshot env (regionEdits path))
-          case filter ((/= path) . fePath) edits of
-            [] -> pure ()
-            others -> void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: regions") (workspaceEdit others)) (\_ -> pure ()))
+          worked <- liftIO (atomicModifyIORef' (envSaving env) (\m -> (M.delete path m, M.lookup path m)))
+          lspEnv <- getLspEnv
+          -- what willSaveWaitUntil worked out, else (a client without it)
+          -- the refresh now, off the message loop
+          void . liftIO . forkIO . runLspT lspEnv $ do
+            others <- maybe (liftIO (filter ((/= path) . fePath) <$> withSnapshot env (regionEdits path))) pure worked
+            unless (null others) $
+              void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: regions") (workspaceEdit others)) (\_ -> pure ()))
     , requestHandler SMethod_TextDocumentWillSaveWaitUntil $ \req respond -> do
         edits <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> filter ((== path) . fePath) <$> liftIO (withSnapshot env (regionEdits path))
+          Just path -> do
+            all' <- liftIO (withSnapshot env (regionEdits path))
+            liftIO (atomicModifyIORef' (envSaving env) (\m -> (M.insert path (filter ((/= path) . fePath) all') m, ())))
+            pure (filter ((== path) . fePath) all')
         respond (Right (InL [TextEdit (toRange (feRange e)) (feText e) | e <- edits]))
     , -- the generator picker: every generator with its inputs, and one
       -- generator's choices given what is set so far
@@ -312,10 +325,10 @@ handlers env =
             pure (if T.null text then Nothing else Just (Hover (InL (MarkupContent MarkupKind_Markdown text)) Nothing))
         respond (Right (maybe (InR Null) InL hover))
     , -- snippets, each with its body placed at the cursor (tab stops)
-      requestHandler SMethod_TextDocumentCompletion $ \req respond -> do
+      requestHandler SMethod_TextDocumentCompletion $ \req respond -> inBackground env req respond $ \job -> do
         items <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (snippetItems env path (req ^. L.params . L.position))
+          Just path -> liftIO (snippetItems job path (req ^. L.params . L.position))
         respond (Right (InL items))
     , -- the chosen snippet, planned again with the model filling its holes
       requestHandler SMethod_CompletionItemResolve $ \req respond -> inBackground env req respond $ \job -> do
@@ -327,7 +340,7 @@ handlers env =
               Right (_, Just sn) -> respond (Right (item & L.textEdit %~ fmap (\case InL e -> InL (e & L.newText .~ snBody sn); InR e -> InR (e & L.newText .~ snBody sn))))
               _ -> respond (Right item)
     , -- the snippet anticipated here, unasked (LSP 3.18 inline completion)
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "textDocument/inlineCompletion")) $ \req respond -> do
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "textDocument/inlineCompletion")) $ \req respond -> inBackground env req respond $ \job -> do
         let params = req ^. L.params
             found = do
               Object o <- pure params
@@ -339,7 +352,7 @@ handlers env =
               (,) <$> uriToFilePath (Uri uri) <*> (Position <$> toBoundedInteger l <*> toBoundedInteger c)
         items <- case found of
           Nothing -> pure []
-          Just (path, position) -> liftIO (ghostItems env path position)
+          Just (path, position) -> liftIO (ghostItems job path position)
         respond (Right (object ["items" .= items]))
     , -- every action in a file, where each applies (durandal's hints read
       -- this; other editors get inlay hints)
@@ -404,35 +417,36 @@ handlers env =
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
     , -- the project of a document in the shared vocabulary (spec §1b)
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) $ \req respond -> do
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) $ \req respond -> inBackground env req respond $ \job -> do
         let path = case req ^. L.params of
               Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
               _ -> Nothing
-        model <- maybe (pure Nothing) (liftIO . withSnapshot env . modelFor) path
+        model <- maybe (pure Nothing) (liftIO . withSnapshot job . modelFor) path
         respond (Right (maybe Aeson.Null toJSON model))
     , -- the holes left in the project of a document: where, which, what for
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) $ \req respond -> do
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) $ \req respond -> inBackground env req respond $ \job -> do
         let path = case req ^. L.params of
               Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
               _ -> Nothing
-        holes <- maybe (pure []) (liftIO . withSnapshot env . holesFor) path
+        holes <- maybe (pure []) (liftIO . withSnapshot job . holesFor) path
         respond (Right (object ["holes" .= [object ["path" .= hoPath h, "line" .= hoLine h, "name" .= hoName h, "kind" .= hoKind h, "instruction" .= hoInstruction h] | h <- holes]]))
-    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \_ respond ->
+    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \req respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))
-          True -> liftIO (debugState env) >>= respond . Right
+          True -> inBackground env req respond $ \job -> liftIO (debugState job) >>= respond . Right
     ]
 
 -- | Each open document, its version and its project (loading it).
 debugState :: Env -> IO Value
-debugState env = modifyMVar (envState env) $ \s0 -> do
+debugState env = withSnapshotState env (\s0 -> do
   let docs = M.toList (ssDocs s0)
   (s, rows) <- foldr (\(path, (version, _)) acc -> do
                          (s', rs) <- acc
                          (s'', found) <- projectFor path s'
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
-  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)]])
+  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)]]))
+    <&> snd
 
 -- | Ask the client to watch more files (dynamic registration: the protocol
 -- has no static capability for it), once per glob; a change reloads the
@@ -530,7 +544,9 @@ withSnapshotState env work = do
   modifyMVar_ (envState env) $ \now ->
     pure
       now
-        { ssProjects = M.union (ssProjects now) (ssProjects after)
+        { -- projects it loaded stand only if no file changed meanwhile: a
+          -- configuration changed under a load is read again when next asked
+          ssProjects = M.union (ssProjects now) (if ssFilesStamp now == ssFilesStamp before then ssProjects after else M.empty)
         , ssLoads = M.unionWith (+) (ssLoads now) loaded
         , -- what it worked out stands only if nothing changed meanwhile
           ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
@@ -709,8 +725,10 @@ inBackground env req respond work = do
   let key = requestKey (req ^. L.id)
   liftIO (atomicModifyIORef' (envRunning env) (\m -> (M.insert key trip m, ())))
   void . liftIO . forkIO $
-    ( runLspT lspEnv (work env {envCancel = token}) `catch` \(e :: SomeException) ->
-        runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
+    ( runLspT lspEnv (work env {envCancel = token}) `catch` \(e :: SomeException) -> case fromException e :: Maybe Lsp.ProgressCancelledException of
+        -- the client cancelled it from its progress: stopped, not failed
+        Just _ -> trip >> runLspT lspEnv (respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing)))
+        Nothing -> runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
     )
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
 

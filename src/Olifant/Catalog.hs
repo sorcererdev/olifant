@@ -5,6 +5,7 @@ module Olifant.Catalog
   , packsFromConfig
   , catalogEntries
   , catalogProject
+  , catalogName
   , catalogPacks
   , catalogPackRoots
   , catalogBroken
@@ -99,6 +100,8 @@ data Catalog = Catalog
   , catalogBrokenModelMaps :: [(FilePath, Text)]
   , -- | where each pack is (resolved): the language server watches them
     catalogPackRoots :: [FilePath]
+  , -- | the project's `name` in its config.toml (its model's ids), if given
+    catalogName :: Maybe Text
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -190,11 +193,14 @@ openProjectCatalogWith loadP root paths = do
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= parseRulesConfig)
       userModel <- maybe (pure (Right Nothing)) modelIn userConfig
       projectModel <- modelIn projectConfig
-      pure $ case (,,) <$> userModel <*> projectModel <*> rulesConfig of
+      name <- readText root projectConfig <&> \case
+        Nothing -> Right Nothing
+        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= Toml.optional "name" Toml.text)
+      pure $ case (,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name of
         Left err -> Left err
-        Right (userM, projectM, rc) ->
+        Right (userM, projectM, rc, named) ->
           let model = fromMaybe (ModelConfig Nothing 2 120 []) (maybe userM Just projectM)
-           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc}))) result
+           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named}))) result
   where
     -- A config's `[model]`, if it has one.
     modelIn configPath =
@@ -238,7 +244,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs)
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),
