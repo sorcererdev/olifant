@@ -36,7 +36,7 @@ import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
-import Olifant.Cli.Output (doctorJson, listJson, planJson, showJson)
+import Olifant.Cli.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, showGenerator, subsOf)
 import Olifant.Catalog (catalogPackRoots, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
@@ -226,21 +226,19 @@ handlers env =
         let failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
         case (fixData =<< (action ^. L.data_), actionData =<< (action ^. L.data_)) of
           (Just (path, rule, line, n, sets), _) ->
-            liftIO (withSnapshot env (fixEdits path rule line n sets)) >>= \case
+            liftIO (withSnapshot env (fixPlan path rule line n sets)) >>= \case
               Left why -> failed why
-              Right edits -> respond (Right (action & L.edit ?~ workspaceEdit edits))
+              Right planned -> resolved env action planned >>= respond . Right
           (_, Just (path, line, generator, sets)) ->
             planProgress (action ^. L.title) (\progress -> withSnapshot env (actionPlanWith progress True path line generator sets)) >>= \case
               Left why -> failed why
               -- a snippet's body (tab stops) rides along for editors that expand it
-              Right (root, plan) -> do
-                s <- liftIO (readMVar (envState env))
-                respond (Right (action & L.edit ?~ workspaceEdit (editsOfPlan s root plan) & L.data_ %~ fmap (withSnippet (planSnippet plan))))
+              Right planned@(_, plan) -> resolved env action planned >>= respond . Right . (L.data_ %~ fmap (withSnippet (planSnippet plan)))
           _ -> case holeData =<< (action ^. L.data_) of
             Just (path, line) ->
-              planProgress "Fill with the model" (\progress -> withSnapshot env (fillHoleEdits progress path line)) >>= \case
+              planProgress "Fill with the model" (\progress -> withSnapshot env (fillHolePlan progress path line)) >>= \case
                 Left why -> failed why
-                Right edits -> respond (Right (action & L.edit ?~ workspaceEdit edits))
+                Right planned -> resolved env action planned >>= respond . Right
             Nothing -> respond (Right action)
     , -- ⚡ at the end of each line with actions; the hint opens the menu there
       requestHandler SMethod_TextDocumentInlayHint $ \req respond -> do
@@ -303,6 +301,14 @@ handlers env =
           Nothing -> pure []
           Just (path, position) -> liftIO (ghostItems env path position)
         respond (Right (object ["items" .= items]))
+    , -- every action in a file, where each applies (durandal's hints read
+      -- this; other editors get inlay hints)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/fileActions")) $ \req respond -> do
+        let path = case req ^. L.params of
+              Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
+              _ -> Nothing
+        found <- maybe (pure Nothing) (liftIO . withSnapshot env . fileActionsFor) path
+        respond (Right (maybe (fileActionsJson [] [] []) (\(gens, acts, near) -> fileActionsJson gens acts near) found))
     , -- an offered suggestion's plan, while its document is as it was
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) $ \req respond -> do
         let wanted = case req ^. L.params of
@@ -534,6 +540,17 @@ ghostItems env path (Position l c) = do
           , "filterText" .= lineText
           ]
       ]
+
+-- | A resolved code action: its plan's edit, and the plan itself in its
+-- data (the editors' plan JSON, files before and after, for a preview).
+resolved :: Env -> CodeAction -> (FilePath, Plan) -> LspM () CodeAction
+resolved env action (root, plan) = do
+  s <- liftIO (readMVar (envState env))
+  pure (action & L.edit ?~ workspaceEdit (editsOfPlan s root plan) & L.data_ %~ fmap withPlan)
+  where
+    withPlan = \case
+      Object o -> Object (KM.insert "plan" (planJson False plan) o)
+      other -> other
 
 -- | "Fill with the model" on a line holding a hole.
 holeActions :: Env -> FilePath -> Int -> IO [CodeAction]

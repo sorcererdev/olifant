@@ -170,6 +170,30 @@ actionsSpec = describe "⚡ actions at the cursor" $ do
       length edited `shouldSatisfy` (> 1)
       T.concat (editTexts resolved) `shouldSatisfy` T.isInfixOf "booking_repository: BookingRepository"
       (resolved ^. L.edit >>= (^. L.changeAnnotations)) `shouldSatisfy` maybe False (any (\c -> c ^. L.needsConfirmation == Just True))
+  it "(b) carries the plan itself on a resolved action, as durandal previews it" $ do
+    files <- given
+    withPython (M.toList files) $ \ports dir -> do
+      (resolved, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        actions <- refactors doc
+        case named "Add a port" actions of
+          a : _ -> resolveCodeAction (withSet "port" "booking_repository" a)
+          [] -> fail "no action"
+      (resolved ^. L.data_ >>= lookupKey "plan" >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> length fs > 1; _ -> False)
+  it "(e) lists a file's actions, where each applies, as `actions --file` does (durandal's hints)" $ do
+    files <- given
+    withPython (M.toList files) $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/fileActions")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      let actions = case lookupKey "actions" v of
+            Just (Array as) -> [a | Object a <- foldr (:) [] as]
+            _ -> []
+      [KM.lookup "label" a | a <- actions] `shouldSatisfy` elem (Just (String "Add a port"))
+      [KM.lookup "range" a | a <- actions, KM.lookup "label" a == Just (String "Add a port")] `shouldSatisfy` all (/= Nothing)
+      [KM.member "suggest" a && KM.member "snippet" a | a <- actions] `shouldSatisfy` and
   it "(c) resolves against the document as it is now (Review Focus 1)" $ do
     files <- given
     withPython (M.toList files) $ \ports dir -> do

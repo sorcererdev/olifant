@@ -41,18 +41,21 @@ module Olifant.Server
   , actionEdits
   , bytePosition
   , fixEdits
+  , fixPlan
+  , fileActionsFor
+  , fillHolePlan
   , Jobs
   , newJobs
   , submit
   ) where
 
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress)
-import Olifant.Server.Holes (Hole (..), fillHoleEdits, holeAt, holesFor)
+import Olifant.Server.Holes (Hole (..), fillHoleEdits, fillHolePlan, holeAt, holesFor)
 import Olifant.Server.Regions (regionEdits)
 import Olifant.Server.Suggest (Suggestion (..), suggestionFor)
 import Olifant.Server.Completion (completionsFor, ghostFor)
 import Olifant.Server.Edits (FileEdit (..), bytePosition, editorPosition, editsOfPlan, smallestChange)
-import Olifant.Server.Fixes (findingsFor, fixEdits)
-import Olifant.Server.Hints (LineHint (..), hintsFor)
+import Olifant.Server.Fixes (findingsFor, fixEdits, fixPlan)
+import Olifant.Server.Hints (LineHint (..), fileActionsFor, hintsFor)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
 import Olifant.Server.State

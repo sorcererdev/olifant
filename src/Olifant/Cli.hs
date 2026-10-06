@@ -246,13 +246,8 @@ runCommand rt cwd fmt cat = \case
         emit rt fmt (toJSON (map (actionJson suggestOf nameOf) acts)) (T.unlines (map human acts))
       Nothing -> do
         (acts, near) <- actionsIn (portsOf rt) here rel
-        let rangeJson (Range (l1, c1) (l2, c2)) = object ["start" .= [l1, c1], "end" .= [l2, c2]]
-            json = object
-              [ "actions" .= [object (["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] ++ suggestOf (actGenerator a)) | FileAction a r <- acts]
-              , "nearby" .= [object ["generator" .= nbGenerator n, "name" .= nameOf (nbGenerator n), "label" .= nbLabel n, "why" .= nbWhy n] | n <- near]
-              ]
-            where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
-        emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
+        let where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
+        emit rt fmt (fileActionsJson gens acts near) (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
     pure ExitSuccess
   CompleteCmd file pos fromStdin -> do
     let project = within (rtProjectDir rt) (rtRoot rt)

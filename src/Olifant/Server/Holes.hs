@@ -2,9 +2,10 @@
 -- an unfilled plan wrote (`olifant: NAME: instruction` in every language's
 -- placeholder) — and filling one on request: the placeholder becomes its
 -- hole again, planned with the model.
-module Olifant.Server.Holes (Hole (..), holesFor, holeAt, fillHoleEdits) where
+module Olifant.Server.Holes (Hole (..), holesFor, holeAt, fillHoleEdits, fillHolePlan) where
 
 import Control.Monad (forM)
+import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -52,7 +53,11 @@ holeAt path line = memo "hole" path (T.pack (show line)) $ \s ->
 
 -- | Fill the hole on a line with the model: its edits.
 fillHoleEdits :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text [FileEdit])
-fillHoleEdits progress path line s =
+fillHoleEdits progress path line s = fillHolePlan progress path line s <&> \(s', planned) -> (s', (\(root, plan) -> editsOfPlan s' root plan) <$> planned)
+
+-- | 'fillHoleEdits' as the plan itself, with the project's root.
+fillHolePlan :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
+fillHolePlan progress path line s =
   holeAt path line s >>= \case
     (s', Nothing) -> pure (s', Left ("no hole on line " <> T.pack (show line) <> " (it was filled, or the code changed)"))
     (s', Just (root, project, hole)) -> fmap (s',) $ do
@@ -70,7 +75,7 @@ fillHoleEdits progress path line s =
                 Left err -> pure (Left (describeGenerationError err))
                 Right plan
                   | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
-                  | otherwise -> pure (Right (editsOfPlan s' root plan))
+                  | otherwise -> pure (Right (root, plan))
 
 -- | The holes in a file's text: lines holding `olifant: NAME: instruction`
 -- inside one of the language's placeholders.

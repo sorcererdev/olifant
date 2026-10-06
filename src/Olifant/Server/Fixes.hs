@@ -1,9 +1,10 @@
 -- | Internal to Olifant.Server: a file's rule findings (with their fixes'
 -- open choices), and a fix planned as edits — always against the
 -- documents as they are now.
-module Olifant.Server.Fixes (findingsFor, fixEdits) where
+module Olifant.Server.Fixes (findingsFor, fixEdits, fixPlan) where
 
 import Data.Bifunctor (first)
+import Data.Functor ((<&>))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (FixFailure (..), PlanOptions (..), findings, fixSteps, planOptions, planWith)
@@ -26,7 +27,11 @@ findingsFor path = memo "findings" path "" $ \s ->
 -- with the choices made: planned now, so a finding that moved or went
 -- away says so instead of editing stale text.
 fixEdits :: FilePath -> Text -> Int -> Int -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text [FileEdit])
-fixEdits path rule line n sets s =
+fixEdits path rule line n sets s = fixPlan path rule line n sets s <&> \(s', planned) -> (s', (\(root, plan) -> editsOfPlan s' root plan) <$> planned)
+
+-- | 'fixEdits' as the plan itself, with the project's root.
+fixPlan :: FilePath -> Text -> Int -> Int -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
+fixPlan path rule line n sets s =
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Left (T.pack path <> " is in no Olifant project"))
     (s', Just (root, project)) ->
@@ -38,7 +43,7 @@ fixEdits path rule line n sets s =
               Left why -> pure (Left why)
               Right plan
                 | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
-                | otherwise -> pure (Right (editsOfPlan s' root plan))
+                | otherwise -> pure (Right (root, plan))
   where
     describeFix = \case
       FixNotFound why -> why <> " (the code changed since: ask for the actions again)"
