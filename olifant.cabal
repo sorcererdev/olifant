@@ -39,6 +39,7 @@ library
     Olifant.Anchor.Items
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
+    Olifant.App
     Olifant.Catalog
     Olifant.Cli
     Olifant.Cli.Options
@@ -117,6 +118,8 @@ test-suite spec
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.AnchorSpec
+    Olifant.App
+    Olifant.AppSpec
     Olifant.Catalog
     Olifant.CatalogSpec
     Olifant.Cli
