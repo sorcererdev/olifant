@@ -85,6 +85,13 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
             TResponseMessage _ _ (Right result) -> fmap (\(ServerInfo n _) -> n) (result ^. L.serverInfo)
             _ -> Nothing
         name `shouldBe` Just "olifant"
+  it "advertises only what it answers: no semantic tokens (Neovim asked, and logged an error each time)" $
+    withPython [] $ \ports dir -> do
+      (caps, _) <- inProcessWith ports dir $
+        initializeResponse <&> \case
+          TResponseMessage _ _ (Right result) -> Just (result ^. L.capabilities)
+          _ -> Nothing
+      fmap (^. L.semanticTokensProvider) caps `shouldBe` Just Nothing
 
 -- | Rule findings and their fixes (Task 9): pull diagnostics, quickfixes
 -- carrying a fix's open choices, resolved to the fix's plan.

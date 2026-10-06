@@ -106,7 +106,10 @@ advertise out
       Just (Object o)
         | Just (Object result) <- KM.lookup "result" o
         , Just (Object caps) <- KM.lookup "capabilities" result ->
-            Aeson.encode (Object (KM.insert "result" (Object (KM.insert "capabilities" (Object (KM.insert "inlineCompletionProvider" (Bool True) caps)) result)) o))
+            -- inline completion (lsp-types predates it); no semantic tokens,
+            -- which lsp advertises by default though nothing answers them
+            let caps' = KM.delete "semanticTokensProvider" (KM.insert "inlineCompletionProvider" (Bool True) caps)
+             in Aeson.encode (Object (KM.insert "result" (Object (KM.insert "capabilities" (Object caps') result)) o))
       _ -> out
 
 serverDefinition :: Ports -> IO (ServerDefinition ())
