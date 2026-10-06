@@ -9,6 +9,7 @@ import Data.Aeson (object, (.=))
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Char (isAlphaNum)
 import Data.Functor ((<&>))
 import Data.Maybe (isJust)
@@ -37,7 +38,9 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
     -- @stuck@: holes given up on for a reason no retry can change (their
     -- tests could not run at all: review I3)
-    loop mf r accepted notes stuck pending = do
+    loop mf r accepted notes stuck pending = toolCancelled tools >>= \case
+     True -> pure (finish mf accepted notes (stuck ++ [(t, "cancelled") | t <- pending]))
+     False -> do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
       reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools))
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
@@ -115,8 +118,8 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           verified <- forM stood $ \(t, f) -> case (M.lookup (bare (name t)) verifyFor, langOf (holeFile (site t))) of
             (Just argv, Just lang) -> do
               toolProgress tools (Verifying (name t))
-              everything <- projectFiles (with stood) lang
-              runVerify (toolVerifier tools) lang argv everything <&> \case
+              (scope, everything) <- projectFiles (with stood) lang [holeFile (site t)]
+              runVerifyIn (toolVerifier tools) lang scope argv everything <&> \case
                 Right (True, _) -> (t, f, Nothing)
                 Right (False, out) -> (t, f, Just ("the tests failed:\n" <> T.intercalate "\n" (lastN 40 (T.lines out))))
                 Left why -> (t, f, Just ("the tests could not run: " <> describeCheckFailure why))
@@ -210,19 +213,21 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     checkFiles files sites = do
       let names = nub [langName l | s <- sites, Just l <- [languageFor (toolLanguages tools) (holeFile s)], isJust (langCheck l)]
           langs = [l | l <- toolLanguages tools, langName l `elem` names]
-      foldM (\(acc, note) lang -> (\(b, n) -> (M.unionWith (++) acc b, maybe note Just n)) <$> checkLang files lang) (M.empty, Nothing) langs
+      foldM (\(acc, note) lang -> (\(b, n) -> (M.unionWith (++) acc b, maybe note Just n)) <$> checkLang files lang [holeFile s | s <- sites, fmap langName (languageFor (toolLanguages tools) (holeFile s)) == Just (langName lang)]) (M.empty, Nothing) langs
     -- The language's files and its check's context, from disk, with the
     -- plan's versions over them: what a check (or a verify) runs over.
-    projectFiles files lang = do
+    -- Only the judged files' package ([check] root): its scope, and its
+    -- files by project path.
+    projectFiles files lang judged = do
       paths <- listFiles ws "."
-      let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
-          wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
-      disk <- forM (filter wanted paths) (\p -> (p,) <$> readText ws p)
-      pure (M.union (M.filterWithKey (\p _ -> wanted p) files) (M.fromList [(p, t) | (p, Just t) <- disk]))
-    checkLang files lang = do
-      all' <- projectFiles files lang
+      let (scope, chosen) = checkScope lang (nub (paths ++ M.keys files)) judged
+          wanted = S.fromList chosen
+      disk <- forM [p | p <- chosen, M.notMember p files] (\p -> (p,) <$> readText ws p)
+      pure (scope, M.union (M.filterWithKey (\p _ -> p `S.member` wanted) files) (M.fromList [(p, t) | (p, Just t) <- disk]))
+    checkLang files lang judged = do
+      (scope, all') <- projectFiles files lang judged
       toolProgress tools (Checking (langName lang))
-      runCheck (toolChecker tools) lang all' >>= \case
+      runCheckIn (toolChecker tools) lang scope all' >>= \case
         Left f -> pure (M.empty, Just (describeCheckFailure f)) -- parse validation stands; the plan says so
         Right report -> pure (M.fromListWith (flip (++)) [(p, [T.pack p <> ": " <> why]) | (p, why) <- reportBroken report], Nothing)
 

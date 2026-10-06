@@ -24,6 +24,9 @@ data Tools m = Tools
     toolFillContext :: [(FilePath, Text)]
   , -- | runs a hole's `verify` command over the files as the plan has them
     toolVerifier :: Verifier m
+  , -- | whether the plan was cancelled (the language server's superseded
+    -- work): the fill phase stops between rounds
+    toolCancelled :: m Bool
   }
 
 
@@ -37,4 +40,4 @@ noTools = basicTools noSyntax noChecker []
 
 -- | Syntax, checker and languages, with no regions and no commands.
 basicTools :: Applicative m => Syntax m -> Checker m -> [Language] -> Tools m
-basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier
+basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier (pure False)

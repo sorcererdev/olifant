@@ -20,6 +20,7 @@ packs/elm/
     grammar/elm/         the tree-sitter grammar it needs, vendored as C source
   regions.toml           owned regions (optional; olifant-dev and rust-htmx have one)
   rules.toml             rules: conventions as checks (optional; rust-htmx has one)
+  model.toml             how the pack's conventions map onto the project model (optional)
   SKILL.md               instructions for AI agents (optional; Olifant itself never reads it)
 ```
 
@@ -32,6 +33,7 @@ packs/elm/
 | `languages/<name>.toml` | `at` phrases, `complete`, `olifant anchors`/`where`, region comments | below |
 | `regions.toml` | every `gen`, `sync` and `check` | [chapter 5](05-owned-regions.md) |
 | `rules.toml` | `check` (and Durandal, on save) | [chapter 15](15-conventions-that-hold.md) |
+| `model.toml` | the language server's project model | [below](#the-project-model-modeltoml) |
 | `SKILL.md` | agent harnesses | [chapter 11](11-olifant-and-agents.md) |
 
 Only directories exactly one level under `generators/` with a `generator.toml` count; the same
@@ -222,7 +224,7 @@ example   = "end of struct BillingService"
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
-| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
+| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
 | `imports` | a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check |
@@ -283,6 +285,8 @@ branch = "{= pattern =} => {= body =},"
 command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}"]
 context = ["**/Cargo.toml", "Cargo.lock"]
 format  = "rustc-json"
+root      = ["Cargo.toml"]
+root_pick = "outermost"
 
 [targets.enum]
 phrase = "enum NAME"
@@ -296,6 +300,9 @@ example = "end of enum RefundInvoiceFailure"
   files.
 - **`--target-dir {= cache =}`.** The scratch copy is new each round; the build directory is
   not, so dependencies compile once per machine (`~/.cache/olifant/check/rust`).
+- **`root`, `root_pick = "outermost"`.** In a repository holding several Rust projects, a
+  check runs in the Cargo workspace around the files it judges: the outermost folder with a
+  `Cargo.toml` (a crate's own `Cargo.toml` sits inside the workspace's).
 - **`--exclude diesel-*`.** The rust-htmx template's Diesel adapters need libpq and its real
   `db` crate; they are left out of every check, and the in-memory adapters are compiled.
 - **`rustc-json`** reads cargo's `compiler-message` lines from stdout: error E0004 is a
@@ -334,7 +341,13 @@ branch = "case {= pattern =}:\n    {= body =}"
 command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
 context = ["pyproject.toml", "uv.lock"]
 format  = "pyright-json"
+root    = ["pyproject.toml"]
 ```
+
+- **`root = ["pyproject.toml"]`.** In a monorepo of Python apps, a check (and a hole's
+  `verify`) runs in the judged file's app only: the nearest folder above it with a
+  `pyproject.toml`. Its `context` globs are read from there, so that app's `pyproject.toml`
+  and `uv.lock` are the ones used.
 
 - **`uv run pyright`, not a `pyright` on your PATH.** pyright is a dev dependency of the
   project, so its version is pinned in `uv.lock`, and strict mode comes from the project's own
@@ -622,6 +635,66 @@ parameters (`web-command` gives a router factory its command). All three want on
 line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a blank line
 between imports is a group, so a new import joins the last group) and `when_empty = "after
 header"` (in a file with no imports, the first goes under the docstring).
+
+## The project model: `model.toml`
+
+The language server keeps a model of each project: its services, commands, queries, ports,
+adapters, web resources, data models, tests and pages, and how they relate. Every pack
+describes it with the same words, so a Python project and a Rust project read the same way
+(and can be put side by side later, as one system). A pack's `model.toml` says which of its
+files are which:
+
+```toml
+# packs/python-htmx/model.toml (abridged)
+[[elements]]
+kind  = "command"
+query = { glob = "src/*/*/commands/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id    = "{= path|dir|dir|basename =}/commands/{= stem =}"
+
+[[elements]]
+kind   = "adapter"
+query  = { glob = "src/*/*/ports/*/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id     = "{= path|dir|dir|dir|basename =}/ports/{= path|dir|basename =}/{= stem =}"
+differ = ["{= stem =}", "{= path|dir|basename =}"]   # not the port's own Protocol file
+
+[[relations]]
+kind     = "uses"
+query    = { files = "src/*/*/commands/*.py", items_of = "parameters in __init__", each = { type = ":[[:space:]]*([A-Za-z_]+)" } }
+from     = "{= path|dir|dir|basename =}/commands/{= path|stem =}"
+to_name  = "{= type|snake =}"
+to_kinds = ["port"]
+
+[[relations]]
+kind    = "covers"
+from    = "test"
+to_path = "{= path =}"
+rewrite = [["__test\\.py$", ".py"]]
+```
+
+- **`[[elements]]`**: a `kind`, a `query` (the [query language](06-queries-and-choices.md):
+  a glob, an AST query, or a command) and an `id` template over each record; `name` defaults
+  to the id's last segment. `differ = [a, b]` keeps only records where the two templates
+  render differently.
+- **Kinds**: `service`, `command`, `query`, `port`, `adapter`, `resource`, `model`, `test`,
+  `page`, or the pack's own, namespaced (`elm:route`, `haskell:unit`). Any other word is a
+  load error.
+- **Ids** are the project's name (its root folder's name), a colon, and the rendered id:
+  `bistro:booking/commands/create_booking`. They do not depend on the order files are listed in.
+- **`[[relations]]`**: a `kind` (`uses`, `implements`, `calls`, `covers`), from each element
+  of a kind (`from = "adapter"`, the templates read its record), or from each record of a
+  `query` (`from` renders the element's id). The target is one of `to` (an id), `to_path` (an
+  element's path) or `to_name` (an element's name, among `to_kinds`), each rewritten by
+  `rewrite` (regex, replacement) pairs in order. A relation whose ends are not both elements is
+  dropped.
+- Two template filters exist for this: `dir` (a path's folder) and `stem` (its file name
+  without the extension).
+
+`python-htmx`, `rust-htmx`, `elm` and `olifant-dev` have one.
+
+To see a project's model, ask the language server for it: `olifant/model` with a document of the
+project answers its `elements` (id, kind, name, path, line), its `relations` (from, kind, to)
+and its `problems` (a query that failed, and why), [chapter 16](16-the-language-server.md#the-project-model).
+Nothing draws it yet: it is the seam a view of the whole system builds on.
 
 ## The python-htmx pack
 

@@ -7,13 +7,18 @@ module Olifant.Language.Check
   , noChecker
   , describeCheckFailure
   , processChecker
+  , processCheckerWith
   , Verifier (..)
   , noVerifier
   , processVerifier
   , processVerifierWith
+  , processVerifierCancellable
   , compileClean
   , checkProgram
   , contextKey
+  , checkScope
+  , runCheckIn
+  , runVerifyIn
   ) where
 
 import Control.Monad (forM_)
@@ -23,7 +28,9 @@ import Numeric (showHex)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
-import Data.List (sort)
+import Data.List (isPrefixOf, nub, sort)
+import Data.Set qualified as S
+import Olifant.Workspace (pruned)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -32,10 +39,10 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), Language (..), matchesGlob)
 import Olifant.Language.Support (supportFor)
-import Olifant.Process (runBytes, runBytesWithin)
+import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
 import System.Exit (ExitCode (..))
-import System.FilePath (makeRelative, takeDirectory, (</>))
+import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Olifant.Language.Diagnostics (CheckReport (..), CompilerSupport (..), MissingPatterns (..))
 
@@ -59,7 +66,11 @@ processVerifier = processVerifierWith 120
 -- @{= cache =}@ and @{= context =}@), stopped after @secs@ seconds: exit 0
 -- passes; the output (stdout then stderr) is what it said.
 processVerifierWith :: Int -> Verifier IO
-processVerifierWith secs = Verifier $ \lang argv files -> case (argv, checkProgram argv) of
+processVerifierWith = processVerifierCancellable neverCancel
+
+-- | 'processVerifierWith', killed when the token is tripped ("cancelled").
+processVerifierCancellable :: Cancel -> Int -> Verifier IO
+processVerifierCancellable token secs = Verifier $ \lang argv files -> case (argv, checkProgram argv) of
   ([], _) -> pure (Left (CheckFailed "empty verify command"))
   (_, Nothing) -> pure (Left (CheckFailed "the verify command runs no program"))
   (exe : args, Just program) ->
@@ -76,10 +87,11 @@ processVerifierWith secs = Verifier $ \lang argv files -> case (argv, checkProgr
         createDirectoryIfMissing True cache
         let ctx = maybe "none" (`contextKey` files) (langCheck lang)
             expand a = T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))
-        runBytesWithin secs path (map expand args) (Just tmp) "" <&> \case
+        runBytesCancellable token (Just secs) path (map expand args) (Just tmp) "" <&> \case
           Left why -> Left (CheckFailed why)
-          Right Nothing -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
-          Right (Just (code, out, err)) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
+          Right Cancelled -> Left (CheckFailed "cancelled")
+          Right TimedOut -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
+          Right (Finished code out err) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
 
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))
@@ -92,10 +104,15 @@ describeCheckFailure = \case
 -- | The process adapter: write the files into a scratch directory, run the
 -- adapter's check command there, and parse its report by format.
 processChecker :: Checker IO
-processChecker = Checker $ \lang files -> case langCheck lang of
+processChecker = processCheckerWith neverCancel
+
+-- | 'processChecker', its compiler killed when the token is tripped
+-- ("cancelled").
+processCheckerWith :: Cancel -> Checker IO
+processCheckerWith token = Checker $ \lang files -> case langCheck lang of
   Nothing -> pure (Left (CheckFailed (langName lang <> " has no [check] in its adapter")))
   Just check ->
-    runIn lang check files <&> \case
+    runIn token lang check files <&> \case
       Left f -> Left f
       Right (code, out, err, dir) -> case supportFor (checkFormat check) of
         Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
@@ -134,7 +151,7 @@ compileClean :: Language -> Map FilePath Text -> IO (Either Text ())
 compileClean lang files = case langCheck lang of
   Nothing -> pure (Left "no [check] command")
   Just check ->
-    runIn lang check files <&> \case
+    runIn neverCancel lang check files <&> \case
       Left f -> Left (describeCheckFailure f)
       Right (ExitSuccess, _, _, _) -> Right ()
       -- The support's broken files when it reads any (cargo's JSON), else stderr.
@@ -152,8 +169,8 @@ compileClean lang files = case langCheck lang of
 -- | The argument @{= files =}@ expands to the sources the adapter's globs
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
 -- directory that outlives the scratch copy (cargo's `--target-dir`).
-runIn :: Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn lang check files = case (checkCommand check, checkProgram (checkCommand check)) of
+runIn :: Cancel -> Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
+runIn token lang check files = case (checkCommand check, checkProgram (checkCommand check)) of
   ([], _) -> pure (Left (CheckFailed "empty check command"))
   (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
   (exe : args, Just program) ->
@@ -173,10 +190,11 @@ runIn lang check files = case (checkCommand check, checkProgram (checkCommand ch
             expand a
               | T.strip a == "{= files =}" = sources
               | otherwise = [T.unpack (T.replace "{= context =}" (contextKey check files) (T.replace "{= cache =}" (T.pack cache) a))]
-        ran <- runBytes path (concatMap expand args) (Just tmp) ""
+        ran <- runBytesCancellable token Nothing path (concatMap expand args) (Just tmp) ""
         pure $ case ran of
           Left why -> Left (CheckFailed why)
-          Right (code, out, err) -> Right (code, out, err, tmp)
+          Right (Finished code out err) -> Right (code, out, err, tmp)
+          Right _ -> Left (CheckFailed "cancelled")
 
 -- | GHC already prints relative paths; makeRelative leaves those unchanged.
 relativeTo :: FilePath -> CheckReport -> CheckReport
@@ -184,3 +202,59 @@ relativeTo dir (CheckReport missingPs broken unplaced) =
   CheckReport [rel m | m <- missingPs] [(makeRelative dir p, t) | (p, t) <- broken] [(rel m, f) | (m, f) <- unplaced]
   where
     rel m = m {missingFile = makeRelative dir (missingFile m)}
+
+-- | What a check of the @judged@ files runs over, from the project's
+-- @paths@: its scope, the judged files' package (the nearest folder holding
+-- one of the check's `root` markers, or the outermost; the project, "",
+-- when there is none or the files sit in different packages), and the
+-- language's files and the check's context files under it (globs read from
+-- the scope), as project paths.
+checkScope :: Language -> [FilePath] -> [FilePath] -> (FilePath, [FilePath])
+checkScope lang paths judged = (scope, [p | p <- paths, Just rel <- [inside scope p], not (any (`elem` pruned) (splitDirectories p)), any (`matchesGlob` rel) globs])
+  where
+    check = langCheck lang
+    globs = langFiles lang ++ maybe [] checkContext check
+    present = S.fromList paths
+    scope = case nub (map packageOf judged) of
+      [one] -> one
+      _ -> ""
+    packageOf f = case [d | d <- ancestors (takeDirectory f), any (\m -> joined d (T.unpack m) `S.member` present) (maybe [] checkRoot check)] of
+      [] -> ""
+      nearest : further -> if maybe False checkRootOutermost check then foldl (\_ d -> d) nearest further else nearest
+    -- nearest first, the project ("") last
+    ancestors d
+      | d `elem` [".", "", "/"] = [""]
+      | otherwise = d : ancestors (takeDirectory d)
+    joined d m = if null d then m else d </> m
+
+-- | A path under a scope, relative to it.
+inside :: FilePath -> FilePath -> Maybe FilePath
+inside "" p = Just p
+inside scope p
+  | (scope <> "/") `isPrefixOf` p = Just (drop (length scope + 1) p)
+  | otherwise = Nothing
+
+-- | The check run inside @scope@ over files keyed by project path: the
+-- checker sees paths relative to the scope; its report says project paths.
+runCheckIn :: Monad m => Checker m -> Language -> FilePath -> Map FilePath Text -> m (Either CheckFailure CheckReport)
+runCheckIn checker lang scope files = fmap (outOf scope) <$> runCheck checker lang (into scope files)
+
+-- | A verify command run inside @scope@: its arguments that name project
+-- files under the scope name them from the scope.
+runVerifyIn :: Verifier m -> Language -> FilePath -> [Text] -> Map FilePath Text -> m (Either CheckFailure (Bool, Text))
+runVerifyIn verifier lang scope argv files = runVerify verifier lang (map fromScope argv) (into scope files)
+  where
+    fromScope a
+      | null scope = a
+      | otherwise = maybe a T.pack (inside scope (T.unpack a))
+
+into :: FilePath -> Map FilePath Text -> Map FilePath Text
+into "" files = files
+into scope files = M.fromList [(rel, t) | (p, t) <- M.toList files, Just rel <- [inside scope p]]
+
+outOf :: FilePath -> CheckReport -> CheckReport
+outOf "" report = report
+outOf scope (CheckReport missingPs broken unplaced) =
+  CheckReport [up m | m <- missingPs] [(scope </> p, t) | (p, t) <- broken] [(up m, f) | (m, f) <- unplaced]
+  where
+    up m = m {missingFile = scope </> missingFile m}

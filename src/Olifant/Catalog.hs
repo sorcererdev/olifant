@@ -6,6 +6,7 @@ module Olifant.Catalog
   , catalogEntries
   , catalogProject
   , catalogPacks
+  , catalogPackRoots
   , catalogBroken
   , catalogLanguages
   , catalogBrokenLanguages
@@ -15,11 +16,17 @@ module Olifant.Catalog
   , catalogRules
   , catalogBrokenRules
   , catalogRulesConfig
+  , catalogModelMaps
+  , catalogBrokenModelMaps
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
   , CatalogPaths (..)
   , openProjectCatalog
+  , PackCache
+  , newPackCache
+  , openProjectCatalogCached
+  , packFingerprint
   , openPackCatalog
   , findEntry
   , loadGenerator
@@ -30,9 +37,15 @@ module Olifant.Catalog
   ) where
 
 import Data.Bifunctor (bimap, first)
+import Data.Bits (xor)
+import Data.ByteString qualified as BS
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.Text.Encoding qualified as TE
+import Data.Word (Word64)
+import Numeric (showHex)
 import Data.Functor ((<&>))
 import Data.Either (lefts, rights)
-import Data.List (sortOn)
+import Data.List (sort, sortOn)
 import Data.Map.Strict qualified as M
 import Olifant.Model (ModelConfig (..), parseModelConfig)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
@@ -44,6 +57,7 @@ import Olifant.Snippet (withHoleSources)
 import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
 import Olifant.Language (Language (..), Match (..), Syntax, languageFor, matchShape, parseLanguage)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
+import Olifant.ProjectModel (ModelMap, parseModelMap)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
 import Olifant.Rules (FixDef (..), RuleDef (..), RulesConfig (..), parseRules, parseRulesConfig)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, freeVariables, parseTemplate, templateSource)
@@ -80,6 +94,11 @@ data Catalog = Catalog
   , catalogBrokenRules :: [(FilePath, Text)]
   , -- | the project's `[rules]`: severities and allowed paths
     catalogRulesConfig :: RulesConfig
+  , -- | how each pack's conventions map onto the shared project model (its `model.toml`)
+    catalogModelMaps :: [ModelMap]
+  , catalogBrokenModelMaps :: [(FilePath, Text)]
+  , -- | where each pack is (resolved): the language server watches them
+    catalogPackRoots :: [FilePath]
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -117,7 +136,43 @@ describeCatalogError = \case
   SourceInvalid g p e -> generatorIdText g <> ": " <> T.pack p <> ": " <> e
 
 openProjectCatalog :: Monad m => Workspace m -> CatalogPaths -> m (Either CatalogError Catalog)
-openProjectCatalog root paths = do
+openProjectCatalog root = openProjectCatalogWith (loadPack root) root
+
+-- | Packs parsed once and shared by the projects that use them (the
+-- language server's many projects), by name and resolved path; a pack whose
+-- files changed (its 'packFingerprint') is parsed again.
+newtype PackCache = PackCache (IORef (M.Map (Text, FilePath) (Text, LoadedPack)))
+
+newPackCache :: IO PackCache
+newPackCache = PackCache <$> newIORef M.empty
+
+-- | 'openProjectCatalog', its packs from the cache.
+openProjectCatalogCached :: PackCache -> Workspace IO -> CatalogPaths -> IO (Either CatalogError Catalog)
+openProjectCatalogCached (PackCache cache) root = openProjectCatalogWith cached root
+  where
+    cached (name, dir) = do
+      fingerprint <- packFingerprint root dir
+      known <- M.lookup (name, dir) <$> readIORef cache
+      case known of
+        Just (seen, pack) | seen == fingerprint -> pure pack
+        _ -> do
+          pack <- loadPack root (name, dir)
+          modifyIORef' cache (M.insert (name, dir) (fingerprint, pack))
+          pure pack
+
+-- | A hash of a pack's files, their paths and contents: equal for an
+-- unchanged pack, different when any file changed.
+packFingerprint :: Monad m => Workspace m -> FilePath -> m Text
+packFingerprint root dir = do
+  files <- sort <$> listFiles root dir
+  texts <- traverse (\f -> (f,) <$> readText root (dir </> f)) files
+  let bytes = BS.unpack (TE.encodeUtf8 (T.concat [T.pack f <> "\0" <> fromMaybe "" t <> "\0" | (f, t) <- texts]))
+      fnv = foldl (\h b -> (h `xor` fromIntegral b) * 1099511628211) (14695981039346656037 :: Word64) bytes
+  pure (T.pack (showHex fnv ""))
+
+-- | 'openProjectCatalog' with packs loaded by @loadP@.
+openProjectCatalogWith :: Monad m => ((Text, FilePath) -> m LoadedPack) -> Workspace m -> CatalogPaths -> m (Either CatalogError Catalog)
+openProjectCatalogWith loadP root paths = do
   let project = catalogProjectDir paths
       userConfig = fmap (</> "config.toml") (catalogUserConfigDir paths)
       projectConfig = project </> ".olifant" </> "config.toml"
@@ -127,7 +182,7 @@ openProjectCatalog root paths = do
     Left err -> pure (Left err)
     Right (fromUser, fromProject) -> do
       let packRoots = M.toList (M.fromList (fromUser ++ fromProject))
-      result <- openCatalogAt root (Just (project </> ".olifant" </> "generators")) packRoots
+      result <- openCatalogAt root loadP (Just (project </> ".olifant" </> "generators")) packRoots
       own <- regionsIn root (project </> ".olifant")
       ownRules <- rulesIn root (project </> ".olifant")
       rulesConfig <- readText root projectConfig <&> \case
@@ -160,7 +215,7 @@ openProjectCatalog root paths = do
       _ -> p
 
 openPackCatalog :: Monad m => Workspace m -> [(Text, FilePath)] -> m (Either CatalogError Catalog)
-openPackCatalog root = openCatalogAt root Nothing
+openPackCatalog root = openCatalogAt root (loadPack root) Nothing
 
 packsFromConfig :: Text -> Either Text [(Text, FilePath)]
 packsFromConfig src = do
@@ -170,25 +225,38 @@ packsFromConfig src = do
     (\(name, v) -> Toml.inKey "packs" (Toml.inKey name (Toml.table v >>= \t -> Toml.onlyKeys ["path"] t >> (name,) . T.unpack <$> Toml.required "path" Toml.text t)))
     (maybe [] M.toList packs)
 
-openCatalogAt :: Monad m => Workspace m -> Maybe FilePath -> [(Text, FilePath)] -> m (Either CatalogError Catalog)
-openCatalogAt root localDir packs = do
+openCatalogAt :: Monad m => Workspace m -> ((Text, FilePath) -> m LoadedPack) -> Maybe FilePath -> [(Text, FilePath)] -> m (Either CatalogError Catalog)
+openCatalogAt root loadP localDir packs = do
   states <- traverse (\(name, r) -> (name,r,) <$> inspectPath root r) packs
   case [(name, r) | (name, r, st) <- states, st /= Directory] of
     (name, r) : _ -> pure (Left (PackMissing name r))
-    [] -> Right <$> openAt root localDir packs
+    [] -> Right <$> openAt root loadP localDir packs
 
-openAt :: Monad m => Workspace m -> Maybe FilePath -> [(Text, FilePath)] -> m Catalog
-openAt root localDir packs = do
-  local <- maybe (pure []) (discover Nothing Nothing) localDir
-  fromPacks <- concat <$> traverse (\(name, r) -> discover (Just name) (Just r) (r </> "generators")) packs
-  let loaded = local ++ fromPacks
-  langs <- concat <$> traverse (languagesIn . snd) packs
-  regions <- traverse (regionsIn root . snd) packs
-  let base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] [])
-  rules <- traverse (rulesIn root . snd) packs
-  pure (foldl (flip addRules) (foldl (flip addRegions) base regions) rules)
+openAt :: Monad m => Workspace m -> ((Text, FilePath) -> m LoadedPack) -> Maybe FilePath -> [(Text, FilePath)] -> m Catalog
+openAt root loadP localDir packs = do
+  local <- maybe (pure []) (discover root Nothing Nothing) localDir
+  fromPacks <- traverse loadP packs
+  let loaded = local ++ concatMap lpEntries fromPacks
+      langs = concatMap lpLanguages fromPacks
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs)
+  pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
+
+-- | What one pack brings, parsed: its generators (or why each is broken),
+-- language adapters, regions and rules.
+data LoadedPack = LoadedPack
+  { lpEntries :: [Either (GeneratorId, FilePath, Text) CatalogEntry]
+  , lpLanguages :: [Either (FilePath, Text) Language]
+  , lpRegions :: Either (FilePath, Text) [RegionDef]
+  , lpRules :: Either (FilePath, Text) [RuleDef]
+  , lpModel :: Maybe (Either (FilePath, Text) ModelMap)
+  }
+
+loadPack :: Monad m => Workspace m -> (Text, FilePath) -> m LoadedPack
+loadPack root (name, r) =
+  LoadedPack <$> discover root (Just name) (Just r) (r </> "generators") <*> languagesIn <*> regionsIn root r <*> rulesIn root r <*> modelIn
   where
-    languagesIn r = do
+    modelIn = readText root (r </> "model.toml") <&> fmap (first (r </> "model.toml",) . parseModelMap)
+    languagesIn = do
       let dir = r </> "languages"
       files <- listFiles root dir
       traverse
@@ -200,11 +268,16 @@ openAt root localDir packs = do
               Just t -> first (path,) (parseLanguage (T.pack (takeBaseName f)) r t)
         )
         [f | f <- files, takeExtension f == ".toml", length (splitDirectories f) == 1]
-    discover pack packRoot dir = do
-      files <- listFiles root dir
-      let gens = [takeDirectory f | f <- files, takeFileName f == "generator.toml", length (splitDirectories f) == 2]
-      traverse (load pack packRoot dir) gens
-    load pack packRoot dir g = do
+
+-- | The generators in a folder (each `NAME/generator.toml`), as a pack's or
+-- the project's own.
+discover :: Monad m => Workspace m -> Maybe Text -> Maybe FilePath -> FilePath -> m [Either (GeneratorId, FilePath, Text) CatalogEntry]
+discover root pack packRoot dir = do
+  files <- listFiles root dir
+  let gens = [takeDirectory f | f <- files, takeFileName f == "generator.toml", length (splitDirectories f) == 2]
+  traverse load gens
+  where
+    load g = do
       let gdir = dir </> g
           gname = T.pack g
           gid = GeneratorId (maybe gname (\p -> p <> "/" <> gname) pack)
@@ -212,7 +285,7 @@ openAt root localDir packs = do
       src <- readText root path
       pure $ case src of
         Nothing -> Left (gid, path, "unreadable")
-        Just s -> bimap (gid,path,) (CatalogEntry gid pack gdir packRoot) (parseGenerator gid s)
+        Just src' -> bimap (gid,path,) (CatalogEntry gid pack gdir packRoot) (parseGenerator gid src')
 
 findEntry :: Catalog -> Text -> Either CatalogError CatalogEntry
 findEntry cat ref =

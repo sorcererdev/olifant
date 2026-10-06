@@ -164,11 +164,11 @@ From the bottom up:
 | **Glob** | `**` / `*` path globs | `Glob.hs`: `matchesGlob`, `globPrefix` | none |
 | **Template** | The `{= … =}` language, holes included: parse, render, exemplars | `Template.hs` over `Template/{Syntax,Parse,Render,Value,Exemplar,Error}`: `Template`, `parseTemplate`, `render`, `evaluate`, `Value`, `Env`, `exemplar`, `freeVariables` | Naming, Suggest |
 | **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`, `Diagnostics`, `Support` (`Language.Header`'s `headerEnd`, a file's leading comments and docstring, is used by the anchors and the fill phase): `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`, `compileClean`, `CompilerSupport`, `typeNames`, `supportFor`. `checkProgram`, `indentBlockEnd`. `Language.Elm`, `Language.Ghc`, `Language.Pyright` and `Language.Rustc` (one `CompilerSupport` record each, spec §5.6) and `Language.AstGrep` (the ast-grep adapter) are internal; only `AstGrep` is imported directly, by `Main`. `HoleKind` is an adapter's `[holes.KIND]` | Glob, Process, Template, Toml |
-| **Process** | Run an external program with byte stdin/stdout/stderr; never throws | `Process.hs`: `runBytes` | none |
+| **Process** | Run an external program with byte stdin/stdout/stderr; never throws; stop it (and its process group) when a `Cancel` token trips | `Process.hs`: `runBytes`, `runBytesWithin`, `runBytesCancellable`, `Outcome`, and `Process/Cancel`'s `Cancel`, `newCancel`, `neverCancel`, `cancelled` | none |
 | **Fill** | The **Filler** port: what a model is asked for typed holes, and what it answers | `Fill.hs`: `FillHole`, `FillRequest`, `Filler`, `ModelFiller` | none |
 | **Model** | `[model]` config and the real fillers: request and reply formats per backend, called with `curl` | `Model.hs`: `Backend`, `ModelConfig`, `parseModelConfig`, `backendKinds`, `backendModel`, `systemPrompt`, `userPrompt`, `requestBody`, `decodeFills`, `curlFiller`, `probeBackend` | Fill, Process, Toml |
 | **Holes** | Typed holes inside a plan's text: markers, placeholders, final names, matching a hole against anything | `Holes.hs`: `Marker`, `HoleSite`, `splitMarkers`, `hasMarkers`, `placeholderize`, `placeHoles`, `matchesWithHoles` | Language, Template |
-| **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `pruned`, `diskWorkspace`, `memoryWorkspace`, `within`, `overlay`, `normalisePath`, `isSafeRelative` | Process (to run `git`) |
+| **Workspace** | The filesystem **port**, with disk and in-memory adapters | `Workspace.hs`: `Workspace`, `PathState`, `pruned`, `diskWorkspace`, `memoryWorkspace`, `within`, `overlay`, `normalisePath`, `isSafeRelative`, `overlayMany` | Process (to run `git`) |
 | **Query** | Facts from the repo as records (globs, commands printing JSON, AST queries selecting nodes, or the cases the compiler says a `match` at the cursor lacks), the **Queries** port, and what an enum's choice is | `Query.hs`: `Query` (with `UncoveredQuery`), `AstQuery`, `AstSelect`, `Record`, `runQuery`, `renderQuery`, `eachFields`, `Queries`, `QueryFailure`, `failed`, `noQueries`, `processCommand`, `ChoiceValue`, `choiceValue`, `queryVariables` | Glob, Language (`Rule`), Naming, Process, Template, Toml |
 | **Anchor** | `at` phrases and where they put text, plus AST queries over a target's items | `Anchor.hs` re-exports `Anchor/Phrase`, `Anchor/Resolve` and `Anchor/Items`: `parsePhrase`, `resolveLayers`, `Located`, `Opening`, `Spacing`, `Miss`, `insertLines`, `insertedText`, `placedText`, `presentAt`, `locateContainer`, `itemsOfTarget`, `astQueries` | Holes, Language, Query, Suggest, Template |
 | **Generator** | A generator definition: the types, loading `generator.toml`, resolving `one_of` choices, turning `--set` values into a template environment | `Generator.hs` re-exports `Definition` (including `ResolveFailure`, why a `[[uses]]` ref or step didn't resolve, `Choices`, and a snippet's `Cursor` edit and `HoleSource`) and `Inputs` (including `envBefore`, `inputsUsed`), plus `parseGenerator`, `withChoices`, `needsChoices`, `ChoiceView`, `choiceViews` | Anchor, Language, Naming, Query, Template, Toml |
@@ -181,7 +181,12 @@ From the bottom up:
 | **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses; snippets for a completion menu (spec §4.9) | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `Completion`, `actionsAt`, `actionsInFile`, `completionsAt`, `describeRule`, `matchPathSlots` | Cursor, Generator, Language, Query, Template |
 | **Doctor** | `olifant doctor` (spec §4.7): what generators need here, and how to fix what is missing | `Doctor.hs`: `Status`, `Check`, `DoctorInput`, `DoctorPorts`, `doctor` | Language, Model |
 | **Catalog** | Finding packs and generators, checking a generator's sources and fixed `at` targets, loading one into a runnable `Generator` (with its `[holes.NAME]` sources in the hole markers), reading `[model]`, and loading regions and rules | `Catalog.hs`: `openProjectCatalog`, `findEntry`, `loadGenerator`, `checkEntry`, `resolver`, `Catalog` (with `catalogModel`, `catalogProject`, `catalogPacks`, `catalogRules`, `catalogBrokenRules`, `catalogRulesConfig`), `CatalogEntry` | Anchor, Generator, Language, Model, Region, Rules, Snippet, Template, Toml, Workspace |
-| **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internals: `Cli/Options` (argument parsing), `Cli/Output` (rendering) | almost everything |
+| **ProjectModel** | The project in a shared vocabulary (services, commands, ports, adapters, … and `uses`, `implements`, `calls`, `covers`), by each pack's `model.toml` | `ProjectModel.hs`: `Kind`, `RelKind`, `Element`, `Relation`, `ProjectModel`, `ModelMap`, `parseModelMap`, `buildModel` | Query, Template, Toml |
+| **App** | The operations the CLI and the language server share, over a **Ports** record (files, syntax, checker, verifier, clock, config dirs, doctor) and a loaded **Project** (root, catalog, workspace) | `App.hs`: `Ports`, `Project`, `nearestProject`, `openProject`, `listGenerators`, `showGenerator`, `actionsAt'`, `actionsIn`, `completeAt`, `findings`, `planWith`, `doctorChecks`, `projectModel`, … | Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace |
+| **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `submit`, … | Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Process, ProjectModel, Rules, Snippet, Template, Workspace |
+| **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
+| **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
 
 `GeneratorTesting` isn't used by the CLI yet. Only `GeneratorTestingSpec` calls it.
@@ -200,6 +205,12 @@ none upwards.
   ├────────────────────────────────────────────────────────────┤
   │ Cli                         GeneratorTesting               │  entry points
   ├────────────────────────────────────────────────────────────┤
+  │ Lsp                                                        │  the protocol adapter (`olifant lsp`)
+  ├────────────────────────────────────────────────────────────┤
+  │ Server                                                     │  documents, projects, caches, jobs; no LSP types
+  ├────────────────────────────────────────────────────────────┤
+  │ App                         Output                         │  shared operations; what Olifant says
+  ├────────────────────────────────────────────────────────────┤
   │ Catalog                                                    │  finding and loading generators, regions, rules
   ├────────────────────────────────────────────────────────────┤
   │ Rules                                                      │  conventions as checks (uses Actions' path patterns)
@@ -208,7 +219,7 @@ none upwards.
   ├────────────────────────────────────────────────────────────┤
   │ Cursor           Snippet          Uncovered                │  snippets: the cursor, tab stops, missing cases
   ├────────────────────────────────────────────────────────────┤
-  │ Generator                   Region                         │  definitions (generator.toml, regions.toml)
+  │ Generator          Region          ProjectModel            │  definitions (generator.toml, regions.toml, model.toml)
   ├────────────────────────────────────────────────────────────┤
   │ Anchor                                                     │  placing text (`at` phrases, AST queries)
   ├────────────────────────────────────────────────────────────┤
@@ -245,10 +256,15 @@ Generation           → Anchor, Fill, Generator, Glob, Holes, Language, Query, 
 Actions              → Cursor, Generator, Language, Query, Template
 Doctor               → Language, Model
 Rules                → Actions, Glob, Language, Template, Toml
-Catalog              → Anchor, Generator, Language, Model, Region, Rules, Snippet, Template, Toml, Workspace
-Cli                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, Query, Region, Rules, Snippet, Template, Toml, Uncovered, Workspace
+ProjectModel         → Query, Template, Toml
+Catalog              → Anchor, Generator, Language, Model, ProjectModel, Region, Rules, Snippet, Template, Toml, Workspace
+App                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace
+Output               → Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template
+Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Process, ProjectModel, Rules, Snippet, Template, Workspace
+Lsp                  → Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace
+Cli                  → Actions, Anchor, App, Catalog, Cursor, Doctor, Fill, Generation, Generator, Language, Lsp, Output, Region, Rules, Template, Toml, Workspace
 GeneratorTesting     → Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace   (Generator.Definition directly, for apAfter)
-app/Main             → Cli, Language, Language.AstGrep, Model, Workspace
+app/Main             → Cli, GitInit, Language, Language.AstGrep, Model, Workspace
 ```
 
 `Anchor` importing `Query` is the one edge worth pausing on: an `at` target and an `ast`
@@ -2069,6 +2085,123 @@ every instance is filled in one plan.
 Durandal calls `sync --plan --json` after each save and applies `files` as buffer edits,
 then `check --file FILE --content - --json` for the saved buffer's diagnostics (user book,
 chapter 14). Both are read-only, so the editor decides what is written, and when.
+
+## The fifth use case: the language server (`olifant lsp`)
+
+`olifant lsp` (`Cli` hands it to `Lsp.runLsp`) is one long-lived process per editor session.
+It answers from the same operations the CLI calls, in four layers, each knowing less than the one
+above:
+
+```
+Lsp      the protocol: handlers, URIs and positions, WorkspaceEdits, $/progress, threads
+Server   the state: documents, projects, caches, jobs — and each feature as state → (state, answer)
+App      the operations the CLI shares: open a project, actions at a cursor, plan, findings, doctor
+engine   Catalog, Actions, Generation, Rules, ProjectModel, …
+```
+
+### `App`: one set of operations, two front ends
+
+Before the server, `Cli` held the use cases' glue (find the project, open the catalog, build
+the tools, run `generate`). `App` is that glue, lifted out so the server could call it too.
+Everything it needs from the world comes through **`Ports`** (`App.hs`): the filesystem
+(`pFiles`), syntax (ast-grep), the checker and verifier, the clock, the user's config and home
+directories, and the doctor's probes. A **`Project`** is a loaded root: `prRoot`, its catalog
+(`prCatalog`) and a workspace rooted there (`prWorkspace`). `Main` builds the real ports; specs
+build in-memory ones. The CLI and the server never import each other's code: the CLI's
+`olifant lsp` subcommand is the one edge, and it only starts the server.
+
+### `Server`: the state, without the protocol
+
+`Server/State.hs`'s `ServerState` is the whole server as a value:
+
+- **`ssDocs`**: every open document's version and text. `workspaceOf` lays them over the disk
+  (`overlayMany`), so every engine call reads unsaved buffers.
+- **`ssProjects`**: one slot per project root, `Loaded Project` or `Broken why lastGood` — a
+  project whose configuration stops loading keeps serving its last good catalog, and `brokenFor`
+  gives the reason, which `Lsp` puts at the top of each of its files' diagnostics. `projectFor
+  file` finds the nearest root (`nearestProject`) and loads it on first use. Packs come from
+  a shared cache keyed by (pack name, resolved folder), with a fingerprint, so projects using
+  the same pack folder parse it once and a project with its own copy has its own.
+- **Caches.** `ssGeneration` is bumped by anything that can change an answer (an edit, a
+  watched file, a reload); `memo request file where work` keeps one answer per (request,
+  file, position) for the current generation. `ssListings` caches each project's file list
+  until files may have come or gone (`ssFilesStamp`: saves and watched-file events).
+- **`ssConfig`**: the client's `initializationOptions` (debounce, model, fills).
+- **`ssCancel`**: the token of the work the state was handed to (below).
+
+Each feature is a function `… -> ServerState -> IO (ServerState, answer)` in its own module
+(`Server/Actions.hs`, `Fixes.hs`, `Hints.hs`, `Completion.hs`, `Suggest.hs`, `Holes.hs`,
+`Regions.hs`, `Model.hs`), returning the state because answering may load a project or fill a
+cache. `Server/Edits.hs` turns a `Plan` into `FileEdit`s: the smallest run of changed lines per
+file, with positions in the editor's units (UTF-16; `bytePosition`/`editorPosition` convert),
+so a cursor and folds stay put. A property spec pins that applying the edits yields the plan's
+text.
+
+`Server/Jobs.hs` runs debounced work: `submit jobs key delayMs work` cancels the key's previous
+job and starts this one after the delay; a job superseded before it starts never runs.
+
+### `Lsp`: the adapter
+
+`Lsp.hs` holds an `Env` (the state in an `MVar`, the jobs, the ports, the running requests,
+and the token of the work at hand) and one handler per method, each `guarded`: `lsp` runs
+handlers on its message loop without catching, so an exception would end the process; a guarded
+request answers an internal error instead. The pattern of most:
+
+- **`withSnapshot env work`**: run `work` on the state as it is now, without holding the
+  lock; afterwards merge back what the work loaded (projects, caches) and never undo documents
+  that changed meanwhile. `withPlanned` also returns the state a plan was made on: its edits
+  are stamped with that state's document versions, never the versions current when it answers,
+  so an editor refuses them once the buffer moved on.
+- **`inBackground`**: slow requests (`codeAction/resolve`, `completionItem/resolve`,
+  `olifant/plan`, `olifant/suggest`) run in their own thread, under work-done progress, so the
+  server's loop keeps reading (and other requests keep being answered) while a model fills a
+  hole. Each runs under its own `Cancel`, kept by request id in `envRunning`; the client's
+  `$/cancelRequest` trips it. An exception becomes an error response.
+- **Suggestions are pushed.** An edit (`didChange`) submits a debounced job that plans the
+  edited line; its result is pushed as `olifant/suggestion` with a `planId`, kept per document
+  version, and fetched with `olifant/plan`. `olifant/suggest` asks the same for the cursor's
+  line.
+- **Plans reuse `Output`.** A resolved action carries `data.plan`, the exact JSON `gen --plan
+  --json` prints, so a client renders the review it already knows.
+- **Watching.** The server asks the client to watch `**/.olifant/**` at start, and, as each
+  project loads, its root and its packs' folders as `RelativePattern`s (`**/*` under each):
+  an editor scopes a plain glob to the workspace folders it had when it registered it, which
+  would miss a second project and packs elsewhere. Any change bumps the listing stamp and
+  the generation; a change under `.olifant/` or a pack reloads the projects that use it.
+- **`initializationOptions`** are read in `configure`; `inlineCompletionProvider` is added to
+  the initialize response by hand (`prepareOutwards`), since `lsp-types` 2.4 predates it.
+
+### `ProjectModel`: the seam for the whole system
+
+`ProjectModel.hs` reads a pack's `model.toml` (`parseModelMap`) and builds a project's model
+(`buildModel`): elements with stable ids (`PROJECT:path-like-name`), kinds from a shared
+vocabulary (or a pack's own, namespaced), and relations whose two ends are both elements. It
+runs the same query language generators use, so a pack describes its conventions once. A
+failed query becomes a `problem`, not a failure: a partial model beats none in an editor.
+`App.projectModel` builds it for a project, `olifant/model` serves it. Nothing draws it yet.
+
+### `Cancel`
+
+`Process/Cancel.hs` is a token: `newCancel` gives the token and the action that trips it;
+`neverCancel` is the CLI's. `runBytesCancellable` polls it while a child runs and, when it
+trips, kills the child's process group (cargo's rustc, uv's python). The ports' checker and
+verifier take one (`pChecker`, `pVerifier :: Cancel -> …`; `Main` passes `processCheckerWith`
+and `processVerifierCancellable`), and so does a plan (`poCancel`): `planWith` gives it to the
+checks, the verifies, the `uncovered` queries and the model filler (`modelFillerWith`, curl),
+and the fill loop stops between holes.
+
+In the server, the token travels with the state: `withSnapshot` hands the work its snapshot with
+`ssCancel` set from the `Env` it was given, and the feature functions put it in their
+`PlanOptions`. A suggestion job's token is the one `Jobs.submit` trips when the next edit
+supersedes it; a background request's is the one `$/cancelRequest` trips.
+
+### Testing the server
+
+`LspSpec` drives the real server in-process over pipes with `lsp-test`, on fixture projects
+copied to temp folders (`withProjects`: several roots, several packs), so every method is tested
+as an editor calls it. `ServerSpec` tests the state functions directly. durandal.nvim's own
+suite runs against a fake server with canned answers (`tests/fake-lsp`), and its e2e suites
+against the real one.
 
 ## Rough spots
 

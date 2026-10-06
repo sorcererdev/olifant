@@ -1,0 +1,85 @@
+# python-htmx in Olifant's shared project model (olifant lsp, spec §1b): which
+# files are which elements, and how they relate. Ids are templates over each
+# query record (a glob's: path, dir, stem; an AST query's: path, line, text and
+# its `each` fields); a relation's target names an element.
+
+# A service: src/APP/SERVICE, the folder with commands/.
+[[elements]]
+kind  = "service"
+query = { glob = "src/*/*/commands" }
+id    = "{= path|dir|basename =}"
+
+[[elements]]
+kind  = "command"
+query = { glob = "src/*/*/commands/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id    = "{= path|dir|dir|basename =}/commands/{= stem =}"
+
+[[elements]]
+kind  = "query"
+query = { glob = "src/*/*/queries/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id    = "{= path|dir|dir|basename =}/queries/{= stem =}"
+
+[[elements]]
+kind  = "model"
+query = { glob = "src/*/*/models/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id    = "{= path|dir|dir|basename =}/models/{= stem =}"
+
+# A port: its folder, ports/PORT/ (the Protocol in PORT.py, adapters beside it).
+[[elements]]
+kind  = "port"
+query = { glob = "src/*/*/ports/*", exclude = ["**/*.py"] }
+id    = "{= path|dir|dir|basename =}/ports/{= stem =}"
+
+# An adapter: any other module in a port's folder (in_memory_*, sqlite_*, …).
+[[elements]]
+kind   = "adapter"
+query  = { glob = "src/*/*/ports/*/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id     = "{= path|dir|dir|dir|basename =}/ports/{= path|dir|basename =}/{= stem =}"
+differ = ["{= stem =}", "{= path|dir|basename =}"]
+
+# A web resource: src/APP/web/RESOURCE/routes.py.
+[[elements]]
+kind  = "resource"
+query = { glob = "src/*/web/*/routes.py" }
+id    = "web/{= path|dir|basename =}"
+
+# A test: a module's __test.py beside it.
+[[elements]]
+kind  = "test"
+query = { glob = "src/**/*__test.py" }
+id    = "{= path|dir|dir|basename =}/{= path|dir|basename =}/{= stem =}"
+
+[[relations]]
+kind = "implements"
+from = "adapter"
+to   = "{= path|dir|dir|dir|basename =}/ports/{= path|dir|basename =}"
+
+# A command or query uses the ports its __init__ takes.
+[[relations]]
+kind     = "uses"
+query    = { files = "src/*/*/commands/*.py", items_of = "parameters in __init__", each = { type = ":[[:space:]]*([A-Za-z_]+)" } }
+from     = "{= path|dir|dir|basename =}/commands/{= path|stem =}"
+to_name  = "{= type|snake =}"
+to_kinds = ["port"]
+
+[[relations]]
+kind     = "uses"
+query    = { files = "src/*/*/queries/*.py", items_of = "parameters in __init__", each = { type = ":[[:space:]]*([A-Za-z_]+)" } }
+from     = "{= path|dir|dir|basename =}/queries/{= path|stem =}"
+to_name  = "{= type|snake =}"
+to_kinds = ["port"]
+
+# A resource calls the commands and queries its router factory takes.
+[[relations]]
+kind     = "calls"
+query    = { files = "src/*/web/*/routes.py", items_of = "parameters in [a-z_]+_routes", each = { type = ":[[:space:]]*([A-Za-z_]+)" } }
+from     = "web/{= path|dir|basename =}"
+to_name  = "{= type|snake =}"
+to_kinds = ["command", "query"]
+
+# A test covers the module beside it.
+[[relations]]
+kind    = "covers"
+from    = "test"
+to_path = "{= path =}"
+rewrite = [["__test\\.py$", ".py"]]

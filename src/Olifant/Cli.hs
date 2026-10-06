@@ -4,47 +4,43 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
-import Olifant.Rules (Exception (..), FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, suggestChoice)
+import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
-import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
-import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), actionsAt, actionsInFile, completionsAt, matchPathSlots)
-import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
+import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
+import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), matchPathSlots)
 import Control.Monad (forM_, unless, when)
-import Olifant.Holes (HoleSite (..))
-import Olifant.Snippet (Snippet, snippetOf)
 import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
-import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Functor ((<&>))
-import Data.List (find, sortOn)
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
-import Olifant.Template (describeTemplateError, render)
+import Data.List (find)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Olifant.Template (render)
 import Olifant.Template qualified as Tm
-import Olifant.Template.Syntax (Segment (..), Template (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
-import Olifant.Anchor (Located (..), RenderedAnchor (..), astQueries, describeMisses, insertLines, parsePhrase, resolveLayers)
+import Olifant.Anchor (Located (..), RenderedAnchor (..), describeMisses, insertLines, parsePhrase, resolveLayers)
 import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyRegion, fenceLines, wholeHeader)
+import Olifant.App
+import Olifant.Lsp (runLsp)
 import Olifant.Catalog
 import Olifant.Cli.Options
-import Olifant.Cli.Output
+import Olifant.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
-import Olifant.Cursor (afterIndent, afterRule, atCursor, atCursorIndented, cursorIndent, isSnippet)
-import Olifant.Uncovered (uncoveredQuery)
-import Olifant.Generator (AppliesAt (..), Generator, generatorName, replaceGenerator, ChoiceView (..), Choices (..), EnvError (..), GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, needsChoices, withChoices)
-import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
+import Olifant.Cursor (isSnippet)
+import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..), GeneratorId (..), GeneratorWith (..), generatorIdText)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
+import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
-import System.FilePath (makeRelative, normalise, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
+import System.FilePath (makeRelative, normalise, splitDirectories, takeBaseName, takeFileName, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -58,7 +54,7 @@ data Runtime = Runtime
   , rtOut :: Text -> IO ()
   , rtErr :: Text -> IO ()
   , rtSyntax :: Syntax IO
-  , rtChecker :: Checker IO
+  , rtChecker :: Cancel -> Checker IO
   , rtDoctor :: DoctorPorts IO
   , -- | lines changed since a git ref (file, 1-based inclusive ranges) and
     -- untracked files, for `check --changed-since`
@@ -67,7 +63,7 @@ data Runtime = Runtime
     -- needed (`olifant init`)
     rtGitInit :: FilePath -> Text -> IO (Either Text ())
   , -- | runs a hole's `verify` command (its tests) in a scratch copy
-    rtVerifier :: Verifier IO
+    rtVerifier :: Cancel -> Verifier IO
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -77,6 +73,8 @@ runCli rt args = case parseOptions args of
     | wantsJson -> rtOut rt (encodeJson (errorJson "usage" (T.strip text) []) <> "\n") >> pure (ExitFailure 2)
     | otherwise -> rtErr rt text >> pure (ExitFailure 2)
   -- `init` makes a project: there is none to open yet
+  -- the language server finds its projects itself, file by file
+  Right opts | LspCmd <- optCommand opts -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   Right opts | InitCmd pack name dir plan <- optCommand opts ->
     runInit rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) pack name dir plan
   Right opts -> do
@@ -152,7 +150,7 @@ runInit rt fmt pack name dirArg plan = do
                       else do
                         -- every region whose files the starter wrote gets its fences
                         let project = within dir ws
-                            tools = projectTools rt' cat
+                            tools = projectTools (portsOf rt') (projectOf rt' cat)
                         universe <- listFiles project "."
                         forM_ (catalogRegions cat) $ \def ->
                           forM_ (regionInstances universe def) (initFences project tools)
@@ -173,20 +171,6 @@ runInit rt fmt pack name dirArg plan = do
           -- copied only when it names the model to use
           hasDefault = any (\l -> "default" `T.isPrefixOf` T.stripStart l && "=" `T.isInfixOf` l) ls
        in if null ls || not hasDefault then "" else "\n" <> T.unlines ls
-
--- | The project is the nearest directory, from where Olifant runs upwards,
--- that has a `.olifant` directory; with none, where it runs. The search
--- stops below the home directory (user config is ~/.config/olifant).
-projectRoot :: Monad m => Workspace m -> Maybe FilePath -> FilePath -> m FilePath
-projectRoot ws home start = go start
-  where
-    go dir
-      | Just dir == home = pure start
-      | otherwise =
-          inspectPath ws (dir </> ".olifant") >>= \case
-            Directory -> pure dir
-            _ | takeDirectory dir == dir -> pure start
-              | otherwise -> go (takeDirectory dir)
 
 -- | Where to look when a generator.toml does not load.
 formatHint :: Text
@@ -237,22 +221,9 @@ runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt cwd fmt cat = \case
   -- handled before a project is opened (runCli); here for completeness
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
+  LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   ListCmd detail -> do
-    -- Sources and fixed targets are checked here, so a broken generator shows
-    -- as INVALID before anyone runs it.
-    checked <- traverse (\e -> (e,) <$> checkEntry (rtRoot rt) (rtSyntax rt) cat e) (catalogEntries cat)
-    let broken =
-          catalogBroken cat
-            ++ [(entryId e, entryDir e </> "generator.toml", why) | (e, Just why) <- checked]
-            ++ [(GeneratorId ("language " <> T.pack (takeBaseName path)), path, why) | (path, why) <- catalogBrokenLanguages cat]
-        ok = [e | (e, Nothing) <- checked]
-    -- --detail prints inputs, so choices_from must be live, as in `show`.
-    entries <-
-      if detail
-        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor rt cat M.empty (entryDefinition e)) ok
-        else pure ok
-    viewList <- if detail then traverse (\e -> (entryId e,) . either (const M.empty) M.fromList <$> choiceViewsFor rt cat M.empty (entryDefinition e)) ok else pure []
-    let views e = M.findWithDefault M.empty (entryId e) (M.fromList viewList)
+    (entries, broken, views) <- listGenerators (portsOf rt) (projectOf rt cat) detail
     emit rt fmt (listJson detail (subsOf cat) views entries broken) (listHuman detail (subsOf cat) views entries broken)
     pure ExitSuccess
   ActionsCmd file at fromStdin -> do
@@ -261,8 +232,8 @@ runCommand rt cwd fmt cat = \case
     let project = within (rtProjectDir rt) (rtRoot rt)
         rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
     content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> file)
-    paths <- listFiles project "."
-    let gens = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat]
+    let here = (projectOf rt cat) {prWorkspace = maybe project (\t -> overlay rel t project) content}
+        gens = generatorsOf here
         nameOf gid = maybe gid generatorName (lookup gid gens)
         -- how an editor may offer it: unasked (suggest), as a snippet, on a trigger (spec §4.8, §4.9)
         suggestOf gid =
@@ -272,28 +243,20 @@ runCommand rt cwd fmt cat = \case
         human a = actLabel a <> "  (" <> actGenerator a <> ")" <> (if null (actMissing a) then "" else "  asks: " <> T.intercalate ", " (actMissing a))
     case at of
       Just pos -> do
-        let here = maybe project (\t -> overlay rel t project) content
-        acts <- actionsAt (rtSyntax rt) (catalogLanguages cat) (queriesAt rt cat here rel (fst pos)) paths (readText project) gens rel pos (fromMaybe "" content)
+        acts <- actionsAt' (portsOf rt) here rel pos
         emit rt fmt (toJSON (map (actionJson suggestOf nameOf) acts)) (T.unlines (map human acts))
       Nothing -> do
-        (acts, near) <- actionsInFile (rtSyntax rt) (catalogLanguages cat) (projectQueries rt cat) paths (readText project) gens rel (fromMaybe "" content)
-        let rangeJson (Range (l1, c1) (l2, c2)) = object ["start" .= [l1, c1], "end" .= [l2, c2]]
-            json = object
-              [ "actions" .= [object (["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] ++ suggestOf (actGenerator a)) | FileAction a r <- acts]
-              , "nearby" .= [object ["generator" .= nbGenerator n, "name" .= nameOf (nbGenerator n), "label" .= nbLabel n, "why" .= nbWhy n] | n <- near]
-              ]
-            where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
-        emit rt fmt json (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
+        (acts, near) <- actionsIn (portsOf rt) here rel
+        let where' r = maybe "file  " (\(Range (l, c) _) -> T.pack (show l) <> ":" <> T.pack (show c) <> "  ") r
+        emit rt fmt (fileActionsJson gens acts near) (T.unlines ([where' r <> human a | FileAction a r <- acts] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near]))
     pure ExitSuccess
   CompleteCmd file pos fromStdin -> do
     let project = within (rtProjectDir rt) (rtRoot rt)
         rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
     content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> file)
-    paths <- listFiles project "."
-    let gens = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries cat]
-        described gid = maybe ("", gid) (\g -> (genDescription g, generatorName g)) (lookup gid gens)
-    let here = maybe project (\t -> overlay rel t project) content
-    items <- completionsAt (rtSyntax rt) (catalogLanguages cat) (queriesAt rt cat here rel (fst pos)) paths (readText project) gens rel pos (fromMaybe "" content)
+    let here = (projectOf rt cat) {prWorkspace = maybe project (\t -> overlay rel t project) content}
+        described gid = maybe ("", gid) (\g -> (genDescription g, generatorName g)) (lookup gid (generatorsOf here))
+    items <- completeAt (portsOf rt) here rel pos
     let json c = object ["generator" .= cpGenerator c, "name" .= snd (described (cpGenerator c)), "label" .= cpLabel c, "sets" .= M.fromList (cpSets c), "detail" .= fst (described (cpGenerator c))]
     emit rt fmt (toJSON (map json items)) (T.unlines ["⚡ " <> cpLabel c <> "  (" <> cpGenerator c <> ")" | c <- items])
     pure ExitSuccess
@@ -323,12 +286,12 @@ runCommand rt cwd fmt cat = \case
         exceptionHuman e = "  " <> exRule e <> " at " <> exWhere e <> ": " <> fromMaybe "(no reason)" (exReason e) <> (if exStale e then "  [stale: suppresses nothing]" else "")
     paths <- listFiles ws "."
     now <- rtNow rt
-    let chooseInputs = chooseFixInputs rt cat paths now
+    let chooseInputs = chooseFixInputs (portsOf rt) (projectOf rt cat) paths now
     case file of
       Just f -> do
         let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> f))
         content <- if fromStdin then Just <$> rtReadStdin rt else readText (rtRoot rt) (cwd </> f)
-        (fs, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (\p -> if p == rel then pure content else readText ws p) [rel] >>= chooseInputs
+        (fs, exs) <- findings (portsOf rt) (projectOf rt cat) {prWorkspace = maybe ws (\t -> overlay rel t ws) content} [rel]
         let olds = baselinedIn fs
         emit rt fmt (object (["findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs] ++ reportJson fs)) (T.unlines (map (findingHuman olds) fs))
         pure ExitSuccess
@@ -355,7 +318,7 @@ runCommand rt cwd fmt cat = \case
       Nothing -> do
         (edits, conflicts, _) <- case changedSince of
           Just _ -> pure ([], [], M.empty) -- a findings run on the branch's changes
-          Nothing -> refreshRegions ReportUnset (projectTools rt cat) ws 1 M.empty
+          Nothing -> refreshRegions ReportUnset (projectTools (portsOf rt) (projectOf rt cat)) ws 1 M.empty
         changed <- traverse (rtGitChanged rt (rtProjectDir rt)) changedSince
         let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
             touched f = case changed of
@@ -397,19 +360,9 @@ runCommand rt cwd fmt cat = \case
         emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ reportJson fs)) human
         pure (if failed then ExitFailure 1 else ExitSuccess)
   DoctorCmd -> do
-    checks <-
-      doctor (rtDoctor rt) $
-        DoctorInput
-          (catalogProject cat)
-          (catalogPacks cat)
-          (catalogLanguages cat)
-          [(T.pack p, why) | (p, why) <- catalogBrokenLanguages cat]
-          [(generatorIdText g, why) | (g, _, why) <- catalogBroken cat]
-          (catalogModel cat)
-    let status = \case Ok -> "ok" :: Text; Warn -> "warn"; Bad -> "error"
-        mark = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
-        json = object ["checks" .= [object ["name" .= checkName c, "status" .= status (checkStatus c), "detail" .= checkDetail c, "fix" .= checkFix c] | c <- checks]]
-    emit rt fmt json (T.unlines (concat [[mark (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c] ++ ["  fix: " <> f | Just f <- [checkFix c]] | c <- checks]))
+    checks <- doctorChecks (portsOf rt) (projectOf rt cat)
+    let mark = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
+    emit rt fmt (doctorJson checks) (T.unlines (concat [[mark (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c] ++ ["  fix: " <> f | Just f <- [checkFix c]] | c <- checks]))
     pure (if any ((== Bad) . checkStatus) checks then ExitFailure 1 else ExitSuccess)
   SchemaCmd -> do
     emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")
@@ -431,19 +384,11 @@ runCommand rt cwd fmt cat = \case
         pure ExitSuccess
     where
       nextSteps lang = "fill in description and [[edits]]; `olifant anchors " <> lang <> "` lists placement phrases, `olifant where FILE \"PHRASE\"` tests one, `olifant gen " <> name <> " --set name=example --plan` previews"
-  ShowCmd ref setList -> case findEntry cat ref of
-    Left err -> catalogFailure rt fmt err
-    Right e0 ->
-      checkEntry (rtRoot rt) (rtSyntax rt) cat e0 >>= \case
-       Just why -> failWith rt fmt 1 "generator_invalid" (generatorIdText (entryId e0) <> ": " <> why) Nothing []
-       Nothing -> do
-        let sets = M.fromList setList
-        resolved <- resolveChoicesFor rt cat sets (entryDefinition e0)
-        views <- choiceViewsFor rt cat sets (entryDefinition e0)
-        case (resolved, views) of
-          (Left why, _) -> failWith rt fmt 1 "generator_invalid" why Nothing []
-          (_, Left why) -> failWith rt fmt 1 "generator_invalid" why Nothing []
-          (Right d, Right vs) -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (M.fromList vs) (subsOf cat e) e) (showHuman (M.fromList vs) (subsOf cat e) e) >> pure ExitSuccess
+  ShowCmd ref setList ->
+    showGenerator (portsOf rt) (projectOf rt cat) ref (M.fromList setList) >>= \case
+      Left (ShowCatalog err) -> catalogFailure rt fmt err
+      Left (ShowInvalid why) -> failWith rt fmt 1 "generator_invalid" why Nothing []
+      Right (e, vs) -> emit rt fmt (showJson (M.fromList vs) (subsOf cat e) e) (showHuman (M.fromList vs) (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
     Nothing ->
       failWith rt fmt 3 "language_not_found" ("no language adapter named `" <> name <> "`" <> T.concat ["; " <> T.pack path <> " failed to load: " <> why | (path, why) <- catalogBrokenLanguages cat, takeBaseName path == T.unpack name]) (Just "packs define languages in languages/<name>.toml") ["available" .= map langName (catalogLanguages cat)]
@@ -460,7 +405,7 @@ runCommand rt cwd fmt cat = \case
   SyncCmd mode -> do
     now <- rtNow rt
     let ws = within (rtProjectDir rt) (rtRoot rt)
-        tools = projectTools rt cat
+        tools = projectTools (portsOf rt) (projectOf rt cat)
     case mode of
       SyncApply -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools SkipUnset SyncWrite [] now
       SyncCheck -> syncRegions rt fmt (catalogBrokenRegions cat) ws tools ReportUnset SyncReport [] now
@@ -494,84 +439,33 @@ runCommand rt cwd fmt cat = \case
           Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
             Left why -> failWith rt fmt 2 "usage" why Nothing []
             Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
-  FixCmd rule file (line, _) n given g -> do
-    let ws = within (rtProjectDir rt) (rtRoot rt)
-        rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
-    paths <- listFiles ws "."
-    now <- rtNow rt
-    (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (catalogRules cat) paths (readText ws) [rel] >>= chooseFixInputs rt cat paths now
-    let here = [f | f <- fs, fRule f == rule, Just ((l1, _), (l2, _)) <- [fRange f], l1 <= line, line <= l2]
-    case here of
-      [] -> failWith rt fmt 3 "finding_not_found" ("no `" <> rule <> "` finding at " <> T.pack rel <> ":" <> T.pack (show line)) (Just "run `olifant check --file` to see the findings") []
-      f : _ -> case drop (n - 1) (fFixes f) of
-        [] -> failWith rt fmt 2 "usage" ("`" <> rule <> "` offers " <> T.pack (show (length (fFixes f))) <> " fix(es); there is no fix " <> T.pack (show n)) Nothing []
-        o : _ -> case findEntry cat (foGenerator o) of
-          Left err -> catalogFailure rt fmt err
-          Right entry ->
-            loadGenerator (rtRoot rt) (rtSyntax rt) cat entry >>= \case
-              Left err -> catalogFailure rt fmt err
-              Right gen -> do
-                let sets = M.union (M.fromList given) (M.fromList (foSets o))
-                    env = M.map Tm.VText (M.insert "finding" (maybe "" rpFinding (foReplace o)) sets)
-                    defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
-                    replacement = case foReplace o of
-                      Nothing -> Right []
-                      Just rp -> do
-                        rendered <- first describeTemplateError (render env (rpText rp))
-                        let text = T.intercalate "\n" [if T.null l then l else rpIndent rp <> l | l <- T.lines rendered]
-                        pure [Step (replaceGenerator rel (rpLines rp) (rpOld rp) (Template text [Lit text])) M.empty]
-                context <- fmap catMaybes . traverse (\t -> either (const (pure Nothing)) (\p -> fmap (T.unpack p,) <$> readText ws (T.unpack p)) (render env t)) $ concatMap fdContext (take 1 defs)
-                case replacement of
-                  Left why -> failWith rt fmt 1 "fix_failed" why Nothing []
-                  -- The replacement first, while its lines are where the rule saw them.
-                  Right first' -> runSteps rt cwd fmt cat g context (first' ++ [Step gen sets])
+  FixCmd rule file (line, _) n given g ->
+    fixSteps (portsOf rt) (projectOf rt cat) rule (projectPath rt cwd file) line n given >>= \case
+      Left (FixNotFound why) -> failWith rt fmt 3 "finding_not_found" why (Just "run `olifant check --file` to see the findings") []
+      Left (FixUsage why) -> failWith rt fmt 2 "usage" why Nothing []
+      Left (FixCatalog err) -> catalogFailure rt fmt err
+      Left (FixFailed why) -> failWith rt fmt 1 "fix_failed" why Nothing []
+      Right (context, steps) -> runSteps rt cwd fmt cat g context steps
 
--- | Snippets (spec §5.3): each cursor edit becomes a replacement of the
--- `--at` line (the overlay's text when there is one), indented to fit.
+-- | Snippets (spec §5.3): a snippet needs `--at`; its line is read from the
+-- overlay's text when there is one.
 placeCursor :: Runtime -> FilePath -> Catalog -> GenOptions -> [Generator] -> IO (Either Text [Generator])
 placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
   (_, []) -> pure (Right gens)
   (Nothing, s : _) -> pure (Left ("`" <> generatorIdText (genId s) <> "` is a snippet: it needs --at FILE:LINE:COL"))
   (Just (file, line, _), _) -> do
-    let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
-        overlaid = fmap (\f -> makeRelative (rtProjectDir rt) (normalise (cwd </> f))) (genOverlay g) == Just rel
-        lang = languageFor (catalogLanguages cat) rel
-        unit = maybe "    " langIndent lang
-    text <- if overlaid then Just <$> rtReadStdin rt else readText (within (rtProjectDir rt) (rtRoot rt)) rel
-    case text of
-      Nothing -> pure (Left (T.pack rel <> " does not exist"))
-      Just t
-        | let n = length (T.splitOn "\n" t), line < 1 || line > n ->
-            pure (Left ("--at " <> T.pack rel <> ":" <> T.pack (show line) <> ": line " <> T.pack (show line) <> " is outside " <> T.pack rel <> " (lines 1–" <> T.pack (show n) <> ")"))
-        | otherwise -> do
-            let ls = T.splitOn "\n" t
-            sequence <$> traverse (place ls lang unit rel line) gens
-  where
-    -- a snippet anticipated `after` a node takes that node's indentation
-    place ls lang unit rel line gen
-      | not (isSnippet gen) = pure (Right gen)
-      | Just after <- afterRule =<< apAfter =<< genAppliesAt gen, Just l <- lang =
-          afterIndent (rtSyntax rt) l after ls line <&> \case
-            Left why -> Left ("cannot place `" <> generatorIdText (genId gen) <> "`: " <> why <> " (run `olifant doctor`)")
-            Right ind -> Right (atCursorIndented (fromMaybe (cursorIndent unit ls line) ind) rel line ls gen)
-      | otherwise = pure (Right (atCursor unit rel line ls gen))
+    project <- overlaidProject rt cwd cat g
+    placeAt (portsOf rt) project (projectPath rt cwd file, line) gens
 
 -- | Run plan steps as `gen` does (model, fills, progress, regions,
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,
 -- with the fix's context files shown to the model).
 runSteps :: Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
 runSteps rt cwd fmt cat g context steps = do
-  let snippetAt = snippetAtCursor rt cwd g
-  now <- maybe (rtNow rt) pure (genNow g)
-  let mode = if genPlanOnly g then PlanOnly else Apply
-      project = within (rtProjectDir rt) (rtRoot rt)
   -- `--overlay FILE` (spec §4.8): plan against the editor's unsaved text.
   overlaid <- case genOverlay g of
-    Nothing -> pure (Right project)
     Just _ | not (genPlanOnly g) -> pure (Left "--overlay needs --plan (an unsaved buffer is planned, never written)")
-    Just f -> do
-      text <- rtReadStdin rt
-      pure (Right (overlay (makeRelative (rtProjectDir rt) (normalise (cwd </> f))) text project))
+    _ -> Right <$> overlaidProject rt cwd cat g
   -- `--fills FILE`: recorded fills stand in for the model
   chosen <- case genFills g of
     Nothing -> pure (modelFor cat g)
@@ -579,37 +473,39 @@ runSteps rt cwd fmt cat g context steps = do
       Nothing -> Left ("--fills " <> T.pack f <> ": no such file")
       Just src -> (\fills -> Just (ModelFiller "recorded" 0 (replayFiller fills))) <$> parseFills src
   case (overlaid, chosen) of
-   (Left why, _) -> failWith rt fmt 2 "usage" why Nothing []
-   (Right ws, filler0) -> case filler0 of
-             Left why -> failWith rt fmt 2 "usage" why Nothing []
-             Right filler ->
-              generate ws (resolver (rtRoot rt) (rtSyntax rt) cat) ((projectTools rt cat) {toolQueries = maybe (projectQueries rt cat) (\(f, l, _) -> queriesAt rt cat ws (makeRelative (rtProjectDir rt) (normalise (cwd </> f))) l) (genAt g), toolFiller = filler, toolFillContext = context, toolProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())}) steps now mode >>= \case
-              Left err -> generationFailure rt fmt err
-              Right plan0 -> do
-                let plan =
-                      (if genNoFill g then noFill plan0 else plan0)
-                        { planSnippet = snippetAt plan0
-                        , planWarnings =
-                            planWarnings plan0
-                              ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions cat]
-                              ++ ["language adapter " <> T.pack path <> " failed to load: " <> err | (path, err) <- catalogBrokenLanguages cat]
-                        }
-                    applied = mode == Apply && not (hasConflicts plan)
-                emit rt fmt (planJson applied plan) (planHuman applied plan)
-                pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
+    (Left why, _) -> failWith rt fmt 2 "usage" why Nothing []
+    (_, Left why) -> failWith rt fmt 2 "usage" why Nothing []
+    (Right project, Right filler) -> do
+      let po =
+            PlanOptions
+              { poMode = if genPlanOnly g then PlanOnly else Apply
+              , poAt = (\(f, l, _) -> (projectPath rt cwd f, l)) <$> genAt g
+              , poFiller = filler
+              , poNoFill = genNoFill g
+              , poContext = context
+              , poProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())
+              , poNow = genNow g
+              , poCancel = neverCancel
+              }
+      planWith (portsOf rt) project po steps >>= \case
+        Left err -> generationFailure rt fmt err
+        Right plan -> do
+          let applied = poMode po == Apply && not (hasConflicts plan)
+          emit rt fmt (planJson applied plan) (planHuman applied plan)
+          pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
 
--- | The snippet a `gen --at` plan placed (spec §4.9): the lines that replaced
--- the cursor's line, holes as tab stops, model fills where there are any.
-snippetAtCursor :: Runtime -> FilePath -> GenOptions -> Plan -> Maybe Snippet
-snippetAtCursor rt cwd g plan = do
-  (file, line, _) <- genAt g
-  let rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
-  text <- maybe (M.lookup rel (planWrites plan)) Just (M.lookup rel (planMarked plan))
-  -- as many lines as the replacement of the cursor's line has
-  k <- listToMaybe [max 1 (length (T.lines new)) | e <- planEdits plan, editPath e == rel, WillReplace l _ new <- [editAction e], l == line]
-  let lines' = take k (drop (line - 1) (T.splitOn "\n" text))
-      fills = [(T.takeWhile (/= '[') (holeName (phSite h)), f) | h <- planHoles plan, holeFile (phSite h) == rel, Just f <- [phFill h]]
-  Just (snippetOf rel line (T.intercalate "\n" lines') (`lookup` fills))
+-- | The project, with the editor's unsaved text of `--overlay FILE` (read
+-- from stdin) over disk.
+overlaidProject :: Runtime -> FilePath -> Catalog -> GenOptions -> IO Project
+overlaidProject rt cwd cat g = case genOverlay g of
+  Nothing -> pure project
+  Just f -> rtReadStdin rt <&> \text -> project {prWorkspace = overlay (projectPath rt cwd f) text (prWorkspace project)}
+  where
+    project = projectOf rt cat
+
+-- | A path given where Olifant runs, relative to the project.
+projectPath :: Runtime -> FilePath -> FilePath -> FilePath
+projectPath rt cwd f = makeRelative (rtProjectDir rt) (normalise (cwd </> f))
 
 -- | A usage-level failure inside a command: JSON on stdout in JSON mode.
 usageIn :: Runtime -> Format -> Text -> IO ExitCode
@@ -621,9 +517,6 @@ usageIn rt fmt msg = do
 
 -- | A generator's [[uses]] steps with the entries they resolve to, so `show`
 -- can describe a composite completely in one call.
-subsOf :: Catalog -> CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
-subsOf cat e = [(u, either (const Nothing) Just (resolveEntry cat (packOfEntry e) (useGenerator u))) | u <- genUses (entryDefinition e)]
-
 emit :: Runtime -> Format -> Value -> Text -> IO ()
 emit rt fmt json human = rtOut rt $ case fmt of
   Json -> encodeJson json <> "\n"
@@ -667,26 +560,6 @@ generationFailure rt fmt err = case err of
   CompositionCycle {} -> failWith rt fmt 1 "composition_cycle" msg Nothing []
   where
     msg = describeGenerationError err
-
--- | Resolve `choices_from` inputs against the project (spec §4.1); the
--- project is listed only when a generator needs it.
-resolveChoicesFor :: Runtime -> Catalog -> Map Text Text -> GeneratorWith s -> IO (Either Text (GeneratorWith s))
-resolveChoicesFor rt cat sets gen
-  | not (needsChoices gen) = pure (Right gen)
-  | otherwise = do
-      paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      now <- rtNow rt
-      first failureWhy <$> withChoices (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets now gen
-
--- | `show`'s view of each enum's choices (spec §4.1); the project is listed
--- only when a generator has a `one_of`.
-choiceViewsFor :: Runtime -> Catalog -> Map Text Text -> GeneratorWith s -> IO (Either Text [(Text, ChoiceView)])
-choiceViewsFor rt cat sets gen
-  | not (needsChoices gen) = pure (Right [(inputName i, Flat cs) | i@InputSpec {inputType = ScalarInput (EnumS cs)} <- genInputs gen])
-  | otherwise = do
-      paths <- listFiles (within (rtProjectDir rt) (rtRoot rt)) "."
-      now <- rtNow rt
-      first failureWhy <$> choiceViews (projectQueries rt cat) paths (readText (within (rtProjectDir rt) (rtRoot rt))) sets now gen
 
 -- | Refresh every region (spec §5.8). With @checkOnly@, write nothing and
 -- fail (exit 5) if any region drifted, is broken, or is not set up.
@@ -757,66 +630,19 @@ initFences ws tools def
     lang = languageFor (toolLanguages tools) file
 
 -- | The model that fills holes in a `gen` (spec §6.4): `--model`, else
--- `[model] default`; none with `--no-fill` or without `[model]`.
+-- the config's `default`; none with `--no-fill`.
 modelFor :: Catalog -> GenOptions -> Either Text (Maybe (ModelFiller IO))
 modelFor cat g
   | genNoFill g = Right Nothing
-  | otherwise = case genModel g <|> mcDefault config of
-      Nothing -> Right Nothing
-      Just name -> case lookup name (mcBackends config) of
-        Nothing -> Left ("--model " <> name <> ": no such backend under [model.backends] (backends: " <> (if null (mcBackends config) then "none" else T.intercalate ", " (map fst (mcBackends config))) <> ")")
-        Just b -> Right (Just (ModelFiller (backendModel b) (mcRetries config) (curlFiller (mcTimeout config) b)))
-  where
-    config = catalogModel cat
+  | otherwise = modelFiller cat (genModel g)
 
--- | `--no-fill`: holes were left on purpose.
-noFill :: Plan -> Plan
-noFill p = p {planHoles = [h {phStatus = HoleSkipped "--no-fill"} | h <- planHoles p]}
+-- | The engine's ports, as the CLI runs them.
+portsOf :: Runtime -> Ports
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt)
 
--- | The tools a command in this project uses: the runtime's syntax and
--- checker, the catalog's languages and regions, and the project's queries.
-projectTools :: Runtime -> Catalog -> Tools IO
-projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries rt cat, toolVerifier = rtVerifier rt}
-
--- | Queries run in the project: commands in its root, AST queries over its
--- files with the catalog's language adapters.
--- | 'projectQueries' with a cursor: `uncovered` queries ask the compiler
--- about the match there (spec §4.9), reading through @ws@ (an overlay).
-queriesAt :: Runtime -> Catalog -> Workspace IO -> FilePath -> Int -> Queries IO
-queriesAt rt cat ws file line = (projectQueries rt cat) {queryUncovered = uncoveredQuery (rtChecker rt) (catalogLanguages cat) ws file line}
-
-projectQueries :: Runtime -> Catalog -> Queries IO
-projectQueries rt cat =
-  Queries
-    { queryCommand = processCommand (rtProjectDir rt)
-    , queryAst = astQueries (rtSyntax rt) (catalogLanguages cat)
-    , queryUncovered = \_ -> pure (Right [])
-    }
-
--- | A fix's enum inputs left open are pre-chosen when the finding's code
--- names exactly one choice (`invoices::table` → invoice_repository), and the
--- label says which (beat 4 feedback).
-chooseFixInputs :: Runtime -> Catalog -> [FilePath] -> UTCTime -> ([Finding], a) -> IO ([Finding], a)
-chooseFixInputs rt cat paths now (fs, exs) = (,exs) <$> traverse (\f -> (\os -> f {fFixes = os}) <$> traverse (choose f) (fFixes f)) fs
-  where
-    ws = within (rtProjectDir rt) (rtRoot rt)
-    nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
-    choose f o = case find ((== foGenerator o) . generatorIdText . entryId) (catalogEntries cat) of
-      Nothing -> pure o
-      Just e ->
-        withChoices (projectQueries rt cat) paths (readText ws) (M.fromList (foSets o)) now (entryDefinition e) <&> \case
-          Left _ -> o
-          Right g ->
-            let open = [(inputName i, cs) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i]]
-                picks = [(k, c) | (k, cs) <- open, Just c <- [suggestChoice (fText f) cs]]
-             in case picks of
-                  (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c), foChoices = [oc | oc@(k', _) <- open, k' /= k]}
-                  -- what the code does not name, the person picks (review I2)
-                  [] -> o {foChoices = open}
-
--- | `invoice_repository` → `InvoiceRepository`.
-toPascal :: Text -> Text
-toPascal = T.concat . map (\w -> T.toUpper (T.take 1 w) <> T.drop 1 w) . T.splitOn "_"
+-- | The project Olifant runs in, reading disk.
+projectOf :: Runtime -> Catalog -> Project
+projectOf rt cat = Project (rtProjectDir rt) cat (within (rtProjectDir rt) (rtRoot rt))
 
 -- | `.olifant/baseline.toml` (spec §5.10): (rule, file, fingerprint) entries.
 readBaseline :: Text -> Either Text [((Text, Text, Text), Int)]

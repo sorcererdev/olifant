@@ -155,6 +155,14 @@ spec = do
   describe "basename" $
     it "is a path's last segment: a resource's folder name" $
       renderWith [("d", VText "src/bistro/web/bookings")] "{= d|basename =}" `shouldBe` Right "bookings"
+  describe "dir" $
+    it "is a path's folder: the service a command file sits in, two levels up" $ do
+      renderWith [("p", VText "src/bistro/booking/commands/create_booking.py")] "{= p|dir =}" `shouldBe` Right "src/bistro/booking/commands"
+      renderWith [("p", VText "src/bistro/booking/commands/create_booking.py")] "{= p|dir|dir|basename =}" `shouldBe` Right "booking"
+      renderWith [("p", VText "main.py")] "{= p|dir =}" `shouldBe` Right ""
+  describe "stem" $
+    it "is a path's file name without its extension" $
+      renderWith [("p", VText "src/bistro/booking/commands/create_booking.py")] "{= p|stem =}" `shouldBe` Right "create_booking"
   describe "indent" $
     it "indents every non-empty line one level (four spaces): a body under a def" $
       renderWith [("t", VText "x = 1\n\nreturn x")] "{= t|indent =}" `shouldBe` Right "    x = 1\n\n    return x"

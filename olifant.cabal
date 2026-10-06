@@ -28,6 +28,12 @@ common shared
     , process               >=1.6
     , regex-tdfa            >=1.3
     , temporary             >=1.3
+    , unix                  >=2.8
+    , async                 >=2.2
+    , lsp                   >=2.8  && <2.9
+    , lsp-types             >=2.4  && <2.5
+    , lens                  >=5.2
+    , co-log-core           >=0.3
 
 library
   import:          shared
@@ -39,10 +45,10 @@ library
     Olifant.Anchor.Items
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
+    Olifant.App
     Olifant.Catalog
     Olifant.Cli
     Olifant.Cli.Options
-    Olifant.Cli.Output
     Olifant.Cursor
     Olifant.Doctor
     Olifant.Fill
@@ -78,12 +84,28 @@ library
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Lsp
     Olifant.Model
     Olifant.Naming
+    Olifant.Output
     Olifant.Process
+    Olifant.Process.Cancel
+    Olifant.ProjectModel
     Olifant.Query
     Olifant.Region
     Olifant.Rules
+    Olifant.Server
+    Olifant.Server.Actions
+    Olifant.Server.Completion
+    Olifant.Server.Edits
+    Olifant.Server.Fixes
+    Olifant.Server.Hints
+    Olifant.Server.Holes
+    Olifant.Server.Jobs
+    Olifant.Server.Model
+    Olifant.Server.Regions
+    Olifant.Server.State
+    Olifant.Server.Suggest
     Olifant.Snippet
     Olifant.Suggest
     Olifant.Template
@@ -108,6 +130,7 @@ test-suite spec
     , hedgehog        >=1.4
     , hspec           >=2.11
     , hspec-hedgehog  >=0.1
+    , lsp-test        >=0.18 && <0.19
   other-modules:
     -- olifant:region test-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Actions
@@ -117,11 +140,12 @@ test-suite spec
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.AnchorSpec
+    Olifant.App
+    Olifant.AppSpec
     Olifant.Catalog
     Olifant.CatalogSpec
     Olifant.Cli
     Olifant.Cli.Options
-    Olifant.Cli.Output
     Olifant.CliSpec
     Olifant.Cursor
     Olifant.CursorSpec
@@ -167,17 +191,37 @@ test-suite spec
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.LanguageSpec
+    Olifant.Lsp
+    Olifant.LspSpec
     Olifant.Model
     Olifant.ModelSpec
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.Output
+    Olifant.OutputSpec
     Olifant.Process
+    Olifant.Process.Cancel
+    Olifant.ProjectModel
+    Olifant.ProjectModelSpec
     Olifant.Query
     Olifant.QuerySpec
     Olifant.Region
     Olifant.RegionSpec
     Olifant.Rules
     Olifant.RulesSpec
+    Olifant.Server
+    Olifant.Server.Actions
+    Olifant.Server.Completion
+    Olifant.Server.Edits
+    Olifant.Server.Fixes
+    Olifant.Server.Hints
+    Olifant.Server.Holes
+    Olifant.Server.Jobs
+    Olifant.Server.Model
+    Olifant.Server.Regions
+    Olifant.Server.State
+    Olifant.Server.Suggest
+    Olifant.ServerSpec
     Olifant.Snippet
     Olifant.SnippetSpec
     Olifant.Suggest
@@ -201,3 +245,5 @@ executable olifant
   hs-source-dirs:  app
   main-is:         Main.hs
   build-depends:   olifant
+  -- the language server reads, answers and runs jobs at once
+  ghc-options:     -threaded -rtsopts

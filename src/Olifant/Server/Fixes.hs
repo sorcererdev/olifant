@@ -1,0 +1,57 @@
+-- | Internal to Olifant.Server: a file's rule findings (with their fixes'
+-- open choices), and a fix planned as edits — always against the
+-- documents as they are now.
+module Olifant.Server.Fixes (findingsFor, fixEdits, fixPlan) where
+
+import Data.Bifunctor (first)
+import Data.Functor ((<&>))
+import Data.Text (Text)
+import Data.Text qualified as T
+import Olifant.App (FixFailure (..), PlanOptions (..), findings, fixSteps, planOptions, planWith)
+import Olifant.Catalog (describeCatalogError)
+import Olifant.Generation (Plan (..), ProgressEvent, describeConflict, describeGenerationError)
+import Olifant.Server.Actions (fillerFor)
+import Olifant.Rules (Finding)
+import Olifant.Server.Edits (FileEdit, editsOfPlan)
+import Olifant.Server.State (ServerState (..), memo, projectFor)
+import System.FilePath (makeRelative)
+
+-- | The rules' findings in a file (project-relative paths in them); none
+-- for a file in no project.
+findingsFor :: FilePath -> ServerState -> IO (ServerState, [Finding])
+findingsFor path = memo "findings" path "" $ \s ->
+  projectFor path s >>= \case
+    (s', Nothing) -> pure (s', [])
+    (s', Just (root, project)) -> (s',) . fst <$> findings (ssPorts s') project [makeRelative root path]
+
+-- | The edits of a rule's fix (the @n@th, 1-based) at a line of a file,
+-- with the choices made: planned now, so a finding that moved or went
+-- away says so instead of editing stale text.
+fixEdits :: FilePath -> Text -> Int -> Int -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text [FileEdit])
+fixEdits path rule line n sets s = fixPlan False (const (pure ())) path rule line n sets s <&> \(s', planned) -> (s', (\(root, plan) -> editsOfPlan s' root plan) <$> planned)
+
+-- | 'fixEdits' as the plan itself, with the project's root; with @fill@,
+-- the model fills its holes (as `olifant fix` does), telling @progress@.
+fixPlan :: Bool -> (ProgressEvent -> IO ()) -> FilePath -> Text -> Int -> Int -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
+fixPlan fill progress path rule line n sets s =
+  projectFor path s >>= \case
+    (s', Nothing) -> pure (s', Left (T.pack path <> " is in no Olifant project"))
+    (s', Just (root, project)) ->
+      fmap (s',) $
+        fixSteps (ssPorts s') project rule (makeRelative root path) line n sets >>= \case
+          Left failure -> pure (Left (describeFix failure))
+          Right (context, steps) ->
+            fillerFor fill s' project >>= \case
+             Left why -> pure (Left why)
+             Right filler ->
+              first describeGenerationError <$> planWith (ssPorts s') project planOptions {poContext = context, poFiller = filler, poProgress = progress, poCancel = ssCancel s'} steps >>= \case
+              Left why -> pure (Left why)
+              Right plan
+                | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
+                | otherwise -> pure (Right (root, plan))
+  where
+    describeFix = \case
+      FixNotFound why -> why <> " (the code changed since: ask for the actions again)"
+      FixUsage why -> why
+      FixCatalog err -> describeCatalogError err
+      FixFailed why -> why

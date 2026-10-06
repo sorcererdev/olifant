@@ -2,8 +2,10 @@
 
 Engineers meet Olifant through **Durandal**, the editor side of the product. Olifant is the
 conventions engine underneath it. The first editor is Neovim, with the `durandal.nvim`
-plugin. It runs `olifant` for everything, so this chapter covers both halves: what the
-plugin does, and what Olifant gives an editor:
+plugin. The plugin is a thin client of Olifant's language server, `olifant lsp`
+([chapter 16](16-the-language-server.md)), which answers from the same engine as the CLI. This
+chapter covers both halves: what the plugin does, and what Olifant gives an editor — as the
+server answers it, and as the CLI prints it, for scripts, agents and probing by hand:
 
 - **`[applies_at]`** in a `generator.toml`: where in the code a generator applies (inside
   a node, or `after` one), which of its inputs the code there already gives, (`where`) what
@@ -39,12 +41,12 @@ you press `<CR>`. The change goes in as ordinary buffer edits, so `u` undoes it.
 
 | key | command | what it does |
 |---|---|---|
-| `<leader>ma` | `:DurandalActions` | generators that apply at the cursor (`olifant actions`) |
-| `<leader>mg` | `:DurandalGenerate` | any generator, inputs from a picker (`olifant show`) |
+| `<leader>ma` | `:DurandalActions` | generators that apply at the cursor (the server's code actions; `olifant actions` on the command line) |
+| `<leader>mg` | `:DurandalGenerate` | any generator, inputs from a picker (`olifant/generators`, `olifant/choices`; `olifant show`) |
 | | `:DurandalHints [toggle\|on\|off]` | the ⚡ hints ([below](#hints-on-the-cursor-line)); no argument toggles |
 | `<Tab>` | | while a suggestion is shown, and only then: apply the ghost text, review the follow-up ([below](#ghost-text-and-follow-ups)), or expand the snippet ([below](#snippets)) |
 | | `:DurandalGhosts [toggle\|on\|off]` | ghost text and follow-ups; no argument toggles |
-| | `:checkhealth durandal` | Neovim, `nui.nvim`, `olifant`, then `olifant doctor` ([Troubleshooting](#troubleshooting)) |
+| | `:checkhealth durandal` | Neovim, `nui.nvim`, `olifant`, the server, then the doctor's checks ([Troubleshooting](#troubleshooting)) |
 
 In the preview, `j`/`k` move between files, `<Tab>` switches to the diff, `<CR>` applies and
 `q`/`<Esc>` cancels. A plan with conflicts shows why, and cannot be applied. While a model is
@@ -55,13 +57,12 @@ three-beat demo on the rust-htmx fixture. It needs Neovim 0.11+, `nui.nvim`, and
 and `ast-grep` on your `PATH` — Neovim's `PATH`, which is not always your shell's
 ([Troubleshooting](#troubleshooting)).
 
-Two things the plugin does that Olifant doesn't:
+Two things worth knowing:
 
-- **It saves modified buffers in the project before it plans** from `<leader>ma` or
-  `<leader>mg`. `gen` reads the disk. (`olifant actions` can read an unsaved buffer,
-  [below](#unsaved-text---content--), and so can `gen --plan --overlay`, which suggestions
-  and snippets use instead of saving: a snippet picked from `<leader>ma` saves nothing.)
-- **It logs** which actions it hinted, offered and suggested, and which you picked, applied
+- **Nothing is saved before Olifant plans.** The server holds every open buffer's text, so it
+  plans against what you see, unsaved. (On the command line, `--content -` and
+  `--overlay FILE` do the same for one file, [below](#unsaved-text---content--).)
+- **The plugin logs** which actions it hinted, offered and suggested, and which you picked, applied
   or dismissed, to `~/.cache/durandal/actions.jsonl`, on your machine only, so that where
   generators apply can be tuned. Olifant logs nothing.
 
@@ -150,13 +151,15 @@ for what you are about to write, not a consequence of what you wrote. Snippets a
 section; they are suggested the same way, and drawn the same way, but `Tab` expands them with
 their holes as tab stops ([below](#snippets)).
 
-**When Durandal plans.** Once the cursor has settled (300 ms) on a line where a `suggest`
-action applies, according to the hints' `--file` answer, and nothing is `missing`: a
-generator that would have to ask you something is only ever in `<leader>ma`. It runs the
-action's `gen` with `--plan --json --no-fill --overlay FILE`, the buffer's text on stdin
-([below](#from-the-command-line)), so it saves nothing and asks no model. One plan at a time
-per buffer; if the buffer changed while it ran, the answer is dropped; a plan that fails, has
-a conflict or changes nothing shows nothing.
+**When Olifant plans.** The server plans once typing pauses (300 ms, `debounce_ms`), on the
+line you edited, when a `suggest` action applies there and nothing is `missing`: a generator
+that would have to ask you something is only ever in `<leader>ma`. It plans without asking a
+model (the CLI's `gen --plan --no-fill --overlay FILE`, [below](#from-the-command-line)) and
+pushes the result (`olifant/suggestion`); when the cursor settles on another line, Durandal
+asks for that line's (`olifant/suggest`). Newer edits supersede older work; a suggestion for
+an older version of the buffer is dropped; a plan that fails, has a conflict or changes nothing
+shows nothing. A follow-up's review is fetched with `olifant/plan`, and `Tab` applies it, its
+holes filled by the model then.
 
 When several apply on the line, **follow-ups come before snippets**: what you just wrote is
 finished before what comes next is offered. The first one that offers something here is
@@ -300,29 +303,29 @@ ghost is at most 8 lines, like other ghost text.
 
 #### Chosen: the completion menu, and `<leader>ma`
 
-Durandal is an nvim-cmp source named `durandal`. Add it to cmp's sources:
+The snippets are the server's completion items, so any LSP completion lists them: nvim-cmp
+with `cmp-nvim-lsp`, `blink.cmp`, or Neovim's own:
 
 ```lua
-sources = { { name = "nvim_lsp" }, { name = "durandal" } },
+sources = { { name = "nvim_lsp" } },
 ```
 
-Its items are the snippets that apply at the cursor, from `olifant complete`
-([below](#olifant-complete)), labelled `⚡ LABEL` with the Snippet kind and the generator's
-`description` as the detail. A snippet missing one choice is one item per choice. On a blank
+Its items are the snippets that apply at the cursor (what `olifant complete` prints,
+[below](#olifant-complete)), with the Snippet kind and the generator's `description` as the
+detail. A snippet missing one choice is one item per choice. On a blank
 line inside `pub struct CancelInvoice { … }`, the menu has
 
 ```
-⚡ Add port EmailSender
-⚡ Add port InvoiceRepository
+Add port EmailSender
+Add port InvoiceRepository
 ```
 
 (The trigger does not matter here: you opened the menu, so you are asking.) Picking one
-removes the word you typed to find it, plans the snippet at the cursor (the model fills
-model holes) and expands it, as `Tab` does for a ghost: the line becomes
+resolves it (`completionItem/resolve`: the model fills model holes, under progress) and
+expands it, as `Tab` does for a ghost: the line becomes
 `    pub email_sender: Arc<dyn EmailSender>,`. With the cursor on that field, `wire-command`'s
 follow-up appears, `⚡ Tab: review Wire Command Dependencies (+2 lines here, +7 in service.rs,
-main.rs)`: the import, `new()`'s parameter and `main.rs`'s construction, reviewed. Without
-nvim-cmp the source is simply not registered; there is no `blink.cmp` source yet.
+main.rs)`: the import, `new()`'s parameter and `main.rs`'s construction, reviewed.
 
 `<leader>ma` lists snippets too, after the other actions on the line. Picking one asks for
 what is missing as usual (for `add-port`, the port), then expands the snippet at the cursor
@@ -407,38 +410,31 @@ applying the plan: it is a warning, not a conflict.
 ## Conventions on save
 
 Generators keep conventions when they write code; Durandal keeps them when you do
-([chapter 15](15-conventions-that-hold.md)). Every time you save a buffer in an Olifant
-project, it does two things, and nothing while you type.
+([chapter 15](15-conventions-that-hold.md)). Both halves come from the server.
 
 ### Regions, as buffer edits
 
-First it runs `olifant sync --plan --json` ([chapter 5](05-owned-regions.md#--plan-the-refresh-for-editors))
-and applies the plan's `files` the way it applies a generator's: as ordinary buffer edits,
-written, each an undo step in its buffer. Save a new `billing/billing-service/src/void_payment.rs`
-and `lib.rs` gains its line, with a notice:
+As a buffer saves, the server refreshes the project's owned regions (what `olifant sync --plan`
+prints, [chapter 5](05-owned-regions.md#--plan-the-refresh-for-editors)):
+
+- the saved file's region edits go into the same write (`textDocument/willSaveWaitUntil`);
+- other files' come as `workspace/applyEdit`, which Durandal applies as ordinary buffer edits
+  (each an undo step) and saves, with a notice.
+
+Save a new `billing/billing-service/src/void_payment.rs` and `lib.rs` gains its line:
 
 ```
 synced billing/billing-service/src/lib.rs: modules +1
 ```
 
-(`modules +0 −1` when a file went away.) The refresh covers the whole project, not only the
-file you saved.
-
-It never writes over your unsaved work. If a file the refresh would change is open with
-unsaved changes, nothing is applied, and the notice says so:
-
-```
-billing/billing-service/src/lib.rs has unsaved changes; region modules not refreshed (save it, then save again)
-```
-
-A refresh with a conflict (a broken fence) is not applied either; `olifant sync --check` in
-a terminal says why.
+The refresh covers the whole project, not only the file you saved. A file with unsaved changes
+gets the edit and keeps its other changes unsaved; save it when you are ready. A refresh with a
+conflict (a broken fence) is not applied; `olifant sync --check` in a terminal says why.
 
 ### Rule findings as diagnostics
 
-Then it checks the saved buffer's rules, with `olifant check --file FILE --content -` and the
-buffer's text on stdin, and shows each finding as a Neovim diagnostic (source `durandal`, the
-rule's id as its code). It does the same when you enter a buffer.
+The project's rules are the server's diagnostics (pulled, `textDocument/diagnostic`), there as
+you type, unsaved text included: source `olifant`, the rule's id as the code.
 
 - The diagnostic has the rule's severity: `hint`, `warn` or `error`. With `use
   diesel::prelude::*;` in a command, that is a warning under the line: "Commands talk to
@@ -446,33 +442,28 @@ rule's id as its code). It does the same when you enter a buffer.
 - A finding in the baseline ([chapter 15](15-conventions-that-hold.md#a-new-rule-the-ratchet))
   is always a hint, its message ending "(existing)": known debt, not news.
 - A finding about a whole file (a `missing` rule) is on line 1.
-- A check that fails (no `olifant`, a broken `rules.toml`) changes nothing and says nothing;
-  run `olifant check` in a terminal to see why.
 
-Add `// olifant:allow commands-use-ports — spike` to the line, save, and the diagnostic goes.
+Add `// olifant:allow commands-use-ports — spike` to the line and the diagnostic goes.
 
 ### A finding's fix, first in `<leader>ma`
 
-When the cursor is on a finding whose rule has a `fix`, `<leader>ma` lists the fix first,
-before the actions that apply there:
+When the cursor is on a finding whose rule has a `fix`, `<leader>ma` lists the fix first
+(a `quickfix` code action, preferred), before the actions that apply there:
 
 ```
-Fix: Commands talk to ports, not the database (rust-htmx: ports & adapters) (Add Repository Port)
+Use an existing port: InvoiceRepository
+Add a new repository port
 ```
 
-Picking it goes on as `<leader>mg` would, with the finding's `sets` (the slots of the rule's
-`files`) already set: it asks for the rest (`aggregate`), then shows the plan.
+Picking one asks for any choice still missing, then shows the plan, with the line the rule
+flagged rewritten by the model through the port where one is configured.
 
-### Turning it off
+### Turning them off
 
-```lua
-opts = { conventions = false },
-```
-
-turns off both, region refreshes and diagnostics. The diagnostics are in their own
-namespace, `require("durandal.conventions").ns`, so Neovim's diagnostic settings apply to
-them as to any other: `vim.diagnostic.enable(false, { ns_id = require("durandal.conventions").ns })`
-hides them and keeps the refreshes.
+The diagnostics are ordinary LSP diagnostics: Neovim's settings apply to them as to any other
+(`vim.diagnostic.config`, or hide one client's with its namespace,
+`vim.lsp.diagnostic.get_namespace(require("durandal.lsp").client().id)`). Regions follow the
+project's `regions.toml`: a project with none has nothing to refresh.
 
 ## The demo, from the command line
 
@@ -1355,7 +1346,7 @@ not checked.)
 olifant complete --at FILE:LINE:COL [--content -]
 ```
 
-The snippets for a completion menu at a position: what Durandal's nvim-cmp source lists
+The snippets for a completion menu at a position: what the server's completion lists
 ([above](#chosen-the-completion-menu-and-leaderma)). It is `actions --at` narrowed to
 snippets, with two differences: a `trigger` is not checked (you opened the menu, so you are
 asking), and a snippet missing exactly one input that has choices becomes one item per
@@ -1710,14 +1701,19 @@ before the branch counts), not ghost text.
 ### `:checkhealth durandal` and `olifant doctor`
 
 When an action does nothing useful, start with `:checkhealth durandal`. It checks Neovim
-(0.11+), `nui.nvim` and that `olifant` is on Neovim's `PATH`, then, from the project of the
-current buffer, runs `olifant doctor --json` and shows each of its checks:
+(0.11+), `nui.nvim` and that `olifant` is on Neovim's `PATH`, whether `olifant lsp` is running
+and which projects it holds, then asks it for the doctor's checks (`olifant.doctor`, what
+`olifant doctor --json` prints) for the project of the current buffer:
 
 ```
 durandal ~
 - ✅ OK Neovim 0.12.5
 - ✅ OK nui.nvim
 - ✅ OK olifant: /Users/you/.local/bin/olifant
+
+durandal: olifant lsp ~
+- ✅ OK olifant lsp: running
+- ✅ OK project /tmp/demo (loaded 1×)
 
 durandal: olifant doctor in /tmp/demo ~
 - ✅ OK config — project at /tmp/demo
@@ -1739,7 +1735,7 @@ terminal for the same checks, against your shell's `PATH`.
 
 Olifant runs the tools a generator needs (`ast-grep` always; `cargo`, `elm` or `cabal` for a
 `complete` edit's checks) from the `PATH` of the process that started it. From Durandal,
-that is Neovim's `PATH`, which is whatever Neovim was started with: a GUI Neovim, or one
+that is the server's, which Neovim started: Neovim's `PATH`, which is whatever Neovim was started with: a GUI Neovim, or one
 started before you edited your shell profile, may not have what your terminal has. Homebrew's
 `rustup` is the usual case: it is keg-only, so `cargo` is in `/opt/homebrew/opt/rustup/bin`
 and on no `PATH` until you add it.

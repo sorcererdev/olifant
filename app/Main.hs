@@ -12,7 +12,7 @@ import Data.Maybe (fromMaybe, isJust)
 import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
 import System.Process (readProcessWithExitCode)
-import Olifant.Language (processChecker, processVerifier)
+import Olifant.Language (processCheckerWith, processVerifierCancellable)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Workspace (diskWorkspace)
 import System.Directory (XdgDirectory (XdgCache, XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
@@ -47,11 +47,11 @@ main = do
         , rtNow = getCurrentTime
         , rtStdoutIsTty = tty
         , rtGitInit = gitInit
-        , rtVerifier = processVerifier
+        , rtVerifier = (`processVerifierCancellable` 120)
         , rtOut = TIO.putStr
         , rtErr = TIO.hPutStr stderr
         , rtSyntax = astGrepSyntax cache
-        , rtChecker = processChecker
+        , rtChecker = processCheckerWith
         , rtGitChanged = gitChanged
         , rtDoctor =
             DoctorPorts

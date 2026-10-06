@@ -1,5 +1,8 @@
-module Olifant.Cli.Output
+-- | What Olifant says, as JSON and text: the CLI prints it, the language server sends it, agents read it.
+module Olifant.Output
   ( encodeJson
+  , doctorJson
+  , fileActionsJson
   , listJson
   , listHuman
   , showJson
@@ -26,6 +29,10 @@ import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Anchor (Located (..), positionWords)
+import Olifant.Doctor (Check (..), Status (..))
+import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..))
+import Olifant.Cursor (isSnippet)
+import Data.Maybe (isJust)
 import Olifant.Catalog (CatalogEntry (..))
 import Olifant.Snippet (Snippet (..), holeSource)
 import Olifant.Generation
@@ -167,6 +174,29 @@ showHuman views subs e =
       ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
         : ("    with " <> T.unwords [k <> "=" <> templateSource t | (k, t) <- useWith u])
         : ["    its input --set " <> inputName i <> "=<" <> describeInputType (inputType i) <> ">" | Just s' <- [sub], i <- genInputs (entryDefinition s')]
+
+-- | Every action in a file, where it applies and how an editor may offer it
+-- (unasked, as a snippet, on a trigger: spec §4.8, §4.9), and the near
+-- misses (`actions --file`).
+fileActionsJson :: [(Text, GeneratorDef)] -> [FileAction] -> [Nearby] -> Value
+fileActionsJson gens acts near =
+  object
+    [ "actions" .= [object (["generator" .= actGenerator a, "name" .= nameOf (actGenerator a), "label" .= actLabel a, "range" .= fmap rangeJson r, "sets" .= M.fromList (actSets a), "missing" .= actMissing a] ++ suggestOf (actGenerator a)) | FileAction a r <- acts]
+    , "nearby" .= [object ["generator" .= nbGenerator n, "name" .= nameOf (nbGenerator n), "label" .= nbLabel n, "why" .= nbWhy n] | n <- near]
+    ]
+  where
+    nameOf gid = maybe gid generatorName (lookup gid gens)
+    rangeJson (Range (l1, c1) (l2, c2)) = object ["start" .= [l1, c1], "end" .= [l2, c2]]
+    suggestOf gid =
+      let g = lookup gid gens
+          ap = genAppliesAt =<< g
+       in ["suggest" .= maybe False apSuggest ap, "snippet" .= maybe False isSnippet g, "trigger" .= maybe False (isJust . apTrigger) ap]
+
+-- | `doctor`'s checks, as editors read them.
+doctorJson :: [Check] -> Value
+doctorJson checks = object ["checks" .= [object ["name" .= checkName c, "status" .= status (checkStatus c), "detail" .= checkDetail c, "fix" .= checkFix c] | c <- checks]]
+  where
+    status = \case Ok -> "ok" :: Text; Warn -> "warn"; Bad -> "error"
 
 planJson :: Bool -> Plan -> Value
 planJson applied plan =

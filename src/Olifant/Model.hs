@@ -14,6 +14,7 @@ module Olifant.Model
   , requestBody
   , decodeFills
   , curlFiller
+  , curlFillerWith
   , probeBackend
   ) where
 
@@ -33,7 +34,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..))
-import Olifant.Process (runBytes)
+import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytes, runBytesCancellable)
 import Olifant.Toml (Table, inKey, int, onlyKeys, optional, required, table, text)
 import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
@@ -198,7 +199,12 @@ decodeFills b raw = do
 
 -- | A filler that posts to the backend with curl.
 curlFiller :: Int -> Backend -> Filler IO
-curlFiller timeout b = Filler $ \req ->
+curlFiller = curlFillerWith neverCancel
+
+-- | 'curlFiller', the request dropped when the token is tripped
+-- ("cancelled").
+curlFillerWith :: Cancel -> Int -> Backend -> Filler IO
+curlFillerWith token timeout b = Filler $ \req ->
   findExecutable "curl" >>= \case
     Nothing -> pure (Left "curl is not installed")
     Just curl -> case b of
@@ -213,10 +219,11 @@ curlFiller timeout b = Filler $ \req ->
   where
     post curl url extra req = do
       let args = ["-sS", "-X", "POST", url, "-H", "content-type: application/json", "--max-time", show timeout, "--data-binary", "@-"] ++ extra
-      runBytes curl args Nothing (BL.toStrict (encode (requestBody b req))) >>= \case
+      runBytesCancellable token Nothing curl args Nothing (BL.toStrict (encode (requestBody b req))) >>= \case
         Left why -> pure (Left why)
-        Right (ExitSuccess, out, _) -> pure (decodeFills b out)
-        Right (ExitFailure c, _, err) -> pure (Left ("curl exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8 err)))
+        Right (Finished ExitSuccess out _) -> pure (decodeFills b out)
+        Right (Finished (ExitFailure c) _ err) -> pure (Left ("curl exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8 err)))
+        Right _ -> pure (Left "cancelled")
 
 -- | Does the backend answer (`olifant doctor`)? openai-compatible: its model
 -- list within 3 s, with the model in it. Anthropic is never called (that

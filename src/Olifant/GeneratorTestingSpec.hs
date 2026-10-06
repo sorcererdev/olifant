@@ -13,7 +13,7 @@ import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
 import Olifant.Generation.Tools (Verifier (..))
 import Olifant.Language.Check (noVerifier, processVerifierWith)
-import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker, processCheckerWith)
 import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
@@ -32,6 +32,9 @@ import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
 import System.Directory (canonicalizePath)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Test.Hspec
+import Control.Concurrent (forkIO, threadDelay)
+import Data.Time (diffUTCTime, getCurrentTime)
+import Olifant.Process (Outcome (..), newCancel, runBytesCancellable)
 
 tinyPack :: Text -> [(FilePath, Text)]
 tinyPack snapshotContent =
@@ -263,9 +266,9 @@ spec = do
               { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 4) 0), rtStdoutIsTty = False
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
-              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processChecker
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processCheckerWith
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
         let project = dir </> "demo"
@@ -347,9 +350,9 @@ spec = do
               { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 6) 0), rtStdoutIsTty = False
               , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
-              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = noChecker
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         _ <- runCli rt ["check", "--file", close, "--json"]
         checked <- readIORef out
         checked `shouldSatisfy` T.isInfixOf "\"missing\":[\"port\"]"
@@ -374,6 +377,18 @@ spec = do
       Right (tools, g) <- atCaseCursor ws noChecker (Just (moved, line)) tools0 g0
       Right plan <- generate ws resolve tools [Step g (M.fromList [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "close_table")])] (UTCTime (fromGregorian 2026 10 6) 0) PlanOnly
       map describeConflict (planConflicts plan) `shouldSatisfy` any ("write close_table__test.py first" `T.isInfixOf`)
+    it "a cancelled command is killed at once, its process gone (olifant lsp)" $
+      withSystemTempDirectory "olifant-cancel" $ \dir -> do
+        (token, stop) <- newCancel
+        _ <- forkIO (threadDelay 200000 >> stop)
+        t0 <- getCurrentTime
+        r <- runBytesCancellable token Nothing "sh" ["-c", "echo $$ > pid; exec sleep 30"] (Just dir) ""
+        t1 <- getCurrentTime
+        r `shouldBe` Right Cancelled
+        diffUTCTime t1 t0 `shouldSatisfy` (< 2)
+        pid <- readFile (dir </> "pid")
+        (alive, _, _) <- readCreateProcessWithExitCode (proc "kill" ["-0", takeWhile (/= '\n') pid]) ""
+        alive `shouldNotBe` ExitSuccess
     it "verify: a command that runs too long is stopped and says so (Review Focus 4)" $ do
       r <- runVerify (processVerifierWith 1) python ["sleep", "30"] (M.fromList [("src/a.py", "x = 1\n")])
       r `shouldBe` Right (False, "the tests timed out (1 s)")

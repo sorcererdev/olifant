@@ -1,6 +1,12 @@
 module Olifant.WorkspaceSpec (spec) where
 
+import Control.Applicative ((<|>))
 import Data.ByteString qualified as BS
+import Data.Map.Strict qualified as M
+import Hedgehog (evalIO, forAll, (===))
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
+import Test.Hspec.Hedgehog (hedgehog)
 import Olifant.Workspace
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -46,6 +52,35 @@ spec = do
       inspectPath o "a.txt" `shouldReturn` Readable "unsaved"
       listFiles new "." >>= (`shouldSatisfy` elem "c.txt")
       fileExists new "c.txt" `shouldReturn` True
+  describe "overlayMany (the server's open documents over disk)" $ do
+    it "reads open documents first and disk for the rest" $ do
+      (ws, _) <- memoryWorkspace [("src/a.py", "disk a"), ("src/b.py", "disk b")]
+      let o = overlayMany (M.fromList [("src/a.py", "unsaved a")]) ws
+      readText o "src/a.py" `shouldReturn` Just "unsaved a"
+      readText o "./src/a.py" `shouldReturn` Just "unsaved a"
+      readText o "src/b.py" `shouldReturn` Just "disk b"
+      inspectPath o "src/a.py" `shouldReturn` Readable "unsaved a"
+    it "lists an open document that is not on disk yet, once" $ do
+      (ws, _) <- memoryWorkspace [("src/a.py", "disk a")]
+      let o = overlayMany (M.fromList [("src/new.py", "fresh"), ("src/a.py", "unsaved a")]) ws
+      listFiles o "." >>= (`shouldMatchList` ["src/a.py", "src/new.py"])
+      listFiles o "src" >>= (`shouldMatchList` ["a.py", "new.py"])
+      listFiles o "other" `shouldReturn` []
+      fileExists o "src/new.py" `shouldReturn` True
+    it "reads disk again once a document is closed (Review Focus 5)" $ do
+      (ws, _) <- memoryWorkspace [("src/a.py", "disk a")]
+      let docs = M.fromList [("src/a.py", "unsaved a")]
+      writeText ws "src/a.py" "changed on disk"
+      readText (overlayMany (M.delete "src/a.py" docs) ws) "src/a.py" `shouldReturn` Just "changed on disk"
+    it "reads what is open, else what is on disk (any documents, any disk)" $ hedgehog $ do
+      let path = Gen.element ["a.py", "src/b.py", "src/c/d.py", "e.txt"]
+          text = Gen.text (Range.linear 0 8) Gen.alpha
+      disk <- forAll (Gen.map (Range.linear 0 4) ((,) <$> path <*> text))
+      docs <- forAll (Gen.map (Range.linear 0 4) ((,) <$> path <*> text))
+      p <- forAll path
+      (ws, _) <- evalIO (memoryWorkspace (M.toList disk))
+      r <- evalIO (readText (overlayMany docs ws) p)
+      r === (M.lookup p docs <|> M.lookup p disk)
   describe "memory adapter" $ around (\act -> memoryWorkspace [] >>= act . fst) contract
   describe "disk adapter" $ around (\act -> withSystemTempDirectory "olifant" (act . diskWorkspace)) contract
   describe "disk adapter (bytes that are not UTF-8)" $

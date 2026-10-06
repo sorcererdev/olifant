@@ -1,0 +1,13 @@
+# elm in Olifant's shared project model (olifant lsp, spec §1b): its pages,
+# and its routes (a kind of its own).
+
+[[elements]]
+kind  = "page"
+query = { glob = "src/Page/*.elm" }
+id    = "Page/{= stem =}"
+
+[[elements]]
+kind  = "elm:route"
+query = { files = "src/Route.elm", items_of = "type Route", each = { name = "([A-Z][A-Za-z0-9_]*)" } }
+id    = "Route/{= name =}"
+name  = "{= name =}"
