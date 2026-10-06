@@ -620,6 +620,18 @@ holesSpec = describe "progress, holes and verify" $ do
         pure (either (Just . (^. L.code)) (const Nothing) r)
       answer `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
 
+  it "(d1) names the model's ids by the project's `name`, so projects in folders of the same name do not collide (review minor)" $
+    withPython [] $ \ports dir -> do
+      config <- TIO.readFile (dir </> ".olifant/config.toml")
+      TIO.writeFile (dir </> ".olifant/config.toml") ("name = \"bistro\"\n" <> config)
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      lookupKey "project" v `shouldBe` Just (String "bistro")
+      let ids = case lookupKey "elements" v of Just (Array es) -> [i | e <- foldr (:) [] es, Just (String i) <- [lookupKey "id" e]]; _ -> []
+      ids `shouldSatisfy` (\is -> not (null is) && all ("bistro:" `T.isPrefixOf`) is)
   it "(d0) answers others while it reports its state (health) and re-lists a project (review minor)" $ do
     armed <- newIORef False
     entered <- newEmptyMVar

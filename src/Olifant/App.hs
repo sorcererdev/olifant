@@ -172,12 +172,13 @@ showGenerator ports project ref sets = case findEntry (prCatalog project) ref of
           (Right d, Right vs) -> Right (e0 {entryDefinition = d}, vs)
 
 -- | The project in the shared vocabulary (spec §1b), by its packs'
--- `model.toml`; its ids are the root folder's name and a path-like name.
+-- `model.toml`; its ids are the project's `name` (config.toml; else its
+-- root folder's name) and a path-like name.
 projectModel :: Ports -> Project -> IO ProjectModel
 projectModel ports project = do
   let ws = prWorkspace project
   paths <- listFiles ws "."
-  buildModel (projectQueries ports project) paths (readText ws) (catalogModelMaps (prCatalog project)) (T.pack (takeFileName (prRoot project)))
+  buildModel (projectQueries ports project) paths (readText ws) (catalogModelMaps (prCatalog project)) (fromMaybe (T.pack (takeFileName (prRoot project))) (catalogName (prCatalog project)))
 
 -- | What generators need here (`doctor`): tools, packs, the model.
 doctorChecks :: Ports -> Project -> IO [Check]
