@@ -18,7 +18,9 @@ import System.Directory (findExecutable, getTemporaryDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Olifant.Template (Value (..))
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (forM_)
+import System.IO.Temp (withSystemTempDirectory)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
 import Olifant.Language.Header (headerEnd)
@@ -107,6 +109,11 @@ spec = do
   describe "the Elm adapter (ast-grep, fixture Main.elm)" $ do
     let at syn elm file p = fmap (fmap locLine) (resolveLayers syn (Just elm) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "a grammar built by several queries at once, on a cold cache, serves them all (parallel tests, the server's threads)" $ withAstGrep $ \_ elm file ->
+      forM_ [1 .. 3 :: Int] $ \_ -> withSystemTempDirectory "olifant-cold-cache" $ \cold -> do
+        let syn = astGrepSyntax cold
+        answers <- mapConcurrently (const (at syn elm file "end of type Page")) [1 .. 8 :: Int]
+        answers `shouldBe` replicate 8 (Right (lineOf file "| SamplePage SamplePage.Model" + 1))
     it "end of type Page goes after the last variant" $ withAstGrep $ \syn elm file ->
       at syn elm file "end of type Page" `shouldReturn` Right (lineOf file "| SamplePage SamplePage.Model" + 1)
     it "end of case in update skips the catch-all and the nested case" $ withAstGrep $ \syn elm file ->

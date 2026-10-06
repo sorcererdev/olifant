@@ -14,7 +14,9 @@ import Numeric (showHex)
 import Olifant.Language.Adapter
 import Olifant.Process (runBytes)
 import Olifant.Language.Syntax
-import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, getFileSize, getModificationTime, makeAbsolute)
+import Control.Concurrent (myThreadId)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, getFileSize, getModificationTime, makeAbsolute, renameFile)
+import System.Posix.Process (getProcessID)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Info (os)
@@ -70,8 +72,12 @@ prepare cache lang = case langGrammar lang of
           then pure ()
           else do
             createDirectoryIfMissing True dir
-            writeFile config $
+            -- written aside, then renamed: a query at the same moment reads
+            -- the whole config or none
+            mine <- unique config
+            writeFile mine $
               "ruleDirs: []\ncustomLanguages:\n  " <> T.unpack (langName lang) <> ":\n    libraryPath: " <> lib <> "\n    extensions: [" <> T.unpack (langName lang) <> "]\n"
+            renameFile mine config
         pure (Right dir)
   where
     compile src lib =
@@ -81,9 +87,21 @@ prepare cache lang = case langGrammar lang of
           createDirectoryIfMissing True (cache </> "grammars")
           hasScanner <- doesFileExist (src </> "scanner.c")
           let sources = (src </> "parser.c") : [src </> "scanner.c" | hasScanner]
-          ran <- runBytes cc (["-shared", "-fPIC", "-O2", "-I", src] ++ sources ++ ["-o", lib]) Nothing ""
+          -- built aside, then renamed: queries (parallel tests, the server's
+          -- threads, other olifant processes) never load a half-written
+          -- library, and builds at the same moment do not collide
+          mine <- unique lib
+          ran <- runBytes cc (["-shared", "-fPIC", "-O2", "-I", src] ++ sources ++ ["-o", mine]) Nothing ""
+          case ran of
+            Right (ExitSuccess, _, _) -> renameFile mine lib
+            _ -> pure ()
           pure $ case ran of
             Right (ExitSuccess, _, _) -> Right ()
             Right (ExitFailure _, _, err) -> Left (SyntaxFailed ("building the " <> langName lang <> " grammar failed: " <> T.strip (TE.decodeUtf8With lenientDecode err)))
             Left why -> Left (SyntaxFailed ("building the " <> langName lang <> " grammar failed: " <> why))
+    -- a name of this process and thread beside @path@
+    unique path = do
+      pid <- getProcessID
+      thread <- myThreadId
+      pure (path <> ".tmp-" <> show pid <> "-" <> filter (/= ' ') (show thread))
     fnv = BS.foldl' (\h b -> (h `xor` fromIntegral b) * 1099511628211) (14695981039346656037 :: Word64)
