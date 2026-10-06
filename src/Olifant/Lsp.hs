@@ -38,7 +38,7 @@ import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
-import Olifant.Cli.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
+import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, showGenerator, subsOf)
 import Olifant.Catalog (catalogPackRoots, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))

@@ -1,4 +1,5 @@
-module Olifant.Cli.Output
+-- | What Olifant says, as JSON and text: the CLI prints it, the language server sends it, agents read it.
+module Olifant.Output
   ( encodeJson
   , doctorJson
   , fileActionsJson

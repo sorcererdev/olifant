@@ -12,7 +12,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Olifant.Cli
-import Olifant.Cli.Output (planHuman, planJson)
+import Olifant.Output (planHuman, planJson)
 import Olifant.Generation (EditAction (..), HoleStatus (..), Plan (..), PlannedEdit (..), PlannedHole (..), Site (..))
 import Olifant.Holes (HoleSite (..))
 import Data.Aeson (encode)

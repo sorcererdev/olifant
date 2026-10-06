@@ -49,7 +49,6 @@ library
     Olifant.Catalog
     Olifant.Cli
     Olifant.Cli.Options
-    Olifant.Cli.Output
     Olifant.Cursor
     Olifant.Doctor
     Olifant.Fill
@@ -88,6 +87,7 @@ library
     Olifant.Lsp
     Olifant.Model
     Olifant.Naming
+    Olifant.Output
     Olifant.Process
     Olifant.Process.Cancel
     Olifant.ProjectModel
@@ -145,7 +145,6 @@ test-suite spec
     Olifant.CatalogSpec
     Olifant.Cli
     Olifant.Cli.Options
-    Olifant.Cli.Output
     Olifant.CliSpec
     Olifant.Cursor
     Olifant.CursorSpec
@@ -197,6 +196,8 @@ test-suite spec
     Olifant.ModelSpec
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.Output
+    Olifant.OutputSpec
     Olifant.Process
     Olifant.Process.Cancel
     Olifant.ProjectModel

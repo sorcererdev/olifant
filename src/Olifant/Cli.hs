@@ -32,7 +32,7 @@ import Olifant.App
 import Olifant.Lsp (runLsp)
 import Olifant.Catalog
 import Olifant.Cli.Options
-import Olifant.Cli.Output
+import Olifant.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
 import Olifant.Cursor (isSnippet)

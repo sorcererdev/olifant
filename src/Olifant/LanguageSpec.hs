@@ -24,7 +24,7 @@ import Olifant.Language.Ghc (parseGhcReport, typeOf)
 import Olifant.Language.Header (headerEnd)
 import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
-import Olifant.Cli.Output (anchorsHuman)
+import Olifant.Output (anchorsHuman)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Test.Hspec
 
