@@ -1,0 +1,24 @@
+# olifant-dev (Olifant's own conventions) in the shared project model: units
+# (a public module and its spec) and their internal modules, as this pack's
+# own kinds; specs are tests covering their unit.
+
+[[elements]]
+kind  = "haskell:unit"
+query = { glob = "src/Olifant/*.hs", exclude = ["**/*Spec.hs"] }
+id    = "{= stem =}"
+
+[[elements]]
+kind  = "haskell:module"
+query = { glob = "src/Olifant/*/**.hs", exclude = ["**/*Spec.hs"] }
+id    = "{= path|dir|basename =}/{= stem =}"
+
+[[elements]]
+kind  = "test"
+query = { glob = "src/Olifant/*Spec.hs" }
+id    = "{= stem =}"
+
+[[relations]]
+kind    = "covers"
+from    = "test"
+to_path = "{= path =}"
+rewrite = [["Spec\\.hs$", ".hs"]]

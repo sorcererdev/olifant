@@ -15,6 +15,8 @@ module Olifant.Catalog
   , catalogRules
   , catalogBrokenRules
   , catalogRulesConfig
+  , catalogModelMaps
+  , catalogBrokenModelMaps
   , CatalogEntry (..)
   , CatalogError (..)
   , describeCatalogError
@@ -54,6 +56,7 @@ import Olifant.Snippet (withHoleSources)
 import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
 import Olifant.Language (Language (..), Match (..), Syntax, languageFor, matchShape, parseLanguage)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
+import Olifant.ProjectModel (ModelMap, parseModelMap)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
 import Olifant.Rules (FixDef (..), RuleDef (..), RulesConfig (..), parseRules, parseRulesConfig)
 import Olifant.Template (describeExemplarError, describeTemplateError, exemplar, freeVariables, parseTemplate, templateSource)
@@ -90,6 +93,9 @@ data Catalog = Catalog
   , catalogBrokenRules :: [(FilePath, Text)]
   , -- | the project's `[rules]`: severities and allowed paths
     catalogRulesConfig :: RulesConfig
+  , -- | how each pack's conventions map onto the shared project model (its `model.toml`)
+    catalogModelMaps :: [ModelMap]
+  , catalogBrokenModelMaps :: [(FilePath, Text)]
   }
 
 -- | Where configuration lives. Packs come from the user config
@@ -229,7 +235,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] [])
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks]
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),
@@ -239,12 +245,14 @@ data LoadedPack = LoadedPack
   , lpLanguages :: [Either (FilePath, Text) Language]
   , lpRegions :: Either (FilePath, Text) [RegionDef]
   , lpRules :: Either (FilePath, Text) [RuleDef]
+  , lpModel :: Maybe (Either (FilePath, Text) ModelMap)
   }
 
 loadPack :: Monad m => Workspace m -> (Text, FilePath) -> m LoadedPack
 loadPack root (name, r) =
-  LoadedPack <$> discover root (Just name) (Just r) (r </> "generators") <*> languagesIn <*> regionsIn root r <*> rulesIn root r
+  LoadedPack <$> discover root (Just name) (Just r) (r </> "generators") <*> languagesIn <*> regionsIn root r <*> rulesIn root r <*> modelIn
   where
+    modelIn = readText root (r </> "model.toml") <&> fmap (first (r </> "model.toml",) . parseModelMap)
     languagesIn = do
       let dir = r </> "languages"
       files <- listFiles root dir

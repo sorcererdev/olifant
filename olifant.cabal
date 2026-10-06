@@ -84,6 +84,7 @@ library
     Olifant.Naming
     Olifant.Process
     Olifant.Process.Cancel
+    Olifant.ProjectModel
     Olifant.Query
     Olifant.Region
     Olifant.Rules
@@ -178,6 +179,8 @@ test-suite spec
     Olifant.NamingSpec
     Olifant.Process
     Olifant.Process.Cancel
+    Olifant.ProjectModel
+    Olifant.ProjectModelSpec
     Olifant.Query
     Olifant.QuerySpec
     Olifant.Region

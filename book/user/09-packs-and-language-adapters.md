@@ -20,6 +20,7 @@ packs/elm/
     grammar/elm/         the tree-sitter grammar it needs, vendored as C source
   regions.toml           owned regions (optional; olifant-dev and rust-htmx have one)
   rules.toml             rules: conventions as checks (optional; rust-htmx has one)
+  model.toml             how the pack's conventions map onto the project model (optional)
   SKILL.md               instructions for AI agents (optional; Olifant itself never reads it)
 ```
 
@@ -32,6 +33,7 @@ packs/elm/
 | `languages/<name>.toml` | `at` phrases, `complete`, `olifant anchors`/`where`, region comments | below |
 | `regions.toml` | every `gen`, `sync` and `check` | [chapter 5](05-owned-regions.md) |
 | `rules.toml` | `check` (and Durandal, on save) | [chapter 15](15-conventions-that-hold.md) |
+| `model.toml` | the language server's project model | [below](#the-project-model-modeltoml) |
 | `SKILL.md` | agent harnesses | [chapter 11](11-olifant-and-agents.md) |
 
 Only directories exactly one level under `generators/` with a `generator.toml` count; the same
@@ -633,6 +635,61 @@ parameters (`web-command` gives a router factory its command). All three want on
 line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a blank line
 between imports is a group, so a new import joins the last group) and `when_empty = "after
 header"` (in a file with no imports, the first goes under the docstring).
+
+## The project model: `model.toml`
+
+The language server keeps a model of each project: its services, commands, queries, ports,
+adapters, web resources, data models, tests and pages, and how they relate. Every pack
+describes it with the same words, so a Python project and a Rust project read the same way
+(and can be put side by side later, as one system). A pack's `model.toml` says which of its
+files are which:
+
+```toml
+# packs/python-htmx/model.toml (abridged)
+[[elements]]
+kind  = "command"
+query = { glob = "src/*/*/commands/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id    = "{= path|dir|dir|basename =}/commands/{= stem =}"
+
+[[elements]]
+kind   = "adapter"
+query  = { glob = "src/*/*/ports/*/*.py", exclude = ["**/__init__.py", "**/*__test.py"] }
+id     = "{= path|dir|dir|dir|basename =}/ports/{= path|dir|basename =}/{= stem =}"
+differ = ["{= stem =}", "{= path|dir|basename =}"]   # not the port's own Protocol file
+
+[[relations]]
+kind     = "uses"
+query    = { files = "src/*/*/commands/*.py", items_of = "parameters in __init__", each = { type = ":[[:space:]]*([A-Za-z_]+)" } }
+from     = "{= path|dir|dir|basename =}/commands/{= path|stem =}"
+to_name  = "{= type|snake =}"
+to_kinds = ["port"]
+
+[[relations]]
+kind    = "covers"
+from    = "test"
+to_path = "{= path =}"
+rewrite = [["__test\\.py$", ".py"]]
+```
+
+- **`[[elements]]`**: a `kind`, a `query` (the [query language](06-queries-and-choices.md):
+  a glob, an AST query, or a command) and an `id` template over each record; `name` defaults
+  to the id's last segment. `differ = [a, b]` keeps only records where the two templates
+  render differently.
+- **Kinds**: `service`, `command`, `query`, `port`, `adapter`, `resource`, `model`, `test`,
+  `page`, or the pack's own, namespaced (`elm:route`, `haskell:unit`). Any other word is a
+  load error.
+- **Ids** are the project's name, a colon, and the rendered id: `bistro:booking/commands/create_booking`.
+  They do not depend on the order files are listed in.
+- **`[[relations]]`**: a `kind` (`uses`, `implements`, `calls`, `covers`), from each element
+  of a kind (`from = "adapter"`, the templates read its record), or from each record of a
+  `query` (`from` renders the element's id). The target is one of `to` (an id), `to_path` (an
+  element's path) or `to_name` (an element's name, among `to_kinds`), each rewritten by
+  `rewrite` (regex, replacement) pairs in order. A relation whose ends are not both elements is
+  dropped.
+- Two template filters exist for this: `dir` (a path's folder) and `stem` (its file name
+  without the extension).
+
+`python-htmx`, `rust-htmx`, `elm` and `olifant-dev` have one.
 
 ## The python-htmx pack
 

@@ -110,6 +110,17 @@ applyFilter f v = case caseFromText f of
     "basename" -> case v of
       VText t -> Right (VText (snd (T.breakOnEnd "/" (T.dropWhileEnd (== '/') t))))
       other -> Left (TypeMismatch ("`basename` needs text, got " <> describeValue other))
+    -- A path's folder (src/app/booking/commands/x.py → src/app/booking/commands).
+    "dir" -> case v of
+      VText t -> Right (VText (T.dropWhileEnd (== '/') (fst (T.breakOnEnd "/" (T.dropWhileEnd (== '/') t)))))
+      other -> Left (TypeMismatch ("`dir` needs text, got " <> describeValue other))
+    -- A path's file name without its extension (…/create_booking.py → create_booking).
+    "stem" -> case v of
+      VText t ->
+        let file = snd (T.breakOnEnd "/" (T.dropWhileEnd (== '/') t))
+            (before, _) = T.breakOnEnd "." file
+         in Right (VText (if T.null before || before == "." then file else T.dropEnd 1 before))
+      other -> Left (TypeMismatch ("`stem` needs text, got " <> describeValue other))
     -- One level in (four spaces) on every non-empty line: a body under a def.
     "indent" -> case v of
       VText t -> Right (VText (T.intercalate "\n" [if T.null (T.strip l) then l else "    " <> l | l <- T.splitOn "\n" t]))

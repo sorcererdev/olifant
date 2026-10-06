@@ -677,6 +677,9 @@ The others, from `src/Olifant/Template/Render.hs`:
 | `rust_string` | escapes text for the inside of a Rust format-string literal (`todo!("…")`, `#[error("…")]`): `\` → `\\`, `"` → `\"`, `{` → `{{`, `}` → `}}` | `Too "late" for {refunds}` → `Too \"late\" for {{refunds}}` |
 | `escaped` | escapes text for the inside of an Elm or Haskell string literal: `\` → `\\`, `"` → `\"` | `say "hi" to C:\tmp` → `say \"hi\" to C:\\tmp` |
 | `python_string` | escapes text for the inside of a double-quoted Python string: `\` → `\\`, `"` → `\"`, a newline → `\n` | `Too "late" for {refunds}, C:\tmp` → `Too \"late\" for {refunds}, C:\\tmp` |
+| `basename` | a path's last segment | `src/bistro/web/bookings` → `bookings` |
+| `dir` | a path's folder (empty for a bare file name) | `src/bistro/booking/commands/create_booking.py` → `src/bistro/booking/commands` |
+| `stem` | a path's file name without its extension | `src/bistro/booking/commands/create_booking.py` → `create_booking` |
 
 `rust_string` is what the rust-htmx pack writes a free-text message with, in `command-failure`'s
 `#[error("{= message|rust_string =}")]` and in its adapter's `placeholder`

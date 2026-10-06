@@ -1,0 +1,37 @@
+# rust-htmx in Olifant's shared project model (olifant lsp, spec §1b).
+# A service is DOMAIN/DOMAIN-service; its commands are the modules of its
+# crate, its ports src/ports/*.rs; adapters are crates under DOMAIN/adapters.
+
+[[elements]]
+kind  = "service"
+query = { glob = "*/*-service" }
+id    = "{= path|dir|basename =}"
+
+[[elements]]
+kind  = "command"
+query = { glob = "*/*-service/src/*.rs", exclude = ["**/lib.rs", "**/main.rs", "**/models.rs", "**/ports.rs", "**/service.rs"] }
+id    = "{= path|dir|dir|dir|basename =}/commands/{= stem =}"
+
+[[elements]]
+kind  = "model"
+query = { glob = "*/*-service/src/models.rs" }
+id    = "{= path|dir|dir|dir|basename =}/models"
+
+[[elements]]
+kind  = "port"
+query = { glob = "*/*-service/src/ports/*.rs" }
+id    = "{= path|dir|dir|dir|dir|basename =}/ports/{= stem =}"
+
+[[elements]]
+kind  = "adapter"
+query = { glob = "*/adapters/*", exclude = ["**/*.*"] }
+id    = "{= path|dir|dir|basename =}/adapters/{= stem|snake =}"
+
+# An adapter implements the port trait its crate implements
+# (`impl InvoiceRepository for InMemoryInvoiceRepository`).
+[[relations]]
+kind     = "implements"
+query    = { files = "*/adapters/*/src/*.rs", ast = { kind = "impl_item", has = { field = "trait", kind = "type_identifier" } }, each = { port = "^impl[[:space:]]+([A-Za-z_]+)[[:space:]]+for" } }
+from     = "{= path|dir|dir|dir|dir|basename =}/adapters/{= path|dir|dir|basename|snake =}"
+to_name  = "{= port|snake =}"
+to_kinds = ["port"]
