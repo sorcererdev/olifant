@@ -476,6 +476,20 @@ holesSpec = describe "progress, holes and verify" $ do
           [] -> fail ("no Fill action among " <> show [a ^. L.title | InR a <- actions])
       T.concat (editTexts resolved) `shouldSatisfy` T.isInfixOf "self.bookings.save(booking)"
 
+  it "(d) says the project's model: its elements in the shared vocabulary, and how they relate (spec §1b)" $
+    withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
+      (v, _) <- inProcessWith ports root $ do
+        doc <- openDoc "shop/billing/billing-service/src/cancel_invoice.rs" "rust"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      let elements = case lookupKey "elements" v of Just (Array es) -> foldr (:) [] es; _ -> []
+          kindOf i = [lookupKey "kind" e | e <- elements, fmap (T.isSuffixOf i) (textOf (lookupKey "id" e)) == Just True]
+          textOf = \case Just (String t) -> Just t; _ -> Nothing
+      kindOf ":billing/commands/cancel_invoice" `shouldBe` [Just (String "command")]
+      lookupKey "relations" v `shouldSatisfy` (\case Just (Array rs) -> not (null rs); _ -> False)
+      lookupKey "problems" v `shouldBe` Just (Array mempty)
+
 -- | Regions kept on save, the generator picker, commands (Task 15).
 pickerSpec :: Spec
 pickerSpec = describe "regions on save, the generator picker, commands" $ do

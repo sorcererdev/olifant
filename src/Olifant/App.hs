@@ -14,6 +14,7 @@ module Olifant.App
   , ShowFailure (..)
   , showGenerator
   , doctorChecks
+  , projectModel
   , projectTools
   , projectQueries
   , queriesAt
@@ -48,6 +49,7 @@ import Data.Time (UTCTime)
 import Olifant.Actions (Action, Completion, FileAction, Nearby, actionsAt, actionsInFile, completionsAt)
 import Olifant.Anchor (astQueries)
 import Olifant.Catalog
+import Olifant.ProjectModel (ProjectModel, buildModel)
 import Olifant.Cursor (afterIndent, afterRule, atCursor, atCursorIndented, cursorIndent, isSnippet)
 import Olifant.Fill (ModelFiller (..))
 import Olifant.Generation
@@ -63,7 +65,7 @@ import Olifant.Template qualified as Tm
 import Olifant.Template.Syntax (Segment (..), Template (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Workspace (PathState (..), Workspace (..), within)
-import System.FilePath (takeBaseName, takeDirectory, (</>))
+import System.FilePath (takeBaseName, takeDirectory, takeFileName, (</>))
 import Olifant.Doctor (Check, DoctorInput (..), DoctorPorts, doctor)
 
 -- | What the engine needs from the world: the file system (absolute
@@ -165,6 +167,14 @@ showGenerator ports project ref sets = case findEntry (prCatalog project) ref of
           (Left why, _) -> Left (ShowInvalid why)
           (_, Left why) -> Left (ShowInvalid why)
           (Right d, Right vs) -> Right (e0 {entryDefinition = d}, vs)
+
+-- | The project in the shared vocabulary (spec §1b), by its packs'
+-- `model.toml`; its ids are the root folder's name and a path-like name.
+projectModel :: Ports -> Project -> IO ProjectModel
+projectModel ports project = do
+  let ws = prWorkspace project
+  paths <- listFiles ws "."
+  buildModel (projectQueries ports project) paths (readText ws) (catalogModelMaps (prCatalog project)) (T.pack (takeFileName (prRoot project)))
 
 -- | What generators need here (`doctor`): tools, packs, the model.
 doctorChecks :: Ports -> Project -> IO [Check]

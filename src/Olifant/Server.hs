@@ -44,6 +44,7 @@ module Olifant.Server
   , fixPlan
   , fileActionsFor
   , fillHolePlan
+  , modelFor
   , Jobs
   , newJobs
   , submit
@@ -56,6 +57,7 @@ import Olifant.Server.Suggest (Suggestion (..), suggestionFor)
 import Olifant.Server.Completion (completionsFor, ghostFor)
 import Olifant.Server.Edits (FileEdit (..), bytePosition, editorPosition, editsOfPlan, smallestChange)
 import Olifant.Server.Fixes (findingsFor, fixEdits, fixPlan)
+import Olifant.Server.Model (modelFor)
 import Olifant.Server.Hints (LineHint (..), fileActionsFor, hintsFor)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
 import Olifant.Server.State

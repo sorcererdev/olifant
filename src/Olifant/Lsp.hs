@@ -373,6 +373,13 @@ handlers env =
                   Right (root, plan) -> do
                     now <- liftIO (readMVar (envState env))
                     respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan now root plan)]))
+    , -- the project of a document in the shared vocabulary (spec §1b)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) $ \req respond -> do
+        let path = case req ^. L.params of
+              Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
+              _ -> Nothing
+        model <- maybe (pure Nothing) (liftIO . withSnapshot env . modelFor) path
+        respond (Right (maybe Aeson.Null toJSON model))
     , -- the holes left in the project of a document: where, which, what for
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) $ \req respond -> do
         let path = case req ^. L.params of
