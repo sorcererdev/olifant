@@ -272,6 +272,19 @@ spec = describe "olifant actions (spec §4.6)" $ do
         offeredAt (lineOf "tables: TableRepository", col "tables: TableRepository" + 2) `shouldReturn`
           [("Wire tables (TableRepository)", [("app", "bistro"), ("command", "get_day_schedule"), ("kind", "queries"), ("param", "tables"), ("port", "TableRepository"), ("service", "booking")])]
         offeredAt (lineOf "def handle", col "day: date" + 1) `shouldReturn` []
+    it "(python) offers add-dependency on __init__, not on handle" $ findExecutable "ast-grep" >>= \case
+      Nothing -> if strict then expectationFailure "ast-grep is required" else pendingWith "ast-grep is not installed"
+      Just _ -> do
+        tmp <- getTemporaryDirectory
+        let given = "packs/python-htmx/generators/add-dependency/tests/inline/given/src/bistro/booking/commands/cancel_booking.py"
+            path = "src/bistro/booking/commands/cancel_booking.py"
+        content <- TIO.readFile given
+        Right (ws, tools, _, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "add-dependency" [(path, content)]
+        paths <- listFiles ws "."
+        let lineOf needle = 1 + length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines content))
+            offeredAt pos = map (\a -> (actLabel a, actSets a)) <$> actionsAt (toolSyntax tools) (toolLanguages tools) (toolQueries tools) paths (readText ws) [("python-htmx/add-dependency", g)] path pos content
+        offeredAt (lineOf "def __init__", 9) `shouldReturn` [("Add a port", [("app", "bistro"), ("command", "cancel_booking"), ("kind", "commands"), ("service", "booking")])]
+        offeredAt (lineOf "def handle", 9) `shouldReturn` []
     it "offers wire-command on a field of the command's struct, not on another struct" $ do
       acts <- real "wire-command" cancel "billing/billing-service/src/cancel_invoice.rs" (9, 9)
       map (\a -> (actLabel a, actSets a, actMissing a)) acts `shouldBe` [("Wire cancel_invoice's dependencies", [("command", "cancel_invoice"), ("service", "billing")], [])]

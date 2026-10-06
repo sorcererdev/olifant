@@ -181,8 +181,8 @@ spec = do
             pure [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
           command = "src/bistro/booking/commands/close_table.py"
       check command "import sqlite3\n\n\ndef f() -> None:\n    db = sqlite3.connect(\"x\")\n    raise TableNotFound(\"t9\")\n"
-        `shouldReturn` [ ("commands-use-ports", Just 1, Warn, ["python-htmx/repository"])
-                       , ("commands-use-ports", Just 5, Warn, ["python-htmx/repository"])
+        `shouldReturn` [ ("commands-use-ports", Just 1, Warn, ["python-htmx/add-dependency", "python-htmx/repository"])
+                       , ("commands-use-ports", Just 5, Warn, ["python-htmx/add-dependency", "python-htmx/repository"])
                        , ("failures-returned", Just 6, Hint, []) ]
       check command "def f() -> None:\n    raise NotImplementedError(\"later\")\n" `shouldReturn` []
       check "src/bistro/web/floor/routes.py" "from bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n"

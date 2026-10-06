@@ -1,0 +1,12 @@
+now = "2026-10-06T12:00:00Z"
+# A one-line __init__(self): the port joins inline; wire follows (import,
+# self.booking_repository, the stub test's fake). The stub stays red.
+run_tests = true
+expect_failing = 1
+
+[inputs]
+app = "bistro"
+service = "booking"
+kind = "commands"
+command = "cancel_booking"
+port = "booking_repository"

@@ -643,6 +643,7 @@ wired up, ready for the first case. Snippets add the next case.
 | `repository` | `ports/E_repository/`: Protocol (`get`, `save`, `all`), in-memory and SQLite adapters from the model's fields (a value field such as `date` goes through encode/decode holes the model fills), contract test over both | passing |
 | `command` | `commands/NAME.py`: Input, a first failure in a one-per-line union, `handle` | a red stub |
 | `query` | `queries/NAME.py`: Input, Result, `handle` | a red stub |
+| `add-dependency` (menu) | on `__init__`: one of the service's ports joins its parameters, then `wire` | the existing ones |
 | `wire` (follow-up) | on an `__init__` parameter: the module keeps the port; every test that builds it passes the fake; `main.py`, if it builds it, passes the adapter, added once | the existing ones |
 | `web-resource` | `web/RESOURCE/`: the page from a query, a route per command (`web-command`), templates, `failures.py`; `main.py` builds and routes them; the home page links it | a red stub |
 | `failure-arms`, `failure-variant`, `match-arm`, `test-case`, `port-method`, `port-method-adapters` | snippets and follow-ups ([chapter 14](14-editors-and-actions.md#the-python-htmx-snippets)) | a red stub where they add behaviour |
@@ -661,7 +662,7 @@ page links each. (It lives in Python, not in `home.html`, because a region's fen
 comments and an HTML comment cannot end a line the way `#` does.)
 
 **The rules** (`packs/python-htmx/rules.toml`, [chapter 15](15-conventions-that-hold.md)):
-`commands-use-ports` (no `sqlite3` in a command or query; the fix adds a repository),
+`commands-use-ports` (no `sqlite3` in a command or query; the fixes use an existing port, or add a repository),
 `web-uses-commands` (no ports or `sqlite3` in `web/`), `adapters-in-main` (only `main.py`
 and tests import adapters) and `failures-returned` (a hint: return a failure, don't raise
 it).

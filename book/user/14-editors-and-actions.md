@@ -734,6 +734,10 @@ to walk its stops) and in the ⚡ menu.
 - **`port-method-adapters`**, the follow-up on a Protocol's method: each adapter beside the
   Protocol gets the method, its body a hole the model fills (with the Protocol's imports),
   and the contract test a red `test_NAME`.
+- **`add-dependency`** ("Add a port"), chosen from the ⚡ menu on a command's or query's
+  `__init__`: pick one of the service's ports and it joins the parameters, inline while the
+  line fits 88 columns, else one per line; then `wire` (below) runs as part of it. It is
+  also `commands-use-ports`' first fix, "Use an existing port".
 - **`wire`**, the follow-up on a parameter of a command's or query's `__init__` (type
   `bookings: BookingRepository` and Tab): the module keeps the port, every test that builds
   the command passes its fake, and `main.py`, when it builds the command, passes the

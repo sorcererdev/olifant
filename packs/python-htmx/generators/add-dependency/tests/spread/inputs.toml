@@ -1,0 +1,12 @@
+now = "2026-10-06T12:00:00Z"
+# Two ports already: a third would pass 88 columns, so __init__'s parameters
+# go one per line.
+run_tests = true
+expect_failing = 1
+
+[inputs]
+app = "bistro"
+service = "booking"
+kind = "commands"
+command = "cancel_booking"
+port = "id_generator"
