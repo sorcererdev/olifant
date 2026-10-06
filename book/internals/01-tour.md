@@ -1361,7 +1361,11 @@ has `imports`, `splitImports` takes the fill's leading import lines off first an
 `addImports` puts each one the file lacks after its last top-level import (or after the
 leading comments and docstring, `headerEnd`). `parses` checks only the code part, and
 `FillHole`'s `fhImports` tells the model it may send imports (`Model.hs` adds the line to
-that hole's prompt).
+that hole's prompt). After a round's check, `autoImport` looks at files whose every error
+is an undefined name (the support's `supportUndefined`); `importFor` scans the project's
+files of that language for the one import line binding the name (through `merging` and
+`import M( as N)?`), and each candidate using the name is prefixed with it and judged again
+in the same round (`AutoImported` progress).
 
 Then `generate` makes the shown edits match the writes:
 

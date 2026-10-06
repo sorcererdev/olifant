@@ -24,6 +24,7 @@ pyrightSupport =
     -- qualified as the site's own `case`s are (python review I2)
     , supportPattern = \d content _ p -> qualifyLike (siteLines d content) p
     , supportVisible = \_ _ _ -> True
+    , supportUndefined = undefinedName
     , supportFunction = pythonFunctionAt
     , supportArmSeparator = ""
     , supportReadsStdout = True
@@ -99,3 +100,14 @@ pythonFunctionAt content line =
   fromMaybe "?" (listToMaybe [n | l <- reverse (take (line + 1) (T.lines content)), Just rest <- [T.stripPrefix "def " (T.stripStart l) `orElse` T.stripPrefix "async def " (T.stripStart l)], let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest, not (T.null n)])
   where
     orElse a b = maybe b Just a
+
+-- | `"date" is not defined` → `date`.
+undefinedName :: Text -> Maybe Text
+undefinedName msg = case T.stripPrefix "\"" (T.stripStart msg) of
+  Just rest
+    | (n, after) <- T.breakOn "\"" rest
+    , not (T.null n)
+    , T.all (\c -> isAlphaNum c || c == '_') n
+    , "\" is not defined" `T.isPrefixOf` after ->
+        Just n
+  _ -> Nothing

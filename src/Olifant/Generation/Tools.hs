@@ -26,7 +26,7 @@ data Tools m = Tools
 
 -- | What a long-running plan is doing: a language's check; a fill request
 -- (holes, attempt, model); a hole filled (attempt) or given up on (why).
-data ProgressEvent = Checking Text | Filling [Text] Int Text | Filled Text Int | Unfilled Text Text
+data ProgressEvent = Checking Text | Filling [Text] Int Text | Filled Text Int | Unfilled Text Text | AutoImported Text Text
   deriving stock (Eq, Show)
 
 noTools :: Applicative m => Tools m

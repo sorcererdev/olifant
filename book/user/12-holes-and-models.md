@@ -279,6 +279,16 @@ run at all (no `ast-grep`, no `cargo`), the fill is accepted, and when a check c
 the plan warns: "holes were filled but not compile-checked: …". The point of the checks is
 to reject a wrong fill, not to stop a generation because a tool is missing.
 
+
+**Auto-import, without a model round.** When a fill fails only because names are not
+defined (pyright: `"date" is not defined`), and exactly one import line in the project's
+files of that language binds the name (`from datetime import date, time` in a model binds
+`date`), Olifant adds that import to the fill and checks it again in the same attempt. An
+alias binds its alias (`from datetime import date as d` binds `d`, not `date`). Two modules
+binding the name, or none, leave it to the model's retry. `--progress` reports it as
+`{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the
+name from a message (`supportUndefined`; pyright's does, the others don't yet).
+
 ### Retries with the reason
 
 A hole whose fill failed goes back to the model, in a new request holding only the failing

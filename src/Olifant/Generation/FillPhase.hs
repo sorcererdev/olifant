@@ -9,6 +9,7 @@ import Data.Aeson (object, (.=))
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
+import Data.Char (isAlphaNum)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -51,15 +52,25 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
               escaped = [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
           parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) (snd (splitImports (importsOf (holeFile (site t))) f))
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
-              candidates = [(t, f) | (t, f, True) <- parsed]
+              candidates0 = [(t, f) | (t, f, True) <- parsed]
               known = [(s', f') | (s', f', _) <- M.elems accepted]
               with cs = applyFills langOf base (known ++ [(site t, f) | (t, f) <- cs])
-          (broken0, note) <- checkFiles (with candidates) [site t | (t, _) <- candidates]
+          (broken0, note0) <- checkFiles (with candidates0) [site t | (t, _) <- candidates0]
           -- errors the files had with their placeholders are not the fills'
           -- (python review I1); checked only when something is broken
-          already <- if M.null broken0 then pure M.empty else fst <$> checkFiles (with []) [site t | (t, _) <- candidates]
+          already <- if M.null broken0 then pure M.empty else fst <$> checkFiles (with []) [site t | (t, _) <- candidates0]
           let notAlready = M.filter (not . null) . M.mapWithKey (\p es -> filter (`notElem` M.findWithDefault [] p already) es)
-              broken = notAlready broken0
+              broken1 = notAlready broken0
+          -- Auto-import (no model round): in a file whose every error is a
+          -- name not defined, a candidate using that name gets the one import
+          -- line in the project that binds it, and all are judged again.
+          imported <- if M.null broken1 then pure candidates0 else autoImport broken1 candidates0
+          (candidates, broken, note) <-
+            if map snd imported == map snd candidates0
+              then pure (candidates0, broken1, note0)
+              else do
+                (b, n) <- checkFiles (with imported) [site t | (t, _) <- imported]
+                pure (imported, notAlready b, n)
           -- All together compile: every candidate stands. Otherwise each is
           -- checked alone beside what is already accepted, so a fill that
           -- breaks another file is the one blamed (review I5).
@@ -91,6 +102,42 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
 
     name = holeName . site
     site = phSite . tryHole
+
+    -- Each candidate whose file's errors are all undefined names gets, for
+    -- each such name its fill uses, the one project import line binding it.
+    autoImport broken cs = do
+      let undefinedIn p = do
+            support <- supportFor . checkFormat =<< langCheck =<< langOf p
+            traverse (supportUndefined support . T.drop (length p + 2)) (M.findWithDefault [] p broken)
+          wanted = nub [(p, n) | p <- M.keys broken, Just ns <- [undefinedIn p], n <- ns]
+      if null wanted
+        then pure cs
+        else do
+          found <- forM (nub [(p, n) | (p, n) <- wanted]) $ \(p, n) -> ((p, n),) <$> maybe (pure Nothing) (\l -> importFor l n) (langOf p)
+          forM cs $ \(t, f) -> do
+            let p = holeFile (site t)
+                lines' = nub [l | ((q, n), Just l) <- found, q == p, usesName n f]
+            forM_ lines' (\l -> toolProgress tools (AutoImported (name t) l))
+            pure (t, if null lines' then f else T.intercalate "\n" lines' <> "\n\n" <> f)
+
+    usesName n f = any (== n) (T.split (\c -> not (isAlphaNum c || c == '_')) f)
+
+    -- The one import line in the project's files of this language that
+    -- binds @n@ (an alias binds its alias), as a line for one name.
+    importFor lang n = do
+      paths <- listFiles ws "."
+      let mine p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) (langFiles lang)
+      texts <- forM (filter mine paths) (readText ws)
+      let ls = [T.strip l | Just t <- texts, l <- T.lines t, maybe False (`matches` l) (langImports lang)]
+          binding entry = case T.words entry of
+            [x, "as", y] -> (x, y)
+            ws' -> (T.unwords ws', T.unwords ws')
+          froms = [ "from " <> m <> " import " <> e
+                  | Just mg <- [langImportMerge lang], l <- ls, Just (m, es) <- [merging mg l], e <- es, snd (binding e) == n ]
+          plains = [ l | l <- ls, Just rest <- [T.stripPrefix "import " l], let (x, y) = binding rest, (if x == y then T.takeWhile (/= '.') x else y) == n ]
+      pure $ case nub (froms ++ plains) of
+        [one] -> Just one
+        _ -> Nothing
 
     fillHole t =
       let s = site t

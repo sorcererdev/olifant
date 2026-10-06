@@ -839,3 +839,4 @@ progressJson = \case
   Filling holes attempt model -> object ["event" .= ("fill" :: Text), "holes" .= holes, "attempt" .= attempt, "model" .= model]
   Filled hole attempt -> object ["event" .= ("filled" :: Text), "hole" .= hole, "attempt" .= attempt]
   Unfilled hole why -> object ["event" .= ("unfilled" :: Text), "hole" .= hole, "why" .= why]
+  AutoImported hole line -> object ["event" .= ("auto_import" :: Text), "hole" .= hole, "import" .= line]

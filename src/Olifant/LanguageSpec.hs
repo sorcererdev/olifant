@@ -205,6 +205,9 @@ spec = do
         `shouldBe` Right [("billing/billing-service/src/service.rs", "missing field `email_sender` in initializer of `CancelInvoice`")]
     it "is a known format" $ fmap supportFormat (supportFor "rustc-json") `shouldBe` Just "rustc-json"
   describe "pyright-json (Python, recorded from pyright)" $ do
+    it "reads the undefined name from a message (auto-import)" $ do
+      supportUndefined pyrightSupport "\"date\" is not defined" `shouldBe` Just "date"
+      supportUndefined pyrightSupport "Type of \"date\" is unknown" `shouldBe` Nothing
     let sample name = BS.readFile ("src/Olifant/Language/testdata/pyright/" <> name <> "/report.json")
         sites r = [(missingFile m, fst (missingCase m), missingPatterns m) | m <- reportMissing r]
     it "is a known format, read from stdout" $ do
