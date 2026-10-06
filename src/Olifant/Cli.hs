@@ -29,6 +29,7 @@ import Data.Time (UTCTime)
 import Olifant.Anchor (Located (..), RenderedAnchor (..), describeMisses, insertLines, parsePhrase, resolveLayers)
 import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyRegion, fenceLines, wholeHeader)
 import Olifant.App
+import Olifant.Lsp (runLsp)
 import Olifant.Catalog
 import Olifant.Cli.Options
 import Olifant.Cli.Output
@@ -71,6 +72,8 @@ runCli rt args = case parseOptions args of
     | wantsJson -> rtOut rt (encodeJson (errorJson "usage" (T.strip text) []) <> "\n") >> pure (ExitFailure 2)
     | otherwise -> rtErr rt text >> pure (ExitFailure 2)
   -- `init` makes a project: there is none to open yet
+  -- the language server finds its projects itself, file by file
+  Right opts | LspCmd <- optCommand opts -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   Right opts | InitCmd pack name dir plan <- optCommand opts ->
     runInit rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) pack name dir plan
   Right opts -> do
@@ -217,6 +220,7 @@ runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt cwd fmt cat = \case
   -- handled before a project is opened (runCli); here for completeness
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
+  LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   ListCmd detail -> do
     -- Sources and fixed targets are checked here, so a broken generator shows
     -- as INVALID before anyone runs it.

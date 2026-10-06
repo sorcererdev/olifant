@@ -30,6 +30,10 @@ common shared
     , temporary             >=1.3
     , unix                  >=2.8
     , async                 >=2.2
+    , lsp                   >=2.8  && <2.9
+    , lsp-types             >=2.4  && <2.5
+    , lens                  >=5.2
+    , co-log-core           >=0.3
 
 library
   import:          shared
@@ -81,6 +85,7 @@ library
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Lsp
     Olifant.Model
     Olifant.Naming
     Olifant.Process
@@ -116,6 +121,7 @@ test-suite spec
     , hedgehog        >=1.4
     , hspec           >=2.11
     , hspec-hedgehog  >=0.1
+    , lsp-test        >=0.18 && <0.19
   other-modules:
     -- olifant:region test-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Actions
@@ -177,6 +183,8 @@ test-suite spec
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.LanguageSpec
+    Olifant.Lsp
+    Olifant.LspSpec
     Olifant.Model
     Olifant.ModelSpec
     Olifant.Naming
@@ -218,3 +226,5 @@ executable olifant
   hs-source-dirs:  app
   main-is:         Main.hs
   build-depends:   olifant
+  -- the language server reads, answers and runs jobs at once
+  ghc-options:     -threaded -rtsopts
