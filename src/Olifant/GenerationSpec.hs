@@ -774,7 +774,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
           , "[[edits]]", "create = \"src/c.py\"", "text = \"import os\\n\\nTODAY = {= ? d: expr | today =}\\n\"" ]
         -- `date` used but not imported in c.py: pyright's message
         undefinedDate = Checker $ \_ files -> pure (Right (CheckReport [] [(p, "\"date\" is not defined") | (p, t) <- M.toList files, p == "src/c.py", "date." `T.isInfixOf` t, not ("import date" `T.isInfixOf` t)] []))
-        run others = do
+        runAuto others = do
           calls <- newIORef (0 :: Int)
           let filler = Filler $ \_ -> modifyIORef' calls (+ 1) >> pure (Right (M.fromList [("d", "date.today()")]))
               tools = (basicTools noSyntax undefinedDate [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
@@ -784,18 +784,18 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
           n <- readIORef calls
           pure ([(holeName (phSite h), phStatus h) | h <- planHoles plan], M.lookup "src/c.py" files, n)
     it "(a) adds the one import that binds the name, in the same attempt" $ do
-      (statuses, c, n) <- run [("src/m.py", "from datetime import date, time\n")]
-      statuses `shouldBe` [("d", HoleFilled "fake" 1)]
+      (st, c, n) <- runAuto [("src/m.py", "from datetime import date, time\n")]
+      st `shouldBe` [("d", HoleFilled "fake" 1)]
       c `shouldBe` Just "import os\nfrom datetime import date\n\nTODAY = date.today()\n"
       n `shouldBe` 1
     it "(b) an alias binds its alias, not the name (Review Focus 1)" $ do
-      (statuses, c, _) <- run [("src/m.py", "from datetime import date as d\n")]
-      map fst statuses `shouldBe` ["d"]
-      statuses `shouldSatisfy` all (\case (_, HoleUnfilled _) -> True; _ -> False)
+      (st, c, _) <- runAuto [("src/m.py", "from datetime import date as d\n")]
+      map fst st `shouldBe` ["d"]
+      st `shouldSatisfy` all (\case (_, HoleUnfilled _) -> True; _ -> False)
       c `shouldSatisfy` maybe False (not . T.isInfixOf "from datetime import date\n")
     it "(c) two modules bind it: no guess" $ do
-      (statuses, _, _) <- run [("src/a.py", "from x import date\n"), ("src/b.py", "from y import date\n")]
-      statuses `shouldSatisfy` all (\case (_, HoleUnfilled _) -> True; _ -> False)
+      (st, _, _) <- runAuto [("src/a.py", "from x import date\n"), ("src/b.py", "from y import date\n")]
+      st `shouldSatisfy` all (\case (_, HoleUnfilled _) -> True; _ -> False)
   it "(m4) an inserted fragment shows the fill's code, not its imports (they go to the file's imports; review I4)" $ do
     let pyLang = l
           where

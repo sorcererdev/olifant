@@ -11,7 +11,7 @@ import Data.List (nub)
 import Data.Maybe (isJust)
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
-import Olifant.Anchor (RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, resolveLayers)
+import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
@@ -124,6 +124,10 @@ spec = do
       let big = T.replicate 20000 "x = 1\n\n"
       r <- querySyntax syn elm (object ["kind" .= ("no_such_kind" :: Text)]) big
       either (const True) (const False) r `shouldBe` True
+    it "(pack-opens c) a one-line list in a language with no separator is still refused" $ withAstGrep $ \syn elm _ -> do
+      let src = T.unlines ["module A exposing (..)", "", "parser =", "    oneOf [ a, b ]"]
+      r <- resolveLayers syn (Just elm) [PhraseAnchor "end of list in parser"] src
+      either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
@@ -152,6 +156,24 @@ spec = do
     it "(c) end of imports in a file with none goes after its docstring, a blank line before" $ withPython $ \syn lang _ -> do
       let bare = T.unlines ["\"\"\"Clock in memory.\"\"\"", "", "", "class InMemoryClock:", "    pass"]
       fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] bare) `shouldReturn` Right (1, BlankBefore)
+    describe "one-line containers (pack-opens: inline if it fits, else one per line)" $ do
+      let grown syn lang src phrase text = do
+            Right loc <- resolveLayers syn (Just lang) [PhraseAnchor phrase] src
+            pure (snd (insertLines loc text src), presentAt loc text src)
+          long = "tables_with_a_rather_long_name: TableRepositoryWithAnEvenLongerName"
+      it "(a) inline when it fits the line length" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "class A:\n    def __init__(self) -> None:\n        pass\n" "end of parameters in __init__" "bookings: BookingRepository")
+          `shouldReturn` "class A:\n    def __init__(self, bookings: BookingRepository) -> None:\n        pass\n"
+      it "(b) one item per line when it does not" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "class A:\n    def __init__(self, bookings: BookingRepository) -> None:\n        pass\n" "end of parameters in __init__" long)
+          `shouldReturn` T.unlines ["class A:", "    def __init__(", "        self,", "        bookings: BookingRepository,", "        " <> long <> ",", "    ) -> None:", "        pass"]
+      it "(d) nested calls stay whole; a trailing comment stays on the closing line (Review Focus 2)" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "x = foo(a, bar(b, c))  # note\n" "end of call foo" long)
+          `shouldReturn` T.unlines ["x = foo(", "    a,", "    bar(b, c),", "    " <> long <> ",", ")  # note"]
+      it "(e) a separator already at the end is not doubled (Review Focus 3)" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "y = f(a,)\n" "end of call f" "b") `shouldReturn` "y = f(a, b)\n"
+      it "(f) already there: present" $ withPython $ \syn lang _ ->
+        fmap snd (grown syn lang "y = f(a, b)\n" "end of call f" "b") `shouldReturn` True
     it "(c) end of parameters in FUNCTION goes after its last parameter (python-pack: web-command)" $ withPython $ \syn lang file ->
       at syn lang file "end of parameters in floor_routes" `shouldReturn` Right (lineOf "find_free_tables: FindFreeTables," + 1, "    ")
     it "(c) end of call NAME (anywhere in the file) goes after its last argument" $ withPython $ \syn lang file ->

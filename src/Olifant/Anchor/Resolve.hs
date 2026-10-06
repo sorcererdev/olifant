@@ -8,6 +8,7 @@ module Olifant.Anchor.Resolve
   , locateContainer
   , itemsOfTarget
   , insertLines
+  , grownLine
   , insertedText
   , placedText
   , Opening (..)
@@ -47,7 +48,14 @@ data Located = Located {locLine :: Int, locIndent :: Text, locRegion :: Text, lo
 -- @(line, from, to)@, the bracket columns; 'OpenLines' inserts before the
 -- closing line of a container spread over lines. Either way the text becomes
 -- the first item, so a leading separator is dropped ('placedText').
-data Opening = OpenLine Int Int Int | OpenLines
+--
+-- 'Grow': a one-line container with items, in a language with a
+-- `separator`: the new item joins it inline when the line stays within
+-- 'growWidth', else every item goes on its own line ('grownLine').
+data Opening
+  = OpenLine Int Int Int
+  | OpenLines
+  | Grow {growLine :: Int, growOpen :: Int, growClose :: Int, growItems :: [Text], growSep :: Text, growWidth :: Int, growIndent :: Text, growAtStart :: Bool}
   deriving stock (Eq, Show)
 
 data Spacing = NoSpacing | BlankBefore | BlankAfter
@@ -179,6 +187,12 @@ resolveOne syntax lang anchor content = case anchor of
               | otherwise ->
                   let inside = [indentAt i | i <- [cs + 1 .. ce - 1], not (T.null (T.strip (lineAt' i)))]
                    in Right ((located ce (case inside of (i : _) -> i; [] -> indentAt cs <> langIndent l) region) {locOpen = Just OpenLines})
+            (p, _ : _)
+              | p `elem` [StartOf, EndOf]
+              , cs == ce
+              , bracketed
+              , Just sep <- langSeparator l ->
+                  Right ((located cs (indentAt cs) region) {locOpen = Just (Grow cs (snd (matchStart c)) (snd (matchEnd c)) (map (T.strip . matchText) (sortOn matchStart items)) sep (langLineLength l) (langIndent l) (p == StartOf))})
             (StartOf, _) ->
               let f = minimumBy (comparing matchStart) items
                   spacing = case sortOn matchStart items of
@@ -245,14 +259,36 @@ insertLines loc snippet content =
       ls = T.splitOn newline content
       new = [if T.null (T.strip l) then "" else locIndent loc <> l | l <- T.splitOn "\n" (placedText loc snippet)]
       i = min (locLine loc) (length ls)
-   in case locOpen loc of
+   in case (grownLine loc snippet content, locOpen loc) of
+        -- A one-line container grown: its line replaced.
+        (Just (n, replacement), _) -> (n, T.intercalate newline (take (n - 1) ls ++ T.splitOn "\n" replacement ++ drop n ls))
         -- Split the container's line: up to the opening bracket, the text,
         -- then the closing bracket onwards at the line's own indentation.
-        Just (OpenLine l from to) | l < length ls ->
+        (_, Just (OpenLine l from to)) | l < length ls ->
           let line = ls !! l
               base = T.takeWhile (\c -> c == ' ' || c == '\t') line
            in (l + 2, T.intercalate newline (take l ls ++ [T.take (from + 1) line] ++ new ++ [base <> T.drop (to - 1) line] ++ drop (l + 1) ls))
         _ -> (i + 1, T.intercalate newline (take i ls ++ new ++ drop i ls))
+
+-- | A 'Grow' site: the 1-based line the container is on, and what replaces
+-- it: the line with the item inline when that fits, else the container
+-- spread one item per line (the closing bracket and whatever followed it on
+-- the last line). A separator the line already ended with is not doubled.
+grownLine :: Located -> Text -> Text -> Maybe (Int, Text)
+grownLine loc snippet content = case locOpen loc of
+  Just g@Grow {} | growLine g < length ls ->
+    let line = ls !! growLine g
+        before = T.take (growOpen g + 1) line
+        after = T.drop (growClose g - 1) line
+        new = let t = T.strip snippet in T.strip (fromMaybe t (T.stripSuffix (growSep g) t))
+        items = if growAtStart g then new : growItems g else growItems g ++ [new]
+        inline = before <> T.intercalate (growSep g <> " ") items <> after
+        base = T.takeWhile (\ch -> ch == ' ' || ch == '\t') line
+        spread = [before] ++ [base <> growIndent g <> i <> growSep g | i <- items] ++ [base <> after]
+     in Just (growLine g + 1, T.intercalate "\n" (if T.length inline <= growWidth g then [inline] else spread))
+  _ -> Nothing
+  where
+    ls = T.splitOn "\n" (T.replace "\r\n" "\n" content)
 
 -- | 'insertedText' at a located site: when the site opens an empty
 -- container the text is its first item, so a leading `,` is dropped (a

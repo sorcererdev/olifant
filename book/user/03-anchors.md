@@ -88,7 +88,13 @@ Use this when a structural target needs a tool (below) that might not be install
 
 - **Whole lines.** Olifant inserts whole lines, so the spot must own its line. With
   `oneOf [ a, b ]` written on one line, `end of list in parser` refuses ("the last item
-  shares its line with other code") instead of producing broken code. A separator such as
+  shares its line with other code") instead of producing broken code, unless the
+  language says how its items are separated. With a `separator` (Python's and Rust's
+  `,`), an item joins a one-line container: inline when the line stays within the
+  language's `line_length` (`def __init__(self, bookings: BookingRepository) -> None:`), else
+  the container goes one item per line, the closing bracket and what followed it on a line
+  of their own. The plan shows that line replaced; a separator already at the end is not
+  doubled. A separator such as
   `,` or `|` may share the line, so Elm's leading-comma lists work.
 - **Exactly one.** A target must match once. If `update` had two top-level `case`s,
   `case in update` would be ambiguous and the edit a conflict.

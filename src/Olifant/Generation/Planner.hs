@@ -13,7 +13,7 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Anchor (Located (..), Miss, RenderedAnchor, insertLines, placedText, presentAt)
+import Olifant.Anchor (Located (..), Miss, RenderedAnchor, grownLine, insertLines, placedText, presentAt)
 import Olifant.Generation.Compose (PlanItem (..))
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (RenderedEdit (..), renderedPath, renderedUnless)
@@ -83,7 +83,11 @@ decideItems locate diskPaths items original blocked onDisk = finish <$> foldM st
                   | presentAt loc snippet old -> (current, (planned path n p (Skipped AlreadyPresent)) {editAnchor = Just (locUsed loc)}, Nothing)
                   | otherwise ->
                       let (line, updated) = insertLines loc snippet old
-                       in (M.insert p (Just updated) current, (planned path n p (WillInsert line (placedText loc snippet))) {editAnchor = Just (locUsed loc)}, Nothing)
+                          -- a one-line container grown: the plan shows its line replaced
+                          action = case grownLine loc snippet old of
+                            Just (l, text) -> WillReplace l 1 text
+                            Nothing -> WillInsert line (placedText loc snippet)
+                       in (M.insert p (Just updated) current, (planned path n p action) {editAnchor = Just (locUsed loc)}, Nothing)
     -- A rule's fix: the lines must still read what the rule saw.
     decideReplace path n p (l1, l2) old new current
       | Just problem <- unwritable n p = (current, planned path n p Conflicted, Just problem)

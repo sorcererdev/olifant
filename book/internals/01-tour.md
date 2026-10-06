@@ -947,6 +947,11 @@ phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on 
   and `targetWhenEmpty = Just "after header"` (Python's `imports` again) it places the text
   at `headerEnd` (after the leading comments and docstring) with `BlankBefore`, instead of
   missing.
+- **A one-line container with items.** When the language has a `separator`, `place`
+  returns a `Grow` opening (the line, the bracket columns, the items' texts, the separator,
+  `line_length`, the indent, start or end) instead of refusing. `grownLine` builds the
+  replacement: inline if it fits, else one item per line; `insertLines` applies it, and the
+  planner shows it as `WillReplace line 1 text`.
 - **An empty container.** `place` has a third case, for `end of`/`start of` against a target
   whose `items` come back `[]` (spec §7.1). It opens the container only when it is bracketed
   (`()`, `{}`, `[]`; anything else, a whole file say, misses with "has no items to insert
