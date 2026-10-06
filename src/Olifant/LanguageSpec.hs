@@ -21,6 +21,7 @@ import Olifant.Template (Value (..))
 import Control.Monad (forM_)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
+import Olifant.Language.Header (headerEnd)
 import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
 import Olifant.Cli.Output (anchorsHuman)
@@ -174,6 +175,13 @@ spec = do
         fmap fst (grown syn lang "y = f(a,)\n" "end of call f" "b") `shouldReturn` "y = f(a, b)\n"
       it "(f) already there: present" $ withPython $ \syn lang _ ->
         fmap snd (grown syn lang "y = f(a, b)\n" "end of call f" "b") `shouldReturn` True
+    it "(pack-opens) headerEnd: prefixed docstrings and leading blank lines count" $ do
+      headerEnd ["r\"\"\"Doc.\"\"\"", "", "x = 1"] `shouldBe` 1
+      headerEnd ["", "", "\"\"\"Doc.\"\"\"", "x = 1"] `shouldBe` 3
+      headerEnd ["b'''a", "b'''", "x"] `shouldBe` 2
+      headerEnd ["x = 1"] `shouldBe` 0
+    it "(pack-opens) end of imports in a file with no header: line 0, no blank line" $ withPython $ \syn lang _ ->
+      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] "class X:\n    pass\n") `shouldReturn` Right (0, NoSpacing)
     it "(c) end of parameters in FUNCTION goes after its last parameter (python-pack: web-command)" $ withPython $ \syn lang file ->
       at syn lang file "end of parameters in floor_routes" `shouldReturn` Right (lineOf "find_free_tables: FindFreeTables," + 1, "    ")
     it "(c) end of call NAME (anywhere in the file) goes after its last argument" $ withPython $ \syn lang file ->

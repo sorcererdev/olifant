@@ -154,7 +154,8 @@ resolveOne syntax lang anchor content = case anchor of
         Right Nothing -> Left (miss "not found")
         Right (Just (_, []))
           | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] ->
-              Right ((located (headerEnd ls) "" (regionOf 0 (max 0 (length ls - 1)))) {locSpacing = BlankBefore})
+              let h = headerEnd ls
+               in Right ((located h "" (regionOf 0 (max 0 (length ls - 1)))) {locSpacing = if h == 0 then NoSpacing else BlankBefore})
         Right (Just (c, items)) -> (\loc -> if maybe True targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l pos c items
       where
         target = case [t | t <- langTargets l, Just _ <- [matchShape t ws]] of

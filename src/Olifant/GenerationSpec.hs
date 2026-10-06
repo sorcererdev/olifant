@@ -876,6 +876,21 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     Right plan <- generate ws noResolve tools [Step gen M.empty] now PlanOnly
     [t | e <- planEdits plan, WillInsert _ t <- [editAction e]] `shouldBe` ["NOW = datetime.now()"]
     M.lookup "src/c.py" (planWrites plan) `shouldBe` Just "import os\nfrom datetime import datetime\n\nX = 1\nNOW = datetime.now()\n"
+  it "(m5) an import-looking line inside the module docstring is not an import (pack-opens)" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
+              , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/c.py\"", "text = \"\\\"\\\"\\\"Use it like:\\n\\nfrom c import X\\n\\\"\\\"\\\"\\n\\nX = {= ? x: expr | x =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("x", "import os\nos.sep")]))
+        tools = (basicTools noSyntax noChecker [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "\"\"\"Use it like:\n\nfrom c import X\n\"\"\"\n\nimport os\n\nX = os.sep\n"
   it "(m3) imports from one module merge into one line (the language's import_merge)" $ do
     let pyLang = l
           where

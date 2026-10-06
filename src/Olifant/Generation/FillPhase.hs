@@ -273,13 +273,13 @@ addImports lang new t = case langImports lang of
       | line `elem` ls = ls
       | Just m <- langImportMerge lang
       , Just (modu, names) <- merging m line
-      , (i, have) : _ <- [(i, ns) | (i, l) <- zip [0 :: Int ..] ls, topLevel l, Just (mo, ns) <- [merging m l], mo == modu] =
+      , (i, have) : _ <- [(i, ns) | (i, l) <- zip [0 :: Int ..] ls, i >= headerEnd ls, topLevel l, Just (mo, ns) <- [merging m l], mo == modu] =
           case filter (`notElem` have) names of
             [] -> ls
             more -> case render (M.fromList [("module", VText modu), ("names", VText (T.intercalate ", " (have ++ more)))]) (mergeWrite m) of
               Right merged -> take i ls ++ [merged] ++ drop (i + 1) ls
               Left _ -> ls
-      | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, topLevel l, matches re l] of
+      | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, i >= headerEnd ls, topLevel l, matches re l] of
           [] ->
             let (header, rest) = splitAt (headerEnd ls) ls
              in header ++ [""] ++ [line] ++ (case rest of "" : _ -> rest; _ -> "" : rest)
