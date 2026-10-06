@@ -8,6 +8,7 @@ module Olifant.Workspace
   , diskWorkspace
   , within
   , overlay
+  , overlayMany
   , normalisePath
   , isSafeRelative
   ) where
@@ -18,6 +19,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf, nub, sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8', encodeUtf8)
@@ -129,25 +131,32 @@ diskWorkspace root =
 
 -- | View a workspace from a subdirectory.
 -- | The workspace with one file's text replaced (an editor's unsaved
--- buffer, spec §4.8): reads, existence and listing see it; everything
--- else is the workspace's. Plans only; it is never written.
+-- buffer, spec §4.8). Plans only; it is never written.
 overlay :: Monad m => FilePath -> Text -> Workspace m -> Workspace m
-overlay path text ws =
+overlay path text = overlayMany (M.singleton path text)
+
+-- | The workspace with open documents' texts over it (the language
+-- server's unsaved buffers): reads, existence and listing see them, and a
+-- document not on disk yet is listed; everything else is the workspace's.
+-- Plans only; it is never written.
+overlayMany :: Monad m => Map FilePath Text -> Workspace m -> Workspace m
+overlayMany docs0 ws =
   ws
-    { readText = \p -> if same p then pure (Just text) else readText ws p
-    , fileExists = \p -> if same p then pure True else fileExists ws p
-    , inspectPath = \p -> if same p then pure (Readable text) else inspectPath ws p
+    { readText = \p -> maybe (readText ws p) (pure . Just) (open p)
+    , fileExists = \p -> maybe (fileExists ws p) (const (pure True)) (open p)
+    , inspectPath = \p -> maybe (inspectPath ws p) (pure . Readable) (open p)
     , listFiles = \dir -> do
         fs <- listFiles ws dir
         let prefix = case normalisePath dir of
               "." -> ""
               d -> d <> "/"
-            rel = drop (length prefix) target
-        pure (if prefix `isPrefixOf` target && rel `notElem` fs then fs ++ [rel] else fs)
+            listed = S.fromList fs
+            extra = [rel | t <- M.keys docs, prefix `isPrefixOf` t, let rel = drop (length prefix) t, rel `S.notMember` listed]
+        pure (fs ++ extra)
     }
   where
-    target = normalisePath path
-    same p = normalisePath p == target
+    docs = M.mapKeys normalisePath docs0
+    open p = M.lookup (normalisePath p) docs
 
 within :: FilePath -> Workspace m -> Workspace m
 within dir ws =
