@@ -29,6 +29,7 @@ common shared
     , regex-tdfa            >=1.3
     , temporary             >=1.3
     , unix                  >=2.8
+    , async                 >=2.2
 
 library
   import:          shared
@@ -88,6 +89,9 @@ library
     Olifant.Query
     Olifant.Region
     Olifant.Rules
+    Olifant.Server
+    Olifant.Server.Jobs
+    Olifant.Server.State
     Olifant.Snippet
     Olifant.Suggest
     Olifant.Template
@@ -187,6 +191,10 @@ test-suite spec
     Olifant.RegionSpec
     Olifant.Rules
     Olifant.RulesSpec
+    Olifant.Server
+    Olifant.Server.Jobs
+    Olifant.Server.State
+    Olifant.ServerSpec
     Olifant.Snippet
     Olifant.SnippetSpec
     Olifant.Suggest

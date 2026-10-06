@@ -5,7 +5,9 @@ module Olifant.App
   ( Ports (..)
   , Project (..)
   , projectRoot
+  , nearestProject
   , openProject
+  , openProjectWith
   , generatorsOf
   , projectTools
   , projectQueries
@@ -83,20 +85,31 @@ data Project = Project
 -- | The nearest folder at or above @start@ holding `.olifant/` (not above
 -- the home directory); @start@ itself when there is none.
 projectRoot :: Monad m => Workspace m -> Maybe FilePath -> FilePath -> m FilePath
-projectRoot ws home start = go start
+projectRoot ws home start = fromMaybe start <$> nearestProject ws home start
+
+-- | The nearest folder at or above @start@ holding `.olifant/` (not above
+-- the home directory), if any.
+nearestProject :: Monad m => Workspace m -> Maybe FilePath -> FilePath -> m (Maybe FilePath)
+nearestProject ws home = go
   where
     go dir
-      | Just dir == home = pure start
+      | Just dir == home = pure Nothing
       | otherwise =
           inspectPath ws (dir </> ".olifant") >>= \case
-            Directory -> pure dir
-            _ | takeDirectory dir == dir -> pure start
+            Directory -> pure (Just dir)
+            _ | takeDirectory dir == dir -> pure Nothing
               | otherwise -> go (takeDirectory dir)
 
 -- | The project whose root is @root@, its catalog loaded, reading disk.
 openProject :: Ports -> FilePath -> IO (Either CatalogError Project)
 openProject ports root =
   openProjectCatalog (pFiles ports) (CatalogPaths root (pUserConfigDir ports) (pHomeDir ports))
+    <&> fmap (\cat -> Project root cat (within root (pFiles ports)))
+
+-- | 'openProject', its packs from a cache shared with other projects.
+openProjectWith :: PackCache -> Ports -> FilePath -> IO (Either CatalogError Project)
+openProjectWith cache ports root =
+  openProjectCatalogCached cache (pFiles ports) (CatalogPaths root (pUserConfigDir ports) (pHomeDir ports))
     <&> fmap (\cat -> Project root cat (within root (pFiles ports)))
 
 generatorsOf :: Project -> [(Text, GeneratorDef)]
