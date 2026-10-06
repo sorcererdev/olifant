@@ -5,7 +5,7 @@ module Olifant.LspSpec (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Applicative ((<|>))
-import Control.Monad (forM, forM_, void)
+import Control.Monad (forM, forM_, void, when)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BSL
@@ -37,12 +37,12 @@ import Olifant.App (Ports (..))
 import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processCheckerWith, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled)
 import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Workspace (diskWorkspace)
+import Olifant.Workspace (Workspace (listFiles), diskWorkspace)
 import System.Environment (lookupEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
 import System.FilePath (makeRelative, takeDirectory, (</>))
@@ -593,6 +593,32 @@ holesSpec = describe "progress, holes and verify" $ do
         TResponseMessage _ _ r <- awaitResolve
         pure (either (Just . (^. L.code)) (const Nothing) r)
       answer `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
+
+  it "(d0) answers others while it reports its state (health) and re-lists a project (review minor)" $ do
+    armed <- newIORef False
+    entered <- newEmptyMVar
+    gate <- newEmptyMVar
+    withPython [] $ \ports dir -> do
+      let disk = pFiles ports
+          gated = disk {listFiles = \p -> do
+                          held <- atomicModifyIORef' armed (False,)
+                          when held (putMVar entered () >> takeMVar gate)
+                          listFiles disk p}
+      _ <- forkIO (threadDelay 5000000 >> void (tryPutMVar gate ()))
+      (first, _) <- inProcessWith ports {pFiles = gated} dir $ do
+        _ <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        liftIO (writeIORef armed True)
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> "src/new.py")) FileChangeType_Created])
+        state <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) Aeson.Null
+        liftIO (timeout 10000000 (takeMVar entered)) >>= maybe (fail "debugState never re-listed") pure
+        plan <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= (999 :: Int)])
+        let firstOf = (responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) plan >> pure "plan")
+              <|> (responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) state >> pure "debugState")
+              <|> (anyMessage >> firstOf)
+        winner <- firstOf
+        liftIO (void (tryPutMVar gate ()))
+        pure (winner :: Text)
+      first `shouldBe` "plan"
 
   it "(d) says the project's model: its elements in the shared vocabulary, and how they relate (spec §1b)" $
     withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do

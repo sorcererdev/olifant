@@ -420,22 +420,23 @@ handlers env =
               _ -> Nothing
         holes <- maybe (pure []) (liftIO . withSnapshot env . holesFor) path
         respond (Right (object ["holes" .= [object ["path" .= hoPath h, "line" .= hoLine h, "name" .= hoName h, "kind" .= hoKind h, "instruction" .= hoInstruction h] | h <- holes]]))
-    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \_ respond ->
+    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \req respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))
-          True -> liftIO (debugState env) >>= respond . Right
+          True -> inBackground env req respond $ \job -> liftIO (debugState job) >>= respond . Right
     ]
 
 -- | Each open document, its version and its project (loading it).
 debugState :: Env -> IO Value
-debugState env = modifyMVar (envState env) $ \s0 -> do
+debugState env = withSnapshotState env (\s0 -> do
   let docs = M.toList (ssDocs s0)
   (s, rows) <- foldr (\(path, (version, _)) acc -> do
                          (s', rs) <- acc
                          (s'', found) <- projectFor path s'
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
-  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)]])
+  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)]]))
+    <&> snd
 
 -- | Ask the client to watch more files (dynamic registration: the protocol
 -- has no static capability for it), once per glob; a change reloads the
