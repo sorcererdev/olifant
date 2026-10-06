@@ -45,7 +45,7 @@ import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
 import System.Environment (lookupEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
-import System.FilePath (makeRelative, takeDirectory, (</>))
+import System.FilePath (makeRelative, normalise, takeDirectory, (</>))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (createPipe)
@@ -157,6 +157,32 @@ fixesSpec = describe "rule findings and their fixes" $ do
       [d ^. L.message | d <- ds] `shouldSatisfy` any (T.isInfixOf "configuration does not load")
       [d ^. L.severity | d <- ds, "configuration does not load" `T.isInfixOf` (d ^. L.message)] `shouldBe` [Just DiagnosticSeverity_Error]
       (lookupKey "broken" state >>= lookupKey (T.pack dir)) `shouldSatisfy` (/= Nothing)
+  it "(h) never keeps a catalog loaded in the background from a configuration that changed meanwhile (review minor)" $ do
+    armed <- newIORef False
+    entered <- newEmptyMVar
+    gate <- newEmptyMVar
+    withPython [] $ \ports dir -> do
+      let disk = pFiles ports
+          -- held after the load, as it lists the project's files
+          held = disk {listFiles = \p -> do
+                         stop <- if normalise p `elem` [normalise dir, normalise (dir </> ".")] then atomicModifyIORef' armed (False,) else pure False
+                         when stop (putMVar entered () >> takeMVar gate)
+                         listFiles disk p}
+          command = "src/bistro/booking/commands/create_booking.py"
+      _ <- forkIO (threadDelay 10000000 >> void (tryPutMVar gate ()))
+      (ds, _) <- inProcessWith ports {pFiles = held} dir $ do
+        liftIO (writeIORef armed True)
+        -- the project's first load, in the background (no document open yet)
+        _ <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) (object ["textDocument" .= object ["uri" .= filePathToUri (dir </> command)]])
+        liftIO (timeout 10000000 (takeMVar entered)) >>= maybe (fail "the load never listed the project") pure
+        -- meanwhile the configuration breaks
+        liftIO (TIO.writeFile (dir </> ".olifant/config.toml") "[packs\n")
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> ".olifant/config.toml")) FileChangeType_Changed])
+        liftIO (threadDelay 200000 >> putMVar gate ())
+        liftIO (threadDelay 500000)
+        doc <- openDoc command "python"
+        pullDiagnostics doc
+      [d ^. L.message | d <- ds] `shouldSatisfy` any (T.isInfixOf "configuration does not load")
   it "(f) answers an error, and keeps serving, when a request throws (review I4)" $
     withPython [] $ \ports dir -> do
       -- a tool that throws instead of answering (a file deleted mid-read, an unreadable folder)

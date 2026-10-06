@@ -544,7 +544,9 @@ withSnapshotState env work = do
   modifyMVar_ (envState env) $ \now ->
     pure
       now
-        { ssProjects = M.union (ssProjects now) (ssProjects after)
+        { -- projects it loaded stand only if no file changed meanwhile: a
+          -- configuration changed under a load is read again when next asked
+          ssProjects = M.union (ssProjects now) (if ssFilesStamp now == ssFilesStamp before then ssProjects after else M.empty)
         , ssLoads = M.unionWith (+) (ssLoads now) loaded
         , -- what it worked out stands only if nothing changed meanwhile
           ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
