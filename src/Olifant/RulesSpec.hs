@@ -60,7 +60,7 @@ spec = describe "rules (spec §5.9)" $ do
   it "(a) a match rule finds its node, with message, fix and the path's slots" $ do
     let [f] = fst (run none [(cmd, "use std::sync::Arc;\nuse diesel::prelude::*;\n")] [cmd])
     (fRule f, fRange f, fSeverity f, fMessage f, fFixes f)
-      `shouldBe` ("commands-use-ports", Just ((2, 1), (2, 24)), Warn, "Commands talk to ports, not the database", [FixOffer "rust-htmx/service-repository" Nothing [("command", "cancel_invoice"), ("service", "billing")] Nothing])
+      `shouldBe` ("commands-use-ports", Just ((2, 1), (2, 24)), Warn, "Commands talk to ports, not the database", [FixOffer "rust-htmx/service-repository" Nothing [("command", "cancel_invoice"), ("service", "billing")] Nothing []])
     fst (run none [("billing/billing-service/src/lib.rs", "use diesel::x;\n")] ["billing/billing-service/src/lib.rs"]) `shouldBe` []
   it "(b) a missing rule finds a file that should exist" $ do
     let port = "billing/src/ports/email_sender.rs"
@@ -99,8 +99,8 @@ spec = describe "rules (spec §5.9)" $ do
             , "[[rules.p.fixes]]", "generator = \"rust-htmx/service-repository\"", "label = \"Add a new repository port\"", "with = { service = \"{= service =}\" }" ])
           (fs, _) = runIdentity (checkFiles diesel [rust] none [r] [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
       map fFixes fs `shouldBe`
-        [ [ FixOffer "rust-htmx/command-dependency" (Just "Use an existing port") [("command", "cancel_invoice"), ("service", "billing")] Nothing
-          , FixOffer "rust-htmx/service-repository" (Just "Add a new repository port") [("service", "billing")] Nothing ] ]
+        [ [ FixOffer "rust-htmx/command-dependency" (Just "Use an existing port") [("command", "cancel_invoice"), ("service", "billing")] Nothing []
+          , FixOffer "rust-htmx/service-repository" (Just "Add a new repository port") [("service", "billing")] Nothing [] ] ]
     it "keeps one finding where matches nest (the outermost)" $ do
       let nested = Syntax $ \_ _ _ -> Identity (Right [Match (0, 4) (0, 10) "diesel", Match (0, 0) (0, 20) "use diesel::prelude"])
           (fs, _) = runIdentity (checkFiles nested [rust] none rules [cmd] (\_ -> Identity (Just "use diesel::prelude;\n")) [cmd])

@@ -125,6 +125,13 @@ generator, as one plan with the usual fill phase. In a rust-htmx sandbox with
 `let invoice = invoices::table.find("inv-1").first::<Invoice>(&mut conn).ok();` typed into
 `cancel_invoice`:
 
+**A fix that needs a choice.** When the fix's generator has an enum input the finding does
+not settle (which port to use for `import sqlite3`?), the offer in `check --json` lists it:
+`"missing": ["port"]`, `"choices": {"port": ["booking_repository", "id_generator"]}`. Give it
+with `olifant fix RULE --at FILE:LINE:COL --set port=booking_repository`; editors ask with a
+menu (durandal.nvim does, one input at a time). When the finding's code names exactly one
+choice (`invoices::table`), it is chosen for you and not listed.
+
 ```
 $ olifant fix commands-use-ports --at billing/billing-service/src/cancel_invoice.rs:15:24 --human
 …

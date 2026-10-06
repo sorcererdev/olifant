@@ -307,7 +307,7 @@ runCommand rt cwd fmt cat = \case
         rules = catalogRules cat
         nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
         sevText = \case R.Hint -> "hint" :: Text; R.Warn -> "warn"; R.Error -> "error"; R.Off -> "off"
-        offerJson o = object ["generator" .= foGenerator o, "name" .= nameOf (foGenerator o), "label" .= fromMaybe (nameOf (foGenerator o)) (foLabel o), "sets" .= M.fromList (foSets o)]
+        offerJson o = object ["generator" .= foGenerator o, "name" .= nameOf (foGenerator o), "label" .= fromMaybe (nameOf (foGenerator o)) (foLabel o), "sets" .= M.fromList (foSets o), "missing" .= map fst (foChoices o), "choices" .= M.fromList (foChoices o)]
         findingJson olds f =
           object
             [ "rule" .= fRule f, "file" .= fFile f, "severity" .= sevText (fSeverity f), "message" .= fMessage f
@@ -494,7 +494,7 @@ runCommand rt cwd fmt cat = \case
           Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
             Left why -> failWith rt fmt 2 "usage" why Nothing []
             Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
-  FixCmd rule file (line, _) n g -> do
+  FixCmd rule file (line, _) n given g -> do
     let ws = within (rtProjectDir rt) (rtRoot rt)
         rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
     paths <- listFiles ws "."
@@ -511,7 +511,7 @@ runCommand rt cwd fmt cat = \case
             loadGenerator (rtRoot rt) (rtSyntax rt) cat entry >>= \case
               Left err -> catalogFailure rt fmt err
               Right gen -> do
-                let sets = M.fromList (foSets o)
+                let sets = M.union (M.fromList given) (M.fromList (foSets o))
                     env = M.map Tm.VText (M.insert "finding" (maybe "" rpFinding (foReplace o)) sets)
                     defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                     replacement = case foReplace o of
@@ -807,10 +807,12 @@ chooseFixInputs rt cat paths now (fs, exs) = (,exs) <$> traverse (\f -> (\os -> 
         withChoices (projectQueries rt cat) paths (readText ws) (M.fromList (foSets o)) now (entryDefinition e) <&> \case
           Left _ -> o
           Right g ->
-            let picks = [(inputName i, c) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i], Just c <- [suggestChoice (fText f) cs]]
+            let open = [(inputName i, cs) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i]]
+                picks = [(k, c) | (k, cs) <- open, Just c <- [suggestChoice (fText f) cs]]
              in case picks of
-                  (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c)}
-                  [] -> o
+                  (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c), foChoices = [oc | oc@(k', _) <- open, k' /= k]}
+                  -- what the code does not name, the person picks (review I2)
+                  [] -> o {foChoices = open}
 
 -- | `invoice_repository` → `InvoiceRepository`.
 toPascal :: Text -> Text

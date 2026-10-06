@@ -30,6 +30,7 @@ import System.Environment (lookupEnv)
 import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
 import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
 import System.Directory (canonicalizePath)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
@@ -330,6 +331,33 @@ spec = do
           (checked, T.isInfixOf "conventions hold (0 findings" (T.pack checkOut)) `shouldBe` (ExitSuccess, True)
           (served, _, serveErr) <- stage "serve"
           (served, serveErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+    it "a fix that needs a choice offers it, and fix --set takes it (review I2: Use an existing port)" $ withUv $ do
+      tmp <- getTemporaryDirectory
+      withSystemTempDirectory "olifant-fix" $ \dir0 -> do
+        dir <- canonicalizePath dir0
+        packs <- canonicalizePath "packs/python-htmx"
+        fixture <- readTree "packs/python-htmx/fixtures/app"
+        forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+        createDirectoryIfMissing True (dir </> ".olifant")
+        TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack packs <> "\" }\n")
+        let close = "src/bistro/booking/commands/close_table.py"
+        TIO.writeFile (dir </> close) (T.unlines ["import sqlite3", "", "", "class CloseTableInput:", "    pass", "", "", "class CloseTable:", "    def __init__(self) -> None:", "        \"\"\"Its ports.\"\"\"", "", "    def handle(self, input: CloseTableInput) -> None:", "        raise NotImplementedError(\"later\")"])
+        out <- newIORef ""
+        let rt = Runtime
+              { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
+              , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 6) 0), rtStdoutIsTty = False
+              , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = noChecker
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
+        _ <- runCli rt ["check", "--file", close, "--json"]
+        checked <- readIORef out
+        checked `shouldSatisfy` T.isInfixOf "\"missing\":[\"port\"]"
+        checked `shouldSatisfy` T.isInfixOf "booking_repository"
+        writeIORef out ""
+        runCli rt ["fix", "commands-use-ports", "--at", close <> ":1:1", "--set", "port=booking_repository", "--plan", "--json"] `shouldReturn` ExitSuccess
+        planned <- readIORef out
+        planned `shouldSatisfy` T.isInfixOf "booking_repository: BookingRepository"
     it "web-command refuses a command with no Failure union (pack-opens)" $ do
       tmp <- getTemporaryDirectory
       let path = "src/bistro/booking/commands/close_table.py"

@@ -31,7 +31,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -134,10 +134,11 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     syncP = flag' SyncCheck (long "check" <> help "Report regions that drifted or are broken; write nothing") <|> (SyncInit <$> strOption (long "init" <> metavar "REGION" <> help "Create a region's fences at its init_at, then fill it")) <|> flag' SyncPlan (long "plan" <> help "Show the refresh as a plan (whole files, for editors); write nothing") <|> pure SyncApply
     setP s = either (Left . T.unpack) Right (parseSet s)
     fixP =
-      (\rule (f, pos) n plan model noFill progress -> FixCmd (T.pack rule) f pos n (GenOptions [] Nothing plan Nothing (T.pack <$> model) noFill progress Nothing Nothing Nothing))
+      (\rule (f, pos) n sets plan model noFill progress -> FixCmd (T.pack rule) f pos n sets (GenOptions [] Nothing plan Nothing (T.pack <$> model) noFill progress Nothing Nothing Nothing))
         <$> strArgument (metavar "RULE")
         <*> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "Where the finding is (1-based line, UTF-8 byte column)")
         <*> option auto (long "fix" <> metavar "N" <> value 1 <> help "Which of the rule's fixes (1 = the first, the default)")
+        <*> many (option (eitherReader setP) (long "set" <> metavar "K=V" <> help "An input the fix leaves open (check --json lists them as `missing`)"))
         <*> switch (long "plan" <> help "Show what would change without writing anything")
         <*> optional (strOption (long "model" <> metavar "NAME" <> help "Fill holes with [model.backends.NAME]"))
         <*> switch (long "no-fill" <> help "Leave every hole as its placeholder")
