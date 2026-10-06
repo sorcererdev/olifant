@@ -134,13 +134,15 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     lastN n xs = drop (length xs - n) xs
     site = phSite . tryHole
 
-    -- Each candidate whose file's errors are all undefined names gets, for
-    -- each such name its fill uses, the one project import line binding it.
+    -- Each candidate in a file that says names are not defined gets, for
+    -- each such name its fill uses, the one project import line binding it;
+    -- the re-check judges (other errors are often the cascade: pyright
+    -- strict's "Type of … is unknown", review I1).
     autoImport broken cs = do
-      let undefinedIn p = do
-            support <- supportFor . checkFormat =<< langCheck =<< langOf p
-            traverse (supportUndefined support . T.drop (length p + 2)) (M.findWithDefault [] p broken)
-          wanted = nub [(p, n) | p <- M.keys broken, Just ns <- [undefinedIn p], n <- ns]
+      let undefinedIn p = case supportFor . checkFormat =<< langCheck =<< langOf p of
+            Nothing -> []
+            Just support -> [n | m <- M.findWithDefault [] p broken, Just n <- [supportUndefined support (T.drop (length p + 2) m)]]
+          wanted = nub [(p, n) | p <- M.keys broken, n <- undefinedIn p]
       if null wanted
         then pure cs
         else do
@@ -282,7 +284,7 @@ addImports lang new t = case langImports lang of
       | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, i >= headerEnd ls, topLevel l, matches re l] of
           [] ->
             let (header, rest) = splitAt (headerEnd ls) ls
-             in header ++ [""] ++ [line] ++ (case rest of "" : _ -> rest; _ -> "" : rest)
+             in header ++ [""  | not (null header)] ++ [line] ++ (case rest of "" : _ -> rest; _ -> "" : rest)
           is -> let (upTo, rest) = splitAt (last is + 1) ls in upTo ++ [line] ++ rest
 
 

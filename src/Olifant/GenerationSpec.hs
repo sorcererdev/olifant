@@ -836,8 +836,9 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
         gen = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"python\""
           , "[[edits]]", "create = \"src/c.py\"", "text = \"import os\\n\\nTODAY = {= ? d: expr | today =}\\n\"" ]
-        -- `date` used but not imported in c.py: pyright's message
-        undefinedDate = Checker $ \_ files -> pure (Right (CheckReport [] [(p, "\"date\" is not defined") | (p, t) <- M.toList files, p == "src/c.py", "date." `T.isInfixOf` t, not ("import date" `T.isInfixOf` t)] []))
+        -- `date` used but not imported in c.py: pyright's message, and the
+        -- cascade strict mode adds (review I1)
+        undefinedDate = Checker $ \_ files -> pure (Right (CheckReport [] (concat [[(p, "\"date\" is not defined"), (p, "Type of \"TODAY\" is unknown")] | (p, t) <- M.toList files, p == "src/c.py", "date." `T.isInfixOf` t, not ("import date" `T.isInfixOf` t)]) []))
         runAuto others = do
           calls <- newIORef (0 :: Int)
           let filler = Filler $ \_ -> modifyIORef' calls (+ 1) >> pure (Right (M.fromList [("d", "date.today()")]))
@@ -852,6 +853,15 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       st `shouldBe` [("d", HoleFilled "fake" 1)]
       c `shouldBe` Just "import os\nfrom datetime import date\n\nTODAY = date.today()\n"
       n `shouldBe` 1
+    it "(a2) a file with no imports and no header: the import is its first line" $ do
+      let bare = generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"python\""
+            , "[[edits]]", "create = \"src/c.py\"", "text = \"TODAY = {= ? d: expr | today =}\\n\"" ]
+          filler = Filler $ \_ -> pure (Right (M.fromList [("d", "date.today()")]))
+          tools = (basicTools noSyntax undefinedDate [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+      (ws, snap) <- memoryWorkspace [("src/m.py", "from datetime import date\n")]
+      Right _ <- generate ws noResolve tools [Step bare M.empty] now Apply
+      (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "from datetime import date\n\nTODAY = date.today()\n"
     it "(b) an alias binds its alias, not the name (Review Focus 1)" $ do
       (st, c, _) <- runAuto [("src/m.py", "from datetime import date as d\n")]
       map fst st `shouldBe` ["d"]
