@@ -7,10 +7,12 @@ module Olifant.Language.Check
   , noChecker
   , describeCheckFailure
   , processChecker
+  , processCheckerWith
   , Verifier (..)
   , noVerifier
   , processVerifier
   , processVerifierWith
+  , processVerifierCancellable
   , compileClean
   , checkProgram
   , contextKey
@@ -32,7 +34,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), Language (..), matchesGlob)
 import Olifant.Language.Support (supportFor)
-import Olifant.Process (runBytes, runBytesWithin)
+import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, takeDirectory, (</>))
@@ -59,7 +61,11 @@ processVerifier = processVerifierWith 120
 -- @{= cache =}@ and @{= context =}@), stopped after @secs@ seconds: exit 0
 -- passes; the output (stdout then stderr) is what it said.
 processVerifierWith :: Int -> Verifier IO
-processVerifierWith secs = Verifier $ \lang argv files -> case (argv, checkProgram argv) of
+processVerifierWith = processVerifierCancellable neverCancel
+
+-- | 'processVerifierWith', killed when the token is tripped ("cancelled").
+processVerifierCancellable :: Cancel -> Int -> Verifier IO
+processVerifierCancellable token secs = Verifier $ \lang argv files -> case (argv, checkProgram argv) of
   ([], _) -> pure (Left (CheckFailed "empty verify command"))
   (_, Nothing) -> pure (Left (CheckFailed "the verify command runs no program"))
   (exe : args, Just program) ->
@@ -76,10 +82,11 @@ processVerifierWith secs = Verifier $ \lang argv files -> case (argv, checkProgr
         createDirectoryIfMissing True cache
         let ctx = maybe "none" (`contextKey` files) (langCheck lang)
             expand a = T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))
-        runBytesWithin secs path (map expand args) (Just tmp) "" <&> \case
+        runBytesCancellable token (Just secs) path (map expand args) (Just tmp) "" <&> \case
           Left why -> Left (CheckFailed why)
-          Right Nothing -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
-          Right (Just (code, out, err)) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
+          Right Cancelled -> Left (CheckFailed "cancelled")
+          Right TimedOut -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
+          Right (Finished code out err) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
 
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))
@@ -92,10 +99,15 @@ describeCheckFailure = \case
 -- | The process adapter: write the files into a scratch directory, run the
 -- adapter's check command there, and parse its report by format.
 processChecker :: Checker IO
-processChecker = Checker $ \lang files -> case langCheck lang of
+processChecker = processCheckerWith neverCancel
+
+-- | 'processChecker', its compiler killed when the token is tripped
+-- ("cancelled").
+processCheckerWith :: Cancel -> Checker IO
+processCheckerWith token = Checker $ \lang files -> case langCheck lang of
   Nothing -> pure (Left (CheckFailed (langName lang <> " has no [check] in its adapter")))
   Just check ->
-    runIn lang check files <&> \case
+    runIn token lang check files <&> \case
       Left f -> Left f
       Right (code, out, err, dir) -> case supportFor (checkFormat check) of
         Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
@@ -134,7 +146,7 @@ compileClean :: Language -> Map FilePath Text -> IO (Either Text ())
 compileClean lang files = case langCheck lang of
   Nothing -> pure (Left "no [check] command")
   Just check ->
-    runIn lang check files <&> \case
+    runIn neverCancel lang check files <&> \case
       Left f -> Left (describeCheckFailure f)
       Right (ExitSuccess, _, _, _) -> Right ()
       -- The support's broken files when it reads any (cargo's JSON), else stderr.
@@ -152,8 +164,8 @@ compileClean lang files = case langCheck lang of
 -- | The argument @{= files =}@ expands to the sources the adapter's globs
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
 -- directory that outlives the scratch copy (cargo's `--target-dir`).
-runIn :: Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn lang check files = case (checkCommand check, checkProgram (checkCommand check)) of
+runIn :: Cancel -> Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
+runIn token lang check files = case (checkCommand check, checkProgram (checkCommand check)) of
   ([], _) -> pure (Left (CheckFailed "empty check command"))
   (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
   (exe : args, Just program) ->
@@ -173,10 +185,11 @@ runIn lang check files = case (checkCommand check, checkProgram (checkCommand ch
             expand a
               | T.strip a == "{= files =}" = sources
               | otherwise = [T.unpack (T.replace "{= context =}" (contextKey check files) (T.replace "{= cache =}" (T.pack cache) a))]
-        ran <- runBytes path (concatMap expand args) (Just tmp) ""
+        ran <- runBytesCancellable token Nothing path (concatMap expand args) (Just tmp) ""
         pure $ case ran of
           Left why -> Left (CheckFailed why)
-          Right (code, out, err) -> Right (code, out, err, tmp)
+          Right (Finished code out err) -> Right (code, out, err, tmp)
+          Right _ -> Left (CheckFailed "cancelled")
 
 -- | GHC already prints relative paths; makeRelative leaves those unchanged.
 relativeTo :: FilePath -> CheckReport -> CheckReport

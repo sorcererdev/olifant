@@ -517,6 +517,7 @@ runSteps rt cwd fmt cat g context steps = do
               , poContext = context
               , poProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())
               , poNow = genNow g
+              , poCancelled = pure False
               }
       planWith (portsOf rt) project po steps >>= \case
         Left err -> generationFailure rt fmt err

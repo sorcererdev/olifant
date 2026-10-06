@@ -37,7 +37,9 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
     -- @stuck@: holes given up on for a reason no retry can change (their
     -- tests could not run at all: review I3)
-    loop mf r accepted notes stuck pending = do
+    loop mf r accepted notes stuck pending = toolCancelled tools >>= \case
+     True -> pure (finish mf accepted notes (stuck ++ [(t, "cancelled") | t <- pending]))
+     False -> do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
       reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools))
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]

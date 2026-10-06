@@ -251,11 +251,13 @@ data PlanOptions = PlanOptions
   , poContext :: [(FilePath, Text)]
   , poProgress :: ProgressEvent -> IO ()
   , poNow :: Maybe UTCTime
+  , -- | whether the plan was cancelled (superseded work in the server)
+    poCancelled :: IO Bool
   }
 
 -- | Plan only, no cursor, no model, no progress.
 planOptions :: PlanOptions
-planOptions = PlanOptions PlanOnly Nothing Nothing False [] (const (pure ())) Nothing
+planOptions = PlanOptions PlanOnly Nothing Nothing False [] (const (pure ())) Nothing (pure False)
 
 -- | Run plan steps (model, fills, regions): the plan, with the snippet at
 -- the cursor and the catalog's load warnings.
@@ -269,6 +271,7 @@ planWith ports project po steps = do
           , toolFiller = poFiller po
           , toolFillContext = poContext po
           , toolProgress = poProgress po
+          , toolCancelled = poCancelled po
           }
   generate (prWorkspace project) (resolver (pFiles ports) (pSyntax ports) cat) tools steps now (poMode po) <&> fmap finish
   where
