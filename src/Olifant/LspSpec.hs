@@ -27,7 +27,7 @@ import System.Exit (ExitCode (..))
 import System.Process (proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
-import Data.List (sort)
+import Data.List (isInfixOf, sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (..), LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
 import Data.Text.Encoding qualified as TE
@@ -42,7 +42,7 @@ import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled)
 import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Workspace (Workspace (listFiles), diskWorkspace)
+import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
 import System.Environment (lookupEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
 import System.FilePath (makeRelative, takeDirectory, (</>))
@@ -661,6 +661,26 @@ pickerSpec = describe "regions on save, the generator picker, commands" $ do
           TResponseMessage _ _ (Right (InL es)) -> pure es
           other -> fail (show other)
       T.concat (map (^. L.newText) edits) `shouldSatisfy` T.isInfixOf "\"floor\","
+  it "(a) refreshes regions once per save: didSave sends what willSaveWaitUntil worked out (review minor)" $ do
+    reads <- newIORef (0 :: Int)
+    withPython [] $ \ports dir -> do
+      let routes = "src/bistro/web/floor/routes.py"
+          disk = pFiles ports
+          counted = disk {readText = \p -> modifyIORef' reads (+ 1) >> readText disk p}
+      createDirectoryIfMissing True (dir </> "src/bistro/web/floor")
+      TIO.writeFile (dir </> routes) "from fastapi import APIRouter\n"
+      ((during, edit), _) <- inProcessWith ports {pFiles = counted} dir $ do
+        doc <- openDoc routes "python"
+        _ <- request SMethod_TextDocumentWillSaveWaitUntil (WillSaveTextDocumentParams doc TextDocumentSaveReason_Manual)
+        before <- liftIO (readIORef reads)
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams doc Nothing)
+        TRequestMessage _ _ _ params <- message SMethod_WorkspaceApplyEdit
+        after <- liftIO (readIORef reads)
+        pure (after - before, params ^. L.edit)
+      let texts = [either (^. L.newText) (^. L.newText) (toEither t) | Just cs <- [edit ^. L.documentChanges], InL te <- cs, t <- te ^. L.edits]
+          toEither = \case InL x -> Left x; InR y -> Right y
+      T.concat texts `shouldSatisfy` T.isInfixOf "\"floor\","
+      during `shouldBe` 0
   it "(b) lists the generators, each with its inputs (the picker)" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do
@@ -835,7 +855,44 @@ withPackCopies act = do
 -- | Slow work runs beside the requests that come meanwhile (the server
 -- reads on; progress can begin).
 concurrencySpec :: Spec
-concurrencySpec = describe "slow work, and requests meanwhile" $
+concurrencySpec = describe "slow work, and requests meanwhile" $ do
+  -- holes, the model and completion read or plan over a project: one
+  -- project's slow work never holds another's requests (spec §1b)
+  let uriOf d = object ["textDocument" .= object ["uri" .= (d ^. L.uri)]]
+      awaiting m rid = void (responseForId m rid)
+  forM_
+    [ ("olifant/holes", \py -> awaiting (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) <$> sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) (uriOf py))
+    , ("olifant/model", \py -> awaiting (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) <$> sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) (uriOf py))
+    , ("textDocument/completion", \_ -> do
+        test <- openDoc "py/src/bistro/booking/commands/create_booking__test.py" "python"
+        awaiting SMethod_TextDocumentCompletion <$> sendRequest SMethod_TextDocumentCompletion (CompletionParams test (Position 34 0) Nothing Nothing Nothing))
+    ]
+    $ \(method, slowRequest) ->
+      it ("answers another project while " <> method <> " is slow in one (review minor)") $ do
+        armed <- newIORef False
+        entered <- newEmptyMVar
+        gate <- newEmptyMVar
+        withProjects [("py", "python-htmx", "packs/python-htmx/fixtures/app"), ("rs", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
+          let disk = pFiles ports
+              hold = atomicModifyIORef' armed (False,) >>= \held -> when held (putMVar entered () >> takeMVar gate)
+              gated = disk {readText = \p -> when ("/py/" `isInfixOf` p) hold >> readText disk p}
+              -- the first syntax query after arming (completion plans over the open buffer)
+              slowSyntax = Syntax (\l q t -> hold >> querySyntax (pSyntax ports) l q t)
+          _ <- forkIO (threadDelay 5000000 >> void (tryPutMVar gate ()))
+          (first, _) <- inProcessWith ports {pFiles = gated, pSyntax = slowSyntax} root $ do
+            py <- openDoc "py/src/bistro/booking/commands/create_booking.py" "python"
+            rs <- openDoc "rs/billing/billing-service/src/cancel_invoice.rs" "rust"
+            _ <- pullDiagnostics rs
+            _ <- pullDiagnostics py
+            liftIO (writeIORef armed True)
+            slow <- slowRequest py
+            liftIO (timeout 10000000 (takeMVar entered)) >>= maybe (fail (method <> " never read a file")) pure
+            other <- sendRequest SMethod_TextDocumentDiagnostic (DocumentDiagnosticParams Nothing Nothing rs Nothing Nothing)
+            let firstOf = (responseForId SMethod_TextDocumentDiagnostic other >> pure "other") <|> (slow >> pure "slow") <|> (anyMessage >> firstOf)
+            winner <- firstOf
+            liftIO (void (tryPutMVar gate ()))
+            pure (winner :: Text)
+          first `shouldBe` "other"
   it "answers other requests while a slow resolve (a 2 s check) runs" $ do
     fills <- canonicalizePath "packs/python-htmx/generators/handle-body/tests/create-booking/fills.toml"
     let slowCheck = Checker (\_ _ -> threadDelay 2000000 >> pure (Right (CheckReport [] [] [])))
