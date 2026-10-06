@@ -62,6 +62,8 @@ container = { kind = "parenthesized_expression", inside = { kind = "type_alias_s
 # goes after its last line, at its indentation.
 items = { any = [{ kind = "binary_operator" }, { kind = "identifier" }] }
 example = "end of union CreateBookingFailure"
+# members are joined by `|`, not a separator: a one-line union never grows
+separator = ""
 
 [targets.class]
 phrase = "class NAME"

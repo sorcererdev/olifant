@@ -81,7 +81,10 @@ data Grammar = BuiltInGrammar Text | GrammarSource FilePath
 -- 'targetWhenEmpty' (key `when_empty`): with no items and no brackets to
 -- open, `"after header"` puts the text after the file's leading comments
 -- and docstring (Python's imports in a file with none).
-data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targetItems :: Rule, targetExample :: Text, targetSpaced :: Bool, targetWhenEmpty :: Maybe Text}
+--
+-- 'targetSeparator' (key `separator`): this target's, over the language's
+-- (`""`: its one-line containers never grow — a `|` union is not a list).
+data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targetItems :: Rule, targetExample :: Text, targetSpaced :: Bool, targetWhenEmpty :: Maybe Text, targetSeparator :: Maybe Text}
   deriving stock (Show)
 
 data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text}
@@ -127,7 +130,7 @@ parseLanguage name packRoot src = do
         then Right (HoleKind ph wrap)
         else Left "`wrap` must contain {= fill =} (or {= fill|indent =}, one level in), where the fill goes"
     targetFrom t = do
-      onlyKeys ["phrase", "container", "items", "example", "spaced", "when_empty"] t
+      onlyKeys ["phrase", "container", "items", "example", "spaced", "when_empty", "separator"] t
       TargetDef
         <$> (T.words <$> required "phrase" text t)
         <*> required "container" ruleFromTree t
@@ -135,6 +138,7 @@ parseLanguage name packRoot src = do
         <*> required "example" text t
         <*> (fromMaybe True <$> optional "spaced" bool t)
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
+        <*> optional "separator" text t
     checkFrom t = do
       onlyKeys ["command", "context", "format"] t
       format <- required "format" text t

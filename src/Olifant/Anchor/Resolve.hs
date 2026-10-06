@@ -114,6 +114,11 @@ resolveOne syntax lang anchor content = case anchor of
             then wholeLine "the match" (startsLine (matchStart m)) (located s (indentAt s) (regionOf s e))
             else wholeLine "the match" (endsLine (matchEnd m)) (located (e + 1) (indentAt s) (regionOf s e))
     -- Items separated by a blank line (Elm case branches, Rust methods).
+    covered sep inside texts =
+      let strip rest = \case
+            [] -> rest
+            i : is -> let (b, a) = T.breakOn i rest in strip (b <> T.drop (T.length i) a) is
+       in T.all (`elem` (" \t" <> T.unpack sep)) (strip inside texts)
     blankBetween a b = any (T.null . T.strip . lineAt') [fst (matchEnd a) + 1 .. fst (matchStart b) - 1]
     -- Olifant inserts whole lines, so a position must begin or end its line.
     lineAt' i = if i < length ls then ls !! i else ""
@@ -156,12 +161,17 @@ resolveOne syntax lang anchor content = case anchor of
           | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] ->
               let h = headerEnd ls
                in Right ((located h "" (regionOf 0 (max 0 (length ls - 1)))) {locSpacing = if h == 0 then NoSpacing else BlankBefore})
-        Right (Just (c, items)) -> (\loc -> if maybe True targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l pos c items
+        Right (Just (c, items)) -> (\loc -> if maybe True targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l separator pos c items
       where
         target = case [t | t <- langTargets l, Just _ <- [matchShape t ws]] of
           t : _ -> Just t
           [] -> Nothing
-    place l pos c items =
+        -- the target's separator over the language's; "" never grows
+        separator = case targetSeparator =<< target of
+          Just s | T.null s -> Nothing
+          Just s -> Just s
+          Nothing -> langSeparator l
+    place l separator pos c items =
       let (cs, ce) = (fst (matchStart c), fst (matchEnd c))
           region = regionOf cs ce
           body = T.strip (matchText c)
@@ -192,7 +202,10 @@ resolveOne syntax lang anchor content = case anchor of
               | p `elem` [StartOf, EndOf]
               , cs == ce
               , bracketed
-              , Just sep <- langSeparator l ->
+              , Just sep <- separator
+              -- every bit of code between the brackets is an item: what is
+              -- not (a lambda, `*`, an operator) would be lost; refuse instead
+              , covered sep (T.drop (snd (matchStart c) + 1) (T.take (snd (matchEnd c) - 1) (lineAt' cs))) (map matchText (sortOn matchStart items)) ->
                   Right ((located cs (indentAt cs) region) {locOpen = Just (Grow cs (snd (matchStart c)) (snd (matchEnd c)) (map (T.strip . matchText) (sortOn matchStart items)) sep (langLineLength l) (langIndent l) (p == StartOf))})
             (StartOf, _) ->
               let f = minimumBy (comparing matchStart) items

@@ -173,6 +173,15 @@ spec = do
           `shouldReturn` T.unlines ["x = foo(", "    a,", "    bar(b, c),", "    " <> long <> ",", ")  # note"]
       it "(e) a separator already at the end is not doubled (Review Focus 3)" $ withPython $ \syn lang _ ->
         fmap fst (grown syn lang "y = f(a,)\n" "end of call f" "b") `shouldReturn` "y = f(a, b)\n"
+      it "(g) review C1: code that is not an item (a lambda, an operator) refuses rather than vanish" $ withPython $ \syn lang _ -> do
+        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of call foo"] "x = foo(a + b, lambda q: q, c)  # note\n"
+        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
+      it "(h) review C1: a keyword-only marker is not an item: refused, not dropped" $ withPython $ \syn lang _ -> do
+        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of parameters in f"] "def f(self, *, x: int) -> None:\n    pass\n"
+        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
+      it "(i) review C1: a one-line union is not a comma list: refused" $ withPython $ \syn lang _ -> do
+        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of union F"] "type F = (NotFound | Late)\n"
+        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
       it "(f) already there: present" $ withPython $ \syn lang _ ->
         fmap snd (grown syn lang "y = f(a, b)\n" "end of call f" "b") `shouldReturn` True
     it "(pack-opens) headerEnd: prefixed docstrings and leading blank lines count" $ do
