@@ -8,6 +8,7 @@ import Data.ByteString.Lazy.Char8 qualified as BL
 import Data.Aeson (encode, object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Hedgehog (evalIO, forAll, (===))
 import Hedgehog.Gen qualified as Gen
@@ -891,6 +892,17 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (ws, snap) <- memoryWorkspace []
     Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
     (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "\"\"\"Use it like:\n\nfrom c import X\n\"\"\"\n\nimport os\n\nX = os.sep\n"
+  it "(m6) the pack's import patterns: aliases and parenthesised imports (pack-opens)" $ do
+    src <- TIO.readFile "packs/python-htmx/languages/python.toml"
+    let Right packPy = parseLanguage "python" "packs/python-htmx" src
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/c.py\"", "text = \"from x import c\\n\\nA = {= ? a: expr | a =}\\nB = {= ? b: expr | b =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("a", "from datetime import date as d\n\nd.today()"), ("b", "from x import (a, b)\n\na + b")]))
+        tools = (basicTools noSyntax noChecker [packPy]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "from x import c, a, b\nfrom datetime import date as d\n\nA = d.today()\nB = a + b\n"
   it "(m3) imports from one module merge into one line (the language's import_merge)" $ do
     let pyLang = l
           where
