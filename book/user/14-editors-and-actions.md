@@ -734,6 +734,17 @@ to walk its stops) and in the ⚡ menu.
 - **`port-method-adapters`**, the follow-up on a Protocol's method: each adapter beside the
   Protocol gets the method, its body a hole the model fills (with the Protocol's imports),
   and the contract test a red `test_NAME`.
+- **`add-dependency`** ("Add a port"), chosen from the ⚡ menu on a command's or query's
+  `__init__`: pick one of the service's ports and it joins the parameters, inline while the
+  line fits 88 columns, else one per line; then `wire` (below) runs as part of it. It is
+  also `commands-use-ports`' first fix, "Use an existing port".
+- **`handle-body`** ("Write handle with the model (until its tests pass)"), chosen from the
+  ⚡ menu on a `handle` whose body is still `raise NotImplementedError(…)`, never offered
+  unasked. The model writes the body, seeing the module's tests, the service's models and
+  ports; the fill stands only when pyright is clean and `NAME__test.py` passes (`verify`;
+  editors show "Testing"). With no `__test.py` it refuses: "write NAME__test.py first". On
+  the slice, qwen3-coder:30b wrote `create_booking`, `cancel_booking` and
+  `get_day_schedule` green in one round each, 3–6 s.
 - **`wire`**, the follow-up on a parameter of a command's or query's `__init__` (type
   `bookings: BookingRepository` and Tab): the module keeps the port, every test that builds
   the command passes its fake, and `main.py`, when it builds the command, passes the

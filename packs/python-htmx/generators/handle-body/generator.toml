@@ -1,0 +1,52 @@
+name = "Handle body"
+description = "Write a command's or query's handle with the model, until its tests pass (asked for from the ⚡ menu, never offered unasked)"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/handle-body --at src/bistro/booking/commands/create_booking.py:52:9 --plan",
+]
+
+# What the model sees beside the module: the tests it must pass, the
+# service's models, and its ports (Protocols and adapters).
+context = [
+  "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}__test.py",
+  "src/{= app =}/{= service|snake =}/models/*.py",
+  "src/{= app =}/{= service|snake =}/ports/*/*.py",
+]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.kind]
+type    = "enum"
+choices = ["commands", "queries"]
+prompt  = "A command or a query"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command or query (its module's name)"
+
+[requires]
+exists = ["src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}__test.py"]
+hint   = "write {= command|snake =}__test.py first: handle-body writes the code that makes its tests pass"
+
+[[edits]]
+cursor = true
+text = "{= ? body: block | handle for {= command|pascal =}: make every test in {= command|snake =}__test.py pass, using only the ports self already has =}"
+
+# The fill stands only when the module's tests pass.
+[holes.body]
+source = "model"
+verify = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "-p", "no:cacheprovider", "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}__test.py"]
+
+# In an editor: chosen from the ⚡ menu on handle's raise NotImplementedError.
+[applies_at]
+path  = "src/{app}/{service}/{kind}/{command}.py"
+node  = { kind = "raise_statement", regex = "NotImplementedError", inside = { kind = "block", inside = { kind = "function_definition", has = { field = "name", regex = "^handle$" } } } }
+where = "on handle's raise NotImplementedError"
+label = "Write handle with the model (until its tests pass)"

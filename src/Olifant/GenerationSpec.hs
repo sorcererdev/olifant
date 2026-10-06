@@ -8,6 +8,7 @@ import Data.ByteString.Lazy.Char8 qualified as BL
 import Data.Aeson (encode, object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Hedgehog (evalIO, forAll, (===))
 import Hedgehog.Gen qualified as Gen
@@ -760,6 +761,123 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (ws, _) <- memoryWorkspace []
     Right plan <- generate ws noResolve tools [Step twice M.empty] now PlanOnly
     [t | e <- planEdits plan, WillCreate t <- [editAction e]] `shouldBe` ["a = 1\nb = 2\n"]
+  describe "verify (a hole's fill must pass a command: its tests)" $ do
+    let gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "create = \"src/V.elm\"", "text = \"v = {= ? v: expr | the value =}\\n\""
+          , "[holes.v]", "source = \"model\"", "verify = [\"run-tests\", \"src/V.elm\", \"{= cache =}/venv-{= context =}\"]" ]
+        -- passes when the file holds GOOD; says why otherwise
+        verifier seen = Verifier $ \_ argv files -> do
+          modifyIORef' seen (++ [argv])
+          pure (Right (if any ("GOOD" `T.isInfixOf`) (M.elems files) then (True, "ok") else (False, "FAILED test_v - expected GOOD")))
+    it "(b) a fill that compiles but fails verify is retried with the output" $ do
+      seen <- newIORef []
+      calls <- newIORef []
+      script <- newIORef [Right (M.fromList [("v", "WRONG")]), Right (M.fromList [("v", "GOOD")])]
+      let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> atomicModifyIORef' script (\case [] -> ([], Left "no more"); (r : rs) -> (rs, r))
+          tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler), toolVerifier = verifier seen}
+      (ws, snap) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+      [(holeName (phSite h), phStatus h) | h <- planHoles plan] `shouldBe` [("v", HoleFilled "fake" 2)]
+      (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = GOOD\n"
+      reqs <- readIORef calls
+      [fmap (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [Just "the tests failed:"]
+      -- {= cache =} and {= context =} reach the verifier, which expands them
+      take 1 <$> readIORef seen `shouldReturn` [["run-tests", "src/V.elm", "{= cache =}/venv-{= context =}"]]
+    it "(d) review I3: tests that cannot run are not the fill's fault: one attempt, no retry" $ do
+      calls <- newIORef (0 :: Int)
+      let filler = Filler $ \_ -> modifyIORef' calls (+ 1) >> pure (Right (M.fromList [("v", "GOOD")]))
+          tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 2 filler)}
+      (ws, _) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+      [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "could not run" `T.isInfixOf` why; _ -> False)
+      readIORef calls `shouldReturn` 1
+    it "(c) retries run out: the placeholder stays, the reason is the output" $ do
+      seen <- newIORef []
+      let filler = Filler $ \_ -> pure (Right (M.fromList [("v", "WRONG")]))
+          tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 1 filler), toolVerifier = verifier seen}
+      (ws, snap) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+      [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "FAILED test_v" `T.isInfixOf` why; _ -> False)
+      (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = Debug.todo \"olifant: v\"\n"
+  it "(q) a block whose continuation lines came one level too deep is read one level up, when that compiles (pack-opens)" $ do
+    let blockLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/f.py\"", "text = \"def f():\\n    {= ? body: block | the body =}\\n\"" ]
+        -- pyright's complaint: a line indented past its block
+        indentation = Checker $ \_ files -> pure (Right (CheckReport [] [(p, "Unexpected indentation") | (p, t) <- M.toList files, any ("        if" `T.isPrefixOf`) (T.lines t)] []))
+        filler = Filler $ \_ -> pure (Right (M.fromList [("body", "x = 1\n    if x:\n        y = 2")]))
+        tools = (basicTools noSyntax indentation [blockLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+    [phStatus h | h <- planHoles plan] `shouldBe` [HoleFilled "fake" 1]
+    (M.lookup "src/f.py" <$> snap) `shouldReturn` Just "def f():\n    x = 1\n    if x:\n        y = 2\n"
+  it "(r) a fill written at its absolute column is placed by its own relative indentation (pack-opens)" $ do
+    let blockLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/f.py\"", "text = \"def f():\\n    {= ? body: block | the body =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("body", "\n        x = 1\n        if x:\n            y = 2\n")]))
+        tools = (basicTools noSyntax noChecker [blockLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/f.py" <$> snap) `shouldReturn` Just "def f():\n    x = 1\n    if x:\n        y = 2\n"
+  describe "auto-import (a name another file imports, no model round)" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$\""
+              , "[import_merge]", "pattern = \"^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$\"", "write = \"from {= module =} import {= names =}\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/c.py\"", "text = \"import os\\n\\nTODAY = {= ? d: expr | today =}\\n\"" ]
+        -- `date` used but not imported in c.py: pyright's message, and the
+        -- cascade strict mode adds (review I1)
+        undefinedDate = Checker $ \_ files -> pure (Right (CheckReport [] (concat [[(p, "\"date\" is not defined"), (p, "Type of \"TODAY\" is unknown")] | (p, t) <- M.toList files, p == "src/c.py", "date." `T.isInfixOf` t, not ("import date" `T.isInfixOf` t)]) []))
+        runAuto others = do
+          calls <- newIORef (0 :: Int)
+          let filler = Filler $ \_ -> modifyIORef' calls (+ 1) >> pure (Right (M.fromList [("d", "date.today()")]))
+              tools = (basicTools noSyntax undefinedDate [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+          (ws, snap) <- memoryWorkspace others
+          Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+          files <- snap
+          n <- readIORef calls
+          pure ([(holeName (phSite h), phStatus h) | h <- planHoles plan], M.lookup "src/c.py" files, n)
+    it "(a) adds the one import that binds the name, in the same attempt" $ do
+      (st, c, n) <- runAuto [("src/m.py", "from datetime import date, time\n")]
+      st `shouldBe` [("d", HoleFilled "fake" 1)]
+      c `shouldBe` Just "import os\nfrom datetime import date\n\nTODAY = date.today()\n"
+      n `shouldBe` 1
+    it "(a2) a file with no imports and no header: the import is its first line" $ do
+      let bare = generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"python\""
+            , "[[edits]]", "create = \"src/c.py\"", "text = \"TODAY = {= ? d: expr | today =}\\n\"" ]
+          filler = Filler $ \_ -> pure (Right (M.fromList [("d", "date.today()")]))
+          tools = (basicTools noSyntax undefinedDate [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+      (ws, snap) <- memoryWorkspace [("src/m.py", "from datetime import date\n")]
+      Right _ <- generate ws noResolve tools [Step bare M.empty] now Apply
+      (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "from datetime import date\n\nTODAY = date.today()\n"
+    it "(b) an alias binds its alias, not the name (Review Focus 1)" $ do
+      (st, c, _) <- runAuto [("src/m.py", "from datetime import date as d\n")]
+      map fst st `shouldBe` ["d"]
+      st `shouldSatisfy` all (\case (_, HoleUnfilled _) -> True; _ -> False)
+      c `shouldSatisfy` maybe False (not . T.isInfixOf "from datetime import date\n")
+    it "(c) two modules bind it: no guess" $ do
+      (st, _, _) <- runAuto [("src/a.py", "from x import date\n"), ("src/b.py", "from y import date\n")]
+      st `shouldSatisfy` all (\case (_, HoleUnfilled _) -> True; _ -> False)
   it "(m4) an inserted fragment shows the fill's code, not its imports (they go to the file's imports; review I4)" $ do
     let pyLang = l
           where
@@ -777,6 +895,32 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     Right plan <- generate ws noResolve tools [Step gen M.empty] now PlanOnly
     [t | e <- planEdits plan, WillInsert _ t <- [editAction e]] `shouldBe` ["NOW = datetime.now()"]
     M.lookup "src/c.py" (planWrites plan) `shouldBe` Just "import os\nfrom datetime import datetime\n\nX = 1\nNOW = datetime.now()\n"
+  it "(m5) an import-looking line inside the module docstring is not an import (pack-opens)" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+)$\""
+              , "[holes.expr]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"h = {= fill =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/c.py\"", "text = \"\\\"\\\"\\\"Use it like:\\n\\nfrom c import X\\n\\\"\\\"\\\"\\n\\nX = {= ? x: expr | x =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("x", "import os\nos.sep")]))
+        tools = (basicTools noSyntax noChecker [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "\"\"\"Use it like:\n\nfrom c import X\n\"\"\"\n\nimport os\n\nX = os.sep\n"
+  it "(m6) the pack's import patterns: aliases and parenthesised imports (pack-opens)" $ do
+    src <- TIO.readFile "packs/python-htmx/languages/python.toml"
+    let Right packPy = parseLanguage "python" "packs/python-htmx" src
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/c.py\"", "text = \"from x import c\\n\\nA = {= ? a: expr | a =}\\nB = {= ? b: expr | b =}\\n\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("a", "from datetime import date as d\n\nd.today()"), ("b", "from x import (a, b)\n\na + b")]))
+        tools = (basicTools noSyntax noChecker [packPy]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, snap) <- memoryWorkspace []
+    Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
+    (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "from x import c, a, b\nfrom datetime import date as d\n\nA = d.today()\nB = a + b\n"
   it "(m3) imports from one module merge into one line (the language's import_merge)" $ do
     let pyLang = l
           where
@@ -806,6 +950,17 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     map describeConflict (planConflicts refused) `shouldBe` ["test/gen: the key must be the id"]
     Right fine <- generate ws noResolve tools [Step gen (M.fromList [("key", "id")])] now PlanOnly
     planConflicts fine `shouldBe` []
+  it "(o2) repeated holes in two inserts show each its own fill (pack-opens)" $ do
+    let two = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "insert = \"src/F.elm\"", "at = \"start of file\"", "text = \"x = {= ? v: expr | same =}\""
+          , "[[edits]]", "insert = \"src/F.elm\"", "at = \"end of file\"", "text = \"y = {= ? v: expr | same =}\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("v[src/F.elm:1]", "1"), ("v[src/F.elm:3]", "2")]))
+        tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, _) <- memoryWorkspace [("src/F.elm", "a = 0\n")]
+    Right plan <- generate ws noResolve tools [Step two M.empty] now PlanOnly
+    M.lookup "src/F.elm" (planWrites plan) `shouldBe` Just "x = 1\na = 0\ny = 2\n"
+    [t | e <- planEdits plan, WillInsert _ t <- [editAction e]] `shouldBe` ["x = 1", "y = 2"]
   it "(m2) with no imports in the file, a fill's imports go after its leading docstring and comments" $ do
     let pyLang = l
           where

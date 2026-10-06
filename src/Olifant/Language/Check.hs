@@ -7,6 +7,10 @@ module Olifant.Language.Check
   , noChecker
   , describeCheckFailure
   , processChecker
+  , Verifier (..)
+  , noVerifier
+  , processVerifier
+  , processVerifierWith
   , compileClean
   , checkProgram
   , contextKey
@@ -28,7 +32,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language.Adapter (CheckDef (..), Language (..), matchesGlob)
 import Olifant.Language.Support (supportFor)
-import Olifant.Process (runBytes)
+import Olifant.Process (runBytes, runBytesWithin)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, takeDirectory, (</>))
@@ -39,6 +43,43 @@ data CheckFailure = CheckToolMissing Text | CheckFailed Text
   deriving stock (Eq, Show)
 
 newtype Checker m = Checker {runCheck :: Language -> Map FilePath Text -> m (Either CheckFailure CheckReport)}
+
+-- | A hole's `verify` command run over the project's files (a scratch copy,
+-- like a check): passed, and its output.
+newtype Verifier m = Verifier {runVerify :: Language -> [Text] -> Map FilePath Text -> m (Either CheckFailure (Bool, Text))}
+
+noVerifier :: Applicative m => Verifier m
+noVerifier = Verifier (\_ _ _ -> pure (Left (CheckFailed "no verifier is configured")))
+
+-- | 'processVerifierWith' a 120 s limit.
+processVerifier :: Verifier IO
+processVerifier = processVerifierWith 120
+
+-- | The command in a scratch copy of the files (as a check runs, with
+-- @{= cache =}@ and @{= context =}@), stopped after @secs@ seconds: exit 0
+-- passes; the output (stdout then stderr) is what it said.
+processVerifierWith :: Int -> Verifier IO
+processVerifierWith secs = Verifier $ \lang argv files -> case (argv, checkProgram argv) of
+  ([], _) -> pure (Left (CheckFailed "empty verify command"))
+  (_, Nothing) -> pure (Left (CheckFailed "the verify command runs no program"))
+  (exe : args, Just program) ->
+    (findExecutable (T.unpack program) >>= \case
+      Nothing -> pure Nothing
+      Just _ -> findExecutable (T.unpack exe)) >>= \case
+      Nothing -> pure (Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)")))
+      Just path -> withSystemTempDirectory "olifant-verify" $ \tmp0 -> do
+        tmp <- canonicalizePath tmp0
+        forM_ (M.toList files) $ \(p, t) -> do
+          createDirectoryIfMissing True (takeDirectory (tmp </> p))
+          BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
+        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
+        createDirectoryIfMissing True cache
+        let ctx = maybe "none" (`contextKey` files) (langCheck lang)
+            expand a = T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))
+        runBytesWithin secs path (map expand args) (Just tmp) "" <&> \case
+          Left why -> Left (CheckFailed why)
+          Right Nothing -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
+          Right (Just (code, out, err)) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
 
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))

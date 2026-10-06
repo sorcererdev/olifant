@@ -18,6 +18,15 @@ match    = { any = [
 message  = "Commands and queries talk to ports, not the database (python-htmx: ports & adapters)"
 severity = "warn"
 
+# The usual answer first: a port the service already has.
+[[rules.commands-use-ports.fixes]]
+generator = "python-htmx/add-dependency"
+label     = "Use an existing port"
+with      = { app = "{= app =}", service = "{= service =}", kind = "{= kind =}", command = "{= stem =}" }
+replace   = [
+  { enclosing = ["import_statement", "import_from_statement"], text = "" },
+]
+
 [[rules.commands-use-ports.fixes]]
 generator = "python-htmx/repository"
 label     = "Add a repository (a port with in-memory and SQLite adapters)"

@@ -78,12 +78,12 @@ sameWithHoles a b = a == b
 -- the plan gave them).
 showHoles :: [Language] -> [HoleSite] -> PlannedEdit -> PlannedEdit
 showHoles langs sites e =
-  let shown = placeholderizeWith langs sites (editPath e)
+  let shown from = placeholderizeWith langs sites (editPath e) from
    in e {editAction = case editAction e of
-            WillCreate t -> WillCreate (shown t)
-            WillOverwrite t -> WillOverwrite (shown t)
-            WillInsert n t -> WillInsert n (shown t)
-            WillReplace l n t -> WillReplace l n (shown t)
+            WillCreate t -> WillCreate (shown 1 t)
+            WillOverwrite t -> WillOverwrite (shown 1 t)
+            WillInsert n t -> WillInsert n (shown n t)
+            WillReplace l n t -> WillReplace l n (shown l t)
             other -> other}
 
 -- | The message for a 'GenerationError', naming the step it happened in.
@@ -158,7 +158,7 @@ generate ws resolve tools steps now mode =
             related <- if null globs || null forModel then pure [] else do
               paths <- listFiles ws "."
               fmap catMaybes . forM [p | p <- paths, any (`matchesGlob` p) globs] $ \p -> fmap (p,) <$> readText ws p
-            (w, filled, fw) <- fillPhase ws tools {toolFillContext = toolFillContext tools ++ related} (concatMap (M.toList . stepSets) steps) placed forModel
+            (w, filled, fw) <- fillPhase ws tools {toolFillContext = toolFillContext tools ++ related} (M.fromList [(n, argv) | PlanVerify n argv <- items]) (concatMap (M.toList . stepSets) steps) placed forModel
             let byName = [(holeName (phSite h), h) | h <- filled]
             pure (w, [maybe h id (lookup (holeName (phSite h)) byName) | h <- holes0], fw)
           else pure (placed, holes0, [])

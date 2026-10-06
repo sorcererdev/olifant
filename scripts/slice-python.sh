@@ -6,7 +6,11 @@
 #   slice-python.sh DIR gens       init, then generators (and the small
 #                                  edits they read: fields, ports): pyright
 #                                  clean, only the stubs red
-#   slice-python.sh DIR behaviour  the tests and handle bodies: all green
+#   slice-python.sh DIR behaviour  the tests and handle bodies, but
+#                                  cancel_booking's: its two tests red
+#   slice-python.sh DIR fill       handle-body writes cancel_booking.handle
+#                                  (a recorded qwen3-coder:30b fill, verified
+#                                  by its tests): all green
 #   slice-python.sh DIR serve      uvicorn serves /bookings (200)
 #
 # OLIFANT picks the binary (default: olifant). No model: holes stay
@@ -59,6 +63,12 @@ gens)
 behaviour)
   typed 06-behaviour
   ;;
+fill)
+  F=src/bistro/booking/commands/cancel_booking.py
+  LINE=$(cd "$APP" && grep -n 'raise NotImplementedError' "$F" | cut -d: -f1)
+  (cd "$APP" && "$OLIFANT" gen python-htmx/handle-body --at "$F:$LINE:9" --set app=bistro --set service=booking --set kind=commands --set command=cancel_booking --fills "$PACK/slice/fills/cancel_booking.toml" > /dev/null)
+  step "handle-body: cancel_booking"
+  ;;
 serve)
   PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])')
   (cd "$APP" && uv run --quiet uvicorn --factory --app-dir src bistro.main:create --port "$PORT" > /dev/null 2>&1) &
@@ -74,5 +84,5 @@ serve)
   done
   echo "uvicorn did not start" >&2; exit 1
   ;;
-*) echo "usage: slice-python.sh DIR gens|behaviour|serve" >&2; exit 2 ;;
+*) echo "usage: slice-python.sh DIR gens|behaviour|fill|serve" >&2; exit 2 ;;
 esac

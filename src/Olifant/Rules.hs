@@ -73,7 +73,9 @@ data FixDef = FixDef {fdGenerator :: Text, fdLabel :: Maybe Text, fdWith :: Mayb
 
 -- | A fix offered for one finding: the generator, its label, its inputs,
 -- and the code it replaces, if its rule says so.
-data FixOffer = FixOffer {foGenerator :: Text, foLabel :: Maybe Text, foSets :: [(Text, Text)], foReplace :: Maybe Replacement}
+-- | 'foChoices': the generator's enum inputs still open, with their values
+-- (an editor asks for one; `olifant fix --set` gives it).
+data FixOffer = FixOffer {foGenerator :: Text, foLabel :: Maybe Text, foSets :: [(Text, Text)], foReplace :: Maybe Replacement, foChoices :: [(Text, [Text])]}
   deriving stock (Eq, Show)
 
 -- | The code a fix replaces: whole lines (1-based, inclusive) of the node
@@ -252,7 +254,7 @@ checkFiles syntax langs config rules paths readFile' files = do
     -- each fix definition with its offer (a fix whose inputs don't render is not offered)
     pairs f slots r =
       let env = M.fromList ([(k, VText v) | (k, v) <- slots] ++ [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f))])
-       in [ (d, FixOffer (fdGenerator d) (fdLabel d) (sortOn fst sets) Nothing)
+       in [ (d, FixOffer (fdGenerator d) (fdLabel d) (sortOn fst sets) Nothing [])
           | d <- ruleFixes r
           , Right sets <- [maybe (Right slots) (traverse (\(k, t) -> (k,) <$> either (Left . describeTemplateError) Right (render env t))) (fdWith d)]
           ]

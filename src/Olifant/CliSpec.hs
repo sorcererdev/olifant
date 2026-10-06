@@ -16,10 +16,11 @@ import Olifant.Cli.Output (planHuman, planJson)
 import Olifant.Generation (EditAction (..), HoleStatus (..), Plan (..), PlannedEdit (..), PlannedHole (..), Site (..))
 import Olifant.Holes (HoleSite (..))
 import Data.Aeson (encode)
+import Data.ByteString.Lazy qualified as BL
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
-import Olifant.Language (Syntax, noChecker, noSyntax)
+import Olifant.Language (Syntax, noChecker, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -87,14 +88,18 @@ runInWith syntax dir stdinText files tty args = do
         , rtChecker = noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
-        , rtGitInit = \_ _ -> pure (Right ())
+        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
 
 -- | `olifant init` from /w, with a user config at /u and git calls recorded.
 runInit :: [(FilePath, Text)] -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text, [(FilePath, Text)])
-runInit files args = do
+runInit = runInitWith (Right ())
+
+-- | 'runInit' with what the first commit answers.
+runInitWith :: Either Text () -> [(FilePath, Text)] -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text, [(FilePath, Text)])
+runInitWith committed files args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -108,7 +113,7 @@ runInit files args = do
         , rtSyntax = noSyntax, rtChecker = noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
         , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure (Right ())
+        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = noVerifier
         }
       args
   (,,,,) code <$> readIORef out <*> readIORef err <*> snapshot <*> readIORef gits
@@ -146,6 +151,11 @@ planOutputSpec = describe "planHuman" $ do
           , ("/proj/.olifant/generators/h/generator.toml", "description = \"h\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"out.x\"\ntext = \"v = {= ? val: expr | a value =}\\n\"\n")
           ]
         anthropic = "[model]\ndefault = \"claude\"\n[model.backends.claude]\nkind = \"anthropic\"\nmodel = \"claude-x\"\napi_key_env = \"OLIFANT_TEST_NO_SUCH_KEY\"\n"
+    it "--fills FILE replays recorded fills as the model (pack-opens: the slice)" $ do
+      let recorded = ("/proj/fills.toml", "[fills]\nval = \"42\"\n")
+      (code, _, err, files) <- runWith "" (recorded : holeProject "") False ["gen", "h", "--fills", "fills.toml"]
+      (code, err) `shouldBe` (ExitSuccess, "")
+      M.lookup "/proj/out.x" files `shouldBe` Just "v = 42\n"
     it "leaves placeholders with --no-fill, even with a model configured" $ do
       (code, out, _, files) <- runWith "" (holeProject anthropic) False ["gen", "h", "--no-fill"]
       code `shouldBe` ExitSuccess
@@ -318,6 +328,15 @@ runCliSpec = describe "runCli" $ do
       err `shouldSatisfy` T.isInfixOf "has no starter generator (starter = true)"
       -- nothing written: the folder is as it was
       M.member "/w/bistro/.olifant/config.toml" files `shouldBe` False
+    it "(h) --json: no first commit is a warning in the plan (pack-opens)" $ do
+      (code, out, _, _, _) <- runInitWith (Left "git is not installed") pack ["init", "--pack", "/packs/p", "bistro", "--json"]
+      code `shouldBe` ExitSuccess
+      jsonAt ["warnings"] out `shouldSatisfy` maybe False (T.isInfixOf "no first commit: git is not installed" . TE.decodeUtf8 . BL.toStrict . encode)
+    it "(i) model settings without a default are not copied (pack-opens)" $ do
+      let user = ("/u/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://x/v1\"\nmodel = \"m\"\n")
+      (code, _, _, files, _) <- runInit (user : pack) ["init", "--pack", "p", "bistro", "--human"]
+      code `shouldBe` ExitSuccess
+      M.findWithDefault "" "/w/bistro/.olifant/config.toml" files `shouldNotSatisfy` T.isInfixOf "[model"
     it "(f) --plan writes nothing and says what it would do" $ do
       (code, out, _, files, gits) <- runInit pack ["init", "--pack", "/packs/p", "bistro", "--plan", "--human"]
       code `shouldBe` ExitSuccess

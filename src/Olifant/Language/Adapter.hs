@@ -47,6 +47,11 @@ data Language = Language
   , langImports :: Maybe Text
   -- ^ `imports`: a POSIX expression matching one import line. A fill may
   -- begin with such lines; they join the file's imports
+  , langSeparator :: Maybe Text
+  -- ^ `separator`: what follows each item of a container (`,`), so an item
+  -- can join a one-line container (inline, or one item per line)
+  , langLineLength :: Int
+  -- ^ `line_length` (default 88): the longest line an inline item may make
   , langImportMerge :: Maybe ImportMerge
   -- ^ `[import_merge]`: how an import of names from a module joins a line
   -- that already imports from it
@@ -76,7 +81,10 @@ data Grammar = BuiltInGrammar Text | GrammarSource FilePath
 -- 'targetWhenEmpty' (key `when_empty`): with no items and no brackets to
 -- open, `"after header"` puts the text after the file's leading comments
 -- and docstring (Python's imports in a file with none).
-data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targetItems :: Rule, targetExample :: Text, targetSpaced :: Bool, targetWhenEmpty :: Maybe Text}
+--
+-- 'targetSeparator' (key `separator`): this target's, over the language's
+-- (`""`: its one-line containers never grow — a `|` union is not a list).
+data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targetItems :: Rule, targetExample :: Text, targetSpaced :: Bool, targetWhenEmpty :: Maybe Text, targetSeparator :: Maybe Text}
   deriving stock (Show)
 
 data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text}
@@ -85,7 +93,7 @@ data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkF
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -97,7 +105,9 @@ parseLanguage name packRoot src = do
   holes <- maybe [] M.toList <$> optional "holes" (table >=> traverse (\v -> table v >>= holeKindFrom)) top
   imports <- optional "imports" (text >=> \re -> maybe (Left ("`imports` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))) top
   importMerge <- optional "import_merge" (table >=> importMergeFrom) top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importMerge)
+  separator <- optional "separator" text top
+  lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
@@ -120,7 +130,7 @@ parseLanguage name packRoot src = do
         then Right (HoleKind ph wrap)
         else Left "`wrap` must contain {= fill =} (or {= fill|indent =}, one level in), where the fill goes"
     targetFrom t = do
-      onlyKeys ["phrase", "container", "items", "example", "spaced", "when_empty"] t
+      onlyKeys ["phrase", "container", "items", "example", "spaced", "when_empty", "separator"] t
       TargetDef
         <$> (T.words <$> required "phrase" text t)
         <*> required "container" ruleFromTree t
@@ -128,6 +138,7 @@ parseLanguage name packRoot src = do
         <*> required "example" text t
         <*> (fromMaybe True <$> optional "spaced" bool t)
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
+        <*> optional "separator" text t
     checkFrom t = do
       onlyKeys ["command", "context", "format"] t
       format <- required "format" text t

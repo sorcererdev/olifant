@@ -1,0 +1,4 @@
+# Recorded from qwen3-coder:30b via Ollama (2026-10-06): round 1, verified by the module's tests
+# (its continuation lines came one level deep; Olifant read them one level up).
+[fills]
+"body" = "table = self.bookings.table(input.table_id)\nif table is None:\n    return TableNotFound(reason=f\"Table {input.table_id} not found.\")\n\nif input.party > table.seats:\n    return PartyTooLarge(reason=f\"Party of {input.party} is larger than table {input.table_id} with {table.seats} seats.\")\n\nif self.bookings.booking_at(input.table_id, input.slot) is not None:\n    return SlotTaken(reason=f\"Slot {input.slot} is already taken for table {input.table_id}.\")\n\nbooking = Booking(\n    id=self.ids.next_id(),\n    table_id=input.table_id,\n    slot=input.slot,\n    party=input.party,\n    guest=input.guest,\n)\nself.bookings.save(booking)\nreturn Ok(booking)"

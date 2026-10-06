@@ -279,6 +279,41 @@ run at all (no `ast-grep`, no `cargo`), the fill is accepted, and when a check c
 the plan warns: "holes were filled but not compile-checked: …". The point of the checks is
 to reject a wrong fill, not to stop a generation because a tool is missing.
 
+
+**Layout is repaired, not retried.** A fill's lines lose their common indentation before
+they are placed (a model may write at the hole's absolute column), and a fill whose first
+line is bare while the rest sit one level in (written as if the first line were at the
+marker) is read one level up when that alone compiles. Measured on `handle-body`: every
+failed qwen3-coder:30b attempt was one of these two layouts, and the model repeated it on
+retry; with both repaired, every handler was green in one round.
+
+**Verify: a fill must pass a command.** A model hole may name a command its fill must pass,
+usually its tests:
+
+```toml
+[holes.body]
+source = "model"
+verify = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "src/bistro/booking/commands/cancel_booking__test.py"]
+```
+
+After a fill parses and compiles, Olifant runs the command in a scratch copy of the project
+(the language's files and its check's context, with every standing fill in place), as a
+check runs, with `{= cache =}` and `{= context =}`. Exit 0: the fill stands. Otherwise the
+last 40 lines of what it printed go back to the model as "the tests failed: …", and it
+retries; when the retries run out the hole keeps its placeholder, with that output as the
+reason. A command that runs past 120 seconds is stopped ("the tests timed out (120 s)").
+`--progress` reports `{"event":"verify","hole":…}`; editors show it as "Testing". Only
+model holes take `verify` (a tab stop is yours to write).
+
+**Auto-import, without a model round.** When a fill fails only because names are not
+defined (pyright: `"date" is not defined`), and exactly one import line in the project's
+files of that language binds the name (`from datetime import date, time` in a model binds
+`date`), Olifant adds that import to the fill and checks it again in the same attempt. An
+alias binds its alias (`from datetime import date as d` binds `d`, not `date`). Two modules
+binding the name, or none, leave it to the model's retry. `--progress` reports it as
+`{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the
+name from a message (`supportUndefined`; pyright's does, the others don't yet).
+
 ### Retries with the reason
 
 A hole whose fill failed goes back to the model, in a new request holding only the failing

@@ -28,6 +28,7 @@ rustcSupport =
         (Nothing, _) -> True
         (_, Nothing) -> True
         (Just ty, Just t) -> ty `elem` typeNames t
+    , supportUndefined = const Nothing
     , supportFunction = rustFunctionAt
     , supportArmSeparator = ","
     , supportReadsStdout = True

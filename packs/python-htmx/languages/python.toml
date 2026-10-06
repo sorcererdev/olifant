@@ -6,16 +6,21 @@ files = ["**/*.py"]
 comment = "#"
 grammar = "python"
 indent = "    "
+# Items in brackets are followed by a comma: an item joins a one-line
+# container inline when the line stays within 88 (Black's and Ruff's), else
+# the container goes one item per line.
+separator = ","
+line_length = 88
 placeholder = 'raise NotImplementedError("{= message|python_string =}")'
 branch = "case {= pattern =}:\n    {= body =}"
 # A fill may begin with import lines (a decode that needs `date`): they join
 # the file's imports.
-imports = "^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$"
+imports = "^(from [A-Za-z0-9_.]+ import \\(?[A-Za-z0-9_., ]+\\)?|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$"
 
 # `from datetime import time` joins `from datetime import date`: one line
 # per module.
 [import_merge]
-pattern = "^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$"
+pattern = "^from ([A-Za-z0-9_.]+) import \\(?([A-Za-z0-9_, ]+)\\)?$"
 write   = "from {= module =} import {= names =}"
 
 [check]
@@ -57,6 +62,8 @@ container = { kind = "parenthesized_expression", inside = { kind = "type_alias_s
 # goes after its last line, at its indentation.
 items = { any = [{ kind = "binary_operator" }, { kind = "identifier" }] }
 example = "end of union CreateBookingFailure"
+# members are joined by `|`, not a separator: a one-line union never grows
+separator = ""
 
 [targets.class]
 phrase = "class NAME"

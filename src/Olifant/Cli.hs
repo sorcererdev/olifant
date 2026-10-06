@@ -3,7 +3,7 @@
 module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) where
 
 import Control.Applicative ((<|>))
-import Olifant.Fill (ModelFiller (..))
+import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Rules (Exception (..), FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, suggestChoice)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
@@ -13,7 +13,10 @@ import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (forM_, unless, when)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Snippet (Snippet, snippetOf)
-import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
+import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Lazy qualified as BL
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
@@ -63,6 +66,8 @@ data Runtime = Runtime
   , -- | a first commit of everything in a directory, `git init` first if
     -- needed (`olifant init`)
     rtGitInit :: FilePath -> Text -> IO (Either Text ())
+  , -- | runs a hole's `verify` command (its tests) in a scratch copy
+    rtVerifier :: Verifier IO
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -128,9 +133,22 @@ runInit rt fmt pack name dirArg plan = do
                   Left err -> catalogFailure rt fmt err
                   Right gen -> do
                     when (plan && fmt == Human) (rtOut rt ("would write " <> T.pack (makeRelative cwd (dir </> ".olifant" </> "config.toml")) <> " (pack " <> packName <> ")\n"))
-                    code <- runSteps rt' dir fmt cat (GenOptions [] Nothing plan Nothing Nothing False False Nothing Nothing) [] [Step gen (M.fromList [("name", name)])]
+                    -- JSON callers get one document: the plan, held until the
+                    -- first commit's outcome can join its warnings
+                    held <- newIORef ""
+                    let rtRun = if fmt == Json && not plan then rt' {rtOut = \t -> modifyIORef' held (<> t)} else rt'
+                        release extra = do
+                          out <- readIORef held
+                          unless (T.null out) $ rtOut rt $ case (extra, decodeStrict (TE.encodeUtf8 out)) of
+                            (Just w, Just (Object o)) ->
+                              let ws' = case KM.lookup "warnings" o of
+                                    Just (Array a) -> Array (a <> pure (String w))
+                                    _ -> Array (pure (String w))
+                               in TE.decodeUtf8 (BL.toStrict (encode (Object (KM.insert "warnings" ws' o)))) <> "\n"
+                            _ -> out
+                    code <- runSteps rtRun dir fmt cat (GenOptions [] Nothing plan Nothing Nothing False False Nothing Nothing Nothing) [] [Step gen (M.fromList [("name", name)])]
                     if code /= ExitSuccess || plan
-                      then pure code
+                      then release Nothing >> pure code
                       else do
                         -- every region whose files the starter wrote gets its fences
                         let project = within dir ws
@@ -139,6 +157,7 @@ runInit rt fmt pack name dirArg plan = do
                         forM_ (catalogRegions cat) $ \def ->
                           forM_ (regionInstances universe def) (initFences project tools)
                         committed <- rtGitInit rt dir ("olifant init: " <> packName)
+                        release (either (\why -> Just ("no first commit: " <> why)) (const Nothing) committed)
                         let nexts = [t | tm <- genNext gen, Right t <- [render (M.fromList [("name", Tm.VText name)]) tm]]
                         when (fmt == Human) $ do
                           either (\why -> rtErr rt ("note: no first commit: " <> why <> "\n")) (const (pure ())) committed
@@ -151,7 +170,9 @@ runInit rt fmt pack name dirArg plan = do
             | "[" `T.isPrefixOf` T.stripStart l = let m = "[model" `T.isPrefixOf` T.stripStart l in (m, if m then acc ++ [l] else acc)
             | otherwise = (inModel, if inModel then acc ++ [l] else acc)
           ls = snd (foldl keep (False, []) (T.lines src))
-       in if null ls then "" else "\n" <> T.unlines ls
+          -- copied only when it names the model to use
+          hasDefault = any (\l -> "default" `T.isPrefixOf` T.stripStart l && "=" `T.isInfixOf` l) ls
+       in if null ls || not hasDefault then "" else "\n" <> T.unlines ls
 
 -- | The project is the nearest directory, from where Olifant runs upwards,
 -- that has a `.olifant` directory; with none, where it runs. The search
@@ -286,7 +307,7 @@ runCommand rt cwd fmt cat = \case
         rules = catalogRules cat
         nameOf gid = maybe gid (generatorName . entryDefinition) (find ((== gid) . generatorIdText . entryId) (catalogEntries cat))
         sevText = \case R.Hint -> "hint" :: Text; R.Warn -> "warn"; R.Error -> "error"; R.Off -> "off"
-        offerJson o = object ["generator" .= foGenerator o, "name" .= nameOf (foGenerator o), "label" .= fromMaybe (nameOf (foGenerator o)) (foLabel o), "sets" .= M.fromList (foSets o)]
+        offerJson o = object ["generator" .= foGenerator o, "name" .= nameOf (foGenerator o), "label" .= fromMaybe (nameOf (foGenerator o)) (foLabel o), "sets" .= M.fromList (foSets o), "missing" .= map fst (foChoices o), "choices" .= M.fromList (foChoices o)]
         findingJson olds f =
           object
             [ "rule" .= fRule f, "file" .= fFile f, "severity" .= sevText (fSeverity f), "message" .= fMessage f
@@ -473,7 +494,7 @@ runCommand rt cwd fmt cat = \case
           Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
             Left why -> failWith rt fmt 2 "usage" why Nothing []
             Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
-  FixCmd rule file (line, _) n g -> do
+  FixCmd rule file (line, _) n given g -> do
     let ws = within (rtProjectDir rt) (rtRoot rt)
         rel = makeRelative (rtProjectDir rt) (normalise (cwd </> file))
     paths <- listFiles ws "."
@@ -490,7 +511,7 @@ runCommand rt cwd fmt cat = \case
             loadGenerator (rtRoot rt) (rtSyntax rt) cat entry >>= \case
               Left err -> catalogFailure rt fmt err
               Right gen -> do
-                let sets = M.fromList (foSets o)
+                let sets = M.union (M.fromList given) (M.fromList (foSets o))
                     env = M.map Tm.VText (M.insert "finding" (maybe "" rpFinding (foReplace o)) sets)
                     defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                     replacement = case foReplace o of
@@ -551,7 +572,13 @@ runSteps rt cwd fmt cat g context steps = do
     Just f -> do
       text <- rtReadStdin rt
       pure (Right (overlay (makeRelative (rtProjectDir rt) (normalise (cwd </> f))) text project))
-  case (overlaid, modelFor cat g) of
+  -- `--fills FILE`: recorded fills stand in for the model
+  chosen <- case genFills g of
+    Nothing -> pure (modelFor cat g)
+    Just f -> readText (rtRoot rt) (normalise (cwd </> f)) <&> \case
+      Nothing -> Left ("--fills " <> T.pack f <> ": no such file")
+      Just src -> (\fills -> Just (ModelFiller "recorded" 0 (replayFiller fills))) <$> parseFills src
+  case (overlaid, chosen) of
    (Left why, _) -> failWith rt fmt 2 "usage" why Nothing []
    (Right ws, filler0) -> case filler0 of
              Left why -> failWith rt fmt 2 "usage" why Nothing []
@@ -749,7 +776,7 @@ noFill p = p {planHoles = [h {phStatus = HoleSkipped "--no-fill"} | h <- planHol
 -- | The tools a command in this project uses: the runtime's syntax and
 -- checker, the catalog's languages and regions, and the project's queries.
 projectTools :: Runtime -> Catalog -> Tools IO
-projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries rt cat}
+projectTools rt cat = (basicTools (rtSyntax rt) (rtChecker rt) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries rt cat, toolVerifier = rtVerifier rt}
 
 -- | Queries run in the project: commands in its root, AST queries over its
 -- files with the catalog's language adapters.
@@ -780,10 +807,12 @@ chooseFixInputs rt cat paths now (fs, exs) = (,exs) <$> traverse (\f -> (\os -> 
         withChoices (projectQueries rt cat) paths (readText ws) (M.fromList (foSets o)) now (entryDefinition e) <&> \case
           Left _ -> o
           Right g ->
-            let picks = [(inputName i, c) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i], Just c <- [suggestChoice (fText f) cs]]
+            let open = [(inputName i, cs) | i <- genInputs g, inputName i `notElem` map fst (foSets o), ScalarInput (EnumOf _ _ (Resolved cs _)) <- [inputType i]]
+                picks = [(k, c) | (k, cs) <- open, Just c <- [suggestChoice (fText f) cs]]
              in case picks of
-                  (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c)}
-                  [] -> o
+                  (k, c) : _ -> o {foSets = sortOn fst ((k, c) : foSets o), foLabel = Just (fromMaybe (nameOf (foGenerator o)) (foLabel o) <> ": " <> toPascal c), foChoices = [oc | oc@(k', _) <- open, k' /= k]}
+                  -- what the code does not name, the person picks (review I2)
+                  [] -> o {foChoices = open}
 
 -- | `invoice_repository` → `InvoiceRepository`.
 toPascal :: Text -> Text
@@ -839,3 +868,5 @@ progressJson = \case
   Filling holes attempt model -> object ["event" .= ("fill" :: Text), "holes" .= holes, "attempt" .= attempt, "model" .= model]
   Filled hole attempt -> object ["event" .= ("filled" :: Text), "hole" .= hole, "attempt" .= attempt]
   Unfilled hole why -> object ["event" .= ("unfilled" :: Text), "hole" .= hole, "why" .= why]
+  AutoImported hole line -> object ["event" .= ("auto_import" :: Text), "hole" .= hole, "import" .= line]
+  Verifying hole -> object ["event" .= ("verify" :: Text), "hole" .= hole]

@@ -418,7 +418,7 @@ repositories and a port             typed: 05-remove             (a port method)
 typed: 02-next-id                   remove in the adapters       (port-method-adapters)
 next_id in the adapters             typed: 06-behaviour          (the tests and handle bodies)
 typed: 03-holes                     (what the model fills: codecs, next_id, statuses)
-commands and a query
+commands and a query                handle-body: cancel_booking  (the model writes it, tests judge)
 ```
 
 What a person types is recorded as `packs/python-htmx/slice/*.diff`, applied between the
@@ -428,7 +428,11 @@ behaviour patch carry what a model fills, so the run needs no Ollama. The stages
 
 - **`gens`**: pyright clean, and the red tests are exactly the stubs, by name (seven: two
   commands, the query, the routes, the `next_id` contract and `remove`'s, once per adapter);
-- **`behaviour`**: 31 green, pyright clean, `olifant check` holds;
+- **`behaviour`**: the tests and handle bodies, all but `cancel_booking`'s: its two tests red;
+- **`fill`**: `handle-body` writes `cancel_booking.handle`, replaying a recorded
+  qwen3-coder:30b fill (`gen --fills packs/python-htmx/slice/fills/cancel_booking.toml`),
+  which stands only because `verify` runs its tests: then 31 green, pyright clean, `olifant
+  check` holds;
 - **`serve`**: uvicorn answers `GET /bookings?day=2026-10-09` with 200.
 
 The spec test runs all three with the freshly built binary (`cabal list-bin olifant`). To

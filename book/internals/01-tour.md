@@ -947,6 +947,11 @@ phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on 
   and `targetWhenEmpty = Just "after header"` (Python's `imports` again) it places the text
   at `headerEnd` (after the leading comments and docstring) with `BlankBefore`, instead of
   missing.
+- **A one-line container with items.** When the language has a `separator`, `place`
+  returns a `Grow` opening (the line, the bracket columns, the items' texts, the separator,
+  `line_length`, the indent, start or end) instead of refusing. `grownLine` builds the
+  replacement: inline if it fits, else one item per line; `insertLines` applies it, and the
+  planner shows it as `WillReplace line 1 text`.
 - **An empty container.** `place` has a third case, for `end of`/`start of` against a target
   whose `items` come back `[]` (spec §7.1). It opens the container only when it is bracketed
   (`()`, `{}`, `[]`; anything else, a whole file say, misses with "has no items to insert
@@ -1361,7 +1366,23 @@ has `imports`, `splitImports` takes the fill's leading import lines off first an
 `addImports` puts each one the file lacks after its last top-level import (or after the
 leading comments and docstring, `headerEnd`). `parses` checks only the code part, and
 `FillHole`'s `fhImports` tells the model it may send imports (`Model.hs` adds the line to
-that hole's prompt).
+that hole's prompt). After a round's check, `autoImport` looks at files whose every error
+is an undefined name (the support's `supportUndefined`); `importFor` scans the project's
+files of that language for the one import line binding the name (through `merging` and
+`import M( as N)?`), and each candidate using the name is prefixed with it and judged again
+in the same round (`AutoImported` progress). A hole with `verify` (`genVerify`, rendered
+per step into `PlanVerify` items, handed to `fillPhase` as a map by bare hole name) is run
+after the compile check: `projectFiles` gathers what a check sees, and the **Verifier** port
+(`Language.Check`: `runVerify`; `processVerifierWith secs` runs the command in a scratch copy
+through `Process.runBytesWithin`, which polls for exit so it can stop a long run under the
+non-threaded runtime) decides; a failure is a retry reason "the tests failed: …". Before
+any of this, layout is repaired: `applyFills` places `dedented` lines (common indent
+dropped), and a candidate failing to compile whose first line is bare and the rest one
+level in is tried `reindented`, kept only if it then compiles. `Snippet.snippetOf` places a
+model fill the same way (shared `Holes.dedented`, continuation lines at the marker line's
+indent), so the editor's snippet matches the written file. `gen --fills FILE` makes the
+filler `replayFiller` over `parseFills` (both in `Olifant.Fill`, shared with the case
+harness).
 
 Then `generate` makes the shown edits match the writes:
 

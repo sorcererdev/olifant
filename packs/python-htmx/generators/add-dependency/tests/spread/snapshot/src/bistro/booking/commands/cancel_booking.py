@@ -1,0 +1,41 @@
+"""Cancel booking."""
+
+from dataclasses import dataclass
+
+from bistro.shared.result import Ok
+from bistro.booking.ports.booking_repository.booking_repository import BookingRepository
+from bistro.booking.ports.table_repository.table_repository import TableRepository
+from bistro.booking.ports.id_generator.id_generator import IdGenerator
+
+
+@dataclass(frozen=True)
+class CancelBookingInput:
+    id: str
+
+
+@dataclass(frozen=True)
+class NotFound:
+    reason: str
+
+
+type CancelBookingFailure = (
+    NotFound
+)
+
+type CancelBookingOutput = Ok[None] | CancelBookingFailure
+
+
+class CancelBooking:
+    def __init__(
+        self,
+        booking_repository: BookingRepository,
+        table_repository: TableRepository,
+        id_generator: IdGenerator,
+    ) -> None:
+        """Takes the ports it uses; main.py passes their adapters."""
+        self.booking_repository = booking_repository
+        self.table_repository = table_repository
+        self.id_generator = id_generator
+
+    def handle(self, input: CancelBookingInput) -> CancelBookingOutput:
+        raise NotImplementedError("CancelBooking.handle: write its first case in cancel_booking__test.py, then this")

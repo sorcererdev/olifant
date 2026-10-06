@@ -9,13 +9,15 @@ import Data.Aeson (object, (.=))
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
+import Data.Char (isAlphaNum)
+import Data.Functor ((<&>))
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
 import Olifant.Generation.Plan (HoleStatus (..), PlannedHole (..))
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
-import Olifant.Holes (HoleSite (..))
+import Olifant.Holes (HoleSite (..), dedented)
 import Olifant.Language.Header (headerEnd)
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
@@ -26,22 +28,30 @@ import System.FilePath (splitDirectories)
 -- | A hole being tried: attempts so far and the previous (fill, why).
 data Try = Try {tryHole :: PlannedHole, tryAttempts :: Int, tryPrevious :: Maybe (Text, Text)}
 
-fillPhase :: Monad m => Workspace m -> Tools m -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
-fillPhase ws tools inputs base holes = case toolFiller tools of
+fillPhase :: Monad m => Workspace m -> Tools m -> Map Text [Text] -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
+fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   Nothing -> pure (base, holes, [])
   Just _ | null holes -> pure (base, holes, [])
-  Just mf -> loop mf 1 M.empty [] [Try h 0 Nothing | h <- holes]
+  Just mf -> loop mf 1 M.empty [] [] [Try h 0 Nothing | h <- holes]
   where
     -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
-    loop mf r accepted notes pending = do
+    -- @stuck@: holes given up on for a reason no retry can change (their
+    -- tests could not run at all: review I3)
+    loop mf r accepted notes stuck pending = do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
       reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools))
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
-          next accepted' notes' failed
+          next accepted' notes' failed0
             | null failed || r >= 1 + max 0 (mfRetries mf) = do
-                forM_ failed (\(t, why) -> toolProgress tools (Unfilled (name t) why))
-                pure (finish mf accepted' notes' failed)
-            | otherwise = loop mf (r + 1) accepted' notes' (map fst failed)
+                forM_ (failed ++ newlyStuck) (\(t, why) -> toolProgress tools (Unfilled (name t) why))
+                pure (finish mf accepted' notes' (failed ++ stuck ++ newlyStuck))
+            | otherwise = do
+                forM_ newlyStuck (\(t, why) -> toolProgress tools (Unfilled (name t) why))
+                loop mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed)
+            where
+              unrunnable (_, why) = "the tests could not run" `T.isPrefixOf` why
+              newlyStuck = filter unrunnable failed0
+              failed = filter (not . unrunnable) failed0
       case reply of
         -- An unreadable reply is a failed attempt, retried like any other.
         Left why -> next accepted notes [(t, why) | t <- tried]
@@ -51,15 +61,39 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
               escaped = [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
           parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) (snd (splitImports (importsOf (holeFile (site t))) f))
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
-              candidates = [(t, f) | (t, f, True) <- parsed]
+              candidates0 = [(t, f) | (t, f, True) <- parsed]
               known = [(s', f') | (s', f', _) <- M.elems accepted]
               with cs = applyFills langOf base (known ++ [(site t, f) | (t, f) <- cs])
-          (broken0, note) <- checkFiles (with candidates) [site t | (t, _) <- candidates]
+          (broken0, note0) <- checkFiles (with candidates0) [site t | (t, _) <- candidates0]
           -- errors the files had with their placeholders are not the fills'
           -- (python review I1); checked only when something is broken
-          already <- if M.null broken0 then pure M.empty else fst <$> checkFiles (with []) [site t | (t, _) <- candidates]
+          already <- if M.null broken0 then pure M.empty else fst <$> checkFiles (with []) [site t | (t, _) <- candidates0]
           let notAlready = M.filter (not . null) . M.mapWithKey (\p es -> filter (`notElem` M.findWithDefault [] p already) es)
-              broken = notAlready broken0
+              broken1 = notAlready broken0
+          -- Auto-import (no model round): in a file whose every error is a
+          -- name not defined, a candidate using that name gets the one import
+          -- line in the project that binds it, and all are judged again.
+          imported <- if M.null broken1 then pure candidates0 else autoImport broken1 candidates0
+          (candidatesA, brokenA, noteA) <-
+            if map snd imported == map snd candidates0
+              then pure (candidates0, broken1, note0)
+              else do
+                (b, n) <- checkFiles (with imported) [site t | (t, _) <- imported]
+                pure (imported, notAlready b, n)
+          -- A block whose first line came unindented and the rest one level
+          -- in (written as if the first line sat at the marker's column): read
+          -- one level up, when that alone compiles.
+          rescued <- if M.null brokenA then pure candidatesA else forM candidatesA $ \(t, f) -> case reindented f of
+            Just f' | M.member (holeFile (site t)) brokenA -> do
+              (b, _) <- checkFiles (with [(t, f')]) [site t]
+              pure (if M.null (notAlready b) then (t, f') else (t, f))
+            _ -> pure (t, f)
+          (candidates, broken, note) <-
+            if map snd rescued == map snd candidatesA
+              then pure (candidatesA, brokenA, noteA)
+              else do
+                (b, n) <- checkFiles (with rescued) [site t | (t, _) <- rescued]
+                pure (rescued, notAlready b, n)
           -- All together compile: every candidate stands. Otherwise each is
           -- checked alone beside what is already accepted, so a fill that
           -- breaks another file is the one blamed (review I5).
@@ -75,9 +109,22 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
           -- Each good alone may still clash together: then none of them stands.
           (together, _) <- if M.null broken || null good then pure (M.empty, Nothing) else (\(b, n) -> (notAlready b, n)) <$> checkFiles (with good) [site t | (t, _) <- good]
           let clash = if M.null together then [] else [(t, f, "this fill and another do not compile together: " <> T.intercalate "; " (concat (M.elems together))) | (t, f) <- good]
-              good' = if null clash then good else []
+              stood = if null clash then good else []
+          -- A hole with `verify`: its fill must also pass that command (its
+          -- tests), run over the files with every standing fill in place.
+          verified <- forM stood $ \(t, f) -> case (M.lookup (bare (name t)) verifyFor, langOf (holeFile (site t))) of
+            (Just argv, Just lang) -> do
+              toolProgress tools (Verifying (name t))
+              everything <- projectFiles (with stood) lang
+              runVerify (toolVerifier tools) lang argv everything <&> \case
+                Right (True, _) -> (t, f, Nothing)
+                Right (False, out) -> (t, f, Just ("the tests failed:\n" <> T.intercalate "\n" (lastN 40 (T.lines out))))
+                Left why -> (t, f, Just ("the tests could not run: " <> describeCheckFailure why))
+            _ -> pure (t, f, Nothing)
+          let good' = [(t, f) | (t, f, Nothing) <- verified]
+              verifyFailed = [(t, f, why) | (t, f, Just why) <- verified]
               accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
-              failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash]
+              failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash ++ verifyFailed]
           forM_ good' (\(t, _) -> toolProgress tools (Filled (name t) (tryAttempts t)))
           next accepted' (maybe notes (: notes) note) failed
 
@@ -90,7 +137,48 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
        in (applyFills langOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
 
     name = holeName . site
+    -- a repeated hole's name less its "[file:line]"
+    bare = T.takeWhile (/= '[')
+    lastN n xs = drop (length xs - n) xs
     site = phSite . tryHole
+
+    -- Each candidate in a file that says names are not defined gets, for
+    -- each such name its fill uses, the one project import line binding it;
+    -- the re-check judges (other errors are often the cascade: pyright
+    -- strict's "Type of … is unknown", review I1).
+    autoImport broken cs = do
+      let undefinedIn p = case supportFor . checkFormat =<< langCheck =<< langOf p of
+            Nothing -> []
+            Just support -> [n | m <- M.findWithDefault [] p broken, Just n <- [supportUndefined support (T.drop (length p + 2) m)]]
+          wanted = nub [(p, n) | p <- M.keys broken, n <- undefinedIn p]
+      if null wanted
+        then pure cs
+        else do
+          found <- forM (nub [(p, n) | (p, n) <- wanted]) $ \(p, n) -> ((p, n),) <$> maybe (pure Nothing) (\l -> importFor l n) (langOf p)
+          forM cs $ \(t, f) -> do
+            let p = holeFile (site t)
+                lines' = nub [l | ((q, n), Just l) <- found, q == p, usesName n f]
+            forM_ lines' (\l -> toolProgress tools (AutoImported (name t) l))
+            pure (t, if null lines' then f else T.intercalate "\n" lines' <> "\n\n" <> f)
+
+    usesName n f = any (== n) (T.split (\c -> not (isAlphaNum c || c == '_')) f)
+
+    -- The one import line in the project's files of this language that
+    -- binds @n@ (an alias binds its alias), as a line for one name.
+    importFor lang n = do
+      paths <- listFiles ws "."
+      let mine p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) (langFiles lang)
+      texts <- forM (filter mine paths) (readText ws)
+      let ls = [T.strip l | Just t <- texts, l <- T.lines t, maybe False (`matches` l) (langImports lang)]
+          binding entry = case T.words entry of
+            [x, "as", y] -> (x, y)
+            ws' -> (T.unwords ws', T.unwords ws')
+          froms = [ "from " <> m <> " import " <> e
+                  | Just mg <- [langImportMerge lang], l <- ls, Just (m, es) <- [merging mg l], e <- es, snd (binding e) == n ]
+          plains = [ l | l <- ls, Just rest <- [T.stripPrefix "import " l], let (x, y) = binding rest, (if x == y then T.takeWhile (/= '.') x else y) == n ]
+      pure $ case nub (froms ++ plains) of
+        [one] -> Just one
+        _ -> Nothing
 
     fillHole t =
       let s = site t
@@ -123,12 +211,16 @@ fillPhase ws tools inputs base holes = case toolFiller tools of
       let names = nub [langName l | s <- sites, Just l <- [languageFor (toolLanguages tools) (holeFile s)], isJust (langCheck l)]
           langs = [l | l <- toolLanguages tools, langName l `elem` names]
       foldM (\(acc, note) lang -> (\(b, n) -> (M.unionWith (++) acc b, maybe note Just n)) <$> checkLang files lang) (M.empty, Nothing) langs
-    checkLang files lang = do
+    -- The language's files and its check's context, from disk, with the
+    -- plan's versions over them: what a check (or a verify) runs over.
+    projectFiles files lang = do
       paths <- listFiles ws "."
       let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
           wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
       disk <- forM (filter wanted paths) (\p -> (p,) <$> readText ws p)
-      let all' = M.union (M.filterWithKey (\p _ -> wanted p) files) (M.fromList [(p, t) | (p, Just t) <- disk])
+      pure (M.union (M.filterWithKey (\p _ -> wanted p) files) (M.fromList [(p, t) | (p, Just t) <- disk]))
+    checkLang files lang = do
+      all' <- projectFiles files lang
       toolProgress tools (Checking (langName lang))
       runCheck (toolChecker tools) lang all' >>= \case
         Left f -> pure (M.empty, Just (describeCheckFailure f)) -- parse validation stands; the plan says so
@@ -152,7 +244,7 @@ applyFills langOf = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) f
             (imports, code) = splitImports (langImports =<< lang) f
             lineStart = snd (T.breakOnEnd "\n" before)
             indent = T.takeWhile (`elem` (" \t" :: String)) lineStart
-            body = T.intercalate ("\n" <> indent) (T.splitOn "\n" (T.strip code))
+            body = T.intercalate ("\n" <> indent) (dedented code)
          in maybe id (\l -> addImports l imports) lang (before <> body <> T.drop (T.length (holePlaceholder s)) after)
 
 -- | A fill's leading import lines (blank lines between them dropped), and
@@ -191,16 +283,16 @@ addImports lang new t = case langImports lang of
       | line `elem` ls = ls
       | Just m <- langImportMerge lang
       , Just (modu, names) <- merging m line
-      , (i, have) : _ <- [(i, ns) | (i, l) <- zip [0 :: Int ..] ls, topLevel l, Just (mo, ns) <- [merging m l], mo == modu] =
+      , (i, have) : _ <- [(i, ns) | (i, l) <- zip [0 :: Int ..] ls, i >= headerEnd ls, topLevel l, Just (mo, ns) <- [merging m l], mo == modu] =
           case filter (`notElem` have) names of
             [] -> ls
             more -> case render (M.fromList [("module", VText modu), ("names", VText (T.intercalate ", " (have ++ more)))]) (mergeWrite m) of
               Right merged -> take i ls ++ [merged] ++ drop (i + 1) ls
               Left _ -> ls
-      | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, topLevel l, matches re l] of
+      | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, i >= headerEnd ls, topLevel l, matches re l] of
           [] ->
             let (header, rest) = splitAt (headerEnd ls) ls
-             in header ++ [""] ++ [line] ++ (case rest of "" : _ -> rest; _ -> "" : rest)
+             in header ++ [""  | not (null header)] ++ [line] ++ (case rest of "" : _ -> rest; _ -> "" : rest)
           is -> let (upTo, rest) = splitAt (last is + 1) ls in upTo ++ [line] ++ rest
 
 
@@ -224,3 +316,17 @@ escapes f
       '\\' : _ : rest -> skipString rest
       '"' : rest -> rest
       _ : rest -> skipString rest
+
+-- | A fill whose first line is unindented while every other non-blank line
+-- is indented at least @c > 0@: those lines @c@ less (Nothing otherwise).
+reindented :: Text -> Maybe Text
+reindented f = case T.lines (T.dropWhile (== '\n') f) of
+  first : rest@(_ : _)
+    | indentOf first == 0
+    , ns@(_ : _) <- [indentOf l | l <- rest, not (T.null (T.strip l))]
+    , c <- minimum ns
+    , c > 0 ->
+        Just (T.intercalate "\n" (first : [T.drop c l | l <- rest]))
+  _ -> Nothing
+  where
+    indentOf = T.length . T.takeWhile (== ' ')

@@ -49,6 +49,11 @@ files = "src/{= app =}/{= service|snake =}/commands/{= command|snake =}.py"
 ast   = { kind = "typed_parameter", inside = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^__init__$" } } } }
 each  = { name = "^([a-z_][a-z_0-9]*)", port = ":[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)" }
 
+# Its failures become statuses, so it needs a Failure union.
+[requires]
+holds = "{= for f in failures =}{= if loop.first =}yes{= end =}{= end =}"
+hint  = "give {= command|snake =} a Failure union first (the failure-variant snippet adds the first)"
+
 # routes.py: the router takes the command; its route
 [[edits]]
 insert = "{= web =}/routes.py"

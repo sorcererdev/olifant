@@ -26,10 +26,22 @@ type   = "ident"
 prompt = "The method"
 
 [inputs.signature]
-type   = "text"
-prompt = "Its signature, as the Protocol writes it (name(self, …) -> T)"
+type     = "text"
+optional = true
+prompt   = "Its signature, as the Protocol writes it (name(self, …) -> T); editors give params and returns instead"
+
+[inputs.params]
+type     = "text"
+optional = true
+prompt   = "Its parameters, parenthesised: (self, booking: Booking)"
+
+[inputs.returns]
+type     = "text"
+optional = true
+prompt   = "What it returns: None, Booking | None, …"
 
 [derive]
+sig   = "{= if signature =}{= signature =}{= else =}{= name =}{= params =} -> {= returns =}{= end =}"
 dir   = "src/{= app =}/{= service|snake =}/ports/{= port|snake =}"
 port_ = "{= port|snake =}"
 
@@ -51,7 +63,7 @@ ast   = { kind = "typed_parameter", nthChild = 1, inside = { kind = "parameters"
 [[uses]]
 generator = "port-method-adapter"
 for_each  = "adapters"
-with      = { file = "{= item.path =}", dir = "{= dir =}", stem = "{= item.stem =}", name = "{= name =}", signature = "{= signature =}", port = "{= port =}", app = "{= app =}", service = "{= service =}" }
+with      = { file = "{= item.path =}", dir = "{= dir =}", stem = "{= item.stem =}", name = "{= name =}", signature = "{= sig =}", port = "{= port =}", app = "{= app =}", service = "{= service =}" }
 
 [[edits]]
 insert = "{= dir =}/{= port_ =}__test.py"
@@ -63,7 +75,9 @@ unless = { matches = "^def test_{= name =}\\(" }
 [applies_at]
 path    = "src/{app}/{service}/ports/{port}/{port}.py"
 node    = { kind = "function_definition", inside = { kind = "block", inside = { kind = "class_definition", has = { field = "superclasses", regex = "Protocol" } } } }
-bind    = { name = "^def ([a-z_][a-z_0-9]*)", signature = "^def (.*):[[:space:]]*\\.\\.\\.[[:space:]]*$" }
+# The signature from the method's text, over lines or with a docstring body:
+# its parameters (to their closing parenthesis) and its return type.
+bind    = { name = "^def ([a-z_][a-z_0-9]*)", params = "^def [a-z_][a-z_0-9]*(\\([^)]*\\))", returns = "\\)[[:space:]]*->[[:space:]]*([^:]+):" }
 where   = "on a method of a port's Protocol"
 suggest = true
 label   = "Add {= name =} to {= port =}'s adapters"

@@ -1,0 +1,64 @@
+name = "Add a port"
+description = "A command's or query's __init__ takes one of the service's ports (a menu); wire follows: the module keeps it, its tests pass a fake, main.py the adapter"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/add-dependency --set app=bistro --set service=booking --set kind=commands --set command=cancel_booking --set port=booking_repository",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service"
+
+[inputs.kind]
+type    = "enum"
+choices = ["commands", "queries"]
+prompt  = "A command or a query"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command or query (its module's name)"
+
+[inputs.port]
+type   = "enum"
+one_of = "ports"
+prompt = "The port it takes (one of the service's ports/)"
+
+[derive]
+module = "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}.py"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/ports"
+value = "parent folder"
+
+# One choice per port: its folder under ports/.
+[query.ports]
+glob  = "src/{= app =}/{= service|snake =}/ports/*/__init__.py"
+value = "parent folder"
+
+[[edits]]
+insert = "{= module =}"
+at     = "end of parameters in __init__"
+text   = "{= port|snake =}: {= port|pascal =}"
+unless = { matches = ":[[:space:]]*{= port|pascal =}([,)]|[[:space:]]|$)" }
+
+[[uses]]
+generator = "wire"
+with      = { app = "{= app =}", service = "{= service =}", kind = "{= kind =}", command = "{= command =}", param = "{= port|snake =}", port = "{= port|pascal =}" }
+
+# In an editor: chosen from the ⚡ menu on an __init__.
+[applies_at]
+path    = "src/{app}/{service}/{kind}/{command}.py"
+node    = { kind = "function_definition", has = { field = "name", regex = "^__init__$" } }
+where   = "on a command's or query's __init__"
+label   = "Add a port"

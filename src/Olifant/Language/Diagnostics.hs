@@ -40,6 +40,9 @@ data CompilerSupport = CompilerSupport
   -- pattern: the pattern as the site writes it
   , supportVisible :: MissingPatterns -> Text -> Text -> Bool
   -- ^ the diagnostic, site source, constructor: can it appear here?
+  , supportUndefined :: Text -> Maybe Text
+  -- ^ a report message that says a name is not defined: the name (the fill
+  -- phase imports it when exactly one project file does)
   , supportFunction :: Text -> Int -> Text
   -- ^ site source, 0-based line: the enclosing top-level declaration
   , supportArmSeparator :: Text

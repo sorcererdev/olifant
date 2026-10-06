@@ -2,6 +2,9 @@
 files = ["**/*.rs"]
 comment = "//"
 grammar = "rust"
+# Items in brackets are followed by a comma; rustfmt's width is 100.
+separator = ","
+line_length = 100
 placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"
 

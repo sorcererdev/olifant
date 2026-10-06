@@ -11,7 +11,7 @@ import Data.List (nub)
 import Data.Maybe (isJust)
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
-import Olifant.Anchor (RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, resolveLayers)
+import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (findExecutable, getTemporaryDirectory)
@@ -21,6 +21,7 @@ import Olifant.Template (Value (..))
 import Control.Monad (forM_)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
+import Olifant.Language.Header (headerEnd)
 import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
 import Olifant.Cli.Output (anchorsHuman)
@@ -124,6 +125,10 @@ spec = do
       let big = T.replicate 20000 "x = 1\n\n"
       r <- querySyntax syn elm (object ["kind" .= ("no_such_kind" :: Text)]) big
       either (const True) (const False) r `shouldBe` True
+    it "(pack-opens c) a one-line list in a language with no separator is still refused" $ withAstGrep $ \syn elm _ -> do
+      let src = T.unlines ["module A exposing (..)", "", "parser =", "    oneOf [ a, b ]"]
+      r <- resolveLayers syn (Just elm) [PhraseAnchor "end of list in parser"] src
+      either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
@@ -152,6 +157,40 @@ spec = do
     it "(c) end of imports in a file with none goes after its docstring, a blank line before" $ withPython $ \syn lang _ -> do
       let bare = T.unlines ["\"\"\"Clock in memory.\"\"\"", "", "", "class InMemoryClock:", "    pass"]
       fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] bare) `shouldReturn` Right (1, BlankBefore)
+    describe "one-line containers (pack-opens: inline if it fits, else one per line)" $ do
+      let grown syn lang src phrase text = do
+            Right loc <- resolveLayers syn (Just lang) [PhraseAnchor phrase] src
+            pure (snd (insertLines loc text src), presentAt loc text src)
+          long = "tables_with_a_rather_long_name: TableRepositoryWithAnEvenLongerName"
+      it "(a) inline when it fits the line length" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "class A:\n    def __init__(self) -> None:\n        pass\n" "end of parameters in __init__" "bookings: BookingRepository")
+          `shouldReturn` "class A:\n    def __init__(self, bookings: BookingRepository) -> None:\n        pass\n"
+      it "(b) one item per line when it does not" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "class A:\n    def __init__(self, bookings: BookingRepository) -> None:\n        pass\n" "end of parameters in __init__" long)
+          `shouldReturn` T.unlines ["class A:", "    def __init__(", "        self,", "        bookings: BookingRepository,", "        " <> long <> ",", "    ) -> None:", "        pass"]
+      it "(d) nested calls stay whole; a trailing comment stays on the closing line (Review Focus 2)" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "x = foo(a, bar(b, c))  # note\n" "end of call foo" long)
+          `shouldReturn` T.unlines ["x = foo(", "    a,", "    bar(b, c),", "    " <> long <> ",", ")  # note"]
+      it "(e) a separator already at the end is not doubled (Review Focus 3)" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "y = f(a,)\n" "end of call f" "b") `shouldReturn` "y = f(a, b)\n"
+      it "(g) review C1: code that is not an item (a lambda, an operator) refuses rather than vanish" $ withPython $ \syn lang _ -> do
+        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of call foo"] "x = foo(a + b, lambda q: q, c)  # note\n"
+        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
+      it "(h) review C1: a keyword-only marker is not an item: refused, not dropped" $ withPython $ \syn lang _ -> do
+        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of parameters in f"] "def f(self, *, x: int) -> None:\n    pass\n"
+        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
+      it "(i) review C1: a one-line union is not a comma list: refused" $ withPython $ \syn lang _ -> do
+        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of union F"] "type F = (NotFound | Late)\n"
+        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
+      it "(f) already there: present" $ withPython $ \syn lang _ ->
+        fmap snd (grown syn lang "y = f(a, b)\n" "end of call f" "b") `shouldReturn` True
+    it "(pack-opens) headerEnd: prefixed docstrings and leading blank lines count" $ do
+      headerEnd ["r\"\"\"Doc.\"\"\"", "", "x = 1"] `shouldBe` 1
+      headerEnd ["", "", "\"\"\"Doc.\"\"\"", "x = 1"] `shouldBe` 3
+      headerEnd ["b'''a", "b'''", "x"] `shouldBe` 2
+      headerEnd ["x = 1"] `shouldBe` 0
+    it "(pack-opens) end of imports in a file with no header: line 0, no blank line" $ withPython $ \syn lang _ ->
+      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] "class X:\n    pass\n") `shouldReturn` Right (0, NoSpacing)
     it "(c) end of parameters in FUNCTION goes after its last parameter (python-pack: web-command)" $ withPython $ \syn lang file ->
       at syn lang file "end of parameters in floor_routes" `shouldReturn` Right (lineOf "find_free_tables: FindFreeTables," + 1, "    ")
     it "(c) end of call NAME (anywhere in the file) goes after its last argument" $ withPython $ \syn lang file ->
@@ -205,6 +244,9 @@ spec = do
         `shouldBe` Right [("billing/billing-service/src/service.rs", "missing field `email_sender` in initializer of `CancelInvoice`")]
     it "is a known format" $ fmap supportFormat (supportFor "rustc-json") `shouldBe` Just "rustc-json"
   describe "pyright-json (Python, recorded from pyright)" $ do
+    it "reads the undefined name from a message (auto-import)" $ do
+      supportUndefined pyrightSupport "\"date\" is not defined" `shouldBe` Just "date"
+      supportUndefined pyrightSupport "Type of \"date\" is unknown" `shouldBe` Nothing
     let sample name = BS.readFile ("src/Olifant/Language/testdata/pyright/" <> name <> "/report.json")
         sites r = [(missingFile m, fst (missingCase m), missingPatterns m) | m <- reportMissing r]
     it "is a known format, read from stdout" $ do

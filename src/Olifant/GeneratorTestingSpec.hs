@@ -11,6 +11,8 @@ import Olifant.Generation (describeConflict, PlannedEdit (..), HoleStatus (..), 
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
+import Olifant.Generation.Tools (Verifier (..))
+import Olifant.Language.Check (noVerifier, processVerifierWith)
 import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
 import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
@@ -28,6 +30,7 @@ import System.Environment (lookupEnv)
 import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
 import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
 import System.Directory (canonicalizePath)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Test.Hspec
 
 tinyPack :: Text -> [(FilePath, Text)]
@@ -181,8 +184,8 @@ spec = do
             pure [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
           command = "src/bistro/booking/commands/close_table.py"
       check command "import sqlite3\n\n\ndef f() -> None:\n    db = sqlite3.connect(\"x\")\n    raise TableNotFound(\"t9\")\n"
-        `shouldReturn` [ ("commands-use-ports", Just 1, Warn, ["python-htmx/repository"])
-                       , ("commands-use-ports", Just 5, Warn, ["python-htmx/repository"])
+        `shouldReturn` [ ("commands-use-ports", Just 1, Warn, ["python-htmx/add-dependency", "python-htmx/repository"])
+                       , ("commands-use-ports", Just 5, Warn, ["python-htmx/add-dependency", "python-htmx/repository"])
                        , ("failures-returned", Just 6, Hint, []) ]
       check command "def f() -> None:\n    raise NotImplementedError(\"later\")\n" `shouldReturn` []
       check "src/bistro/web/floor/routes.py" "from bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n"
@@ -262,7 +265,7 @@ spec = do
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processChecker
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-              , rtGitInit = \_ _ -> pure (Right ()) }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
         let project = dir </> "demo"
@@ -313,6 +316,13 @@ spec = do
             , "src/bistro/web/bookings/routes__test.py::test_the_bookings_page_shows_it" ]
           (behaviour, _, behaviourErr) <- stage "behaviour"
           (behaviour, behaviourErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+          (_, cancelRed, _) <- uv ["run", "--quiet", "pytest", "-q"]
+          failing cancelRed `shouldBe`
+            [ "src/bistro/booking/commands/cancel_booking__test.py::test_cancels_a_booking"
+            , "src/bistro/booking/commands/cancel_booking__test.py::test_refuses_a_booking_that_does_not_exist" ]
+          -- handle-body writes it (a recorded fill), verified by its tests
+          (filled, _, fillErr) <- stage "fill"
+          (filled, fillErr) `shouldSatisfy` ((== ExitSuccess) . fst)
           (green, greenOut, _) <- uv ["run", "--quiet", "pytest", "-q"]
           (green, failing greenOut) `shouldBe` (ExitSuccess, [])
           (typed2, typedOut2, _) <- uv ["run", "--quiet", "pyright"]
@@ -321,6 +331,54 @@ spec = do
           (checked, T.isInfixOf "conventions hold (0 findings" (T.pack checkOut)) `shouldBe` (ExitSuccess, True)
           (served, _, serveErr) <- stage "serve"
           (served, serveErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+    it "a fix that needs a choice offers it, and fix --set takes it (review I2: Use an existing port)" $ withUv $ do
+      tmp <- getTemporaryDirectory
+      withSystemTempDirectory "olifant-fix" $ \dir0 -> do
+        dir <- canonicalizePath dir0
+        packs <- canonicalizePath "packs/python-htmx"
+        fixture <- readTree "packs/python-htmx/fixtures/app"
+        forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+        createDirectoryIfMissing True (dir </> ".olifant")
+        TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack packs <> "\" }\n")
+        let close = "src/bistro/booking/commands/close_table.py"
+        TIO.writeFile (dir </> close) (T.unlines ["import sqlite3", "", "", "class CloseTableInput:", "    pass", "", "", "class CloseTable:", "    def __init__(self) -> None:", "        \"\"\"Its ports.\"\"\"", "", "    def handle(self, input: CloseTableInput) -> None:", "        raise NotImplementedError(\"later\")"])
+        out <- newIORef ""
+        let rt = Runtime
+              { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
+              , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 6) 0), rtStdoutIsTty = False
+              , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = noChecker
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
+        _ <- runCli rt ["check", "--file", close, "--json"]
+        checked <- readIORef out
+        checked `shouldSatisfy` T.isInfixOf "\"missing\":[\"port\"]"
+        checked `shouldSatisfy` T.isInfixOf "booking_repository"
+        writeIORef out ""
+        runCli rt ["fix", "commands-use-ports", "--at", close <> ":1:1", "--set", "port=booking_repository", "--plan", "--json"] `shouldReturn` ExitSuccess
+        planned <- readIORef out
+        planned `shouldSatisfy` T.isInfixOf "booking_repository: BookingRepository"
+    it "web-command refuses a command with no Failure union (pack-opens)" $ do
+      tmp <- getTemporaryDirectory
+      let path = "src/bistro/booking/commands/close_table.py"
+          command = T.unlines ["from dataclasses import dataclass", "", "from bistro.shared.result import Ok", "", "", "@dataclass(frozen=True)", "class CloseTableInput:", "    id: str", "", "", "class CloseTable:", "    def handle(self, input: CloseTableInput) -> Ok[None]:", "        return Ok(None)"]
+      Right (ws, tools, resolve, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "web-command" [(path, command)]
+      Right plan <- generate ws resolve tools [Step g (M.fromList [("app", "bistro"), ("service", "booking"), ("resource", "bookings"), ("command", "close_table")])] (UTCTime (fromGregorian 2026 10 6) 0) PlanOnly
+      map describeConflict (planConflicts plan) `shouldSatisfy` any ("give close_table a Failure union first" `T.isInfixOf`)
+    it "handle-body refuses a command with no __test.py beside it (Review Focus 5)" $ do
+      tmp <- getTemporaryDirectory
+      given <- TIO.readFile "packs/python-htmx/generators/handle-body/tests/create-booking/given/src/bistro/booking/commands/create_booking.py"
+      let moved = "src/bistro/booking/commands/close_table.py"
+      Right (ws, tools0, resolve, g0) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "handle-body" [(moved, given)]
+      let line = 1 + length (takeWhile (not . T.isInfixOf "raise NotImplementedError") (T.lines given))
+      Right (tools, g) <- atCaseCursor ws noChecker (Just (moved, line)) tools0 g0
+      Right plan <- generate ws resolve tools [Step g (M.fromList [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "close_table")])] (UTCTime (fromGregorian 2026 10 6) 0) PlanOnly
+      map describeConflict (planConflicts plan) `shouldSatisfy` any ("write close_table__test.py first" `T.isInfixOf`)
+    it "verify: a command that runs too long is stopped and says so (Review Focus 4)" $ do
+      r <- runVerify (processVerifierWith 1) python ["sleep", "30"] (M.fromList [("src/a.py", "x = 1\n")])
+      r `shouldBe` Right (False, "the tests timed out (1 s)")
+      ok <- runVerify (processVerifierWith 10) python ["true"] (M.fromList [("src/a.py", "x = 1\n")])
+      fmap fst ok `shouldBe` Right True
     it "its fixture is pyright-strict clean" $ withUv $ do
       fixture <- readTree "packs/python-htmx/fixtures/app"
       compileClean python fixture `shouldReturn` Right ()
