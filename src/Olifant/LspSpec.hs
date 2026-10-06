@@ -274,6 +274,9 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
       firstInsert v = case lookupKey "items" v of
         Just (Array items) | Object item : _ <- foldr (:) [] items, Just insert <- KM.lookup "insertText" item -> Just insert
         _ -> Nothing
+      firstItem v = case lookupKey "items" v of
+        Just (Array items) | Object item : _ <- foldr (:) [] items -> Just (Object item)
+        _ -> Nothing
   it "(a) completes a snippet that applies here, its body with tab stops" $
     withPython [] $ \ports dir -> do
       (items, _) <- inProcessWith ports dir $ do
@@ -295,6 +298,9 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
         Just (Object insert) -> do
           KM.lookup "kind" insert `shouldBe` Just (String "snippet")
           KM.lookup "value" insert `shouldSatisfy` \case Just (String body) -> "= command()" `T.isInfixOf` body; _ -> False
+          -- the ghost as the engine draws it, and what to resolve for the filled body
+          (firstItem v >>= lookupKey "ghost") `shouldSatisfy` \case Just (Array ls) -> String "def test_\10216behaviour\10217() -> None:" `elem` ls; _ -> False
+          (firstItem v >>= lookupKey "data" >>= lookupKey "generator") `shouldBe` Just (String "python-htmx/test-case")
         other -> expectationFailure ("inline completion: " <> show v <> " / " <> show other)
   it "(c) says it serves inline completion (LSP 3.18), though its library predates it" $
     withPython [] $ \ports dir -> do
@@ -347,6 +353,7 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
         (,current) <$> suggestion
       lookupKey "label" v `shouldBe` Just (String "Add Cancelled to every match")
       lookupKey "kind" v `shouldBe` Just (String "followup")
+      lookupKey "at" v `shouldBe` Just (toJSON (35 :: Int))
       lookupKey "version" v `shouldBe` Just (toJSON version)
       lookupKey "summary" v `shouldSatisfy` \case Just (String t) -> "+1 line here" `T.isPrefixOf` t && "failures.py" `T.isInfixOf` t; _ -> False
   it "(b) gives the suggestion's plan, with its edit, by id" $

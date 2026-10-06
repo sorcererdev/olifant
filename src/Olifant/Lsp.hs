@@ -416,6 +416,7 @@ suggestLater env lspEnv path version line = do
             , "summary" .= sgSummary sg
             , "line" .= sgLine sg
             , "lines" .= sgLines sg
+            , "at" .= sgAt sg
             , "planId" .= n
             ]
       _ -> pure ()
@@ -548,11 +549,15 @@ ghostItems env path (Position l c) = do
       (line, col) = bytePosition lineText (fromIntegral l, fromIntegral c)
   withSnapshot env (ghostFor path (line, col)) <&> \case
     Nothing -> []
-    Just sn ->
+    Just (generator, sets, sn) ->
       [ object
           [ "insertText" .= object ["kind" .= ("snippet" :: T.Text), "value" .= snBody sn]
           , "range" .= Range (Position l 0) (Position l (fromIntegral (utf16 lineText)))
           , "filterText" .= lineText
+          , -- beyond LSP: the ghost as the engine draws it (holes as ⟨name⟩),
+            -- and what completionItem/resolve takes to fill it with the model
+            "ghost" .= snGhost sn
+          , "data" .= object ["kind" .= ("action" :: T.Text), "path" .= path, "generator" .= generator, "sets" .= M.fromList sets, "line" .= line]
           ]
       ]
 

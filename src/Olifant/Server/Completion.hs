@@ -11,6 +11,7 @@ import Olifant.Cursor (isSnippet)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..))
 import Olifant.Server.Actions (actionEdits)
 import Olifant.Server.State (ServerState (..), memo, projectFor)
+import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Snippet (Snippet (..))
 import System.FilePath (makeRelative)
@@ -26,10 +27,11 @@ completionsFor path pos = memo "completions" path (T.pack (show pos)) $ \s ->
       placed <- forM items $ \c -> snd <$> actionEdits False path (fst pos) (cpGenerator c) (cpSets c) s'
       pure (s', [(c, sn) | (c, Right (_, Just sn)) <- zip items placed])
 
--- | The snippet anticipated at a position: the first suggested snippet
+-- | The snippet anticipated at a position (with its generator and inputs):
+-- the first suggested snippet
 -- that applies there (its missing inputs set to their first choice),
 -- placed on the cursor's line and short enough to show (8 lines at most).
-ghostFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, Maybe Snippet)
+ghostFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, Maybe (Text, [(Text, Text)], Snippet))
 ghostFor path pos@(line, _) = memo "ghost" path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Nothing)
@@ -47,6 +49,6 @@ ghostFor path pos@(line, _) = memo "ghost" path (T.pack (show pos)) $ \s ->
           try [] = pure Nothing
           try ((generator, sets) : rest) =
             snd <$> actionEdits False path line generator sets s' >>= \case
-              Right (_, Just sn) | snLine sn == line, length (snGhost sn) <= 8 -> pure (Just sn)
+              Right (_, Just sn) | snLine sn == line, length (snGhost sn) <= 8 -> pure (Just (generator, sets, sn))
               _ -> try rest
       (s',) <$> try candidates
