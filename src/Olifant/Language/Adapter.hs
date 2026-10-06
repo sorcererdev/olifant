@@ -92,7 +92,7 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- a check runs in the judged file's package, the nearest folder holding one
 -- (`root_pick = "outermost"`: the outermost, a Cargo workspace).
 -- @checkExclusive@: the tool keeps a build cache (cargo's target dir), so
--- checks of one workspace run one at a time.
+-- each check gets a cache no other check uses while it runs (a slot).
 data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool}
   deriving stock (Eq, Show)
 

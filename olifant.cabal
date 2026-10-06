@@ -125,6 +125,8 @@ test-suite spec
   type:               exitcode-stdio-1.0
   hs-source-dirs:     src
   main-is:            TestDriver.hs
+  -- the specs run in parallel (SpecHook), on every core
+  ghc-options:        -threaded -rtsopts "-with-rtsopts=-N"
   build-tool-depends: hspec-discover:hspec-discover
   build-depends:
     , hedgehog        >=1.4
@@ -238,6 +240,7 @@ test-suite spec
     Olifant.UncoveredSpec
     Olifant.Workspace
     Olifant.WorkspaceSpec
+    SpecHook
     -- olifant:end test-modules
 
 executable olifant

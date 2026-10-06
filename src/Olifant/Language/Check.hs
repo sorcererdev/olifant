@@ -21,7 +21,9 @@ module Olifant.Language.Check
   , runVerifyIn
   ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, withMVar)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, putMVar, tryTakeMVar)
+import Control.Exception (bracket)
 import Control.Monad (forM_)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Bits (xor)
@@ -172,7 +174,7 @@ compileClean lang files = case langCheck lang of
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
 -- directory that outlives the scratch copy (cargo's `--target-dir`).
 runIn :: Cancel -> Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn token lang check files = (if checkExclusive check then oneAtATime (langName lang <> ":" <> contextKey check files) else id) $ case (checkCommand check, checkProgram (checkCommand check)) of
+runIn token lang check files = (if checkExclusive check then inSlot (langName lang <> ":" <> contextKey check files) else ($ Nothing)) $ \slot -> case (checkCommand check, checkProgram (checkCommand check)) of
   ([], _) -> pure (Left (CheckFailed "empty check command"))
   (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
   (exe : args, Just program) ->
@@ -186,7 +188,8 @@ runIn token lang check files = (if checkExclusive check then oneAtATime (langNam
         forM_ (M.toList files) $ \(p, t) -> do
           createDirectoryIfMissing True (takeDirectory (tmp </> p))
           BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
-        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
+        -- an exclusive check's cache is its slot's: no other check uses it meanwhile
+        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
         createDirectoryIfMissing True cache
         let sources = sort [p | p <- M.keys files, any (`matchesGlob` p) (langFiles lang)]
             expand a
@@ -198,20 +201,28 @@ runIn token lang check files = (if checkExclusive check then oneAtATime (langNam
           Right (Finished code out err) -> Right (code, out, err, tmp)
           Right _ -> Left (CheckFailed "cancelled")
 
--- | One run at a time per key in this process, its scratch copy gone before
--- the next starts: cargo's fingerprints follow the source files of the last
--- build, so a check that starts while the previous one's copy is still on
--- disk finds its crates fresh and reports nothing of its own.
-oneAtATime :: Text -> IO a -> IO a
-oneAtATime key act = do
-  lock <- modifyMVar checkLocks $ \m -> case M.lookup key m of
-    Just l -> pure (m, l)
-    Nothing -> newMVar () <&> \l -> (M.insert key l m, l)
-  withMVar lock (const act)
+-- | Run in one of a key's slots (a cache of its own), the slot held until
+-- the run and its scratch copy are done: cargo's fingerprints follow the
+-- source files of a cache's last build, so a check sharing a cache with a
+-- running one, or starting before the last one's copy is gone, finds its
+-- crates fresh and reports nothing of its own. Up to 'slotsPerKey' checks of
+-- one workspace run at once in this process, each slot's cache kept warm.
+inSlot :: Text -> (Maybe Int -> IO a) -> IO a
+inSlot key act = do
+  slots <- modifyMVar checkSlots $ \m -> case M.lookup key m of
+    Just ss -> pure (m, ss)
+    Nothing -> traverse (const (newMVar ())) [1 .. slotsPerKey] <&> \ss -> (M.insert key ss m, ss)
+  let free = \case
+        [] -> threadDelay 20000 >> free (zip [0 ..] slots)
+        (n, s) : rest -> tryTakeMVar s >>= maybe (free rest) (const (pure (n, s)))
+  bracket (free (zip [0 ..] slots)) (\(_, s) -> putMVar s ()) (act . Just . fst)
 
-{-# NOINLINE checkLocks #-}
-checkLocks :: MVar (Map Text (MVar ()))
-checkLocks = unsafePerformIO (newMVar M.empty)
+slotsPerKey :: Int
+slotsPerKey = 4
+
+{-# NOINLINE checkSlots #-}
+checkSlots :: MVar (Map Text [MVar ()])
+checkSlots = unsafePerformIO (newMVar M.empty)
 
 -- | GHC already prints relative paths; makeRelative leaves those unchanged.
 relativeTo :: FilePath -> CheckReport -> CheckReport

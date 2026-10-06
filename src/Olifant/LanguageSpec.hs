@@ -319,19 +319,25 @@ spec = do
       let Right rust = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"cargo\"]", "context = [\"**/Cargo.toml\"]", "root = [\"Cargo.toml\"]", "root_pick = \"outermost\"", "format = \"rustc-json\""])
       fst (checkScope rust ["Cargo.toml", "crates/a/Cargo.toml", "crates/a/src/lib.rs"] ["crates/a/src/lib.rs"]) `shouldBe` ""
       fst (checkScope rust ["svc/Cargo.toml", "svc/crates/a/Cargo.toml", "svc/crates/a/src/lib.rs"] ["svc/crates/a/src/lib.rs"]) `shouldBe` "svc"
-    it "reads `exclusive`: a check whose tool keeps a build cache runs one at a time per workspace (cargo)" $ do
+    it "reads `exclusive`: a check whose tool keeps a build cache (cargo) gets a cache no other check uses meanwhile" $ do
       let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
       fmap (fmap checkExclusive . langCheck) (parsed ["exclusive = true"]) `shouldBe` Right (Just True)
       fmap (fmap checkExclusive . langCheck) (parsed []) `shouldBe` Right (Just False)
       rust <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
       fmap (fmap checkExclusive . langCheck) (parseLanguage "rust" "packs/rust-htmx" rust) `shouldBe` Right (Just True)
-    it "runs an exclusive check one at a time per workspace: two at once never overlap" $
+    it "runs exclusive checks of a workspace in parallel, never two in one cache at once" $
       withSystemTempDirectory "olifant-exclusive" $ \dir -> do
         let log' = dir </> "log"
-            command = "[\"sh\", \"-c\", \"echo start >> " <> T.pack log' <> "; sleep 0.3; echo end >> " <> T.pack log' <> "\"]"
+            command = "[\"sh\", \"-c\", \"echo start {= cache =} >> " <> T.pack log' <> "; sleep 0.3; echo end {= cache =} >> " <> T.pack log' <> "\"]"
             Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = " <> command, "format = \"rustc-json\"", "exclusive = true"])
-        _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1, 2 :: Int]
-        lines <$> readFile log' `shouldReturn` ["start", "end", "start", "end"]
+        _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1 .. 6 :: Int]
+        events <- map words . lines <$> readFile log'
+        -- in each cache, a run ends before the next starts
+        let byCache = M.fromListWith (flip (++)) [(c, [e]) | [e, c] <- events]
+        M.elems byCache `shouldSatisfy` all (\es -> es == concat (replicate (length es `div` 2) ["start", "end"]))
+        -- and several caches were in use at once
+        M.size byCache `shouldSatisfy` (> 1)
+        length events `shouldBe` 12
     it "runs the checker inside the package and reports project paths" $ do
       seen <- newIORef []
       let checker = Checker $ \_ files -> do

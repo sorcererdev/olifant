@@ -17,7 +17,8 @@ branch = "{= pattern =} => {= body =},"
 command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]
 context = ["**/Cargo.toml", "Cargo.lock"]
 format  = "rustc-json"
-# cargo's build cache is shared: one check of a workspace at a time
+# cargo's build cache is not safe to share between checks running at once:
+# each check gets a cache of its own while it runs ({= cache =} is its slot's)
 exclusive = true
 # a check runs in the judged file's Cargo workspace: the outermost Cargo.toml
 root      = ["Cargo.toml"]

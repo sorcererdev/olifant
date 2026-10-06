@@ -4,7 +4,7 @@
 [regions.library-modules]
 file        = "olifant.cabal"
 comment     = "--"
-query       = { glob = "src/**/*.hs", exclude = ["**/*Spec.hs", "src/TestDriver.hs"] }
+query       = { glob = "src/**/*.hs", exclude = ["**/*Spec.hs", "src/TestDriver.hs", "src/SpecHook.hs"] }
 item        = "{= dotted =}"
 init_at     = "after first line matching ^  exposed-modules:"
 init_indent = "    "
