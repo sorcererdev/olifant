@@ -230,19 +230,19 @@ handlers env =
         let failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
         case (fixData =<< (action ^. L.data_), actionData =<< (action ^. L.data_)) of
           (Just (path, rule, line, n, sets), _) ->
-            planProgress (action ^. L.title) (\progress -> withSnapshot env (fixPlan True progress path rule line n sets)) >>= \case
+            planProgress (action ^. L.title) (\progress -> withPlanned env (fixPlan True progress path rule line n sets)) >>= \case
               Left why -> failed why
-              Right planned -> resolved env action planned >>= respond . Right
+              Right planned -> respond (Right (resolved action planned))
           (_, Just (path, line, generator, sets)) ->
-            planProgress (action ^. L.title) (\progress -> withSnapshot env (actionPlanWith progress True path line generator sets)) >>= \case
+            planProgress (action ^. L.title) (\progress -> withPlanned env (actionPlanWith progress True path line generator sets)) >>= \case
               Left why -> failed why
               -- a snippet's body (tab stops) rides along for editors that expand it
-              Right planned@(_, plan) -> resolved env action planned >>= respond . Right . (L.data_ %~ fmap (withSnippet (planSnippet plan)))
+              Right planned@(_, (_, plan)) -> respond (Right (resolved action planned & L.data_ %~ fmap (withSnippet (planSnippet plan))))
           _ -> case holeData =<< (action ^. L.data_) of
             Just (path, line) ->
-              planProgress "Fill with the model" (\progress -> withSnapshot env (fillHolePlan progress path line)) >>= \case
+              planProgress "Fill with the model" (\progress -> withPlanned env (fillHolePlan progress path line)) >>= \case
                 Left why -> failed why
-                Right planned -> resolved env action planned >>= respond . Right
+                Right planned -> respond (Right (resolved action planned))
             Nothing -> respond (Right action)
     , -- ⚡ at the end of each line with actions; the hint opens the menu there
       requestHandler SMethod_TextDocumentInlayHint $ \req respond -> do
@@ -326,12 +326,10 @@ handlers env =
         case found of
           Nothing -> respond (Right Aeson.Null)
           Just (path, line) -> do
-            version <- liftIO (fmap fst . M.lookup path . ssDocs <$> readMVar (envState env))
-            liftIO (withSnapshot env (suggestionFor path line)) >>= \case
-              Just sg | Just v <- version -> do
+            liftIO (withSnapshotState env (suggestionFor path line)) >>= \case
+              (at, Just sg) | Just v <- fst <$> M.lookup path (ssDocs at) -> do
                 n <- liftIO (offer env path v sg)
-                now <- liftIO (readMVar (envState env))
-                respond (Right (object (suggestionFields path v n sg ++ ["plan" .= planJson False (sgPlan sg)] ++ ["edit" .= workspaceEdit (editsOfPlan now (sgRoot sg) (sgPlan sg))])))
+                respond (Right (object (suggestionFields path v n sg ++ ["plan" .= planJson False (sgPlan sg)] ++ ["edit" .= workspaceEdit (editsOfPlan at (sgRoot sg) (sgPlan sg))])))
               _ -> respond (Right Aeson.Null)
     , -- an offered suggestion's plan, while its document is as it was
       -- (`fill`: planned again with the model, as accepting it does)
@@ -355,11 +353,9 @@ handlers env =
               _ -> Nothing
         case (chosen, offered) of
           (Just (path, generator, sets), _) ->
-            planProgress generator (\progress -> withSnapshot env (actionPlanWith progress True path 1 generator sets)) >>= \case
+            planProgress generator (\progress -> withPlanned env (actionPlanWith progress True path 1 generator sets)) >>= \case
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right (root, plan) -> do
-                now <- liftIO (readMVar (envState env))
-                respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan now root plan)]))
+              Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
           (_, Nothing) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
           (_, Just o)
             | fmap fst (M.lookup (ofPath o) (ssDocs s)) /= Just (ofVersion o) -> respond (Left (TResponseError (InL LSPErrorCodes_ContentModified) "the document changed since this was suggested" Nothing))
@@ -368,11 +364,9 @@ handlers env =
                  in respond (Right (object ["plan" .= planJson False (sgPlan sg), "edit" .= workspaceEdit (editsOfPlan s (sgRoot sg) (sgPlan sg))]))
             | otherwise -> do
                 let sg = ofSuggestion o
-                planProgress (sgLabel sg) (\progress -> withSnapshot env (actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg))) >>= \case
+                planProgress (sgLabel sg) (\progress -> withPlanned env (actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg))) >>= \case
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-                  Right (root, plan) -> do
-                    now <- liftIO (readMVar (envState env))
-                    respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan now root plan)]))
+                  Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
     , -- the project of a document in the shared vocabulary (spec §1b)
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) $ \req respond -> do
         let path = case req ^. L.params of
@@ -477,7 +471,17 @@ suggestionFields path version n sg =
 -- | Run against the state as it is now, without holding it: what the work
 -- loaded (projects) is kept; documents changed meanwhile are not undone.
 withSnapshot :: Env -> (ServerState -> IO (ServerState, a)) -> IO a
-withSnapshot env work = do
+withSnapshot env work = snd <$> withSnapshotState env work
+
+-- | A plan made on a snapshot, with the state it was made on: edits are
+-- stamped with that state's document versions.
+withPlanned :: Env -> (ServerState -> IO (ServerState, Either e (FilePath, Plan))) -> IO (Either e (ServerState, (FilePath, Plan)))
+withPlanned env work = withSnapshotState env work <&> \(at, planned) -> (at,) <$> planned
+
+-- | 'withSnapshot', with the state the work ran on (the documents as they
+-- were when it started).
+withSnapshotState :: Env -> (ServerState -> IO (ServerState, a)) -> IO (ServerState, a)
+withSnapshotState env work = do
   before <- readMVar (envState env)
   (after, a) <- work before
   let loaded = M.filter (> 0) (M.unionWith (-) (ssLoads after) (ssLoads before))
@@ -490,7 +494,7 @@ withSnapshot env work = do
           ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
         , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
         }
-  pure a
+  pure (after, a)
 
 -- | A file's findings as diagnostics (with the finding each is).
 diagnosticsOf :: Env -> FilePath -> IO [(Diagnostic, Finding)]
@@ -616,10 +620,10 @@ ghostItems env path (Position l c) = do
 
 -- | A resolved code action: its plan's edit, and the plan itself in its
 -- data (the editors' plan JSON, files before and after, for a preview).
-resolved :: Env -> CodeAction -> (FilePath, Plan) -> LspM () CodeAction
-resolved env action (root, plan) = do
-  s <- liftIO (readMVar (envState env))
-  pure (action & L.edit ?~ workspaceEdit (editsOfPlan s root plan) & L.data_ %~ fmap withPlan)
+-- Its edits are for the documents as they were planned (the versions of
+-- that state), never as they are when it answers (review C1).
+resolved :: CodeAction -> (ServerState, (FilePath, Plan)) -> CodeAction
+resolved action (at, (root, plan)) = action & L.edit ?~ workspaceEdit (editsOfPlan at root plan) & L.data_ %~ fmap withPlan
   where
     withPlan = \case
       Object o -> Object (KM.insert "plan" (planJson False plan) o)

@@ -476,6 +476,29 @@ holesSpec = describe "progress, holes and verify" $ do
           [] -> fail ("no Fill action among " <> show [a ^. L.title | InR a <- actions])
       T.concat (editTexts resolved) `shouldSatisfy` T.isInfixOf "self.bookings.save(booking)"
 
+  it "(e) stamps a resolved edit with the version it was planned against, though the document changed during the resolve (review C1)" $ do
+    fills <- canonicalizePath (handCase <> "/fills.toml")
+    entered <- newEmptyMVar
+    gate <- newEmptyMVar
+    -- the fill's check waits until the test has changed the document
+    let gated = Checker $ \lang files -> putMVar entered () >> takeMVar gate >> runCheck noChecker lang files
+    withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
+      (versions, _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = gated} dir $ do
+        doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
+        actions <- getCodeActions doc (Range (Position 1 4) (Position 1 4))
+        a <- case [a | InR a <- actions, a ^. L.title == "Fill with the model"] of
+          a : _ -> pure a
+          [] -> fail "no Fill action"
+        rid <- sendRequest SMethod_CodeActionResolve a
+        liftIO (timeout 30000000 (takeMVar entered)) >>= maybe (fail "the fill never checked") pure
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument "# typed meanwhile\ndef handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n"))]
+        liftIO (threadDelay 300000) -- the change is in before the check goes on
+        liftIO (putMVar gate () >> forkIO (let loop = putMVar gate () >> loop in loop))
+        let awaitResolve = responseForId SMethod_CodeActionResolve rid <|> (anyMessage >> awaitResolve)
+        TResponseMessage _ _ answer <- awaitResolve
+        either (fail . show) (pure . editVersions) answer
+      versions `shouldSatisfy` (\vs -> not (null vs) && all (== InL 0) vs)
+
   it "(d) says the project's model: its elements in the shared vocabulary, and how they relate (spec §1b)" $
     withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
       (v, _) <- inProcessWith ports root $ do
