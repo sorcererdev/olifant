@@ -391,6 +391,18 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
         pure ([KM.lookup "status" h | h <- holesOf unfilled], [KM.lookup "status" h | h <- holesOf filled])
       fst statuses `shouldSatisfy` (\ss -> not (null ss) && all (/= Just (String "filled")) ss)
       snd statuses `shouldSatisfy` (\ss -> not (null ss) && all (== Just (String "filled")) ss)
+  it "(e) answers what follows at a line when asked (the editor knows the cursor), with its plan" $
+    withPythonChecked [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        -- the class typed in one change: the change ends below the class line
+        changeDoc doc [insert 33 0 "@dataclass(frozen=True)\nclass Cancelled:\n    reason: str\n\n\n"]
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "line" .= (35 :: Int)]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      lookupKey "label" v `shouldBe` Just (String "Add Cancelled to every match")
+      lookupKey "planId" v `shouldSatisfy` (/= Nothing)
+      (lookupKey "plan" v >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> not (null fs); _ -> False)
   it "(c) drops the suggestion of a version typed over before it settled" $
     withPythonChecked [] $ \ports dir -> do
       ((v, version), _) <- inProcessWith ports dir $ do

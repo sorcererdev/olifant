@@ -313,6 +313,26 @@ handlers env =
               _ -> Nothing
         found <- maybe (pure Nothing) (liftIO . withSnapshot env . fileActionsFor) path
         respond (Right (maybe (fileActionsJson [] [] []) (\(gens, acts, near) -> fileActionsJson gens acts near) found))
+    , -- what follows at a line (the editor knows the cursor; pushes guess it
+      -- from the last edit), offered as pushed ones are, its plan with it
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) $ \req respond -> inBackground respond $ do
+        let params = req ^. L.params
+            found = do
+              Object o <- pure params
+              Object doc <- KM.lookup "textDocument" o
+              String uri <- KM.lookup "uri" doc
+              Number l <- KM.lookup "line" o
+              (,) <$> uriToFilePath (Uri uri) <*> toBoundedInteger l
+        case found of
+          Nothing -> respond (Right Aeson.Null)
+          Just (path, line) -> do
+            version <- liftIO (fmap fst . M.lookup path . ssDocs <$> readMVar (envState env))
+            liftIO (withSnapshot env (suggestionFor path line)) >>= \case
+              Just sg | Just v <- version -> do
+                n <- liftIO (offer env path v sg)
+                now <- liftIO (readMVar (envState env))
+                respond (Right (object (suggestionFields path v n sg ++ ["plan" .= planJson False (sgPlan sg)] ++ ["edit" .= workspaceEdit (editsOfPlan now (sgRoot sg) (sgPlan sg))])))
+              _ -> respond (Right Aeson.Null)
     , -- an offered suggestion's plan, while its document is as it was
       -- (`fill`: planned again with the model, as accepting it does)
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) $ \req respond -> inBackground respond $ do
@@ -406,20 +426,29 @@ suggestLater env lspEnv path version line = do
     current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
     case found of
       Just sg | current == Just version -> do
-        n <- atomicModifyIORef' (envOffered env) (\(k, m) -> ((k + 1, M.insert (k + 1) (Offered path version sg) (M.filter ((/= path) . ofPath) m)), k + 1))
-        runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $
-          object
-            [ "uri" .= filePathToUri path
-            , "version" .= version
-            , "kind" .= sgKind sg
-            , "label" .= sgLabel sg
-            , "summary" .= sgSummary sg
-            , "line" .= sgLine sg
-            , "lines" .= sgLines sg
-            , "at" .= sgAt sg
-            , "planId" .= n
-            ]
+        n <- offer env path version sg
+        runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version n sg)
       _ -> pure ()
+
+-- | Keep a suggestion's plan for `olifant/plan` (the file's newest only):
+-- its id.
+offer :: Env -> FilePath -> Int -> Suggestion -> IO Int
+offer env path version sg =
+  atomicModifyIORef' (envOffered env) (\(k, m) -> ((k + 1, M.insert (k + 1) (Offered path version sg) (M.filter ((/= path) . ofPath) m)), k + 1))
+
+-- | A suggestion as editors read it (olifant/suggestion, olifant/suggest).
+suggestionFields :: FilePath -> Int -> Int -> Suggestion -> [(Key.Key, Value)]
+suggestionFields path version n sg =
+  [ "uri" .= filePathToUri path
+  , "version" .= version
+  , "kind" .= sgKind sg
+  , "label" .= sgLabel sg
+  , "summary" .= sgSummary sg
+  , "line" .= sgLine sg
+  , "lines" .= sgLines sg
+  , "at" .= sgAt sg
+  , "planId" .= n
+  ]
 
 -- | Run against the state as it is now, without holding it: what the work
 -- loaded (projects) is kept; documents changed meanwhile are not undone.

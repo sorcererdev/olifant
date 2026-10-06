@@ -16,7 +16,7 @@ import Olifant.Generation (Plan (..))
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..))
 import Olifant.Server.Actions (actionPlan)
 import Olifant.Server.Edits (FileEdit (..), editsOfPlan)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.State (ServerState (..), memo, projectFor)
 import Olifant.Workspace (normalisePath)
 import System.FilePath (makeRelative, takeFileName, (</>))
 
@@ -39,7 +39,7 @@ data Suggestion = Suggestion
 -- | What follows from an edit at a line (1-based) of a file; nothing when
 -- no suggested action covers it, or its plan changes nothing.
 suggestionFor :: FilePath -> Int -> ServerState -> IO (ServerState, Maybe Suggestion)
-suggestionFor path line s =
+suggestionFor path line = memo "suggest" path (T.pack (show line)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (root, project)) -> do
