@@ -20,14 +20,12 @@ import Olifant.Anchor (Located (..), Spacing (..), insertLines, locateContainer)
 import Olifant.Generation.Compose (StepPath, showStepPath)
 import Olifant.Generation.Plan
 import Olifant.Generation.Render (CompleteSpec (..))
-import Olifant.Workspace (pruned)
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Language
 import Data.Functor ((<&>))
 import Olifant.Holes (placeholderize)
 import Olifant.Template (Value (..), describeTemplateError, render)
 import Olifant.Workspace (Workspace (..))
-import System.FilePath (splitDirectories)
 
 maxRounds :: Int
 maxRounds = 5
@@ -46,26 +44,28 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
         Just lang -> case langCheck lang >>= supportFor . checkFormat of
           Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("the " <> name <> " adapter's check format has no compiler support") False], warnings, current)
           Just support -> do
-            (disk, files) <- gather lang current
-            (es, cs, ws', current') <- loop lang support step mine disk 1 S.empty (firstNumber + length edits) files current []
+            (scope, disk, files) <- gather lang current
+            (es, cs, ws', current') <- loop lang scope support step mine disk 1 S.empty (firstNumber + length edits) files current []
             pure (edits ++ es, conflicts ++ cs, warnings ++ ws', current')
 
 
     -- Everything the check needs: the adapter's sources and context files,
     -- as they will be after the positional edits.
+    -- Only the package of the files this plan changed ([check] root).
     gather lang current = do
       paths <- listFiles ws "."
-      let globs = langFiles lang ++ maybe [] checkContext (langCheck lang)
-          wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
-      read' <- traverse (\p -> (p,) <$> readText ws p) (filter wanted paths)
+      let changedHere = [p | (p, Just _) <- M.toList current, fmap langName (languageFor (toolLanguages tools) p) == Just (langName lang)]
+          (scope, chosen) = checkScope lang (nub (paths ++ changedHere)) changedHere
+          wanted = S.fromList chosen
+      read' <- traverse (\p -> (p,) <$> readText ws p) [p | p <- chosen, p `elem` paths]
       let disk = M.fromList [(p, t) | (p, Just t) <- read']
-      pure (disk, M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, wanted p]) disk)
+      pure (scope, disk, M.union (M.fromList [(p, t) | (p, Just t) <- M.toList current, p `S.member` wanted]) disk)
 
-    loop lang support step mine disk rnd seen n files current acc
+    loop lang scope support step mine disk rnd seen n files current acc
       | rnd > maxRounds = pure (reverse acc, [CompleteFailed step ("the compiler still reports missing cases after " <> T.pack (show maxRounds) <> " rounds") False], [], current)
       | otherwise =
           toolProgress tools (Checking (langName lang)) >>
-          runCheck (toolChecker tools) lang (placeholderize (toolLanguages tools) files) >>= \case
+          runCheckIn (toolChecker tools) lang scope (placeholderize (toolLanguages tools) files) >>= \case
             Left f -> pure (reverse acc, [CompleteFailed step (describeCheckFailure f) (isToolMissing f)], [], current)
             Right report -> do
               let diags = reportMissing report
@@ -82,7 +82,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                   let why = [t | (bf, t) <- reportBroken report, bf == f]
                    in pure (reverse acc, [CompleteFailed step ("the compiler still reports " <> p <> " in " <> T.pack f <> " after a branch was added" <> (if null why then "" else ": " <> T.intercalate "; " (nub why))) False], [], current)
                 []
-                  | null wanted -> addHidden hidden . addUnplaced (reportUnplaced report) <$> finishChecked lang (reportBroken report)
+                  | null wanted -> addHidden hidden . addUnplaced (reportUnplaced report) <$> finishChecked lang scope (reportBroken report)
                   | otherwise -> do
                       built <- traverse (branchFor lang support files) wanted
                       case sequence built of
@@ -90,7 +90,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                         Right branches -> do
                           let (edits, files') = applyBranches (supportArmSeparator support) (supportLoneArmSpaced support) n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
-                          loop lang support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
+                          loop lang scope support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
 
       where
         -- Nothing left to add. A file that does not compile hides the
@@ -115,10 +115,10 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
         -- An error a changed file had before this run is not ours (python
         -- review I1: pyright reports missing cases beside other errors):
         -- only then is the unchanged project checked, for its errors.
-        finishChecked lang' broken
+        finishChecked lang' scope' broken
           | null [() | (f, _) <- broken, changed f] = pure (finish broken [])
           | otherwise =
-              runCheck (toolChecker tools) lang' (placeholderize (toolLanguages tools) disk) <&> \case
+              runCheckIn (toolChecker tools) lang' scope' (placeholderize (toolLanguages tools) disk) <&> \case
                 Right before -> finish broken (reportBroken before)
                 Left _ -> finish broken []
         changed f = M.lookup f disk /= M.lookup f files

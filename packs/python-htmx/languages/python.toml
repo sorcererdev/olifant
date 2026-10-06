@@ -27,6 +27,8 @@ write   = "from {= module =} import {= names =}"
 command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
 context = ["pyproject.toml", "uv.lock"]
 format  = "pyright-json"
+# a check runs in the judged file's package: the nearest folder with a pyproject.toml
+root    = ["pyproject.toml"]
 
 # Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
 # result), so it fits any type under pyright strict and needs no import; it

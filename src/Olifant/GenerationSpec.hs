@@ -664,6 +664,16 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (plan, _) <- run1 tools
     statuses plan `shouldBe` [("a", HoleUnfilled "cancelled"), ("b", HoleUnfilled "cancelled")]
     length <$> readIORef calls `shouldReturn` 1
+  it "(scope) a fill is checked in its own package only ([check] root, olifant lsp)" $ do
+    seen <- newIORef []
+    let lang = holeLang {langCheck = (\c -> c {checkRoot = ["elm.json"]}) <$> langCheck holeLang}
+        recording = Checker $ \_ files -> modifyIORef' seen (++ [M.keys files]) >> pure (Right (CheckReport [] [] []))
+        inA = generatorFrom . T.unlines $ ["description = \"d\"", "language = \"elm\"", "[[edits]]", "create = \"apps/a/src/A.elm\"", "text = \"a = {= ? a: expr | the a value =}\\n\""]
+        tools = (basicTools parses recording [lang]) {toolFiller = Just (ModelFiller "fake" 0 (Filler (\_ -> pure (Right (M.fromList [("a", "1")])))))}
+    (ws, _) <- memoryWorkspace [("apps/a/elm.json", "{}"), ("apps/a/src/Other.elm", "o = 1\n"), ("apps/b/elm.json", "{}"), ("apps/b/src/B.elm", "b = 1\n")]
+    Right plan <- generate ws noResolve tools [Step inA M.empty] now Apply
+    statuses plan `shouldBe` [("a", HoleFilled "fake" 1)]
+    readIORef seen `shouldReturn` [["src/A.elm", "src/Other.elm"]]
   it "(a) fills every hole from one request" $ do
     (tools, calls) <- withFiller [Right (M.fromList [("a", "1"), ("b", "2")])]
     (plan, files) <- run1 tools

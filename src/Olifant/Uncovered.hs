@@ -11,17 +11,15 @@ import Data.Map.Strict qualified as M
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Glob (matchesGlob)
 import Olifant.Holes (placeholderize)
 import Olifant.Language.Support (supportFor)
 import Olifant.Language (Language (..), languageFor)
 import Olifant.Language.Adapter (CheckDef (..))
-import Olifant.Language.Check (Checker (..), describeCheckFailure)
+import Olifant.Language.Check (Checker (..), checkScope, describeCheckFailure, runCheckIn)
 import Olifant.Language.Diagnostics (CheckReport (..), CompilerSupport (..), MissingPatterns (..))
 import Olifant.Query (QueryFailure (..), Record)
 import Olifant.Template (Value (..))
-import Olifant.Workspace (Workspace (..), pruned)
-import System.FilePath (splitDirectories)
+import Olifant.Workspace (Workspace (..))
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 -- | The patterns the match at 1-based @line@ of @file@ lacks, matching @re@
@@ -53,11 +51,10 @@ uncoveredQuery checker langs ws file line re = case languageFor langs file of
     Nothing -> pure (Left (QueryFailure ("the " <> langName lang <> " adapter has no [check]: the compiler cannot say which cases are missing") False))
     Just check -> do
       paths <- listFiles ws "."
-      let globs = langFiles lang ++ checkContext check
-          wanted p = not (any (`elem` pruned) (splitDirectories p)) && any (`matchesGlob` p) globs
-      texts <- traverse (\p -> (p,) <$> readText ws p) (filter wanted paths)
+      let (scope, wanted) = checkScope lang paths [file]
+      texts <- traverse (\p -> (p,) <$> readText ws p) wanted
       let files = M.fromList [(p, t) | (p, Just t) <- texts]
-      runCheck checker lang (placeholderize langs files) >>= \case
+      runCheckIn checker lang scope (placeholderize langs files) >>= \case
         Left f -> pure (Left (QueryFailure ("uncovered " <> re <> ": " <> describeCheckFailure f) False))
         Right report -> do
           ls <- maybe [] (T.splitOn "\n") <$> readText ws file

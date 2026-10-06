@@ -16,6 +16,9 @@ module Olifant.Language.Check
   , compileClean
   , checkProgram
   , contextKey
+  , checkScope
+  , runCheckIn
+  , runVerifyIn
   ) where
 
 import Control.Monad (forM_)
@@ -25,7 +28,9 @@ import Numeric (showHex)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
-import Data.List (sort)
+import Data.List (isPrefixOf, nub, sort)
+import Data.Set qualified as S
+import Olifant.Workspace (pruned)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -37,7 +42,7 @@ import Olifant.Language.Support (supportFor)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
 import System.Exit (ExitCode (..))
-import System.FilePath (makeRelative, takeDirectory, (</>))
+import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Olifant.Language.Diagnostics (CheckReport (..), CompilerSupport (..), MissingPatterns (..))
 
@@ -197,3 +202,59 @@ relativeTo dir (CheckReport missingPs broken unplaced) =
   CheckReport [rel m | m <- missingPs] [(makeRelative dir p, t) | (p, t) <- broken] [(rel m, f) | (m, f) <- unplaced]
   where
     rel m = m {missingFile = makeRelative dir (missingFile m)}
+
+-- | What a check of the @judged@ files runs over, from the project's
+-- @paths@: its scope, the judged files' package (the nearest folder holding
+-- one of the check's `root` markers, or the outermost; the project, "",
+-- when there is none or the files sit in different packages), and the
+-- language's files and the check's context files under it (globs read from
+-- the scope), as project paths.
+checkScope :: Language -> [FilePath] -> [FilePath] -> (FilePath, [FilePath])
+checkScope lang paths judged = (scope, [p | p <- paths, Just rel <- [inside scope p], not (any (`elem` pruned) (splitDirectories p)), any (`matchesGlob` rel) globs])
+  where
+    check = langCheck lang
+    globs = langFiles lang ++ maybe [] checkContext check
+    present = S.fromList paths
+    scope = case nub (map packageOf judged) of
+      [one] -> one
+      _ -> ""
+    packageOf f = case [d | d <- ancestors (takeDirectory f), any (\m -> joined d (T.unpack m) `S.member` present) (maybe [] checkRoot check)] of
+      [] -> ""
+      nearest : further -> if maybe False checkRootOutermost check then foldl (\_ d -> d) nearest further else nearest
+    -- nearest first, the project ("") last
+    ancestors d
+      | d `elem` [".", "", "/"] = [""]
+      | otherwise = d : ancestors (takeDirectory d)
+    joined d m = if null d then m else d </> m
+
+-- | A path under a scope, relative to it.
+inside :: FilePath -> FilePath -> Maybe FilePath
+inside "" p = Just p
+inside scope p
+  | (scope <> "/") `isPrefixOf` p = Just (drop (length scope + 1) p)
+  | otherwise = Nothing
+
+-- | The check run inside @scope@ over files keyed by project path: the
+-- checker sees paths relative to the scope; its report says project paths.
+runCheckIn :: Monad m => Checker m -> Language -> FilePath -> Map FilePath Text -> m (Either CheckFailure CheckReport)
+runCheckIn checker lang scope files = fmap (outOf scope) <$> runCheck checker lang (into scope files)
+
+-- | A verify command run inside @scope@: its arguments that name project
+-- files under the scope name them from the scope.
+runVerifyIn :: Verifier m -> Language -> FilePath -> [Text] -> Map FilePath Text -> m (Either CheckFailure (Bool, Text))
+runVerifyIn verifier lang scope argv files = runVerify verifier lang (map fromScope argv) (into scope files)
+  where
+    fromScope a
+      | null scope = a
+      | otherwise = maybe a T.pack (inside scope (T.unpack a))
+
+into :: FilePath -> Map FilePath Text -> Map FilePath Text
+into "" files = files
+into scope files = M.fromList [(rel, t) | (p, t) <- M.toList files, Just rel <- [inside scope p]]
+
+outOf :: FilePath -> CheckReport -> CheckReport
+outOf "" report = report
+outOf scope (CheckReport missingPs broken unplaced) =
+  CheckReport [up m | m <- missingPs] [(scope </> p, t) | (p, t) <- broken] [(up m, f) | (m, f) <- unplaced]
+  where
+    up m = m {missingFile = scope </> missingFile m}

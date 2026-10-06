@@ -14,6 +14,9 @@ branch = "{= pattern =} => {= body =},"
 command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}"]
 context = ["**/Cargo.toml", "Cargo.lock"]
 format  = "rustc-json"
+# a check runs in the judged file's Cargo workspace: the outermost Cargo.toml
+root      = ["Cargo.toml"]
+root_pick = "outermost"
 
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.

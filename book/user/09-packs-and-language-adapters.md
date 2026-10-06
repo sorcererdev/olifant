@@ -222,7 +222,7 @@ example   = "end of struct BillingService"
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
-| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
+| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
 | `imports` | a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check |
@@ -283,6 +283,8 @@ branch = "{= pattern =} => {= body =},"
 command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}"]
 context = ["**/Cargo.toml", "Cargo.lock"]
 format  = "rustc-json"
+root      = ["Cargo.toml"]
+root_pick = "outermost"
 
 [targets.enum]
 phrase = "enum NAME"
@@ -296,6 +298,9 @@ example = "end of enum RefundInvoiceFailure"
   files.
 - **`--target-dir {= cache =}`.** The scratch copy is new each round; the build directory is
   not, so dependencies compile once per machine (`~/.cache/olifant/check/rust`).
+- **`root`, `root_pick = "outermost"`.** In a repository holding several Rust projects, a
+  check runs in the Cargo workspace around the files it judges: the outermost folder with a
+  `Cargo.toml` (a crate's own `Cargo.toml` sits inside the workspace's).
 - **`--exclude diesel-*`.** The rust-htmx template's Diesel adapters need libpq and its real
   `db` crate; they are left out of every check, and the in-memory adapters are compiled.
 - **`rustc-json`** reads cargo's `compiler-message` lines from stdout: error E0004 is a
@@ -334,7 +339,13 @@ branch = "case {= pattern =}:\n    {= body =}"
 command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
 context = ["pyproject.toml", "uv.lock"]
 format  = "pyright-json"
+root    = ["pyproject.toml"]
 ```
+
+- **`root = ["pyproject.toml"]`.** In a monorepo of Python apps, a check (and a hole's
+  `verify`) runs in the judged file's app only: the nearest folder above it with a
+  `pyproject.toml`. Its `context` globs are read from there, so that app's `pyproject.toml`
+  and `uv.lock` are the ones used.
 
 - **`uv run pyright`, not a `pyright` on your PATH.** pyright is a dev dependency of the
   project, so its version is pinned in `uv.lock`, and strict mode comes from the project's own

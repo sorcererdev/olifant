@@ -87,7 +87,11 @@ data Grammar = BuiltInGrammar Text | GrammarSource FilePath
 data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targetItems :: Rule, targetExample :: Text, targetSpaced :: Bool, targetWhenEmpty :: Maybe Text, targetSeparator :: Maybe Text}
   deriving stock (Show)
 
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text}
+-- | A language's check: its command, the context files it needs (globs),
+-- its report format, and the files that mark a package's root (`root`):
+-- a check runs in the judged file's package, the nearest folder holding one
+-- (`root_pick = "outermost"`: the outermost, a Cargo workspace).
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool}
   deriving stock (Eq, Show)
 
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
@@ -140,12 +144,18 @@ parseLanguage name packRoot src = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     checkFrom t = do
-      onlyKeys ["command", "context", "format"] t
+      onlyKeys ["command", "context", "format", "root", "root_pick"] t
       format <- required "format" text t
       if format `elem` knownFormats
         then Right ()
         else Left ("`format`: unknown format `" <> format <> "`; expected one of " <> T.intercalate ", " knownFormats)
       CheckDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
+        <*> (fromMaybe [] <$> optional "root" (list text) t)
+        <*> (optional "root_pick" text t >>= \case
+              Nothing -> Right False
+              Just "nearest" -> Right False
+              Just "outermost" -> Right True
+              Just other -> Left ("`root_pick`: expected \"nearest\" or \"outermost\", got `" <> other <> "`"))
 
 targetPhrase :: TargetDef -> Text
 targetPhrase = T.unwords . targetShape

@@ -25,6 +25,7 @@ import Olifant.Language.Header (headerEnd)
 import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
 import Olifant.Cli.Output (anchorsHuman)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Test.Hspec
 
 elmToml :: Text
@@ -294,6 +295,37 @@ spec = do
       case r of
         Left (CheckToolMissing why) -> why `shouldSatisfy` T.isInfixOf "olifant-no-such-tool"
         other -> expectationFailure (show other)
+  describe "package-scoped checks ([check] root)" $ do
+    let lang root extra = either (error . T.unpack) id . parseLanguage "python" "/p" . T.unlines $
+          ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""]
+            ++ ["root = [" <> T.intercalate ", " ["\"" <> r <> "\"" | r <- root] <> "]" | not (null root)] ++ extra
+        monorepo = ["pyproject.toml", "tools/x.py", "apps/a/pyproject.toml", "apps/a/uv.lock", "apps/a/src/x.py", "apps/a/src/x__test.py", "apps/b/pyproject.toml", "apps/b/src/y.py"]
+    it "checks the judged file's package: the nearest folder with a root marker, its files only" $
+      checkScope (lang ["pyproject.toml"] []) monorepo ["apps/a/src/x.py"]
+        `shouldBe` ("apps/a", ["apps/a/pyproject.toml", "apps/a/uv.lock", "apps/a/src/x.py", "apps/a/src/x__test.py"])
+    it "checks the whole project when the language names no root (as before)" $
+      checkScope (lang [] []) monorepo ["apps/a/src/x.py"]
+        `shouldBe` ("", ["pyproject.toml", "tools/x.py", "apps/a/src/x.py", "apps/a/src/x__test.py", "apps/b/src/y.py"])
+    it "checks the project when judged files sit in different packages" $
+      fst (checkScope (lang ["pyproject.toml"] []) monorepo ["apps/a/src/x.py", "apps/b/src/y.py"]) `shouldBe` ""
+    it "takes the outermost marker when asked (a Cargo workspace)" $ do
+      let Right rust = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"cargo\"]", "context = [\"**/Cargo.toml\"]", "root = [\"Cargo.toml\"]", "root_pick = \"outermost\"", "format = \"rustc-json\""])
+      fst (checkScope rust ["Cargo.toml", "crates/a/Cargo.toml", "crates/a/src/lib.rs"] ["crates/a/src/lib.rs"]) `shouldBe` ""
+      fst (checkScope rust ["svc/Cargo.toml", "svc/crates/a/Cargo.toml", "svc/crates/a/src/lib.rs"] ["svc/crates/a/src/lib.rs"]) `shouldBe` "svc"
+    it "runs the checker inside the package and reports project paths" $ do
+      seen <- newIORef []
+      let checker = Checker $ \_ files -> do
+            writeIORef seen (M.keys files)
+            pure (Right (CheckReport [MissingPatterns "src/x.py" (3, 5) ["B()"] Nothing] [("src/x.py", "bad")] []))
+      r <- runCheckIn checker (lang ["pyproject.toml"] []) "apps/a" (M.fromList [("apps/a/pyproject.toml", ""), ("apps/a/src/x.py", "x")])
+      readIORef seen `shouldReturn` ["pyproject.toml", "src/x.py"]
+      fmap reportBroken r `shouldBe` Right [("apps/a/src/x.py", "bad")]
+      fmap (map missingFile . reportMissing) r `shouldBe` Right ["apps/a/src/x.py"]
+    it "runs a verify command inside the package, its project paths made the package's" $ do
+      seen <- newIORef ([], [])
+      let verifier = Verifier $ \_ argv files -> writeIORef seen (argv, M.keys files) >> pure (Right (True, ""))
+      _ <- runVerifyIn verifier (lang ["pyproject.toml"] []) "apps/a" ["uv", "run", "pytest", "apps/a/src/x__test.py"] (M.fromList [("apps/a/src/x__test.py", "")])
+      readIORef seen `shouldReturn` (["uv", "run", "pytest", "src/x__test.py"], ["src/x__test.py"])
   describe "contextKey: one check environment per project and lockfile" $ do
     let Right py = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"uv\"]", "context = [\"pyproject.toml\", \"uv.lock\"]", "format = \"pyright-json\""])
         Just check = langCheck py
