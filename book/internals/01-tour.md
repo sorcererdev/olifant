@@ -2149,14 +2149,19 @@ request answers an internal error instead. The pattern of most:
 
 - **`withSnapshot env work`**: run `work` on the state as it is now, without holding the
   lock; afterwards merge back what the work loaded (projects, caches) and never undo documents
-  that changed meanwhile. `withPlanned` also returns the state a plan was made on: its edits
+  that changed meanwhile. Projects it loaded are kept only if no file changed meanwhile
+  (`ssFilesStamp`): a configuration changed under a load is read again when next asked. `withPlanned` also returns the state a plan was made on: its edits
   are stamped with that state's document versions, never the versions current when it answers,
   so an editor refuses them once the buffer moved on.
 - **`inBackground`**: slow requests (`codeAction/resolve`, `completionItem/resolve`,
-  `olifant/plan`, `olifant/suggest`) run in their own thread, under work-done progress, so the
+  `olifant/plan`, `olifant/suggest`, completion, inline completion, `olifant/holes`,
+  `olifant/model`, `olifant/debugState`) run in their own thread, under work-done progress, so the
   server's loop keeps reading (and other requests keep being answered) while a model fills a
   hole. Each runs under its own `Cancel`, kept by request id in `envRunning`; the client's
-  `$/cancelRequest` trips it. An exception becomes an error response.
+  `$/cancelRequest` trips it. A cancel on its progress (`lsp` throws into the thread) trips it
+  too and answers `RequestCancelled`; any other exception becomes an error response.
+- **Saves.** `willSaveWaitUntil` works out the region refresh once: the saved file's edits go in
+  the write, the others wait in `envSaving` for the `didSave`, which sends them off the loop.
 - **Suggestions are pushed.** An edit (`didChange`) submits a debounced job that plans the
   edited line; its result is pushed as `olifant/suggestion` with a `planId`, kept per document
   version, and fetched with `olifant/plan`. `olifant/suggest` asks the same for the cursor's
@@ -2184,7 +2189,9 @@ failed query becomes a `problem`, not a failure: a partial model beats none in a
 
 `Process/Cancel.hs` is a token: `newCancel` gives the token and the action that trips it;
 `neverCancel` is the CLI's. `runBytesCancellable` polls it while a child runs and, when it
-trips, kills the child's process group (cargo's rustc, uv's python). The ports' checker and
+trips, kills the child's process group (cargo's rustc, uv's python). If the thread itself is
+interrupted (an asynchronous exception: a client's progress cancel), the group is killed and
+reaped, and the interruption goes on; only synchronous failures become answers. The ports' checker and
 verifier take one (`pChecker`, `pVerifier :: Cancel -> …`; `Main` passes `processCheckerWith`
 and `processVerifierCancellable`), and so does a plan (`poCancel`): `planWith` gives it to the
 checks, the verifies, the `uncovered` queries and the model filler (`modelFillerWith`, curl),

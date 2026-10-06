@@ -14,8 +14,8 @@ Why a server rather than the CLI per keystroke:
   something changes them. From the caches, every request answers in under a millisecond; the
   first request in a project of 5,000 files takes about 175 ms (measured in Task 16).
 - **It cancels.** The next edit supersedes a suggestion still being worked out, and an
-  editor's `$/cancelRequest` stops a request running in the background (a ⚡ action being
-  resolved, a snippet being filled). Either way the work's child processes — cargo, pyright,
+  editor's `$/cancelRequest`, or a cancel on the request's progress, stops a request running in
+  the background (a ⚡ action being resolved, a snippet being filled; it answers "cancelled"). Either way the work's child processes — cargo, pyright,
   uv, curl — are killed. An answer for an older version of a buffer is never shown, and the
   edits the server returns carry the version they were planned against, so an editor refuses
   them once you have typed on.
@@ -56,8 +56,9 @@ regions.
 - **Each project keeps its own conventions**: its packs, `.olifant/generators/`, rule severities
   and allowances, `[model]`, language adapters.
 - **No inheritance.** A project nested inside another does not take its parent's conventions.
-- **Isolation.** Caches and jobs are per project. A slow check in one project never blocks
-  another project's requests.
+- **Isolation.** Caches and jobs are per project. Slow work (resolves, completion, holes, the
+  model, the region refresh after a save) runs off the server's message loop, so a slow check
+  in one project never blocks another project's requests.
 - **Packs are loaded once per copy.** Two projects using the same pack folder share its parsed
   generators; a project with its own copy has its own.
 - **A file in no project** gets nothing: every request answers empty, never an error.
@@ -93,6 +94,9 @@ Standard LSP where the protocol has it; `olifant/*` methods only where it does n
 | Doctor | `workspace/executeCommand` `olifant.doctor` (argument: a document's uri) | the checks `olifant doctor --json` prints |
 | Progress | `$/progress` | the same words as the CLI's `--progress`: "checking rust…", "asking qwen3-coder:30b to fill body…" |
 
+**Regions are refreshed once per save**: `willSaveWaitUntil` works out the refresh, puts the
+saved file's part in the write, and the other files' part follows the save.
+
 **Edits are tied to versions.** A plan is made against the documents as they are; a follow-up's
 plan asked for after the document changed is refused ("the document changed since this was
 suggested"), and the editor asks again.
@@ -115,7 +119,8 @@ olifant/model { textDocument: { uri: "file:///…/billing/billing-service/src/ca
     problems:  [] }
 ```
 
-The ids are the same however files are listed, and the same words in every project, so a
+The ids start with the project's name (`name` in `.olifant/config.toml`, else its folder's
+name). They are the same however files are listed, and the same words in every project, so a
 Python project's model and a Rust project's can be put side by side. Nothing draws the model yet:
 it is the seam a view of the whole system — services and how they call each other, what is
 tested, what is red — builds on.
