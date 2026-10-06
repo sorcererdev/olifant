@@ -14,7 +14,12 @@ import Olifant.Process (cancelled)
 import Olifant.Rules (RulesConfig (..), Severity (..))
 import Olifant.Server
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
+import Data.Text qualified as T
+import Hedgehog (forAll, (===))
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
 import Test.Hspec
+import Test.Hspec.Hedgehog (hedgehog)
 
 spec :: Spec
 spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $ do
@@ -83,6 +88,15 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
     other <- submit jobs "check /r2/y.py" 0 (\_ -> modifyIORef' ran (++ ["other"]))
     mapM_ wait [first', second, other]
     readIORef ran >>= (`shouldMatchList` ["first cancelled", "second", "other"])
+  it "turns a plan's file into the smallest change of whole lines, which gives the new text (any texts)" $ hedgehog $ do
+    let line = Gen.element ["", "a", "b", "def f():", "    x = 1", "é ✓"]
+        text = T.intercalate "\n" <$> Gen.list (Range.linear 0 8) line
+    old <- forAll text
+    new <- forAll text
+    let (range, replacement) = smallestChange old new
+    applyChange range replacement old === new
+  it "keeps the lines a change shares at both ends" $
+    smallestChange "a\nb\nc\n" "a\nB\nc\n" `shouldBe` (((1, 0), (2, 0)), "B\n")
   it "(h) a debounced job superseded before it starts never runs" $ do
     jobs <- newJobs
     ran <- newIORef ([] :: [Text])
@@ -120,3 +134,11 @@ describeSlot = \case
   Nothing -> "nothing"
   Just (Loaded _) -> "Loaded"
   Just (Broken why p) -> "Broken " <> show why <> maybe " (no project)" (const " (last good)") p
+
+-- | Apply a replacement of a span (0-based line, UTF-16 column) to a text.
+applyChange :: ((Int, Int), (Int, Int)) -> Text -> Text -> Text
+applyChange ((l1, c1), (l2, c2)) replacement text = before <> replacement <> after
+  where
+    offset (l, c) = sum [T.length x + 1 | x <- take l (T.splitOn "\n" text)] + c
+    before = T.take (offset (l1, c1)) text
+    after = T.drop (offset (l2, c2)) text

@@ -15,10 +15,18 @@ module Olifant.Server
   , workspaceOf
   , catalogChanged
   , slotOf
+  , FileEdit (..)
+  , editsOfPlan
+  , smallestChange
+  , editorPosition
+  , findingsFor
+  , fixEdits
   , Jobs
   , newJobs
   , submit
   ) where
 
+import Olifant.Server.Edits (FileEdit (..), editorPosition, editsOfPlan, smallestChange)
+import Olifant.Server.Fixes (findingsFor, fixEdits)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
 import Olifant.Server.State

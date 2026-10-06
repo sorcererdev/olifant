@@ -95,6 +95,8 @@ library
     Olifant.Region
     Olifant.Rules
     Olifant.Server
+    Olifant.Server.Edits
+    Olifant.Server.Fixes
     Olifant.Server.Jobs
     Olifant.Server.State
     Olifant.Snippet
@@ -200,6 +202,8 @@ test-suite spec
     Olifant.Rules
     Olifant.RulesSpec
     Olifant.Server
+    Olifant.Server.Edits
+    Olifant.Server.Fixes
     Olifant.Server.Jobs
     Olifant.Server.State
     Olifant.ServerSpec
