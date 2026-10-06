@@ -17,7 +17,7 @@ import Data.List (mapAccumL)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Generator.Definition (GeneratorWith (..), HoleSource (..))
-import Olifant.Holes (Marker (..), splitMarkers)
+import Olifant.Holes (Marker (..), dedented, splitMarkers)
 import Olifant.Template.Syntax (Segment (..), Template (..))
 
 -- | Where the snippet goes (file, 1-based line it replaces), its ghost
@@ -61,17 +61,22 @@ holeSource k = case T.breakOn "@" k of
 snippetOf :: FilePath -> Int -> Text -> (Text -> Maybe Text) -> Snippet
 snippetOf file line marked fillOf =
   let pieces = splitMarkers marked
-      (_, rendered) = mapAccumL piece (1 :: Int) pieces
-      piece n = \case
-        Right lit -> (n, (lit, lspEscape lit))
+      (_, rendered) = mapAccumL piece (1 :: Int, "") pieces
+      -- a fill goes in as the file gets it: its own indentation dropped, its
+      -- continuation lines indented like the line the marker is on
+      placed soFar f =
+        let indent = T.takeWhile (`elem` (" \t" :: String)) (snd (T.breakOnEnd "\n" soFar))
+         in T.intercalate ("\n" <> indent) (dedented f)
+      piece (n, soFar) = \case
+        Right lit -> ((n, soFar <> lit), (lit, lspEscape lit))
         Left m ->
           let (_, source) = holeSource (markerKind m)
               name = markerName m
               (ghost, value) = case source of
                 "yours" -> ("⟨" <> name <> "⟩", name)
                 "derived" -> (markerInstruction m, markerInstruction m)
-                _ -> maybe ("⟨" <> name <> "⟩", name) (\f -> (f, f)) (fillOf name)
-           in (n + 1, (ghost, "${" <> T.pack (show n) <> ":" <> lspEscape value <> "}"))
+                _ -> maybe ("⟨" <> name <> "⟩", name) (\f -> let f' = placed soFar f in (f', f')) (fillOf name)
+           in ((n + 1, soFar <> ghost), (ghost, "${" <> T.pack (show n) <> ":" <> lspEscape value <> "}"))
    in Snippet file line (T.splitOn "\n" (T.concat (map fst rendered))) (T.concat (map snd rendered) <> "$0")
 
 -- | Text as an LSP snippet literal: `\`, `$` and `}` escaped.

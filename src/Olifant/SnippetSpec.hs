@@ -27,6 +27,10 @@ spec = describe "Olifant.Snippet (spec §4.9)" $ do
     lspEscape "a\\nb" `shouldBe` "a\\\\nb"
     snBody (snippetOf "a.hs" 1 ("it \"" <> hole "b" "text@yours" "x" <> "\" $ do\n  " <> hole "body" "block@derived" "pure $ ()") (const Nothing))
       `shouldBe` "it \"${1:b}\" \\$ do\n  ${2:pure \\$ ()}$0"
+  it "places a multi-line fill as the file gets it: continuation lines indented like the marker's line (pack-opens)" $ do
+    let s = snippetOf "a.py" 32 ("        " <> hole "body" "block" "the body") (\n -> if n == "body" then Just "        x = 1\n        if x:\n            y = 2" else Nothing)
+    snGhost s `shouldBe` ["        x = 1", "        if x:", "            y = 2"]
+    snBody s `shouldBe` "        ${1:x = 1\n        if x:\n            y = 2}$0"
   it "reads a hole's source from its marker kind" $ do
     holeSource "text@yours" `shouldBe` ("text", "yours")
     holeSource "expr" `shouldBe` ("expr", "model")

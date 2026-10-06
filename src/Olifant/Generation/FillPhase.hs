@@ -17,7 +17,7 @@ import Data.Text qualified as T
 import Olifant.Fill
 import Olifant.Generation.Plan (HoleStatus (..), PlannedHole (..))
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
-import Olifant.Holes (HoleSite (..))
+import Olifant.Holes (HoleSite (..), dedented)
 import Olifant.Language.Header (headerEnd)
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
@@ -320,15 +320,3 @@ reindented f = case T.lines (T.dropWhile (== '\n') f) of
   _ -> Nothing
   where
     indentOf = T.length . T.takeWhile (== ' ')
-
--- | A fill's lines less their common indentation, blank lines at either end
--- dropped (a model may write at the hole's absolute column).
-dedented :: Text -> [Text]
-dedented f =
-  let ls = dropWhileEnd' (T.null . T.strip) (dropWhile (T.null . T.strip) (T.splitOn "\n" f))
-      common = case [T.length (T.takeWhile (== ' ') l) | l <- ls, not (T.null (T.strip l))] of
-        [] -> 0
-        ns -> minimum ns
-   in [if T.null (T.strip l) then "" else T.stripEnd (T.drop common l) | l <- ls]
-  where
-    dropWhileEnd' p = reverse . dropWhile p . reverse

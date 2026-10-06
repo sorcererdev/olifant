@@ -9,6 +9,7 @@ module Olifant.Holes
   , hasMarkers
   , placeholderize
   , placeholderizeWith
+  , dedented
   , placeHoles
   , matchesWithHoles
   ) where
@@ -160,3 +161,15 @@ matchesWithHoles planned actual
         (_, "") -> False
         (_, found) -> go more (T.drop (T.length lit) found)
       Left _ : more -> go more rest
+
+-- | A fill's lines less their common indentation, blank lines at either end
+-- dropped (a model may write at the hole's absolute column).
+dedented :: Text -> [Text]
+dedented f =
+  let ls = dropWhileEnd' (T.null . T.strip) (dropWhile (T.null . T.strip) (T.splitOn "\n" f))
+      common = case [T.length (T.takeWhile (== ' ') l) | l <- ls, not (T.null (T.strip l))] of
+        [] -> 0
+        ns -> minimum ns
+   in [if T.null (T.strip l) then "" else T.stripEnd (T.drop common l) | l <- ls]
+  where
+    dropWhileEnd' p = reverse . dropWhile p . reverse
