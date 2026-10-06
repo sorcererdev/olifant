@@ -13,7 +13,10 @@ import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
 import Control.Monad (forM_, unless, when)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Snippet (Snippet, snippetOf)
-import Data.Aeson (Value, eitherDecodeStrict, object, toJSON)
+import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Lazy qualified as BL
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Aeson.Types (Pair, (.=))
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
@@ -130,9 +133,22 @@ runInit rt fmt pack name dirArg plan = do
                   Left err -> catalogFailure rt fmt err
                   Right gen -> do
                     when (plan && fmt == Human) (rtOut rt ("would write " <> T.pack (makeRelative cwd (dir </> ".olifant" </> "config.toml")) <> " (pack " <> packName <> ")\n"))
-                    code <- runSteps rt' dir fmt cat (GenOptions [] Nothing plan Nothing Nothing False False Nothing Nothing) [] [Step gen (M.fromList [("name", name)])]
+                    -- JSON callers get one document: the plan, held until the
+                    -- first commit's outcome can join its warnings
+                    held <- newIORef ""
+                    let rtRun = if fmt == Json && not plan then rt' {rtOut = \t -> modifyIORef' held (<> t)} else rt'
+                        release extra = do
+                          out <- readIORef held
+                          unless (T.null out) $ rtOut rt $ case (extra, decodeStrict (TE.encodeUtf8 out)) of
+                            (Just w, Just (Object o)) ->
+                              let ws' = case KM.lookup "warnings" o of
+                                    Just (Array a) -> Array (a <> pure (String w))
+                                    _ -> Array (pure (String w))
+                               in TE.decodeUtf8 (BL.toStrict (encode (Object (KM.insert "warnings" ws' o)))) <> "\n"
+                            _ -> out
+                    code <- runSteps rtRun dir fmt cat (GenOptions [] Nothing plan Nothing Nothing False False Nothing Nothing) [] [Step gen (M.fromList [("name", name)])]
                     if code /= ExitSuccess || plan
-                      then pure code
+                      then release Nothing >> pure code
                       else do
                         -- every region whose files the starter wrote gets its fences
                         let project = within dir ws
@@ -141,6 +157,7 @@ runInit rt fmt pack name dirArg plan = do
                         forM_ (catalogRegions cat) $ \def ->
                           forM_ (regionInstances universe def) (initFences project tools)
                         committed <- rtGitInit rt dir ("olifant init: " <> packName)
+                        release (either (\why -> Just ("no first commit: " <> why)) (const Nothing) committed)
                         let nexts = [t | tm <- genNext gen, Right t <- [render (M.fromList [("name", Tm.VText name)]) tm]]
                         when (fmt == Human) $ do
                           either (\why -> rtErr rt ("note: no first commit: " <> why <> "\n")) (const (pure ())) committed
@@ -153,7 +170,9 @@ runInit rt fmt pack name dirArg plan = do
             | "[" `T.isPrefixOf` T.stripStart l = let m = "[model" `T.isPrefixOf` T.stripStart l in (m, if m then acc ++ [l] else acc)
             | otherwise = (inModel, if inModel then acc ++ [l] else acc)
           ls = snd (foldl keep (False, []) (T.lines src))
-       in if null ls then "" else "\n" <> T.unlines ls
+          -- copied only when it names the model to use
+          hasDefault = any (\l -> "default" `T.isPrefixOf` T.stripStart l && "=" `T.isInfixOf` l) ls
+       in if null ls || not hasDefault then "" else "\n" <> T.unlines ls
 
 -- | The project is the nearest directory, from where Olifant runs upwards,
 -- that has a `.olifant` directory; with none, where it runs. The search
