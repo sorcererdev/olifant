@@ -96,6 +96,7 @@ library
     Olifant.Rules
     Olifant.Server
     Olifant.Server.Actions
+    Olifant.Server.Completion
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
@@ -205,6 +206,7 @@ test-suite spec
     Olifant.RulesSpec
     Olifant.Server
     Olifant.Server.Actions
+    Olifant.Server.Completion
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints

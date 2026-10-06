@@ -21,6 +21,8 @@ module Olifant.Server
   , editorPosition
   , findingsFor
   , actionsFor
+  , completionsFor
+  , ghostFor
   , LineHint (..)
   , hintsFor
   , actionEdits
@@ -32,6 +34,7 @@ module Olifant.Server
   ) where
 
 import Olifant.Server.Actions (actionEdits, actionsFor)
+import Olifant.Server.Completion (completionsFor, ghostFor)
 import Olifant.Server.Edits (FileEdit (..), bytePosition, editorPosition, editsOfPlan, smallestChange)
 import Olifant.Server.Fixes (findingsFor, fixEdits)
 import Olifant.Server.Hints (LineHint (..), hintsFor)

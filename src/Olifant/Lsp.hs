@@ -5,14 +5,20 @@
 -- | `olifant lsp` (olifant lsp spec §2): the language server, speaking LSP
 -- over stdio. This module only maps LSP messages onto "Olifant.Server",
 -- which holds the projects, the open documents and the jobs.
-module Olifant.Lsp (runLsp, serverDefinition) where
+module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
-import Control.Lens ((%~), (&), (?~), (^.))
+import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Monad (forM_)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
+import Colog.Core qualified as L
+import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BSL
+import Data.Functor ((<&>))
+import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text qualified as T
@@ -24,10 +30,11 @@ import Data.Scientific (toBoundedInteger)
 import Language.LSP.Protocol.Lens qualified as L
 import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
-import Language.LSP.Server
+import Language.LSP.Server hiding (ServerConfig (..))
+import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
-import Olifant.Actions (Action (..), Nearby (..))
+import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
@@ -39,8 +46,43 @@ import System.FilePath (splitDirectories, joinPath)
 -- `olifant/debugState` answers.
 data Env = Env {envState :: MVar ServerState, envDebug :: IORef Bool}
 
+-- | The server over stdin and stdout (what `olifant lsp` runs).
 runLsp :: Ports -> IO Int
-runLsp ports = serverDefinition ports >>= runServer
+runLsp ports = runLspWithHandles ports stdin stdout
+
+-- | The server over two handles, from the client and to it.
+runLspWithHandles :: Ports -> Handle -> Handle -> IO Int
+runLspWithHandles ports hin hout = do
+  mapM_ (\h -> hSetBuffering h NoBuffering >> hSetBinaryMode h True) [hin, hout]
+  definition <- serverDefinition ports
+  runServerWithConfig
+    Lsp.ServerConfig
+      { Lsp.ioLogger = problems
+      , Lsp.lspLogger = L.hoistLogAction liftIO problems
+      , Lsp.inwards = BS.hGetSome hin 65536
+      , Lsp.outwards = \out -> BSL.hPut hout out >> hFlush hout
+      , Lsp.prepareOutwards = prependHeader . advertise
+      , Lsp.parseInwards = parseHeaders
+      }
+    definition
+  where
+    -- errors to stderr (never stdout: that is the protocol); a client
+    -- without settings for us is not one (the library always asks)
+    problems = L.LogAction $ \msg ->
+      let text = show (L.getMsg msg)
+       in if L.getSeverity msg == L.Error && not ("BadConfigurationResponse" `isInfixOf` text) then hPutStrLn stderr ("olifant lsp: " <> text) else pure ()
+
+-- | The initialize response, with what the protocol library cannot yet
+-- say: inline completion (LSP 3.18), which the server answers.
+advertise :: BSL.ByteString -> BSL.ByteString
+advertise out
+  | not ("\"capabilities\"" `BS.isInfixOf` BSL.toStrict out) = out
+  | otherwise = case Aeson.decode out of
+      Just (Object o)
+        | Just (Object result) <- KM.lookup "result" o
+        , Just (Object caps) <- KM.lookup "capabilities" result ->
+            Aeson.encode (Object (KM.insert "result" (Object (KM.insert "capabilities" (Object (KM.insert "inlineCompletionProvider" (Bool True) caps)) result)) o))
+      _ -> out
 
 serverDefinition :: Ports -> IO (ServerDefinition ())
 serverDefinition ports = do
@@ -119,7 +161,7 @@ handlers env =
               Left why -> failed why
               Right edits -> respond (Right (action & L.edit ?~ workspaceEdit edits))
           (_, Just (path, line, generator, sets)) ->
-            liftIO (withSnapshot env (actionEdits path line generator sets)) >>= \case
+            liftIO (withSnapshot env (actionEdits False path line generator sets)) >>= \case
               Left why -> failed why
               -- a snippet's body (tab stops) rides along for editors that expand it
               Right (edits, snippet) -> respond (Right (action & L.edit ?~ workspaceEdit edits & L.data_ %~ fmap (withSnippet snippet)))
@@ -155,6 +197,36 @@ handlers env =
                 text = T.intercalate "\n\n" (["⚡ " <> actLabel a <> " (" <> actGenerator a <> ")" | a <- here] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near])
             pure (if T.null text then Nothing else Just (Hover (InL (MarkupContent MarkupKind_Markdown text)) Nothing))
         respond (Right (maybe (InR Null) InL hover))
+    , -- snippets, each with its body placed at the cursor (tab stops)
+      requestHandler SMethod_TextDocumentCompletion $ \req respond -> do
+        items <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure []
+          Just path -> liftIO (snippetItems env path (req ^. L.params . L.position))
+        respond (Right (InL items))
+    , -- the chosen snippet, planned again with the model filling its holes
+      requestHandler SMethod_CompletionItemResolve $ \req respond -> do
+        let item = req ^. L.params
+        case actionData =<< (item ^. L.data_) of
+          Nothing -> respond (Right item)
+          Just (path, line, generator, sets) ->
+            liftIO (withSnapshot env (actionEdits True path line generator sets)) >>= \case
+              Right (_, Just sn) -> respond (Right (item & L.textEdit %~ fmap (\case InL e -> InL (e & L.newText .~ snBody sn); InR e -> InR (e & L.newText .~ snBody sn))))
+              _ -> respond (Right item)
+    , -- the snippet anticipated here, unasked (LSP 3.18 inline completion)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "textDocument/inlineCompletion")) $ \req respond -> do
+        let params = req ^. L.params
+            found = do
+              Object o <- pure params
+              Object doc <- KM.lookup "textDocument" o
+              String uri <- KM.lookup "uri" doc
+              Object pos <- KM.lookup "position" o
+              Number l <- KM.lookup "line" pos
+              Number c <- KM.lookup "character" pos
+              (,) <$> uriToFilePath (Uri uri) <*> (Position <$> toBoundedInteger l <*> toBoundedInteger c)
+        items <- case found of
+          Nothing -> pure []
+          Just (path, position) -> liftIO (ghostItems env path position)
+        respond (Right (object ["items" .= items]))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \_ respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))
@@ -247,6 +319,57 @@ cursorActions env path (Position l c) = do
         }
     | (a, snippet) <- acts
     ]
+
+-- | Completion items for the snippets at a cursor: each replaces the
+-- cursor's line with its body (tab stops), filtered by what the line holds.
+snippetItems :: Env -> FilePath -> Position -> IO [CompletionItem]
+snippetItems env path (Position l c) = do
+  text <- documentText env path
+  let lineText = lineAt (T.splitOn "\n" text) (fromIntegral l)
+      (line, col) = bytePosition lineText (fromIntegral l, fromIntegral c)
+      range = Range (Position l 0) (Position l (fromIntegral (utf16 lineText)))
+  snippets <- withSnapshot env (completionsFor path (line, col))
+  pure
+    [ CompletionItem
+        { _label = cpLabel cp
+        , _labelDetails = Nothing
+        , _kind = Just CompletionItemKind_Snippet
+        , _tags = Nothing
+        , _detail = Just (cpGenerator cp)
+        , _documentation = Nothing
+        , _deprecated = Nothing
+        , _preselect = Nothing
+        , _sortText = Nothing
+        , _filterText = Just (if T.null (T.strip lineText) then cpLabel cp else lineText)
+        , _insertText = Nothing
+        , _insertTextFormat = Just InsertTextFormat_Snippet
+        , _insertTextMode = Nothing
+        , _textEdit = Just (InL (TextEdit range (snBody sn)))
+        , _textEditText = Nothing
+        , _additionalTextEdits = Nothing
+        , _commitCharacters = Nothing
+        , _command = Nothing
+        , _data_ = Just (object ["kind" .= ("action" :: T.Text), "path" .= path, "generator" .= cpGenerator cp, "sets" .= M.fromList (cpSets cp), "line" .= line])
+        }
+    | (cp, sn) <- snippets
+    ]
+
+-- | The inline completion at a cursor: the anticipated snippet, unfilled,
+-- replacing the cursor's line.
+ghostItems :: Env -> FilePath -> Position -> IO [Value]
+ghostItems env path (Position l c) = do
+  text <- documentText env path
+  let lineText = lineAt (T.splitOn "\n" text) (fromIntegral l)
+      (line, col) = bytePosition lineText (fromIntegral l, fromIntegral c)
+  withSnapshot env (ghostFor path (line, col)) <&> \case
+    Nothing -> []
+    Just sn ->
+      [ object
+          [ "insertText" .= object ["kind" .= ("snippet" :: T.Text), "value" .= snBody sn]
+          , "range" .= Range (Position l 0) (Position l (fromIntegral (utf16 lineText)))
+          , "filterText" .= lineText
+          ]
+      ]
 
 -- | An action's data: the file, the cursor's line, the generator, and the
 -- inputs set (its own and the choices made).

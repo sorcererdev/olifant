@@ -4,7 +4,12 @@ module Olifant.LspSpec (spec) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (forM, forM_)
+import Control.Monad (forM, forM_, void)
+import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy qualified as BSL
+import Data.ByteString.Lazy.Char8 qualified as BSL8
+import System.IO (Handle, hFlush)
 import Data.Aeson (Value (Array, Bool, Object, String), object, toJSON, (.=))
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
@@ -20,10 +25,11 @@ import Language.LSP.Protocol.Lens qualified as L
 import System.Exit (ExitCode (..))
 import System.Process (proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
-import Data.Time (UTCTime (..), fromGregorian)
+import Control.Monad.IO.Class (liftIO)
+import Data.List (sort)
+import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Language.LSP.Protocol.Message (SMethod (..), TResponseMessage (..))
 import Language.LSP.Protocol.Types
-import Language.LSP.Server (runServerWithHandles)
 import Language.LSP.Test
 import Olifant.App (Ports (..))
 import Olifant.Language (noChecker, noSyntax)
@@ -54,6 +60,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   fixesSpec
   actionsSpec
   hintsSpec
+  completionSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -216,9 +223,82 @@ hintsSpec = describe "⚡ hints and near misses" $ do
         (hs,) <$> getHover doc (Position 0 0)
       (length hints, hover) `shouldBe` (0, Nothing)
 
+-- | Snippets as completion items, and the one anticipated at the cursor as
+-- an inline completion (Task 12).
+completionSpec :: Spec
+completionSpec = describe "snippets: completion and inline completion (ghosts)" $ do
+  let test = "src/bistro/booking/commands/create_booking__test.py"
+      afterTest = Position 34 0
+      inline doc pos = do
+        let params = object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= pos, "context" .= object ["triggerKind" .= (1 :: Int)]]
+        request (SMethod_CustomMethod (Proxy :: Proxy "textDocument/inlineCompletion")) params >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      firstInsert v = case lookupKey "items" v of
+        Just (Array items) | Object item : _ <- foldr (:) [] items, Just insert <- KM.lookup "insertText" item -> Just insert
+        _ -> Nothing
+  it "(a) completes a snippet that applies here, its body with tab stops" $
+    withPython [] $ \ports dir -> do
+      (items, _) <- inProcessWith ports dir $ do
+        doc <- openDoc test "python"
+        getCompletions doc afterTest
+      case [i | i <- items, i ^. L.label == "Test case"] of
+        item : _ -> do
+          item ^. L.insertTextFormat `shouldBe` Just InsertTextFormat_Snippet
+          let body = case item ^. L.textEdit of
+                Just (InL e) -> e ^. L.newText
+                Just (InR e) -> e ^. L.newText
+                Nothing -> maybe "" id (item ^. L.insertText)
+          body `shouldSatisfy` T.isInfixOf "${1:behaviour}"
+        [] -> expectationFailure ("no Test case among " <> show (map (^. L.label) items))
+  it "(b) offers the snippet anticipated here as an inline completion: unfilled, a snippet" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir (openDoc test "python" >>= (`inline` afterTest))
+      case firstInsert v of
+        Just (Object insert) -> do
+          KM.lookup "kind" insert `shouldBe` Just (String "snippet")
+          KM.lookup "value" insert `shouldSatisfy` \case Just (String body) -> "= command()" `T.isInfixOf` body; _ -> False
+        other -> expectationFailure ("inline completion: " <> show v <> " / " <> show other)
+  it "(c) says it serves inline completion (LSP 3.18), though its library predates it" $
+    withPython [] $ \ports dir -> do
+      -- the raw response: a typed client drops what its types do not know
+      (inRead, inWrite) <- createPipe
+      (outRead, outWrite) <- createPipe
+      _ <- forkIO (void (runLspWithHandles ports inRead outWrite))
+      let body = Aeson.encode (object ["jsonrpc" .= ("2.0" :: Text), "id" .= (1 :: Int), "method" .= ("initialize" :: Text), "params" .= object ["processId" .= Aeson.Null, "rootUri" .= filePathToUri dir, "capabilities" .= object []]])
+      BSL.hPut inWrite ("Content-Length: " <> BSL8.pack (show (BSL.length body)) <> "\r\n\r\n" <> body) >> hFlush inWrite
+      response <- readMessage outRead
+      (Aeson.decode response >>= lookupKey "result" >>= lookupKey "capabilities" >>= lookupKey "inlineCompletionProvider") `shouldBe` Just (Bool True)
+  it "(e) answers an inline completion within 150 ms once warm (median of 20)" $
+    withPython [] $ \ports dir -> do
+      (times, _) <- inProcessWith ports dir $ do
+        doc <- openDoc test "python"
+        _ <- inline doc afterTest
+        forM [1 .. 20 :: Int] $ \_ -> do
+          t0 <- liftIO getCurrentTime
+          _ <- inline doc afterTest
+          t1 <- liftIO getCurrentTime
+          pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+      let median = sort times !! 10
+      liftIO (putStrLn ("      inline completion, warm: median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms"))
+      median `shouldSatisfy` (< 150)
+  it "(d) offers nothing inline where nothing is anticipated, and nothing in no project" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir (openDoc test "python" >>= (`inline` Position 0 0))
+      firstInsert v `shouldBe` Nothing
+
 -- | The versions an action's edit is for, in one document.
 editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]
 editVersionsOf uri a = [te ^. L.textDocument . L.version | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, te ^. L.textDocument . L.uri == uri]
+
+-- | One message from the server: its headers, then that many bytes.
+readMessage :: Handle -> IO BSL.ByteString
+readMessage h = do
+  let headers n = do
+        line <- BS8.hGetLine h
+        if BS8.strip line == "" then pure n else headers (maybe n fst (BS8.readInt =<< BS8.stripPrefix "Content-Length: " line))
+  n <- headers 0
+  BSL.fromStrict <$> BS.hGet h n
 
 pullDiagnostics :: TextDocumentIdentifier -> Session [Diagnostic]
 pullDiagnostics doc =
@@ -281,9 +361,8 @@ inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith ports dir session = do
   (inRead, inWrite) <- createPipe
   (outRead, outWrite) <- createPipe
-  definition <- serverDefinition ports
   done <- newEmptyMVar
-  _ <- forkIO (runServerWithHandles mempty mempty inRead outWrite definition >>= putMVar done)
+  _ <- forkIO (runLspWithHandles ports inRead outWrite >>= putMVar done)
   a <- runSessionWithHandles inWrite outRead defaultConfig {lspConfig = KM.fromList [("debug", Bool True)]} fullLatestClientCaps dir session
   code <- timeout 5000000 (takeMVar done)
   pure (a, code)
