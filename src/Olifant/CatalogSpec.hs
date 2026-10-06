@@ -11,7 +11,8 @@ import Olifant.Catalog
 import Olifant.Generation
 import Data.Aeson (encode)
 import Data.ByteString.Lazy.Char8 qualified as BL
-import Data.List (isInfixOf)
+import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..))
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), render)
@@ -59,6 +60,48 @@ genInto root cat ref = do
 
 spec :: Spec
 spec = describe "catalog" $ do
+  describe "the pack cache (olifant lsp: many projects, packs parsed once)" $ do
+    let gen desc = "description = \"" <> desc <> "\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a.x\"\ntext = \"a\"\n"
+        config pack = "[packs]\npython-htmx = { path = \"" <> pack <> "\" }\n"
+        files =
+          [ ("/packs/a/generators/command/generator.toml", gen "the original")
+          , ("/packs/fork/generators/command/generator.toml", gen "the fork")
+          , ("/p1/.olifant/config.toml", config "/packs/a")
+          , ("/p2/.olifant/config.toml", config "/packs/fork")
+          , ("/p3/.olifant/config.toml", config "/packs/a") ]
+        open cache root dir = openProjectCatalogCached cache root (CatalogPaths dir Nothing Nothing)
+        described = either (const []) (map (genDescription . entryDefinition) . catalogEntries)
+        -- how often a pack's generators were discovered (parsed)
+        counting root = do
+          n <- newIORef (0 :: Int)
+          let ws = root {listFiles = \d -> (if "/generators" `isSuffixOf` d && "/packs/" `isPrefixOf` d then modifyIORef' n (+ 1) else pure ()) >> listFiles root d}
+          pure (ws, readIORef n)
+    it "keeps two copies of a pack apart: same name, different paths" $ do
+      (root, _) <- memoryWorkspace files
+      cache <- newPackCache
+      described <$> open cache root "/p1" `shouldReturn` ["the original"]
+      described <$> open cache root "/p2" `shouldReturn` ["the fork"]
+    it "parses a pack once for every project that uses it" $ do
+      (root0, _) <- memoryWorkspace files
+      (root, parsed) <- counting root0
+      cache <- newPackCache
+      _ <- open cache root "/p1"
+      _ <- open cache root "/p3"
+      parsed `shouldReturn` 1
+    it "parses it again when its files change" $ do
+      (root0, _) <- memoryWorkspace files
+      (root, parsed) <- counting root0
+      cache <- newPackCache
+      _ <- open cache root "/p1"
+      writeText root0 "/packs/a/generators/command/generator.toml" (gen "changed")
+      described <$> open cache root "/p3" `shouldReturn` ["changed"]
+      parsed `shouldReturn` 2
+    it "fingerprints a pack by its files' paths and contents" $ do
+      (root, _) <- memoryWorkspace files
+      a <- packFingerprint root "/packs/a"
+      a' <- packFingerprint root "/packs/a"
+      fork <- packFingerprint root "/packs/fork"
+      (a == a', a == fork) `shouldBe` (True, False)
   describe "fragment exemplars" $ do
     let lang = "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.case_in]\nphrase = \"case in FUNCTION\"\ncontainer = { kind = \"c\" }\nitems = { kind = \"b\" }\nexample = \"end of case in update\"\n"
         gen matching = "description = \"d\"\nlanguage = \"x\"\n[inputs.page]\ntype = \"ident\"\n[[edits]]\ninsert = \"Main.x\"\nat = \"end of case in update\"\nfragment = { file = \"fixture:Main.x\", items_of = \"case in update\", matching = \"" <> matching <> "\" }\nbind = { page = \"sample_page\" }\n"
