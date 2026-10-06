@@ -7,7 +7,9 @@
 -- which holds the projects, the open documents and the jobs.
 module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
+import Control.Exception (SomeException, catch, displayException)
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -221,12 +223,14 @@ handlers env =
           Nothing -> pure []
           Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
-    , requestHandler SMethod_CodeActionResolve $ \req respond -> do
+    , -- planned on its own thread: a model fill or a test run takes seconds,
+      -- and the server reads on meanwhile (other requests, progress)
+      requestHandler SMethod_CodeActionResolve $ \req respond -> inBackground respond $ do
         let action = req ^. L.params
         let failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
         case (fixData =<< (action ^. L.data_), actionData =<< (action ^. L.data_)) of
           (Just (path, rule, line, n, sets), _) ->
-            liftIO (withSnapshot env (fixPlan path rule line n sets)) >>= \case
+            planProgress (action ^. L.title) (\progress -> withSnapshot env (fixPlan True progress path rule line n sets)) >>= \case
               Left why -> failed why
               Right planned -> resolved env action planned >>= respond . Right
           (_, Just (path, line, generator, sets)) ->
@@ -278,7 +282,7 @@ handlers env =
           Just path -> liftIO (snippetItems env path (req ^. L.params . L.position))
         respond (Right (InL items))
     , -- the chosen snippet, planned again with the model filling its holes
-      requestHandler SMethod_CompletionItemResolve $ \req respond -> do
+      requestHandler SMethod_CompletionItemResolve $ \req respond -> inBackground respond $ do
         let item = req ^. L.params
         case actionData =<< (item ^. L.data_) of
           Nothing -> respond (Right item)
@@ -577,6 +581,15 @@ holeData = \case
     Number line <- KM.lookup "line" o
     (T.unpack path,) <$> toBoundedInteger line
   _ -> Nothing
+
+-- | Answer a request from a thread of its own, so slow work never holds up
+-- the server; a failure there is answered as an error, never left hanging.
+inBackground :: (Either (TResponseError m) a -> LspM () ()) -> LspM () () -> LspM () ()
+inBackground respond work = do
+  lspEnv <- getLspEnv
+  void . liftIO . forkIO $
+    runLspT lspEnv work `catch` \(e :: SomeException) ->
+      runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
 
 -- | Work under a progress report (checking, asking the model, testing).
 planProgress :: T.Text -> ((ProgressEvent -> IO ()) -> IO a) -> LspM () a

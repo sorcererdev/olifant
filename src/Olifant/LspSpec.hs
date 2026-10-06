@@ -2,8 +2,9 @@
 
 module Olifant.LspSpec (spec) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Applicative ((<|>))
 import Control.Monad (forM, forM_, void)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
@@ -33,9 +34,9 @@ import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (noChecker, noSyntax, processChecker, processVerifier)
+import Olifant.Language (CheckReport (..), Checker (..), noChecker, noSyntax, processChecker, processVerifier)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
-import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, newServerState)
+import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Lsp
@@ -72,6 +73,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   pickerSpec
   conventionsSpec
   scaleSpec
+  concurrencySpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -389,6 +391,20 @@ holesSpec = describe "progress, holes and verify" $ do
       case planned of
         Right (_, plan) -> map phStatus (planHoles plan) `shouldSatisfy` all (\case HoleFilled _ _ -> True; _ -> False)
         Left why -> expectationFailure (T.unpack why)
+  it "(a) fills a rule fix's holes with the model too, as `olifant fix` does" $ do
+    recorded <- (</> "fills.toml") <$> getTemporaryDirectory
+    TIO.writeFile recorded "[fills]\n\"port_call\" = \"let invoice = self.invoice_repository.get_invoice(\\\"inv-1\\\".to_string()).await;\"\n"
+    withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
+      let file = root </> "shop/billing/billing-service/src/cancel_invoice.rs"
+      original <- TIO.readFile file
+      TIO.writeFile file (T.replace "        todo!(\"cancel_invoice\")" "        let invoice = invoices::table.find(\"inv-1\").first::<Invoice>(&mut conn).ok();\n        todo!(\"cancel_invoice\")" original)
+      s0 <- newServerState ports
+      let s1 = s0 {ssConfig = (ssConfig s0) {scFills = Just recorded}}
+          line = 1 + length (takeWhile (not . T.isInfixOf "invoices::table") (T.lines (T.replace "        todo!(\"cancel_invoice\")" "        let invoice = invoices::table.find(\"inv-1\").first::<Invoice>(&mut conn).ok();\n        todo!(\"cancel_invoice\")" original)))
+      (_, planned) <- fixPlan True (const (pure ())) file "commands-use-ports" line 1 [] s1
+      case planned of
+        Right (_, plan) -> map phStatus (planHoles plan) `shouldSatisfy` (\hs -> not (null hs) && all (\case HoleFilled _ _ -> True; _ -> False) hs)
+        Left why -> expectationFailure (T.unpack why)
   it "(b) lists the project's unfilled holes: where, which, and what they are for" $
     withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table, then say \\\"closed\\\"\")\n")] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do
@@ -586,6 +602,31 @@ withPackCopies act = do
       createDirectoryIfMissing True (root </> name </> ".olifant")
       TIO.writeFile (root </> name </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack packDir <> "\" }\n")
     act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")} root (root </> "pack-two")
+
+-- | Slow work runs beside the requests that come meanwhile (the server
+-- reads on; progress can begin).
+concurrencySpec :: Spec
+concurrencySpec = describe "slow work, and requests meanwhile" $
+  it "answers other requests while a slow resolve (a 2 s check) runs" $ do
+    fills <- canonicalizePath "packs/python-htmx/generators/handle-body/tests/create-booking/fills.toml"
+    let slowCheck = Checker (\_ _ -> threadDelay 2000000 >> pure (Right (CheckReport [] [] [])))
+    withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
+      ((hoverMs, resolvedMs), _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = slowCheck} dir $ do
+        doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
+        actions <- getCodeActions doc (Range (Position 1 4) (Position 1 4))
+        a <- case [x | InR x <- actions, x ^. L.title == "Fill with the model"] of
+          x : _ -> pure x
+          [] -> fail "no Fill action"
+        t0 <- liftIO getCurrentTime
+        rid <- sendRequest SMethod_CodeActionResolve a
+        _ <- getHover doc (Position 0 0)
+        t1 <- liftIO getCurrentTime
+        let awaitResolve = (responseForId SMethod_CodeActionResolve rid >> pure ()) <|> (anyMessage >> awaitResolve)
+        awaitResolve
+        t2 <- liftIO getCurrentTime
+        pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double, realToFrac (diffUTCTime t2 t0) * 1000 :: Double)
+      resolvedMs `shouldSatisfy` (> 1500)
+      hoverMs `shouldSatisfy` (< 1000)
 
 -- | The versions an action's edit is for, in one document.
 editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]

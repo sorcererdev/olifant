@@ -9,7 +9,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (FixFailure (..), PlanOptions (..), findings, fixSteps, planOptions, planWith)
 import Olifant.Catalog (describeCatalogError)
-import Olifant.Generation (Plan (..), describeConflict, describeGenerationError)
+import Olifant.Generation (Plan (..), ProgressEvent, describeConflict, describeGenerationError)
+import Olifant.Server.Actions (fillerFor)
 import Olifant.Rules (Finding)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
 import Olifant.Server.State (ServerState (..), memo, projectFor)
@@ -27,11 +28,12 @@ findingsFor path = memo "findings" path "" $ \s ->
 -- with the choices made: planned now, so a finding that moved or went
 -- away says so instead of editing stale text.
 fixEdits :: FilePath -> Text -> Int -> Int -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text [FileEdit])
-fixEdits path rule line n sets s = fixPlan path rule line n sets s <&> \(s', planned) -> (s', (\(root, plan) -> editsOfPlan s' root plan) <$> planned)
+fixEdits path rule line n sets s = fixPlan False (const (pure ())) path rule line n sets s <&> \(s', planned) -> (s', (\(root, plan) -> editsOfPlan s' root plan) <$> planned)
 
--- | 'fixEdits' as the plan itself, with the project's root.
-fixPlan :: FilePath -> Text -> Int -> Int -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
-fixPlan path rule line n sets s =
+-- | 'fixEdits' as the plan itself, with the project's root; with @fill@,
+-- the model fills its holes (as `olifant fix` does), telling @progress@.
+fixPlan :: Bool -> (ProgressEvent -> IO ()) -> FilePath -> Text -> Int -> Int -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
+fixPlan fill progress path rule line n sets s =
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Left (T.pack path <> " is in no Olifant project"))
     (s', Just (root, project)) ->
@@ -39,7 +41,10 @@ fixPlan path rule line n sets s =
         fixSteps (ssPorts s') project rule (makeRelative root path) line n sets >>= \case
           Left failure -> pure (Left (describeFix failure))
           Right (context, steps) ->
-            first describeGenerationError <$> planWith (ssPorts s') project planOptions {poContext = context} steps >>= \case
+            fillerFor fill s' project >>= \case
+             Left why -> pure (Left why)
+             Right filler ->
+              first describeGenerationError <$> planWith (ssPorts s') project planOptions {poContext = context, poFiller = filler, poProgress = progress} steps >>= \case
               Left why -> pure (Left why)
               Right plan
                 | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
