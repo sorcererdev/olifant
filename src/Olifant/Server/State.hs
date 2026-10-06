@@ -12,6 +12,7 @@ module Olifant.Server.State
   , changeDoc
   , closeDoc
   , projectFor
+  , brokenFor
   , workspaceOf
   , catalogChanged
   , filesChanged
@@ -135,6 +136,16 @@ projectFor file s =
         Just (stamp, _) | stamp == ssFilesStamp s0 -> pure s0
         _ -> (\paths -> s0 {ssListings = M.insert root (ssFilesStamp s0, paths) (ssListings s0)}) <$> listFiles (within root (pFiles (ssPorts s0))) "."
       pure (s', (\p -> (root, p {prWorkspace = workspaceOf s' root})) <$> (usable =<< slotOf root s'))
+
+-- | Why the project a file belongs to does not load (loading it if it was
+-- not), when it does not; the last good catalog, if any, is still served.
+brokenFor :: FilePath -> ServerState -> IO (ServerState, Maybe Text)
+brokenFor file s =
+  nearestProject (pFiles (ssPorts s)) (pHomeDir (ssPorts s)) (takeDirectory (normalisePath file)) >>= \case
+    Nothing -> pure (s, Nothing)
+    Just root -> do
+      s' <- maybe (load root Nothing s) (const (pure s)) (slotOf root s)
+      pure (s', case slotOf root s' of Just (Broken why _) -> Just why; _ -> Nothing)
 
 -- | A project's configuration or packs changed: load it again, keeping the
 -- last good catalog when it no longer loads. A project not yet loaded is

@@ -48,7 +48,6 @@ import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
 import Olifant.Workspace (Workspace (..))
 import Olifant.Server
-import System.FilePath ((</>))
 
 -- | The server's state behind a lock, its background jobs, the plans of
 -- the suggestions it has offered (by id, for `olifant/plan`), and whether
@@ -235,7 +234,13 @@ handlers env =
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
     , -- rule findings, pulled (spec §2)
       requestHandler SMethod_TextDocumentDiagnostic $ \req respond -> do
-        items <- maybe (pure []) (liftIO . fmap (map fst) . diagnosticsOf env) (uriToFilePath (req ^. L.params . L.textDocument . L.uri))
+        items <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure []
+          Just path -> liftIO $ do
+            broken <- withSnapshot env (brokenFor path)
+            -- a project that does not load says why, on top of every file (review I6)
+            let why w = Diagnostic (Range (Position 0 0) (Position 0 0)) (Just DiagnosticSeverity_Error) (Just (InR "config")) Nothing (Just "olifant") ("this project's Olifant configuration does not load: " <> w) Nothing Nothing Nothing
+            (maybe [] (pure . why) broken ++) . map fst <$> diagnosticsOf env path
         respond (Right (DocumentDiagnosticReport (InL (RelatedFullDocumentDiagnosticReport AString Nothing items Nothing))))
     , -- the fixes of the findings on the lines asked about, resolved lazily
       requestHandler SMethod_TextDocumentCodeAction $ \req respond -> do
@@ -417,7 +422,7 @@ debugState env = modifyMVar (envState env) $ \s0 -> do
                          (s'', found) <- projectFor path s'
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
-  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s)])
+  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)]])
 
 -- | Ask the client to watch more files (dynamic registration: the protocol
 -- has no static capability for it), once per glob; a change reloads the

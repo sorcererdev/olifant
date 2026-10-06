@@ -12,6 +12,7 @@ module Olifant.Server
   , changeDoc
   , closeDoc
   , projectFor
+  , brokenFor
   , workspaceOf
   , catalogChanged
   , filesChanged

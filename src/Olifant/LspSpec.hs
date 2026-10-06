@@ -140,6 +140,15 @@ fixesSpec = describe "rule findings and their fixes" $ do
         doc <- openDoc "outside/notes.py" "python"
         (,) <$> pullDiagnostics doc <*> getCodeActions doc (Range (Position 0 0) (Position 0 5))
       (ds, length as) `shouldBe` ([], 0)
+  it "(g) says why a project's configuration does not load, on its files and to health (review I6)" $
+    withPython [] $ \ports dir -> do
+      TIO.writeFile (dir </> ".olifant/config.toml") "[packs\n"
+      ((ds, state), _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        (,) <$> pullDiagnostics doc <*> debugState
+      [d ^. L.message | d <- ds] `shouldSatisfy` any (T.isInfixOf "configuration does not load")
+      [d ^. L.severity | d <- ds, "configuration does not load" `T.isInfixOf` (d ^. L.message)] `shouldBe` [Just DiagnosticSeverity_Error]
+      (lookupKey "broken" state >>= lookupKey (T.pack dir)) `shouldSatisfy` (/= Nothing)
   it "(f) answers an error, and keeps serving, when a request throws (review I4)" $
     withPython [] $ \ports dir -> do
       -- a tool that throws instead of answering (a file deleted mid-read, an unreadable folder)
