@@ -9,11 +9,16 @@ placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"
 
 # cargo, over the whole workspace (spec §5.6, §9). Diesel adapters need libpq
-# and the template's real db crate, so they are left out of the build.
+# and the template's real db crate, so they are left out of the build. One
+# target dir per workspace shape (its Cargo.toml files and lock): checks of
+# different workspaces at once (two projects, the server's threads) would
+# otherwise build each other's crates of the same name.
 [check]
-command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}"]
+command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]
 context = ["**/Cargo.toml", "Cargo.lock"]
 format  = "rustc-json"
+# cargo's build cache is shared: one check of a workspace at a time
+exclusive = true
 # a check runs in the judged file's Cargo workspace: the outermost Cargo.toml
 root      = ["Cargo.toml"]
 root_pick = "outermost"

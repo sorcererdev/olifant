@@ -21,7 +21,9 @@ module Olifant.Language.Check
   , runVerifyIn
   ) where
 
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, withMVar)
 import Control.Monad (forM_)
+import System.IO.Unsafe (unsafePerformIO)
 import Data.Bits (xor)
 import Data.Word (Word64)
 import Numeric (showHex)
@@ -170,7 +172,7 @@ compileClean lang files = case langCheck lang of
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
 -- directory that outlives the scratch copy (cargo's `--target-dir`).
 runIn :: Cancel -> Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn token lang check files = case (checkCommand check, checkProgram (checkCommand check)) of
+runIn token lang check files = (if checkExclusive check then oneAtATime (langName lang <> ":" <> contextKey check files) else id) $ case (checkCommand check, checkProgram (checkCommand check)) of
   ([], _) -> pure (Left (CheckFailed "empty check command"))
   (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
   (exe : args, Just program) ->
@@ -195,6 +197,21 @@ runIn token lang check files = case (checkCommand check, checkProgram (checkComm
           Left why -> Left (CheckFailed why)
           Right (Finished code out err) -> Right (code, out, err, tmp)
           Right _ -> Left (CheckFailed "cancelled")
+
+-- | One run at a time per key in this process, its scratch copy gone before
+-- the next starts: cargo's fingerprints follow the source files of the last
+-- build, so a check that starts while the previous one's copy is still on
+-- disk finds its crates fresh and reports nothing of its own.
+oneAtATime :: Text -> IO a -> IO a
+oneAtATime key act = do
+  lock <- modifyMVar checkLocks $ \m -> case M.lookup key m of
+    Just l -> pure (m, l)
+    Nothing -> newMVar () <&> \l -> (M.insert key l m, l)
+  withMVar lock (const act)
+
+{-# NOINLINE checkLocks #-}
+checkLocks :: MVar (Map Text (MVar ()))
+checkLocks = unsafePerformIO (newMVar M.empty)
 
 -- | GHC already prints relative paths; makeRelative leaves those unchanged.
 relativeTo :: FilePath -> CheckReport -> CheckReport
