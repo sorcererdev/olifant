@@ -344,9 +344,24 @@ handlers env =
               _ -> False
         offered <- liftIO ((\(_, m) -> (`M.lookup` m) =<< wanted) <$> readIORef (envOffered env))
         s <- liftIO (readMVar (envState env))
-        case offered of
-          Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
-          Just o
+        -- or a generator from the inputs chosen (the picker), for a document's project
+        let chosen = case req ^. L.params of
+              Object o
+                | Just (String generator) <- KM.lookup "generator" o
+                , Just (Object doc) <- KM.lookup "textDocument" o
+                , Just (String uri) <- KM.lookup "uri" doc
+                , Just path <- uriToFilePath (Uri uri) ->
+                    Just (path, generator, setsIn o)
+              _ -> Nothing
+        case (chosen, offered) of
+          (Just (path, generator, sets), _) ->
+            planProgress generator (\progress -> withSnapshot env (actionPlanWith progress True path 1 generator sets)) >>= \case
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right (root, plan) -> do
+                now <- liftIO (readMVar (envState env))
+                respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan now root plan)]))
+          (_, Nothing) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
+          (_, Just o)
             | fmap fst (M.lookup (ofPath o) (ssDocs s)) /= Just (ofVersion o) -> respond (Left (TResponseError (InL LSPErrorCodes_ContentModified) "the document changed since this was suggested" Nothing))
             | not fill ->
                 let sg = ofSuggestion o

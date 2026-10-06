@@ -520,6 +520,15 @@ pickerSpec = describe "regions on save, the generator picker, commands" $ do
           TResponseMessage _ _ (Right r) -> pure r
           TResponseMessage _ _ (Left err) -> fail (show err)
       encoded v `shouldSatisfy` T.isInfixOf "\"booking\""
+  it "(c) plans a generator from the inputs chosen (the picker's last step), its plan and edit" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/main.py" "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "generator" .= ("python-htmx/model" :: Text), "sets" .= object ["app" .= ("bistro" :: Text), "service" .= ("booking" :: Text), "model" .= ("guest" :: Text)]]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      (lookupKey "plan" v >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> not (null fs); _ -> False)
+      encoded v `shouldSatisfy` T.isInfixOf "models/guest.py"
   it "(d) runs the doctor: what generators need here, and how to fix it" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do
