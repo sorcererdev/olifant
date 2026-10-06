@@ -28,11 +28,12 @@ import Olifant.Workspace (Workspace, normalisePath, overlayMany, within)
 import System.FilePath (takeDirectory)
 
 -- | The client's settings (`initializationOptions`): how long slow work
--- waits after typing stops, and a model to use instead of the projects'.
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text}
+-- waits after typing stops, a model to use instead of the projects', and
+-- (tests) a file of recorded fills that stands in for the model.
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).

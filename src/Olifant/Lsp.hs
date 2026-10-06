@@ -34,6 +34,7 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
+import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Cli.Output (planJson)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
@@ -124,6 +125,7 @@ configure env = \case
               (ssConfig s)
                 { scDebounceMs = maybe (scDebounceMs (ssConfig s)) id (KM.lookup "debounce_ms" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing)
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
+                , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
                 }
           }
   _ -> pure ()
@@ -168,7 +170,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO ((++) <$> fixActions env path (fromIntegral from + 1) (fromIntegral to + 1) <*> cursorActions env path (req ^. L.params . L.range . L.start))
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , requestHandler SMethod_CodeActionResolve $ \req respond -> do
         let action = req ^. L.params
@@ -179,11 +181,18 @@ handlers env =
               Left why -> failed why
               Right edits -> respond (Right (action & L.edit ?~ workspaceEdit edits))
           (_, Just (path, line, generator, sets)) ->
-            liftIO (withSnapshot env (actionEdits False path line generator sets)) >>= \case
+            planProgress (action ^. L.title) (\progress -> withSnapshot env (actionPlanWith progress True path line generator sets)) >>= \case
               Left why -> failed why
               -- a snippet's body (tab stops) rides along for editors that expand it
-              Right (edits, snippet) -> respond (Right (action & L.edit ?~ workspaceEdit edits & L.data_ %~ fmap (withSnippet snippet)))
-          _ -> respond (Right action)
+              Right (root, plan) -> do
+                s <- liftIO (readMVar (envState env))
+                respond (Right (action & L.edit ?~ workspaceEdit (editsOfPlan s root plan) & L.data_ %~ fmap (withSnippet (planSnippet plan))))
+          _ -> case holeData =<< (action ^. L.data_) of
+            Just (path, line) ->
+              planProgress "Fill with the model" (\progress -> withSnapshot env (fillHoleEdits progress path line)) >>= \case
+                Left why -> failed why
+                Right edits -> respond (Right (action & L.edit ?~ workspaceEdit edits))
+            Nothing -> respond (Right action)
     , -- ⚡ at the end of each line with actions; the hint opens the menu there
       requestHandler SMethod_TextDocumentInlayHint $ \req respond -> do
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
@@ -259,6 +268,13 @@ handlers env =
             | otherwise ->
                 let sg = ofSuggestion o
                  in respond (Right (object ["plan" .= planJson False (sgPlan sg), "edit" .= workspaceEdit (editsOfPlan s (sgRoot sg) (sgPlan sg))]))
+    , -- the holes left in the project of a document: where, which, what for
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) $ \req respond -> do
+        let path = case req ^. L.params of
+              Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
+              _ -> Nothing
+        holes <- maybe (pure []) (liftIO . withSnapshot env . holesFor) path
+        respond (Right (object ["holes" .= [object ["path" .= hoPath h, "line" .= hoLine h, "name" .= hoName h, "kind" .= hoKind h, "instruction" .= hoInstruction h] | h <- holes]]))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \_ respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))
@@ -435,6 +451,39 @@ ghostItems env path (Position l c) = do
           , "filterText" .= lineText
           ]
       ]
+
+-- | "Fill with the model" on a line holding a hole.
+holeActions :: Env -> FilePath -> Int -> IO [CodeAction]
+holeActions env path line =
+  withSnapshot env (holeAt path line) <&> \case
+    Nothing -> []
+    Just (_, _, h) ->
+      [ CodeAction
+          { _title = "Fill with the model"
+          , _kind = Just CodeActionKind_RefactorRewrite
+          , _diagnostics = Nothing
+          , _isPreferred = Nothing
+          , _disabled = Nothing
+          , _edit = Nothing
+          , _command = Nothing
+          , _data_ = Just (object ["kind" .= ("hole" :: T.Text), "path" .= path, "line" .= line, "name" .= hoName h])
+          }
+      ]
+
+holeData :: Value -> Maybe (FilePath, Int)
+holeData = \case
+  Object o | KM.lookup "kind" o == Just (String "hole") -> do
+    String path <- KM.lookup "path" o
+    Number line <- KM.lookup "line" o
+    (T.unpack path,) <$> toBoundedInteger line
+  _ -> Nothing
+
+-- | Work under a progress report (checking, asking the model, testing).
+planProgress :: T.Text -> ((ProgressEvent -> IO ()) -> IO a) -> LspM () a
+planProgress title work =
+  withIndefiniteProgress title Nothing Cancellable $ \report -> do
+    lspEnv <- getLspEnv
+    liftIO (work (runLspT lspEnv . report . describeProgress))
 
 -- | An action's data: the file, the cursor's line, the generator, and the
 -- inputs set (its own and the choices made).

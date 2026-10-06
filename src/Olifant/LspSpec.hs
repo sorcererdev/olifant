@@ -32,7 +32,10 @@ import Language.LSP.Protocol.Message (SMethod (..), TCustomMessage (..), TNotifi
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (noChecker, noSyntax, processChecker)
+import Olifant.Language (noChecker, noSyntax, processChecker, processVerifier)
+import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
+import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, newServerState)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Lsp
 import Olifant.Workspace (diskWorkspace)
@@ -63,6 +66,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   hintsSpec
   completionSpec
   followupsSpec
+  holesSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -338,6 +342,44 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
         (,current) <$> suggestion
       lookupKey "version" v `shouldBe` Just (toJSON version)
 
+-- | Progress, the holes list, and filling a hole on request (Task 14).
+holesSpec :: Spec
+holesSpec = describe "progress, holes and verify" $ do
+  let command = "src/bistro/booking/commands/create_booking.py"
+      handCase = "packs/python-htmx/generators/handle-body/tests/create-booking"
+  it "(a) fills handle's body with the model until its tests pass, saying so as it goes" $ do
+    given <- readTree (handCase <> "/given")
+    fills <- canonicalizePath (handCase <> "/fills.toml")
+    withPythonChecked (M.toList given) $ \ports dir -> do
+      events <- newIORef []
+      s0 <- newServerState ports {pVerifier = processVerifier}
+      let s1 = s0 {ssConfig = (ssConfig s0) {scFills = Just fills}}
+      (_, planned) <- actionPlanWith (\e -> modifyIORef' events (++ [e])) True (dir </> command) 50 "python-htmx/handle-body" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "create_booking")] s1
+      seen <- readIORef events
+      map describeProgress seen `shouldSatisfy` elem "testing body…"
+      case planned of
+        Right (_, plan) -> map phStatus (planHoles plan) `shouldSatisfy` all (\case HoleFilled _ _ -> True; _ -> False)
+        Left why -> expectationFailure (T.unpack why)
+  it "(b) lists the project's unfilled holes: where, which, and what they are for" $
+    withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table, then say \\\"closed\\\"\")\n")] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      let expected = object ["path" .= (dir </> "src/bistro/booking/commands/close_table.py"), "line" .= (2 :: Int), "name" .= ("body" :: Text), "kind" .= ("block" :: Text), "instruction" .= ("close the table, then say \"closed\"" :: Text)]
+      lookupKey "holes" v `shouldBe` Just (Array (pure expected))
+  it "(c) fills a hole on request: its code action resolves to the model's fill" $ do
+    fills <- canonicalizePath (handCase <> "/fills.toml")
+    withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
+      (resolved, _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
+        actions <- getCodeActions doc (Range (Position 1 4) (Position 1 4))
+        case [a | InR a <- actions, a ^. L.title == "Fill with the model"] of
+          a : _ -> resolveCodeAction a
+          [] -> fail ("no Fill action among " <> show [a ^. L.title | InR a <- actions])
+      T.concat (editTexts resolved) `shouldSatisfy` T.isInfixOf "self.bookings.save(booking)"
+
 -- | The versions an action's edit is for, in one document.
 editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]
 editVersionsOf uri a = [te ^. L.textDocument . L.version | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, te ^. L.textDocument . L.uri == uri]
@@ -418,12 +460,16 @@ plainPorts :: Ports
 plainPorts = Ports (diskWorkspace "/") noSyntax noChecker noVerifier (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
-inProcessWith ports dir session = do
+inProcessWith = inProcessWithConfig []
+
+-- | 'inProcessWith', with more initializationOptions.
+inProcessWithConfig :: [(Key.Key, Value)] -> Ports -> FilePath -> Session a -> IO (a, Maybe Int)
+inProcessWithConfig extra ports dir session = do
   (inRead, inWrite) <- createPipe
   (outRead, outWrite) <- createPipe
   done <- newEmptyMVar
   _ <- forkIO (runLspWithHandles ports inRead outWrite >>= putMVar done)
-  a <- runSessionWithHandles inWrite outRead defaultConfig {lspConfig = KM.fromList [("debug", Bool True), ("debounce_ms", Number 100)]} fullLatestClientCaps dir session
+  a <- runSessionWithHandles inWrite outRead defaultConfig {lspConfig = KM.fromList ([("debug", Bool True), ("debounce_ms", Number 100)] ++ extra)} fullLatestClientCaps dir session
   code <- timeout 5000000 (takeMVar done)
   pure (a, code)
 
