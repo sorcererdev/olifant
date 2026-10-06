@@ -71,7 +71,7 @@ fillHolePlan progress path line s =
           fillerFor True s' project >>= \case
             Left why -> pure (Left why)
             Right filler ->
-              planWith (ssPorts s') project planOptions {poFiller = filler, poProgress = progress} [Step (replaceGenerator rel (line, line) old template) M.empty] >>= \case
+              planWith (ssPorts s') project planOptions {poFiller = filler, poProgress = progress, poCancel = ssCancel s'} [Step (replaceGenerator rel (line, line) old template) M.empty] >>= \case
                 Left err -> pure (Left (describeGenerationError err))
                 Right plan
                   | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))

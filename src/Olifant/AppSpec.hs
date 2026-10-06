@@ -54,8 +54,8 @@ withPythonProject changed act = do
     createDirectoryIfMissing True (dir </> ".olifant")
     TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack packs <> "\" }\n")
     let ports = Ports
-          { pFiles = diskWorkspace "/", pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pChecker = noChecker
-          , pVerifier = noVerifier, pNow = pure (UTCTime (fromGregorian 2026 10 6) 0), pUserConfigDir = Nothing, pHomeDir = Nothing
+          { pFiles = diskWorkspace "/", pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pChecker = const noChecker
+          , pVerifier = const noVerifier, pNow = pure (UTCTime (fromGregorian 2026 10 6) 0), pUserConfigDir = Nothing, pHomeDir = Nothing
           , pDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) }
     openProject ports dir >>= \case
       Left _ -> fail "the project's catalog did not load"

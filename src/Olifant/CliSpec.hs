@@ -85,10 +85,10 @@ runInWith syntax dir stdinText files tty args = do
         , rtOut = \t -> modifyIORef' out (<> t)
         , rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = syntax
-        , rtChecker = noChecker
+        , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False)
-        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier
+        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
@@ -110,10 +110,10 @@ runInitWith committed files args = do
         { rtRoot = root, rtProjectDir = "/w", rtUserConfigDir = Just "/u", rtHomeDir = Nothing
         , rtReadStdin = pure "", rtNow = pure fixedNow, rtStdoutIsTty = False
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
-        , rtSyntax = noSyntax, rtChecker = noChecker
+        , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
         , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = noVerifier
+        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier
         }
       args
   (,,,,) code <$> readIORef out <*> readIORef err <*> snapshot <*> readIORef gits

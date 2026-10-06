@@ -3,7 +3,7 @@
 module Olifant.LspSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Applicative ((<|>))
 import Control.Monad (forM, forM_, void)
 import Data.ByteString qualified as BS
@@ -29,16 +29,17 @@ import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
 import Data.List (sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
-import Language.LSP.Protocol.Message (SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
+import Language.LSP.Protocol.Message (LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
 import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processChecker, processVerifier)
+import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processCheckerWith, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Olifant.Language.Check (noVerifier)
+import Olifant.Language.Check (CheckFailure (..), noVerifier)
+import Olifant.Process (cancelled)
 import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (diskWorkspace)
@@ -377,6 +378,23 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
       lookupKey "at" v `shouldBe` Just (toJSON (35 :: Int))
       lookupKey "version" v `shouldBe` Just (toJSON version)
       lookupKey "summary" v `shouldSatisfy` \case Just (String t) -> "+1 line here" `T.isPrefixOf` t && "failures.py" `T.isInfixOf` t; _ -> False
+  it "(a2) stops a superseded suggestion's running check when typing goes on (review I5)" $ do
+    entered <- newEmptyMVar
+    stopped <- newEmptyMVar
+    let endless token = Checker $ \_ _ -> do
+          _ <- tryPutMVar entered ()
+          let wait = cancelled token >>= \case
+                True -> tryPutMVar stopped () >> pure (Left (CheckFailed "cancelled"))
+                False -> threadDelay 20000 >> wait
+          wait
+    withPython [] $ \ports dir -> do
+      (seen, _) <- inProcessWith ports {pChecker = endless} dir $ do
+        doc <- openDoc command "python"
+        typeFailure doc
+        liftIO (timeout 30000000 (takeMVar entered)) >>= maybe (fail "the suggestion never checked") pure
+        changeDoc doc [insert 0 0 "# more typing\n"]
+        liftIO (timeout 10000000 (takeMVar stopped))
+      seen `shouldBe` Just ()
   it "(b) gives the suggestion's plan, with its edit, by id" $
     withPythonChecked [] $ \ports dir -> do
       (planned, _) <- inProcessWith ports dir $ do
@@ -455,7 +473,7 @@ holesSpec = describe "progress, holes and verify" $ do
     fills <- canonicalizePath (handCase <> "/fills.toml")
     withPythonChecked (M.toList given) $ \ports dir -> do
       events <- newIORef []
-      s0 <- newServerState ports {pVerifier = processVerifier}
+      s0 <- newServerState ports {pVerifier = (`processVerifierCancellable` 120)}
       let s1 = s0 {ssConfig = (ssConfig s0) {scFills = Just fills}}
       (_, planned) <- actionPlanWith (\e -> modifyIORef' events (++ [e])) True (dir </> command) 50 "python-htmx/handle-body" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "create_booking")] s1
       seen <- readIORef events
@@ -504,7 +522,7 @@ holesSpec = describe "progress, holes and verify" $ do
     -- the fill's check waits until the test has changed the document
     let gated = Checker $ \lang files -> putMVar entered () >> takeMVar gate >> runCheck noChecker lang files
     withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
-      (versions, _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = gated} dir $ do
+      (versions, _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = const gated} dir $ do
         doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
         actions <- getCodeActions doc (Range (Position 1 4) (Position 1 4))
         a <- case [a | InR a <- actions, a ^. L.title == "Fill with the model"] of
@@ -519,6 +537,30 @@ holesSpec = describe "progress, holes and verify" $ do
         TResponseMessage _ _ answer <- awaitResolve
         either (fail . show) (pure . editVersions) answer
       versions `shouldSatisfy` (\vs -> not (null vs) && all (== InL 0) vs)
+
+  it "(f) stops a resolve's running check when the editor cancels it (review I5)" $ do
+    fills <- canonicalizePath (handCase <> "/fills.toml")
+    entered <- newEmptyMVar
+    stopped <- newEmptyMVar
+    -- a check that runs until its token trips (as cargo or pyright would)
+    let endless token = Checker $ \_ _ -> do
+          putMVar entered ()
+          let wait = cancelled token >>= \case
+                True -> putMVar stopped () >> pure (Left (CheckFailed "cancelled"))
+                False -> threadDelay 20000 >> wait
+          wait
+    withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
+      (seen, _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = endless} dir $ do
+        doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
+        actions <- getCodeActions doc (Range (Position 1 4) (Position 1 4))
+        a <- case [a | InR a <- actions, a ^. L.title == "Fill with the model"] of
+          a : _ -> pure a
+          [] -> fail "no Fill action"
+        rid <- sendRequest SMethod_CodeActionResolve a
+        liftIO (timeout 30000000 (takeMVar entered)) >>= maybe (fail "the fill never checked") pure
+        sendNotification SMethod_CancelRequest (CancelParams (case rid of IdInt n -> InL n; IdString t -> InR t))
+        liftIO (timeout 10000000 (takeMVar stopped))
+      seen `shouldBe` Just ()
 
   it "(d) says the project's model: its elements in the shared vocabulary, and how they relate (spec §1b)" $
     withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
@@ -740,7 +782,7 @@ concurrencySpec = describe "slow work, and requests meanwhile" $
     fills <- canonicalizePath "packs/python-htmx/generators/handle-body/tests/create-booking/fills.toml"
     let slowCheck = Checker (\_ _ -> threadDelay 2000000 >> pure (Right (CheckReport [] [] [])))
     withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
-      ((hoverMs, resolvedMs), _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = slowCheck} dir $ do
+      ((hoverMs, resolvedMs), _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = const slowCheck} dir $ do
         doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
         actions <- getCodeActions doc (Range (Position 1 4) (Position 1 4))
         a <- case [x | InR x <- actions, x ^. L.title == "Fill with the model"] of
@@ -802,7 +844,7 @@ withPythonChecked changed act = do
   strict <- (== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS"
   findExecutable "uv" >>= \case
     Nothing -> if strict then expectationFailure "required tool missing: uv" else pendingWith "uv is not installed"
-    Just _ -> withPython changed (\ports dir -> act ports {pChecker = processChecker} dir)
+    Just _ -> withPython changed (\ports dir -> act ports {pChecker = processCheckerWith} dir)
 
 -- | The python-htmx fixture app with some files changed, as a project on
 -- disk using the pack from this repository, and ports with the real syntax.
@@ -834,7 +876,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax noChecker noVerifier (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False))
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False))
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []

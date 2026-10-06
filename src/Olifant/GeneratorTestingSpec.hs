@@ -13,7 +13,7 @@ import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
 import Olifant.Generation.Tools (Verifier (..))
 import Olifant.Language.Check (noVerifier, processVerifierWith)
-import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker)
+import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker, processCheckerWith)
 import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
@@ -266,9 +266,9 @@ spec = do
               { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 4) 0), rtStdoutIsTty = False
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
-              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processChecker
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processCheckerWith
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
         let project = dir </> "demo"
@@ -350,9 +350,9 @@ spec = do
               { rtRoot = diskWorkspace "/", rtProjectDir = dir, rtUserConfigDir = Nothing, rtHomeDir = Nothing
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 6) 0), rtStdoutIsTty = False
               , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
-              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = noChecker
+              , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
-              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = noVerifier }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         _ <- runCli rt ["check", "--file", close, "--json"]
         checked <- readIORef out
         checked `shouldSatisfy` T.isInfixOf "\"missing\":[\"port\"]"

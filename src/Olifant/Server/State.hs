@@ -29,6 +29,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Catalog (PackCache, catalogPackRoots, describeCatalogError, newPackCache)
+import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany, within)
 import System.FilePath (takeDirectory, (</>))
 
@@ -61,10 +62,13 @@ data ServerState = ServerState
   , ssListings :: Map FilePath (Int, [FilePath])
   , -- | answers by (request, file, where), for one generation
     ssMemo :: Map (Text, FilePath, Text) (Int, Dynamic)
+  , -- | the token of the work this state was handed to (a job, a request):
+    -- its plans' checks, verifies and model calls stop when it trips
+    ssCancel :: Cancel
   }
 
 newServerState :: Ports -> IO ServerState
-newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty) <$> newPackCache
+newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel) <$> newPackCache
 
 -- | A document opened in the editor, at a version, with its text.
 openDoc :: FilePath -> Int -> Text -> ServerState -> ServerState

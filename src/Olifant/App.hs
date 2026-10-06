@@ -33,6 +33,7 @@ module Olifant.App
   , planWith
   , noFill
   , modelFiller
+  , modelFillerWith
   , FixFailure (..)
   , fixSteps
   ) where
@@ -56,7 +57,8 @@ import Olifant.Generation
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
-import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
+import Olifant.Process (Cancel, cancelled, neverCancel)
+import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), checkFiles, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
@@ -74,8 +76,9 @@ import Olifant.Doctor (Check, DoctorInput (..), DoctorPorts, doctor)
 data Ports = Ports
   { pFiles :: Workspace IO
   , pSyntax :: Syntax IO
-  , pChecker :: Checker IO
-  , pVerifier :: Verifier IO
+  , -- | checks and verifies, stopped (their processes killed) when the token trips
+    pChecker :: Cancel -> Checker IO
+  , pVerifier :: Cancel -> Verifier IO
   , pNow :: IO UTCTime
   , pUserConfigDir :: Maybe FilePath
   , pHomeDir :: Maybe FilePath
@@ -195,7 +198,7 @@ doctorChecks ports project =
 -- queries.
 projectTools :: Ports -> Project -> Tools IO
 projectTools ports project =
-  (basicTools (pSyntax ports) (pChecker ports) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries ports project, toolVerifier = pVerifier ports}
+  (basicTools (pSyntax ports) (pChecker ports neverCancel) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries ports project, toolVerifier = pVerifier ports neverCancel}
   where
     cat = prCatalog project
 
@@ -212,8 +215,12 @@ projectQueries ports project =
 -- | 'projectQueries' with a cursor: `uncovered` queries ask the compiler
 -- about the match there (spec §4.9), reading the project's workspace.
 queriesAt :: Ports -> Project -> FilePath -> Int -> Queries IO
-queriesAt ports project file line =
-  (projectQueries ports project) {queryUncovered = uncoveredQuery (pChecker ports) (catalogLanguages (prCatalog project)) (prWorkspace project) file line}
+queriesAt = queriesAtWith neverCancel
+
+-- | 'queriesAt', its compiler checks stopped when the token trips.
+queriesAtWith :: Cancel -> Ports -> Project -> FilePath -> Int -> Queries IO
+queriesAtWith token ports project file line =
+  (projectQueries ports project) {queryUncovered = uncoveredQuery (pChecker ports token) (catalogLanguages (prCatalog project)) (prWorkspace project) file line}
 
 -- | The ⚡ actions at a cursor in a project file (spec §4.8).
 actionsAt' :: Ports -> Project -> FilePath -> (Int, Int) -> IO [Action]
@@ -339,13 +346,14 @@ data PlanOptions = PlanOptions
   , poContext :: [(FilePath, Text)]
   , poProgress :: ProgressEvent -> IO ()
   , poNow :: Maybe UTCTime
-  , -- | whether the plan was cancelled (superseded work in the server)
-    poCancelled :: IO Bool
+  , -- | stops the plan (between fills) and its checks, verifies and model
+    -- calls, their processes killed (superseded work in the server)
+    poCancel :: Cancel
   }
 
 -- | Plan only, no cursor, no model, no progress.
 planOptions :: PlanOptions
-planOptions = PlanOptions PlanOnly Nothing Nothing False [] (const (pure ())) Nothing (pure False)
+planOptions = PlanOptions PlanOnly Nothing Nothing False [] (const (pure ())) Nothing neverCancel
 
 -- | Run plan steps (model, fills, regions): the plan, with the snippet at
 -- the cursor and the catalog's load warnings.
@@ -355,11 +363,13 @@ planWith ports project po steps = do
   let cat = prCatalog project
       tools =
         (projectTools ports project)
-          { toolQueries = maybe (projectQueries ports project) (uncurry (queriesAt ports project)) (poAt po)
+          { toolQueries = maybe (projectQueries ports project) (uncurry (queriesAtWith (poCancel po) ports project)) (poAt po)
           , toolFiller = poFiller po
           , toolFillContext = poContext po
           , toolProgress = poProgress po
-          , toolCancelled = poCancelled po
+          , toolChecker = pChecker ports (poCancel po)
+          , toolVerifier = pVerifier ports (poCancel po)
+          , toolCancelled = cancelled (poCancel po)
           }
   generate (prWorkspace project) (resolver (pFiles ports) (pSyntax ports) cat) tools steps now (poMode po) <&> fmap finish
   where
@@ -379,11 +389,15 @@ noFill p = p {planHoles = [h {phStatus = HoleSkipped "--no-fill"} | h <- planHol
 -- | The model a plan fills with: the one named, else the project's
 -- default; none when neither is set.
 modelFiller :: Catalog -> Maybe Text -> Either Text (Maybe (ModelFiller IO))
-modelFiller cat named = case named <|> mcDefault config of
+modelFiller = modelFillerWith neverCancel
+
+-- | 'modelFiller', its requests dropped when the token trips.
+modelFillerWith :: Cancel -> Catalog -> Maybe Text -> Either Text (Maybe (ModelFiller IO))
+modelFillerWith token cat named = case named <|> mcDefault config of
   Nothing -> Right Nothing
   Just name -> case lookup name (mcBackends config) of
     Nothing -> Left ("--model " <> name <> ": no such backend under [model.backends] (backends: " <> (if null (mcBackends config) then "none" else T.intercalate ", " (map fst (mcBackends config))) <> ")")
-    Just b -> Right (Just (ModelFiller (backendModel b) (mcRetries config) (curlFiller (mcTimeout config) b)))
+    Just b -> Right (Just (ModelFiller (backendModel b) (mcRetries config) (curlFillerWith token (mcTimeout config) b)))
   where
     config = catalogModel cat
 

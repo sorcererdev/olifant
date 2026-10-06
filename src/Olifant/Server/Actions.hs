@@ -8,7 +8,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Actions (Action (..))
-import Olifant.App (PlanOptions (..), Ports (..), Project (..), actionsAt', generatorsOf, modelFiller, placeAt, planOptions, planWith)
+import Olifant.App (PlanOptions (..), Ports (..), Project (..), actionsAt', generatorsOf, modelFillerWith, placeAt, planOptions, planWith)
 import Olifant.Catalog (describeCatalogError, findEntry, loadGenerator)
 import Olifant.Cursor (isSnippet)
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
@@ -62,7 +62,7 @@ actionPlanWith progress fill path line generator sets s =
                 Right gens -> fillerFor fill s' project >>= \case
                   Left why -> pure (Left why)
                   Right filler ->
-                    planWith ports project planOptions {poAt = Just (rel, line), poFiller = filler, poProgress = progress} [Step g (M.fromList sets) | g <- gens] >>= \case
+                    planWith ports project planOptions {poAt = Just (rel, line), poFiller = filler, poProgress = progress, poCancel = ssCancel s'} [Step g (M.fromList sets) | g <- gens] >>= \case
                       Left err -> pure (Left (describeGenerationError err))
                       Right plan
                         | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
@@ -77,7 +77,7 @@ fillerFor True s project = case scFills (ssConfig s) of
     readText (pFiles (ssPorts s)) file <&> \case
       Nothing -> Left ("recorded fills: cannot read " <> T.pack file)
       Just src -> (\fills -> Just (ModelFiller "recorded" 0 (replayFiller fills))) <$> parseFills src
-  Nothing -> pure (modelFiller (prCatalog project) (scModel (ssConfig s)))
+  Nothing -> pure (modelFillerWith (ssCancel s) (prCatalog project) (scModel (ssConfig s)))
 
 -- | A progress event in words, as editors show them.
 describeProgress :: ProgressEvent -> Text

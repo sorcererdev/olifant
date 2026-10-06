@@ -44,7 +44,7 @@ fixPlan fill progress path rule line n sets s =
             fillerFor fill s' project >>= \case
              Left why -> pure (Left why)
              Right filler ->
-              first describeGenerationError <$> planWith (ssPorts s') project planOptions {poContext = context, poFiller = filler, poProgress = progress} steps >>= \case
+              first describeGenerationError <$> planWith (ssPorts s') project planOptions {poContext = context, poFiller = filler, poProgress = progress, poCancel = ssCancel s'} steps >>= \case
               Left why -> pure (Left why)
               Right plan
                 | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))

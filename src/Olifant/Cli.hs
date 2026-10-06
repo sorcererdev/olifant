@@ -38,6 +38,7 @@ import Olifant.Generation
 import Olifant.Cursor (isSnippet)
 import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..), GeneratorId (..), GeneratorWith (..), generatorIdText)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
+import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
 import System.FilePath (makeRelative, normalise, splitDirectories, takeBaseName, takeFileName, (</>))
 import System.Exit (ExitCode (..))
@@ -53,7 +54,7 @@ data Runtime = Runtime
   , rtOut :: Text -> IO ()
   , rtErr :: Text -> IO ()
   , rtSyntax :: Syntax IO
-  , rtChecker :: Checker IO
+  , rtChecker :: Cancel -> Checker IO
   , rtDoctor :: DoctorPorts IO
   , -- | lines changed since a git ref (file, 1-based inclusive ranges) and
     -- untracked files, for `check --changed-since`
@@ -62,7 +63,7 @@ data Runtime = Runtime
     -- needed (`olifant init`)
     rtGitInit :: FilePath -> Text -> IO (Either Text ())
   , -- | runs a hole's `verify` command (its tests) in a scratch copy
-    rtVerifier :: Verifier IO
+    rtVerifier :: Cancel -> Verifier IO
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -484,7 +485,7 @@ runSteps rt cwd fmt cat g context steps = do
               , poContext = context
               , poProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())
               , poNow = genNow g
-              , poCancelled = pure False
+              , poCancel = neverCancel
               }
       planWith (portsOf rt) project po steps >>= \case
         Left err -> generationFailure rt fmt err

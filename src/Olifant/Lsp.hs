@@ -9,7 +9,8 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (SomeAsyncException, SomeException, catch, displayException, fromException, throwIO)
+import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
+import Olifant.Process (Cancel, neverCancel, newCancel)
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -60,6 +61,11 @@ data Env = Env
   , envDebug :: IORef Bool
   , -- | the globs the client already watches for us
     envWatched :: IORef (S.Set T.Text)
+  , -- | the requests running in the background, by id: how to cancel each
+    envRunning :: IORef (M.Map T.Text (IO ()))
+  , -- | the token of the work this Env was handed to (a job, a request);
+    -- the work's snapshots carry it (`ssCancel`)
+    envCancel :: Cancel
   }
 
 -- | A suggestion's plan, for the document version it was planned against.
@@ -105,7 +111,7 @@ advertise out
 
 serverDefinition :: Ports -> IO (ServerDefinition ())
 serverDefinition ports = do
-  env <- Env ports <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty
+  env <- Env ports <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> pure neverCancel
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -158,7 +164,11 @@ guarded = mapHandlers onRequest onNotification
 handlers :: Env -> Handlers (LspM ())
 handlers env =
   mconcat
-    [ -- watch every project's `.olifant/`; packs are watched as projects load
+    [ -- the client gave up on a request: stop its work
+      notificationHandler SMethod_CancelRequest $ \msg -> do
+        let key = case msg ^. L.params . L.id of InL n -> T.pack (show n); InR t -> t
+        liftIO (readIORef (envRunning env)) >>= maybe (pure ()) liftIO . M.lookup key
+    , -- watch every project's `.olifant/`; packs are watched as projects load
       notificationHandler SMethod_Initialized (\_ -> watch env [GlobPattern (InL (Pattern "**/.olifant/**"))])
     , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
         let item = msg ^. L.params . L.textDocument
@@ -251,22 +261,22 @@ handlers env =
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
-      requestHandler SMethod_CodeActionResolve $ \req respond -> inBackground respond $ do
+      requestHandler SMethod_CodeActionResolve $ \req respond -> inBackground env req respond $ \job -> do
         let action = req ^. L.params
         let failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
         case (fixData =<< (action ^. L.data_), actionData =<< (action ^. L.data_)) of
           (Just (path, rule, line, n, sets), _) ->
-            planProgress (action ^. L.title) (\progress -> withPlanned env (fixPlan True progress path rule line n sets)) >>= \case
+            planProgress (action ^. L.title) (\progress -> withPlanned job (fixPlan True progress path rule line n sets)) >>= \case
               Left why -> failed why
               Right planned -> respond (Right (resolved action planned))
           (_, Just (path, line, generator, sets)) ->
-            planProgress (action ^. L.title) (\progress -> withPlanned env (actionPlanWith progress True path line generator sets)) >>= \case
+            planProgress (action ^. L.title) (\progress -> withPlanned job (actionPlanWith progress True path line generator sets)) >>= \case
               Left why -> failed why
               -- a snippet's body (tab stops) rides along for editors that expand it
               Right planned@(_, (_, plan)) -> respond (Right (resolved action planned & L.data_ %~ fmap (withSnippet (planSnippet plan))))
           _ -> case holeData =<< (action ^. L.data_) of
             Just (path, line) ->
-              planProgress "Fill with the model" (\progress -> withPlanned env (fillHolePlan progress path line)) >>= \case
+              planProgress "Fill with the model" (\progress -> withPlanned job (fillHolePlan progress path line)) >>= \case
                 Left why -> failed why
                 Right planned -> respond (Right (resolved action planned))
             Nothing -> respond (Right action)
@@ -308,12 +318,12 @@ handlers env =
           Just path -> liftIO (snippetItems env path (req ^. L.params . L.position))
         respond (Right (InL items))
     , -- the chosen snippet, planned again with the model filling its holes
-      requestHandler SMethod_CompletionItemResolve $ \req respond -> inBackground respond $ do
+      requestHandler SMethod_CompletionItemResolve $ \req respond -> inBackground env req respond $ \job -> do
         let item = req ^. L.params
         case actionData =<< (item ^. L.data_) of
           Nothing -> respond (Right item)
           Just (path, line, generator, sets) ->
-            liftIO (withSnapshot env (actionEdits True path line generator sets)) >>= \case
+            liftIO (withSnapshot job (actionEdits True path line generator sets)) >>= \case
               Right (_, Just sn) -> respond (Right (item & L.textEdit %~ fmap (\case InL e -> InL (e & L.newText .~ snBody sn); InR e -> InR (e & L.newText .~ snBody sn))))
               _ -> respond (Right item)
     , -- the snippet anticipated here, unasked (LSP 3.18 inline completion)
@@ -341,7 +351,7 @@ handlers env =
         respond (Right (maybe (fileActionsJson [] [] []) (\(gens, acts, near) -> fileActionsJson gens acts near) found))
     , -- what follows at a line (the editor knows the cursor; pushes guess it
       -- from the last edit), offered as pushed ones are, its plan with it
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) $ \req respond -> inBackground respond $ do
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) $ \req respond -> inBackground env req respond $ \job -> do
         let params = req ^. L.params
             found = do
               Object o <- pure params
@@ -352,22 +362,22 @@ handlers env =
         case found of
           Nothing -> respond (Right Aeson.Null)
           Just (path, line) -> do
-            liftIO (withSnapshotState env (suggestionFor path line)) >>= \case
+            liftIO (withSnapshotState job (suggestionFor path line)) >>= \case
               (at, Just sg) | Just v <- fst <$> M.lookup path (ssDocs at) -> do
-                n <- liftIO (offer env path v sg)
+                n <- liftIO (offer job path v sg)
                 respond (Right (object (suggestionFields path v n sg ++ ["plan" .= planJson False (sgPlan sg)] ++ ["edit" .= workspaceEdit (editsOfPlan at (sgRoot sg) (sgPlan sg))])))
               _ -> respond (Right Aeson.Null)
     , -- an offered suggestion's plan, while its document is as it was
       -- (`fill`: planned again with the model, as accepting it does)
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) $ \req respond -> inBackground respond $ do
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) $ \req respond -> inBackground env req respond $ \job -> do
         let wanted = case req ^. L.params of
               Object o | Just (Number n) <- KM.lookup "planId" o -> toBoundedInteger n
               _ -> Nothing
             fill = case req ^. L.params of
               Object o -> KM.lookup "fill" o == Just (Bool True)
               _ -> False
-        offered <- liftIO ((\(_, m) -> (`M.lookup` m) =<< wanted) <$> readIORef (envOffered env))
-        s <- liftIO (readMVar (envState env))
+        offered <- liftIO ((\(_, m) -> (`M.lookup` m) =<< wanted) <$> readIORef (envOffered job))
+        s <- liftIO (readMVar (envState job))
         -- or a generator from the inputs chosen (the picker), for a document's project
         let chosen = case req ^. L.params of
               Object o
@@ -379,7 +389,7 @@ handlers env =
               _ -> Nothing
         case (chosen, offered) of
           (Just (path, generator, sets), _) ->
-            planProgress generator (\progress -> withPlanned env (actionPlanWith progress True path 1 generator sets)) >>= \case
+            planProgress generator (\progress -> withPlanned job (actionPlanWith progress True path 1 generator sets)) >>= \case
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
           (_, Nothing) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
@@ -390,7 +400,7 @@ handlers env =
                  in respond (Right (object ["plan" .= planJson False (sgPlan sg), "edit" .= workspaceEdit (editsOfPlan s (sgRoot sg) (sgPlan sg))]))
             | otherwise -> do
                 let sg = ofSuggestion o
-                planProgress (sgLabel sg) (\progress -> withPlanned env (actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg))) >>= \case
+                planProgress (sgLabel sg) (\progress -> withPlanned job (actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg))) >>= \case
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
     , -- the project of a document in the shared vocabulary (spec §1b)
@@ -468,8 +478,9 @@ lastEditedLine changes = case reverse changes of
 suggestLater :: Env -> LanguageContextEnv () -> FilePath -> Int -> Int -> IO ()
 suggestLater env lspEnv path version line = do
   debounce <- scDebounceMs . ssConfig <$> readMVar (envState env)
-  void . submit (envJobs env) ("suggest " <> T.pack path) debounce $ \_ -> do
-    found <- withSnapshot env (suggestionFor path line)
+  void . submit (envJobs env) ("suggest " <> T.pack path) debounce $ \token -> do
+    -- superseded by the next edit: its checks stop (review I5)
+    found <- withSnapshot env {envCancel = token} (suggestionFor path line)
     current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
     case found of
       Just sg | current == Just version -> do
@@ -513,7 +524,7 @@ withPlanned env work = withSnapshotState env work <&> \(at, planned) -> (at,) <$
 -- were when it started).
 withSnapshotState :: Env -> (ServerState -> IO (ServerState, a)) -> IO (ServerState, a)
 withSnapshotState env work = do
-  before <- readMVar (envState env)
+  before <- (\s -> s {ssCancel = envCancel env}) <$> readMVar (envState env)
   (after, a) <- work before
   let loaded = M.filter (> 0) (M.unionWith (-) (ssLoads after) (ssLoads before))
   modifyMVar_ (envState env) $ \now ->
@@ -688,12 +699,26 @@ holeData = \case
 
 -- | Answer a request from a thread of its own, so slow work never holds up
 -- the server; a failure there is answered as an error, never left hanging.
-inBackground :: (Either (TResponseError m) a -> LspM () ()) -> LspM () () -> LspM () ()
-inBackground respond work = do
+-- It runs under a token of its own, tripped by the client's
+-- `$/cancelRequest` for it: its checks, verifies and model calls stop,
+-- their processes killed (review I5).
+inBackground :: Env -> TRequestMessage m -> (Either (TResponseError m) a -> LspM () ()) -> (Env -> LspM () ()) -> LspM () ()
+inBackground env req respond work = do
   lspEnv <- getLspEnv
+  (token, trip) <- liftIO newCancel
+  let key = requestKey (req ^. L.id)
+  liftIO (atomicModifyIORef' (envRunning env) (\m -> (M.insert key trip m, ())))
   void . liftIO . forkIO $
-    runLspT lspEnv work `catch` \(e :: SomeException) ->
-      runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
+    ( runLspT lspEnv (work env {envCancel = token}) `catch` \(e :: SomeException) ->
+        runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
+    )
+      `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
+
+-- | A request id as `$/cancelRequest` names it.
+requestKey :: LspId m -> T.Text
+requestKey = \case
+  IdInt n -> T.pack (show n)
+  IdString t -> t
 
 -- | Work under a progress report (checking, asking the model, testing).
 planProgress :: T.Text -> ((ProgressEvent -> IO ()) -> IO a) -> LspM () a
