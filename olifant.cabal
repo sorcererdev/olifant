@@ -102,6 +102,7 @@ library
     Olifant.Server.Hints
     Olifant.Server.Jobs
     Olifant.Server.State
+    Olifant.Server.Suggest
     Olifant.Snippet
     Olifant.Suggest
     Olifant.Template
@@ -212,6 +213,7 @@ test-suite spec
     Olifant.Server.Hints
     Olifant.Server.Jobs
     Olifant.Server.State
+    Olifant.Server.Suggest
     Olifant.ServerSpec
     Olifant.Snippet
     Olifant.SnippetSpec

@@ -1,8 +1,9 @@
 -- | Internal to Olifant.Server: the ⚡ actions at a cursor, and an action
 -- planned there (a snippet placed at the cursor, as `gen --at` does) with
 -- the choices made — against the documents as they are now.
-module Olifant.Server.Actions (actionsFor, actionEdits) where
+module Olifant.Server.Actions (actionsFor, actionEdits, actionPlan) where
 
+import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -32,6 +33,12 @@ actionsFor path pos s =
 -- @fill@, the project's model (or the client's) fills its holes.
 actionEdits :: Bool -> FilePath -> Int -> Text -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text ([FileEdit], Maybe Snippet))
 actionEdits fill path line generator sets s =
+  actionPlan fill path line generator sets s <&> \(s', planned) ->
+    (s', fmap (\(root, plan) -> (editsOfPlan s' root plan, planSnippet plan)) planned)
+
+-- | 'actionEdits' as the plan itself, with the project's root.
+actionPlan :: Bool -> FilePath -> Int -> Text -> [(Text, Text)] -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
+actionPlan fill path line generator sets s =
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Left (T.pack path <> " is in no Olifant project"))
     (s', Just (root, project)) -> fmap (s',) $ do
@@ -46,10 +53,10 @@ actionEdits fill path line generator sets s =
               placeAt ports project (rel, line) [gen0] >>= \case
                 Left why -> pure (Left why)
                 Right gens -> case if fill then modelFiller (prCatalog project) (scModel (ssConfig s')) else Right Nothing of
-                 Left why -> pure (Left why)
-                 Right filler ->
-                  planWith ports project planOptions {poAt = Just (rel, line), poFiller = filler} [Step g (M.fromList sets) | g <- gens] >>= \case
-                    Left err -> pure (Left (describeGenerationError err))
-                    Right plan
-                      | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
-                      | otherwise -> pure (Right (editsOfPlan s' root plan, planSnippet plan))
+                  Left why -> pure (Left why)
+                  Right filler ->
+                    planWith ports project planOptions {poAt = Just (rel, line), poFiller = filler} [Step g (M.fromList sets) | g <- gens] >>= \case
+                      Left err -> pure (Left (describeGenerationError err))
+                      Right plan
+                        | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
+                        | otherwise -> pure (Right (root, plan))

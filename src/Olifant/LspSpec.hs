@@ -10,7 +10,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Char8 qualified as BSL8
 import System.IO (Handle, hFlush)
-import Data.Aeson (Value (Array, Bool, Object, String), object, toJSON, (.=))
+import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, (.=))
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
 import Data.Aeson qualified as Aeson
@@ -28,15 +28,16 @@ import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
 import Data.List (sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
-import Language.LSP.Protocol.Message (SMethod (..), TResponseMessage (..))
+import Language.LSP.Protocol.Message (SMethod (..), TCustomMessage (..), TNotificationMessage (..), TResponseMessage (..))
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (noChecker, noSyntax)
+import Olifant.Language (noChecker, noSyntax, processChecker)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Lsp
 import Olifant.Workspace (diskWorkspace)
-import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
+import System.Environment (lookupEnv)
+import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
 import System.FilePath (makeRelative, takeDirectory, (</>))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -61,6 +62,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   actionsSpec
   hintsSpec
   completionSpec
+  followupsSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -287,6 +289,55 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
       (v, _) <- inProcessWith ports dir (openDoc test "python" >>= (`inline` Position 0 0))
       firstInsert v `shouldBe` Nothing
 
+-- | Follow-ups (Task 13): after typing settles, the server pushes what
+-- follows from the edit; its plan is fetched by id.
+followupsSpec :: Spec
+followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
+  let command = "src/bistro/booking/commands/create_booking.py"
+      at l c = Range (Position l c) (Position l c)
+      insert l c t = TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (at l c) Nothing t))
+      -- a new failure class, typed: the block, then the colon that ends its line
+      typeFailure doc = do
+        changeDoc doc [insert 33 0 "@dataclass(frozen=True)\nclass Cancelled\n    reason: str\n\n\n"]
+        changeDoc doc [insert 34 15 ":"]
+      suggestion =
+        customNotification (Proxy :: Proxy "olifant/suggestion") >>= \case
+          NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)
+  it "(a) suggests what follows from an edit once typing settles: a new failure, its arms" $
+    withPythonChecked [] $ \ports dir -> do
+      ((v, version), _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        typeFailure doc
+        VersionedTextDocumentIdentifier _ current <- getVersionedDoc doc
+        (,current) <$> suggestion
+      lookupKey "label" v `shouldBe` Just (String "Add Cancelled to every match")
+      lookupKey "kind" v `shouldBe` Just (String "followup")
+      lookupKey "version" v `shouldBe` Just (toJSON version)
+      lookupKey "summary" v `shouldSatisfy` \case Just (String t) -> "+1 line here" `T.isPrefixOf` t && "failures.py" `T.isInfixOf` t; _ -> False
+  it "(b) gives the suggestion's plan, with its edit, by id" $
+    withPythonChecked [] $ \ports dir -> do
+      (planned, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        typeFailure doc
+        v <- suggestion
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= lookupKey "planId" v]) >>= \case
+          TResponseMessage _ _ (Right p) -> pure p
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      let texts = case lookupKey "edit" planned >>= lookupKey "documentChanges" of
+            Just (Array cs) -> [t | Object c <- foldr (:) [] cs, Just (Array es) <- [KM.lookup "edits" c], Object e <- foldr (:) [] es, Just (String t) <- [KM.lookup "newText" e]]
+            _ -> []
+      T.concat texts `shouldSatisfy` T.isInfixOf "Cancelled"
+      (lookupKey "plan" planned >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> not (null fs); _ -> False)
+  it "(c) drops the suggestion of a version typed over before it settled" $
+    withPythonChecked [] $ \ports dir -> do
+      ((v, version), _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        typeFailure doc
+        changeDoc doc [insert 34 16 "  # one more"]
+        VersionedTextDocumentIdentifier _ current <- getVersionedDoc doc
+        (,current) <$> suggestion
+      lookupKey "version" v `shouldBe` Just (toJSON version)
+
 -- | The versions an action's edit is for, in one document.
 editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]
 editVersionsOf uri a = [te ^. L.textDocument . L.version | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, te ^. L.textDocument . L.uri == uri]
@@ -324,6 +375,15 @@ editTexts a = [either (^. L.newText) (^. L.newText) (toEither t) | Just e <- [a 
 -- | The versions an action's edit is for.
 editVersions :: CodeAction -> [Int32 |? Null]
 editVersions a = [te ^. L.textDocument . L.version | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes]
+
+-- | 'withPython', its files checked by the real compiler (pyright through
+-- uv): pending without uv, failing with OLIFANT_REQUIRE_TOOLS=1.
+withPythonChecked :: [(FilePath, Text)] -> (Ports -> FilePath -> IO ()) -> IO ()
+withPythonChecked changed act = do
+  strict <- (== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS"
+  findExecutable "uv" >>= \case
+    Nothing -> if strict then expectationFailure "required tool missing: uv" else pendingWith "uv is not installed"
+    Just _ -> withPython changed (\ports dir -> act ports {pChecker = processChecker} dir)
 
 -- | The python-htmx fixture app with some files changed, as a project on
 -- disk using the pack from this repository, and ports with the real syntax.
@@ -363,7 +423,7 @@ inProcessWith ports dir session = do
   (outRead, outWrite) <- createPipe
   done <- newEmptyMVar
   _ <- forkIO (runLspWithHandles ports inRead outWrite >>= putMVar done)
-  a <- runSessionWithHandles inWrite outRead defaultConfig {lspConfig = KM.fromList [("debug", Bool True)]} fullLatestClientCaps dir session
+  a <- runSessionWithHandles inWrite outRead defaultConfig {lspConfig = KM.fromList [("debug", Bool True), ("debounce_ms", Number 100)]} fullLatestClientCaps dir session
   code <- timeout 5000000 (takeMVar done)
   pure (a, code)
 

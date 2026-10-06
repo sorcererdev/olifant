@@ -9,7 +9,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -22,7 +22,7 @@ import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinar
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text qualified as T
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import Data.Map.Strict qualified as M
 import Data.Proxy (Proxy (..))
@@ -34,6 +34,7 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
+import Olifant.Cli.Output (planJson)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
@@ -42,9 +43,18 @@ import Olifant.Workspace (Workspace (..))
 import Olifant.Server
 import System.FilePath (splitDirectories, joinPath)
 
--- | The server's state behind a lock, and whether the test-only
--- `olifant/debugState` answers.
-data Env = Env {envState :: MVar ServerState, envDebug :: IORef Bool}
+-- | The server's state behind a lock, its background jobs, the plans of
+-- the suggestions it has offered (by id, for `olifant/plan`), and whether
+-- the test-only `olifant/debugState` answers.
+data Env = Env
+  { envState :: MVar ServerState
+  , envJobs :: Jobs
+  , envOffered :: IORef (Int, M.Map Int Offered)
+  , envDebug :: IORef Bool
+  }
+
+-- | A suggestion's plan, for the document version it was planned against.
+data Offered = Offered {ofPath :: FilePath, ofVersion :: Int, ofSuggestion :: Suggestion}
 
 -- | The server over stdin and stdout (what `olifant lsp` runs).
 runLsp :: Ports -> IO Int
@@ -86,7 +96,7 @@ advertise out
 
 serverDefinition :: Ports -> IO (ServerDefinition ())
 serverDefinition ports = do
-  env <- Env <$> (newServerState ports >>= newMVar) <*> newIORef False
+  env <- Env <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -129,7 +139,15 @@ handlers env =
         let uri = msg ^. L.params . L.textDocument . L.uri
         getVirtualFile (toNormalizedUri uri) >>= \case
           Nothing -> pure ()
-          Just vf -> atPath uri $ \path -> update env (changeDoc path (fromIntegral (virtualFileVersion vf)) (virtualFileText vf))
+          Just vf -> atPath uri $ \path -> do
+            let version = fromIntegral (virtualFileVersion vf)
+            update env (changeDoc path version (virtualFileText vf))
+            -- what follows from this edit, once typing settles
+            case lastEditedLine (msg ^. L.params . L.contentChanges) of
+              Nothing -> pure ()
+              Just line -> do
+                lspEnv <- getLspEnv
+                liftIO (suggestLater env lspEnv path version line)
     , notificationHandler SMethod_TextDocumentDidClose $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) (update env . closeDoc)
     , notificationHandler SMethod_TextDocumentDidSave (\_ -> pure ())
@@ -227,6 +245,20 @@ handlers env =
           Nothing -> pure []
           Just (path, position) -> liftIO (ghostItems env path position)
         respond (Right (object ["items" .= items]))
+    , -- an offered suggestion's plan, while its document is as it was
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) $ \req respond -> do
+        let wanted = case req ^. L.params of
+              Object o | Just (Number n) <- KM.lookup "planId" o -> toBoundedInteger n
+              _ -> Nothing
+        offered <- liftIO ((\(_, m) -> (`M.lookup` m) =<< wanted) <$> readIORef (envOffered env))
+        s <- liftIO (readMVar (envState env))
+        case offered of
+          Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
+          Just o
+            | fmap fst (M.lookup (ofPath o) (ssDocs s)) /= Just (ofVersion o) -> respond (Left (TResponseError (InL LSPErrorCodes_ContentModified) "the document changed since this was suggested" Nothing))
+            | otherwise ->
+                let sg = ofSuggestion o
+                 in respond (Right (object ["plan" .= planJson False (sgPlan sg), "edit" .= workspaceEdit (editsOfPlan s (sgRoot sg) (sgPlan sg))]))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \_ respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))
@@ -243,6 +275,39 @@ debugState env = modifyMVar (envState env) $ \s0 -> do
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
   pure (s, object ["documents" .= rows])
+
+-- | The line (1-based) an edit ends on, in the text after it: where to
+-- look for what follows. None for a whole-document change.
+lastEditedLine :: [TextDocumentContentChangeEvent] -> Maybe Int
+lastEditedLine changes = case reverse changes of
+  TextDocumentContentChangeEvent (InL partial) : _ ->
+    let Range (Position l _) _ = partial ^. L.range
+     in Just (fromIntegral l + 1 + T.count "\n" (partial ^. L.text))
+  _ -> Nothing
+
+-- | After the debounce (a newer edit of the file cancels it), plan what
+-- follows from the edit and push it, unless the document has moved on.
+suggestLater :: Env -> LanguageContextEnv () -> FilePath -> Int -> Int -> IO ()
+suggestLater env lspEnv path version line = do
+  debounce <- scDebounceMs . ssConfig <$> readMVar (envState env)
+  void . submit (envJobs env) ("suggest " <> T.pack path) debounce $ \_ -> do
+    found <- withSnapshot env (suggestionFor path line)
+    current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+    case found of
+      Just sg | current == Just version -> do
+        n <- atomicModifyIORef' (envOffered env) (\(k, m) -> ((k + 1, M.insert (k + 1) (Offered path version sg) (M.filter ((/= path) . ofPath) m)), k + 1))
+        runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $
+          object
+            [ "uri" .= filePathToUri path
+            , "version" .= version
+            , "kind" .= sgKind sg
+            , "label" .= sgLabel sg
+            , "summary" .= sgSummary sg
+            , "line" .= sgLine sg
+            , "lines" .= sgLines sg
+            , "planId" .= n
+            ]
+      _ -> pure ()
 
 -- | Run against the state as it is now, without holding it: what the work
 -- loaded (projects) is kept; documents changed meanwhile are not undone.
