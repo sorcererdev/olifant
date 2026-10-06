@@ -19,6 +19,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
+import Data.Text.Encoding qualified as TE
 import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
@@ -159,14 +160,17 @@ handlers :: Env -> Handlers (LspM ())
 handlers env =
   mconcat
     [ -- watch every project's `.olifant/`; packs are watched as projects load
-      notificationHandler SMethod_Initialized (\_ -> watch env ["**/.olifant/**"])
+      notificationHandler SMethod_Initialized (\_ -> watch env [GlobPattern (InL (Pattern "**/.olifant/**"))])
     , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
         let item = msg ^. L.params . L.textDocument
         atPath (item ^. L.uri) $ \path -> do
           update env (openDoc path (fromIntegral (item ^. L.version)) (item ^. L.text))
-          -- its project loads now; watch its packs
+          -- its project loads now; watch its files (config, generators, the
+          -- code agents and the CLI change on disk) and its packs, each
+          -- relative to its own folder: an editor scopes a plain glob to the
+          -- workspace folders it had when it registered (review I3, I8)
           found <- liftIO (withSnapshot env (projectFor path))
-          watch env [T.pack (r </> "**") | Just (_, p) <- [found], r <- catalogPackRoots (prCatalog p)]
+          watch env [everything r | Just (root, p) <- [found], r <- root : catalogPackRoots (prCatalog p)]
     , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
         let uri = msg ^. L.params . L.textDocument . L.uri
         getVirtualFile (toNormalizedUri uri) >>= \case
@@ -418,14 +422,19 @@ debugState env = modifyMVar (envState env) $ \s0 -> do
 -- | Ask the client to watch more files (dynamic registration: the protocol
 -- has no static capability for it), once per glob; a change reloads the
 -- projects whose `.olifant/` or packs hold it.
-watch :: Env -> [T.Text] -> LspM () ()
+watch :: Env -> [GlobPattern] -> LspM () ()
 watch env globs = do
-  fresh <- liftIO (atomicModifyIORef' (envWatched env) (\seen -> let new = filter (`S.notMember` seen) globs in (foldr S.insert seen new, new)))
+  let keyed = [(TE.decodeUtf8 (BSL.toStrict (Aeson.encode g)), g) | g <- globs]
+  fresh <- liftIO (atomicModifyIORef' (envWatched env) (\seen -> let new = [kg | kg@(k, _) <- keyed, k `S.notMember` seen] in (foldr (S.insert . fst) seen new, map snd new)))
   if null fresh
     then pure ()
     else void $
-      registerCapability mempty SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesRegistrationOptions [FileSystemWatcher (GlobPattern (InL (Pattern g))) Nothing | g <- fresh]) $ \msg ->
+      registerCapability mempty SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesRegistrationOptions [FileSystemWatcher g Nothing | g <- fresh]) $ \msg ->
         liftIO (modifyMVar_ (envState env) (filesChanged [p | ev <- msg ^. L.params . L.changes, Just p <- [uriToFilePath (ev ^. L.uri)]]))
+
+-- | Every file under a folder, as a pattern relative to it.
+everything :: FilePath -> GlobPattern
+everything dir = GlobPattern (InR (RelativePattern (InR (filePathToUri dir)) (Pattern "**/*")))
 
 -- | The project of the document a request names (`textDocument.uri`).
 projectOfRequest :: Env -> Value -> IO (Maybe Project)

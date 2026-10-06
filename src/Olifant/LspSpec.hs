@@ -606,6 +606,17 @@ conventionsSpec = describe "many conventions in one session" $ do
         (,) <$> generatorsOf' a <*> generatorsOf' b
       py `shouldSatisfy` (\gs -> not (null gs) && all ("python-htmx/" `T.isPrefixOf`) gs)
       rs `shouldSatisfy` (\gs -> not (null gs) && all ("rust-htmx/" `T.isPrefixOf`) gs)
+  it "(a2) watches each project's files and its packs relative to their own folders, whatever the editor's workspace folders (review I3, I8)" $
+    withProjects [("py", "python-htmx", "packs/python-htmx/fixtures/app"), ("rs", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
+      (registered, _) <- inProcessWith ports root $ do
+        _ <- openDoc "py/src/bistro/main.py" "python"
+        _ <- openDoc "rs/billing/billing-service/src/cancel_invoice.rs" "rust"
+        _ <- debugState
+        TE.decodeUtf8 . BSL.toStrict . Aeson.encode <$> getRegisteredCapabilities
+      pyPack <- canonicalizePath "packs/python-htmx"
+      let relative dir = "{\"baseUri\":" <> TE.decodeUtf8 (BSL.toStrict (Aeson.encode (filePathToUri dir))) <> ",\"pattern\":\"**/*\"}"
+      forM_ [root </> "py", root </> "rs", pyPack] $ \dir ->
+        (dir, relative dir `T.isInfixOf` registered) `shouldBe` (dir, True)
   it "(b) keeps two copies of a pack apart: each project sees its own" $
     withPackCopies $ \ports root packB -> do
       createDirectoryIfMissing True (packB </> "generators/extra")
