@@ -79,23 +79,27 @@ placeholderize langs = M.mapWithKey $ \p t -> case languageFor langs p of
 
 -- | An edit's text as the plan shows it: each marker as the placeholder of
 -- its hole among @sites@ (the named holes of the whole plan), so a repeated
--- name shows as written ("v[file:line]"). The site is the one in @path@ with
--- the marker's name and instruction; the k-th such marker in the text is the
--- k-th such site by line. A marker with no site keeps its own name.
-placeholderizeWith :: [Language] -> [HoleSite] -> FilePath -> Text -> Text
-placeholderizeWith langs sites path t
+-- name shows as written ("v[file:line]"). The edit's text starts at 1-based
+-- line @firstLine@ of @path@: a marker on its k-th line is the site at
+-- @firstLine + k@ with its name, when there is one; otherwise the k-th
+-- marker with that name and instruction is the k-th such site by line. A
+-- marker with no site keeps its own name.
+placeholderizeWith :: [Language] -> [HoleSite] -> FilePath -> Int -> Text -> Text
+placeholderizeWith langs sites path firstLine t
   | not (hasMarkers t) = t
-  | otherwise = T.concat (snd (mapAccumL piece M.empty (splitMarkers t)))
+  | otherwise = T.intercalate "\n" (snd (mapAccumL line M.empty (zip [0 ..] (T.splitOn "\n" t))))
   where
-    piece seen = \case
-      Right x -> (seen, x)
-      Left m ->
-        let key = (markerName m, markerInstruction m)
-            k = M.findWithDefault (0 :: Int) key seen
-            matching = sortOn holeLine [s | s <- sites, holeFile s == path, T.takeWhile (/= '[') (holeName s) == markerName m, holeInstruction s == markerInstruction m]
-         in (M.insert key (k + 1) seen, case drop k matching of
-              s : _ -> holePlaceholder s
-              [] -> own m)
+    line seen (k, l) = (\(seen', pieces) -> (seen', T.concat pieces)) (mapAccumL (piece k) seen (splitMarkers l))
+    piece _ seen (Right x) = (seen, x)
+    piece k seen (Left m) =
+      let key = (markerName m, markerInstruction m)
+          n = M.findWithDefault (0 :: Int) key seen
+          named s = holeFile s == path && T.takeWhile (/= '[') (holeName s) == markerName m
+          here = [s | s <- sites, named s, holeLine s == firstLine + k]
+          byOrder = sortOn holeLine [s | s <- sites, named s, holeInstruction s == markerInstruction m]
+       in (M.insert key (n + 1) seen, case here ++ drop n byOrder of
+            s : _ -> holePlaceholder s
+            [] -> own m)
     own m =
       let text = open <> markerName m <> "|" <> markerKind m <> "|" <> markerInstruction m <> close
        in M.findWithDefault text path (placeholderize langs (M.singleton path text))

@@ -932,6 +932,17 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     map describeConflict (planConflicts refused) `shouldBe` ["test/gen: the key must be the id"]
     Right fine <- generate ws noResolve tools [Step gen (M.fromList [("key", "id")])] now PlanOnly
     planConflicts fine `shouldBe` []
+  it "(o2) repeated holes in two inserts show each its own fill (pack-opens)" $ do
+    let two = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"elm\""
+          , "[[edits]]", "insert = \"src/F.elm\"", "at = \"start of file\"", "text = \"x = {= ? v: expr | same =}\""
+          , "[[edits]]", "insert = \"src/F.elm\"", "at = \"end of file\"", "text = \"y = {= ? v: expr | same =}\"" ]
+        filler = Filler $ \_ -> pure (Right (M.fromList [("v[src/F.elm:1]", "1"), ("v[src/F.elm:3]", "2")]))
+        tools = (basicTools parses compiles [holeLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+    (ws, _) <- memoryWorkspace [("src/F.elm", "a = 0\n")]
+    Right plan <- generate ws noResolve tools [Step two M.empty] now PlanOnly
+    M.lookup "src/F.elm" (planWrites plan) `shouldBe` Just "x = 1\na = 0\ny = 2\n"
+    [t | e <- planEdits plan, WillInsert _ t <- [editAction e]] `shouldBe` ["x = 1", "y = 2"]
   it "(m2) with no imports in the file, a fill's imports go after its leading docstring and comments" $ do
     let pyLang = l
           where

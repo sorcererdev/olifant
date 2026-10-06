@@ -78,12 +78,12 @@ sameWithHoles a b = a == b
 -- the plan gave them).
 showHoles :: [Language] -> [HoleSite] -> PlannedEdit -> PlannedEdit
 showHoles langs sites e =
-  let shown = placeholderizeWith langs sites (editPath e)
+  let shown from = placeholderizeWith langs sites (editPath e) from
    in e {editAction = case editAction e of
-            WillCreate t -> WillCreate (shown t)
-            WillOverwrite t -> WillOverwrite (shown t)
-            WillInsert n t -> WillInsert n (shown t)
-            WillReplace l n t -> WillReplace l n (shown t)
+            WillCreate t -> WillCreate (shown 1 t)
+            WillOverwrite t -> WillOverwrite (shown 1 t)
+            WillInsert n t -> WillInsert n (shown n t)
+            WillReplace l n t -> WillReplace l n (shown l t)
             other -> other}
 
 -- | The message for a 'GenerationError', naming the step it happened in.
