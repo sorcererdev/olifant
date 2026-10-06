@@ -9,7 +9,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (SomeException, catch, displayException)
+import Control.Exception (SomeAsyncException, SomeException, catch, displayException, fromException, throwIO)
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -113,7 +113,7 @@ serverDefinition ports = do
       , defaultConfig = ()
       , configSection = "olifant"
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
-      , staticHandlers = \_ -> handlers env
+      , staticHandlers = \_ -> guarded (handlers env)
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
       , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optExecuteCommandCommands = Just ["olifant.doctor"]}
       }
@@ -137,6 +137,23 @@ configure env = \case
                 }
           }
   _ -> pure ()
+
+-- | Every handler, kept from killing the server: lsp runs them on its
+-- message loop without catching, so an IO exception (a file deleted while
+-- read, an unreadable folder) would end the process (review I4). A
+-- request answers an internal error instead; a notification is logged.
+guarded :: Handlers (LspM ()) -> Handlers (LspM ())
+guarded = mapHandlers onRequest onNotification
+  where
+    onRequest h req respond = rescue (h req respond) (\why -> respond (Left (TResponseError (InR ErrorCodes_InternalError) why Nothing)))
+    onNotification h msg = rescue (h msg) (\why -> liftIO (hPutStrLn stderr ("olifant lsp: " <> T.unpack why)))
+    rescue :: LspM () () -> (T.Text -> LspM () ()) -> LspM () ()
+    rescue work recover = do
+      lspEnv <- getLspEnv
+      liftIO $
+        runLspT lspEnv work `catch` \(e :: SomeException) -> case fromException e :: Maybe SomeAsyncException of
+          Just _ -> throwIO e
+          Nothing -> runLspT lspEnv (recover (T.pack (displayException e)))
 
 handlers :: Env -> Handlers (LspM ())
 handlers env =

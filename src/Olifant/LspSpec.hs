@@ -34,7 +34,7 @@ import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (CheckReport (..), Checker (..), noChecker, noSyntax, processChecker, processVerifier)
+import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processChecker, processVerifier)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -140,6 +140,18 @@ fixesSpec = describe "rule findings and their fixes" $ do
         doc <- openDoc "outside/notes.py" "python"
         (,) <$> pullDiagnostics doc <*> getCodeActions doc (Range (Position 0 0) (Position 0 5))
       (ds, length as) `shouldBe` ([], 0)
+  it "(f) answers an error, and keeps serving, when a request throws (review I4)" $
+    withPython [] $ \ports dir -> do
+      -- a tool that throws instead of answering (a file deleted mid-read, an unreadable folder)
+      let throwing = Syntax (\_ _ _ -> ioError (userError "the disk went away"))
+      ((answer, after), code) <- inProcessWith ports {pSyntax = throwing} dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        TResponseMessage _ _ answer <- request SMethod_TextDocumentCodeAction (CodeActionParams Nothing Nothing doc (Range (Position 0 0) (Position 0 0)) (CodeActionContext [] Nothing Nothing))
+        after <- debugState
+        pure (answer, after)
+      either (\e -> T.isInfixOf "the disk went away" (e ^. L.message)) (const True) answer `shouldBe` True
+      lookupKey "projects" after `shouldSatisfy` (/= Nothing)
+      code `shouldBe` Just 0
 
 -- | The ⚡ actions at a cursor (Task 10): refactor code actions resolved to
 -- their plan at the cursor.
