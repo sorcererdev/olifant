@@ -16,6 +16,6 @@ def client() -> TestClient:
 
 
 def test_the_{= resource_ =}_page_shows_it() -> None:
-    response = client().get("/{= resource_ =}", params={{=- for p in params =}"{= p.name =}": "1"{= if not loop.last =}, {= end =}{= end =}})
+    response = client().get("/{= resource_ =}", params={{=- for p in params =}"{= p.name =}": {= if p.type == "str" =}"1"{= elif p.type == "int" =}1{= elif p.type == "float" =}1.5{= elif p.type == "bool" =}"true"{= elif p.type == "date" =}"2026-10-09"{= elif p.type == "time" =}"19:00"{= else =}"{= ? sample: text | a value for {= p.name =} =}"{= end =}{= if not loop.last =}, {= end =}{= end =}})
     assert response.status_code == 200
     assert "{= ? shows: text | what the page shows =}" in response.text

@@ -1,0 +1,11 @@
+now = "2026-10-06T12:00:00Z"
+# A query whose Input is typed (date, int, str): the page stub asks with a
+# sample of each type, so it is red for its own reason, not a 422.
+run_tests = true
+expect_failing = 2
+
+[inputs]
+app = "bistro"
+service = "booking"
+resource = "week"
+query = "week_view"

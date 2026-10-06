@@ -57,7 +57,7 @@ value   = "file name"
 [query.params]
 files = "src/{= app =}/{= service|snake =}/queries/{= query|snake =}.py"
 ast   = { kind = "assignment", has = { field = "type", kind = "type" }, inside = { kind = "expression_statement", inside = { kind = "block", inside = { kind = "class_definition", has = { field = "name", regex = "^{= query|pascal =}Input$" } } } } }
-each  = { name = "^([a-z_][a-z_0-9]*):" }
+each  = { name = "^([a-z_][a-z_0-9]*):", type = "^[a-z_][a-z_0-9]*: ([^=]*[^= ])" }
 
 # the query's ports, faked in the routes test
 [query.deps]

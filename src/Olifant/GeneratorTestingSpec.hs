@@ -323,6 +323,13 @@ spec = do
           (checked, T.isInfixOf "conventions hold (0 findings" (T.pack checkOut)) `shouldBe` (ExitSuccess, True)
           (served, _, serveErr) <- stage "serve"
           (served, serveErr) `shouldSatisfy` ((== ExitSuccess) . fst)
+    it "web-command refuses a command with no Failure union (pack-opens)" $ do
+      tmp <- getTemporaryDirectory
+      let path = "src/bistro/booking/commands/close_table.py"
+          command = T.unlines ["from dataclasses import dataclass", "", "from bistro.shared.result import Ok", "", "", "@dataclass(frozen=True)", "class CloseTableInput:", "    id: str", "", "", "class CloseTable:", "    def handle(self, input: CloseTableInput) -> Ok[None]:", "        return Ok(None)"]
+      Right (ws, tools, resolve, g) <- preparePack (diskWorkspace ".") (astGrepSyntax (tmp </> "olifant-test-cache")) noChecker "packs/python-htmx" "python-htmx" "web-command" [(path, command)]
+      Right plan <- generate ws resolve tools [Step g (M.fromList [("app", "bistro"), ("service", "booking"), ("resource", "bookings"), ("command", "close_table")])] (UTCTime (fromGregorian 2026 10 6) 0) PlanOnly
+      map describeConflict (planConflicts plan) `shouldSatisfy` any ("give close_table a Failure union first" `T.isInfixOf`)
     it "handle-body refuses a command with no __test.py beside it (Review Focus 5)" $ do
       tmp <- getTemporaryDirectory
       given <- TIO.readFile "packs/python-htmx/generators/handle-body/tests/create-booking/given/src/bistro/booking/commands/create_booking.py"
