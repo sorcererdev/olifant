@@ -32,9 +32,12 @@ import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
 import System.Directory (canonicalizePath)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Test.Hspec
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, catch, displayException)
+import System.Timeout (timeout)
 import Data.Time (diffUTCTime, getCurrentTime)
-import Olifant.Process (Outcome (..), newCancel, runBytesCancellable)
+import Olifant.Process (Outcome (..), neverCancel, newCancel, runBytesCancellable)
 
 tinyPack :: Text -> [(FilePath, Text)]
 tinyPack snapshotContent =
@@ -386,6 +389,22 @@ spec = do
         t1 <- getCurrentTime
         r `shouldBe` Right Cancelled
         diffUTCTime t1 t0 `shouldSatisfy` (< 2)
+        pid <- readFile (dir </> "pid")
+        (alive, _, _) <- readCreateProcessWithExitCode (proc "kill" ["-0", takeWhile (/= '\n') pid]) ""
+        alive `shouldNotBe` ExitSuccess
+    it "a command whose thread is interrupted (a client's progress cancel) is killed, and the interruption goes on" $
+      withSystemTempDirectory "olifant-interrupt" $ \dir -> do
+        done <- newEmptyMVar
+        worker <- forkIO $
+          (runBytesCancellable neverCancel Nothing "sh" ["-c", "echo $$ > pid; exec sleep 30"] (Just dir) "" >>= putMVar done . Right)
+            `catch` \(e :: SomeException) -> putMVar done (Left (takeWhile (/= '\n') (displayException e)))
+        let started = doesFileExist (dir </> "pid") >>= \case
+              True -> pure ()
+              False -> threadDelay 20000 >> started
+        started >> threadDelay 100000
+        killThread worker
+        outcome <- timeout 5000000 (takeMVar done)
+        outcome `shouldBe` Just (Left "thread killed")
         pid <- readFile (dir </> "pid")
         (alive, _, _) <- readCreateProcessWithExitCode (proc "kill" ["-0", takeWhile (/= '\n') pid]) ""
         alive `shouldNotBe` ExitSuccess

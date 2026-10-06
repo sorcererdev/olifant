@@ -712,8 +712,10 @@ inBackground env req respond work = do
   let key = requestKey (req ^. L.id)
   liftIO (atomicModifyIORef' (envRunning env) (\m -> (M.insert key trip m, ())))
   void . liftIO . forkIO $
-    ( runLspT lspEnv (work env {envCancel = token}) `catch` \(e :: SomeException) ->
-        runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
+    ( runLspT lspEnv (work env {envCancel = token}) `catch` \(e :: SomeException) -> case fromException e :: Maybe Lsp.ProgressCancelledException of
+        -- the client cancelled it from its progress: stopped, not failed
+        Just _ -> trip >> runLspT lspEnv (respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing)))
+        Nothing -> runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
     )
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
 

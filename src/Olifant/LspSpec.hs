@@ -29,7 +29,7 @@ import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
 import Data.List (sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
-import Language.LSP.Protocol.Message (LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
+import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (..), LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
 import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
@@ -568,6 +568,31 @@ holesSpec = describe "progress, holes and verify" $ do
         sendNotification SMethod_CancelRequest (CancelParams (case rid of IdInt n -> InL n; IdString t -> InR t))
         liftIO (timeout 10000000 (takeMVar stopped))
       seen `shouldBe` Just ()
+
+  it "(f2) answers a resolve cancelled from its progress as cancelled, not as a failure" $ do
+    fills <- canonicalizePath (handCase <> "/fills.toml")
+    entered <- newEmptyMVar
+    let endless = Checker $ \_ _ -> tryPutMVar entered () >> let wait = threadDelay 20000 >> wait in wait
+    withPython [("src/bistro/booking/commands/close_table.py", "def handle() -> None:\n    raise NotImplementedError(\"olifant: body: close the table\")\n")] $ \ports dir -> do
+      (answer, _) <- inProcessWithConfig [("fills", String (T.pack fills))] ports {pChecker = const endless} dir $ do
+        doc <- openDoc "src/bistro/booking/commands/close_table.py" "python"
+        actions <- getCodeActions doc (Range (Position 1 4) (Position 1 4))
+        a <- case [a | InR a <- actions, a ^. L.title == "Fill with the model"] of
+          a : _ -> pure a
+          [] -> fail "no Fill action"
+        rid <- sendRequest SMethod_CodeActionResolve a
+        let created :: FromServerMessage -> Maybe ProgressToken
+            created = \case
+              FromServerMess SMethod_WindowWorkDoneProgressCreate req -> Just (req ^. L.params . L.token)
+              _ -> Nothing
+            awaitCreate = satisfyMaybe created <|> (anyMessage >> awaitCreate)
+        token <- awaitCreate
+        liftIO (timeout 30000000 (takeMVar entered)) >>= maybe (fail "the fill never checked") pure
+        sendNotification SMethod_WindowWorkDoneProgressCancel (WorkDoneProgressCancelParams token)
+        let awaitResolve = responseForId SMethod_CodeActionResolve rid <|> (anyMessage >> awaitResolve)
+        TResponseMessage _ _ r <- awaitResolve
+        pure (either (Just . (^. L.code)) (const Nothing) r)
+      answer `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
 
   it "(d) says the project's model: its elements in the shared vocabulary, and how they relate (spec §1b)" $
     withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
