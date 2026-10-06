@@ -8,6 +8,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Actions (Action (..))
 import Olifant.App
+import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (noChecker)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Language.Check (noVerifier)
@@ -54,7 +55,8 @@ withPythonProject changed act = do
     TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack packs <> "\" }\n")
     let ports = Ports
           { pFiles = diskWorkspace "/", pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pChecker = noChecker
-          , pVerifier = noVerifier, pNow = pure (UTCTime (fromGregorian 2026 10 6) 0), pUserConfigDir = Nothing, pHomeDir = Nothing }
+          , pVerifier = noVerifier, pNow = pure (UTCTime (fromGregorian 2026 10 6) 0), pUserConfigDir = Nothing, pHomeDir = Nothing
+          , pDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) }
     openProject ports dir >>= \case
       Left _ -> fail "the project's catalog did not load"
       Right project -> act ports project

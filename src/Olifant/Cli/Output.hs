@@ -1,5 +1,6 @@
 module Olifant.Cli.Output
   ( encodeJson
+  , doctorJson
   , listJson
   , listHuman
   , showJson
@@ -26,6 +27,7 @@ import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Anchor (Located (..), positionWords)
+import Olifant.Doctor (Check (..), Status (..))
 import Olifant.Catalog (CatalogEntry (..))
 import Olifant.Snippet (Snippet (..), holeSource)
 import Olifant.Generation
@@ -167,6 +169,12 @@ showHuman views subs e =
       ("  " <> maybe (useGenerator u) (idText . entryId) sub <> maybe "" (\f -> " (for each item of " <> f <> ")") (useForEach u))
         : ("    with " <> T.unwords [k <> "=" <> templateSource t | (k, t) <- useWith u])
         : ["    its input --set " <> inputName i <> "=<" <> describeInputType (inputType i) <> ">" | Just s' <- [sub], i <- genInputs (entryDefinition s')]
+
+-- | `doctor`'s checks, as editors read them.
+doctorJson :: [Check] -> Value
+doctorJson checks = object ["checks" .= [object ["name" .= checkName c, "status" .= status (checkStatus c), "detail" .= checkDetail c, "fix" .= checkFix c] | c <- checks]]
+  where
+    status = \case Ok -> "ok" :: Text; Warn -> "warn"; Bad -> "error"
 
 planJson :: Bool -> Plan -> Value
 planJson applied plan =

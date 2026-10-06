@@ -9,6 +9,11 @@ module Olifant.App
   , openProject
   , openProjectWith
   , generatorsOf
+  , subsOf
+  , listGenerators
+  , ShowFailure (..)
+  , showGenerator
+  , doctorChecks
   , projectTools
   , projectQueries
   , queriesAt
@@ -46,7 +51,7 @@ import Olifant.Catalog
 import Olifant.Cursor (afterIndent, afterRule, atCursor, atCursorIndented, cursorIndent, isSnippet)
 import Olifant.Fill (ModelFiller (..))
 import Olifant.Generation
-import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
+import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Model (ModelConfig (..), backendModel, curlFiller)
@@ -58,7 +63,8 @@ import Olifant.Template qualified as Tm
 import Olifant.Template.Syntax (Segment (..), Template (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Workspace (PathState (..), Workspace (..), within)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeBaseName, takeDirectory, (</>))
+import Olifant.Doctor (Check, DoctorInput (..), DoctorPorts, doctor)
 
 -- | What the engine needs from the world: the file system (absolute
 -- paths), the syntax and compiler adapters, the clock, and where user
@@ -71,6 +77,8 @@ data Ports = Ports
   , pNow :: IO UTCTime
   , pUserConfigDir :: Maybe FilePath
   , pHomeDir :: Maybe FilePath
+  , -- | what `doctor` looks at: installed tools, the model backends
+    pDoctor :: DoctorPorts IO
   }
 
 -- | An open project: its root (absolute), its catalog, and the workspace
@@ -114,6 +122,63 @@ openProjectWith cache ports root =
 
 generatorsOf :: Project -> [(Text, GeneratorDef)]
 generatorsOf project = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries (prCatalog project)]
+
+-- | A generator's [[uses]] steps with the entries they resolve to.
+subsOf :: Catalog -> CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
+subsOf cat e = [(u, either (const Nothing) Just (resolveEntry cat (packOfEntry e) (useGenerator u))) | u <- genUses (entryDefinition e)]
+
+-- | The generators (`list`): the valid ones (with their `choices_from`
+-- resolved and each one's choices, when @detail@), and the broken ones
+-- with why — sources and fixed targets checked, so a broken generator
+-- shows before anyone runs it.
+listGenerators :: Ports -> Project -> Bool -> IO ([CatalogEntry], [(GeneratorId, FilePath, Text)], CatalogEntry -> M.Map Text ChoiceView)
+listGenerators ports project detail = do
+  let cat = prCatalog project
+  checked <- traverse (\e -> (e,) <$> checkEntry (pFiles ports) (pSyntax ports) cat e) (catalogEntries cat)
+  let broken =
+        catalogBroken cat
+          ++ [(entryId e, entryDir e </> "generator.toml", why) | (e, Just why) <- checked]
+          ++ [(GeneratorId ("language " <> T.pack (takeBaseName path)), path, why) | (path, why) <- catalogBrokenLanguages cat]
+      ok = [e | (e, Nothing) <- checked]
+  entries <-
+    if detail
+      then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor ports project M.empty (entryDefinition e)) ok
+      else pure ok
+  viewList <- if detail then traverse (\e -> (entryId e,) . either (const M.empty) M.fromList <$> choiceViewsFor ports project M.empty (entryDefinition e)) ok else pure []
+  let views e = M.findWithDefault M.empty (entryId e) (M.fromList viewList)
+  pure (entries, broken, views)
+
+-- | Why `show` could not describe a generator.
+data ShowFailure = ShowCatalog CatalogError | ShowInvalid Text
+
+-- | One generator with its choices, given the inputs set so far (`show`).
+showGenerator :: Ports -> Project -> Text -> M.Map Text Text -> IO (Either ShowFailure (CatalogEntry, [(Text, ChoiceView)]))
+showGenerator ports project ref sets = case findEntry (prCatalog project) ref of
+  Left err -> pure (Left (ShowCatalog err))
+  Right e0 ->
+    checkEntry (pFiles ports) (pSyntax ports) (prCatalog project) e0 >>= \case
+      Just why -> pure (Left (ShowInvalid (generatorIdText (entryId e0) <> ": " <> why)))
+      Nothing -> do
+        resolved <- resolveChoicesFor ports project sets (entryDefinition e0)
+        views <- choiceViewsFor ports project sets (entryDefinition e0)
+        pure $ case (resolved, views) of
+          (Left why, _) -> Left (ShowInvalid why)
+          (_, Left why) -> Left (ShowInvalid why)
+          (Right d, Right vs) -> Right (e0 {entryDefinition = d}, vs)
+
+-- | What generators need here (`doctor`): tools, packs, the model.
+doctorChecks :: Ports -> Project -> IO [Check]
+doctorChecks ports project =
+  doctor (pDoctor ports) $
+    DoctorInput
+      (catalogProject cat)
+      (catalogPacks cat)
+      (catalogLanguages cat)
+      [(T.pack p, why) | (p, why) <- catalogBrokenLanguages cat]
+      [(generatorIdText g, why) | (g, _, why) <- catalogBroken cat]
+      (catalogModel cat)
+  where
+    cat = prCatalog project
 
 -- | The tools a command in this project uses: the ports' syntax, checker
 -- and verifier, the catalog's languages and regions, and the project's

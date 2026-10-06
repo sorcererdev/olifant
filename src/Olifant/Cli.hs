@@ -7,7 +7,7 @@ import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
-import Olifant.Doctor (Check (..), DoctorInput (..), DoctorPorts (..), Status (..), doctor)
+import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
 import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), matchPathSlots)
 import Control.Monad (forM_, unless, when)
 import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
@@ -36,7 +36,7 @@ import Olifant.Cli.Output
 import Olifant.Generator.Schema (generatorSchema)
 import Olifant.Generation
 import Olifant.Cursor (isSnippet)
-import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..), GeneratorId (..), GeneratorWith (..), UseStep (..), generatorIdText)
+import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..), GeneratorId (..), GeneratorWith (..), generatorIdText)
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
 import System.FilePath (makeRelative, normalise, splitDirectories, takeBaseName, takeFileName, (</>))
@@ -222,21 +222,7 @@ runCommand rt cwd fmt cat = \case
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
   LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   ListCmd detail -> do
-    -- Sources and fixed targets are checked here, so a broken generator shows
-    -- as INVALID before anyone runs it.
-    checked <- traverse (\e -> (e,) <$> checkEntry (rtRoot rt) (rtSyntax rt) cat e) (catalogEntries cat)
-    let broken =
-          catalogBroken cat
-            ++ [(entryId e, entryDir e </> "generator.toml", why) | (e, Just why) <- checked]
-            ++ [(GeneratorId ("language " <> T.pack (takeBaseName path)), path, why) | (path, why) <- catalogBrokenLanguages cat]
-        ok = [e | (e, Nothing) <- checked]
-    -- --detail prints inputs, so choices_from must be live, as in `show`.
-    entries <-
-      if detail
-        then traverse (\e -> either (const e) (\d -> e {entryDefinition = d}) <$> resolveChoicesFor (portsOf rt) (projectOf rt cat) M.empty (entryDefinition e)) ok
-        else pure ok
-    viewList <- if detail then traverse (\e -> (entryId e,) . either (const M.empty) M.fromList <$> choiceViewsFor (portsOf rt) (projectOf rt cat) M.empty (entryDefinition e)) ok else pure []
-    let views e = M.findWithDefault M.empty (entryId e) (M.fromList viewList)
+    (entries, broken, views) <- listGenerators (portsOf rt) (projectOf rt cat) detail
     emit rt fmt (listJson detail (subsOf cat) views entries broken) (listHuman detail (subsOf cat) views entries broken)
     pure ExitSuccess
   ActionsCmd file at fromStdin -> do
@@ -378,19 +364,9 @@ runCommand rt cwd fmt cat = \case
         emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ reportJson fs)) human
         pure (if failed then ExitFailure 1 else ExitSuccess)
   DoctorCmd -> do
-    checks <-
-      doctor (rtDoctor rt) $
-        DoctorInput
-          (catalogProject cat)
-          (catalogPacks cat)
-          (catalogLanguages cat)
-          [(T.pack p, why) | (p, why) <- catalogBrokenLanguages cat]
-          [(generatorIdText g, why) | (g, _, why) <- catalogBroken cat]
-          (catalogModel cat)
-    let status = \case Ok -> "ok" :: Text; Warn -> "warn"; Bad -> "error"
-        mark = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
-        json = object ["checks" .= [object ["name" .= checkName c, "status" .= status (checkStatus c), "detail" .= checkDetail c, "fix" .= checkFix c] | c <- checks]]
-    emit rt fmt json (T.unlines (concat [[mark (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c] ++ ["  fix: " <> f | Just f <- [checkFix c]] | c <- checks]))
+    checks <- doctorChecks (portsOf rt) (projectOf rt cat)
+    let mark = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
+    emit rt fmt (doctorJson checks) (T.unlines (concat [[mark (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c] ++ ["  fix: " <> f | Just f <- [checkFix c]] | c <- checks]))
     pure (if any ((== Bad) . checkStatus) checks then ExitFailure 1 else ExitSuccess)
   SchemaCmd -> do
     emit rt fmt generatorSchema (encodeJson generatorSchema <> "\n")
@@ -412,19 +388,11 @@ runCommand rt cwd fmt cat = \case
         pure ExitSuccess
     where
       nextSteps lang = "fill in description and [[edits]]; `olifant anchors " <> lang <> "` lists placement phrases, `olifant where FILE \"PHRASE\"` tests one, `olifant gen " <> name <> " --set name=example --plan` previews"
-  ShowCmd ref setList -> case findEntry cat ref of
-    Left err -> catalogFailure rt fmt err
-    Right e0 ->
-      checkEntry (rtRoot rt) (rtSyntax rt) cat e0 >>= \case
-       Just why -> failWith rt fmt 1 "generator_invalid" (generatorIdText (entryId e0) <> ": " <> why) Nothing []
-       Nothing -> do
-        let sets = M.fromList setList
-        resolved <- resolveChoicesFor (portsOf rt) (projectOf rt cat) sets (entryDefinition e0)
-        views <- choiceViewsFor (portsOf rt) (projectOf rt cat) sets (entryDefinition e0)
-        case (resolved, views) of
-          (Left why, _) -> failWith rt fmt 1 "generator_invalid" why Nothing []
-          (_, Left why) -> failWith rt fmt 1 "generator_invalid" why Nothing []
-          (Right d, Right vs) -> let e = e0 {entryDefinition = d} in emit rt fmt (showJson (M.fromList vs) (subsOf cat e) e) (showHuman (M.fromList vs) (subsOf cat e) e) >> pure ExitSuccess
+  ShowCmd ref setList ->
+    showGenerator (portsOf rt) (projectOf rt cat) ref (M.fromList setList) >>= \case
+      Left (ShowCatalog err) -> catalogFailure rt fmt err
+      Left (ShowInvalid why) -> failWith rt fmt 1 "generator_invalid" why Nothing []
+      Right (e, vs) -> emit rt fmt (showJson (M.fromList vs) (subsOf cat e) e) (showHuman (M.fromList vs) (subsOf cat e) e) >> pure ExitSuccess
   AnchorsCmd name -> case find ((== name) . langName) (catalogLanguages cat) of
     Nothing ->
       failWith rt fmt 3 "language_not_found" ("no language adapter named `" <> name <> "`" <> T.concat ["; " <> T.pack path <> " failed to load: " <> why | (path, why) <- catalogBrokenLanguages cat, takeBaseName path == T.unpack name]) (Just "packs define languages in languages/<name>.toml") ["available" .= map langName (catalogLanguages cat)]
@@ -553,9 +521,6 @@ usageIn rt fmt msg = do
 
 -- | A generator's [[uses]] steps with the entries they resolve to, so `show`
 -- can describe a composite completely in one call.
-subsOf :: Catalog -> CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
-subsOf cat e = [(u, either (const Nothing) Just (resolveEntry cat (packOfEntry e) (useGenerator u))) | u <- genUses (entryDefinition e)]
-
 emit :: Runtime -> Format -> Value -> Text -> IO ()
 emit rt fmt json human = rtOut rt $ case fmt of
   Json -> encodeJson json <> "\n"
@@ -677,7 +642,7 @@ modelFor cat g
 
 -- | The engine's ports, as the CLI runs them.
 portsOf :: Runtime -> Ports
-portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt)
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt)
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project

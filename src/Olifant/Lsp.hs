@@ -35,7 +35,9 @@ import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
-import Olifant.Cli.Output (planJson)
+import Olifant.Cli.Output (doctorJson, listJson, planJson, showJson)
+import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, showGenerator, subsOf)
+import Olifant.Catalog (describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
@@ -48,7 +50,8 @@ import System.FilePath (splitDirectories, joinPath)
 -- the suggestions it has offered (by id, for `olifant/plan`), and whether
 -- the test-only `olifant/debugState` answers.
 data Env = Env
-  { envState :: MVar ServerState
+  { envPorts :: Ports
+  , envState :: MVar ServerState
   , envJobs :: Jobs
   , envOffered :: IORef (Int, M.Map Int Offered)
   , envDebug :: IORef Bool
@@ -97,7 +100,7 @@ advertise out
 
 serverDefinition :: Ports -> IO (ServerDefinition ())
 serverDefinition ports = do
-  env <- Env <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False
+  env <- Env ports <$> (newServerState ports >>= newMVar) <*> newJobs <*> newIORef (0, M.empty) <*> newIORef False
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -107,11 +110,11 @@ serverDefinition ports = do
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
       , staticHandlers = \_ -> handlers env
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
-      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing)}
+      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optExecuteCommandCommands = Just ["olifant.doctor"]}
       }
   where
     -- open/close and incremental changes; saves are noticed (regions)
-    sync = TextDocumentSyncOptions (Just True) (Just TextDocumentSyncKind_Incremental) (Just False) (Just False) (Just (InR (SaveOptions (Just False))))
+    sync = TextDocumentSyncOptions (Just True) (Just TextDocumentSyncKind_Incremental) (Just False) (Just True) (Just (InR (SaveOptions (Just False))))
 
 -- | `initializationOptions`: `debounce_ms`, `model`, and `debug` (tests).
 configure :: Env -> Maybe Value -> IO ()
@@ -152,7 +155,50 @@ handlers env =
                 liftIO (suggestLater env lspEnv path version line)
     , notificationHandler SMethod_TextDocumentDidClose $ \msg ->
         atPath (msg ^. L.params . L.textDocument . L.uri) (update env . closeDoc)
-    , notificationHandler SMethod_TextDocumentDidSave (\_ -> pure ())
+    , -- regions follow a save: the other files' through applyEdit (the saved
+      -- file's came with willSaveWaitUntil)
+      notificationHandler SMethod_TextDocumentDidSave $ \msg ->
+        atPath (msg ^. L.params . L.textDocument . L.uri) $ \path -> do
+          edits <- liftIO (withSnapshot env (regionEdits path))
+          case filter ((/= path) . fePath) edits of
+            [] -> pure ()
+            others -> void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: regions") (workspaceEdit others)) (\_ -> pure ()))
+    , requestHandler SMethod_TextDocumentWillSaveWaitUntil $ \req respond -> do
+        edits <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure []
+          Just path -> filter ((== path) . fePath) <$> liftIO (withSnapshot env (regionEdits path))
+        respond (Right (InL [TextEdit (toRange (feRange e)) (feText e) | e <- edits]))
+    , -- the generator picker: every generator with its inputs, and one
+      -- generator's choices given what is set so far
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) $ \req respond ->
+        liftIO (projectOfRequest env (req ^. L.params)) >>= \case
+          Nothing -> respond (Right (listJson True (const []) (const M.empty) [] []))
+          Just project -> do
+            (entries, broken, views) <- liftIO (listGenerators (envPorts env) project True)
+            respond (Right (listJson True (subsOf (prCatalog project)) views entries broken))
+    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/choices")) $ \req respond -> do
+        let params = req ^. L.params
+            field k = case params of Object o -> KM.lookup k o; _ -> Nothing
+            sets = case field "sets" of Just (Object m) -> M.fromList [(Key.toText k, v) | (k, String v) <- KM.toList m]; _ -> M.empty
+        liftIO (projectOfRequest env params) >>= \case
+          Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "the document is in no Olifant project" Nothing))
+          Just project -> case field "generator" of
+            Just (String ref) ->
+              liftIO (showGenerator (envPorts env) project ref sets) >>= \case
+                Left (ShowCatalog err) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) (describeCatalogError err) Nothing))
+                Left (ShowInvalid why) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+                Right (e, vs) -> respond (Right (showJson (M.fromList vs) (subsOf (prCatalog project) e) e))
+            _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/choices needs a generator" Nothing))
+    , requestHandler SMethod_WorkspaceExecuteCommand $ \req respond -> case req ^. L.params . L.command of
+        "olifant.doctor" -> do
+          let uri = case req ^. L.params . L.arguments of
+                Just (String u : _) -> Just u
+                _ -> Nothing
+          found <- liftIO (maybe (pure Nothing) (\u -> projectOfRequest env (object ["textDocument" .= object ["uri" .= u]])) uri)
+          case found of
+            Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "olifant.doctor needs a document of an Olifant project" Nothing))
+            Just project -> liftIO (doctorChecks (envPorts env) project) >>= respond . Right . InL . doctorJson
+        other -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("no command " <> other) Nothing))
     , notificationHandler SMethod_WorkspaceDidChangeWorkspaceFolders (\_ -> pure ())
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
     , -- a project's `.olifant/` changed: reload that project
@@ -291,6 +337,19 @@ debugState env = modifyMVar (envState env) $ \s0 -> do
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
   pure (s, object ["documents" .= rows])
+
+-- | The project of the document a request names (`textDocument.uri`).
+projectOfRequest :: Env -> Value -> IO (Maybe Project)
+projectOfRequest env params = case params of
+  Object o
+    | Just (Object doc) <- KM.lookup "textDocument" o
+    , Just (String uri) <- KM.lookup "uri" doc
+    , Just path <- uriToFilePath (Uri uri) ->
+        fmap snd <$> withSnapshot env (projectFor path)
+  _ -> pure Nothing
+
+toRange :: ((Int, Int), (Int, Int)) -> Range
+toRange ((l1, c1), (l2, c2)) = Range (Position (fromIntegral l1) (fromIntegral c1)) (Position (fromIntegral l2) (fromIntegral c2))
 
 -- | The line (1-based) an edit ends on, in the text after it: where to
 -- look for what follows. None for a whole-document change.

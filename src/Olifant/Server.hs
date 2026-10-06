@@ -27,6 +27,7 @@ module Olifant.Server
   , actionPlan
   , actionPlanWith
   , describeProgress
+  , regionEdits
   , Hole (..)
   , holesFor
   , holeAt
@@ -44,6 +45,7 @@ module Olifant.Server
 
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress)
 import Olifant.Server.Holes (Hole (..), fillHoleEdits, holeAt, holesFor)
+import Olifant.Server.Regions (regionEdits)
 import Olifant.Server.Suggest (Suggestion (..), suggestionFor)
 import Olifant.Server.Completion (completionsFor, ghostFor)
 import Olifant.Server.Edits (FileEdit (..), bytePosition, editorPosition, editsOfPlan, smallestChange)

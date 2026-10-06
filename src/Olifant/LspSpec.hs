@@ -28,7 +28,8 @@ import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
 import Data.List (sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
-import Language.LSP.Protocol.Message (SMethod (..), TCustomMessage (..), TNotificationMessage (..), TResponseMessage (..))
+import Language.LSP.Protocol.Message (SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
+import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
@@ -38,6 +39,7 @@ import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, desc
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Lsp
+import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (diskWorkspace)
 import System.Environment (lookupEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
@@ -67,6 +69,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   completionSpec
   followupsSpec
   holesSpec
+  pickerSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -380,6 +383,59 @@ holesSpec = describe "progress, holes and verify" $ do
           [] -> fail ("no Fill action among " <> show [a ^. L.title | InR a <- actions])
       T.concat (editTexts resolved) `shouldSatisfy` T.isInfixOf "self.bookings.save(booking)"
 
+-- | Regions kept on save, the generator picker, commands (Task 15).
+pickerSpec :: Spec
+pickerSpec = describe "regions on save, the generator picker, commands" $ do
+  let encoded = TE.decodeUtf8 . BSL.toStrict . Aeson.encode
+  it "(a) keeps regions on save: a new web resource joins resources.py's list" $
+    withPython [] $ \ports dir -> do
+      let routes = "src/bistro/web/floor/routes.py"
+      createDirectoryIfMissing True (dir </> "src/bistro/web/floor")
+      TIO.writeFile (dir </> routes) "from fastapi import APIRouter\n"
+      (edit, _) <- inProcessWith ports dir $ do
+        doc <- openDoc routes "python"
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams doc Nothing)
+        TRequestMessage _ _ _ params <- message SMethod_WorkspaceApplyEdit
+        pure (params ^. L.edit)
+      let texts = [either (^. L.newText) (^. L.newText) (toEither t) | Just cs <- [edit ^. L.documentChanges], InL te <- cs, t <- te ^. L.edits]
+          toEither = \case InL x -> Left x; InR y -> Right y
+      T.concat texts `shouldSatisfy` T.isInfixOf "\"floor\","
+  it "(a) keeps the saved file's own regions as it saves (willSaveWaitUntil)" $
+    withPython [] $ \ports dir -> do
+      createDirectoryIfMissing True (dir </> "src/bistro/web/floor")
+      TIO.writeFile (dir </> "src/bistro/web/floor/routes.py") "from fastapi import APIRouter\n"
+      (edits, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/web/resources.py" "python"
+        request SMethod_TextDocumentWillSaveWaitUntil (WillSaveTextDocumentParams doc TextDocumentSaveReason_Manual) >>= \case
+          TResponseMessage _ _ (Right (InL es)) -> pure es
+          other -> fail (show other)
+      T.concat (map (^. L.newText) edits) `shouldSatisfy` T.isInfixOf "\"floor\","
+  it "(b) lists the generators, each with its inputs (the picker)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/main.py" "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      encoded v `shouldSatisfy` T.isInfixOf "\"python-htmx/command\""
+      encoded v `shouldSatisfy` T.isInfixOf "\"inputs\""
+  it "(c) gives a generator's choices, given what is set so far" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/main.py" "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/choices")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "generator" .= ("python-htmx/command" :: Text), "sets" .= object ["app" .= ("bistro" :: Text)]]) >>= \case
+          TResponseMessage _ _ (Right r) -> pure r
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      encoded v `shouldSatisfy` T.isInfixOf "\"booking\""
+  it "(d) runs the doctor: what generators need here, and how to fix it" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/main.py" "python"
+        request SMethod_WorkspaceExecuteCommand (ExecuteCommandParams Nothing "olifant.doctor" (Just [toJSON (doc ^. L.uri)])) >>= \case
+          TResponseMessage _ _ (Right (InL r)) -> pure r
+          other -> fail (show other)
+      (lookupKey "checks" v) `shouldSatisfy` maybe False (\case Array cs -> not (null cs); _ -> False)
+
 -- | The versions an action's edit is for, in one document.
 editVersionsOf :: Uri -> CodeAction -> [Int32 |? Null]
 editVersionsOf uri a = [te ^. L.textDocument . L.version | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, te ^. L.textDocument . L.uri == uri]
@@ -457,7 +513,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax noChecker noVerifier (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing
+plainPorts = Ports (diskWorkspace "/") noSyntax noChecker noVerifier (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False))
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []
