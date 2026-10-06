@@ -678,8 +678,8 @@ rewrite = [["__test\\.py$", ".py"]]
 - **Kinds**: `service`, `command`, `query`, `port`, `adapter`, `resource`, `model`, `test`,
   `page`, or the pack's own, namespaced (`elm:route`, `haskell:unit`). Any other word is a
   load error.
-- **Ids** are the project's name, a colon, and the rendered id: `bistro:booking/commands/create_booking`.
-  They do not depend on the order files are listed in.
+- **Ids** are the project's name (its root folder's name), a colon, and the rendered id:
+  `bistro:booking/commands/create_booking`. They do not depend on the order files are listed in.
 - **`[[relations]]`**: a `kind` (`uses`, `implements`, `calls`, `covers`), from each element
   of a kind (`from = "adapter"`, the templates read its record), or from each record of a
   `query` (`from` renders the element's id). The target is one of `to` (an id), `to_path` (an
@@ -690,6 +690,11 @@ rewrite = [["__test\\.py$", ".py"]]
   without the extension).
 
 `python-htmx`, `rust-htmx`, `elm` and `olifant-dev` have one.
+
+To see a project's model, ask the language server for it: `olifant/model` with a document of the
+project answers its `elements` (id, kind, name, path, line), its `relations` (from, kind, to)
+and its `problems` (a query that failed, and why), [chapter 16](16-the-language-server.md#the-project-model).
+Nothing draws it yet: it is the seam a view of the whole system builds on.
 
 ## The python-htmx pack
 
