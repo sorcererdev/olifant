@@ -1,0 +1,11 @@
+# exceptions (from the spike, 2026-10-06)
+path   = "src/bistro/errors.py"
+expect = "nothing"
+band   = "nothing"
+text = '''
+class BistroError(Exception):
+    pass
+
+class NotFound(BistroError):
+    pass
+'''

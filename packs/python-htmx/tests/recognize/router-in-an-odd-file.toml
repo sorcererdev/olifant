@@ -1,0 +1,13 @@
+# router in an odd file (from the spike, 2026-10-06)
+path   = "src/bistro/web/tables.py"
+expect = "web-resource"
+band   = "hint"
+text = '''
+from fastapi import APIRouter, Request
+
+router = APIRouter()
+
+@router.get("/tables")
+def list_tables(request: Request):
+    return templates.TemplateResponse(request, "page.html", {"tables": []})
+'''

@@ -6,7 +6,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language (Language (..), parseLanguage)
 import Olifant.Recognize
-import Control.Monad (forM)
+import Control.Monad (forM, forM_, (>=>))
 import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..), parseGenerator)
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), parseTemplate, render)
@@ -17,6 +17,9 @@ import Olifant.Catalog (Catalog (..), loadGenerator, openPackCatalog)
 import Olifant.Generator (Generator)
 import Olifant.Language (noSyntax)
 import Olifant.Workspace (diskWorkspace)
+import Olifant.Toml qualified as Toml
+import Data.List (sort)
+import Text.Printf (printf)
 import Test.Hspec
 import Test.Hspec.Hedgehog (forAll, hedgehog, (===))
 import Data.Text (Text)
@@ -30,6 +33,7 @@ spec = describe "Olifant.Recognize" $ do
   pathsSpec
   indexSpec
   inputsSpec
+  recognizeSpec
   describe "shapes" $ do
     let kw = Keywords (S.fromList ["class", "def", "self", "return"]) "#"
     it "(a) keeps keywords and punctuation, and names become their case shape" $
@@ -82,8 +86,8 @@ weightsSpec = describe "weights" $ do
       H.assert (v >= 0 && v <= 1)
   it "(d) a change of generic patterns scores lower weighted than unweighted against a large reference (the spike's finding)" $ do
     let generic = [("g" <> T.pack (show i), "h", "k") | i <- [1 .. 6 :: Int]]
-        corpus = [S.fromList (generic <> [("u" <> T.pack (show i), "v", "w")]) | i <- [1 .. 10 :: Int]] <> [S.fromList [a, b]]
-        w' = (weightsOf corpus) {wBoilerplate = S.empty}
+        files' = [S.fromList (generic <> [("u" <> T.pack (show i), "v", "w")]) | i <- [1 .. 10 :: Int]] <> [S.fromList [a, b]]
+        w' = (weightsOf files') {wBoilerplate = S.empty}
         change = S.fromList (take 3 generic <> [a, c])
         big = S.fromList (generic <> [("q", "q", "q")])
         flat = fromIntegral (S.size (S.intersection change big)) / fromIntegral (S.size change) :: Double
@@ -161,8 +165,10 @@ indexSpec = describe "the index" $ do
     [cvGenerator c | c <- ixConventions ix, cvGenerator c == GeneratorId "python-htmx/project"] `shouldBe` []
   it "(b) renders a template for its shape: sample names, holes, the first branch" $ do
     (gens, _) <- pythonProject
-    let [command] = [c | g <- gens, genId g == GeneratorId "python-htmx/command", Create {editSource = c} <- genEdits g, "def handle" `T.isInfixOf` templateSource c]
-        sample = sampleText command
+    command <- case [c | g <- gens, genId g == GeneratorId "python-htmx/command", Create {editSource = c} <- genEdits g, "def handle" `T.isInfixOf` templateSource c] of
+      c : _ -> pure c
+      [] -> fail "no command template"
+    let sample = sampleText command
     sample `shouldSatisfy` T.isInfixOf "class SampleThing:"
     sample `shouldSatisfy` T.isInfixOf "def handle(self, input: SampleThingInput)"
   it "(c) finds the project's own instances of each convention (its siblings)" $ do
@@ -175,7 +181,7 @@ indexSpec = describe "the index" $ do
   it "(d) weighs patterns over the files it is given (one language's)" $ do
     (gens, files) <- pythonProject
     let ix = buildIndex (pythonKeywords gens) gens files
-    wDefault (ixWeights ix) `shouldBe` log (1 + fromIntegral (length files))
+    wDefault (ixWeights ix) `shouldBe` log (2 + fromIntegral (length files))
 
 -- | python-htmx's generators (loaded) and its fixture app's .py files.
 pythonProject :: IO ([Generator], [(FilePath, Text)])
@@ -220,3 +226,69 @@ inputsSpec = describe "inputs" $ do
     (g, _) <- setup
     validInputs g [("command", "close_table"), ("nonsense", "x"), ("command2", "y")] `shouldBe` [("command", "close_table")]
     validInputs g [("command", "Not A Name!")] `shouldBe` []
+
+-- | Scores, place-aware bands, the choice; the packs' corpora (Task 6).
+recognizeSpec :: Spec
+recognizeSpec = describe "recognition" $ do
+  (gens, files) <- runIO pythonProject
+  let ix = buildIndex (pythonKeywords gens) gens files
+      recognise path text = recognizeIn ix gens (Change path text)
+  it "(c) needs three lines, and more than boilerplate" $ do
+    recognise "src/bistro/booking/commands/x.py" "class X:\n    pass\n" `shouldBe` Nothing
+    recognise "src/bistro/booking/commands/x.py" "from dataclasses import dataclass\n\nfrom bistro.shared.result import Ok\n" `shouldBe` Nothing
+  it "(d) says why: the place, and what it is shaped like" $ do
+    r <- maybe (fail "not recognised") pure $ recognise "src/bistro/booking/commands/close_table.py" "class CloseTable:\n    def __init__(self, repo):\n        self.repo = repo\n\n    def run(self, table_id):\n        self.repo.close(table_id)\n"
+    rcReasons r `shouldSatisfy` any ("beside" `T.isInfixOf`)
+    rcReasons r `shouldSatisfy` any ("shaped like" `T.isInfixOf`)
+  it "(e) works in a project with no siblings yet: the template and the place alone (Review Focus 2)" $ do
+    let bare = buildIndex (pythonKeywords gens) gens []
+        r = recognizeIn bare gens (Change "src/bistro/booking/commands/close_table.py" "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass CloseTableInput:\n    table_id: str\n\nclass CloseTable:\n    def handle(self, input: CloseTableInput):\n        raise NotImplementedError\n")
+    fmap (\x -> (rcGenerator x, rcBand x)) r `shouldBe` Just (GeneratorId "python-htmx/command", Offer)
+  cases <- runIO (corpus "python-htmx")
+  describe "the python-htmx corpus" $ do
+    forM_ cases $ \c -> it (caseName c) $ do
+      let r = recognise (casePath c) (caseText c)
+          band = maybe "nothing" (bandText . rcBand) r
+          generator = fmap (T.drop (T.length "python-htmx/") . generatorIdText . rcGenerator) r
+      (caseName c, band) `shouldBe` (caseName c, caseBand c)
+      case r of
+        Just x -> do
+          generator `shouldSatisfy` maybe False (\gen -> maybe (gen `elem` T.splitOn "|" (caseExpect c)) (== gen) (caseAs c))
+          fmap (T.drop (T.length "python-htmx/") . generatorIdText) (rcOr x) `shouldBe` caseOr c
+          [(k, v) | (k, v) <- caseInputs c, lookup k (rcInputs x) /= Just v] `shouldBe` []
+        Nothing -> pure ()
+    it "(b) never offers less precisely, nor finds less, than it does today (offer precision ≥ 0.9, recall with hints ≥ 0.88)" $ do
+      let judged = [(c, recognise (casePath c) (caseText c)) | c <- cases]
+          right c x = any (`elem` T.splitOn "|" (caseExpect c)) (map (T.drop (T.length "python-htmx/") . generatorIdText) (rcGenerator x : maybe [] pure (rcOr x)))
+          offers = [(c, x) | (c, Just x) <- judged, rcBand x == Offer]
+          precision = ratio (length [() | (c, x) <- offers, right c x]) (length offers)
+          positives = [(c, r) | (c, r) <- judged, caseExpect c /= "nothing"]
+          recall = ratio (length [() | (c, Just x) <- positives, right c x]) (length positives)
+      printf "      corpus: %d cases, offer precision %.2f, recall %.2f\n" (length cases) precision recall
+      (precision >= 0.9, recall >= 0.88) `shouldBe` (True, True)
+  where
+    ratio :: Int -> Int -> Double
+    ratio a b = if b == 0 then 1 else fromIntegral a / fromIntegral b
+    bandText = \case
+      Offer -> "offer"
+      Hint -> "hint"
+
+data Case = Case {caseName :: String, casePath :: FilePath, caseExpect :: Text, caseBand :: Text, caseAs :: Maybe Text, caseOr :: Maybe Text, caseInputs :: [(Text, Text)], caseText :: Text}
+
+-- | A pack's recognition corpus (tests/recognize/*.toml).
+corpus :: Text -> IO [Case]
+corpus pack = do
+  let dir = "packs/" <> T.unpack pack <> "/tests/recognize"
+  names <- sort . filter ((== ".toml") . takeExtension) <$> listDirectory dir
+  forM names $ \n -> do
+    src <- TIO.readFile (dir </> n)
+    either (\e -> fail (n <> ": " <> T.unpack e)) pure $ do
+      t <- Toml.parseToml src
+      Case (takeWhile (/= '.') n)
+        <$> (T.unpack <$> Toml.required "path" Toml.text t)
+        <*> Toml.required "expect" Toml.text t
+        <*> Toml.required "band" Toml.text t
+        <*> Toml.optional "as" Toml.text t
+        <*> Toml.optional "or" Toml.text t
+        <*> (maybe [] M.toList <$> Toml.optional "inputs" (Toml.table >=> traverse Toml.text) t)
+        <*> Toml.required "text" Toml.text t

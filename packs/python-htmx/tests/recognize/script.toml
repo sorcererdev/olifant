@@ -1,0 +1,12 @@
+# script (from the spike, 2026-10-06)
+path   = "scripts/seed.py"
+expect = "nothing"
+band   = "nothing"
+text = '''
+import sqlite3
+
+conn = sqlite3.connect("bistro.db")
+for i in range(10):
+    conn.execute("insert into tables values (?)", (i,))
+conn.commit()
+'''

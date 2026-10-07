@@ -1,0 +1,15 @@
+# service-like class in shared (from the spike, 2026-10-06)
+path   = "src/bistro/shared/mailer.py"
+expect = "nothing"
+band   = "nothing"
+text = '''
+import smtplib
+
+class Mailer:
+    def __init__(self, host):
+        self.host = host
+
+    def send(self, to, body):
+        with smtplib.SMTP(self.host) as s:
+            s.sendmail("bistro@example.com", to, body)
+'''

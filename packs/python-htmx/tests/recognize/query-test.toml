@@ -1,0 +1,12 @@
+# a hard case (plan Task 6)
+path   = "src/bistro/booking/queries/list_tables__test.py"
+expect = "query"
+band   = "offer"
+text = '''
+from bistro.booking.queries.list_tables import ListTables
+
+def test_lists_open_tables():
+    repo = FakeRepo()
+    tables = ListTables(repo).run("monday")
+    assert tables == []
+'''

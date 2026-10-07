@@ -1,0 +1,12 @@
+# helper class beside commands (from the spike, 2026-10-06)
+path   = "src/bistro/booking/commands/helpers.py"
+expect = "nothing"
+band   = "nothing"
+text = '''
+def parse_time(text):
+    hours, minutes = text.split(":")
+    return int(hours) * 60 + int(minutes)
+
+def format_time(m):
+    return f"{m // 60:02d}:{m % 60:02d}"
+'''

@@ -1,0 +1,18 @@
+# command, wrong folder (from the spike, 2026-10-06)
+path   = "src/bistro/booking/close_table.py"
+expect = "command"
+band   = "hint"
+text = '''
+from dataclasses import dataclass
+
+@dataclass
+class CloseTableInput:
+    table_id: str
+
+class CloseTable:
+    def __init__(self, bookings):
+        self.bookings = bookings
+
+    def handle(self, input):
+        return self.bookings.close(input.table_id)
+'''

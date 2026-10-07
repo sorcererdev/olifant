@@ -1,0 +1,13 @@
+# port, protocol (from the spike, 2026-10-06)
+path   = "src/bistro/booking/ports/table_repository/table_repository.py"
+expect = "repository|port"
+band   = "offer"
+inputs = { app = "bistro", service = "booking", port = "table_repository" }
+or     = "repository"
+text = '''
+from typing import Protocol
+
+class TableRepository(Protocol):
+    def get(self, table_id: str): ...
+    def save(self, table) -> None: ...
+'''

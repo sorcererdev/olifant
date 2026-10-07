@@ -1,0 +1,14 @@
+# model outside models/ (from the spike, 2026-10-06)
+path   = "src/bistro/booking/waiter.py"
+expect = "model"
+band   = "hint"
+inputs = { model = "waiter" }
+text = '''
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Waiter:
+    id: str
+    name: str
+    section: int
+'''

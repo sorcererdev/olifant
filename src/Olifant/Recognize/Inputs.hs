@@ -17,11 +17,13 @@ import Olifant.Naming (Case (Snake), parseName, render)
 import Olifant.Recognize.Index (Convention (..))
 import Olifant.Recognize.Paths (PathPart (..), PathPattern (..), invertPath, pathPattern)
 import Olifant.Template.Syntax (Segment (..), Template (..))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (splitDirectories, takeDirectory, (</>))
 
 -- | The inputs a file gives, first found first: the path at the
 -- convention's place; else the declarations' names; then what the
--- convention's siblings in or under the file's folder all share.
+-- convention's siblings in or under the file's folder all share — only
+-- values its own folder path names (`booking` in `src/bistro/booking/`), so
+-- one sibling's own name is never borrowed.
 inputsFor :: Generator -> Convention -> FilePath -> Text -> [(Text, Text)]
 inputsFor g c path text = foldl' (\acc (k, v) -> if k `elem` map fst acc then acc else acc <> [(k, v)]) [] (fromPath <> fromNames <> fromSiblings)
   where
@@ -32,10 +34,11 @@ inputsFor g c path text = foldl' (\acc (k, v) -> if k `elem` map fst acc then ac
       either (const Nothing) (\nm -> Just (input, render Snake nm)) (parseName (T.dropEnd (T.length suffix) name))
     fromSiblings =
       let here = takeDirectory path
+          folders = map T.pack (splitDirectories here)
           beside = [vs | (p, _) <- cvReferences c, p /= "template", let sp = T.unpack p, (here </> "") `isPrefixOf` sp || takeDirectory sp == here, Just vs <- [invertPath (cvPattern c) sp]]
        in case beside of
             [] -> []
-            first : rest -> [(k, v) | (k, v) <- first, all (\vs -> lookup k vs == Just v) rest]
+            first : rest -> [(k, v) | (k, v) <- first, all (\vs -> lookup k vs == Just v) rest, v `elem` folders]
 
 -- | The template's declarations of a name: `class {= X =}Suffix` (or
 -- struct, trait, enum, def, fn) — the keyword, the input it names, the

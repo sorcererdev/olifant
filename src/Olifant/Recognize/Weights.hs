@@ -24,8 +24,10 @@ data Weights = Weights {wIdf :: Map Shingle Double, wDefault :: Double, wBoilerp
 weightsOf :: [Set Shingle] -> Weights
 weightsOf files =
   Weights
-    { wIdf = M.map (\c -> log ((1 + n) / (1 + c))) df
-    , wDefault = log (1 + n)
+    { -- smoothed: never 0, so a project with no files yet weighs every
+      -- pattern alike instead of nothing at all
+      wIdf = M.map (\c -> log ((2 + n) / (1 + c))) df
+    , wDefault = log (2 + n)
     , wBoilerplate = if length files < 4 then S.empty else M.keysSet (M.filter (> 0.3 * n) df)
     }
   where

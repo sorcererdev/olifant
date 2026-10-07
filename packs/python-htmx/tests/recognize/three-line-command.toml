@@ -1,0 +1,9 @@
+# a hard case (plan Task 6)
+path   = "src/bistro/booking/commands/seat_party.py"
+expect = "command"
+band   = "offer"
+text = '''
+class SeatParty:
+    def handle(self, input):
+        return None
+'''

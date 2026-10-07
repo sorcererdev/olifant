@@ -1,0 +1,16 @@
+# a hard case (plan Task 6)
+path   = "src/bistro/booking/commands/in_memory_tables.py"
+expect = "repository|port"
+band   = "nothing"
+known  = "an adapter written in commands/: off its place, its shape (0.51) is below the hint band"
+text = '''
+class InMemoryTableRepository:
+    def __init__(self):
+        self.tables = {}
+
+    def get(self, table_id):
+        return self.tables.get(table_id)
+
+    def save(self, table):
+        self.tables[table.id] = table
+'''
