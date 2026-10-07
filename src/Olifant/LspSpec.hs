@@ -27,7 +27,7 @@ import Data.Functor ((<&>))
 import Control.Lens ((%~), (&), (^.))
 import Language.LSP.Protocol.Lens qualified as L
 import System.Exit (ExitCode (..))
-import System.Process (proc, readCreateProcessWithExitCode)
+import System.Process (callProcess, proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
 import Data.List (isInfixOf, sort)
@@ -41,6 +41,7 @@ import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker,
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor)
 import Olifant.Preview (Field (..), Source (..))
+import Olifant.Process (gitBaseText)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled)
@@ -76,6 +77,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   followupsSpec
   recognitionSpec
   generatePickerSpec
+  newCodeSpec
   holesSpec
   pickerSpec
   conventionsSpec
@@ -1056,7 +1058,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing)
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests"))
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []
@@ -1091,6 +1093,57 @@ withProject files act = withSystemTempDirectory "olifant-lsp" $ \dir0 -> do
   act dir
 
 -- | Recognitions as suggestions (convention recognition, Task 8).
+-- | Strangling a legacy codebase: rules on new code, against the base.
+newCodeSpec :: Spec
+newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
+  let legacy = "legacy/views.py"
+      base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]
+      rule = "[rules.no-new-defs]\nfiles = \"legacy/*.py\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n"
+      git dir args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+      underGit dir = do
+        git dir ["init", "-q", "-b", "main"]
+        git dir ["add", "."]
+        git dir ["commit", "-q", "-m", "first"]
+        git dir ["checkout", "-q", "-b", "feature"]
+      ruleIds ds = [c | d <- ds, Just (InR c) <- [d ^. L.code]]
+  it "(a) a definition new on the branch is reported; (b) an edited one is not" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      ((added, edited), _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (base <> "\ndef waitlist(r):\n    return r\n")))]
+        a <- pullDiagnostics doc
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (T.replace "return t" "return t + 1" base)))]
+        e <- pullDiagnostics doc
+        pure (a, e)
+      ruleIds added `shouldContain` ["no-new-defs"]
+      ruleIds edited `shouldNotContain` ["no-new-defs"]
+  it "(c) typing asks git once, not per keystroke (the base is cached until files change)" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      asked <- newIORef (0 :: Int)
+      let counting root ref path = modifyIORef' asked (+ 1) >> gitBaseText root ref path
+      (_, _) <- inProcessWith ports {pBaseText = counting} dir $ do
+        doc <- openDoc legacy "python"
+        forM_ [1 .. 3 :: Int] $ \i -> do
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (base <> "\n# " <> T.pack (show i) <> "\n")))]
+          pullDiagnostics doc
+      readIORef asked `shouldReturn` 1
+  it "(d) when the base moves (the branch merged into main), what was new is not any more (Review Focus 2)" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      TIO.writeFile (dir </> legacy) (base <> "\ndef waitlist(r):\n    return r\n")
+      git dir ["commit", "-q", "-am", "waitlist"]
+      ((before, after), _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        b <- pullDiagnostics doc
+        liftIO (git dir ["checkout", "-q", "main"] >> git dir ["merge", "-q", "feature"])
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> legacy)) FileChangeType_Changed])
+        a <- pullDiagnostics doc
+        pure (b, a)
+      ruleIds before `shouldContain` ["no-new-defs"]
+      ruleIds after `shouldNotContain` ["no-new-defs"]
+
 -- | The generate picker (the float's list, form and live preview).
 generatePickerSpec :: Spec
 generatePickerSpec = describe "the generate picker" $ do

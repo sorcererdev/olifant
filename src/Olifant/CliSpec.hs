@@ -68,7 +68,30 @@ runWithAstGrep stdinText files args = do
   runInWith (astGrepSyntax (tmp </> "olifant-test-cache")) "/proj" stdinText files False args
 
 runInWith :: Syntax IO -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runInWith syntax dir stdinText files tty args = do
+runInWith syntax = runInBase syntax (\_ _ _ -> pure (Left "no base in tests"))
+
+-- | 'runInWith' with the base texts given (the strangler's "new code").
+-- | check on new code (only = "new"), with a base given.
+newCodeCheckSpec :: Spec
+newCodeCheckSpec = describe "check: rules on new code" $
+  it "reports a definition new since the base, and not one edited" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]
+        now = T.replace "return t" "return t + 1" base <> "\ndef waitlist(r):\n    return r\n"
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"legacy/*.py\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", now)
+          ]
+        baseOf _ _ p = pure (if p == "legacy/views.py" then Right ("c0ffee", Just base) else Right ("c0ffee", Nothing))
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    T.count "no-new-defs" out `shouldBe` 1
+    out `shouldSatisfy` T.isInfixOf "\"start\":[7,1]"
+
+runInBase :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInBase syntax base dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -87,7 +110,7 @@ runInWith syntax dir stdinText files tty args = do
         , rtSyntax = syntax
         , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
-        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base
         , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier
         }
       args
@@ -112,7 +135,7 @@ runInitWith committed files args = do
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
-        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
+        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests")
         , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier
         }
       args
@@ -126,7 +149,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do

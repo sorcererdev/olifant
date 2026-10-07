@@ -4,6 +4,7 @@
 -- whose configuration breaks keeps its last good catalog.
 module Olifant.Server.State
   ( ServerState (..)
+  , cachedBase
   , ServerConfig (..)
   , defaultServerConfig
   , ProjectSlot (..)
@@ -26,6 +27,7 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Set qualified as S
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Maybe (fromMaybe)
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
@@ -82,10 +84,27 @@ data ServerState = ServerState
   , -- | per project root: the files it had when first listed (recognition
     -- is for files new since)
     ssEstablished :: Map FilePath (Set FilePath)
+  , -- | base texts (root, ref, path), each with the files stamp it was read at:
+    -- kept until files change (a save, a pull, a rebase)
+    ssBaseCache :: IORef (Map (FilePath, Text, FilePath) (Int, Either Text (Text, Maybe Text)))
   }
 
 newServerState :: Ports -> IO ServerState
-newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty) <$> newPackCache
+newServerState ports = do
+  cache <- newPackCache
+  bases <- newIORef M.empty
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases)
+
+-- | A file's base text, from the cache while no file changed since.
+cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
+cachedBase s root ref path = do
+  known <- M.lookup (root, ref, path) <$> readIORef (ssBaseCache s)
+  case known of
+    Just (stamp, answer) | stamp == ssFilesStamp s -> pure answer
+    _ -> do
+      answer <- pBaseText (ssPorts s) root ref path
+      modifyIORef' (ssBaseCache s) (M.insert (root, ref, path) (ssFilesStamp s, answer))
+      pure answer
 
 -- | A document opened in the editor, at a version, with its text.
 openDoc :: FilePath -> Int -> Text -> ServerState -> ServerState

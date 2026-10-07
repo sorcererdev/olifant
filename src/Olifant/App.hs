@@ -3,6 +3,10 @@
 -- catalog plus the workspace it reads (disk, or open buffers over disk).
 module Olifant.App
   ( Ports (..)
+  , newnessOf
+  , newnessWith
+  , baseRefOf
+  , findingsWith
   , Project (..)
   , projectRoot
   , nearestProject
@@ -61,7 +65,7 @@ import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
-import Olifant.Newness (NewLines (..))
+import Olifant.Newness (NewLines (..), newLinesOf)
 import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), checkFiles, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
@@ -89,6 +93,10 @@ data Ports = Ports
   , -- | the files version control tracks under a folder (relative to it);
     -- nothing outside version control
     pTracked :: FilePath -> IO (Maybe (Set FilePath))
+  , -- | a file's text at the base (the merge base of HEAD and a ref) and that
+    -- commit's id: Right Nothing when the file is not there (new); Left why
+    -- when there is no base (root, ref, project-relative path)
+    pBaseText :: FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
   }
 
 -- | An open project: its root (absolute), its catalog, and the workspace
@@ -253,15 +261,36 @@ completeAt ports project rel pos = do
   paths <- listFiles ws "."
   completionsAt (pSyntax ports) (catalogLanguages (prCatalog project)) (queriesAt ports project rel (fst pos)) paths (readText ws) (generatorsOf project) rel pos (fromMaybe "" content)
 
+-- | Which lines of a project file (its current TEXT) are new since the
+-- base: against the merge base of HEAD and the base ref.
+newnessOf :: Ports -> Project -> FilePath -> Text -> IO NewLines
+newnessOf ports = newnessWith (pBaseText ports)
+
+-- | 'newnessOf' with the base text from BASE (the server caches it).
+newnessWith :: (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> Project -> FilePath -> Text -> IO NewLines
+newnessWith base project rel text =
+  base (prRoot project) (baseRefOf project) rel <&> \case
+    Left why -> NoBase why
+    Right (_, Nothing) -> AllNew
+    Right (_, Just b) -> NewIn (newLinesOf b text)
+
+-- | What "new" is measured from: the base ref ([migrate] base; main).
+baseRefOf :: Project -> Text
+baseRefOf _ = "main"
+
 -- | The rules' findings in some project files, each fix's open choices
 -- resolved ('chooseFixInputs'), and the allowances that applied.
 findings :: Ports -> Project -> [FilePath] -> IO ([Finding], [Exception])
-findings ports project files = do
+findings ports project = findingsWith (newnessOf ports project) ports project
+
+-- | 'findings' with a file's newness given (the server caches it).
+findingsWith :: (FilePath -> Text -> IO NewLines) -> Ports -> Project -> [FilePath] -> IO ([Finding], [Exception])
+findingsWith newness ports project files = do
   let cat = prCatalog project
       ws = prWorkspace project
   paths <- listFiles ws "."
   now <- pNow ports
-  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) [] (\_ -> pure AllNew) (catalogRules cat) paths (readText ws) files
+  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) [] (\f -> readText ws f >>= newness f . fromMaybe "") (catalogRules cat) paths (readText ws) files
     >>= chooseFixInputs ports project paths now
 
 -- | A fix's enum inputs left open are pre-chosen when the finding's code

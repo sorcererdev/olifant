@@ -7,13 +7,13 @@ import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.App (FixFailure (..), PlanOptions (..), findings, fixSteps, planOptions, planWith)
+import Olifant.App (FixFailure (..), PlanOptions (..), findingsWith, fixSteps, newnessWith, planOptions, planWith)
 import Olifant.Catalog (describeCatalogError)
 import Olifant.Generation (Plan (..), ProgressEvent, describeConflict, describeGenerationError)
 import Olifant.Server.Actions (fillerFor)
 import Olifant.Rules (Finding)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Server.State (ServerState (..), memo, projectFor)
+import Olifant.Server.State (cachedBase, ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The rules' findings in a file (project-relative paths in them); none
@@ -22,7 +22,7 @@ findingsFor :: FilePath -> ServerState -> IO (ServerState, [Finding])
 findingsFor path = memo "findings" path "" $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
-    (s', Just (root, project)) -> (s',) . fst <$> findings (ssPorts s') project [makeRelative root path]
+    (s', Just (root, project)) -> (s',) . fst <$> findingsWith (newnessWith (cachedBase s') project) (ssPorts s') project [makeRelative root path]
 
 -- | The edits of a rule's fix (the @n@th, 1-based) at a line of a file,
 -- with the choices made: planned now, so a finding that moved or went

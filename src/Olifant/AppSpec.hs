@@ -56,7 +56,7 @@ withPythonProject changed act = do
     let ports = Ports
           { pFiles = diskWorkspace "/", pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pChecker = const noChecker
           , pVerifier = const noVerifier, pNow = pure (UTCTime (fromGregorian 2026 10 6) 0), pUserConfigDir = Nothing, pHomeDir = Nothing
-          , pDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), pTracked = \_ -> pure Nothing }
+          , pDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), pTracked = \_ -> pure Nothing, pBaseText = \_ _ _ -> pure (Left "no base in tests") }
     openProject ports dir >>= \case
       Left _ -> fail "the project's catalog did not load"
       Right project -> act ports project
