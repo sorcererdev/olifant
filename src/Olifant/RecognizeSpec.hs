@@ -6,9 +6,14 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language (Language (..), parseLanguage)
 import Olifant.Recognize
-import Olifant.Template (parseTemplate)
+import Control.Monad (forM)
+import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..), parseGenerator)
+import Olifant.Naming (parseName)
+import Olifant.Template (Value (..), parseTemplate, render)
+import System.Directory (listDirectory)
 import Test.Hspec
-import Test.Hspec.Hedgehog (forAll, hedgehog)
+import Test.Hspec.Hedgehog (forAll, hedgehog, (===))
+import Data.Text (Text)
 import Hedgehog qualified as H
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
@@ -16,6 +21,7 @@ import Hedgehog.Range qualified as Range
 spec :: Spec
 spec = describe "Olifant.Recognize" $ do
   weightsSpec
+  pathsSpec
   describe "shapes" $ do
     let kw = Keywords (S.fromList ["class", "def", "self", "return"]) "#"
     it "(a) keeps keywords and punctuation, and names become their case shape" $
@@ -78,3 +84,59 @@ weightsSpec = describe "weights" $ do
     wBoilerplate (weightsOf (take 3 files)) `shouldBe` S.empty
   where
     weightOf w s = M.findWithDefault (wDefault w) s (wIdf w)
+
+-- | Output paths as globs, and inverted to inputs (Task 3).
+pathsSpec :: Spec
+pathsSpec = describe "paths" $ do
+  let tmpl t = either (error . show) id (parseTemplate t)
+  it "(a) the command's output path: its glob, and the inputs a path gives back" $ do
+    g <- packGenerator "python-htmx" "command"
+    pat <- maybe (fail "no pattern") pure (pathPattern (genDerived g) (tmpl "{= dir =}/{= command_ =}.py"))
+    ppGlob pat `shouldBe` "src/*/*/commands/*.py"
+    invertPath pat "src/bistro/booking/commands/close_table.py"
+      `shouldBe` Just [("app", "bistro"), ("service", "booking"), ("command", "close_table")]
+  it "(b) a name rendered in Pascal case reads back in snake case" $ do
+    pat <- maybe (fail "no pattern") pure (pathPattern [("Model", tmpl "{= model|pascal =}")] (tmpl "models/{= Model =}.py"))
+    invertPath pat "models/WaiterShift.py" `shouldBe` Just [("model", "waiter_shift")]
+  gens <- runIO (concat <$> forM ["python-htmx", "rust-htmx"] packGenerators)
+  let cases = [(g, t, pat) | g <- gens, Create {editTarget = t} <- genEdits g, Just pat <- [pathPattern (genDerived g) t]]
+  it "(c) inverts most of the packs' output paths (they are plain)" $
+    length cases `shouldSatisfy` (> 10)
+  it "(c) property: every output path of python-htmx and rust-htmx inverts to the inputs that rendered it" $
+    hedgehog $ do
+      (g, t, pat) <- forAll (Gen.element cases)
+      let vars = [v | PVar v _ <- ppParts pat]
+      values <- forM vars $ \v -> (v,) <$> forAll (snakeName)
+      let inputs = M.fromList values
+          env0 = M.map (\v -> VName (either (error . show) id (parseName v))) inputs
+          env = foldl (\e (d, dt) -> either (const e) (\r -> M.insert d (VText r) e) (render e dt)) env0 (genDerived g)
+      case render env t of
+        Left _ -> H.discard
+        Right path -> fmap M.fromList (invertPath pat (T.unpack path)) === Just inputs
+  it "(d) a path that does not match, or a repeated input that disagrees, gives nothing" $ do
+    g <- packGenerator "python-htmx" "command"
+    pat <- maybe (fail "no pattern") pure (pathPattern (genDerived g) (tmpl "{= dir =}/{= command_ =}.py"))
+    invertPath pat "src/bistro/booking/queries/x.py" `shouldBe` Nothing
+    twice <- maybe (fail "no pattern") pure (pathPattern [] (tmpl "{= a =}/{= a =}.py"))
+    invertPath twice "x/y.py" `shouldBe` Nothing
+    invertPath twice "x/x.py" `shouldBe` Just [("a", "x")]
+  it "refuses what it cannot invert: a condition, a loop, a filter that is not a case" $ do
+    pathPattern [] (tmpl "{= if a =}x{= end =}.py") `shouldBe` Nothing
+    pathPattern [] (tmpl "{= a|plural =}.py") `shouldBe` Nothing
+  where
+    snakeName = do
+      ws <- Gen.list (Range.linear 1 3) (Gen.text (Range.linear 2 6) Gen.lower)
+      pure (T.intercalate "_" ws)
+
+-- | A pack's generator definitions (their paths and derived values).
+packGenerators :: Text -> IO [GeneratorWith ()]
+packGenerators pack = do
+  names <- listDirectory ("packs/" <> T.unpack pack <> "/generators")
+  fmap concat . forM names $ \n -> do
+    src <- TIO.readFile ("packs/" <> T.unpack pack <> "/generators/" <> n <> "/generator.toml")
+    pure (either (const []) (\g -> [() <$ g]) (parseGenerator (GeneratorId (pack <> "/" <> T.pack n)) src))
+
+packGenerator :: Text -> Text -> IO (GeneratorWith ())
+packGenerator pack name = do
+  src <- TIO.readFile ("packs/" <> T.unpack pack <> "/generators/" <> T.unpack name <> "/generator.toml")
+  either (fail . T.unpack) (pure . (() <$)) (parseGenerator (GeneratorId (pack <> "/" <> name)) src)

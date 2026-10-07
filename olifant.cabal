@@ -93,6 +93,7 @@ library
     Olifant.ProjectModel
     Olifant.Query
     Olifant.Recognize
+    Olifant.Recognize.Paths
     Olifant.Recognize.Shape
     Olifant.Recognize.Weights
     Olifant.Region
@@ -211,6 +212,7 @@ test-suite spec
     Olifant.Query
     Olifant.QuerySpec
     Olifant.Recognize
+    Olifant.Recognize.Paths
     Olifant.Recognize.Shape
     Olifant.Recognize.Weights
     Olifant.RecognizeSpec
