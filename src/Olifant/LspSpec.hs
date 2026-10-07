@@ -1216,6 +1216,14 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         pure (lookupKey "band" v)
       band `shouldBe` Just (String "hint")
       doesFileExist (answers <> ".asked") `shouldReturn` False
+  it "(k) never recognises a file the project already had, even with a companion to add" $
+    withPython [] $ \ports dir -> do
+      removeFile (dir </> "src/bistro/booking/commands/create_booking__test.py")
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+        suggestAt doc 1
+      v `shouldBe` Aeson.Null
   sequential . it "(e) a long legacy file: recognition reads only around the edit, and answers fast (Review Focus 3)" $
     withPython [] $ \ports dir -> do
       let legacy = T.concat ["def f_" <> T.pack (show i) <> "(x):\n    return x + " <> T.pack (show i) <> "\n\n" | i <- [1 .. 1000 :: Int]]

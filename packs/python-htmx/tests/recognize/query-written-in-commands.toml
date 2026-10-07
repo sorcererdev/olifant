@@ -4,7 +4,6 @@ expect = "query"
 band   = "offer"
 as     = "command"
 known  = "needs the model: a query written in commands/ — the place says command, the shape says query"
-or     = "port"
 text = '''
 class ListTables:
     def __init__(self, repo):

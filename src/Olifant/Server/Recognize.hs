@@ -54,6 +54,8 @@ recognitionFor path line = memo "recognize" path (T.pack (show line)) $ \s ->
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (root, project))
       | not (recEnabled (catalogRecognize (prCatalog project))) -> pure (s', Nothing)
+      -- a file the project already had is what it is: recognition is for new ones
+      | makeRelative root path `S.member` M.findWithDefault S.empty root (ssEstablished s') -> pure (s', Nothing)
       | otherwise -> case languageFor (catalogLanguages (prCatalog project)) rel of
           Nothing -> pure (s', Nothing)
           Just lang -> do
@@ -90,7 +92,7 @@ recognitionSuggestion path line s root _ gens r text = suggestion
             gen = listToMaybe [g | g <- gens, genId g == rcGenerator r]
             missing = [inputName i | Just g <- [gen], i <- genInputs g, not (inputOptional i), inputDefault i == Nothing, inputName i `notElem` map fst (rcInputs r)]
             start = declarationLine text line
-            label = "This looks like a " <> T.toLower (rcName r) <> maybe "" (\v -> " (" <> v <> ")") (mainInput gen (rcInputs r))
+            label = "This looks like a " <> conventionName (rcGenerator r) <> maybe "" (\v -> " (" <> v <> ")") (mainInput gen (rcInputs r))
             base plan = Suggestion "recognition" label "" start [] root plan (generatorIdText (rcGenerator r)) (rcInputs r) start Nothing
         now <- pNow (ssPorts s)
         let empty = Plan (rcGenerator r) [] now [] [] [] M.empty [] M.empty M.empty Nothing
@@ -167,6 +169,11 @@ recordedRecognizer file token = Recognizer $ \_ cands -> do
       loop
       pure (map (const Unsure) cands)
     else pure (either (const (map (const Unsure) cands)) id (decodeVerdicts (map genId cands) answer))
+
+-- | A convention as people say it: its generator's id, without its pack
+-- (rust-htmx/service-command → "service command").
+conventionName :: GeneratorId -> Text
+conventionName (GeneratorId i) = T.replace "-" " " (T.replace "_" " " (snd (T.breakOnEnd "/" i)))
 
 -- | A generator planned for a file someone is writing: the file treated as
 -- absent, so the convention writes it; then, when the file is short (at most

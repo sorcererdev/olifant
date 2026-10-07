@@ -55,7 +55,9 @@ recognizeIn ix gens (Change path text)
       g <- M.lookup (cvGenerator (scConvention best)) generators
       let c = scConvention best
           others = [s | s <- rest, cvGenerator (scConvention s) /= cvGenerator c]
-          choice = listToMaybe [cvGenerator (scConvention s) | s <- others, total best - total s <= 0.1, scShape s >= 0.4]
+          -- a choice only with a convention that lives here or in a sibling folder
+          -- (commands/ beside queries/), not one from elsewhere (another crate)
+          choice = listToMaybe [cvGenerator (scConvention s) | s <- others, total best - total s <= 0.1, scShape s >= 0.4, scPlace s > 0 || near s]
           rival = listToMaybe [(cvGenerator (scConvention s), scShape s) | s <- sortOn (Down . scShape) others, scShape s > scShape best]
       pure
         Recognition
@@ -94,6 +96,9 @@ recognizeIn ix gens (Change path text)
             | takeDirectory path `S.member` M.findWithDefault S.empty (cvGenerator c) (ixSiblingDirs ix) = 0.15
             | otherwise = 0
        in Scored c shape place like
+    near s =
+      let here = takeDirectory path
+       in any (\d -> d == here || takeDirectory d == takeDirectory here) (S.toList (M.findWithDefault S.empty (cvGenerator (scConvention s)) (ixSiblingDirs ix)))
     bandOf s
       | scPlace s > 0 && total s >= 0.5 = Just Offer
       | scPlace s == 0 && scShape s >= 0.55 = Just Hint

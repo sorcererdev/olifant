@@ -590,6 +590,7 @@ withSnapshotState env work = do
         , -- what it worked out stands only if nothing changed meanwhile
           ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
         , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
+        , ssEstablished = M.union (ssEstablished now) (ssEstablished after)
         }
   pure (after, a)
 
