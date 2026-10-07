@@ -174,7 +174,7 @@ compileClean lang files = case langCheck lang of
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
 -- directory that outlives the scratch copy (cargo's `--target-dir`).
 runIn :: Cancel -> Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn token lang check files = (if checkExclusive check then inSlot (langName lang <> ":" <> contextKey check files) else ($ Nothing)) $ \slot -> case (checkCommand check, checkProgram (checkCommand check)) of
+runIn token lang check files = around $ \slot -> case (checkCommand check, checkProgram (checkCommand check)) of
   ([], _) -> pure (Left (CheckFailed "empty check command"))
   (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
   (exe : args, Just program) ->
@@ -201,20 +201,29 @@ runIn token lang check files = (if checkExclusive check then inSlot (langName la
           Right (Finished code out err) -> Right (code, out, err, tmp)
           Right _ -> Left (CheckFailed "cancelled")
 
+  where
+    -- how a check runs beside others: in a slot of its workspace (a cache of
+    -- its own: exclusive), one at a time for its language (not concurrent),
+    -- or freely
+    around
+      | checkExclusive check = inSlot slotsPerKey (langName lang <> ":" <> contextKey check files)
+      | not (checkConcurrent check) = \act -> inSlot 1 ("language:" <> langName lang) (const (act Nothing))
+      | otherwise = ($ Nothing)
+
 -- | Run in one of a key's slots (a cache of its own), the slot held until
 -- the run and its scratch copy are done: cargo's fingerprints follow the
 -- source files of a cache's last build, so a check sharing a cache with a
 -- running one, or starting before the last one's copy is gone, finds its
 -- crates fresh and reports nothing of its own. Up to 'slotsPerKey' checks of
 -- one workspace run at once in this process, each slot's cache kept warm.
-inSlot :: Text -> (Maybe Int -> IO a) -> IO a
-inSlot key act = do
+inSlot :: Int -> Text -> (Maybe Int -> IO a) -> IO a
+inSlot n key act = do
   slots <- modifyMVar checkSlots $ \m -> case M.lookup key m of
     Just ss -> pure (m, ss)
-    Nothing -> traverse (const (newMVar ())) [1 .. slotsPerKey] <&> \ss -> (M.insert key ss m, ss)
+    Nothing -> traverse (const (newMVar ())) [1 .. n] <&> \ss -> (M.insert key ss m, ss)
   let free = \case
         [] -> threadDelay 20000 >> free (zip [0 ..] slots)
-        (n, s) : rest -> tryTakeMVar s >>= maybe (free rest) (const (pure (n, s)))
+        (i, s) : rest -> tryTakeMVar s >>= maybe (free rest) (const (pure (i, s)))
   bracket (free (zip [0 ..] slots)) (\(_, s) -> putMVar s ()) (act . Just . fst)
 
 slotsPerKey :: Int
