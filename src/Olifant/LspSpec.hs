@@ -1191,6 +1191,22 @@ generatePickerSpec = describe "the generate picker" $ do
       let median = sort times !! 10
       liftIO (putStrLn ("      picker preview: median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms"))
       median `shouldSatisfy` (< 50)
+  let testFile = "src/bistro/booking/commands/create_booking__test.py"
+      editLines v = [l | Just (Object e) <- [lookupKey "edit" v >>= \x -> case x of Object o -> Just (Object o); _ -> Nothing], Just (Array cs) <- [KM.lookup "documentChanges" e], Object c <- toList cs, Just (Array es) <- [KM.lookup "edits" c], Object ed <- toList es, Just (Number l) <- [KM.lookup "range" ed >>= lookupKey "start" >>= lookupKey "line"]]
+  it "(l) a snippet planned by the picker lands at the cursor, never at line 1 (review C1)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc testFile "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (34 :: Int), "character" .= (0 :: Int)], "steps" .= [step "python-htmx/test-case" [("test", "closes_a_table")]]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      editLines v `shouldSatisfy` (\ls -> not (null ls) && all (>= 30) ls)
+  it "(m) the preview's main file says where the change starts (review I4)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc testFile "python"
+        pickWith doc [step "python-htmx/test-case" []] -- position 0: the request's own
+      (lookupKey "main" v >>= lookupKey "first") `shouldSatisfy` maybe False (\case Number n -> n >= 1; _ -> False)
   it "(h) olifant/plan plans steps as one plan" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do

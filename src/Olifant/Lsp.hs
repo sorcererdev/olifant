@@ -431,7 +431,7 @@ handlers env =
               _ -> Nothing
         case (picked, chosen, offered) of
           (Just (path, steps), _, _) ->
-            planProgress "Generating" (\progress -> withPlanned job (stepsPlanWith progress True path steps)) >>= \case
+            planProgress "Generating" (\progress -> withPlanned job (stepsPlanWith progress True path (fromMaybe (0, 0) (positionOf (req ^. L.params))) steps)) >>= \case
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
           (_, Just (path, generator, sets, recognising), _) ->
@@ -547,11 +547,15 @@ previewJson steps pv =
     -- lines kept (as a multiset): what the counts leave out
     common p t = sum (M.elems (M.intersectionWith min (counts (old p)) (counts (T.lines t))))
     counts = M.fromListWith (+) . map (,1 :: Int)
+    -- the main file: the first new one, else the first changed; with the
+    -- first line (1-based) where it differs from before, to show the change
     mainFile plan =
       listToMaybe
-        ( [object ["path" .= p, "text" .= t] | (p, t) <- M.toList (planWrites plan), M.lookup p (planBefore plan) == Just Nothing]
-            ++ [object ["path" .= p, "text" .= t] | (p, t) <- M.toList (planWrites plan)]
+        ( [main p t (1 :: Int) | (p, t) <- M.toList (planWrites plan), M.lookup p (planBefore plan) == Just Nothing]
+            ++ [main p t (firstChange (maybe [] T.lines (M.lookup p (planBefore plan) >>= id)) (T.lines t)) | (p, t) <- M.toList (planWrites plan)]
         )
+    main p t first = object ["path" .= p, "text" .= t, "first" .= first]
+    firstChange old new = 1 + length (takeWhile id (zipWith (==) old new))
     fieldJson f =
       object
         [ "name" .= fName f

@@ -79,10 +79,11 @@ checked = \case
     | null (planConflicts plan) -> Right plan
     | otherwise -> Left (T.intercalate "; " (map describeConflict (planConflicts plan)))
 
--- | The steps planned for real (the picker's apply): the values set and
--- the values inferred, no marks.
-stepsPlanWith :: (ProgressEvent -> IO ()) -> Bool -> FilePath -> [PickStep] -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
-stepsPlanWith progress fill path steps s =
+-- | The steps planned for real (the picker's apply) at a position (0-based
+-- line and character: where a snippet goes, as the preview placed it):
+-- the values set and the values inferred, no marks.
+stepsPlanWith :: (ProgressEvent -> IO ()) -> Bool -> FilePath -> (Int, Int) -> [PickStep] -> ServerState -> IO (ServerState, Either Text (FilePath, Plan))
+stepsPlanWith progress fill path (line, _) steps s =
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Left (T.pack path <> " is in no Olifant project"))
     (s', Just (root, project)) -> do
@@ -91,12 +92,12 @@ stepsPlanWith progress fill path steps s =
         workSteps s' project rel [] False steps >>= \case
           Left why -> pure (Left why)
           Right ws ->
-            placeAll (ssPorts s') project rel 0 ws >>= \case
+            placeAll (ssPorts s') project rel line ws >>= \case
               Left why -> pure (Left why)
               Right gens ->
                 fillerFor fill s' project >>= \case
                   Left why -> pure (Left why)
-                  Right filler -> fmap (root,) . checked <$> planWith (ssPorts s') project planOptions {poFiller = filler, poProgress = progress, poCancel = ssCancel s'} (zipWith (\g w -> Step g (M.fromList (wValues w))) gens ws)
+                  Right filler -> fmap (root,) . checked <$> planWith (ssPorts s') project planOptions {poAt = Just (rel, line + 1), poFiller = filler, poProgress = progress, poCancel = ssCancel s'} (zipWith (\g w -> Step g (M.fromList (wValues w))) gens ws)
 
 -- | Each step's generator, placed at the cursor where it applies there (a
 -- snippet), as the ⚡ menu places it.
