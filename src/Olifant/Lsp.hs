@@ -563,7 +563,7 @@ previewJson steps pv =
             ++ [main p t (firstChange (maybe [] T.lines (M.lookup p (planBefore plan) >>= id)) (T.lines t)) | (p, t) <- M.toList (planWrites plan)]
         )
     main p t first = object ["path" .= p, "text" .= t, "first" .= first]
-    firstChange before after = 1 + length (takeWhile id (zipWith (==) before after))
+    firstChange xs ys = 1 + length (takeWhile id (zipWith (==) xs ys))
     fieldJson f =
       object
         [ "name" .= fName f
