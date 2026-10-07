@@ -6,6 +6,7 @@ module Olifant.App
   , newnessOf
   , newnessWith
   , baseRefOf
+  , legacyOf
   , findingsWith
   , Project (..)
   , projectRoot
@@ -139,7 +140,13 @@ openProjectWith cache ports root =
     <&> fmap (\cat -> Project root cat (within root (pFiles ports)))
 
 generatorsOf :: Project -> [(Text, GeneratorDef)]
-generatorsOf project = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries (prCatalog project)]
+generatorsOf project = concat [legacyPaths (generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries (prCatalog project)]
+  where
+    -- `applies_at.path = "{legacy}"`: the project's legacy globs (a copy per
+    -- glob; none without [migrate])
+    legacyPaths (gid, d) = case genAppliesAt d of
+      Just ap | apPath ap == "{legacy}" -> [(gid, d {genAppliesAt = Just ap {apPath = g}}) | g <- legacyOf project]
+      _ -> [(gid, d)]
 
 -- | A generator's [[uses]] steps with the entries they resolve to.
 subsOf :: Catalog -> CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
@@ -276,7 +283,11 @@ newnessWith base project rel text =
 
 -- | What "new" is measured from: the base ref ([migrate] base; main).
 baseRefOf :: Project -> Text
-baseRefOf _ = "main"
+baseRefOf project = maybe "main" mgBase (catalogMigrate (prCatalog project))
+
+-- | The project's legacy globs ([migrate] legacy; none).
+legacyOf :: Project -> [Text]
+legacyOf project = maybe [] mgLegacy (catalogMigrate (prCatalog project))
 
 -- | The rules' findings in some project files, each fix's open choices
 -- resolved ('chooseFixInputs'), and the allowances that applied.
@@ -290,7 +301,7 @@ findingsWith newness ports project files = do
       ws = prWorkspace project
   paths <- listFiles ws "."
   now <- pNow ports
-  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) [] (\f -> readText ws f >>= newness f . fromMaybe "") (catalogRules cat) paths (readText ws) files
+  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf project) (\f -> readText ws f >>= newness f . fromMaybe "") (catalogRules cat) paths (readText ws) files
     >>= chooseFixInputs ports project paths now
 
 -- | A fix's enum inputs left open are pre-chosen when the finding's code

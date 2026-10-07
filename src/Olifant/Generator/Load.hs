@@ -90,7 +90,8 @@ appliesAtFrom :: [Text] -> Table -> Either Text AppliesAt
 appliesAtFrom inputNames t = do
   onlyKeys ["path", "node", "after", "bind", "file", "label", "where", "suggest", "trigger"] t
   path <- required "path" text t
-  case [x | x <- slots path, x `notElem` inputNames] of
+  -- `{legacy}` as the whole path: the project's [migrate] legacy globs
+  case [x | path /= "{legacy}", x <- slots path, x `notElem` inputNames] of
     x : _ -> Left ("`{" <> x <> "}` in applies_at.path is not an input (inputs: " <> T.intercalate ", " inputNames <> ")")
     [] -> Right ()
   node <- traverse (inKey "node" . ruleFromTree) (M.lookup "node" t)

@@ -1129,6 +1129,22 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
           changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (base <> "\n# " <> T.pack (show i) <> "\n")))]
           pullDiagnostics doc
       readIORef asked `shouldReturn` 1
+  it "(e) a generator applies at {legacy}: in the legacy folder, not elsewhere" $
+    withPython
+      [ (legacy, base)
+      , ("src/bistro/booking/x.py", base)
+      , (".olifant/generators/extract/generator.toml", "description = \"d\"\nlanguage = \"python\"\n[applies_at]\npath = \"{legacy}\"\nnode = { kind = \"function_definition\" }\nlabel = \"Extract\"\n[[edits]]\ncreate = \"x.txt\"\ntext = \"x\"\n")
+      ]
+      $ \ports dir -> do
+        config <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+        ((inLegacy, inSrc), _) <- inProcessWith ports dir $ do
+          a <- openDoc legacy "python"
+          b <- openDoc "src/bistro/booking/x.py" "python"
+          (,) <$> getCodeActions a (Range (Position 1 4) (Position 1 4)) <*> getCodeActions b (Range (Position 1 4) (Position 1 4))
+        let titles as = [x ^. L.title | InR x <- as]
+        titles inLegacy `shouldContain` ["Extract"]
+        titles inSrc `shouldNotContain` ["Extract"]
   it "(d) when the base moves (the branch merged into main), what was new is not any more (Review Focus 2)" $
     withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
       underGit dir

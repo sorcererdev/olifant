@@ -44,6 +44,10 @@ withUser = projectOnly {catalogUserConfigDir = Just "/home/u/.config/olifant", c
 withCatalog :: [(FilePath, Text)] -> (Workspace IO -> Catalog -> IO a) -> IO a
 withCatalog = withCatalogAt projectOnly
 
+-- | The project catalog of these files, or why it does not open.
+openWith :: [(FilePath, Text)] -> IO (Either CatalogError Catalog)
+openWith fs = memoryWorkspace fs >>= \(root, _) -> openProjectCatalog root projectOnly
+
 withCatalogAt :: CatalogPaths -> [(FilePath, Text)] -> (Workspace IO -> Catalog -> IO a) -> IO a
 withCatalogAt paths fs k = do
   (root, _) <- memoryWorkspace fs
@@ -66,6 +70,19 @@ spec = describe "catalog" $ do
         catalogRecognize cat `shouldBe` RecognizeConfig False (Just "local")
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
         catalogRecognize cat `shouldBe` RecognizeConfig True Nothing
+  describe "[migrate] (strangling a legacy codebase)" $ do
+    it "reads legacy, base, switches, new_work_lines and count, with defaults" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"legacy/**\"]\n")] $ \_ cat ->
+        catalogMigrate cat `shouldBe` Just (MigrateConfig ["legacy/**"] "main" Nothing 15 ["function_definition"])
+      withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"old/**\"]\nbase = \"trunk\"\nswitches = \"src/app/switches.py\"\nnew_work_lines = 30\ncount = [\"function_item\"]\n")] $ \_ cat ->
+        catalogMigrate cat `shouldBe` Just (MigrateConfig ["old/**"] "trunk" (Just "src/app/switches.py") 30 ["function_item"])
+    it "is nothing without [migrate]" $
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogMigrate cat `shouldBe` Nothing
+    it "names an unknown key, and needs legacy" $ do
+      bad <- openWith [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"a/**\"]\ntypo = 1\n")]
+      either describeCatalogError (const "") bad `shouldSatisfy` T.isInfixOf "typo"
+      none <- openWith [("/proj/.olifant/config.toml", "[migrate]\nbase = \"main\"\n")]
+      either describeCatalogError (const "") none `shouldSatisfy` T.isInfixOf "legacy"
   describe "the pack cache (olifant lsp: many projects, packs parsed once)" $ do
     let gen desc = "description = \"" <> desc <> "\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a.x\"\ntext = \"a\"\n"
         config pack = "[packs]\npython-htmx = { path = \"" <> pack <> "\" }\n"

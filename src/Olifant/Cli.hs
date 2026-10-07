@@ -310,7 +310,7 @@ runCommand rt cwd fmt cat = \case
         pure ExitSuccess
       Nothing | baseline -> do
         let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
-        (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) [] (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked
+        (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf (projectOf rt cat)) (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked
         -- Debt only goes down: once a baseline exists, re-baselining keeps
         -- at most each key's old count, unless --accept-new (review I9).
         let current = M.fromListWith (+) [(key f, 1 :: Int) | f <- fs]
@@ -343,7 +343,7 @@ runCommand rt cwd fmt cat = \case
                     (Nothing, _) -> False
                     (Just _, Nothing) -> True
                     (Just rs, Just ((l1, _), (l2, _))) -> any (\(a, b) -> a <= l2 && l1 <= b) rs
-        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) [] (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked >>= chooseInputs
+        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf (projectOf rt cat)) (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked >>= chooseInputs
         let fs = filter touched fs0
             drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
             regionsJson = [object ["file" .= p, "region" .= r, "status" .= ("drift" :: Text)] | (p, r) <- drift] ++ [object ["status" .= ("broken" :: Text), "message" .= describeConflict c] | c <- conflicts]
