@@ -465,7 +465,7 @@ debugState env = withSnapshotState env (\s0 -> do
                          (s'', found) <- projectFor path s'
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
-  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)]]))
+  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)], "recognitionIndexes" .= M.size (ssRecognition s)]))
     <&> snd
 
 -- | Ask the client to watch more files (dynamic registration: the protocol
@@ -591,6 +591,8 @@ withSnapshotState env work = do
           ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
         , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
         , ssEstablished = M.union (ssEstablished now) (ssEstablished after)
+        , -- a recognition index it built, while no file changed since
+          ssRecognition = M.union (ssRecognition now) (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp now) (ssRecognition after))
         }
   pure (after, a)
 

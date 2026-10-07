@@ -24,6 +24,8 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Olifant.Model (Backend (..))
 import Olifant.Process (neverCancel)
 import Test.Hspec
+import Control.Exception (evaluate)
+import Data.Time (diffUTCTime, getCurrentTime)
 import Test.Hspec.Hedgehog (forAll, hedgehog, (===))
 import Data.Text (Text)
 import Hedgehog qualified as H
@@ -38,6 +40,25 @@ spec = describe "Olifant.Recognize" $ do
   inputsSpec
   recognizeSpec
   askSpec
+  sequential . it "decides in under 50 ms with 5,000 more files in the project (median of 20 changes)" $ do
+    (gens, fixture) <- pythonProject
+    let bulk = [("src/bistro/bulk/m" <> show (i `div` 100) <> "/mod_" <> show i <> ".py", "x_" <> T.pack (show i) <> " = " <> T.pack (show i) <> "\n") | i <- [1 .. 5000 :: Int]]
+        ix = buildIndex (pythonKeywords gens) gens (fixture ++ bulk)
+        ownWay v = "class CloseTable:\n    def __init__(self, repo):\n        self.repo = repo\n\n    def run(self, table_id):\n        self.repo.save(table_id)\n# " <> T.pack (show v) <> "\n"
+        decide v = recognizeIn ix gens (Change "src/bistro/booking/commands/close_table.py" (ownWay v))
+    t0 <- getCurrentTime
+    _ <- evaluate (length (show (decide (0 :: Int))))
+    t1 <- getCurrentTime
+    times <- forM [1 .. 20 :: Int] $ \v -> do
+      a <- getCurrentTime
+      r <- evaluate (decide v)
+      _ <- evaluate (length (show r))
+      b <- getCurrentTime
+      pure (realToFrac (diffUTCTime b a) * 1000 :: Double)
+    let median = sort times !! 10
+    printf "      deciding at 5,000 more files: the index %d ms once, then median %.1f ms, max %.1f ms\n" (round (realToFrac (diffUTCTime t1 t0) * 1000 :: Double) :: Int) median (maximum times)
+    fmap rcName (decide (0 :: Int)) `shouldBe` Just "Command"
+    median `shouldSatisfy` (< 50)
   describe "shapes" $ do
     let kw = Keywords (S.fromList ["class", "def", "self", "return"]) "#"
     it "(a) keeps keywords and punctuation, and names become their case shape" $
