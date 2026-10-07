@@ -1096,6 +1096,7 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         pure (v, p)
       (lookupKey "kind" v, lookupKey "band" v, lookupKey "generator" v) `shouldBe` (Just (String "recognition"), Just (String "offer"), Just (String "python-htmx/command"))
       lookupKey "label" v `shouldBe` Just (String "This looks like a command (Close Table)")
+      (lookupKey "sets" v >>= lookupKey "command") `shouldBe` Just (String "close_table")
       files <- either (fail . show) (pure . changedFiles) planned
       let at name = [t | (u, t) <- files, ("/" <> name) `T.isSuffixOf` u]
       at "close_table.py" `shouldSatisfy` any (T.isInfixOf "def handle(self, input: CloseTableInput)")

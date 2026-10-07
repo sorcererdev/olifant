@@ -552,6 +552,7 @@ suggestionFields path version n sg =
   , "at" .= sgAt sg
   , "planId" .= n
   , "generator" .= sgGenerator sg
+  , "sets" .= M.fromList (sgSets sg)
   ]
     <> case sgRecognition sg of
       Nothing -> []
