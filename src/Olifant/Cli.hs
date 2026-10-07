@@ -84,6 +84,8 @@ runCli rt args = case parseOptions args of
   Right opts | LspCmd <- optCommand opts -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   Right opts | InitMigrateCmd paths pack <- optCommand opts ->
     runInitMigrate rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) paths pack
+  Right opts | InitCmd pack name _ _ <- optCommand opts, T.null pack || T.null name ->
+    failWith rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) 2 "usage" "init needs --pack PACK NAME (a new project), or --migrate PATH (an existing repo)" Nothing []
   Right opts | InitCmd pack name dir plan <- optCommand opts ->
     runInit rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) pack name dir plan
   Right opts -> do

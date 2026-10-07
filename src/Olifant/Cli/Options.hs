@@ -113,7 +113,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "fix" fixP "Apply a rule's fix where it found something: the fix's generator, and the code it replaces, as one plan (--plan to preview)"
             <> cmd "doctor" (pure DoctorCmd) "Check what generators need here (tools on this PATH, packs, the model) and how to fix it"
             <> cmd "actions" (actionsP) "The generators that apply at a position (for editors): --at FILE:LINE:COL [--content -]"
-            <> cmd "init" (initMigrateP <|> initP) "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH"
+            <> cmd "init" initP "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH"
             <> cmd "lsp" (pure LspCmd) "Run the language server over stdin/stdout (editors start it; every Olifant project in the editor's folders)"
             <> cmd "complete" completeP "Snippets for a completion menu at a position (for editors): --at FILE:LINE:COL [--content -]"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
@@ -153,14 +153,17 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> switch (long "baseline" <> help "Record today's findings in .olifant/baseline.toml: from then on only new findings fail (spec §5.10)")
         <*> switch (long "accept-new" <> help "With --baseline: also record findings that are new since the last baseline")
         <*> optional (strOption (long "changed-since" <> metavar "REF" <> help "Only findings on lines changed since REF (git), for CI on a branch"))
-    initMigrateP =
-      (\ps p -> InitMigrateCmd ps (T.pack p))
-        <$> some (strOption (long "migrate" <> metavar "PATH" <> help "Legacy code to strangle (repeat for more)"))
-        <*> strOption (long "pack" <> metavar "PACK" <> value "python-htmx" <> help "The target architecture's pack (default python-htmx)")
+    -- one parser for both forms (their options overlap): --migrate PATH…
+    -- strangles legacy code in an existing repo; else --pack PACK NAME
+    -- starts a project (missing pieces are a usage error at run time)
     initP =
-      (\p n d pl -> InitCmd (T.pack p) (T.pack n) d pl)
-        <$> strOption (long "pack" <> metavar "PACK" <> help "A pack's directory, or a name under [packs] in ~/.config/olifant/config.toml")
-        <*> strArgument (metavar "NAME" <> help "The project's name (and its folder, unless --dir)")
+      ( \migrate pack name dir plan -> case migrate of
+          [] -> InitCmd (maybe "" T.pack pack) (maybe "" T.pack name) dir plan
+          paths -> InitMigrateCmd paths (maybe "python-htmx" T.pack pack)
+      )
+        <$> many (strOption (long "migrate" <> metavar "PATH" <> help "In an existing repo: legacy code to strangle (repeat for more)"))
+        <*> optional (strOption (long "pack" <> metavar "PACK" <> help "A pack's directory, or a name under [packs] in ~/.config/olifant/config.toml (with --migrate: the target architecture, default python-htmx)"))
+        <*> optional (strArgument (metavar "NAME" <> help "The project's name (and its folder, unless --dir)"))
         <*> optional (strOption (long "dir" <> metavar "DIR" <> help "Where to make it (default: ./NAME)"))
         <*> switch (long "plan" <> help "Show what it would make; write nothing")
     completeP =
