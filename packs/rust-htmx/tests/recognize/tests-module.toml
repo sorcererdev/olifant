@@ -1,0 +1,12 @@
+path   = "billing/billing-service/src/tests.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn adds() {
+        assert_eq!(2 + 2, 4);
+    }
+}
+'''

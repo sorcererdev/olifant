@@ -5,6 +5,8 @@
 module Olifant.Recognize.Inputs
   ( inputsFor
   , validInputs
+  , primaryKinds
+  , declaresAny
   ) where
 
 import Data.Char (isAlphaNum, isSpace)
@@ -63,6 +65,20 @@ declarations g c = go (templateSegments (cvTemplate c))
     suffixOf = \case
       Lit l : _ -> T.takeWhile (\x -> isAlphaNum x || x == '_') l
       _ -> ""
+
+-- | The kinds of thing a convention's file is about: the keywords of its
+-- template's main declarations (a name with no suffix: `pub struct
+-- {= Command =}`, `class {= Command =}:`), else of all its declarations;
+-- none when it declares nothing by a name.
+primaryKinds :: Generator -> Convention -> [Text]
+primaryKinds g c =
+  let ds = declarations g c
+      primary = [k | (k, _, suffix) <- ds, T.null suffix]
+   in if null primary then [k | (k, _, _) <- ds] else primary
+
+-- | Does a text declare anything with one of these keywords?
+declaresAny :: [Text] -> Text -> Bool
+declaresAny kinds text = any (\k -> not (null (declared k text))) kinds
 
 -- | The names a text declares with a keyword, in order.
 declared :: Text -> Text -> [Text]

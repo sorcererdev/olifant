@@ -1,0 +1,8 @@
+path   = "billing/billing-service/src/close_account.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+use std::sync::Arc;
+
+use thiserror::Error;
+'''

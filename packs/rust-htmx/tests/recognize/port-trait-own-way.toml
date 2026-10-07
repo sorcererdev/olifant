@@ -1,0 +1,12 @@
+path   = "billing/billing-service/src/ports/payment_repository.rs"
+expect = "service-repository"
+band   = "offer"
+inputs = { service = "billing", aggregate = "payment" }
+text = '''
+use crate::models::Payment;
+
+pub trait PaymentRepository {
+    fn get(&self, id: &str) -> Option<Payment>;
+    fn save(&self, payment: Payment);
+}
+'''

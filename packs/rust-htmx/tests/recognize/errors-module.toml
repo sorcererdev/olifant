@@ -1,0 +1,14 @@
+path   = "billing/billing-service/src/errors.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum BillingError {
+    #[error("not found")]
+    NotFound,
+    #[error("invalid: {0}")]
+    Invalid(String),
+}
+'''

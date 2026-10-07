@@ -78,7 +78,15 @@ recognizeIn ix gens (Change path text)
     -- each generator's best file (a command's module, not its test, for a module)
     byGenerator = sortOn (\s -> Down (total s, scShape s)) (M.elems (M.fromListWith better [(cvGenerator (scConvention s), s) | s <- scored]))
     better a b = if (total a, scShape a) >= (total b, scShape b) then a else b
-    score c =
+    -- a convention about a struct (a class, a fn) is not what code declaring
+    -- none is, wherever it sits: an enum in a service's src/ is no command
+    score c
+      | Just g <- M.lookup (cvGenerator c) generators
+      , kinds <- primaryKinds g c
+      , not (null kinds)
+      , not (declaresAny kinds text) =
+          Scored c 0 0 "the template"
+      | otherwise =
       let refs = [(name, containment (ixWeights ix) mine r) | (name, r) <- cvReferences c, T.unpack name /= path]
           (like, shape) = maybe ("the template", 0) id (listToMaybe (sortOn (Down . snd) refs))
           place

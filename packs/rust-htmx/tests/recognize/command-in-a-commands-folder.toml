@@ -1,0 +1,19 @@
+path   = "billing/billing-service/src/commands/close_account.rs"
+expect = "service-command"
+band   = "hint"
+known  = "off its place (a commands/ folder rust-htmx does not use): a quiet hint"
+text = '''
+#[derive(Clone)]
+pub struct CloseAccount {}
+
+#[derive(Clone, Debug)]
+pub struct CloseAccountInput {}
+
+pub type CloseAccountOutput = Result<(), CloseAccountFailure>;
+
+impl CloseAccount {
+    pub async fn close_account(&self, _input: CloseAccountInput) -> CloseAccountOutput {
+        todo!("close_account")
+    }
+}
+'''

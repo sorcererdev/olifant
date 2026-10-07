@@ -18,7 +18,7 @@ import Olifant.Generator (Generator)
 import Olifant.Language (noSyntax)
 import Olifant.Workspace (diskWorkspace)
 import Olifant.Toml qualified as Toml
-import Data.List (sort)
+import Data.List (isInfixOf, sort)
 import Text.Printf (printf)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Olifant.Model (Backend (..))
@@ -187,6 +187,27 @@ indexSpec = describe "the index" $ do
     let ix = buildIndex (pythonKeywords gens) gens files
     wDefault (ixWeights ix) `shouldBe` log (2 + fromIntegral (length files))
 
+-- | A pack's generators of a language (loaded), its fixture app's files of
+-- that language, and the language's keywords (its adapter's and its
+-- templates').
+packProject :: Text -> String -> Text -> IO ([Generator], [(FilePath, Text)], Keywords)
+packProject pack ext lang = do
+  cat <- either (fail . show) pure =<< openPackCatalog (diskWorkspace ".") [(pack, "packs/" <> T.unpack pack)]
+  gens <- fmap concat . forM (catalogEntries cat) $ \e -> either (const []) pure <$> loadGenerator (diskWorkspace ".") noSyntax cat e
+  let root = "packs/" <> T.unpack pack <> "/fixtures/app"
+  paths <- filter (\p -> takeExtension p == ext && not ("/target/" `isInfixOf` p)) <$> walk root
+  files <- forM paths $ \p -> (makeRelative root p,) <$> TIO.readFile p
+  adapter <- TIO.readFile ("packs/" <> T.unpack pack <> "/languages/" <> T.unpack lang <> ".toml")
+  language <- either (fail . T.unpack) pure (parseLanguage lang ("packs/" <> T.unpack pack) adapter)
+  let mine = [g | g <- gens, genLanguage g == lang]
+  pure (mine, files, keywordsFrom (langComment language) [t | g <- mine, Create {editSource = t} <- genEdits g] (langKeywords language))
+  where
+    walk d = do
+      names <- listDirectory d
+      fmap concat . forM names $ \n -> do
+        isDir <- doesDirectoryExist (d </> n)
+        if isDir then walk (d </> n) else pure [d </> n]
+
 -- | python-htmx's generators (loaded) and its fixture app's .py files.
 pythonProject :: IO ([Generator], [(FilePath, Text)])
 pythonProject = do
@@ -248,29 +269,41 @@ recognizeSpec = describe "recognition" $ do
     let bare = buildIndex (pythonKeywords gens) gens []
         r = recognizeIn bare gens (Change "src/bistro/booking/commands/close_table.py" "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass CloseTableInput:\n    table_id: str\n\nclass CloseTable:\n    def handle(self, input: CloseTableInput):\n        raise NotImplementedError\n")
     fmap (\x -> (rcGenerator x, rcBand x)) r `shouldBe` Just (GeneratorId "python-htmx/command", Offer)
-  cases <- runIO (corpus "python-htmx")
-  describe "the python-htmx corpus" $ do
-    forM_ cases $ \c -> it (caseName c) $ do
-      let r = recognise (casePath c) (caseText c)
-          band = maybe "nothing" (bandText . rcBand) r
-          generator = fmap (T.drop (T.length "python-htmx/") . generatorIdText . rcGenerator) r
-      (caseName c, band) `shouldBe` (caseName c, caseBand c)
-      case r of
-        Just x -> do
-          generator `shouldSatisfy` maybe False (\gen -> maybe (gen `elem` T.splitOn "|" (caseExpect c)) (== gen) (caseAs c))
-          fmap (T.drop (T.length "python-htmx/") . generatorIdText) (rcOr x) `shouldBe` caseOr c
-          [(k, v) | (k, v) <- caseInputs c, lookup k (rcInputs x) /= Just v] `shouldBe` []
-        Nothing -> pure ()
-    it "(b) never offers less precisely, nor finds less, than it does today (offer precision ≥ 0.9, recall with hints ≥ 0.88)" $ do
-      let judged = [(c, recognise (casePath c) (caseText c)) | c <- cases]
-          right c x = any (`elem` T.splitOn "|" (caseExpect c)) (map (T.drop (T.length "python-htmx/") . generatorIdText) (rcGenerator x : maybe [] pure (rcOr x)))
-          offers = [(c, x) | (c, Just x) <- judged, rcBand x == Offer]
-          precision = ratio (length [() | (c, x) <- offers, right c x]) (length offers)
-          positives = [(c, r) | (c, r) <- judged, caseExpect c /= "nothing"]
-          recall = ratio (length [() | (c, Just x) <- positives, right c x]) (length positives)
-      printf "      corpus: %d cases, offer precision %.2f, recall %.2f\n" (length cases) precision recall
-      (precision >= 0.9, recall >= 0.88) `shouldBe` (True, True)
+  forM_ [("python-htmx", ".py", "python"), ("rust-htmx", ".rs", "rust")] $ \(pack, ext, lang) -> do
+    (pgens, pfiles, kw) <- runIO (packProject pack ext lang)
+    cases <- runIO (corpus pack)
+    let pix = buildIndex kw pgens pfiles
+        precognise path text = recognizeIn pix pgens (Change path text)
+        short = T.drop (T.length pack + 1) . generatorIdText
+    describe ("the " <> T.unpack pack <> " corpus") $ do
+      forM_ cases $ \c -> it (caseName c) $ do
+        let r = precognise (casePath c) (caseText c)
+            band = maybe "nothing" (bandText . rcBand) r
+            generator = fmap (short . rcGenerator) r
+        (caseName c, band) `shouldBe` (caseName c, caseBand c)
+        case r of
+          Just x -> do
+            generator `shouldSatisfy` maybe False (\gen -> maybe (gen `elem` T.splitOn "|" (caseExpect c)) (== gen) (caseAs c))
+            fmap short (rcOr x) `shouldBe` caseOr c
+            [(k, v) | (k, v) <- caseInputs c, lookup k (rcInputs x) /= Just v] `shouldBe` []
+          Nothing -> pure ()
+      it "(b) never offers less precisely, nor finds less, than it does today" $ do
+        let judged = [(c, precognise (casePath c) (caseText c)) | c <- cases]
+            right c x = any (`elem` T.splitOn "|" (caseExpect c)) (map short (rcGenerator x : maybe [] pure (rcOr x)))
+            offers = [(c, x) | (c, Just x) <- judged, rcBand x == Offer]
+            precision = ratio (length [() | (c, x) <- offers, right c x]) (length offers)
+            positives = [(c, r) | (c, r) <- judged, caseExpect c /= "nothing"]
+            recall = ratio (length [() | (c, Just x) <- positives, right c x]) (length positives)
+            (pFloor, rFloor) = floors pack
+        printf "      %s corpus: %d cases, offer precision %.2f, recall %.2f\n" (T.unpack pack) (length cases) precision recall
+        (precision >= pFloor, recall >= rFloor) `shouldBe` (True, True)
   where
+    -- each corpus's floors: what it scores today (a change that lowers either fails)
+    floors :: Text -> (Double, Double)
+    floors = \case
+      "python-htmx" -> (0.9, 0.88)
+      "rust-htmx" -> (1, 1)
+      _ -> (0, 0)
     ratio :: Int -> Int -> Double
     ratio a b = if b == 0 then 1 else fromIntegral a / fromIntegral b
     bandText = \case

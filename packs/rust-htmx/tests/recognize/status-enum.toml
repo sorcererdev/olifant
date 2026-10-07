@@ -1,0 +1,11 @@
+path   = "billing/billing-service/src/status.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+#[derive(Clone, Debug, PartialEq)]
+pub enum InvoiceStatus {
+    Draft,
+    Sent,
+    Paid,
+}
+'''

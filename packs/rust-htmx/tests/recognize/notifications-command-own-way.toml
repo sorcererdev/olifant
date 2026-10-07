@@ -1,0 +1,14 @@
+path   = "notifications/notifications-service/src/send_digest.rs"
+expect = "service-command"
+band   = "offer"
+text = '''
+pub struct SendDigest {
+    pub templates: std::sync::Arc<dyn crate::ports::email_template_repository::EmailTemplateRepository>,
+}
+
+impl SendDigest {
+    pub async fn send(&self, to: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+'''

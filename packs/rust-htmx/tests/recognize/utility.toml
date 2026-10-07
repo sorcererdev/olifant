@@ -1,0 +1,11 @@
+path   = "web-htmx/src/utils.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+pub fn slugify(text: &str) -> String {
+    text.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+}
+'''
