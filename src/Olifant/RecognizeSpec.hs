@@ -20,6 +20,9 @@ import Olifant.Workspace (diskWorkspace)
 import Olifant.Toml qualified as Toml
 import Data.List (sort)
 import Text.Printf (printf)
+import Data.IORef (modifyIORef', newIORef, readIORef)
+import Olifant.Model (Backend (..))
+import Olifant.Process (neverCancel)
 import Test.Hspec
 import Test.Hspec.Hedgehog (forAll, hedgehog, (===))
 import Data.Text (Text)
@@ -34,6 +37,7 @@ spec = describe "Olifant.Recognize" $ do
   indexSpec
   inputsSpec
   recognizeSpec
+  askSpec
   describe "shapes" $ do
     let kw = Keywords (S.fromList ["class", "def", "self", "return"]) "#"
     it "(a) keeps keywords and punctuation, and names become their case shape" $
@@ -292,3 +296,48 @@ corpus pack = do
         <*> Toml.optional "or" Toml.text t
         <*> (maybe [] M.toList <$> Toml.optional "inputs" (Toml.table >=> traverse Toml.text) t)
         <*> Toml.required "text" Toml.text t
+
+-- | The Recognizer port and the optional model recogniser (Task 7).
+askSpec :: Spec
+askSpec = describe "asking a model (optional)" $ do
+  (gens, files) <- runIO pythonProject
+  let ix = buildIndex (pythonKeywords gens) gens files
+      recognise path text = recognizeIn ix gens (Change path text)
+      ownWay = "from dataclasses import dataclass\n\n@dataclass\nclass CloseTableInput:\n    table_id: str\n\nclass CloseTable:\n    def __init__(self, bookings):\n        self.bookings = bookings\n\n    def handle(self, input):\n        return self.bookings.close(input.table_id)\n"
+      counting answer = do
+        asked <- newIORef (0 :: Int)
+        pure (asked, Recognizer (\_ cands -> modifyIORef' asked (+ 1) >> pure (map (const answer) cands)))
+  it "(a) is asked only when unsure: a hint, a choice, a rival — never a clear offer" $ do
+    (asked, r) <- counting Unsure
+    let Just clear = recognise "src/bistro/booking/commands/close_table.py" ownWay
+        Just hint = recognise "src/bistro/booking/close_table.py" ownWay
+    (rcBand clear, rcOr clear, rcBand hint) `shouldBe` (Offer, Nothing, Hint)
+    clear' <- consult r gens (Change "src/bistro/booking/commands/close_table.py" ownWay) clear {rcRival = Nothing}
+    readIORef asked `shouldReturn` 0
+    clear' `shouldBe` Just clear {rcRival = Nothing}
+    _ <- consult r gens (Change "src/bistro/booking/close_table.py" ownWay) hint
+    readIORef asked `shouldReturn` 1
+  it "(b) a yes makes a hint an offer, with the inputs it read; a no, nothing" $ do
+    let Just hint = recognise "src/bistro/booking/close_table.py" ownWay
+        yes = Recognizer (\_ cands -> pure [if genId g == rcGenerator hint then Yes [("command", "close_table"), ("service", "booking")] else No | g <- cands])
+        no = Recognizer (\_ cands -> pure (map (const No) cands))
+    Just upgraded <- consult yes gens (Change "src/bistro/booking/close_table.py" ownWay) hint
+    (rcBand upgraded, lookup "service" (rcInputs upgraded)) `shouldBe` (Offer, Just "booking")
+    consult no gens (Change "src/bistro/booking/close_table.py" ownWay) hint `shouldReturn` Nothing
+  it "(c) drops an answer's inputs outside their types; a malformed answer is unsure (Review Focus 4)" $ do
+    let Just hint = recognise "src/bistro/booking/close_table.py" ownWay
+        odd' = Recognizer (\_ cands -> pure [Yes [("command", "Not A Name!"), ("nonsense", "x")] | _ <- cands])
+    Just r <- consult odd' gens (Change "src/bistro/booking/close_table.py" ownWay) hint
+    (lookup "nonsense" (rcInputs r), lookup "command" (rcInputs r)) `shouldBe` (Nothing, Just "close_table")
+    decodeVerdicts [GeneratorId "python-htmx/command"] "no json here" `shouldBe` Left "the model's answer is not the JSON asked for"
+  it "(c) a backend that does not answer is unsure, not an error (Review Focus 4)" $ do
+    let r = curlRecognizer neverCancel 1 (OpenAICompatible "http://127.0.0.1:9" "nothing")
+    commandGen <- maybe (fail "no command") pure (lookup (GeneratorId "python-htmx/command") [(genId g, g) | g <- gens])
+    decide r (Change "x.py" ownWay) [commandGen] `shouldReturn` [Unsure]
+  it "(d) reads the documented answer, and asks with the candidates' names, inputs and templates" $ do
+    decodeVerdicts [GeneratorId "python-htmx/command", GeneratorId "python-htmx/query"]
+      "{\"answers\": [{\"generator\": \"python-htmx/command\", \"is\": \"yes\", \"inputs\": {\"command\": \"close_table\"}}, {\"generator\": \"python-htmx/query\", \"is\": \"no\"}]}"
+      `shouldBe` Right [Yes [("command", "close_table")], No]
+    commandGen <- maybe (fail "no command") pure (lookup (GeneratorId "python-htmx/command") [(genId g, g) | g <- gens])
+    let prompt = recognizerPrompt (Change "src/bistro/booking/close_table.py" ownWay) [commandGen]
+    mapM_ (\needle -> (needle, needle `T.isInfixOf` prompt) `shouldBe` (needle, True)) ["python-htmx/command", "Command", "command (ident)", "service (enum", "class SampleThing", "class CloseTable"]

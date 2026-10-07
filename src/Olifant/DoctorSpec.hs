@@ -19,7 +19,7 @@ local :: ModelConfig
 local = ModelConfig (Just "local") 2 120 [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]
 
 input :: ModelConfig -> DoctorInput
-input = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] []
+input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing
 
 -- Ports: these executables exist; the probe answers; these env vars are set.
 ports :: [String] -> Either Text () -> [Text] -> DoctorPorts Identity
@@ -63,14 +63,19 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
   it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"env\", \"UV_PROJECT_ENVIRONMENT=/c/venv\", \"uv\", \"run\", \"pyright\"]", "format = \"pyright-json\""])
-        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local))
+        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing))
         [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
     checkStatus c `shouldBe` Bad
     checkFix c `shouldSatisfy` maybe False ("brew install uv" `T.isInfixOf`)
   it "reports a broken language adapter or generator as an error" $ do
     let broken = DoctorInput (Just "/proj") ["p"] [] [("p/languages/x.toml", "bad grammar")] [("p/gen", "unknown key")]
-        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local))
+        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing))
     statusOf "language p/languages/x.toml" cs `shouldBe` Just Bad
     statusOf "generator p/gen" cs `shouldBe` Just Bad
+  it "(e) checks that the recognition model ([recognize] model) is a configured backend" $ do
+    let run name = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diRecognizeModel = Just name}))
+    statusOf "recognize model" (run "nope") `shouldBe` Just Bad
+    statusOf "recognize model" (run "local") `shouldBe` Just Ok
+    statusOf "recognize model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))) `shouldBe` Nothing
   it "outside a project: config is an error" $
-    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local))) `shouldBe` Just Bad
+    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local Nothing))) `shouldBe` Just Bad

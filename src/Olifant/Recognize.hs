@@ -10,12 +10,13 @@ module Olifant.Recognize
   , module Olifant.Recognize.Paths
   , module Olifant.Recognize.Index
   , module Olifant.Recognize.Inputs
-  , Change (..)
-  , Band (..)
-  , Recognition (..)
+  , module Olifant.Recognize.Types
+  , module Olifant.Recognize.Ask
   , recognizeIn
   ) where
 
+import Olifant.Recognize.Ask
+import Olifant.Recognize.Types
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (isJust, listToMaybe)
@@ -23,39 +24,13 @@ import Data.Ord (Down (..))
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Generator (Generator, GeneratorId, GeneratorWith (..))
+import Olifant.Generator (Generator, GeneratorWith (..))
 import Olifant.Recognize.Index
 import Olifant.Recognize.Inputs
 import Olifant.Recognize.Paths
 import Olifant.Recognize.Shape
 import Olifant.Recognize.Weights
 import System.FilePath (takeDirectory, takeFileName)
-
--- | A file as it is now (project-relative), or the region around an edit.
-data Change = Change {chPath :: FilePath, chText :: Text}
-  deriving stock (Eq, Show)
-
--- | An offer (`⚡ … Tab: review`) or a quiet hint.
-data Band = Offer | Hint
-  deriving stock (Eq, Show)
-
-data Recognition = Recognition
-  { rcGenerator :: GeneratorId
-  , rcName :: Text
-  , rcBand :: Band
-  , rcScore :: Double
-  , rcShape :: Double
-  , rcPlace :: Double
-  , rcLike :: Text
-  , rcInputs :: [(Text, Text)]
-  , -- | a choice: another generator nearly as likely
-    rcOr :: Maybe GeneratorId
-  , -- | another generator the shape favours over this one (and how much):
-    -- where a model's answer is worth asking
-    rcRival :: Maybe (GeneratorId, Double)
-  , rcReasons :: [Text]
-  }
-  deriving stock (Eq, Show)
 
 data Scored = Scored {scConvention :: Convention, scShape :: Double, scPlace :: Double, scLike :: Text}
 

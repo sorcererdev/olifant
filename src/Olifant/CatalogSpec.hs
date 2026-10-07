@@ -60,6 +60,12 @@ genInto root cat ref = do
 
 spec :: Spec
 spec = describe "catalog" $ do
+  describe "[recognize] (convention recognition)" $ do
+    it "reads enabled and model; on, and no model, by default" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[recognize]\nenabled = false\nmodel = \"local\"\n")] $ \_ cat ->
+        catalogRecognize cat `shouldBe` RecognizeConfig False (Just "local")
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
+        catalogRecognize cat `shouldBe` RecognizeConfig True Nothing
   describe "the pack cache (olifant lsp: many projects, packs parsed once)" $ do
     let gen desc = "description = \"" <> desc <> "\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a.x\"\ntext = \"a\"\n"
         config pack = "[packs]\npython-htmx = { path = \"" <> pack <> "\" }\n"

@@ -93,10 +93,12 @@ library
     Olifant.ProjectModel
     Olifant.Query
     Olifant.Recognize
+    Olifant.Recognize.Ask
     Olifant.Recognize.Index
     Olifant.Recognize.Inputs
     Olifant.Recognize.Paths
     Olifant.Recognize.Shape
+    Olifant.Recognize.Types
     Olifant.Recognize.Weights
     Olifant.Region
     Olifant.Rules
@@ -214,10 +216,12 @@ test-suite spec
     Olifant.Query
     Olifant.QuerySpec
     Olifant.Recognize
+    Olifant.Recognize.Ask
     Olifant.Recognize.Index
     Olifant.Recognize.Inputs
     Olifant.Recognize.Paths
     Olifant.Recognize.Shape
+    Olifant.Recognize.Types
     Olifant.Recognize.Weights
     Olifant.RecognizeSpec
     Olifant.Region
