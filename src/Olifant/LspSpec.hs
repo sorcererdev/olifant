@@ -1171,7 +1171,8 @@ generatePickerSpec = describe "the generate picker" $ do
       (v, _) <- inProcessWith ports dir $ do
         doc <- openDoc command "python"
         pick doc [("python-htmx/add-dependency", [])]
-      lookupKey "new" (fieldNamed "port" v) `shouldBe` Just (toJSON (["port", "repository"] :: [Text]))
+      -- full ids: a bare name could be another pack's, or a local generator
+      lookupKey "new" (fieldNamed "port" v) `shouldBe` Just (toJSON (["python-htmx/port", "python-htmx/repository"] :: [Text]))
   it "(j) rust-htmx's + New repository gives the port's name as its ports/ file is named" $
     withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
       s <- newServerState ports

@@ -12,7 +12,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Actions (Action (..))
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), placeAt, planOptions, planWith, showGenerator)
-import Olifant.Catalog (CatalogEntry (..), describeCatalogError, findEntry, loadGenerator)
+import Olifant.Catalog (CatalogEntry (..), describeCatalogError, findEntry, loadGenerator, packOfEntry, resolveEntry)
 import Olifant.Generation (GenerationError, Plan (..), ProgressEvent, Step (..), describeConflict, describeGenerationError)
 import Olifant.Generator (ChoiceView (..), EditWith (..), Generator, GeneratorDef, GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), buildEnv, describeEnvError, generatorIdText)
 import Olifant.Naming qualified as N
@@ -154,7 +154,9 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
               needs f = case lookup (fName f) views of
                 Just (DependsOn ns) -> f {fNeeds = ns}
                 _ -> f
-              fields = map (needs . fromNew newValues) (fieldsFor d (newValues ++ user) fromPath fromCursor)
+              -- `new` as full ids (a bare name could be another pack's, or a local one)
+              ids f = f {fNew = [either (const n) (generatorIdText . entryId) (resolveEntry (prCatalog project) (packOfEntry entry) n) | n <- fNew f]}
+              fields = map (ids . needs . fromNew newValues) (fieldsFor d (newValues ++ user) fromPath fromCursor)
               more = [(fName f, v) | f <- fields, Just v <- [fValue f], fSource f `elem` [Just OnlyChoice, Just FromDefault], fName f `M.notMember` known]
           if n <= 0 || null more then pure (d, fields) else go (n - 1) (extra ++ more)
     -- a value a `+ New` step makes is not among the choices yet: the plan's
