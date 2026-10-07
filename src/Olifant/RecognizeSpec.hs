@@ -29,6 +29,7 @@ spec = describe "Olifant.Recognize" $ do
   weightsSpec
   pathsSpec
   indexSpec
+  inputsSpec
   describe "shapes" $ do
     let kw = Keywords (S.fromList ["class", "def", "self", "return"]) "#"
     it "(a) keeps keywords and punctuation, and names become their case shape" $
@@ -194,3 +195,28 @@ pythonProject = do
 
 pythonKeywords :: [Generator] -> Keywords
 pythonKeywords gens = keywordsFrom "#" [t | g <- gens, Create {editSource = t} <- genEdits g] ["class", "def", "self", "return", "import", "from"]
+
+-- | Reading inputs: the path, aligned class names, siblings; validated (Task 5).
+inputsSpec :: Spec
+inputsSpec = describe "inputs" $ do
+  let setup = do
+        (gens, files) <- pythonProject
+        let ix = buildIndex (pythonKeywords gens) gens files
+        case ([g | g <- gens, genId g == GeneratorId "python-htmx/command"], [c | c <- ixConventions ix, cvGenerator c == GeneratorId "python-htmx/command", ppGlob (cvPattern c) == "src/*/*/commands/*.py"]) of
+          (g : _, c : _) -> pure (g, c)
+          _ -> fail "no python-htmx/command convention"
+  it "(a) off its place: the class name, its template's suffix stripped (CloseTableInput is not the command)" $ do
+    (g, c) <- setup
+    lookup "command" (inputsFor g c "src/bistro/booking/close_table.py" "class CloseTableInput:\n    table_id: str\n\nclass CloseTable:\n    def run(self):\n        pass\n")
+      `shouldBe` Just "close_table"
+  it "(b) at its place, the path wins over the class name" $ do
+    (g, c) <- setup
+    lookup "command" (inputsFor g c "src/bistro/booking/commands/seat_party.py" "class Something:\n    pass\n") `shouldBe` Just "seat_party"
+  it "(c) the folder's siblings give the inputs they share (app, service)" $ do
+    (g, c) <- setup
+    let got = inputsFor g c "src/bistro/booking/close_table.py" "class CloseTable:\n    def run(self):\n        pass\n"
+    (lookup "app" got, lookup "service" got) `shouldBe` (Just "bistro", Just "booking")
+  it "(d) keeps only declared inputs whose values fit their type" $ do
+    (g, _) <- setup
+    validInputs g [("command", "close_table"), ("nonsense", "x"), ("command2", "y")] `shouldBe` [("command", "close_table")]
+    validInputs g [("command", "Not A Name!")] `shouldBe` []

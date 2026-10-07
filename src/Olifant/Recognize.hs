@@ -6,8 +6,10 @@ module Olifant.Recognize
   , module Olifant.Recognize.Weights
   , module Olifant.Recognize.Paths
   , module Olifant.Recognize.Index
+  , module Olifant.Recognize.Inputs
   ) where
 
+import Olifant.Recognize.Inputs
 import Olifant.Recognize.Index
 import Olifant.Recognize.Paths
 import Olifant.Recognize.Shape
