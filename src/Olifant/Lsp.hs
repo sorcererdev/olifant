@@ -244,7 +244,11 @@ handlers env =
           Nothing -> respond (Right (listJson True (const []) (const M.empty) [] []))
           Just project -> do
             (entries, broken, views) <- liftIO (listGenerators (envPorts env) project True)
-            respond (Right (listJson True (subsOf (prCatalog project)) views entries broken))
+            -- with a position: which apply at the cursor (the picker ranks them first)
+            here <- case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
+              (Just path, Just (line, col)) -> S.fromList . map (actGenerator . fst) <$> liftIO (withSnapshot env (actionsFor path (line + 1, col + 1)))
+              _ -> pure S.empty
+            respond (Right (withHere here (listJson True (subsOf (prCatalog project)) views entries broken)))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/choices")) $ \req respond -> do
         let params = req ^. L.params
             field k = case params of Object o -> KM.lookup k o; _ -> Nothing
@@ -489,6 +493,32 @@ everything :: FilePath -> GlobPattern
 everything dir = GlobPattern (InR (RelativePattern (InR (filePathToUri dir)) (Pattern "**/*")))
 
 -- | The project of the document a request names (`textDocument.uri`).
+-- | A request's document, as a path.
+documentPath :: Value -> Maybe FilePath
+documentPath = \case
+  Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
+  _ -> Nothing
+
+-- | A request's `position` (0-based line and character), if it has one.
+positionOf :: Value -> Maybe (Int, Int)
+positionOf = \case
+  Object o
+    | Just (Object p) <- KM.lookup "position" o
+    , Just (Number l) <- KM.lookup "line" p
+    , Just (Number c) <- KM.lookup "character" p ->
+        (,) <$> toBoundedInteger l <*> toBoundedInteger c
+  _ -> Nothing
+
+-- | Each listed generator marked with whether it applies at the cursor.
+withHere :: S.Set T.Text -> Value -> Value
+withHere here = \case
+  Object o | Just (Aeson.Array gs) <- KM.lookup "generators" o -> Object (KM.insert "generators" (Aeson.Array (fmap mark gs)) o)
+  v -> v
+  where
+    mark = \case
+      Object g | Just (String i) <- KM.lookup "id" g -> Object (KM.insert "here" (Bool (i `S.member` here)) g)
+      g -> g
+
 projectOfRequest :: Env -> Value -> IO (Maybe Project)
 projectOfRequest env params = case params of
   Object o

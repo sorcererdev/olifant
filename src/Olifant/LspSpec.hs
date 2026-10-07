@@ -16,6 +16,7 @@ import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, 
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -73,6 +74,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   completionSpec
   followupsSpec
   recognitionSpec
+  generatePickerSpec
   holesSpec
   pickerSpec
   conventionsSpec
@@ -1088,6 +1090,24 @@ withProject files act = withSystemTempDirectory "olifant-lsp" $ \dir0 -> do
   act dir
 
 -- | Recognitions as suggestions (convention recognition, Task 8).
+-- | The generate picker (the float's list, form and live preview).
+generatePickerSpec :: Spec
+generatePickerSpec = describe "the generate picker" $ do
+  let command = "src/bistro/booking/commands/create_booking.py"
+  it "(a) olifant/generators gives each one's kind and summary, and which apply at the cursor" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (44 :: Int), "character" .= (30 :: Int)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      let gens = case lookupKey "generators" v of Just (Array a) -> toList a; _ -> []
+          byId i = fromMaybe Aeson.Null (listToMaybe [g | g <- gens, lookupKey "id" g == Just (String i)])
+      lookupKey "kind" (byId "python-htmx/command") `shouldBe` Just (String "create")
+      lookupKey "summary" (byId "python-htmx/command") `shouldSatisfy` maybe False (/= String "")
+      lookupKey "here" (byId "python-htmx/add-dependency") `shouldBe` Just (Bool True)
+      lookupKey "here" (byId "python-htmx/command") `shouldBe` Just (Bool False)
+
 recognitionSpec :: Spec
 recognitionSpec = describe "recognition: this looks like a command" $ do
   let newCommand = "src/bistro/booking/commands/close_table.py"
