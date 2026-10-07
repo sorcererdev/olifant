@@ -391,8 +391,25 @@ checkEntry :: Monad m => Workspace m -> Syntax m -> Catalog -> CatalogEntry -> m
 checkEntry root syntax cat entry =
   loadGenerator root syntax cat entry >>= \case
     Left err -> pure (Just (describeCatalogError err))
-    Right _ -> listToMaybe . catMaybes <$> traverse targetProblem (concatMap fixedTargets (genEdits (entryDefinition entry)))
+    Right _ -> case newProblems of
+      why : _ -> pure (Just why)
+      [] -> listToMaybe . catMaybes <$> traverse targetProblem (concatMap fixedTargets (genEdits (entryDefinition entry)))
   where
+    -- an enum's `new`: generators of the pack, each template over their values
+    newProblems =
+      [ why
+      | i <- genInputs (entryDefinition entry)
+      , (n, t) <- inputNew i
+      , Just why <- [newProblem (inputName i) n t]
+      ]
+    newProblem input n t = case resolveEntry cat (packOfEntry entry) n of
+      Left _ -> Just ("input " <> input <> ": new names no generator `" <> n <> "`")
+      Right other ->
+        let d = entryDefinition other
+            known = S.fromList (map inputName (genInputs d) ++ map fst (genDerived d))
+         in case S.toList (freeVariables t `S.difference` known) of
+              v : _ -> Just ("input " <> input <> ": new " <> n <> ": {= " <> v <> " =} is not an input or derived value of " <> n)
+              [] -> Nothing
     fixedTargets = \case
       Insert path anchors _ _ -> [(templateSource path, templateSource t) | AtPhrase t <- anchors, S.null (freeVariables t)]
       _ -> []
