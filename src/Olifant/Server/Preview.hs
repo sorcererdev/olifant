@@ -15,6 +15,7 @@ import Olifant.App (PlanOptions (..), Ports (..), Project (..), placeAt, planOpt
 import Olifant.Catalog (CatalogEntry (..), describeCatalogError, findEntry, loadGenerator, packOfEntry, resolveEntry)
 import Olifant.Generation (GenerationError, Plan (..), ProgressEvent, Step (..), describeConflict, describeGenerationError)
 import Olifant.Generator (ChoiceView (..), EditWith (..), Generator, GeneratorDef, GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), buildEnv, describeEnvError, generatorIdText)
+import Olifant.Holes (Marker (..), splitMarkers)
 import Olifant.Naming qualified as N
 import Olifant.Preview (Field (..), Source (..), fieldsFor, markValue, unmark)
 import Olifant.Recognize (invertPath, pathPattern)
@@ -67,9 +68,12 @@ previewFor path (line, col) steps s =
       ScalarInput IdentS : _ -> True
       _ -> False
     optional g n = maybe False inputOptional (listToMaybe [i | i <- genInputs g, inputName i == n])
+    -- holes as ⟨name⟩ (what you or the model will write): the text with
+    -- its hole markers, where the plan kept one
+    shown plan p t = maybe t (T.concat . map (either (\m -> "⟨" <> markerName m <> "⟩") id) . splitMarkers) (M.lookup p (planMarked plan))
     unmarked names plan =
       plan
-        { planWrites = M.fromList [(back names p, unmark names t) | (p, t) <- M.toList (planWrites plan)]
+        { planWrites = M.fromList [(back names p, unmark names (shown plan p t)) | (p, t) <- M.toList (planWrites plan)]
         , planBefore = M.mapKeys (back names) (planBefore plan)
         }
     back names = T.unpack . unmark names . T.pack
