@@ -1178,6 +1178,19 @@ generatePickerSpec = describe "the generate picker" $ do
       let file = root </> "shop/billing/billing-service/src/cancel_invoice.rs"
       (_, pv) <- previewFor file (0, 0) [PickStep "rust-htmx/service-repository" [("service", "billing"), ("aggregate", "payment")] (Just (1, "port")), PickStep "rust-htmx/add-port" [("service", "billing"), ("command", "cancel_invoice")] Nothing] s
       [(fValue f, fSource f) | fs <- drop 1 (pvFields pv), f <- fs, fName f == "port"] `shouldBe` [(Just "payment_repository", Just FromNew)]
+  sequential . it "(k) previews fast: 20 round-trips in the fixture, each a different name (median under 50 ms)" $
+    withPython [] $ \ports dir -> do
+      (times, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        _ <- pick doc [("python-htmx/command", [])]
+        forM [1 .. 20 :: Int] $ \i -> do
+          t0 <- liftIO getCurrentTime
+          _ <- pick doc [("python-htmx/command", [("command", "close_table_" <> T.pack (show i))])]
+          t1 <- liftIO getCurrentTime
+          pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+      let median = sort times !! 10
+      liftIO (putStrLn ("      picker preview: median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms"))
+      median `shouldSatisfy` (< 50)
   it "(h) olifant/plan plans steps as one plan" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do

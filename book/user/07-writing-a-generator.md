@@ -257,6 +257,7 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 |---|---|---|
 | `name` | no | what editors show ("Add Command Dependency"); without it, made from the id (`command-dependency` → "Command Dependency"). The id is still the directory name |
 | `description` | yes | one line, shown by `list` and `show` |
+| `summary` | no | a short line for lists and pickers (under 60 characters; the generate picker's list and form show it). Without it, the description up to its first `:`, `;` or `—` |
 | `language` | yes | names the language adapter whose `[check]` runs this generator's `complete` edits (chapter 4); otherwise informational |
 | `version` | no (1) | shown in `show --json`; nothing else reads it yet |
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
@@ -290,6 +291,22 @@ prompt = "Page name (e.g. counter, article_list)"   # shown by `show`
 | `bool` | `true` / `false` (any capitalisation) | a bool |
 | `enum` | one of `choices = [...]`, or `one_of = "NAME"`: one of the values a `[query.NAME]` finds in the project, which may depend on the inputs above it ([chapter 6](06-queries-and-choices.md#one_of-inputs-whose-values-come-from-the-project)) | text |
 | `list` | comma-separated items, `of` one of the types above, or a record | a list |
+
+An enum may also say how to make **a new value**, for pickers: `new` names generators of the
+same pack, each with the template (over that generator's inputs and derived values) that gives
+this input's value. python-htmx's "Add a port" offers its existing ports and a new one:
+
+```toml
+[inputs.port]
+type   = "enum"
+one_of = "ports"
+new    = { repository = "{= port =}", port = "{= port|snake =}" }
+```
+
+The picker ends the choice with `+ New repository…` and `+ New port…`; picking one asks that
+generator's inputs in the same form, and both run as one plan: the repository, then the
+command taking `{= port =}` (the repository's derived `{entity}_repository`). The catalog
+checks each name is a generator of the pack and each template uses only its values.
 
 An `ident` that looks like a name followed by a type is refused, because it is almost always
 a mistake: `--set name="SetName String"` gets "looks like a name followed by other words (e.g.
