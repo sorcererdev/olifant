@@ -7,7 +7,7 @@ import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Newness (NewLines (..))
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
-import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined)
+import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
@@ -310,7 +310,7 @@ runCommand rt cwd fmt cat = \case
         emit rt fmt (object (["findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs] ++ reportJson fs)) (T.unlines (map (findingHuman olds) fs))
         pure ExitSuccess
       Nothing | baseline -> do
-        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
+        let checked = [p | p <- paths, any (\r -> isJust (ruleCovers (legacyOf (projectOf rt cat)) r p)) rules]
         (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf (projectOf rt cat)) (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked
         -- Debt only goes down: once a baseline exists, re-baselining keeps
         -- at most each key's old count, unless --accept-new (review I9).
@@ -334,7 +334,7 @@ runCommand rt cwd fmt cat = \case
           Just _ -> pure ([], [], M.empty) -- a findings run on the branch's changes
           Nothing -> refreshRegions ReportUnset (projectTools (portsOf rt) (projectOf rt cat)) ws 1 M.empty
         changed <- traverse (rtGitChanged rt (rtProjectDir rt)) changedSince
-        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
+        let checked = [p | p <- paths, any (\r -> isJust (ruleCovers (legacyOf (projectOf rt cat)) r p)) rules]
             touched f = case changed of
               Nothing -> True
               Just (Left _) -> True

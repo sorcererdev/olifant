@@ -15,6 +15,7 @@ module Olifant.Rules
   , parseRulesConfig
   , parseSeverity
   , checkFiles
+  , ruleCovers
   , fingerprint
   , markBaselined
   , suggestChoice
@@ -200,6 +201,13 @@ data Allow = Allow {alLine :: Int, alFile :: Bool, alRule :: Text, alReason :: M
 
 -- | Check files against the rules: findings (by line) and the exceptions
 -- that applied, or are stale.
+-- | Whether a rule's `files` covers a path (`{legacy}`: the project's
+-- legacy globs), with the path's slots.
+ruleCovers :: [Text] -> RuleDef -> FilePath -> Maybe [(Text, Text)]
+ruleCovers legacy r f
+  | ruleFiles r == "{legacy}" = if any (`matchesGlob` f) legacy then Just [] else Nothing
+  | otherwise = matchPathSlots (ruleFiles r) f
+
 -- | The rules' findings in FILES. LEGACY: the `[migrate] legacy` globs (a
 -- rule's `files = "{legacy}"`); NEWIN: which lines of a file are new since
 -- the base (asked only for files an `only = "new"` rule applies to).
@@ -221,10 +229,7 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
   pure (fs, exs ++ staleConfig)
   where
     known = map ruleId rules
-    -- `{legacy}`: any of the project's legacy globs (no slots)
-    slotsFor r f
-      | ruleFiles r == "{legacy}" = if any (`matchesGlob` f) legacy then Just [] else Nothing
-      | otherwise = matchPathSlots (ruleFiles r) f
+    slotsFor = ruleCovers legacy
     severityOf r = fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity config))
     where' globs = "paths " <> T.intercalate ", " globs
     one f = do

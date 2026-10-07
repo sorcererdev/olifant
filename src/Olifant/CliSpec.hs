@@ -102,6 +102,19 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
         m = lookupKey "migration" v
     (m >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 1 legacy function added (waitlist), legacy 3 → 4 functions; switches: 1 on, 0 off")
+  it "checks the files a {legacy} rule names (its [migrate] legacy globs)" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t"]
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"{legacy}\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", base <> "\ndef waitlist(r):\n    return r\n")
+          ]
+        baseOf _ _ p = pure (if p == "legacy/views.py" then Right ("c0ffee", Just base) else Right ("c0ffee", Nothing))
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    T.count "no-new-defs" out `shouldBe` 1
   it "reports a definition new since the base, and not one edited" $ do
     tmp <- getTemporaryDirectory
     let base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]
