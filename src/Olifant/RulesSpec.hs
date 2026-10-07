@@ -96,6 +96,12 @@ spec = describe "rules (spec §5.9)" $ do
       [(fRule f, fSeverity f, "no ref `main`" `T.isInfixOf` fMessage f) | f <- checkLegacy ["legacy/**"] (NoBase "no ref `main`")] `shouldBe` [("rule-inactive", Hint, True)]
     it "(e) {legacy} with no [migrate] legacy is a rule error" $
       map fRule (checkLegacy [] AllNew) `shouldBe` ["rule-failed"]
+    it "(g) a fix's `with` may use finding_name: the found definition's name" $ do
+      let ruleText = legacyRule <> "[[rules.no-new-defs.fixes]]\ngenerator = \"p/delegate\"\nwith = { name = \"{= finding_name =}\" }\n"
+          Right rs = parseRules ruleText
+          f = "legacy/views.py"
+          (fs, _) = runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity (NewIn (S.fromList [4, 5]))) rs [f] (\_ -> Identity (Just legacyFile)) [f])
+      [foSets o | fd <- fs, o <- fFixes fd] `shouldBe` [[("name", "b")]]
     it "(f) a file outside the legacy globs is not checked" $ do
       let Right rs = parseRules legacyRule
       fst (runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity AllNew) rs ["src/x.py"] (\_ -> Identity (Just legacyFile)) ["src/x.py"])) `shouldBe` []

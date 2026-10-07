@@ -267,7 +267,7 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
           querySyntax syntax l q content >>= \case
             -- One finding where matches nest: the outermost (an import and
             -- the path inside it are one finding).
-            Right ms -> traverse (\m -> withReplacements content l m (pairs f slots r) (finding f r slots (Just (range content m)) (matchText m))) (outermost ms)
+            Right ms -> traverse (\m -> withReplacements content l m (pairs f slots r (matchText m)) (finding f r slots (Just (range content m)) (matchText m))) (outermost ms)
             Left failure -> pure [cannotRun f r (describeSyntaxFailure failure)]
         (Nothing, _) -> pure [cannotRun f r "no language adapter for this file"]
         (_, Left err) -> pure [cannotRun f r (describeTemplateError err)]
@@ -280,10 +280,11 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
     -- A rule that cannot run is an error: a gate must never pass silently
     -- because it could not look (review C2).
     cannotRun f r why = Finding "rule-failed" f Nothing Error ("rule `" <> ruleId r <> "` could not run on " <> T.pack f <> ": " <> why) [] "" (fingerprint ["rule-failed", ruleId r])
-    finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (map snd (pairs f slots r)) what (fingerprint [ruleId r, what])
+    finding f r slots rng what = Finding (ruleId r) f rng (severityOf r) (ruleMessage r) (map snd (pairs f slots r what)) what (fingerprint [ruleId r, what])
     -- each fix definition with its offer (a fix whose inputs don't render is not offered)
-    pairs f slots r =
-      let env = M.fromList ([(k, VText v) | (k, v) <- slots] ++ [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f))])
+    -- `finding_name`: the found definition's name (after def/class/fn/struct)
+    pairs f slots r what =
+      let env = M.fromList ([(k, VText v) | (k, v) <- slots] ++ [("dir", VText (T.pack (takeDirectory f))), ("stem", VText (T.pack (takeBaseName f))), ("file", VText (T.pack f)), ("finding_name", VText (definedName what))])
        in [ (d, FixOffer (fdGenerator d) (fdLabel d) (sortOn fst sets) Nothing [])
           | d <- ruleFixes r
           , Right sets <- [maybe (Right slots) (traverse (\(k, t) -> (k,) <$> either (Left . describeTemplateError) Right (render env t))) (fdWith d)]
@@ -392,3 +393,12 @@ parseAllows prefix content = catMaybes [allowAt i l | (i, l) <- zip [1 ..] (T.li
           rest = T.strip (T.drop (T.length r) after)
           stripped = T.strip (T.dropWhile (`elem` ("—-:" :: String)) rest)
        in if T.null stripped then Nothing else Just stripped
+
+-- | The name a definition's text defines: the identifier after its keyword
+-- (`def b(x):` → b); else its first word.
+definedName :: Text -> Text
+definedName what = case T.words (T.map (\c -> if c `elem` ("(:<{" :: String) then ' ' else c) (fromMaybe "" (listToMaybe (T.lines what)))) of
+  kw : name : _ | kw `elem` ["def", "async", "class", "fn", "pub", "struct", "enum", "trait"] -> if kw `elem` ["async", "pub"] then definedName (T.unwords (name : drop 2 (T.words what))) else name
+  w : _ -> w
+  [] -> ""
+
