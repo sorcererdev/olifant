@@ -87,6 +87,7 @@ library
     Olifant.Lsp
     Olifant.Model
     Olifant.Naming
+    Olifant.Newness
     Olifant.Output
     Olifant.Preview
     Olifant.Preview.Fields
@@ -212,6 +213,8 @@ test-suite spec
     Olifant.ModelSpec
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.Newness
+    Olifant.NewnessSpec
     Olifant.Output
     Olifant.OutputSpec
     Olifant.Preview
