@@ -1208,6 +1208,15 @@ generatePickerSpec = describe "the generate picker" $ do
         doc <- openDoc testFile "python"
         pickWith doc [step "python-htmx/test-case" []] -- position 0: the request's own
       (lookupKey "main" v >>= lookupKey "first") `shouldSatisfy` maybe False (\case Number n -> n >= 1; _ -> False)
+  it "(n) a choice not made yet is never blamed: the preview asks for it, not a conflict its stand-in caused" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pickWith doc
+          [ object ["generator" .= ("python-htmx/repository" :: Text), "sets" .= object [], "makes" .= object ["step" .= (1 :: Int), "input" .= ("port" :: Text)]]
+          , step "python-htmx/add-dependency" [("kind", "commands"), ("command", "create_booking")]
+          ]
+      lookupKey "error" v `shouldSatisfy` maybe False (\case String t -> "entity" `T.isInfixOf` t && not ("already exists" `T.isInfixOf` t); _ -> False)
   it "(h) olifant/plan plans steps as one plan" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do

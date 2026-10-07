@@ -7,7 +7,7 @@ module Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPla
 import Control.Monad (foldM)
 import Data.List (nub)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Actions (Action (..))
@@ -55,7 +55,11 @@ previewFor path (line, col) steps s =
             placeAll (ssPorts s'') project rel line ws >>= \case
               Left why -> pure (Left why)
               Right gens -> checked <$> planWith (ssPorts s'') project planOptions {poAt = Just (rel, line + 1), poCancel = ssCancel s''} (zipWith (\g w -> Step g (M.fromList (wValues w))) gens ws)
+          -- choices not made yet were planned with a stand-in (their first
+          -- option): a failure is theirs to resolve, not a conflict to show
+          let standIns = nub [fName f | w <- ws, f <- wFields w, isNothing (fValue f), not (isName (wGenerator w) (fName f)), isJust (fChoices f)]
           pure $ case planned of
+            Left _ | not (null standIns) -> (s'', Preview fields Nothing False (Just ("choose " <> T.intercalate ", " standIns <> " to see what it writes")))
             Left why -> (s'', Preview fields Nothing False (Just (unmark missing why)))
             Right plan -> (s'', Preview fields (Just (unmarked missing plan)) complete Nothing)
   where
@@ -125,7 +129,11 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
                   fromPath = folderValues (entryDefinition entry) rel
                   fromCursor = [(n, v) | (a, _) <- acts, actGenerator a == generatorIdText (genId g), (n, v) <- actSets a]
               (d, fields) <- settle entry user newValues fromPath fromCursor
-              let values = [(fName f, v) | f <- fields, Just v <- [fValue f]] ++ (if marks then placeholders g fields else [])
+              -- the plan takes the values you set as you set them (the form may
+              -- show one cleared, the plan's own checks decide), then the rest
+              let known = map inputName (genInputs g) ++ map fst (genDerived g)
+                  given = [(k, v) | (k, v) <- newValues ++ user, k `elem` known]
+                  values = given ++ [(fName f, v) | f <- fields, fName f `notElem` map fst given, Just v <- [fValue f]] ++ (if marks then placeholders g [f | f <- fields, fName f `notElem` map fst given] else [])
                   w = Worked g fields values
               case psMakes st >>= \target -> (target,) <$> newTemplate target (psGenerator st) of
                 Nothing -> pure (Right (made, w : done))
@@ -161,7 +169,9 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
           if n <= 0 || null more then pure (d, fields) else go (n - 1) (extra ++ more)
     -- a value a `+ New` step makes is not among the choices yet: the plan's
     -- earlier step makes it
-    fromNew newValues f = if fName f `elem` map fst newValues then f {fSource = Just FromNew, fValid = True, fWhy = Nothing} else f
+    fromNew newValues f = case lookup (fName f) newValues of
+      Just v -> f {fValue = Just v, fSource = Just FromNew, fValid = True, fWhy = Nothing}
+      Nothing -> f
     -- a missing input planned as: a mark for a name, ⟨name⟩ for text,
     -- false, an enum's first choice
     placeholders g fields =
