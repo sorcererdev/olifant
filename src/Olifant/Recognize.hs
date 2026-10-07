@@ -3,6 +3,8 @@
 -- it is and with which inputs.
 module Olifant.Recognize
   ( module Olifant.Recognize.Shape
+  , module Olifant.Recognize.Weights
   ) where
 
 import Olifant.Recognize.Shape
+import Olifant.Recognize.Weights

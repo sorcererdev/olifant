@@ -94,6 +94,7 @@ library
     Olifant.Query
     Olifant.Recognize
     Olifant.Recognize.Shape
+    Olifant.Recognize.Weights
     Olifant.Region
     Olifant.Rules
     Olifant.Server
@@ -211,6 +212,7 @@ test-suite spec
     Olifant.QuerySpec
     Olifant.Recognize
     Olifant.Recognize.Shape
+    Olifant.Recognize.Weights
     Olifant.RecognizeSpec
     Olifant.Region
     Olifant.RegionSpec
