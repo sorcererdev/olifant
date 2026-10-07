@@ -39,6 +39,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Actions (matchPathSlots)
 import Olifant.Glob (matchesGlob)
+import Olifant.Newness (NewLines (..), wholeNew)
 import Olifant.Language (Language (..), Match (..), Rule, Syntax (..), describeSyntaxFailure, languageFor, renderRule, ruleFromTree)
 import Olifant.Template (Template, Value (..), describeTemplateError, freeVariables, parseTemplate, render)
 import Olifant.Toml (Table, inKey, list, onlyKeys, optional, parseToml, required, table, text)
@@ -62,6 +63,8 @@ data RuleDef = RuleDef
   , ruleSeverity :: Severity
   , ruleFixes :: [FixDef]
   -- ^ ranked: the first is offered first
+  , ruleOnlyNew :: Bool
+  -- ^ `only = "new"`: a match counts only if it is wholly new since the base
   }
   deriving stock (Show)
 
@@ -119,7 +122,7 @@ parseRules src = do
   traverse (\(k, v) -> inKey ("rules." <> k) (table v >>= rule k)) (M.toList rs)
   where
     rule k t = do
-      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix", "fixes", "since", "why"] t
+      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix", "fixes", "since", "why", "only"] t
       files <- required "files" text t
       exclude <- fromMaybe [] <$> optional "exclude" (list text) t
       message0 <- required "message" text t
@@ -138,7 +141,11 @@ parseRules src = do
         (Just m, Nothing) -> RuleMatch <$> inKey "match" (ruleFromTree m)
         (Nothing, Just m) -> RuleMissing <$> inKey "missing" (text m >>= tmpl >>= onlyFileVars)
         _ -> Left "a rule has exactly one of `match` (an ast-grep rule) or `missing` (a path that must exist)"
-      pure (RuleDef k files exclude check message severity (one ++ many))
+      onlyNew <- optional "only" text t >>= \case
+        Nothing -> Right False
+        Just "new" -> Right True
+        Just other -> Left ("`only = \"" <> other <> "\"`: the one choice is only = \"new\" (code new since the base)")
+      pure (RuleDef k files exclude check message severity (one ++ many) onlyNew)
     ruleSev s =
       parseSeverity s >>= \case
         Off -> Left "a rule's severity is hint, warn, error (turn it off in the project's [rules])"
@@ -193,11 +200,17 @@ data Allow = Allow {alLine :: Int, alFile :: Bool, alRule :: Text, alReason :: M
 
 -- | Check files against the rules: findings (by line) and the exceptions
 -- that applied, or are stale.
-checkFiles :: Monad m => Syntax m -> [Language] -> RulesConfig -> [RuleDef] -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [FilePath] -> m ([Finding], [Exception])
-checkFiles syntax langs config rules paths readFile' files = do
+-- | The rules' findings in FILES. LEGACY: the `[migrate] legacy` globs (a
+-- rule's `files = "{legacy}"`); NEWIN: which lines of a file are new since
+-- the base (asked only for files an `only = "new"` rule applies to).
+checkFiles :: Monad m => Syntax m -> [Language] -> RulesConfig -> [Text] -> (FilePath -> m NewLines) -> [RuleDef] -> [FilePath] -> (FilePath -> m (Maybe Text)) -> [FilePath] -> m ([Finding], [Exception])
+checkFiles syntax langs config legacy newIn rules paths readFile' files = do
   perFile <- traverse one files
-  let fs = concatMap fst perFile
-      exs = concatMap snd perFile
+  let fs = concatMap (\(a, _, _) -> a) perFile ++ inactive ++ noLegacy
+      exs = concatMap (\(_, b, _) -> b) perFile
+      -- a rule on new code with no base: said once, not per file
+      inactive = [Finding "rule-inactive" "" Nothing Hint ("rule `" <> r <> "` (only new code) is inactive: " <> why) [] "" (fingerprint ["rule-inactive", r]) | (r, why) <- nubBy (\a b -> fst a == fst b) (concatMap (\(_, _, c) -> c) perFile)]
+      noLegacy = [Finding "rule-failed" "" Nothing Error ("rule `" <> ruleId r <> "` names {legacy}, but the project has no [migrate] legacy") [] "" (fingerprint ["rule-failed", ruleId r]) | null legacy, not (null files), r <- rules, ruleFiles r == "{legacy}"]
       usedConfig = nub [w | Exception _ w _ False <- exs]
       staleConfig =
         [ Exception r (where' globs) (Just reason) True
@@ -208,14 +221,26 @@ checkFiles syntax langs config rules paths readFile' files = do
   pure (fs, exs ++ staleConfig)
   where
     known = map ruleId rules
+    -- `{legacy}`: any of the project's legacy globs (no slots)
+    slotsFor r f
+      | ruleFiles r == "{legacy}" = if any (`matchesGlob` f) legacy then Just [] else Nothing
+      | otherwise = matchPathSlots (ruleFiles r) f
     severityOf r = fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity config))
     where' globs = "paths " <> T.intercalate ", " globs
     one f = do
       content <- fromMaybe "" <$> readFile' f
       let lang = languageFor langs f
           allows = maybe [] (\l -> parseAllows (langComment l) content) lang
-          applicable = [(r, slots) | r <- rules, severityOf r /= Off, Just slots <- [matchPathSlots (ruleFiles r) f], not (any (`matchesGlob` f) (ruleExclude r))]
-      raw <- concat <$> traverse (\(r, slots) -> found f content lang r slots) applicable
+          applicable = [(r, slots) | r <- rules, severityOf r /= Off, Just slots <- [slotsFor r f], not (any (`matchesGlob` f) (ruleExclude r))]
+      raw0 <- concat <$> traverse (\(r, slots) -> found f content lang r slots) applicable
+      -- only = "new": a finding stands when its node is wholly new since the base
+      newness <- if any (ruleOnlyNew . fst) applicable then newIn f else pure AllNew
+      let onlyNew = [ruleId r | (r, _) <- applicable, ruleOnlyNew r]
+          isNewOnly fd = fRule fd `elem` onlyNew
+          raw = [fd | fd <- raw0, not (isNewOnly fd) || maybe False (wholeNew newness) (fRange fd)]
+          noBase = case newness of
+            NoBase why -> [(r, why) | r <- onlyNew]
+            _ -> []
       let suppressedBy fd =
             listToMaybe $
               [Left a | a <- allows, alRule a == fRule fd, alFile a]
@@ -230,7 +255,7 @@ checkFiles syntax langs config rules paths readFile' files = do
           commentExceptions = [Exception (alRule a) (T.pack f <> ":" <> T.pack (show (alLine a))) (alReason a) (alLine a `notElem` usedAllows) | a <- allows, alRule a `elem` known]
           configExceptions = nub [Exception r (where' globs) (Just reason) False | Right (r, globs, reason) <- used]
           sorted = sortOn (\fd -> (fmap fst (fRange fd), fRule fd)) (kept ++ unknown ++ noReason)
-      pure (sorted, commentExceptions ++ configExceptions)
+      pure (sorted, commentExceptions ++ configExceptions, noBase)
     found f content lang r slots = case ruleCheck r of
       RuleMatch rule -> case (lang, renderRule (M.fromList [(k, VText v) | (k, v) <- slots]) rule) of
         (Just l, Right q) ->

@@ -28,6 +28,7 @@ import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
 import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
+import Olifant.Newness (NewLines (..))
 import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
 import System.Directory (canonicalizePath)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
@@ -167,16 +168,16 @@ spec = do
           Right rust = parseLanguage "rust" "packs/rust-htmx" langSrc
           path = "billing/billing-service/src/cancel_invoice.rs"
           code = "use std::sync::Arc;\nuse diesel::prelude::*;\n\nfn f() { let x = g().unwrap(); }\n"
-      (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+      (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just code)) [path]
       [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
         `shouldBe` [ ("commands-use-ports", Just 2, Warn, ["rust-htmx/command-dependency", "rust-htmx/service-repository"])
                    , ("commands-no-unwrap", Just 4, Hint, []) ]
       -- the realistic flow: Diesel code, no import yet; one finding per line
       let usage = "fn f(conn: &mut PgConnection) {\n    let rows = invoices::table.filter(invoices::id.eq(1)).load::<Invoice>(conn);\n    diesel::insert_into(invoices::table).values(&x).execute(conn);\n}\n"
-      (uses, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just usage)) [path]
+      (uses, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just usage)) [path]
       [(fRule f, fmap (fst . fst) (fRange f)) | f <- uses, fRule f == "commands-use-ports"] `shouldBe` [("commands-use-ports", Just 2), ("commands-use-ports", Just 3)]
       -- the service's own modules are not commands (review: upgraded minor)
-      (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
+      (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) [] (\_ -> pure AllNew) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
       others `shouldBe` []
   describe "python-htmx rules (spec §5.9)" $
     it "flags sqlite3 in a command, ports in the web, adapters outside main, raised failures; the fixture holds" $ do
@@ -186,7 +187,7 @@ spec = do
       let Right rules = parseRules rulesSrc
           Right python = parseLanguage "python" "packs/python-htmx" langSrc
           check path code = do
-            (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+            (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just code)) [path]
             pure [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
           command = "src/bistro/booking/commands/close_table.py"
       check command "import sqlite3\n\n\ndef f() -> None:\n    db = sqlite3.connect(\"x\")\n    raise TableNotFound(\"t9\")\n"
@@ -203,7 +204,7 @@ spec = do
       -- the fixture is the convention written down: it holds
       fixture <- readTree "packs/python-htmx/fixtures/app"
       let pys = [p | p <- M.keys fixture, ".py" `T.isSuffixOf` T.pack p]
-      (all', _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules pys (\p -> pure (M.lookup p fixture)) pys
+      (all', _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) [] (\_ -> pure AllNew) rules pys (\p -> pure (M.lookup p fixture)) pys
       map fRule all' `shouldBe` []
   describe "rust-htmx regions (spec §5.9)" $
     it "a command file created by hand gets its `pub mod` line; ports.rs lists the ports" $ do

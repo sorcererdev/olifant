@@ -7,6 +7,8 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (Language, Match (..), Syntax (..), SyntaxFailure (..), parseLanguage)
+import Olifant.Newness (NewLines (..))
+import Data.Set qualified as S
 import Olifant.Rules
 import Olifant.Template (templateSource)
 import Test.Hspec
@@ -47,7 +49,7 @@ cmd = "billing/billing-service/src/cancel_invoice.rs"
 
 run :: RulesConfig -> [(FilePath, Text)] -> [FilePath] -> ([Finding], [Exception])
 run config files toCheck =
-  runIdentity (checkFiles diesel [rust] config rules (map fst files) (\p -> Identity (lookup p files)) toCheck)
+  runIdentity (checkFiles diesel [rust] config [] (\_ -> Identity AllNew) rules (map fst files) (\p -> Identity (lookup p files)) toCheck)
 
 none :: RulesConfig
 none = RulesConfig [] []
@@ -55,8 +57,49 @@ none = RulesConfig [] []
 findings :: RulesConfig -> Text -> [(Text, Maybe Int, Severity)]
 findings config content = [(fRule f, fmap (fst . fst) (fRange f), fSeverity f) | f <- fst (run config [(cmd, content)] [cmd])]
 
+-- A python adapter for `.py` files, and a fake syntax where each `def` is a
+-- function_definition: its line, through its last non-blank line before
+-- the next line at column 0 (0-based, as ast-grep reports).
+python :: Language
+python = either (error . T.unpack) id (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+
+defs :: Syntax Identity
+defs = Syntax $ \_ _ content ->
+  let ls = zip [0 ..] (T.lines content)
+      starts = [i | (i, l) <- ls, "def " `T.isPrefixOf` l]
+      end i = last (i : [j | (j, l) <- takeWhile (\(j, l) -> j == i || T.null l || " " `T.isPrefixOf` l) (drop i ls), not (T.null (T.strip l))])
+   in Identity (Right [Match (i, 0) (end i, T.length (snd (ls !! end i))) (T.unlines [l | (j, l) <- ls, j >= i, j <= end i]) | i <- starts])
+
+-- | `only = "new"` rules over a legacy file with two functions (lines 1–2, 4–5).
+legacyRule :: Text
+legacyRule = "[rules.no-new-defs]\nfiles = \"{legacy}\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"new work goes elsewhere\"\n"
+
+legacyFile :: Text
+legacyFile = T.unlines ["def a():", "    return 1", "", "def b(x):", "    return x"]
+
+checkLegacy :: [Text] -> NewLines -> [Finding]
+checkLegacy legacy newness =
+  let Right rs = parseRules legacyRule
+      f = "legacy/views.py"
+   in fst (runIdentity (checkFiles defs [python] none legacy (\_ -> Identity newness) rs [f] (\_ -> Identity (Just legacyFile)) [f]))
+
 spec :: Spec
 spec = describe "rules (spec §5.9)" $ do
+  describe "only = \"new\", {legacy}" $ do
+    it "(a) reports a definition that is wholly new" $
+      map fRule (checkLegacy ["legacy/**"] (NewIn (S.fromList [4, 5]))) `shouldBe` ["no-new-defs"]
+    it "(b) not a definition with any old line" $
+      checkLegacy ["legacy/**"] (NewIn (S.fromList [5])) `shouldBe` []
+    it "(c) not a definition whose def line alone changed (Review Focus 1)" $
+      checkLegacy ["legacy/**"] (NewIn (S.fromList [4])) `shouldBe` []
+    it "(d) without a base: one note that the rule is inactive, saying why" $
+      [(fRule f, fSeverity f, "no ref `main`" `T.isInfixOf` fMessage f) | f <- checkLegacy ["legacy/**"] (NoBase "no ref `main`")] `shouldBe` [("rule-inactive", Hint, True)]
+    it "(e) {legacy} with no [migrate] legacy is a rule error" $
+      map fRule (checkLegacy [] AllNew) `shouldBe` ["rule-failed"]
+    it "(f) a file outside the legacy globs is not checked" $ do
+      let Right rs = parseRules legacyRule
+      fst (runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity AllNew) rs ["src/x.py"] (\_ -> Identity (Just legacyFile)) ["src/x.py"])) `shouldBe` []
+
   it "(a) a match rule finds its node, with message, fix and the path's slots" $ do
     let [f] = fst (run none [(cmd, "use std::sync::Arc;\nuse diesel::prelude::*;\n")] [cmd])
     (fRule f, fRange f, fSeverity f, fMessage f, fFixes f)
@@ -97,13 +140,13 @@ spec = describe "rules (spec §5.9)" $ do
             [ "[rules.p]", "files = \"{service}/*-service/src/*.rs\"", "message = \"m\"", "match = { kind = \"use_declaration\" }"
             , "[[rules.p.fixes]]", "generator = \"rust-htmx/command-dependency\"", "label = \"Use an existing port\"", "with = { service = \"{= service =}\", command = \"{= stem =}\" }"
             , "[[rules.p.fixes]]", "generator = \"rust-htmx/service-repository\"", "label = \"Add a new repository port\"", "with = { service = \"{= service =}\" }" ])
-          (fs, _) = runIdentity (checkFiles diesel [rust] none [r] [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
+          (fs, _) = runIdentity (checkFiles diesel [rust] none [] (\_ -> Identity AllNew) [r] [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
       map fFixes fs `shouldBe`
         [ [ FixOffer "rust-htmx/command-dependency" (Just "Use an existing port") [("command", "cancel_invoice"), ("service", "billing")] Nothing []
           , FixOffer "rust-htmx/service-repository" (Just "Add a new repository port") [("service", "billing")] Nothing [] ] ]
     it "keeps one finding where matches nest (the outermost)" $ do
       let nested = Syntax $ \_ _ _ -> Identity (Right [Match (0, 4) (0, 10) "diesel", Match (0, 0) (0, 20) "use diesel::prelude"])
-          (fs, _) = runIdentity (checkFiles nested [rust] none rules [cmd] (\_ -> Identity (Just "use diesel::prelude;\n")) [cmd])
+          (fs, _) = runIdentity (checkFiles nested [rust] none [] (\_ -> Identity AllNew) rules [cmd] (\_ -> Identity (Just "use diesel::prelude;\n")) [cmd])
       map fRange fs `shouldBe` [Just ((1, 1), (1, 21))]
     it "pre-chooses the choice whose words appear in the code" $ do
       suggestChoice "let rows = invoices::table.filter(x);" ["email_sender", "invoice_repository"] `shouldBe` Just "invoice_repository"
@@ -126,7 +169,7 @@ spec = describe "rules (spec §5.9)" $ do
                   else if "let_declaration" `T.isInfixOf` txt
                     then [Match (i, 4) (i, T.length l) (T.strip l) | (i, l) <- hits, "let " `T.isPrefixOf` T.strip l]
                     else [Match (i, col l) (i, col l + 9) "diesel::x" | (i, l) <- hits]
-        offersFor content = map (map foReplace . fFixes) (fst (runIdentity (checkFiles syn [rust] none [r] [cmd] (\_ -> Identity (Just content)) [cmd])))
+        offersFor content = map (map foReplace . fFixes) (fst (runIdentity (checkFiles syn [rust] none [] (\_ -> Identity AllNew) [r] [cmd] (\_ -> Identity (Just content)) [cmd])))
     it "replaces the enclosing statement (lines, old text, indent, the node's code)" $
       map (fmap (fmap (\rp -> (rpLines rp, rpOld rp, rpIndent rp, rpFinding rp)))) (offersFor "fn f() {\n    let rows = diesel::x;\n}\n")
         `shouldBe` [[Just ((2, 2), "    let rows = diesel::x;", "    ", "let rows = diesel::x;")]]
@@ -136,7 +179,7 @@ spec = describe "rules (spec §5.9)" $ do
   describe "rules that cannot run (review C2)" $ do
     it "a syntax failure is an error finding, not silence" $ do
       let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed"))
-          (fs, _) = runIdentity (checkFiles broken [rust] none rules [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
+          (fs, _) = runIdentity (checkFiles broken [rust] none [] (\_ -> Identity AllNew) rules [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
       map (\f -> (fRule f, fSeverity f)) fs `shouldBe` [("rule-failed", Error)]
       map fMessage fs `shouldSatisfy` all ("ast-grep is not installed" `T.isInfixOf`)
     it "a missing template may only use dir, stem and file" $

@@ -61,6 +61,7 @@ import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
+import Olifant.Newness (NewLines (..))
 import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), checkFiles, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
@@ -260,7 +261,7 @@ findings ports project files = do
       ws = prWorkspace project
   paths <- listFiles ws "."
   now <- pNow ports
-  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) (catalogRules cat) paths (readText ws) files
+  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) [] (\_ -> pure AllNew) (catalogRules cat) paths (readText ws) files
     >>= chooseFixInputs ports project paths now
 
 -- | A fix's enum inputs left open are pre-chosen when the finding's code
