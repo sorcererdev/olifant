@@ -43,7 +43,7 @@ import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
-import System.FilePath (makeRelative, normalise, splitDirectories, takeBaseName, takeFileName, (</>))
+import System.FilePath (dropTrailingPathSeparator, makeRelative, normalise, splitDirectories, takeBaseName, takeFileName, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -82,6 +82,8 @@ runCli rt args = case parseOptions args of
   -- `init` makes a project: there is none to open yet
   -- the language server finds its projects itself, file by file
   Right opts | LspCmd <- optCommand opts -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
+  Right opts | InitMigrateCmd paths pack <- optCommand opts ->
+    runInitMigrate rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) paths pack
   Right opts | InitCmd pack name dir plan <- optCommand opts ->
     runInit rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) pack name dir plan
   Right opts -> do
@@ -99,6 +101,52 @@ runCli rt args = case parseOptions args of
 -- in an empty folder. The pack is a directory, or a name under [packs] in
 -- the user config; the user's [model] comes along; regions are fenced; a
 -- first commit is made; the starter's `next` lines say what to run.
+-- | `init --migrate PATH…` in an existing repo: the target pack and the
+-- strangler pack, `[migrate] legacy`, `.olifant/state/` ignored, and today's
+-- findings baselined (nothing fails on day one).
+runInitMigrate :: Runtime -> Format -> [FilePath] -> Text -> IO ExitCode
+runInitMigrate rt fmt paths pack = do
+  let cwd = rtProjectDir rt
+      ws = rtRoot rt
+      configPath = cwd </> ".olifant" </> "config.toml"
+  existing <- readText ws configPath
+  userConfig <- maybe (pure Nothing) (\u -> readText ws (u </> "config.toml")) (rtUserConfigDir rt)
+  let userPacks = [(n, normalise (fromMaybe "." (rtUserConfigDir rt) </> p)) | Just src <- [userConfig], Right ps <- [packsFromConfig src], (n, p) <- ps]
+      resolve p = do
+        let asPath = normalise (cwd </> T.unpack p)
+        isDir <- (== Directory) <$> inspectPath ws asPath
+        pure (if isDir then Just (T.pack (takeFileName asPath), asPath) else (p,) <$> lookup p userPacks)
+  target <- resolve pack
+  strangler <- resolve "python-strangler"
+  case (existing, target, strangler) of
+    (Just c, _, _) | "[migrate]" `T.isInfixOf` c -> failWith rt fmt 2 "usage" "already migrating: edit [migrate] in .olifant/config.toml" Nothing []
+    (_, Nothing, _) -> failWith rt fmt 2 "usage" ("no pack `" <> pack <> "`") (Just "give a pack's directory, or add it under [packs] in ~/.config/olifant/config.toml") []
+    (_, _, Nothing) -> failWith rt fmt 2 "usage" "no pack `python-strangler`" (Just "add it under [packs] in ~/.config/olifant/config.toml") []
+    (_, Just t, Just s) -> do
+      let packLine (n, p) = n <> " = { path = \"" <> T.pack p <> "\" }\n"
+          migrate = "[migrate]\nlegacy = [" <> T.intercalate ", " ["\"" <> T.pack (dropTrailingPathSeparator p) <> "/**\"" | p <- paths] <> "]\n"
+          withPack c (n, p)
+            | (n <> " = ") `T.isInfixOf` c = c
+            | "[packs]\n" `T.isInfixOf` c = T.replace "[packs]\n" ("[packs]\n" <> packLine (n, p)) c
+            | otherwise = c <> "\n[packs]\n" <> packLine (n, p)
+          config = case existing of
+            Nothing -> "[packs]\n" <> packLine t <> packLine s <> "\n" <> migrate
+            Just c -> withPack (withPack c t) s <> (if "\n" `T.isSuffixOf` c then "\n" else "\n\n") <> migrate
+      writeText ws configPath config
+      -- the language server's local state stays out of git
+      let project = within cwd ws
+      ignored <- readText project ".gitignore"
+      case ignored of
+        Nothing -> writeText project ".gitignore" ".olifant/state/\n"
+        Just g
+          | ".olifant/state/" `elem` map T.strip (T.lines g) -> pure ()
+          | otherwise -> writeText project ".gitignore" (g <> (if T.null g || "\n" `T.isSuffixOf` g then "" else "\n") <> ".olifant/state/\n")
+      -- today's debt, recorded: nothing fails on day one
+      code <- runCli rt (["check", "--baseline"] ++ (if fmt == Human then ["--human"] else ["--json"]))
+      when (fmt == Human) $
+        rtOut rt ("migrating " <> T.intercalate ", " (map T.pack paths) <> ": legacy is bug-fix-only; new work goes to the new architecture\nnext: olifant check, and open the project in your editor\n")
+      pure code
+
 runInit :: Runtime -> Format -> Text -> Text -> Maybe FilePath -> Bool -> IO ExitCode
 runInit rt fmt pack name dirArg plan = do
   let cwd = rtProjectDir rt
@@ -235,6 +283,7 @@ runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt cwd fmt cat = \case
   -- handled before a project is opened (runCli); here for completeness
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
+  InitMigrateCmd paths pack -> runInitMigrate rt fmt paths pack
   LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   ListCmd detail -> do
     (entries, broken, views) <- listGenerators (portsOf rt) (projectOf rt cat) detail

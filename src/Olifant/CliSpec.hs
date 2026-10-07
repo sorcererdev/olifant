@@ -79,6 +79,38 @@ lookupKey k = \case
   Aeson.Object o -> AKM.lookup k o
   _ -> Nothing
 
+-- | `olifant init --migrate` in an existing repo.
+initMigrateSpec :: Spec
+initMigrateSpec = describe "init --migrate (an existing repo)" $ do
+  let packs =
+        [ ("/u/config.toml", "[packs]\npython-htmx = { path = \"/packs/py\" }\npython-strangler = { path = \"/packs/ps\" }\n")
+        , ("/packs/py/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+        , ("/packs/py/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+        , ("/packs/ps/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+        , ("/w/legacy/app.py", "def a():\n    return 1\n")
+        ]
+  it "writes the config (both packs, [migrate]) and a baseline, ignoring .olifant/state/" $ do
+    (code, _, _, files, _) <- runInit packs ["init", "--migrate", "legacy", "--human"]
+    code `shouldBe` ExitSuccess
+    let config = M.findWithDefault "" "/w/.olifant/config.toml" files
+    config `shouldSatisfy` T.isInfixOf "python-htmx = { path = \"/packs/py\" }"
+    config `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/ps\" }"
+    config `shouldSatisfy` T.isInfixOf "[migrate]\nlegacy = [\"legacy/**\"]"
+    M.member "/w/.olifant/baseline.toml" files `shouldBe` True
+    M.findWithDefault "" "/w/.gitignore" files `shouldSatisfy` T.isInfixOf ".olifant/state/"
+  it "refuses when the project is migrating already" $ do
+    (code, out, err, _, _) <- runInit (("/w/.olifant/config.toml", "[migrate]\nlegacy = [\"x/**\"]\n") : packs) ["init", "--migrate", "legacy", "--human"]
+    code `shouldNotBe` ExitSuccess
+    (out <> err) `shouldSatisfy` T.isInfixOf "already migrating"
+  it "appends [migrate] to a project's config, adding the strangler pack, keeping the rest" $ do
+    let existing = "name = \"bistro\"\n\n[packs]\npython-htmx = { path = \"/packs/py\" }\n"
+    (code, _, _, files, _) <- runInit (("/w/.olifant/config.toml", existing) : packs) ["init", "--migrate", "legacy", "--human"]
+    code `shouldBe` ExitSuccess
+    let config = M.findWithDefault "" "/w/.olifant/config.toml" files
+    config `shouldSatisfy` T.isPrefixOf "name = \"bistro\""
+    config `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/ps\" }"
+    config `shouldSatisfy` T.isInfixOf "[migrate]"
+
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec
 newCodeCheckSpec = describe "check: rules on new code" $ do
@@ -190,7 +222,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do
