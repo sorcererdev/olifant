@@ -50,7 +50,7 @@ import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
 import System.Environment (lookupEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
-import System.FilePath (makeRelative, normalise, takeDirectory, (</>))
+import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (createPipe)
@@ -78,6 +78,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   recognitionSpec
   generatePickerSpec
   newCodeSpec
+  stranglerSpec
   holesSpec
   pickerSpec
   conventionsSpec
@@ -1042,6 +1043,26 @@ withPython changed act = do
     TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack pack <> "\" }\n")
     act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")} dir
 
+-- | The python-strangler demo (a Flask legacy app beside a python-htmx one)
+-- under git: main holds it as it is, the work is on a branch `feature`.
+withStrangler :: (Ports -> FilePath -> IO a) -> IO a
+withStrangler act = do
+  tmp <- getTemporaryDirectory
+  htmx <- canonicalizePath "packs/python-htmx"
+  strangler <- canonicalizePath "packs/python-strangler"
+  fixture <- M.filterWithKey (\p _ -> not (any (`elem` [".venv", "__pycache__", ".pytest_cache"]) (splitDirectories p))) <$> readTree "packs/python-strangler/fixtures/app"
+  withSystemTempDirectory "olifant-strangler" $ \dir0 -> do
+    dir <- canonicalizePath dir0
+    forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+    createDirectoryIfMissing True (dir </> ".olifant")
+    TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack htmx <> "\" }\npython-strangler = { path = \"" <> T.pack strangler <> "\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\nswitches = \"src/bistro/switches.py\"\n")
+    let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+    git ["init", "-q", "-b", "main"]
+    git ["add", "."]
+    git ["commit", "-q", "-m", "the monolith"]
+    git ["checkout", "-q", "-b", "feature"]
+    act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pBaseText = gitBaseText} dir
+
 readTree :: FilePath -> IO (M.Map FilePath Text)
 readTree root = M.fromList <$> go root
   where
@@ -1216,6 +1237,54 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
         pure (b, a)
       ruleIds before `shouldContain` ["no-new-defs"]
       ruleIds after `shouldNotContain` ["no-new-defs"]
+
+-- | The python-strangler pack on its demo: the rules.
+stranglerSpec :: Spec
+stranglerSpec = describe "python-strangler (the demo monolith)" $ do
+  let views = "legacy/views.py"
+      codes ds = [c | d <- ds, Just (InR c) <- [d ^. L.code]]
+  it "(a) new work in legacy code is warned, with fixes that create it in the new architecture" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      ((ds, titles), _) <- inProcessWith ports dir $ do
+        doc <- openDoc views "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (original <> "\n\ndef add_to_waitlist(guest, party):\n    return {\"guest\": guest, \"party\": party}\n")))]
+        ds <- pullDiagnostics doc
+        let line = length (T.lines original) + 2
+        as <- getCodeActions doc (Range (Position (fromIntegral line) 4) (Position (fromIntegral line) 4))
+        pure (ds, [a ^. L.title | InR a <- as])
+      codes ds `shouldContain` ["legacy-bug-fix-only"]
+      titles `shouldContain` ["Create it as a command"]
+      titles `shouldContain` ["Create it as a query"]
+  it "(d) the fix creates the command, and the legacy function only delegates to it (with its allowance)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      TIO.writeFile (dir </> views) (original <> "\n\ndef add_to_waitlist(guest, party):\n    return {\"guest\": guest, \"party\": party}\n")
+      s <- newServerState ports
+      let line = length (T.lines original) + 3
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "legacy-bug-fix-only" line 1 [("app", "bistro"), ("service", "booking")] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          M.keys (planWrites plan) `shouldContain` ["src/bistro/booking/commands/add_to_waitlist.py"]
+          let legacyText = M.findWithDefault "" views (planWrites plan)
+          legacyText `shouldSatisfy` T.isInfixOf "# olifant:allow legacy-bug-fix-only — delegates to booking/commands/add_to_waitlist\ndef add_to_waitlist(guest, party):"
+          legacyText `shouldSatisfy` T.isInfixOf "def close_table(table_id):"
+  it "(b) a bug fix inside an existing legacy function is quiet" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      (ds, _) <- inProcessWith ports dir $ do
+        doc <- openDoc views "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (T.replace "db.audit(f\"closed {table_id}\")" "db.audit(f\"closed table {table_id}\")" original)))]
+        pullDiagnostics doc
+      codes ds `shouldNotContain` ["legacy-bug-fix-only"]
+  it "(c) the new architecture importing legacy code is warned" $
+    withStrangler $ \ports dir -> do
+      TIO.writeFile (dir </> "src/bistro/booking/x.py") "from legacy.utils import money\n\nX = money(1)\n"
+      (ds, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/x.py" "python"
+        pullDiagnostics doc
+      codes ds `shouldContain` ["new-code-not-legacy"]
 
 -- | The generate picker (the float's list, form and live preview).
 generatePickerSpec :: Spec

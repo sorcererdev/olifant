@@ -1,0 +1,37 @@
+# Strangling a legacy codebase, by convention (strangler-design.md §3.1).
+# Legacy code ([migrate] legacy) is bug-fix-only: edit what is there, but new
+# work goes into the new architecture. The new code never reaches into legacy.
+# Severities are the project's to set ([rules] in .olifant/config.toml).
+
+[rules.legacy-bug-fix-only]
+files    = "{legacy}"
+only     = "new"
+match    = { any = [ { kind = "function_definition" }, { kind = "class_definition" } ] }
+message  = "New work goes in the new architecture (legacy is bug-fix-only)"
+severity = "warn"
+since    = "the migration"
+why      = "strangle the monolith: legacy gets bug fixes, new work goes to src/"
+
+[[rules.legacy-bug-fix-only.fixes]]
+generator = "python-strangler/delegate-command"
+label     = "Create it as a command"
+with      = { name = "{= finding_name =}", file = "{= file =}" }
+# the legacy function becomes a thin door to the new command (its body a hole: the call)
+replace   = { enclosing = ["function_definition"], text = """# olifant:allow legacy-bug-fix-only — delegates to {= service =}/commands/{= name =}
+{= finding_head =}
+    {= ? delegate: stmt | call the new command bistro.{= service =}.commands.{= name =} with this function's arguments (as main.py builds it) and return what legacy callers expect =}""" }
+
+[[rules.legacy-bug-fix-only.fixes]]
+generator = "python-strangler/delegate-query"
+label     = "Create it as a query"
+with      = { name = "{= finding_name =}", file = "{= file =}" }
+# the legacy function becomes a thin door to the new query (its body a hole: the call)
+replace   = { enclosing = ["function_definition"], text = """# olifant:allow legacy-bug-fix-only — delegates to {= service =}/queries/{= name =}
+{= finding_head =}
+    {= ? delegate: stmt | call the new query bistro.{= service =}.queries.{= name =} with this function's arguments (as main.py builds it) and return what legacy callers expect =}""" }
+
+[rules.new-code-not-legacy]
+files    = "src/**/*.py"
+match    = { any = [ { kind = "import_from_statement", regex = "^from legacy" }, { kind = "import_statement", regex = "^import legacy" } ] }
+message  = "The new architecture does not reach into legacy code"
+severity = "warn"

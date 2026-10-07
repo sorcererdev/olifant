@@ -21,7 +21,7 @@ import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory)
+import System.FilePath (splitDirectories, takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import System.FilePath ((</>))
@@ -261,6 +261,17 @@ spec = do
         withUv k = findExecutable "uv" >>= \case
           Nothing -> missingTool strict "uv is not installed (brew install uv)"
           Just _ -> k
+    it "the strangler demo (a Flask legacy app beside python-htmx): its tests green, src/ pyright-strict clean" $ withUv $
+      withSystemTempDirectory "olifant-strangler-demo" $ \dir -> do
+        fixture <- M.filterWithKey (\p _ -> not (any (`elem` [".venv", "__pycache__", ".pytest_cache"]) (splitDirectories p))) <$> readTree "packs/python-strangler/fixtures/app"
+        forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+        (testCode, testOut, _) <- readCreateProcessWithExitCode (proc "uv" ["run", "--quiet", "pytest", "-q"]) {cwd = Just dir} ""
+        let lastLine out = case reverse (filter (not . null) (lines out)) of
+              l : _ -> l
+              [] -> ""
+        (testCode, lastLine testOut) `shouldSatisfy` ((== ExitSuccess) . fst)
+        (typeCode, typeOut, _) <- readCreateProcessWithExitCode (proc "uv" ["run", "--quiet", "pyright"]) {cwd = Just dir} ""
+        (typeCode, lastLine typeOut) `shouldBe` (ExitSuccess, "0 errors, 0 warnings, 0 informations")
     it "olifant init makes a project where pytest and pyright are green (north-star project 2 §1)" $ withUv $ do
       tmp <- getTemporaryDirectory
       withSystemTempDirectory "olifant-init" $ \dir0 -> do

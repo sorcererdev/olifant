@@ -570,7 +570,9 @@ fixSteps ports project rule rel line n given = do
             Left err -> pure (Left (FixCatalog err))
             Right gen -> do
               let sets = M.union (M.fromList given) (M.fromList (foSets o))
-                  env = M.map Tm.VText (M.insert "finding" (maybe "" rpFinding (foReplace o)) sets)
+                  -- `finding_head`: the found node's first line (a definition's signature)
+                  found = maybe "" rpFinding (foReplace o)
+                  env = M.map Tm.VText (M.insert "finding_head" (fromMaybe "" (listToMaybe (T.lines found))) (M.insert "finding" found sets))
                   defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                   replacement = case foReplace o of
                     Nothing -> Right []
