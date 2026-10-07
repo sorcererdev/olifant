@@ -54,6 +54,10 @@ module Olifant.Server
   , Jobs
   , newJobs
   , submit
+  , PickStep (..)
+  , Preview (..)
+  , previewFor
+  , stepsPlanWith
   ) where
 
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress)
@@ -67,4 +71,5 @@ import Olifant.Server.Model (modelFor)
 import Olifant.Server.Recognize (recognitionFeedback, recognitionFor, recognitionPlan, recognitionUpgrade, suggestOrRecognize)
 import Olifant.Server.Hints (LineHint (..), fileActionsFor, hintsFor)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
+import Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPlanWith)
 import Olifant.Server.State

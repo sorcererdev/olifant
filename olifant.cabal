@@ -114,6 +114,7 @@ library
     Olifant.Server.Holes
     Olifant.Server.Jobs
     Olifant.Server.Model
+    Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
     Olifant.Server.State
@@ -246,6 +247,7 @@ test-suite spec
     Olifant.Server.Holes
     Olifant.Server.Jobs
     Olifant.Server.Model
+    Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
     Olifant.Server.State

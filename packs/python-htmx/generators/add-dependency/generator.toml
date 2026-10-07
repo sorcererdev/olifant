@@ -29,6 +29,8 @@ prompt = "The command or query (its module's name)"
 type   = "enum"
 one_of = "ports"
 prompt = "The port it takes (one of the service's ports/)"
+# + New in a picker: a repository (its port is {entity}_repository) or another port
+new    = { repository = "{= port =}", port = "{= port|snake =}" }
 
 [derive]
 module = "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}.py"

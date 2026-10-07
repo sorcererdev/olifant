@@ -1107,6 +1107,73 @@ generatePickerSpec = describe "the generate picker" $ do
       lookupKey "summary" (byId "python-htmx/command") `shouldSatisfy` maybe False (/= String "")
       lookupKey "here" (byId "python-htmx/add-dependency") `shouldBe` Just (Bool True)
       lookupKey "here" (byId "python-htmx/command") `shouldBe` Just (Bool False)
+  let pickWith doc steps = request (SMethod_CustomMethod (Proxy :: Proxy "olifant/preview"))
+        (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (0 :: Int), "character" .= (0 :: Int)], "steps" .= steps]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      step g sets = object ["generator" .= (g :: Text), "sets" .= object [Key.fromText k .= v | (k, v) <- sets :: [(Text, Text)]]]
+      pick doc steps = pickWith doc [step g ss | (g, ss) <- steps]
+      fieldsOf v = [f | Just (Array ss) <- [lookupKey "steps" v], Object st <- toList ss, Just (Array fs) <- [KM.lookup "fields" st], f <- toList fs]
+      fieldNamed n v = fromMaybe Aeson.Null (listToMaybe [f | f <- reverse (fieldsOf v), lookupKey "name" f == Just (String n)])
+      filesOf v = [p | Just (Array fs) <- [lookupKey "files" v], f <- toList fs, Just (String p) <- [lookupKey "path" f]]
+  it "(b) previews a command with nothing set: placeholders for its name, the app a lone choice" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "pyproject.toml" "toml"
+        pick doc [("python-htmx/command", [])]
+      lookupKey "source" (fieldNamed "app" v) `shouldBe` Just (String "only")
+      lookupKey "ready" v `shouldBe` Just (Bool False)
+      (lookupKey "main" v >>= lookupKey "text") `shouldSatisfy` maybe False (\case String t -> "class ⟨Command⟩Input" `T.isInfixOf` t; _ -> False)
+      filesOf v `shouldSatisfy` any ("⟨command⟩__test.py" `T.isSuffixOf`)
+  it "(c) infers the service from the file's folders (never its name), and is ready once the name is set" $
+    withPython [] $ \ports dir -> do
+      ((before, after), _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        (,) <$> pick doc [("python-htmx/command", [])] <*> pick doc [("python-htmx/command", [("command", "close_table")])]
+      lookupKey "source" (fieldNamed "service" before) `shouldBe` Just (String "path")
+      lookupKey "value" (fieldNamed "command" before) `shouldBe` Just Aeson.Null
+      lookupKey "ready" after `shouldBe` Just (Bool True)
+      filesOf after `shouldContain` ["src/bistro/booking/commands/close_table__test.py"]
+  it "(d) says why a value is invalid, in the engine's words" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pick doc [("python-htmx/command", [("command", "3tables")])]
+      lookupKey "why" (fieldNamed "command" v) `shouldSatisfy` maybe False (\case String t -> "3tables" `T.isInfixOf` t; _ -> False)
+      lookupKey "ready" v `shouldBe` Just (Bool False)
+  it "(e) a dependent choice waits on what it needs (a second service: the port waits on which)" $
+    withPython [("src/bistro/kitchen/ports/__init__.py", "")] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "pyproject.toml" "toml"
+        pick doc [("python-htmx/add-dependency", [])]
+      lookupKey "needs" (fieldNamed "port" v) `shouldBe` Just (toJSON (["service"] :: [Text]))
+  it "(f) + New repository: its value fills the choice it serves, and one plan writes both" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pickWith doc
+          [ object ["generator" .= ("python-htmx/repository" :: Text), "sets" .= object ["entity" .= ("table" :: Text)], "makes" .= object ["step" .= (1 :: Int), "input" .= ("port" :: Text)]]
+          , step "python-htmx/add-dependency" [("kind", "commands"), ("command", "create_booking")]
+          ]
+      (lookupKey "value" (fieldNamed "port" v), lookupKey "source" (fieldNamed "port" v)) `shouldBe` (Just (String "table_repository"), Just (String "new"))
+      lookupKey "ready" v `shouldBe` Just (Bool True)
+      filesOf v `shouldContain` ["src/bistro/booking/ports/table_repository/table_repository.py"]
+  it "(g) a plan that would overwrite a file says so, and is not ready (Review Focus 5)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pick doc [("python-htmx/command", [("command", "create_booking")])]
+      lookupKey "ready" v `shouldBe` Just (Bool False)
+      lookupKey "error" v `shouldSatisfy` maybe False (/= Aeson.Null)
+  it "(h) olifant/plan plans steps as one plan" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "steps" .= [step "python-htmx/repository" [("app", "bistro"), ("service", "booking"), ("entity", "table")], step "python-htmx/add-dependency" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "create_booking"), ("port", "table_repository")]]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      lookupKey "plan" v `shouldSatisfy` (/= Nothing)
+      show v `shouldSatisfy` ("table_repository.py" `isInfixOf`)
 
 recognitionSpec :: Spec
 recognitionSpec = describe "recognition: this looks like a command" $ do
