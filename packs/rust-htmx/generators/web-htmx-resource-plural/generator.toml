@@ -1,4 +1,5 @@
 description = "web-htmx resource handlers for a plural resource (e.g. /workers, not /workers/:worker_id)"
+summary = "Handlers for a plural web resource (/workers)"
 language = "rust"
 version = 1
 examples = [

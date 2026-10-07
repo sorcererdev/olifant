@@ -16,6 +16,7 @@ import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, 
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -38,7 +39,8 @@ import Language.LSP.Test
 import Olifant.App (Ports (..))
 import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processCheckerWith, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
-import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState)
+import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor)
+import Olifant.Preview (Field (..), Source (..))
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled)
@@ -73,6 +75,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   completionSpec
   followupsSpec
   recognitionSpec
+  generatePickerSpec
   holesSpec
   pickerSpec
   conventionsSpec
@@ -1088,6 +1091,132 @@ withProject files act = withSystemTempDirectory "olifant-lsp" $ \dir0 -> do
   act dir
 
 -- | Recognitions as suggestions (convention recognition, Task 8).
+-- | The generate picker (the float's list, form and live preview).
+generatePickerSpec :: Spec
+generatePickerSpec = describe "the generate picker" $ do
+  let command = "src/bistro/booking/commands/create_booking.py"
+  it "(a) olifant/generators gives each one's kind and summary, and which apply at the cursor" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (44 :: Int), "character" .= (30 :: Int)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      let gens = case lookupKey "generators" v of Just (Array a) -> toList a; _ -> []
+          byId i = fromMaybe Aeson.Null (listToMaybe [g | g <- gens, lookupKey "id" g == Just (String i)])
+      lookupKey "kind" (byId "python-htmx/command") `shouldBe` Just (String "create")
+      lookupKey "summary" (byId "python-htmx/command") `shouldSatisfy` maybe False (/= String "")
+      lookupKey "here" (byId "python-htmx/add-dependency") `shouldBe` Just (Bool True)
+      lookupKey "here" (byId "python-htmx/command") `shouldBe` Just (Bool False)
+  let pickWith doc steps = request (SMethod_CustomMethod (Proxy :: Proxy "olifant/preview"))
+        (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (0 :: Int), "character" .= (0 :: Int)], "steps" .= steps]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      step g sets = object ["generator" .= (g :: Text), "sets" .= object [Key.fromText k .= v | (k, v) <- sets :: [(Text, Text)]]]
+      pick doc steps = pickWith doc [step g ss | (g, ss) <- steps]
+      fieldsOf v = [f | Just (Array ss) <- [lookupKey "steps" v], Object st <- toList ss, Just (Array fs) <- [KM.lookup "fields" st], f <- toList fs]
+      fieldNamed n v = fromMaybe Aeson.Null (listToMaybe [f | f <- reverse (fieldsOf v), lookupKey "name" f == Just (String n)])
+      filesOf v = [p | Just (Array fs) <- [lookupKey "files" v], f <- toList fs, Just (String p) <- [lookupKey "path" f]]
+  it "(b) previews a command with nothing set: placeholders for its name, the app a lone choice" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "pyproject.toml" "toml"
+        pick doc [("python-htmx/command", [])]
+      lookupKey "source" (fieldNamed "app" v) `shouldBe` Just (String "only")
+      lookupKey "ready" v `shouldBe` Just (Bool False)
+      (lookupKey "main" v >>= lookupKey "text") `shouldSatisfy` maybe False (\case String t -> "class ⟨Command⟩Input" `T.isInfixOf` t; _ -> False)
+      filesOf v `shouldSatisfy` any ("⟨command⟩__test.py" `T.isSuffixOf`)
+  it "(c) infers the service from the file's folders (never its name), and is ready once the name is set" $
+    withPython [] $ \ports dir -> do
+      ((before, after), _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        (,) <$> pick doc [("python-htmx/command", [])] <*> pick doc [("python-htmx/command", [("command", "close_table")])]
+      lookupKey "source" (fieldNamed "service" before) `shouldBe` Just (String "path")
+      lookupKey "value" (fieldNamed "command" before) `shouldBe` Just Aeson.Null
+      lookupKey "ready" after `shouldBe` Just (Bool True)
+      filesOf after `shouldContain` ["src/bistro/booking/commands/close_table__test.py"]
+  it "(d) says why a value is invalid, in the engine's words" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pick doc [("python-htmx/command", [("command", "3tables")])]
+      lookupKey "why" (fieldNamed "command" v) `shouldSatisfy` maybe False (\case String t -> "3tables" `T.isInfixOf` t; _ -> False)
+      lookupKey "ready" v `shouldBe` Just (Bool False)
+  it "(e) a dependent choice waits on what it needs (a second service: the port waits on which)" $
+    withPython [("src/bistro/kitchen/ports/__init__.py", "")] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "pyproject.toml" "toml"
+        pick doc [("python-htmx/add-dependency", [])]
+      lookupKey "needs" (fieldNamed "port" v) `shouldBe` Just (toJSON (["service"] :: [Text]))
+  it "(f) + New repository: its value fills the choice it serves, and one plan writes both (values it has no input for, carried from the step it serves, are left out)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pickWith doc
+          [ object ["generator" .= ("python-htmx/repository" :: Text), "sets" .= object ["entity" .= ("table" :: Text), "kind" .= ("commands" :: Text), "command" .= ("create_booking" :: Text)], "makes" .= object ["step" .= (1 :: Int), "input" .= ("port" :: Text)]]
+          , step "python-htmx/add-dependency" [("kind", "commands"), ("command", "create_booking")]
+          ]
+      (lookupKey "value" (fieldNamed "port" v), lookupKey "source" (fieldNamed "port" v)) `shouldBe` (Just (String "table_repository"), Just (String "new"))
+      lookupKey "ready" v `shouldBe` Just (Bool True)
+      filesOf v `shouldContain` ["src/bistro/booking/ports/table_repository/table_repository.py"]
+  it "(g) a plan that would overwrite a file says so, and is not ready (Review Focus 5)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pick doc [("python-htmx/command", [("command", "create_booking")])]
+      lookupKey "ready" v `shouldBe` Just (Bool False)
+      lookupKey "error" v `shouldSatisfy` maybe False (/= Aeson.Null)
+  it "(i) python-htmx's Add a port offers + New port and + New repository" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pick doc [("python-htmx/add-dependency", [])]
+      lookupKey "new" (fieldNamed "port" v) `shouldBe` Just (toJSON (["port", "repository"] :: [Text]))
+  it "(j) rust-htmx's + New repository gives the port's name as its ports/ file is named" $
+    withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
+      s <- newServerState ports
+      let file = root </> "shop/billing/billing-service/src/cancel_invoice.rs"
+      (_, pv) <- previewFor file (0, 0) [PickStep "rust-htmx/service-repository" [("service", "billing"), ("aggregate", "payment")] (Just (1, "port")), PickStep "rust-htmx/add-port" [("service", "billing"), ("command", "cancel_invoice")] Nothing] s
+      [(fValue f, fSource f) | fs <- drop 1 (pvFields pv), f <- fs, fName f == "port"] `shouldBe` [(Just "payment_repository", Just FromNew)]
+  sequential . it "(k) previews fast: 20 round-trips in the fixture, each a different name (median under 50 ms)" $
+    withPython [] $ \ports dir -> do
+      (times, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        _ <- pick doc [("python-htmx/command", [])]
+        forM [1 .. 20 :: Int] $ \i -> do
+          t0 <- liftIO getCurrentTime
+          _ <- pick doc [("python-htmx/command", [("command", "close_table_" <> T.pack (show i))])]
+          t1 <- liftIO getCurrentTime
+          pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+      let median = sort times !! 10
+      liftIO (putStrLn ("      picker preview: median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms"))
+      median `shouldSatisfy` (< 50)
+  let testFile = "src/bistro/booking/commands/create_booking__test.py"
+      editLines v = [l | Just (Object e) <- [lookupKey "edit" v >>= \x -> case x of Object o -> Just (Object o); _ -> Nothing], Just (Array cs) <- [KM.lookup "documentChanges" e], Object c <- toList cs, Just (Array es) <- [KM.lookup "edits" c], Object ed <- toList es, Just (Number l) <- [KM.lookup "range" ed >>= lookupKey "start" >>= lookupKey "line"]]
+  it "(l) a snippet planned by the picker lands at the cursor, never at line 1 (review C1)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc testFile "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (34 :: Int), "character" .= (0 :: Int)], "steps" .= [step "python-htmx/test-case" [("test", "closes_a_table")]]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      editLines v `shouldSatisfy` (\ls -> not (null ls) && all (>= 30) ls)
+  it "(m) the preview's main file says where the change starts (review I4)" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc testFile "python"
+        pickWith doc [step "python-htmx/test-case" []] -- position 0: the request's own
+      (lookupKey "main" v >>= lookupKey "first") `shouldSatisfy` maybe False (\case Number n -> n >= 1; _ -> False)
+  it "(h) olifant/plan plans steps as one plan" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "steps" .= [step "python-htmx/repository" [("app", "bistro"), ("service", "booking"), ("entity", "table")], step "python-htmx/add-dependency" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "create_booking"), ("port", "table_repository")]]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      lookupKey "plan" v `shouldSatisfy` (/= Nothing)
+      show v `shouldSatisfy` ("table_repository.py" `isInfixOf`)
+
 recognitionSpec :: Spec
 recognitionSpec = describe "recognition: this looks like a command" $ do
   let newCommand = "src/bistro/booking/commands/close_table.py"

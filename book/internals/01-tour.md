@@ -185,7 +185,8 @@ From the bottom up:
 | **App** | The operations the CLI and the language server share, over a **Ports** record (files, syntax, checker, verifier, clock, config dirs, doctor) and a loaded **Project** (root, catalog, workspace) | `App.hs`: `Ports`, `Project`, `nearestProject`, `openProject`, `listGenerators`, `showGenerator`, `actionsAt'`, `actionsIn`, `completeAt`, `findings`, `planWith`, `doctorChecks`, `projectModel`, … | Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace |
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
 | **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; an optional model for the unsure | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `Recognizer`, `consult`, `curlRecognizer` | Generator, Glob, Model, Naming, Process, Template |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `submit`, … | Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
+| **Preview** | The generate picker's form and placeholders: each input's value and where it came from (you, the file's folders, the cursor, a lone choice, a default, a `+ New` step), checked as `olifant gen` checks it; marks a missing name is planned with, and their renderings back to `⟨name⟩` | `Preview.hs` over `Preview/{Fields,Marks}`: `Field`, `Source`, `fieldsFor`, `markValue`, `unmark` | Generator, Naming |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, … | Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
 | **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
@@ -216,7 +217,7 @@ none upwards.
   ├────────────────────────────────────────────────────────────┤
   │ Rules                                                      │  conventions as checks (uses Actions' path patterns)
   ├────────────────────────────────────────────────────────────┤
-  │ Generation   Actions   Doctor   Recognize                  │  the use cases: steps → plan → writes; actions; doctor
+  │ Generation  Actions  Doctor  Recognize  Preview            │  the use cases: steps → plan → writes; actions; doctor
   ├────────────────────────────────────────────────────────────┤
   │ Cursor           Snippet          Uncovered                │  snippets: the cursor, tab stops, missing cases
   ├────────────────────────────────────────────────────────────┤
@@ -261,9 +262,10 @@ ProjectModel         → Query, Template, Toml
 Catalog              → Anchor, Generator, Language, Model, ProjectModel, Region, Rules, Snippet, Template, Toml, Workspace
 App                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace
 Output               → Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template
+Preview              → Generator, Naming
 Recognize            → Generator, Glob, Model, Naming, Process, Template
-Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace
-Lsp                  → Actions, App, Catalog, Generation, Generator, Output, Process, Recognize, Rules, Server, Snippet, Workspace
+Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace
+Lsp                  → Actions, App, Catalog, Generation, Generator, Output, Preview, Process, Recognize, Rules, Server, Snippet, Workspace
 Cli                  → Actions, Anchor, App, Catalog, Cursor, Doctor, Fill, Generation, Generator, Language, Lsp, Output, Region, Rules, Template, Toml, Workspace
 GeneratorTesting     → Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace   (Generator.Definition directly, for apAfter)
 app/Main             → Cli, GitInit, Language, Language.AstGrep, Model, Workspace
@@ -2246,6 +2248,26 @@ earned quietness (`ssQuiet`, `.olifant/state/recognition.json`) and dismissed sh
 (`ssDismissed`) from `olifant/recognitionFeedback`. The suggest job tries a follow-up first, a
 recognition next, then (unsure, a model configured) `recognitionUpgrade` for the same version.
 The corpora (`packs/*/tests/recognize/`) are the gate on any change to scoring.
+
+### The generate picker's preview (`Preview`, `Server/Preview`)
+
+The picker plans a generator before its inputs are all set, so the person sees exactly what
+Enter will write while they type:
+
+- **Fields** (`Preview/Fields`): each input's value from, in order: what you set, what the
+  file's folders give back through the generator's create paths (recognition's
+  `invertPath`, keeping only folder-named inputs, never the file's own name), the cursor's ⚡
+  action, a lone choice, a default. Each value is checked by the engine's own `resolveInput`, so
+  the reasons match `olifant gen`.
+- **Marks** (`Preview/Marks`): a missing name is planned as `zqmark_NAME`, and every rendering
+  of it (each case, plural, singular) comes back as `⟨name⟩`/`⟨Name⟩`/`⟨NAME⟩`. A missing
+  choice previews with its first option, missing text as `⟨name⟩`.
+- **Steps** (`Server/Preview.previewFor`, `stepsPlanWith`): a picker sends steps, a `+ New`
+  step first with `makes = {step, input}`. The new step's value comes from the served input's
+  `new` template, rendered in that step's resolved environment, and fills the input it makes
+  (source `new`, valid though not yet among the choices). All the steps plan as one plan.
+  `olifant/preview` runs through the job queue keyed per document, so a newer request cancels
+  one not yet started. The plugin ignores an older answer by its sequence number.
 
 ### Testing the server
 

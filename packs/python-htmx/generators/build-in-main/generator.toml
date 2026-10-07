@@ -1,5 +1,6 @@
 name = "Build In Main"
 description = "main.py builds a command or query, passing each port's adapter (added once); used by web-resource and web-command"
+summary = "main.py builds a command or query with its adapters"
 language = "python"
 version = 1
 examples = [

@@ -1,5 +1,6 @@
 name = "Add import"
 description = "An import line in a file, unless it is there; used by other generators"
+summary = "An import line, unless it is there"
 language = "python"
 version = 1
 examples = [

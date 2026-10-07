@@ -1,5 +1,6 @@
 name = "Wire Main"
 description = "main.py passes a command its port's adapter (SQLite if the port has one, else in memory), adding the adapter once; used by wire"
+summary = "main.py passes a command its port's adapter"
 language = "python"
 version = 1
 examples = [

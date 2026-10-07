@@ -1,4 +1,5 @@
 description = "A web-htmx component (an rscx component in web-htmx/src/components)"
+summary = "A web-htmx component"
 language = "rust"
 version = 1
 examples = [

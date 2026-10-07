@@ -1,5 +1,6 @@
 name = "Port method adapter"
 description = "One adapter gets a port's new method, its body a hole the model fills, and the Protocol's imports; used by port-method-adapters"
+summary = "One adapter gets a port's new method"
 language = "python"
 version = 1
 examples = [

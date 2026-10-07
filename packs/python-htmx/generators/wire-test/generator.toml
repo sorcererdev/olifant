@@ -1,5 +1,6 @@
 name = "Wire Test"
 description = "A test that builds a command passes a fake for its new port (the port's in-memory adapter); used by wire"
+summary = "A command's tests pass a fake for its new port"
 language = "python"
 version = 1
 examples = [

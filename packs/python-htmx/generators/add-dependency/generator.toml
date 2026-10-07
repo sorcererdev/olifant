@@ -1,5 +1,6 @@
 name = "Add a port"
 description = "A command's or query's __init__ takes one of the service's ports (a menu); wire follows: the module keeps it, its tests pass a fake, main.py the adapter"
+summary = "A command or query takes one of the service's ports"
 language = "python"
 version = 1
 examples = [
@@ -29,6 +30,8 @@ prompt = "The command or query (its module's name)"
 type   = "enum"
 one_of = "ports"
 prompt = "The port it takes (one of the service's ports/)"
+# + New in a picker: a repository (its port is {entity}_repository) or another port
+new    = { repository = "{= port =}", port = "{= port|snake =}" }
 
 [derive]
 module = "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}.py"

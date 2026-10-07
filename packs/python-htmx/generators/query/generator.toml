@@ -1,5 +1,6 @@
 name = "Query"
 description = "A query of a service: queries/NAME.py (its Input, its Result, handle; no failures) and NAME__test.py, a failing stub wired up, ready for the first case"
+summary = "A query of a service, with its test"
 language = "python"
 version = 1
 examples = [

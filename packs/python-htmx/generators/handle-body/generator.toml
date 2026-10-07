@@ -1,5 +1,6 @@
 name = "Handle body"
 description = "Write a command's or query's handle with the model, until its tests pass (asked for from the ⚡ menu, never offered unasked)"
+summary = "The model writes handle() until its tests pass"
 language = "python"
 version = 1
 examples = [

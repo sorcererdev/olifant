@@ -51,6 +51,9 @@ import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
 import Olifant.Workspace (Workspace (..))
 import Olifant.Server
+import Data.Foldable qualified as F
+import Olifant.Preview (Field (..), Source (..))
+import Control.Concurrent.Async qualified as Async
 
 -- | The server's state behind a lock, its background jobs, the plans of
 -- the suggestions it has offered (by id, for `olifant/plan`), and whether
@@ -244,7 +247,11 @@ handlers env =
           Nothing -> respond (Right (listJson True (const []) (const M.empty) [] []))
           Just project -> do
             (entries, broken, views) <- liftIO (listGenerators (envPorts env) project True)
-            respond (Right (listJson True (subsOf (prCatalog project)) views entries broken))
+            -- with a position: which apply at the cursor (the picker ranks them first)
+            here <- case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
+              (Just path, Just (line, col)) -> S.fromList . map (actGenerator . fst) <$> liftIO (withSnapshot env (actionsFor path (line + 1, col + 1)))
+              _ -> pure S.empty
+            respond (Right (withHere here (listJson True (subsOf (prCatalog project)) views entries broken)))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/choices")) $ \req respond -> do
         let params = req ^. L.params
             field k = case params of Object o -> KM.lookup k o; _ -> Nothing
@@ -418,15 +425,23 @@ handlers env =
                 , Just path <- uriToFilePath (Uri uri) ->
                     Just (path, generator, setsIn o, KM.lookup "recognize" o == Just (Bool True))
               _ -> Nothing
-        case (chosen, offered) of
-          (Just (path, generator, sets, recognising), _) ->
+        -- or the picker's steps (a `+ New` step first, then the picked generator)
+        let picked = case req ^. L.params of
+              Object o | Just (Aeson.Array _) <- KM.lookup "steps" o, Just path <- documentPath (req ^. L.params) -> Just (path, pickSteps o)
+              _ -> Nothing
+        case (picked, chosen, offered) of
+          (Just (path, steps), _, _) ->
+            planProgress "Generating" (\progress -> withPlanned job (stepsPlanWith progress True path (fromMaybe (0, 0) (positionOf (req ^. L.params))) steps)) >>= \case
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
+          (_, Just (path, generator, sets, recognising), _) ->
             -- a recognition's plan (the file converted, or its companions), or the picker's
             let planned progress = if recognising then recognitionPlan True progress path generator sets else actionPlanWith progress True path 1 generator sets
              in planProgress generator (\progress -> withPlanned job (planned progress)) >>= \case
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
-          (_, Nothing) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
-          (_, Just o)
+          (_, _, Nothing) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
+          (_, _, Just o)
             | fmap fst (M.lookup (ofPath o) (ssDocs s)) /= Just (ofVersion o) -> respond (Left (TResponseError (InL LSPErrorCodes_ContentModified) "the document changed since this was suggested" Nothing))
             | not fill ->
                 let sg = ofSuggestion o
@@ -439,6 +454,18 @@ handlers env =
                 planProgress (sgLabel sg) (\progress -> withPlanned job (replanned progress)) >>= \case
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
+    , -- the generate picker: the form and what it would write; a newer
+      -- request for the document supersedes an older one
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/preview")) $ \req respond -> inBackground env req respond $ \job ->
+        case (documentPath (req ^. L.params), req ^. L.params) of
+          (Just path, Object o) -> do
+            let at = fromMaybe (0, 0) (positionOf (req ^. L.params))
+                steps = pickSteps o
+            done <- liftIO (submit (envJobs job) ("preview " <> T.pack path) 0 (\token -> withSnapshot job {envCancel = token} (previewFor path at steps)) >>= Async.wait)
+            case done of
+              Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "superseded by a newer preview" Nothing))
+              Just pv -> respond (Right (previewJson steps pv))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/preview needs a textDocument and steps" Nothing))
     , -- the project of a document in the shared vocabulary (spec §1b)
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) $ \req respond -> inBackground env req respond $ \job -> do
         let path = case req ^. L.params of
@@ -489,6 +516,91 @@ everything :: FilePath -> GlobPattern
 everything dir = GlobPattern (InR (RelativePattern (InR (filePathToUri dir)) (Pattern "**/*")))
 
 -- | The project of the document a request names (`textDocument.uri`).
+-- | A picker's steps: [{generator, sets, makes?: {step, input}}].
+pickSteps :: KM.KeyMap Value -> [PickStep]
+pickSteps o = case KM.lookup "steps" o of
+  Just (Aeson.Array ss) -> [PickStep g (setsIn st) (makesOf st) | Object st <- F.toList ss, Just (String g) <- [KM.lookup "generator" st]]
+  _ -> []
+  where
+    makesOf st = case KM.lookup "makes" st of
+      Just (Object m) | Just (Number k) <- KM.lookup "step" m, Just (String i) <- KM.lookup "input" m -> (,i) <$> toBoundedInteger k
+      _ -> Nothing
+
+-- | A preview as the picker reads it: per step its fields, the files the
+-- plan writes (new, or changed with line counts), its main file's text,
+-- whether it is ready, or why it cannot plan.
+previewJson :: [PickStep] -> Preview -> Value
+previewJson steps pv =
+  object
+    [ "steps" .= [object ["generator" .= psGenerator st, "fields" .= map fieldJson fs] | (st, fs) <- zip steps (pvFields pv)]
+    , "files" .= [object ["path" .= p, "new" .= isNew p, "added" .= added p t, "removed" .= removed p t] | Just plan <- [pvPlan pv], (p, t) <- M.toList (planWrites plan)]
+    , "main" .= (pvPlan pv >>= mainFile)
+    , "ready" .= pvReady pv
+    , "error" .= pvError pv
+    ]
+  where
+    before p = pvPlan pv >>= M.lookup p . planBefore
+    isNew p = before p == Just Nothing
+    old p = maybe [] T.lines (before p >>= id)
+    added p t = length (T.lines t) - common p t
+    removed p t = length (old p) - common p t
+    -- lines kept (as a multiset): what the counts leave out
+    common p t = sum (M.elems (M.intersectionWith min (counts (old p)) (counts (T.lines t))))
+    counts = M.fromListWith (+) . map (,1 :: Int)
+    -- the main file: the first new one, else the first changed; with the
+    -- first line (1-based) where it differs from before, to show the change
+    mainFile plan =
+      listToMaybe
+        ( [main p t (1 :: Int) | (p, t) <- M.toList (planWrites plan), M.lookup p (planBefore plan) == Just Nothing]
+            ++ [main p t (firstChange (maybe [] T.lines (M.lookup p (planBefore plan) >>= id)) (T.lines t)) | (p, t) <- M.toList (planWrites plan)]
+        )
+    main p t first = object ["path" .= p, "text" .= t, "first" .= first]
+    firstChange old new = 1 + length (takeWhile id (zipWith (==) old new))
+    fieldJson f =
+      object
+        [ "name" .= fName f
+        , "value" .= fValue f
+        , "source" .= fmap sourceText (fSource f)
+        , "valid" .= fValid f
+        , "why" .= fWhy f
+        , "choices" .= fChoices f
+        , "needs" .= fNeeds f
+        , "new" .= fNew f
+        ]
+    sourceText = \case
+      FromYou -> "you" :: T.Text
+      FromPath -> "path"
+      FromHere -> "here"
+      OnlyChoice -> "only"
+      FromDefault -> "default"
+      FromNew -> "new"
+
+-- | A request's document, as a path.
+documentPath :: Value -> Maybe FilePath
+documentPath = \case
+  Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
+  _ -> Nothing
+
+-- | A request's `position` (0-based line and character), if it has one.
+positionOf :: Value -> Maybe (Int, Int)
+positionOf = \case
+  Object o
+    | Just (Object p) <- KM.lookup "position" o
+    , Just (Number l) <- KM.lookup "line" p
+    , Just (Number c) <- KM.lookup "character" p ->
+        (,) <$> toBoundedInteger l <*> toBoundedInteger c
+  _ -> Nothing
+
+-- | Each listed generator marked with whether it applies at the cursor.
+withHere :: S.Set T.Text -> Value -> Value
+withHere here = \case
+  Object o | Just (Aeson.Array gs) <- KM.lookup "generators" o -> Object (KM.insert "generators" (Aeson.Array (fmap mark gs)) o)
+  v -> v
+  where
+    mark = \case
+      Object g | Just (String i) <- KM.lookup "id" g -> Object (KM.insert "here" (Bool (i `S.member` here)) g)
+      g -> g
+
 projectOfRequest :: Env -> Value -> IO (Maybe Project)
 projectOfRequest env params = case params of
   Object o

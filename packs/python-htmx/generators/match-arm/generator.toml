@@ -1,5 +1,6 @@
 name = "Next match arm"
 description = "An arm for a case pyright says this match lacks, written as the other arms are; its body is a hole the model fills (a snippet, spec §4.9)"
+summary = "The arm a match lacks; the model fills its body"
 language = "python"
 version = 1
 examples = [

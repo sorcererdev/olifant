@@ -6,6 +6,7 @@ module Olifant.Generator.Inputs
   , describeInputType
   , inputsUsed
   , envBefore
+  , resolveInput
   , showContext
   ) where
 

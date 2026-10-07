@@ -1,5 +1,6 @@
 name = "Port method"
 description = "A method of a port's Protocol: name, parameters and return type tab stops (a snippet, spec §4.9); its adapters and contract test follow up"
+summary = "A method of a port's Protocol (a snippet)"
 language = "python"
 version = 1
 examples = [

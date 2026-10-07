@@ -1,5 +1,6 @@
 name = "Command"
 description = "A command of a service: commands/NAME.py (its Input, a failure in a one-per-line union, handle) and NAME__test.py, a failing stub wired up, ready for the first case"
+summary = "A command of a service, with its test"
 language = "python"
 version = 1
 examples = [

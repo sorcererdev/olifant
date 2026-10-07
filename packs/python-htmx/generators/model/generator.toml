@@ -1,5 +1,6 @@
 name = "Model"
 description = "A model of a service: a frozen dataclass in models/NAME.py, its fields yours"
+summary = "A model of a service: a frozen dataclass"
 language = "python"
 version = 1
 examples = [

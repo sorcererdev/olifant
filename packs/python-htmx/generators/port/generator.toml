@@ -1,5 +1,6 @@
 name = "Port"
 description = "A port of a service: a Protocol in ports/NAME/, an in-memory adapter beside it, and a contract test (passing)"
+summary = "A port: its Protocol, an in-memory adapter, a test"
 language = "python"
 version = 1
 examples = [

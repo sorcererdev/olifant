@@ -71,7 +71,8 @@ parseGenerator gid src = do
   next <- fromMaybe [] <$> optional "next" (list (text >=> tmpl)) top
   when (not starter && not (null next)) (Left "`next` lists what to run after `olifant init`: it belongs to a starter (`starter = true`)")
   context <- fromMaybe [] <$> optional "context" (list (text >=> tmpl)) top
-  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes starter next context verify recognize)
+  summary <- optional "summary" text top
+  pure (Generator gid description language version inputs' derived requires edits uses examples queries appliesAt name holes starter next context verify recognize summary)
   where
     queryWithValue v = do
       t <- table v
@@ -125,8 +126,8 @@ choiceValueFrom v = case v of
 
 -- | The keys each table accepts (also the source of `olifant schema`).
 topKeys, inputKeys, createKeys, insertKeys, completeKeys, cursorKeys, requiresKeys, useKeys :: [Text]
-topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes", "starter", "next", "context", "recognize"]
-inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of"]
+topKeys = ["name", "description", "language", "version", "inputs", "derive", "requires", "edits", "uses", "examples", "query", "applies_at", "holes", "starter", "next", "context", "recognize", "summary"]
+inputKeys = ["type", "optional", "default", "prompt", "choices", "one_of", "choices_from", "of", "new"]
 createKeys = ["create", "template", "exemplar", "bind", "text", "on_exists", "unless"]
 insertKeys = ["insert", "at", "anchor", "template", "text", "fragment", "bind", "unless"]
 completeKeys = ["complete", "where", "template", "text"]
@@ -178,7 +179,13 @@ inputFrom name t = do
   isOptional <- fromMaybe False <$> optional "optional" bool t
   def <- optional "default" scalarDefault t
   prompt <- optional "prompt" text t
-  pure (InputSpec name itype isOptional def prompt)
+  new <- maybe (pure []) (\v -> table v >>= traverse (\(k, x) -> inKey ("new." <> k) ((k,) <$> (text x >>= tmpl))) . M.toList) (M.lookup "new" t)
+  case itype of
+    ScalarInput (EnumS _) -> Right ()
+    ScalarInput EnumOf {} -> Right ()
+    _ | not (null new) -> Left "`new`: only an enum input can make a new value"
+    _ -> Right ()
+  pure (InputSpec name itype isOptional def prompt new)
 
 scalarFrom :: Text -> Table -> Either Text Scalar
 scalarFrom ty t = case ty of

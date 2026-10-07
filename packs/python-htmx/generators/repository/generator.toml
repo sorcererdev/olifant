@@ -1,5 +1,6 @@
 name = "Repository"
 description = "A repository port for a model: its Protocol, an in-memory and a SQLite adapter beside it, and a contract test over both (passing once any value-field codecs are filled)"
+summary = "A repository for a model: in memory and SQLite"
 language = "python"
 version = 1
 examples = [

@@ -245,6 +245,16 @@ parseSpec = describe "parseGenerator" $ do
     it "derives one from the id when there is none" $ do
       fmap generatorName (parseGenerator (GeneratorId "rust-htmx/command-dependency") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Command Dependency"
       fmap generatorName (parseGenerator (GeneratorId "olifant-dev/error_case") "description = \"d\"\nlanguage = \"x\"\n") `shouldBe` Right "Error Case"
+  describe "summary and new (the generate picker)" $ do
+    let g extra = parseGenerator (GeneratorId "p/g") (T.unlines (["description = \"d\"", "language = \"x\""] ++ extra))
+    it "reads `summary`, a short line for lists" $ do
+      fmap genSummary (g ["summary = \"A command of a service\""]) `shouldBe` Right (Just "A command of a service")
+      fmap genSummary (g []) `shouldBe` Right Nothing
+    it "reads an enum input's `new`: the generators that make a new value, and how it reads" $
+      fmap (\d -> [(n, templateSource t) | i <- genInputs d, inputName i == "port", (n, t) <- inputNew i]) (g ["[inputs.port]", "type = \"enum\"", "one_of = \"ports\"", "new = { repository = \"{= port =}\" }", "[query.ports]", "glob = \"x/*\"", "value = \"file name\""])
+        `shouldBe` Right [("repository", "{= port =}")]
+    it "refuses `new` on an input that is not an enum" $
+      g ["[inputs.x]", "type = \"ident\"", "new = { repository = \"{= port =}\" }"] `shouldSatisfy` either ("only an enum input can make a new value" `T.isInfixOf`) (const False)
   describe "starter and next (olifant init)" $ do
     let starterGen extra = parseGenerator (GeneratorId "p/project") (T.unlines (["description = \"d\"", "language = \"x\""] ++ extra))
     it "(h) reads `starter` and `next`" $ do

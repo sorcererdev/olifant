@@ -89,7 +89,7 @@ Standard LSP where the protocol has it; `olifant/*` methods only where it does n
 | Regions on save | `textDocument/willSaveWaitUntil` | the saved file's region edits, in the same write; other files' through `workspace/applyEdit` |
 | Every action in a file | `olifant/fileActions {textDocument}` | the shape `olifant actions --file` prints |
 | Holes left in the project | `olifant/holes {textDocument}` | path, line, name, kind, instruction; a hole's code action fills it |
-| The generator picker | `olifant/generators`, `olifant/choices {generator, sets}`, `olifant/plan {textDocument, generator, sets}` | as `olifant list`, `show`, `gen --plan` |
+| The generate picker | `olifant/generators {textDocument, position?}` (with `kind`, `summary`, `here`), `olifant/preview {textDocument, position, steps}`, `olifant/plan {textDocument, steps}` | [below](#generate-the-picker) |
 | The project model | `olifant/model {textDocument}` | [below](#the-project-model) |
 | Recognition | `olifant/suggestion` / `olifant/suggest` with kind `recognition` (band, or, reasons, score, sets); `olifant/recognitionFeedback {textDocument, generator, outcome}`; `olifant/plan {…, recognize: true}` | [below](#recognition-this-looks-like-a-command) |
 | Doctor | `workspace/executeCommand` `olifant.doctor` (argument: a document's uri) | the checks `olifant doctor --json` prints |
@@ -131,6 +131,60 @@ In Neovim:
 ```
 :lua vim.print(require("durandal.lsp").client():request_sync("olifant/model", { textDocument = vim.lsp.util.make_text_document_params() }, 10000).result)
 ```
+
+## Generate: the picker
+
+`<leader>mg` (or `:DurandalGenerate`) opens one centred float:
+
+```
+┌ Generate ─────────────────┬ Command  create ─────────────────────────────┐
+│ comm▏                     │ app      bistro                   only one   │
+├───────────────────────────┤ service  booking            from this file   │
+│ ── here ──                │ command  close_table▏                        │
+│ Add a port         extend │                                              │
+│ Command            create │                                              │
+│ Command dependency extend ├ src/bistro/booking/commands/close_table.py ──┤
+│                           │ + src/bistro/booking/commands/close_table.py │
+│                           │ + …/close_table__test.py                     │
+│                           │ ~ src/bistro/main.py  +2 −0                  │
+│                           │ ──────────────────────────────────────────── │
+│                           │ class CloseTableInput: …                     │
+└──────────────────── 3 of 24 ┴──────────────────────────────────────────────┘
+```
+
+- **The list.** Type to filter (fuzzy, on the name, the summary and the pack). Generators that
+  apply at the cursor come first under *here*, then the ones you used recently, then by name.
+  Each has a tag: *create* (it makes files), *extend* (it edits existing ones), *fill* (the
+  model writes a body).
+- **The form.** The highlighted generator's inputs, one per line. Values the server knows come
+  filled, with a dim note saying why:
+  - *only one*: a lone choice;
+  - *from this file*: what the file's folders name, never its own name;
+  - *from the cursor*;
+  - *default*.
+
+  A choice filters its options as you type and lists them under it; Tab takes the top one. An
+  invalid value says why in red, in `olifant gen`'s words.
+- **The preview.** What the generator would write, live as you type (debounced): new files `+`,
+  changed ones `~` with line counts, then the main file with your values. A missing name shows
+  as `⟨command⟩` / `⟨Command⟩`, in the case the templates use. It is the engine's real plan
+  (`olifant/preview`), so it is exactly what Enter writes. A plan that cannot be made (a file
+  that already exists) says so in place.
+- **`+ New …`.** A choice whose generator says how to make a new value (`new`, chapter 7) ends
+  with `+ New repository…`. Picking it adds that generator's inputs to the form (the values both
+  share carried over), and Enter writes both as one plan.
+
+| key | does |
+|---|---|
+| typing | filters the list (in the search line), or edits the field |
+| `↓` `↑`, `C-n` `C-p` | move in the list |
+| `Tab`, `S-Tab` | into the form, and between fields |
+| `Enter` | applies when every field is valid; else goes to the first one missing |
+| `C-o` | opens the full review (the diff) first |
+| `Esc` | closes; the cursor goes back where it was |
+
+Everything works with AI off: holes stay `⟨…⟩` stubs, and the model fills them on apply only
+when one is configured.
 
 ## Recognition: this looks like a command
 

@@ -172,6 +172,16 @@ spec = describe "catalog" $ do
           Right cat <- openPackCatalog root [("p", "/packs/p")]
           let Right entry = findEntry cat "p/g"
           checkEntry root noSyntax cat entry
+    it "checks a `new`: it names a generator of the pack, its template only that generator's values" $ do
+      let withNew name tpl = "description = \"d\"\nlanguage = \"x\"\n[inputs.port]\ntype = \"enum\"\nchoices = [\"a\"]\nnew = { " <> name <> " = \"" <> tpl <> "\" }\n"
+          checkTwo gen = do
+            (root, _) <- memoryWorkspace [("/packs/p/languages/x.toml", lang), ("/packs/p/generators/g/generator.toml", gen), ("/packs/p/generators/b/generator.toml", "description = \"d\"\nlanguage = \"x\"\n[inputs.port]\ntype = \"ident\"\n[derive]\nfull = \"{= port =}_x\"\n")]
+            Right cat <- openPackCatalog root [("p", "/packs/p")]
+            let Right entry = findEntry cat "p/g"
+            checkEntry root noSyntax cat entry
+      checkTwo (withNew "nope" "{= port =}") >>= (`shouldSatisfy` maybe False ("new names no generator `nope`" `T.isInfixOf`))
+      checkTwo (withNew "b" "{= nothing =}") >>= (`shouldSatisfy` maybe False ("{= nothing =} is not an input or derived value of b" `T.isInfixOf`))
+      checkTwo (withNew "b" "{= full =}") `shouldReturn` Nothing
     it "reports a missing template file" $
       check "description = \"d\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a.x\"\ntemplate = \"nope.x.dt\"\n" >>= (`shouldSatisfy` maybe False ("nope.x.dt" `T.isInfixOf`))
     it "reports a fixed `at` target the file's adapter does not have, with a suggestion" $

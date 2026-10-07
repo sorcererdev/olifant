@@ -1,5 +1,6 @@
 name = "Web Command"
 description = "A command on a web resource: its POST route (form → Input, Ok → 201, a failure → its status), its failures' statuses, a form on the page, the routes test's fake, and main.py building it"
+summary = "A command on a web resource: its POST route and form"
 language = "python"
 version = 1
 examples = [

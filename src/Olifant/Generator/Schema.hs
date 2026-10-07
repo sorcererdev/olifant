@@ -43,6 +43,7 @@ generatorSchema =
       "context" -> object ["type" .= str "array", "items" .= object ["type" .= str "string"], "description" .= str "Globs (templates over the inputs) of files the model sees when it fills this generator's holes, e.g. the models a codec reads."]
       "name" -> object ["type" .= str "string", "description" .= str "What editors show for this generator (\"Add Command Dependency\"); default: from the id."]
       "applies_at" -> object ["type" .= str "object", "description" .= str "Where this generator applies, for editors (olifant actions): path = \"{slot}/…\" (slots bind inputs), node = an ast-grep rule the cursor must be inside, bind = { input = \"regex\" } over that node's text, label = a template, where = what the rule looks for in words (shown when nothing applies), suggest = true lets editors offer it unasked (ghost text or a follow-up), trigger = a POSIX regex the text before the cursor must end with (a snippet's anticipation), after = an ast-grep rule the cursor's line must follow (only blank lines between; instead of node)."]
+      "summary" -> desc "string" "A short line for lists and pickers; default: the description up to its first : ; or —."
       "query" -> object ["type" .= str "object", "description" .= str "[query.NAME]: bind NAME to records from a glob, command or AST query; value = \"file name\" | \"parent folder\" | \"path\" | a field | a template, for an enum that is one_of it (see the user book, chapter 6).", "additionalProperties" .= object ["type" .= str "object"]]
       _ -> object []
     inputProp = \case
@@ -54,6 +55,7 @@ generatorSchema =
       "one_of" -> desc "string" "The name of a [query.NAME] whose records are the choices; the query's value (file name | parent folder | path | a field | a {= … =} template) picks each choice. The query may use inputs declared above this one."
       "choices_from" -> desc "object" "Retired: use one_of and a [query.NAME]."
       "of" -> object ["description" .= str "List items: a scalar type name, or an array of { name, type } fields."]
+      "new" -> object ["type" .= str "object", "additionalProperties" .= object ["type" .= str "string"], "description" .= str "An enum only: generators of this pack that make a new value (`+ New …` in pickers), each with the template over its inputs and derived values that gives this input's value, e.g. new = { repository = \"{= port =}\" }."]
       _ -> object []
     edit kind keys =
       object

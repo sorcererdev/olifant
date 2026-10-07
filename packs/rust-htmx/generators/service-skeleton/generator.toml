@@ -1,4 +1,5 @@
 description = "Create the skeleton of a new service (a workspace crate with service, models and ports)"
+summary = "A new service crate: service, models, ports"
 language = "rust"
 version = 1
 examples = [

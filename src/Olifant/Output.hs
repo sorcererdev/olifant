@@ -1,6 +1,8 @@
 -- | What Olifant says, as JSON and text: the CLI prints it, the language server sends it, agents read it.
 module Olifant.Output
   ( encodeJson
+  , generatorKind
+  , shortSummary
   , doctorJson
   , fileActionsJson
   , listJson
@@ -39,7 +41,7 @@ import Olifant.Generation
 import Olifant.Holes (HoleSite (..))
 import Olifant.Generator
 import Olifant.Language (Language (..), TargetDef (..), targetPhrase)
-import Olifant.Template (templateSource)
+import Olifant.Template.Syntax (Segment (..), Template (..))
 import System.FilePath ((</>))
 
 encodeJson :: Value -> Text
@@ -61,7 +63,32 @@ listJson detail subs views es broken =
     , "tip" .= compositionTip
     ]
   where
-    summary e = object ["id" .= idText (entryId e), "name" .= generatorName (entryDefinition e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e)]
+    summary e = object ["id" .= idText (entryId e), "name" .= generatorName (entryDefinition e), "pack" .= entryPack e, "description" .= genDescription (entryDefinition e), "kind" .= generatorKind (entryDefinition e), "summary" .= shortSummary (entryDefinition e)]
+
+-- | What a generator does, for a picker's tag: create (it makes files),
+-- fill (it makes none, and the model writes a body: it declares
+-- [holes.NAME] or an inline text has a hole), or extend (it only edits).
+generatorKind :: GeneratorDef -> Text
+generatorKind d
+  | any isCreate (genEdits d) = "create"
+  | not (null (genHoles d)) || any inlineHole (genEdits d) = "fill"
+  | otherwise = "extend"
+  where
+    isCreate = \case
+      Create {} -> True
+      _ -> False
+    inlineHole e = case e of
+      Create {editSource = InlineText t} -> hasHole t
+      Insert {editSource = InlineText t} -> hasHole t
+      _ -> False
+    hasHole t = any (\case Hole {} -> True; _ -> False) (templateSegments t)
+
+-- | A short line for a picker's list: `summary`, else the description up to
+-- its first `:`, `;` or ` —`.
+shortSummary :: GeneratorDef -> Text
+shortSummary d = case genSummary d of
+  Just s -> s
+  Nothing -> T.strip (fst (T.breakOn " —" (T.takeWhile (`notElem` (":;" :: String)) (genDescription d))))
 
 -- | How to do a whole task in one call (agents pay per turn; spec §16).
 compositionTip :: Text
@@ -117,6 +144,8 @@ showJson views subs e =
     [ "id" .= idText (entryId e)
     , "name" .= generatorName d
     , "description" .= genDescription d
+    , "kind" .= generatorKind d
+    , "summary" .= shortSummary d
     , "language" .= genLanguage d
     , "version" .= genVersion d
     , "inputs" .= inputsJson views d

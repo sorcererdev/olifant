@@ -1,5 +1,6 @@
 name = "Port method adapters"
 description = "A port's new method in each adapter beside it (its body a hole the model fills) and a red contract test for it"
+summary = "A port's new method in every adapter, with its test"
 language = "python"
 version = 1
 examples = [
