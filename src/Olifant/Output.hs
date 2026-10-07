@@ -41,7 +41,6 @@ import Olifant.Generation
 import Olifant.Holes (HoleSite (..))
 import Olifant.Generator
 import Olifant.Language (Language (..), TargetDef (..), targetPhrase)
-import Olifant.Template (templateSource)
 import Olifant.Template.Syntax (Segment (..), Template (..))
 import System.FilePath ((</>))
 

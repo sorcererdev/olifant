@@ -88,6 +88,9 @@ library
     Olifant.Model
     Olifant.Naming
     Olifant.Output
+    Olifant.Preview
+    Olifant.Preview.Fields
+    Olifant.Preview.Marks
     Olifant.Process
     Olifant.Process.Cancel
     Olifant.ProjectModel
@@ -210,6 +213,10 @@ test-suite spec
     Olifant.NamingSpec
     Olifant.Output
     Olifant.OutputSpec
+    Olifant.Preview
+    Olifant.Preview.Fields
+    Olifant.Preview.Marks
+    Olifant.PreviewSpec
     Olifant.Process
     Olifant.Process.Cancel
     Olifant.ProcessSpec
