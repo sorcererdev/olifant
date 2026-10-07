@@ -1,0 +1,20 @@
+path   = "billing/billing-service/src/close_account.rs"
+expect = "service-command"
+band   = "offer"
+inputs = { service = "billing", command_name = "close_account" }
+text = '''
+use std::sync::Arc;
+
+use crate::ports::invoice_repository::InvoiceRepository;
+
+pub struct CloseAccount {
+    repo: Arc<dyn InvoiceRepository>,
+}
+
+impl CloseAccount {
+    pub async fn run(&self, id: String) -> Result<(), String> {
+        let invoice = self.repo.get_invoice(id).await.map_err(|e| format!("{e:?}"))?;
+        Ok(())
+    }
+}
+'''

@@ -11,6 +11,8 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, neverCancel, newCancel)
+import Olifant.Recognize qualified as Recognize
+import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Monad (unless, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -146,6 +148,7 @@ configure env = \case
                 { scDebounceMs = maybe (scDebounceMs (ssConfig s)) id (KM.lookup "debounce_ms" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing)
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
                 , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
+                , scRecognizeAnswers = case KM.lookup "recognize_answers" o of Just (String f) -> Just (T.unpack f); _ -> scRecognizeAnswers (ssConfig s)
                 }
           }
   _ -> pure ()
@@ -170,7 +173,19 @@ guarded = mapHandlers onRequest onNotification
 handlers :: Env -> Handlers (LspM ())
 handlers env =
   mconcat
-    [ -- the client gave up on a request: stop its work
+    [ -- what the editor did with a recognition (earned quietness)
+      notificationHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/recognitionFeedback")) $ \msg ->
+        case msg ^. L.params of
+          Object o
+            | Just (Object doc) <- KM.lookup "textDocument" o
+            , Just (String uri) <- KM.lookup "uri" doc
+            , Just path <- uriToFilePath (Uri uri)
+            , Just (String generator) <- KM.lookup "generator" o
+            , Just (String outcome) <- KM.lookup "outcome" o
+            , outcome `elem` ["accepted", "dismissed", "reset"] ->
+                liftIO (modifyMVar_ (envState env) (recognitionFeedback path generator outcome))
+          _ -> pure ()
+    , -- the client gave up on a request: stop its work
       notificationHandler SMethod_CancelRequest $ \msg -> do
         let key = case msg ^. L.params . L.id of InL n -> T.pack (show n); InR t -> t
         liftIO (readIORef (envRunning env)) >>= maybe (pure ()) liftIO . M.lookup key
@@ -375,9 +390,12 @@ handlers env =
         case found of
           Nothing -> respond (Right Aeson.Null)
           Just (path, line) -> do
-            liftIO (withSnapshotState job (suggestionFor path line)) >>= \case
-              (at, Just sg) | Just v <- fst <$> M.lookup path (ssDocs at) -> do
-                n <- liftIO (offer job path v sg)
+            liftIO (withSnapshotState job (suggestOrRecognize path line)) >>= \case
+              (at, Just sg0) | Just v <- fst <$> M.lookup path (ssDocs at) -> do
+                -- a hint the model has upgraded for this version: the offer
+                upgraded <- liftIO (upgradedFor job path v sg0)
+                let sg = maybe sg0 snd upgraded
+                n <- maybe (liftIO (offer job path v sg)) (pure . fst) upgraded
                 respond (Right (object (suggestionFields path v n sg ++ ["plan" .= planJson False (sgPlan sg)] ++ ["edit" .= workspaceEdit (editsOfPlan at (sgRoot sg) (sgPlan sg))])))
               _ -> respond (Right Aeson.Null)
     , -- an offered suggestion's plan, while its document is as it was
@@ -398,13 +416,15 @@ handlers env =
                 , Just (Object doc) <- KM.lookup "textDocument" o
                 , Just (String uri) <- KM.lookup "uri" doc
                 , Just path <- uriToFilePath (Uri uri) ->
-                    Just (path, generator, setsIn o)
+                    Just (path, generator, setsIn o, KM.lookup "recognize" o == Just (Bool True))
               _ -> Nothing
         case (chosen, offered) of
-          (Just (path, generator, sets), _) ->
-            planProgress generator (\progress -> withPlanned job (actionPlanWith progress True path 1 generator sets)) >>= \case
-              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
+          (Just (path, generator, sets, recognising), _) ->
+            -- a recognition's plan (the file converted, or its companions), or the picker's
+            let planned progress = if recognising then recognitionPlan True progress path generator sets else actionPlanWith progress True path 1 generator sets
+             in planProgress generator (\progress -> withPlanned job (planned progress)) >>= \case
+                  Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+                  Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
           (_, Nothing) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
           (_, Just o)
             | fmap fst (M.lookup (ofPath o) (ssDocs s)) /= Just (ofVersion o) -> respond (Left (TResponseError (InL LSPErrorCodes_ContentModified) "the document changed since this was suggested" Nothing))
@@ -413,7 +433,10 @@ handlers env =
                  in respond (Right (object ["plan" .= planJson False (sgPlan sg), "edit" .= workspaceEdit (editsOfPlan s (sgRoot sg) (sgPlan sg))]))
             | otherwise -> do
                 let sg = ofSuggestion o
-                planProgress (sgLabel sg) (\progress -> withPlanned job (actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg))) >>= \case
+                let replanned progress = case sgRecognition sg of
+                      Just _ -> recognitionPlan True progress (ofPath o) (sgGenerator sg) (sgSets sg)
+                      Nothing -> actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg)
+                planProgress (sgLabel sg) (\progress -> withPlanned job (replanned progress)) >>= \case
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
     , -- the project of a document in the shared vocabulary (spec §1b)
@@ -445,7 +468,7 @@ debugState env = withSnapshotState env (\s0 -> do
                          (s'', found) <- projectFor path s'
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
-  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)]]))
+  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)], "recognitionIndexes" .= M.size (ssRecognition s), "recognitionFresh" .= M.size (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp s) (ssRecognition s0)), "listingsFresh" .= M.size (M.filter ((== ssFilesStamp s) . fst) (ssListings s0))]))
     <&> snd
 
 -- | Ask the client to watch more files (dynamic registration: the protocol
@@ -494,13 +517,40 @@ suggestLater env lspEnv path version line = do
   debounce <- scDebounceMs . ssConfig <$> readMVar (envState env)
   void . submit (envJobs env) ("suggest " <> T.pack path) debounce $ \token -> do
     -- superseded by the next edit: its checks stop (review I5)
-    found <- withSnapshot env {envCancel = token} (suggestionFor path line)
+    found <- withSnapshot env {envCancel = token} (suggestOrRecognize path line)
     current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
     case found of
       Just sg | current == Just version -> do
         n <- offer env path version sg
         runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version n sg)
+        -- unsure: the deterministic answer is out; a configured model may
+        -- sharpen it, for this version, if the buffer has not moved on
+        upgraded <- withSnapshot env {envCancel = token} (recognitionUpgrade path sg)
+        now <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+        case upgraded of
+          Just better | now == Just version -> do
+            m <- offer env path version better
+            runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version m better)
+          _ -> pure ()
       _ -> pure ()
+
+-- | The offer a model's yes made of a recognition hint, for this file at
+-- this version (pushed by the suggest job), with its id: what a pull at
+-- any line of the file answers instead of the hint.
+upgradedFor :: Env -> FilePath -> Int -> Suggestion -> IO (Maybe (Int, Suggestion))
+upgradedFor env path version sg = case sgRecognition sg of
+  Just r | Recognize.rcBand r == Recognize.Hint -> do
+    (_, m) <- readIORef (envOffered env)
+    pure $
+      listToMaybe
+        [ (n, ofSuggestion o)
+        | (n, o) <- M.toDescList m
+        , ofPath o == path
+        , ofVersion o == version
+        , Just u <- [sgRecognition (ofSuggestion o)]
+        , Recognize.rcBand u == Recognize.Offer
+        ]
+  _ -> pure Nothing
 
 -- | Keep a suggestion's plan for `olifant/plan`, while its file is at
 -- that version (a file's offers for older versions go): its id.
@@ -522,7 +572,17 @@ suggestionFields path version n sg =
   , "lines" .= sgLines sg
   , "at" .= sgAt sg
   , "planId" .= n
+  , "generator" .= sgGenerator sg
+  , "sets" .= M.fromList (sgSets sg)
   ]
+    <> case sgRecognition sg of
+      Nothing -> []
+      Just r ->
+        [ "band" .= (case Recognize.rcBand r of Recognize.Offer -> "offer" :: T.Text; Recognize.Hint -> "hint")
+        , "or" .= fmap (\(GeneratorId g) -> g) (Recognize.rcOr r)
+        , "reasons" .= Recognize.rcReasons r
+        , "score" .= Recognize.rcScore r
+        ]
 
 -- | Run against the state as it is now, without holding it: what the work
 -- loaded (projects) is kept; documents changed meanwhile are not undone.
@@ -549,8 +609,12 @@ withSnapshotState env work = do
           ssProjects = M.union (ssProjects now) (if ssFilesStamp now == ssFilesStamp before then ssProjects after else M.empty)
         , ssLoads = M.unionWith (+) (ssLoads now) loaded
         , -- what it worked out stands only if nothing changed meanwhile
-          ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
+          -- (a fresh one replaces one gone stale: a save leaves the old in place)
+          ssListings = M.union (M.filter ((== ssFilesStamp now) . fst) (ssListings after)) (ssListings now)
         , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
+        , ssEstablished = M.union (ssEstablished now) (ssEstablished after)
+        , -- a recognition index it built, while no file changed since
+          ssRecognition = M.union (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp now) (ssRecognition after)) (ssRecognition now)
         }
   pure (after, a)
 

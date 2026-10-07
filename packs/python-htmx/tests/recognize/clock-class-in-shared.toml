@@ -1,0 +1,11 @@
+# clock class in shared (from the spike, 2026-10-06)
+path   = "src/bistro/shared/clock.py"
+expect = "nothing"
+band   = "nothing"
+text = '''
+from datetime import datetime
+
+class Clock:
+    def now(self):
+        return datetime.now()
+'''

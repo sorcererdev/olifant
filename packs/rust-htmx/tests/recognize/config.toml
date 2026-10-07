@@ -1,0 +1,8 @@
+path   = "main/src/config.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+pub const PORT: u16 = 8080;
+pub const DATABASE_URL: &str = "postgres://localhost/app";
+pub const PAGE_SIZE: usize = 20;
+'''

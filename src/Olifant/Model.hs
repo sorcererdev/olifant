@@ -15,6 +15,7 @@ module Olifant.Model
   , decodeFills
   , curlFiller
   , curlFillerWith
+  , askBackend
   , probeBackend
   ) where
 
@@ -119,24 +120,29 @@ userPrompt req =
         ++ maybe [] (\(f, why) -> ["Your previous fill was:", "```", f, "```", "It failed: " <> why, "Fix it." <> (if fhImports h then " If it failed on a name that is not defined, add that name's import line first." else "")]) (fhPrevious h)
 
 requestBody :: Backend -> FillRequest -> Value
-requestBody b req = case b of
+requestBody b req = chatBody b systemPrompt (userPrompt req)
+
+-- | A chat request: a system prompt and one user message.
+chatBody :: Backend -> Text -> Text -> Value
+chatBody b system user = case b of
   OpenAICompatible _ model ->
     object
       [ "model" .= model
-      , "messages" .= [object ["role" .= ("system" :: Text), "content" .= systemPrompt], object ["role" .= ("user" :: Text), "content" .= userPrompt req]]
+      , "messages" .= [object ["role" .= ("system" :: Text), "content" .= system], object ["role" .= ("user" :: Text), "content" .= user]]
       , "temperature" .= (0 :: Int)
       ]
   Anthropic model _ ->
     object
       [ "model" .= model
       , "max_tokens" .= (4096 :: Int)
-      , "system" .= systemPrompt
-      , "messages" .= [object ["role" .= ("user" :: Text), "content" .= userPrompt req]]
+      , "system" .= system
+      , "messages" .= [object ["role" .= ("user" :: Text), "content" .= user]]
       ]
 
--- | The fills in a backend's reply, or what was wrong with it.
-decodeFills :: Backend -> ByteString -> Either Text (Map Text Text)
-decodeFills b raw = do
+-- | The text of a backend's reply (a thinking block dropped), or what was
+-- wrong with it.
+replyText :: Backend -> ByteString -> Either Text Text
+replyText b raw = do
   v <- either (\e -> Left ("the model's reply is not JSON: " <> T.pack e)) Right (eitherDecodeStrict raw)
   content <- case (b, v) of
     (_, Object o) | Just (Object e) <- KM.lookup "error" o, Just (String m) <- KM.lookup "message" e -> Left ("the model said: " <> m)
@@ -152,7 +158,16 @@ decodeFills b raw = do
       , Just (String t) <- KM.lookup "text" c ->
           Right t
     _ -> Left "the model's reply has no message"
-  let reply = T.strip (dropThinking content)
+  pure (T.strip (dropThinking content))
+  where
+    dropThinking t = case T.breakOn "</think>" t of
+      (_, "") -> t
+      (_, rest) -> T.drop (T.length "</think>") rest
+
+-- | The fills in a backend's reply, or what was wrong with it.
+decodeFills :: Backend -> ByteString -> Either Text (Map Text Text)
+decodeFills b raw = do
+  reply <- replyText b raw
   -- Tagged blocks (v12: no escaping, no JSON mode); else JSON as it is, then
   -- the JSON inside a fence, or its braces.
   case tagged reply of
@@ -172,10 +187,7 @@ decodeFills b raw = do
     trimNewline block =
       let b' = maybe block id (T.stripPrefix "\n" block)
        in maybe b' id (T.stripSuffix "\n" b')
-    -- Small models wrap the JSON: a <think> block, prose, a ``` fence.
-    dropThinking t = case T.breakOn "</think>" t of
-      (_, "") -> t
-      (_, rest) -> T.drop (T.length "</think>") rest
+    -- Small models wrap the JSON: prose, a ``` fence.
     jsonIn t = case T.breakOn "```" t of
       (_, "") -> outerBraces t
       (_, fenced) -> outerBraces (fst (T.breakOn "```" (T.drop 1 (T.dropWhile (/= '\n') fenced))))
@@ -204,24 +216,37 @@ curlFiller = curlFillerWith neverCancel
 -- | 'curlFiller', the request dropped when the token is tripped
 -- ("cancelled").
 curlFillerWith :: Cancel -> Int -> Backend -> Filler IO
-curlFillerWith token timeout b = Filler $ \req ->
+curlFillerWith token timeout b = Filler $ \req -> post (requestBody b req) (decodeFills b)
+  where
+    post body decode = sendChat token timeout b body >>= pure . (>>= decode)
+
+-- | Ask a backend once: a system prompt and a question, the reply's text
+-- (or why there is none). The request is dropped when the token trips.
+askBackend :: Cancel -> Int -> Backend -> Text -> Text -> IO (Either Text Text)
+askBackend token timeout b system question = sendChat token timeout b (chatBody b system question) >>= pure . (>>= replyText b)
+
+-- | Post a chat body to the backend with curl: its raw reply. An Anthropic
+-- key is read from its variable and passed in a temporary header file,
+-- never on the command line.
+sendChat :: Cancel -> Int -> Backend -> Value -> IO (Either Text ByteString)
+sendChat token timeout b body =
   findExecutable "curl" >>= \case
     Nothing -> pure (Left "curl is not installed")
     Just curl -> case b of
-      OpenAICompatible url _ -> post curl (T.unpack (T.dropWhileEnd (== '/') url) <> "/chat/completions") [] req
+      OpenAICompatible url _ -> post curl (T.unpack (T.dropWhileEnd (== '/') url) <> "/chat/completions") []
       Anthropic _ keyEnv ->
         lookupEnv (T.unpack keyEnv) >>= \case
           Nothing -> pure (Left (keyEnv <> " is not set"))
           Just key -> withSystemTempFile "olifant-headers" $ \path h -> do
             TIO.hPutStr h ("x-api-key: " <> T.pack key <> "\nanthropic-version: 2023-06-01\n")
             hClose h
-            post curl "https://api.anthropic.com/v1/messages" ["-H", "@" <> path] req
+            post curl "https://api.anthropic.com/v1/messages" ["-H", "@" <> path]
   where
-    post curl url extra req = do
+    post curl url extra = do
       let args = ["-sS", "-X", "POST", url, "-H", "content-type: application/json", "--max-time", show timeout, "--data-binary", "@-"] ++ extra
-      runBytesCancellable token Nothing curl args Nothing (BL.toStrict (encode (requestBody b req))) >>= \case
+      runBytesCancellable token Nothing curl args Nothing (BL.toStrict (encode body)) >>= \case
         Left why -> pure (Left why)
-        Right (Finished ExitSuccess out _) -> pure (decodeFills b out)
+        Right (Finished ExitSuccess out _) -> pure (Right out)
         Right (Finished (ExitFailure c) _ err) -> pure (Left ("curl exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8 err)))
         Right _ -> pure (Left "cancelled")
 

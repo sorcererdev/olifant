@@ -1,5 +1,7 @@
 # Rust: ast-grep's built-in grammar.
 files = ["**/*.rs"]
+# Reserved words: recognition keeps them as they are (names become their case shape)
+keywords = ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "Arc", "String", "Result", "Option", "Vec", "Box"]
 comment = "//"
 grammar = "rust"
 # Items in brackets are followed by a comma; rustfmt's width is 100.

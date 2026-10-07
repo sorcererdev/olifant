@@ -1,0 +1,16 @@
+path   = "billing/billing-service/src/money.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+#[derive(Clone, Debug, PartialEq)]
+pub struct Money {
+    pub amount: i64,
+    pub currency: String,
+}
+
+impl Money {
+    pub fn zero(currency: &str) -> Self {
+        Money { amount: 0, currency: currency.to_string() }
+    }
+}
+'''

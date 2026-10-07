@@ -1,0 +1,29 @@
+path   = "billing/billing-service/src/archive_invoice.rs"
+expect = "service-command"
+band   = "offer"
+inputs = { service = "billing", command_name = "archive_invoice" }
+text = '''
+use std::sync::Arc;
+
+use thiserror::Error;
+
+#[derive(Clone)]
+pub struct ArchiveInvoice {}
+
+#[derive(Clone, Debug)]
+pub struct ArchiveInvoiceInput {}
+
+pub type ArchiveInvoiceOutput = Result<(), ArchiveInvoiceFailure>;
+
+impl ArchiveInvoice {
+    pub async fn archive_invoice(&self, _input: ArchiveInvoiceInput) -> ArchiveInvoiceOutput {
+        todo!("archive_invoice")
+    }
+}
+
+#[derive(Error, Debug, PartialEq)]
+pub enum ArchiveInvoiceFailure {
+    #[error("Something went wrong")]
+    Unknown(String),
+}
+'''

@@ -55,6 +55,9 @@ data Language = Language
   , langImportMerge :: Maybe ImportMerge
   -- ^ `[import_merge]`: how an import of names from a module joins a line
   -- that already imports from it
+  , langKeywords :: [Text]
+  -- ^ `keywords`: the language's reserved words, which recognition keeps
+  -- as they are (names become their case shape)
   }
   deriving stock (Show)
 
@@ -93,13 +96,15 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- (`root_pick = "outermost"`: the outermost, a Cargo workspace).
 -- @checkExclusive@: the tool keeps a build cache (cargo's target dir), so
 -- each check gets a cache no other check uses while it runs (a slot).
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool}
+-- @checkConcurrent@ (default true): false for a compiler that cannot run
+-- twice at once (Elm), so its checks run one at a time.
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool}
   deriving stock (Eq, Show)
 
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -113,7 +118,8 @@ parseLanguage name packRoot src = do
   importMerge <- optional "import_merge" (table >=> importMergeFrom) top
   separator <- optional "separator" text top
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge)
+  keywords <- fromMaybe [] <$> optional "keywords" (list text) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
@@ -146,7 +152,7 @@ parseLanguage name packRoot src = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     checkFrom t = do
-      onlyKeys ["command", "context", "format", "root", "root_pick", "exclusive"] t
+      onlyKeys ["command", "context", "format", "root", "root_pick", "exclusive", "concurrent"] t
       format <- required "format" text t
       if format `elem` knownFormats
         then Right ()
@@ -159,6 +165,7 @@ parseLanguage name packRoot src = do
               Just "outermost" -> Right True
               Just other -> Left ("`root_pick`: expected \"nearest\" or \"outermost\", got `" <> other <> "`"))
         <*> (fromMaybe False <$> optional "exclusive" bool t)
+        <*> (fromMaybe True <$> optional "concurrent" bool t)
 
 targetPhrase :: TargetDef -> Text
 targetPhrase = T.unwords . targetShape

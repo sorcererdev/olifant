@@ -1,0 +1,13 @@
+# command test (from the spike, 2026-10-06)
+path   = "src/bistro/booking/commands/close_table__test.py"
+expect = "command"
+band   = "offer"
+inputs = { app = "bistro", service = "booking", command = "close_table" }
+text = '''
+from bistro.booking.commands.close_table import CloseTable
+
+def test_closes_a_table():
+    repo = FakeRepo()
+    CloseTable(repo).run("t1")
+    assert repo.saved[0].closed
+'''

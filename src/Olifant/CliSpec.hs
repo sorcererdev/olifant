@@ -290,6 +290,12 @@ runCliSpec = describe "runCli" $ do
         pack = [("/packs/p/generators/project/generator.toml", starter)
                , ("/packs/p/languages/x.toml", "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n")
                , ("/packs/p/regions.toml", "[regions.links]\nfile = \"src/*/home.x\"\nquery = { glob = \"src/*/*.x\" }\nitem = \"{= stem =}\"\ninit_at = \"end of file\"\n")]
+    it "(c) keeps the language server's local state out of git (.olifant/state/ in .gitignore, once)" $ do
+      (_, _, _, files, _) <- runInit pack ["init", "--pack", "/packs/p", "bistro", "--human"]
+      M.lookup "/w/bistro/.gitignore" files `shouldBe` Just ".olifant/state/\n"
+      let withIgnore = [(p, if "project/generator.toml" `T.isSuffixOf` T.pack p then t <> "[[edits]]\ncreate = \".gitignore\"\ntext = \"__pycache__/\\n\"\n" else t) | (p, t) <- pack]
+      (_, _, _, files', _) <- runInit withIgnore ["init", "--pack", "/packs/p", "bistro", "--human"]
+      M.lookup "/w/bistro/.gitignore" files' `shouldBe` Just "__pycache__/\n.olifant/state/\n"
     it "(a) makes a project from the pack's starter: config, files, fences, a first commit, next steps" $ do
       (code, out, err, files, gits) <- runInit pack ["init", "--pack", "/packs/p", "bistro", "--human"]
       (code, err) `shouldBe` (ExitSuccess, "")

@@ -338,6 +338,19 @@ spec = do
         -- and several caches were in use at once
         M.size byCache `shouldSatisfy` (> 1)
         length events `shouldBe` 12
+    it "reads `concurrent = false` (a compiler that cannot run twice at once: Elm), true by default" $ do
+      let parsed extra = parseLanguage "x" "/p" (T.unlines (["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"tool\"]", "format = \"rustc-json\""] ++ extra))
+      fmap (fmap checkConcurrent . langCheck) (parsed ["concurrent = false"]) `shouldBe` Right (Just False)
+      fmap (fmap checkConcurrent . langCheck) (parsed []) `shouldBe` Right (Just True)
+      elm <- TIO.readFile "packs/elm/languages/elm.toml"
+      fmap (fmap checkConcurrent . langCheck) (parseLanguage "elm" "packs/elm" elm) `shouldBe` Right (Just False)
+    it "runs a non-concurrent check one at a time: two at once never overlap" $
+      withSystemTempDirectory "olifant-one-at-a-time" $ \dir -> do
+        let log' = dir </> "log"
+            command = "[\"sh\", \"-c\", \"echo start >> " <> T.pack log' <> "; sleep 0.3; echo end >> " <> T.pack log' <> "\"]"
+            Right x = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = " <> command, "format = \"rustc-json\"", "concurrent = false"])
+        _ <- mapConcurrently (const (runCheck processChecker x (M.fromList [("a.x", "x")]))) [1, 2 :: Int]
+        lines <$> readFile log' `shouldReturn` ["start", "end", "start", "end"]
     it "runs the checker inside the package and reports project paths" $ do
       seen <- newIORef []
       let checker = Checker $ \_ files -> do

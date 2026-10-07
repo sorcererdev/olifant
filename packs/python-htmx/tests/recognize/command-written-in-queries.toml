@@ -1,0 +1,17 @@
+# a hard case (plan Task 6)
+path   = "src/bistro/booking/queries/close_table.py"
+expect = "command"
+band   = "offer"
+as     = "query"
+or     = "command"
+known  = "the place says query, the shape barely says command: offered as a choice of the two"
+text = '''
+class CloseTable:
+    def __init__(self, repo):
+        self.repo = repo
+
+    def run(self, table_id):
+        table = self.repo.table(table_id)
+        table.closed = True
+        self.repo.save(table)
+'''

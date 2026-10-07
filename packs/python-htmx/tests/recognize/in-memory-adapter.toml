@@ -1,0 +1,17 @@
+# in-memory adapter (from the spike, 2026-10-06)
+path   = "src/bistro/booking/ports/table_repository/in_memory_table_repository.py"
+expect = "repository|port"
+band   = "offer"
+inputs = { app = "bistro", service = "booking", entity = "table" }
+or     = "port"
+text = '''
+class InMemoryTableRepository:
+    def __init__(self):
+        self.tables = {}
+
+    def get(self, table_id):
+        return self.tables.get(table_id)
+
+    def save(self, table):
+        self.tables[table.id] = table
+'''

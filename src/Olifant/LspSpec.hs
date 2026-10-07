@@ -6,6 +6,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Applicative ((<|>))
 import Control.Monad (forM, forM_, void, when)
+import Data.Foldable (toList)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BSL
@@ -44,7 +45,7 @@ import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
 import System.Environment (lookupEnv)
-import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
+import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -70,6 +71,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   hintsSpec
   completionSpec
   followupsSpec
+  recognitionSpec
   holesSpec
   pickerSpec
   conventionsSpec
@@ -827,6 +829,27 @@ scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
           [] -> pure Nothing
         pure (ds, [a | InR a <- fixes, a ^. L.kind == Just CodeActionKind_QuickFix], fmap (^. L.edit) resolved, completions)
       (null ds, null fixes, refactors, null completions) `shouldSatisfy` (\(a, b, c, d) -> not a && not b && maybe False (/= Nothing) c && not d)
+  it "(f) recognises fast after a pause: the whole answer, planned, in the fixture (median of 20 edits)" $
+    withPython [] $ \ports dir -> do
+      let ownWay = "class CloseTable:\n    def __init__(self, repo):\n        self.repo = repo\n\n    def run(self, table_id):\n        table = self.repo.table(table_id)\n        self.repo.save(table)\n"
+          ask doc = request (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "line" .= (1 :: Int)])
+          timed act = do
+            t0 <- liftIO getCurrentTime
+            _ <- act
+            t1 <- liftIO getCurrentTime
+            pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+      ((first, times), _) <- inProcessWith ports dir $ do
+        uri <- getDocUri "src/bistro/booking/commands/close_table.py"
+        sendNotification SMethod_TextDocumentDidOpen (DidOpenTextDocumentParams (TextDocumentItem uri "python" 0 ownWay))
+        let doc = TextDocumentIdentifier uri
+        first <- timed (ask doc)
+        times <- forM [1 .. 20 :: Int] $ \v -> do
+          sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier uri (fromIntegral v)) [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (ownWay <> "\n# " <> T.pack (show v) <> "\n")))])
+          timed (ask doc)
+        pure (first, times)
+      let median = sort times !! 10
+      liftIO (putStrLn ("      recognition, planned: first " <> show (round first :: Int) <> " ms, then median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms"))
+      median `shouldSatisfy` (< 50)
   it "(e) answers fast in a project of 5,000 files: the first request, then from warm" $
     withPython [] $ \ports dir -> do
       forM_ [1 .. 5000 :: Int] $ \i -> do
@@ -1062,3 +1085,225 @@ withProject files act = withSystemTempDirectory "olifant-lsp" $ \dir0 -> do
   dir <- canonicalizePath dir0
   forM_ ((".olifant/config.toml", "") : files) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
   act dir
+
+-- | Recognitions as suggestions (convention recognition, Task 8).
+recognitionSpec :: Spec
+recognitionSpec = describe "recognition: this looks like a command" $ do
+  let newCommand = "src/bistro/booking/commands/close_table.py"
+      ownWay = "class CloseTable:\n    def __init__(self, repo):\n        self.repo = repo\n\n    def run(self, table_id):\n        table = self.repo.table(table_id)\n        self.repo.save(table)\n"
+      whole t = [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument t))]
+      -- a buffer that is only in the editor (not on disk)
+      openNew path text = do
+        uri <- getDocUri path
+        sendNotification SMethod_TextDocumentDidOpen (DidOpenTextDocumentParams (TextDocumentItem uri "python" 0 text))
+        pure (TextDocumentIdentifier uri)
+      changeNew doc v text = sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier (doc ^. L.uri) v) (whole text))
+      suggestAt doc line =
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "line" .= (line :: Int)]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      planOf v =
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= lookupKey "planId" v]) >>= \case
+          TResponseMessage _ _ r -> pure r
+      changedFiles v = case lookupKey "edit" v >>= lookupKey "documentChanges" of
+        Just (Array cs) -> [(u, T.concat [t | Just (Array es) <- [KM.lookup "edits" c], Object e <- toList es, Just (String t) <- [KM.lookup "newText" e]]) | Object c <- toList cs, Just (Object td) <- [KM.lookup "textDocument" c], Just (String u) <- [KM.lookup "uri" td]]
+        _ -> []
+  it "(a) recognises a command written by hand in commands/, and converts it, with its test" $
+    withPython [] $ \ports dir -> do
+      ((v, planned), _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        v <- suggestAt doc 1
+        p <- planOf v
+        pure (v, p)
+      (lookupKey "kind" v, lookupKey "band" v, lookupKey "generator" v) `shouldBe` (Just (String "recognition"), Just (String "offer"), Just (String "python-htmx/command"))
+      lookupKey "label" v `shouldBe` Just (String "This looks like a command (Close Table)")
+      (lookupKey "sets" v >>= lookupKey "command") `shouldBe` Just (String "close_table")
+      files <- either (fail . show) (pure . changedFiles) planned
+      let at name = [t | (u, t) <- files, ("/" <> name) `T.isSuffixOf` u]
+      at "close_table.py" `shouldSatisfy` any (T.isInfixOf "def handle(self, input: CloseTableInput)")
+      at "close_table__test.py" `shouldSatisfy` (not . null)
+  it "(b) a longer file is left alone: only its companions (the test)" $
+    withPython [] $ \ports dir -> do
+      let long = ownWay <> T.concat ["\n    def helper_" <> T.pack (show i) <> "(self):\n        return " <> T.pack (show i) <> "\n" | i <- [1 .. 5 :: Int]]
+      (planned, _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand long
+        suggestAt doc 1 >>= planOf
+      files <- either (fail . show) (pure . changedFiles) planned
+      [u | (u, _) <- files, "/close_table.py" `T.isSuffixOf` u] `shouldBe` []
+      [u | (u, _) <- files, "/close_table__test.py" `T.isSuffixOf` u] `shouldSatisfy` (not . null)
+  it "(c) never offers for an older version: typed on, the old offer is refused, the next is for the new text (Review Focus 1)" $
+    withPython [] $ \ports dir -> do
+      ((old, new, refused), _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        old <- suggestAt doc 1
+        changeNew doc 1 (ownWay <> "\n# more\n")
+        TResponseMessage _ _ refused <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= lookupKey "planId" old])
+        new <- suggestAt doc 1
+        pure (old, new, refused)
+      either (\e -> e ^. L.code) (const (InR ErrorCodes_InternalError)) refused `shouldBe` InL LSPErrorCodes_ContentModified
+      (lookupKey "version" new /= lookupKey "version" old) `shouldBe` True
+  it "(d) says nothing of a file that already is the convention, nor when recognition is off" $ do
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+        suggestAt doc 1
+      v `shouldBe` Aeson.Null
+    withPython [] $ \ports dir -> do
+      config <- TIO.readFile (dir </> ".olifant/config.toml")
+      TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[recognize]\nenabled = false\n")
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        suggestAt doc 1
+      v `shouldBe` Aeson.Null
+  let feedback doc generator outcome =
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/recognitionFeedback")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "generator" .= (generator :: Text), "outcome" .= (outcome :: Text)])
+      named n = T.replace "CloseTable" n ownWay
+  it "(f) a dismissed file is left alone until its shape changes (Review Focus 5)" $
+    withPython [] $ \ports dir -> do
+      createBooking <- TIO.readFile (dir </> "src/bistro/booking/commands/create_booking.py")
+      ((after, rewritten), _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        _ <- suggestAt doc 1
+        feedback doc "python-htmx/command" "dismissed"
+        after <- suggestAt doc 1
+        changeNew doc 1 (T.replace "CreateBooking" "CloseTable" createBooking)
+        rewritten <- suggestAt doc 1
+        pure (after, rewritten)
+      after `shouldBe` Aeson.Null
+      lookupKey "kind" rewritten `shouldBe` Just (String "recognition")
+  it "(g) three dismissals in a row quiet a generator to a hint; an accept makes it speak again; it lasts across restarts" $
+    withPython [] $ \ports dir -> do
+      let file n = "src/bistro/booking/commands/close_" <> n <> ".py"
+          dismissThree = forM_ ["a", "b", "c"] $ \n -> do
+            doc <- openNew (file n) (named ("Close" <> T.toUpper (T.pack n)))
+            _ <- suggestAt doc 1
+            feedback doc "python-htmx/command" "dismissed"
+      ((quiet, loud), _) <- inProcessWith ports dir $ do
+        dismissThree
+        d <- openNew (file "d") (named "CloseD")
+        quiet <- suggestAt d 1
+        feedback d "python-htmx/command" "accepted"
+        e <- openNew (file "e") (named "CloseE")
+        loud <- suggestAt e 1
+        pure (quiet, loud)
+      (lookupKey "band" quiet, lookupKey "band" loud) `shouldBe` (Just (String "hint"), Just (String "offer"))
+      ((), _) <- inProcessWith ports dir dismissThree
+      (later, _) <- inProcessWith ports dir $ do
+        f <- openNew (file "f") (named "CloseF")
+        suggestAt f 1
+      lookupKey "band" later `shouldBe` Just (String "hint")
+  -- the model, when configured (Task 10): a recorded answer stands in for it
+  let offPlace = "src/bistro/booking/close_table.py"
+      offPlaceText = "from dataclasses import dataclass\n\n@dataclass\nclass CloseTableInput:\n    table_id: str\n\nclass CloseTable:\n    def __init__(self, bookings):\n        self.bookings = bookings\n\n    def handle(self, input):\n        return self.bookings.close(input.table_id)\n"
+      withModel ports dir answer act = do
+        config <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[recognize]\nmodel = \"local\"\n\n[model]\ndefault = \"local\"\n\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9/v1\"\nmodel = \"m\"\n")
+        let answers = dir </> "answers.json"
+        TIO.writeFile answers answer
+        fst <$> inProcessWithConfig [("recognize_answers", String (T.pack answers))] ports dir (act answers)
+      pushed = customNotification (Proxy :: Proxy "olifant/suggestion") >>= \case
+        NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)
+      -- typing (a partial change: what the suggest job reacts to)
+      typeIn doc v text = sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier (doc ^. L.uri) v) [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing text))])
+      yes = "{\"answers\": [{\"generator\": \"python-htmx/command\", \"is\": \"yes\", \"inputs\": {\"command\": \"close_table\"}}]}"
+  it "(h) an unsure recognition is pushed at once, then upgraded when the model says yes" $
+    withPython [] $ \ports dir -> do
+      (first, second) <- withModel ports dir yes $ \_ -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        (,) <$> pushed <*> pushed
+      (lookupKey "band" first, lookupKey "band" second) `shouldBe` (Just (String "hint"), Just (String "offer"))
+      lookupKey "version" second `shouldBe` lookupKey "version" first
+  it "(n) asked after the model upgraded it, olifant/suggest answers the offer (on any line of the file)" $
+    withPython [] $ \ports dir -> do
+      v <- withModel ports dir yes $ \_ -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        _ <- pushed
+        _ <- pushed
+        suggestAt doc 9
+      lookupKey "band" v `shouldBe` Just (String "offer")
+  it "(o) a generator quieted by three dismissals stays a hint, even when the model says yes (review I2)" $
+    withPython [] $ \ports dir -> do
+      let file n = "src/bistro/booking/commands/close_" <> n <> ".py"
+      v <- withModel ports dir yes $ \_ -> do
+        forM_ ["a", "b", "c"] $ \n -> do
+          doc <- openNew (file n) (named ("Close" <> T.toUpper (T.pack n)))
+          _ <- suggestAt doc 1
+          feedback doc "python-htmx/command" "dismissed"
+        d <- openNew (file "d") ""
+        typeIn d 1 (named "CloseD")
+        _ <- pushed
+        liftIO (threadDelay 1500000)
+        suggestAt d 1
+      lookupKey "band" v `shouldBe` Just (String "hint")
+  it "(p) accepting a recognition off its place says the user's file stays (review I4)" $
+    withPython [] $ \ports dir -> do
+      v <- withModel ports dir yes $ \_ -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        _ <- pushed
+        pushed
+      lookupKey "summary" v `shouldSatisfy` maybe False (\case String t -> "close_table.py here stays" `T.isInfixOf` t; _ -> False)
+  it "(i) typing on cancels a model still answering (its token trips)" $
+    withPython [] $ \ports dir -> do
+      stopped <- withModel ports dir "wait" $ \answers -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        _ <- pushed
+        liftIO (threadDelay 200000)
+        typeIn doc 2 "# more\n"
+        liftIO (timeout 5000000 (let loop = doesFileExist (answers <> ".cancelled") >>= \d -> if d then pure () else threadDelay 50000 >> loop in loop))
+      stopped `shouldBe` Just ()
+  it "(j) with no [recognize] model, the model is never asked" $
+    withPython [] $ \ports dir -> do
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers yes
+      (band, _) <- inProcessWithConfig [("recognize_answers", String (T.pack answers))] ports dir $ do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        v <- pushed
+        liftIO (threadDelay 500000)
+        pure (lookupKey "band" v)
+      band `shouldBe` Just (String "hint")
+      doesFileExist (answers <> ".asked") `shouldReturn` False
+  it "(k) never recognises a file the project already had, even with a companion to add" $
+    withPython [] $ \ports dir -> do
+      removeFile (dir </> "src/bistro/booking/commands/create_booking__test.py")
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+        suggestAt doc 1
+      v `shouldBe` Aeson.Null
+  it "(l) keeps the index a recognition built: the next edit does not read the project again" $
+    withPython [] $ \ports dir -> do
+      (st, _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        _ <- suggestAt doc 1
+        debugState
+      lookupKey "recognitionIndexes" st `shouldBe` Just (Number 1)
+  it "(m) after a save, the index and the listing it keeps are current again (review I1)" $
+    withPython [] $ \ports dir -> do
+      (st, _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        _ <- suggestAt doc 1
+        other <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams other Nothing)
+        changeNew doc 1 (ownWay <> "# 1\n")
+        _ <- suggestAt doc 1
+        changeNew doc 2 (ownWay <> "# 2\n")
+        _ <- suggestAt doc 1
+        debugState
+      (lookupKey "recognitionFresh" st, lookupKey "listingsFresh" st) `shouldBe` (Just (Number 1), Just (Number 1))
+  sequential . it "(e) a long legacy file: recognition reads only around the edit, and answers fast (Review Focus 3)" $
+    withPython [] $ \ports dir -> do
+      let legacy = T.concat ["def f_" <> T.pack (show i) <> "(x):\n    return x + " <> T.pack (show i) <> "\n\n" | i <- [1 .. 1000 :: Int]]
+      (times, _) <- inProcessWith ports dir $ do
+        doc <- openNew "src/bistro/legacy.py" legacy
+        forM [1 .. 5 :: Int] $ \_ -> do
+          t0 <- liftIO getCurrentTime
+          _ <- suggestAt doc 1500
+          t1 <- liftIO getCurrentTime
+          pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+      sort times !! 2 `shouldSatisfy` (< 100)

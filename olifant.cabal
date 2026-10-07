@@ -92,6 +92,14 @@ library
     Olifant.Process.Cancel
     Olifant.ProjectModel
     Olifant.Query
+    Olifant.Recognize
+    Olifant.Recognize.Ask
+    Olifant.Recognize.Index
+    Olifant.Recognize.Inputs
+    Olifant.Recognize.Paths
+    Olifant.Recognize.Shape
+    Olifant.Recognize.Types
+    Olifant.Recognize.Weights
     Olifant.Region
     Olifant.Rules
     Olifant.Server
@@ -103,6 +111,7 @@ library
     Olifant.Server.Holes
     Olifant.Server.Jobs
     Olifant.Server.Model
+    Olifant.Server.Recognize
     Olifant.Server.Regions
     Olifant.Server.State
     Olifant.Server.Suggest
@@ -207,6 +216,15 @@ test-suite spec
     Olifant.ProjectModelSpec
     Olifant.Query
     Olifant.QuerySpec
+    Olifant.Recognize
+    Olifant.Recognize.Ask
+    Olifant.Recognize.Index
+    Olifant.Recognize.Inputs
+    Olifant.Recognize.Paths
+    Olifant.Recognize.Shape
+    Olifant.Recognize.Types
+    Olifant.Recognize.Weights
+    Olifant.RecognizeSpec
     Olifant.Region
     Olifant.RegionSpec
     Olifant.Rules
@@ -220,6 +238,7 @@ test-suite spec
     Olifant.Server.Holes
     Olifant.Server.Jobs
     Olifant.Server.Model
+    Olifant.Server.Recognize
     Olifant.Server.Regions
     Olifant.Server.State
     Olifant.Server.Suggest

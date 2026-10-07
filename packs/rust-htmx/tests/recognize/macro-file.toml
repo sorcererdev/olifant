@@ -1,0 +1,10 @@
+path   = "web-htmx/src/macros.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+macro_rules! page_title {
+    ($name:expr) => {
+        format!("{} | App", $name)
+    };
+}
+'''

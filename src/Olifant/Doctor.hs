@@ -30,6 +30,8 @@ data DoctorInput = DoctorInput
   , diBrokenLanguages :: [(Text, Text)]
   , diBrokenGenerators :: [(Text, Text)]
   , diModel :: ModelConfig
+  , -- | `[recognize] model`: the backend recognition asks when unsure
+    diRecognizeModel :: Maybe Text
   }
 
 -- | The outside world the doctor looks at.
@@ -49,8 +51,13 @@ doctor ports di = do
   astGrep <- tool "ast-grep" "ast-grep" "brew install ast-grep (or cargo install ast-grep)"
   checkTools <- traverse checkTool (mapMaybe (\l -> (l,) <$> langCheck l) (diLanguages di))
   model <- modelCheck
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat checkTools ++ [model])
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat checkTools ++ [model] ++ recognizeCheck)
   where
+    recognizeCheck = case diRecognizeModel di of
+      Nothing -> []
+      Just name
+        | name `elem` map fst (mcBackends (diModel di)) -> [Check "recognize model" Ok ("recognition asks " <> name <> " when unsure") Nothing]
+        | otherwise -> [Check "recognize model" Bad ("[recognize] model `" <> name <> "` is not under [model.backends]") (Just ("add [model.backends." <> name <> "] or change [recognize] model"))]
     config = case diProject di of
       Just root -> Check "config" Ok ("project at " <> T.pack root) Nothing
       Nothing -> Check "config" Bad "no .olifant/ here or above" (Just "run olifant in a project, or create .olifant/config.toml")

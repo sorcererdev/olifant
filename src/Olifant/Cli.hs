@@ -154,6 +154,13 @@ runInit rt fmt pack name dirArg plan = do
                         universe <- listFiles project "."
                         forM_ (catalogRegions cat) $ \def ->
                           forM_ (regionInstances universe def) (initFences project tools)
+                        -- the language server's local state (recognition's quietness) stays out of git
+                        ignored <- readText project ".gitignore"
+                        case ignored of
+                          Nothing -> writeText project ".gitignore" ".olifant/state/\n"
+                          Just t
+                            | ".olifant/state/" `elem` map T.strip (T.lines t) -> pure ()
+                            | otherwise -> writeText project ".gitignore" (t <> (if T.null t || "\n" `T.isSuffixOf` t then "" else "\n") <> ".olifant/state/\n")
                         committed <- rtGitInit rt dir ("olifant init: " <> packName)
                         release (either (\why -> Just ("no first commit: " <> why)) (const Nothing) committed)
                         let nexts = [t | tm <- genNext gen, Right t <- [render (M.fromList [("name", Tm.VText name)]) tm]]

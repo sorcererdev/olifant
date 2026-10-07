@@ -1,0 +1,28 @@
+path   = "notifications/notifications-service/src/send_reminder.rs"
+expect = "service-command"
+band   = "offer"
+text = '''
+use thiserror::Error;
+
+#[derive(Clone)]
+pub struct SendReminder {}
+
+#[derive(Clone, Debug)]
+pub struct SendReminderInput {
+    pub to: String,
+}
+
+pub type SendReminderOutput = Result<(), SendReminderFailure>;
+
+impl SendReminder {
+    pub async fn send_reminder(&self, input: SendReminderInput) -> SendReminderOutput {
+        todo!("send_reminder")
+    }
+}
+
+#[derive(Error, Debug, PartialEq)]
+pub enum SendReminderFailure {
+    #[error("Something went wrong")]
+    Unknown(String),
+}
+'''

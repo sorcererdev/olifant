@@ -9,6 +9,7 @@ module Olifant.Workspace
   , within
   , overlay
   , overlayMany
+  , hidePath
   , normalisePath
   , isSafeRelative
   ) where
@@ -139,6 +140,25 @@ overlay path text = overlayMany (M.singleton path text)
 -- server's unsaved buffers): reads, existence and listing see them, and a
 -- document not on disk yet is listed; everything else is the workspace's.
 -- Plans only; it is never written.
+-- | The workspace without one file: it reads as absent and is not listed
+-- (planning a convention's version of a file someone is writing).
+hidePath :: Monad m => FilePath -> Workspace m -> Workspace m
+hidePath path0 ws =
+  ws
+    { readText = \p -> if hidden p then pure Nothing else readText ws p
+    , fileExists = \p -> if hidden p then pure False else fileExists ws p
+    , inspectPath = \p -> if hidden p then pure Absent else inspectPath ws p
+    , listFiles = \dir -> do
+        fs <- listFiles ws dir
+        let prefix = case normalisePath dir of
+              "." -> ""
+              d -> d <> "/"
+        pure [f | f <- fs, not (hidden (prefix <> f))]
+    }
+  where
+    path = normalisePath path0
+    hidden p = normalisePath p == path
+
 overlayMany :: Monad m => Map FilePath Text -> Workspace m -> Workspace m
 overlayMany docs0 ws =
   ws

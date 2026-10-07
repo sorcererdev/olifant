@@ -20,6 +20,8 @@ olifantHole =
 command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]
 context = ["elm.json"]
 format = "elm-json"
+# elm make crashes when several run at once under load: one at a time
+concurrent = false
 
 [targets.type]
 phrase = "type NAME"

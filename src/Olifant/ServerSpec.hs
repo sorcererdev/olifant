@@ -2,7 +2,7 @@ module Olifant.ServerSpec (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (wait)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isSuffixOf)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
@@ -82,11 +82,13 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
     let slow name token = do
           let loop n = cancelled token >>= \stop -> if stop || n > (100 :: Int) then pure stop else threadDelay 10000 >> loop (n + 1)
           stop <- loop 0
-          modifyIORef' ran (++ [name <> if stop then " cancelled" else " finished"])
+          record (name <> if stop then " cancelled" else " finished")
+        -- jobs run on other threads at once: append atomically
+        record x = atomicModifyIORef' ran (\xs -> (xs ++ [x], ()))
     first' <- submit jobs "check /r1/x.py" 0 (slow "first")
     threadDelay 20000
-    second <- submit jobs "check /r1/x.py" 0 (\_ -> modifyIORef' ran (++ ["second"]))
-    other <- submit jobs "check /r2/y.py" 0 (\_ -> modifyIORef' ran (++ ["other"]))
+    second <- submit jobs "check /r1/x.py" 0 (\_ -> record "second")
+    other <- submit jobs "check /r2/y.py" 0 (\_ -> record "other")
     mapM_ wait [first', second, other]
     readIORef ran >>= (`shouldMatchList` ["first cancelled", "second", "other"])
   it "turns a plan's file into the smallest change of whole lines, which gives the new text (any texts)" $ hedgehog $ do

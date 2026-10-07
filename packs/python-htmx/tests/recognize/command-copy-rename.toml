@@ -1,0 +1,66 @@
+# command, copy-rename (from the spike, 2026-10-06)
+path   = "src/bistro/booking/commands/cancel_booking.py"
+expect = "command"
+band   = "offer"
+inputs = { app = "bistro", service = "booking", command = "cancel_booking" }
+text = '''
+"""Book a table for a party in a slot."""
+
+from dataclasses import dataclass
+
+from bistro.booking.models.booking import Booking
+from bistro.booking.models.slot import Slot
+from bistro.booking.ports.booking_repository.booking_repository import BookingRepository
+from bistro.booking.ports.id_generator.id_generator import IdGenerator
+from bistro.shared.result import Ok
+
+
+@dataclass(frozen=True)
+class CancelBookingInput:
+    table_id: str
+    slot: Slot
+    party: int
+    guest: str
+
+
+@dataclass(frozen=True)
+class SlotTaken:
+    reason: str
+
+
+@dataclass(frozen=True)
+class AlreadyCancelled:
+    reason: str
+
+
+@dataclass(frozen=True)
+class TableNotFound:
+    reason: str
+
+
+type CancelBookingFailure = (
+    SlotTaken
+    | AlreadyCancelled
+    | TableNotFound
+)
+
+type CancelBookingOutput = Ok[Booking] | CancelBookingFailure
+
+
+class CancelBooking:
+    def __init__(self, bookings: BookingRepository, ids: IdGenerator) -> None:
+        self.bookings = bookings
+        self.ids = ids
+
+    def handle(self, input: CancelBookingInput) -> CancelBookingOutput:
+        table = self.bookings.table(input.table_id)
+        if table is None:
+            return TableNotFound(f"there is no table {input.table_id}")
+        if input.party > table.seats:
+            return AlreadyCancelled(f"table {table.id} seats {table.seats}, not {input.party}")
+        if self.bookings.booking_at(table.id, input.slot) is not None:
+            return SlotTaken(f"table {table.id} is booked at {input.slot.start:%H:%M}")
+        booking = Booking(id=self.ids.next_id(), table_id=table.id, slot=input.slot, party=input.party, guest=input.guest)
+        self.bookings.save(booking)
+        return Ok(booking)
+'''

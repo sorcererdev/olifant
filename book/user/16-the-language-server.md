@@ -91,6 +91,7 @@ Standard LSP where the protocol has it; `olifant/*` methods only where it does n
 | Holes left in the project | `olifant/holes {textDocument}` | path, line, name, kind, instruction; a hole's code action fills it |
 | The generator picker | `olifant/generators`, `olifant/choices {generator, sets}`, `olifant/plan {textDocument, generator, sets}` | as `olifant list`, `show`, `gen --plan` |
 | The project model | `olifant/model {textDocument}` | [below](#the-project-model) |
+| Recognition | `olifant/suggestion` / `olifant/suggest` with kind `recognition` (band, or, reasons, score, sets); `olifant/recognitionFeedback {textDocument, generator, outcome}`; `olifant/plan {…, recognize: true}` | [below](#recognition-this-looks-like-a-command) |
 | Doctor | `workspace/executeCommand` `olifant.doctor` (argument: a document's uri) | the checks `olifant doctor --json` prints |
 | Progress | `$/progress` | the same words as the CLI's `--progress`: "checking rust…", "asking qwen3-coder:30b to fill body…" |
 
@@ -130,6 +131,87 @@ In Neovim:
 ```
 :lua vim.print(require("durandal.lsp").client():request_sync("olifant/model", { textDocument = vim.lsp.util.make_text_document_params() }, 10000).result)
 ```
+
+## Recognition: this looks like a command
+
+Someone who does not know a convention exists writes it their own way. Recognition notices, and
+offers the convention: write a command by hand in `booking/commands/close_table.py`
+
+```python
+class CloseTable:
+    def __init__(self, repo):
+        self.repo = repo
+
+    def run(self, table_id):
+        table = self.repo.table(table_id)
+        self.repo.save(table)
+```
+
+pause, and Durandal says, on the line where it starts:
+
+```
+⚡ This looks like a command (Close Table) — Tab: review
+```
+
+Tab shows the review — the file converted to the convention (its Input, its failure union,
+`handle`) and `close_table__test.py` beside it; Tab again applies it. A copy of a command,
+renamed, is offered its companions instead (`adds cancel_booking__test.py`), its own text left
+alone.
+
+**How it decides**, with no model:
+
+- **Where the file is.** The strongest signal: at a generator's output path
+  (`src/*/*/commands/*.py`), or beside the project's own files of that kind.
+- **What it is shaped like.** Code as token shapes — keywords and punctuation kept, names as their
+  case (`CloseTable` and `SeatParty` read the same), literals as `str`/`num` — compared with the
+  template and with the project's own instances of the convention. Rare patterns count more than
+  ones in every file (`self.x = x` says little; `@dataclass(frozen=True)` much more).
+- **What it declares.** A convention about a struct (a class, a fn) is not what code declaring
+  none is: an enum in a service's folder is no command.
+- **Only new files.** A file the project had when the server loaded it is what it is; recognition
+  is for files written since (unsaved new buffers, files copied in).
+
+**How loud:**
+
+| | |
+|---|---|
+| at its place, sure enough | an offer: `⚡ … — Tab: review` |
+| two conventions both fit here (a port or a repository) | a choice: `⚡ … — Tab: choose` |
+| off its place, but shaped like it | a quiet hint: the dim `⚡`, first in `<leader>ma` with its reasons |
+| otherwise | nothing |
+
+Off its place (`booking/close_table.py`, not `booking/commands/`), accepting writes the
+convention's file where it belongs; yours stays, and the summary says so (*your close_table.py
+here stays: remove it once its logic has moved*).
+
+Inputs come from the path (`booking`, `close_table`), else from the names declared
+(`class CloseTable` → `close_table`), else from the folder; what is still missing the picker
+asks for.
+
+**It stays quiet when you want it to.** Esc on the line dismisses it, for that file until its
+shape changes. Three dismissals in a row make that convention a quiet hint in the project
+(`<leader>ma` → *Show recognitions for … again* undoes it). This is kept in
+`.olifant/state/recognition.json`, which `olifant init` keeps out of git.
+
+**A model, if you want one.** Recognition works without AI. With
+
+```toml
+[recognize]
+model = "local"     # a [model.backends.NAME]
+```
+
+the model is asked — only when recognition is unsure (a hint, a choice, a shape that favours
+another convention) — a typed question: which of these conventions is this code, with which
+inputs. The deterministic answer shows first; a yes upgrades it in place (the dim hint becomes
+an offer, wherever the cursor is in the file). A generator you have quieted stays quiet: the
+model never makes it loud again. Its inputs are checked
+against their types; a model that does not answer changes nothing. `olifant doctor` checks the
+backend. `[recognize] enabled = false` turns recognition off for a project; `recognize = false`
+in a `generator.toml` for one generator (a project's starter never is recognised).
+
+**Seeing why.** `<leader>ma` on a recognition lists its reasons: `beside 4 commands; 59% shaped
+like create_booking.py`. Every offer, accept and dismiss goes to the local action log
+(`~/.cache/durandal/actions.jsonl`) with its band and score — never anywhere else.
 
 ## Checks scoped to the package
 

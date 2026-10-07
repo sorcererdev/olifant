@@ -6,6 +6,8 @@ module Olifant.Catalog
   , catalogEntries
   , catalogProject
   , catalogName
+  , catalogRecognize
+  , RecognizeConfig (..)
   , catalogPacks
   , catalogPackRoots
   , catalogBroken
@@ -102,7 +104,15 @@ data Catalog = Catalog
     catalogPackRoots :: [FilePath]
   , -- | the project's `name` in its config.toml (its model's ids), if given
     catalogName :: Maybe Text
+  , -- | `[recognize]`: convention recognition on or off, and the model asked
+    -- when it is unsure
+    catalogRecognize :: RecognizeConfig
   }
+
+-- | `[recognize] enabled` (default true) and `model` (a [model.backends]
+-- name; none: deterministic only).
+data RecognizeConfig = RecognizeConfig {recEnabled :: Bool, recModel :: Maybe Text}
+  deriving stock (Eq, Show)
 
 -- | Where configuration lives. Packs come from the user config
 -- (@<userConfigDir>/config.toml@, paths relative to that dir) and the project
@@ -196,12 +206,21 @@ openProjectCatalogWith loadP root paths = do
       name <- readText root projectConfig <&> \case
         Nothing -> Right Nothing
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= Toml.optional "name" Toml.text)
-      pure $ case (,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name of
+      recognize <- readText root projectConfig <&> \case
+        Nothing -> Right (RecognizeConfig True Nothing)
+        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= recognizeIn)
+      pure $ case (,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize of
         Left err -> Left err
-        Right (userM, projectM, rc, named) ->
+        Right (userM, projectM, rc, named, rec') ->
           let model = fromMaybe (ModelConfig Nothing 2 120 []) (maybe userM Just projectM)
-           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named}))) result
+           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec'}))) result
   where
+    recognizeIn top =
+      Toml.optional "recognize" Toml.table top >>= \case
+        Nothing -> Right (RecognizeConfig True Nothing)
+        Just t -> Toml.inKey "recognize" $ do
+          Toml.onlyKeys ["enabled", "model"] t
+          RecognizeConfig <$> (fromMaybe True <$> Toml.optional "enabled" Toml.bool t) <*> Toml.optional "model" Toml.text t
     -- A config's `[model]`, if it has one.
     modelIn configPath =
       readText root configPath <&> \case
@@ -244,7 +263,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing)
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),

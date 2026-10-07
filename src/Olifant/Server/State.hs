@@ -24,22 +24,28 @@ module Olifant.Server.State
 import Data.Functor ((<&>))
 import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
+import Data.Set (Set)
+import Data.Set qualified as S
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Catalog (PackCache, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Process (Cancel, neverCancel)
+import Olifant.Generator (Generator)
+import Olifant.Recognize (Index, Shingle)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany, within)
 import System.FilePath (takeDirectory, (</>))
 
 -- | The client's settings (`initializationOptions`): how long slow work
 -- waits after typing stops, a model to use instead of the projects', and
 -- (tests) a file of recorded fills that stands in for the model.
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath}
+-- | @scRecognizeAnswers@: a file holding a model's recorded answer, which
+-- recognition uses instead of the model (tests, as fills use @scFills@).
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
@@ -65,10 +71,20 @@ data ServerState = ServerState
   , -- | the token of the work this state was handed to (a job, a request):
     -- its plans' checks, verifies and model calls stop when it trips
     ssCancel :: Cancel
+  , -- | each project's recognition index per language, for one file stamp
+    ssRecognition :: Map (FilePath, Text) (Int, Index, [Generator])
+  , -- | per project root: each generator's dismissals in a row (kept in
+    -- .olifant/state/recognition.json)
+    ssQuiet :: Map FilePath (Map Text Int)
+  , -- | per file: its shape when its recognition was dismissed
+    ssDismissed :: Map FilePath (Set Shingle)
+  , -- | per project root: the files it had when first listed (recognition
+    -- is for files new since)
+    ssEstablished :: Map FilePath (Set FilePath)
   }
 
 newServerState :: Ports -> IO ServerState
-newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel) <$> newPackCache
+newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty) <$> newPackCache
 
 -- | A document opened in the editor, at a version, with its text.
 openDoc :: FilePath -> Int -> Text -> ServerState -> ServerState
@@ -138,7 +154,7 @@ projectFor file s =
         Nothing -> load root Nothing s
       s' <- case M.lookup root (ssListings s0) of
         Just (stamp, _) | stamp == ssFilesStamp s0 -> pure s0
-        _ -> (\paths -> s0 {ssListings = M.insert root (ssFilesStamp s0, paths) (ssListings s0)}) <$> listFiles (within root (pFiles (ssPorts s0))) "."
+        _ -> (\paths -> s0 {ssListings = M.insert root (ssFilesStamp s0, paths) (ssListings s0), ssEstablished = M.insertWith (\_ old -> old) root (S.fromList paths) (ssEstablished s0)}) <$> listFiles (within root (pFiles (ssPorts s0))) "."
       pure (s', (\p -> (root, p {prWorkspace = workspaceOf s' root})) <$> (usable =<< slotOf root s'))
 
 -- | Why the project a file belongs to does not load (loading it if it was

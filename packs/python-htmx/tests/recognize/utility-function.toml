@@ -1,0 +1,11 @@
+# utility function (from the spike, 2026-10-06)
+path   = "src/bistro/shared/text.py"
+expect = "nothing"
+band   = "nothing"
+text = '''
+import re
+
+def slugify(text):
+    text = text.lower().strip()
+    return re.sub(r"[^a-z0-9]+", "-", text)
+'''

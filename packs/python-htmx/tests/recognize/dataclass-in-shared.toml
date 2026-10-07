@@ -1,0 +1,14 @@
+# a hard case (plan Task 6)
+path   = "src/bistro/shared/money.py"
+expect = "nothing"
+band   = "hint"
+as     = "model"
+known  = "a frozen dataclass off any place is the same shape as a model: a quiet hint"
+text = '''
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Money:
+    amount: int
+    currency: str
+'''

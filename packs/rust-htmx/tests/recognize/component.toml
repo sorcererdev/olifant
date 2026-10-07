@@ -1,0 +1,20 @@
+path   = "web-htmx/src/components/badge.rs"
+expect = "web-htmx-component"
+band   = "offer"
+inputs = { component = "badge" }
+text = '''
+use rscx::{component, html, props};
+
+#[props]
+pub struct BadgeProps {
+    #[builder(setter(into))]
+    label: String,
+}
+
+#[component]
+pub fn Badge(props: BadgeProps) -> String {
+    html! {
+        <span class="rounded bg-gray-100 px-2">{props.label}</span>
+    }
+}
+'''

@@ -1,0 +1,14 @@
+path   = "db/src/pool.rs"
+expect = "nothing"
+band   = "nothing"
+text = '''
+use std::time::Duration;
+
+pub fn timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+pub fn max_connections() -> u32 {
+    10
+}
+'''

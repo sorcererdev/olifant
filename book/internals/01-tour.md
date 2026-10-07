@@ -184,7 +184,8 @@ From the bottom up:
 | **ProjectModel** | The project in a shared vocabulary (services, commands, ports, adapters, … and `uses`, `implements`, `calls`, `covers`), by each pack's `model.toml` | `ProjectModel.hs`: `Kind`, `RelKind`, `Element`, `Relation`, `ProjectModel`, `ModelMap`, `parseModelMap`, `buildModel` | Query, Template, Toml |
 | **App** | The operations the CLI and the language server share, over a **Ports** record (files, syntax, checker, verifier, clock, config dirs, doctor) and a loaded **Project** (root, catalog, workspace) | `App.hs`: `Ports`, `Project`, `nearestProject`, `openProject`, `listGenerators`, `showGenerator`, `actionsAt'`, `actionsIn`, `completeAt`, `findings`, `planWith`, `doctorChecks`, `projectModel`, … | Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace |
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `submit`, … | Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Process, ProjectModel, Rules, Snippet, Template, Workspace |
+| **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; an optional model for the unsure | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `Recognizer`, `consult`, `curlRecognizer` | Generator, Glob, Model, Naming, Process, Template |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `submit`, … | Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
 | **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
@@ -215,7 +216,7 @@ none upwards.
   ├────────────────────────────────────────────────────────────┤
   │ Rules                                                      │  conventions as checks (uses Actions' path patterns)
   ├────────────────────────────────────────────────────────────┤
-  │ Generation        Actions        Doctor                    │  the use cases: steps → plan → writes; actions; doctor
+  │ Generation   Actions   Doctor   Recognize                  │  the use cases: steps → plan → writes; actions; doctor
   ├────────────────────────────────────────────────────────────┤
   │ Cursor           Snippet          Uncovered                │  snippets: the cursor, tab stops, missing cases
   ├────────────────────────────────────────────────────────────┤
@@ -260,8 +261,9 @@ ProjectModel         → Query, Template, Toml
 Catalog              → Anchor, Generator, Language, Model, ProjectModel, Region, Rules, Snippet, Template, Toml, Workspace
 App                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace
 Output               → Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template
-Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Process, ProjectModel, Rules, Snippet, Template, Workspace
-Lsp                  → Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace
+Recognize            → Generator, Glob, Model, Naming, Process, Template
+Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace
+Lsp                  → Actions, App, Catalog, Generation, Generator, Output, Process, Recognize, Rules, Server, Snippet, Workspace
 Cli                  → Actions, Anchor, App, Catalog, Cursor, Doctor, Fill, Generation, Generator, Language, Lsp, Output, Region, Rules, Template, Toml, Workspace
 GeneratorTesting     → Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace   (Generator.Definition directly, for apAfter)
 app/Main             → Cli, GitInit, Language, Language.AstGrep, Model, Workspace
@@ -2211,6 +2213,38 @@ state but the tools' caches, which are safe to share: ast-grep grammars are buil
 their own, then renamed; pyright's venv is uv's, which locks it; cargo's target dir is an
 `exclusive` check's slot (`Check.inSlot`). A new spec that needs something process-wide (the
 working directory, an environment variable) must be `sequential`.
+
+### Recognition (`Recognize`, `Server/Recognize`)
+
+Recognition answers "which convention is this hand-written code, if any", without a model:
+
+- **Shapes** (`Recognize/Shape`): one pass over the text; keywords (the adapter's `keywords` and
+  the words of the pack's templates) and punctuation kept, names as case shape and word count,
+  literals as `str`/`num`, the language's comments dropped; overlapping windows of three tokens.
+- **Weights** (`Recognize/Weights`): each window's rarity over the project's files of the
+  language (a smoothed idf), and the boilerplate (windows in more than 30% of the files),
+  ignored. `containment` is the weighted share of the change's windows a reference explains —
+  not a symmetric similarity, because only the start may be typed.
+- **Paths** (`Recognize/Paths`): a `create` path with its derived names followed down to inputs,
+  as a glob (to find the project's own instances, its siblings) and inverted (a path gives back
+  the inputs that would have rendered it, decoded through their case).
+- **The index** (`Recognize/Index`): per project and language, each recognisable generator's file
+  ("convention"): its path pattern, its template, and references — the template rendered with
+  sample values (`sampleText`) and each sibling. The server caches it per file stamp.
+- **Deciding** (`recognizeIn`): gates (3 lines; names beyond boilerplate), a convention whose
+  template declares its main thing by a name needs code declaring that kind, scores (shape +
+  place), the place-aware bands, a choice with a near runner-up, a rival for the model.
+- **The model** (`Recognize/Ask`): the `Recognizer` port; `consult` asks only the unsure ones and
+  validates the answer; `curlRecognizer` asks a configured backend through `Model.askBackend`.
+
+`Server/Recognize` turns a recognition into a `Suggestion` (kind `recognition`): its plan is the
+generator planned with the user's file hidden (`hidePath`), then converting that file (10
+non-blank lines or fewer) or keeping only its companions. Guards: only files new since the
+project was first listed (`ssEstablished`), never a file whose plan would only rewrite itself;
+earned quietness (`ssQuiet`, `.olifant/state/recognition.json`) and dismissed shapes
+(`ssDismissed`) from `olifant/recognitionFeedback`. The suggest job tries a follow-up first, a
+recognition next, then (unsure, a model configured) `recognitionUpgrade` for the same version.
+The corpora (`packs/*/tests/recognize/`) are the gate on any change to scoring.
 
 ### Testing the server
 
