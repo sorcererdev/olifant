@@ -68,6 +68,9 @@ data GeneratorWith src = Generator
   , -- | `[holes.NAME] verify`: per model hole, a command its fill must pass
     -- (its tests), templates over the generator's values
     genVerify :: [(Text, [Template])]
+  , -- | `recognize` (default true): whether hand-written code may be
+    -- recognised as this generator's (convention recognition)
+    genRecognize :: Bool
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -121,7 +124,7 @@ data Unless t = UnlessExists t | UnlessMatches t
 -- fix removes or rewrites the code it found (spec §5.9).
 replaceGenerator :: FilePath -> (Int, Int) -> Text -> Template -> Generator
 replaceGenerator path range old new =
-  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix") [] False [] [] []
+  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix") [] False [] [] [] False
 
 -- | The name people see: `name`, or one made from the id
 -- (`rust-htmx/command-dependency` → "Command Dependency").

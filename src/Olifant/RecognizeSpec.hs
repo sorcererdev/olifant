@@ -10,7 +10,13 @@ import Control.Monad (forM)
 import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..), parseGenerator)
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), parseTemplate, render)
-import System.Directory (listDirectory)
+import Olifant.Template.Syntax (Template (..))
+import System.Directory (doesDirectoryExist, listDirectory)
+import System.FilePath (makeRelative, takeExtension, (</>))
+import Olifant.Catalog (Catalog (..), CatalogEntry (..), loadGenerator, openPackCatalog)
+import Olifant.Generator (Generator, generatorName)
+import Olifant.Language (noSyntax)
+import Olifant.Workspace (diskWorkspace)
 import Test.Hspec
 import Test.Hspec.Hedgehog (forAll, hedgehog, (===))
 import Data.Text (Text)
@@ -22,6 +28,7 @@ spec :: Spec
 spec = describe "Olifant.Recognize" $ do
   weightsSpec
   pathsSpec
+  indexSpec
   describe "shapes" $ do
     let kw = Keywords (S.fromList ["class", "def", "self", "return"]) "#"
     it "(a) keeps keywords and punctuation, and names become their case shape" $
@@ -140,3 +147,50 @@ packGenerator :: Text -> Text -> IO (GeneratorWith ())
 packGenerator pack name = do
   src <- TIO.readFile ("packs/" <> T.unpack pack <> "/generators/" <> T.unpack name <> "/generator.toml")
   either (fail . T.unpack) (pure . (() <$)) (parseGenerator (GeneratorId (pack <> "/" <> name)) src)
+
+-- | The project's recognition index (Task 4).
+indexSpec :: Spec
+indexSpec = describe "the index" $ do
+  it "(a) reads `recognize = false`; true by default; a starter generator is never recognisable" $ do
+    let gen extra = parseGenerator (GeneratorId "p/g") (T.unlines (["description = \"d\"", "language = \"x\""] ++ extra))
+    fmap genRecognize (gen ["recognize = false"]) `shouldBe` Right False
+    fmap genRecognize (gen []) `shouldBe` Right True
+    (gens, files) <- pythonProject
+    let ix = buildIndex (pythonKeywords gens) gens files
+    [cvGenerator c | c <- ixConventions ix, cvGenerator c == GeneratorId "python-htmx/project"] `shouldBe` []
+  it "(b) renders a template for its shape: sample names, holes, the first branch" $ do
+    (gens, _) <- pythonProject
+    let [command] = [c | g <- gens, genId g == GeneratorId "python-htmx/command", Create {editSource = c} <- genEdits g, "def handle" `T.isInfixOf` templateSource c]
+        sample = sampleText command
+    sample `shouldSatisfy` T.isInfixOf "class SampleThing:"
+    sample `shouldSatisfy` T.isInfixOf "def handle(self, input: SampleThingInput)"
+  it "(c) finds the project's own instances of each convention (its siblings)" $ do
+    (gens, files) <- pythonProject
+    let ix = buildIndex (pythonKeywords gens) gens files
+        siblings gid = [p | c <- ixConventions ix, cvGenerator c == GeneratorId gid, (p, _) <- cvReferences c, p /= "template"]
+    siblings "python-htmx/command" `shouldSatisfy` elem "src/bistro/booking/commands/create_booking.py"
+    siblings "python-htmx/command" `shouldSatisfy` elem "src/bistro/booking/commands/create_booking__test.py"
+    M.lookup (GeneratorId "python-htmx/command") (ixSiblingDirs ix) `shouldBe` Just (S.fromList ["src/bistro/booking/commands"])
+  it "(d) weighs patterns over the files it is given (one language's)" $ do
+    (gens, files) <- pythonProject
+    let ix = buildIndex (pythonKeywords gens) gens files
+    wDefault (ixWeights ix) `shouldBe` log (1 + fromIntegral (length files))
+
+-- | python-htmx's generators (loaded) and its fixture app's .py files.
+pythonProject :: IO ([Generator], [(FilePath, Text)])
+pythonProject = do
+  cat <- either (fail . show) pure =<< openPackCatalog (diskWorkspace ".") [("python-htmx", "packs/python-htmx")]
+  gens <- fmap concat . forM (catalogEntries cat) $ \e -> either (const []) pure <$> loadGenerator (diskWorkspace ".") noSyntax cat e
+  let root = "packs/python-htmx/fixtures/app"
+  paths <- filter ((== ".py") . takeExtension) <$> walk root
+  files <- forM paths $ \p -> (makeRelative root p,) <$> TIO.readFile p
+  pure ([g | g <- gens, genLanguage g == "python"], files)
+  where
+    walk d = do
+      names <- listDirectory d
+      fmap concat . forM names $ \n -> do
+        isDir <- doesDirectoryExist (d </> n)
+        if isDir then walk (d </> n) else pure [d </> n]
+
+pythonKeywords :: [Generator] -> Keywords
+pythonKeywords gens = keywordsFrom "#" [t | g <- gens, Create {editSource = t} <- genEdits g] ["class", "def", "self", "return", "import", "from"]
