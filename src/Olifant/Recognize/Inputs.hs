@@ -8,7 +8,7 @@ module Olifant.Recognize.Inputs
   ) where
 
 import Data.Char (isAlphaNum, isSpace)
-import Data.List (foldl', isPrefixOf)
+import Data.List (isPrefixOf)
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
