@@ -186,7 +186,7 @@ From the bottom up:
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
 | **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; an optional model for the unsure | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `Recognizer`, `consult`, `curlRecognizer` | Generator, Glob, Model, Naming, Process, Template |
 | **Preview** | The generate picker's form and placeholders: each input's value and where it came from (you, the file's folders, the cursor, a lone choice, a default, a `+ New` step), checked as `olifant gen` checks it; marks a missing name is planned with, and their renderings back to `⟨name⟩` | `Preview.hs` over `Preview/{Fields,Marks}`: `Field`, `Source`, `fieldsFor`, `markValue`, `unmark` | Generator, Naming |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, … | Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, … | Actions, App, Catalog, Cursor, Fill, Generation, Generator, Holes, Language, Model, Naming, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
 | **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
@@ -264,7 +264,7 @@ App                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generat
 Output               → Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template
 Preview              → Generator, Naming
 Recognize            → Generator, Glob, Model, Naming, Process, Template
-Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Language, Model, Naming, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace
+Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Holes, Language, Model, Naming, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace
 Lsp                  → Actions, App, Catalog, Generation, Generator, Output, Preview, Process, Recognize, Rules, Server, Snippet, Workspace
 Cli                  → Actions, Anchor, App, Catalog, Cursor, Doctor, Fill, Generation, Generator, Language, Lsp, Output, Region, Rules, Template, Toml, Workspace
 GeneratorTesting     → Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace   (Generator.Definition directly, for apAfter)
@@ -2267,7 +2267,12 @@ Enter will write while they type:
   `new` template, rendered in that step's resolved environment, and fills the input it makes
   (source `new`, valid though not yet among the choices). All the steps plan as one plan.
   `olifant/preview` runs through the job queue keyed per document, so a newer request cancels
-  one not yet started. The plugin ignores an older answer by its sequence number.
+  one not yet started. The plugin ignores an older answer by its sequence number, which a
+  change advances at once.
+- **What it shows:** holes as `⟨name⟩` (from the plan's marked text); a missing choice planned
+  with a stand-in never blames that stand-in ("choose entity to see what it writes"); a
+  dependent choice's value its inputs no longer offer comes back cleared, with a note; `new`
+  names full generator ids. The plan for real takes the values you set as you set them.
 
 ### Testing the server
 

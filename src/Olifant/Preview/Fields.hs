@@ -7,6 +7,7 @@ module Olifant.Preview.Fields (Field (..), Source (..), fieldsFor) where
 import Data.Map.Strict qualified as M
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Olifant.Generator (Choices (..), GeneratorDef, GeneratorWith (..), InputProblem (..), InputSpec (..), InputType (..), Scalar (..), resolveInput)
 
 -- | Where a field's value came from.
@@ -51,7 +52,12 @@ fieldsFor d user path cursor = map field (genInputs d)
               Right _ -> (True, Nothing)
               Left (InvalidInput _ reason) -> (False, Just reason)
               Left _ -> (False, Nothing)
-       in Field name (fst <$> found) (snd <$> found) valid why (choicesOf i) (needsOf i) (map fst (inputNew i))
+       in case (found, inputType i) of
+            -- a dependent choice's value its inputs no longer offer: cleared, with a note
+            (Just (v, _), ScalarInput (EnumOf q _ (Resolved cs ctx)))
+              | not valid, not (null ctx), v `notElem` cs ->
+                  Field name Nothing Nothing False (Just ("cleared " <> v <> ": not one of the " <> q <> " of " <> T.intercalate ", " [k <> "=" <> x | (k, x) <- ctx])) (choicesOf i) (needsOf i) (map fst (inputNew i))
+            _ -> Field name (fst <$> found) (snd <$> found) valid why (choicesOf i) (needsOf i) (map fst (inputNew i))
     choicesOf i = case inputType i of
       ScalarInput (EnumS cs) -> Just cs
       ScalarInput (EnumOf _ _ (Resolved cs _)) -> Just cs

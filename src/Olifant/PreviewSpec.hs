@@ -3,7 +3,7 @@ module Olifant.PreviewSpec (spec) where
 import Control.Monad (forM_)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Generator (GeneratorDef, GeneratorId (..), parseGenerator)
+import Olifant.Generator (ChoiceValue (..), Choices (..), GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), parseGenerator)
 import Olifant.Naming (Case (..), parseName, pluralize, render)
 import Olifant.Preview
 import Test.Hspec
@@ -45,6 +45,14 @@ spec = describe "Olifant.Preview" $ do
           (fValue command, fValid command, fWhy command) `shouldBe` (Nothing, False, Nothing)
           fChoices service `shouldBe` Just ["booking", "notifications"]
         _ -> expectationFailure "fewer than two fields"
+    it "(e) a dependent choice's value that no longer fits (its inputs changed) is cleared, with a note" $ do
+      let dependent = gen ["[inputs.service]", "type = \"ident\"", "[inputs.port]", "type = \"enum\"", "one_of = \"ports\"", "[query.ports]", "glob = \"src/{= service =}/ports/*\"", "value = \"file name\""]
+          resolved = dependent {genInputs = [if inputName i == "port" then i {inputType = ScalarInput (EnumOf "ports" FileName (Resolved ["a", "b"] [("service", "kitchen")]))} else i | i <- genInputs dependent]}
+      case reverse (fieldsFor resolved [("service", "kitchen"), ("port", "booking_repository")] [] []) of
+        port : _ -> do
+          (fValue port, fValid port) `shouldBe` (Nothing, False)
+          fWhy port `shouldSatisfy` maybe False (\w -> "cleared booking_repository" `T.isInfixOf` w && "service=kitchen" `T.isInfixOf` w)
+        [] -> expectationFailure "no fields"
   describe "marks" $ do
     let mark n = either (error . T.unpack) id (parseName (markValue n))
         placeholder c = case c of

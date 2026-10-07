@@ -1171,7 +1171,8 @@ generatePickerSpec = describe "the generate picker" $ do
       (v, _) <- inProcessWith ports dir $ do
         doc <- openDoc command "python"
         pick doc [("python-htmx/add-dependency", [])]
-      lookupKey "new" (fieldNamed "port" v) `shouldBe` Just (toJSON (["port", "repository"] :: [Text]))
+      -- full ids: a bare name could be another pack's, or a local generator
+      lookupKey "new" (fieldNamed "port" v) `shouldBe` Just (toJSON (["python-htmx/port", "python-htmx/repository"] :: [Text]))
   it "(j) rust-htmx's + New repository gives the port's name as its ports/ file is named" $
     withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
       s <- newServerState ports
@@ -1201,12 +1202,39 @@ generatePickerSpec = describe "the generate picker" $ do
           TResponseMessage _ _ (Right v) -> pure v
           TResponseMessage _ _ (Left e) -> fail (show e)
       editLines v `shouldSatisfy` (\ls -> not (null ls) && all (>= 30) ls)
+      -- a snippet: its body with tab stops, for the editor to expand there
+      (lookupKey "plan" v >>= lookupKey "snippet" >>= lookupKey "body") `shouldSatisfy` maybe False (\case String t -> "${" `T.isInfixOf` t; _ -> False)
   it "(m) the preview's main file says where the change starts (review I4)" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do
         doc <- openDoc testFile "python"
         pickWith doc [step "python-htmx/test-case" []] -- position 0: the request's own
       (lookupKey "main" v >>= lookupKey "first") `shouldSatisfy` maybe False (\case Number n -> n >= 1; _ -> False)
+  it "(n) a choice not made yet is never blamed: the preview asks for it, not a conflict its stand-in caused" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pickWith doc
+          [ object ["generator" .= ("python-htmx/repository" :: Text), "sets" .= object [], "makes" .= object ["step" .= (1 :: Int), "input" .= ("port" :: Text)]]
+          , step "python-htmx/add-dependency" [("kind", "commands"), ("command", "create_booking")]
+          ]
+      lookupKey "error" v `shouldSatisfy` maybe False (\case String t -> "entity" `T.isInfixOf` t && not ("already exists" `T.isInfixOf` t); _ -> False)
+  it "(o) a snippet's inputs come from the cursor (the open test file), as the ⚡ menu fills them" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc testFile "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/preview")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (34 :: Int), "character" .= (0 :: Int)], "steps" .= [step "python-htmx/test-case" []]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      (lookupKey "value" (fieldNamed "test" v), lookupKey "source" (fieldNamed "test" v)) `shouldBe` (Just (String (T.pack testFile)), Just (String "here"))
+  it "(p) the preview shows holes as ⟨name⟩ (what you or the model will write), not their defaults" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc testFile "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/preview")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (34 :: Int), "character" .= (0 :: Int)], "steps" .= [step "python-htmx/test-case" []]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      (lookupKey "main" v >>= lookupKey "text") `shouldSatisfy` maybe False (\case String t -> "def test_⟨behaviour⟩()" `T.isInfixOf` t; _ -> False)
   it "(h) olifant/plan plans steps as one plan" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do

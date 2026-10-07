@@ -163,11 +163,15 @@ In Neovim:
   - *from the cursor*;
   - *default*.
 
-  A choice filters its options as you type and lists them under it; Tab takes the top one. An
-  invalid value says why in red, in `olifant gen`'s words.
+  A choice filters its options as you type and lists them under it (its current value said
+  until you type); Tab takes the top one. An invalid value says why in red, in `olifant gen`'s
+  words. A choice whose options depend on another input (the ports of a service) is cleared,
+  with a note, when that input changes and it no longer fits.
 - **The preview.** What the generator would write, live as you type (debounced): new files `+`,
-  changed ones `~` with line counts, then the main file with your values. A missing name shows
-  as `⟨command⟩` / `⟨Command⟩`, in the case the templates use. It is the engine's real plan
+  changed ones `~` with line counts, then the main file with your values, opened at the change.
+  A missing name shows as `⟨command⟩` / `⟨Command⟩`, in the case the templates use; a hole
+  (what you or the model will write) as `⟨behaviour⟩`. A choice not made yet asks for itself
+  ("choose entity to see what it writes"). It is the engine's real plan
   (`olifant/preview`), so it is exactly what Enter writes. A plan that cannot be made (a file
   that already exists) says so in place.
 - **`+ New …`.** A choice whose generator says how to make a new value (`new`, chapter 7) ends
@@ -179,7 +183,7 @@ In Neovim:
 | typing | filters the list (in the search line), or edits the field |
 | `↓` `↑`, `C-n` `C-p` | move in the list |
 | `Tab`, `S-Tab` | into the form, and between fields |
-| `Enter` | applies when every field is valid; else goes to the first one missing |
+| `Enter` | applies when every field is valid; else goes to the first one missing. A snippet (Test case, Match arm) is expanded at the cursor instead, its tab stops yours to fill. If writing fails, the picker stays open with your values |
 | `C-o` | opens the full review (the diff) first |
 | `Esc` | closes; the cursor goes back where it was |
 
