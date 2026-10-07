@@ -172,7 +172,19 @@ guarded = mapHandlers onRequest onNotification
 handlers :: Env -> Handlers (LspM ())
 handlers env =
   mconcat
-    [ -- the client gave up on a request: stop its work
+    [ -- what the editor did with a recognition (earned quietness)
+      notificationHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/recognitionFeedback")) $ \msg ->
+        case msg ^. L.params of
+          Object o
+            | Just (Object doc) <- KM.lookup "textDocument" o
+            , Just (String uri) <- KM.lookup "uri" doc
+            , Just path <- uriToFilePath (Uri uri)
+            , Just (String generator) <- KM.lookup "generator" o
+            , Just (String outcome) <- KM.lookup "outcome" o
+            , outcome `elem` ["accepted", "dismissed", "reset"] ->
+                liftIO (modifyMVar_ (envState env) (recognitionFeedback path generator outcome))
+          _ -> pure ()
+    , -- the client gave up on a request: stop its work
       notificationHandler SMethod_CancelRequest $ \msg -> do
         let key = case msg ^. L.params . L.id of InL n -> T.pack (show n); InR t -> t
         liftIO (readIORef (envRunning env)) >>= maybe (pure ()) liftIO . M.lookup key

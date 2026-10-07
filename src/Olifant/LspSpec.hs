@@ -1134,6 +1134,43 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         doc <- openNew newCommand ownWay
         suggestAt doc 1
       v `shouldBe` Aeson.Null
+  let feedback doc generator outcome =
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/recognitionFeedback")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "generator" .= (generator :: Text), "outcome" .= (outcome :: Text)])
+      named n = T.replace "CloseTable" n ownWay
+  it "(f) a dismissed file is left alone until its shape changes (Review Focus 5)" $
+    withPython [] $ \ports dir -> do
+      createBooking <- TIO.readFile (dir </> "src/bistro/booking/commands/create_booking.py")
+      ((after, rewritten), _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        _ <- suggestAt doc 1
+        feedback doc "python-htmx/command" "dismissed"
+        after <- suggestAt doc 1
+        changeNew doc 1 (T.replace "CreateBooking" "CloseTable" createBooking)
+        rewritten <- suggestAt doc 1
+        pure (after, rewritten)
+      after `shouldBe` Aeson.Null
+      lookupKey "kind" rewritten `shouldBe` Just (String "recognition")
+  it "(g) three dismissals in a row quiet a generator to a hint; an accept makes it speak again; it lasts across restarts" $
+    withPython [] $ \ports dir -> do
+      let file n = "src/bistro/booking/commands/close_" <> n <> ".py"
+          dismissThree = forM_ ["a", "b", "c"] $ \n -> do
+            doc <- openNew (file n) (named ("Close" <> T.toUpper (T.pack n)))
+            _ <- suggestAt doc 1
+            feedback doc "python-htmx/command" "dismissed"
+      ((quiet, loud), _) <- inProcessWith ports dir $ do
+        dismissThree
+        d <- openNew (file "d") (named "CloseD")
+        quiet <- suggestAt d 1
+        feedback d "python-htmx/command" "accepted"
+        e <- openNew (file "e") (named "CloseE")
+        loud <- suggestAt e 1
+        pure (quiet, loud)
+      (lookupKey "band" quiet, lookupKey "band" loud) `shouldBe` (Just (String "hint"), Just (String "offer"))
+      ((), _) <- inProcessWith ports dir dismissThree
+      (later, _) <- inProcessWith ports dir $ do
+        f <- openNew (file "f") (named "CloseF")
+        suggestAt f 1
+      lookupKey "band" later `shouldBe` Just (String "hint")
   sequential . it "(e) a long legacy file: recognition reads only around the edit, and answers fast (Review Focus 3)" $
     withPython [] $ \ports dir -> do
       let legacy = T.concat ["def f_" <> T.pack (show i) <> "(x):\n    return x + " <> T.pack (show i) <> "\n\n" | i <- [1 .. 1000 :: Int]]

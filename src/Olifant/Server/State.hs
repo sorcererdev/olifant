@@ -24,6 +24,7 @@ module Olifant.Server.State
 import Data.Functor ((<&>))
 import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
+import Data.Set (Set)
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -31,7 +32,7 @@ import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Catalog (PackCache, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Generator (Generator)
-import Olifant.Recognize (Index)
+import Olifant.Recognize (Index, Shingle)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany, within)
 import System.FilePath (takeDirectory, (</>))
 
@@ -69,10 +70,15 @@ data ServerState = ServerState
     ssCancel :: Cancel
   , -- | each project's recognition index per language, for one file stamp
     ssRecognition :: Map (FilePath, Text) (Int, Index, [Generator])
+  , -- | per project root: each generator's dismissals in a row (kept in
+    -- .olifant/state/recognition.json)
+    ssQuiet :: Map FilePath (Map Text Int)
+  , -- | per file: its shape when its recognition was dismissed
+    ssDismissed :: Map FilePath (Set Shingle)
   }
 
 newServerState :: Ports -> IO ServerState
-newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty) <$> newPackCache
+newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty) <$> newPackCache
 
 -- | A document opened in the editor, at a version, with its text.
 openDoc :: FilePath -> Int -> Text -> ServerState -> ServerState

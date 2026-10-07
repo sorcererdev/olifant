@@ -7,9 +7,15 @@ module Olifant.Server.Recognize
   ( recognitionFor
   , recognitionPlan
   , suggestOrRecognize
+  , recognitionFeedback
   ) where
 
 import Control.Monad (forM)
+import Data.Aeson (Result (..), Value (..), decodeStrict, encode, fromJSON, object, (.=))
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Lazy qualified as BL
+import Data.Set qualified as S
+import Data.Text.Encoding qualified as TE
 import Data.Char (isSpace)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -49,9 +55,19 @@ recognitionFor path line = memo "recognize" path (T.pack (show line)) $ \s ->
           Just lang -> do
             (s'', ix, gens) <- indexFor root project lang s'
             text <- fromMaybe "" <$> readText (prWorkspace project) rel
-            case recognizeIn ix gens (Change rel (region text)) of
-              Nothing -> pure (s'', Nothing)
-              Just r -> (s'',) <$> suggestion s'' root project gens r text
+            counts <- quietCounts root s''
+            let shape = shingles (shapes (ixKeywords ix) text)
+                -- dismissed: quiet until its shape changes (more than 30% new)
+                stillDismissed = case M.lookup path (ssDismissed s'') of
+                  Just old -> fromIntegral (S.size (shape `S.difference` old)) <= 0.3 * (fromIntegral (S.size shape) :: Double)
+                  Nothing -> False
+                -- earned quietness: three dismissals in a row make a generator a hint
+                quieted r = if M.findWithDefault 0 (generatorIdText (rcGenerator r)) counts >= 3 then r {rcBand = Hint} else r
+            if stillDismissed
+              then pure (s'', Nothing)
+              else case quieted <$> recognizeIn ix gens (Change rel (region text)) of
+                Nothing -> pure (s'', Nothing)
+                Just r -> (s'',) <$> suggestion s'' root project gens r text
       where
         rel = makeRelative root path
   where
@@ -125,6 +141,47 @@ recognitionPlan fill progress path generator sets s =
                       | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
                       | length (filter (not . T.null . T.strip) (T.lines text)) <= 10 -> pure (Right (root, plan {planBefore = M.insert rel (Just text) (planBefore plan)}))
                       | otherwise -> pure (Right (root, plan {planWrites = M.delete rel (planWrites plan), planBefore = M.delete rel (planBefore plan), planMarked = M.delete rel (planMarked plan)}))
+
+-- | What the editor did with a recognition: dismissed (one more in a row
+-- for its generator; the file quiet until its shape changes), accepted or
+-- reset (the generator speaks again). Kept in the project's
+-- .olifant/state/recognition.json.
+recognitionFeedback :: FilePath -> Text -> Text -> ServerState -> IO ServerState
+recognitionFeedback path generator outcome s =
+  projectFor path s >>= \case
+    (s', Nothing) -> pure s'
+    (s', Just (root, project)) -> do
+      counts <- quietCounts root s'
+      let n = M.findWithDefault 0 generator counts
+          counts' = M.insert generator (if outcome == "dismissed" then n + 1 else 0) counts
+          rel = makeRelative root path
+      shape <- case (outcome, languageFor (catalogLanguages (prCatalog project)) rel) of
+        ("dismissed", Just lang) -> do
+          (_, ix, _) <- indexFor root project lang s'
+          text <- fromMaybe "" <$> readText (prWorkspace project) rel
+          pure (Just (shingles (shapes (ixKeywords ix) text)))
+        _ -> pure Nothing
+      writeText (within root (pFiles (ssPorts s'))) stateFile (TE.decodeUtf8 (BL.toStrict (encode (object ["dismissed" .= counts']))))
+      pure
+        s'
+          { ssQuiet = M.insert root counts' (ssQuiet s')
+          , ssDismissed = maybe (M.delete path) (M.insert path) shape (ssDismissed s')
+          , ssGeneration = ssGeneration s' + 1
+          }
+
+stateFile :: FilePath
+stateFile = ".olifant/state/recognition.json"
+
+-- | A project's dismissals in a row, per generator: known, or read from its
+-- state file (none when it has none).
+quietCounts :: FilePath -> ServerState -> IO (M.Map Text Int)
+quietCounts root s = case M.lookup root (ssQuiet s) of
+  Just counts -> pure counts
+  Nothing -> do
+    src <- readText (within root (pFiles (ssPorts s))) stateFile
+    pure $ case src >>= decodeStrict . TE.encodeUtf8 of
+      Just (Object o) | Just v <- KM.lookup "dismissed" o, Success counts <- fromJSON v -> counts
+      _ -> M.empty
 
 -- | The project's recognition index for a language, for the current file
 -- stamp: its generators of that language (loaded) and its files of it.
