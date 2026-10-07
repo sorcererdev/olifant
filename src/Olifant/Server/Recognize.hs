@@ -83,7 +83,7 @@ recognitionFor path line = memo "recognize" path (T.pack (show line)) $ \s ->
 -- is unsure, or an input it could not read is missing); nothing for a file
 -- that already is the convention.
 recognitionSuggestion :: FilePath -> Int -> ServerState -> FilePath -> Project -> [Generator] -> Recognition -> Text -> IO (Maybe Suggestion)
-recognitionSuggestion path line s root project gens r text = suggestion
+recognitionSuggestion path line s root _ gens r text = suggestion
   where
     suggestion = do
         let rel = makeRelative root path
@@ -112,8 +112,8 @@ recognitionSuggestion path line s root project gens r text = suggestion
           converts = M.member rel (planWrites plan)
        in T.intercalate "; " (["converts " <> T.pack (takeFileName rel) | converts] <> ["adds " <> T.intercalate ", " others | not (null others)])
     -- the first line declaring something (where the construct starts)
-    declarationLine text fallback =
-      fromMaybe fallback (listToMaybe [n | (n, l) <- zip [1 ..] (T.lines text), any (`T.isPrefixOf` T.dropWhile isSpace l) ["class ", "def ", "struct ", "pub struct ", "fn ", "pub fn ", "trait ", "pub trait ", "enum ", "pub enum ", "@"]])
+    declarationLine src fallback =
+      fromMaybe fallback (listToMaybe [n | (n, l) <- zip [1 ..] (T.lines src), any (`T.isPrefixOf` T.dropWhile isSpace l) ["class ", "def ", "struct ", "pub struct ", "fn ", "pub fn ", "trait ", "pub trait ", "enum ", "pub enum ", "@"]])
     -- the convention's own name: the last ident input it read (a command's
     -- name, not its service)
     mainInput gen inputs =
