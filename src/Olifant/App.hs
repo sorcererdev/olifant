@@ -71,8 +71,8 @@ import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Newness (NewLines (..), newLinesOf, wholeNew)
-import Olifant.Migration (MigrationReport (..), Switch (..), readRegistry, switchMarkers, unregistered)
-import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), checkFiles, suggestChoice)
+import Olifant.Migration (MigrationReport (..), Switch (..), bigChanges, readRegistry, switchMarkers, unregistered)
+import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), Severity (..), checkFiles, fingerprint, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
 import Olifant.Template qualified as Tm
@@ -344,6 +344,34 @@ migrationFor ports project = case catalogMigrate cat of
       _ : name : _ -> name
       _ -> T.strip (matchText m)
 
+-- | New work in disguise ([migrate]): a legacy function changed by at least
+-- `new_work_lines` new lines, not wholly new — a quiet hint, with the
+-- extract fixes (a configured decider may sharpen it: the server's job).
+newWorkHints :: Ports -> Project -> (FilePath -> Text -> IO NewLines) -> [FilePath] -> IO [Finding]
+newWorkHints ports project newness files = case catalogMigrate cat of
+  Nothing -> pure []
+  Just mig -> fmap concat . forM [f | f <- files, any (`matchesGlob` f) (mgLegacy mig)] $ \f -> do
+    text <- fromMaybe "" <$> readText ws f
+    case languageFor (catalogLanguages cat) f of
+      Nothing -> pure []
+      Just lang -> do
+        ms <- either (const []) id <$> querySyntax (pSyntax ports) lang (J.object ["any" J..= [J.object ["kind" J..= k] | k <- mgCount mig]]) text
+        n <- newness f text
+        let ranged = [(((fst (matchStart m) + 1, 1), (fst (matchEnd m) + 1, snd (matchEnd m) + 1)), m) | m <- ms]
+            big = bigChanges (mgNewWorkLines mig) n (map fst ranged)
+        pure
+          [ Finding "migrate-new-work" f (Just rng) Hint ("a big change (" <> T.pack (show k) <> " new lines): is this new work? New work goes in the new architecture") (extractFixes f) (matchText m) (fingerprint ["migrate-new-work", matchText m])
+          | (rng, k) <- big
+          , Just m <- [lookup rng ranged]
+          ]
+  where
+    cat = prCatalog project
+    ws = prWorkspace project
+    extractFixes f =
+      [ FixOffer ("python-strangler/extract-" <> kind) (Just ("Extract this as a " <> kind)) [("file", T.pack f)] Nothing []
+      | kind <- ["command", "query"]
+      ]
+
 -- | What "new" is measured from: the base ref ([migrate] base; main).
 baseRefOf :: Project -> Text
 baseRefOf project = maybe "main" mgBase (catalogMigrate (prCatalog project))
@@ -364,7 +392,8 @@ findingsWith newness ports project files = do
       ws = prWorkspace project
   paths <- listFiles ws "."
   now <- pNow ports
-  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf project) (\f -> readText ws f >>= newness f . fromMaybe "") (catalogRules cat) paths (readText ws) files
+  hints <- newWorkHints ports project newness files
+  (\(fs, exs) -> (fs ++ hints, exs)) <$> checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf project) (\f -> readText ws f >>= newness f . fromMaybe "") (catalogRules cat) paths (readText ws) files
     >>= chooseFixInputs ports project paths now
 
 -- | A fix's enum inputs left open are pre-chosen when the finding's code

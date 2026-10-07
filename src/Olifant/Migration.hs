@@ -9,7 +9,10 @@ module Olifant.Migration
   , unregistered
   , reportLine
   , migrationJson
+  , bigChanges
   ) where
+
+import Olifant.Newness (NewLines (..), newCount, wholeNew)
 
 import Data.Aeson (Value, object, (.=))
 
@@ -83,4 +86,10 @@ migrationJson r =
     , "unregistered" .= mrUnregistered r
     , "line" .= reportLine r
     ]
+
+-- | Legacy functions that are not wholly new but whose new lines reach the
+-- threshold (a change that may be new work in disguise): each function's
+-- range, with its count of new lines.
+bigChanges :: Int -> NewLines -> [((Int, Int), (Int, Int))] -> [(((Int, Int), (Int, Int)), Int)]
+bigChanges threshold newness fns = [(fn, n) | fn <- fns, not (wholeNew newness fn), let n = newCount newness fn, n >= threshold]
 

@@ -1156,6 +1156,52 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
           TResponseMessage _ _ (Right v) -> pure v
           TResponseMessage _ _ (Left e) -> fail (show e)
       (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Number 2)
+  let bigEdit = T.replace "    return t" (T.unlines (replicate 20 "    t = t + 1") <> "    return t") base
+      migrating dir extra = do
+        config <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[migrate]\nlegacy = [\"legacy/**\"]\n" <> extra)
+      untilRule ids doc = do
+        let loop n = do
+              ds <- pullDiagnostics doc
+              if any (`elem` ids) (ruleIds ds) || n <= (0 :: Int) then pure ds else liftIO (threadDelay 100000) >> loop (n - 1)
+        loop 50
+  it "(g) a big change inside a legacy function: a quiet hint (is this new work?)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir ""
+      underGit dir
+      (ds, _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument bigEdit))]
+        pullDiagnostics doc
+      [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c == "migrate-new-work"] `shouldBe` [("migrate-new-work", Just DiagnosticSeverity_Hint)]
+  it "(h) with Jev saying new behaviour, the hint becomes the bug-fix-only warning" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      underGit dir
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"new behaviour\"}}"
+      (ds, _) <- inProcessWithConfig [("decide_answers", String (T.pack answers))] ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument bigEdit))]
+        untilRule ["legacy-bug-fix-only"] doc
+      [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c `elem` ["legacy-bug-fix-only", "migrate-new-work"]] `shouldBe` [("legacy-bug-fix-only", Just DiagnosticSeverity_Warning)]
+  it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      underGit dir
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"maybe\"}}"
+      ((ds, ms), _) <- inProcessWithConfig [("decide_answers", String (T.pack answers))] ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument bigEdit))]
+        t0 <- liftIO getCurrentTime
+        d <- pullDiagnostics doc
+        t1 <- liftIO getCurrentTime
+        liftIO (threadDelay 500000)
+        d' <- pullDiagnostics doc
+        pure (d', realToFrac (diffUTCTime t1 t0) :: Double)
+      [c | d <- ds, Just (InR c) <- [d ^. L.code], c `elem` ["legacy-bug-fix-only", "migrate-new-work"]] `shouldBe` ["migrate-new-work"]
+      ms `shouldSatisfy` (< 1)
   it "(d) when the base moves (the branch merged into main), what was new is not any more (Review Focus 2)" $
     withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
       underGit dir

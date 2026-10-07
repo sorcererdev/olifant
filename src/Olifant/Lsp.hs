@@ -195,7 +195,12 @@ handlers env =
         let key = case msg ^. L.params . L.id of InL n -> T.pack (show n); InR t -> t
         liftIO (readIORef (envRunning env)) >>= maybe (pure ()) liftIO . M.lookup key
     , -- watch every project's `.olifant/`; packs are watched as projects load
-      notificationHandler SMethod_Initialized (\_ -> watch env [GlobPattern (InL (Pattern "**/.olifant/**"))])
+      notificationHandler SMethod_Initialized $ \_ -> do
+        watch env [GlobPattern (InL (Pattern "**/.olifant/**"))]
+        -- a typed decision made in the background: the editor pulls diagnostics again
+        lspEnv <- getLspEnv
+        st <- liftIO (readMVar (envState env))
+        liftIO (writeIORef (ssOnDecided st) (runLspT lspEnv (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))))
     , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
         let item = msg ^. L.params . L.textDocument
         atPath (item ^. L.uri) $ \path -> do
