@@ -1215,6 +1215,37 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         (,) <$> pushed <*> pushed
       (lookupKey "band" first, lookupKey "band" second) `shouldBe` (Just (String "hint"), Just (String "offer"))
       lookupKey "version" second `shouldBe` lookupKey "version" first
+  it "(n) asked after the model upgraded it, olifant/suggest answers the offer (on any line of the file)" $
+    withPython [] $ \ports dir -> do
+      v <- withModel ports dir yes $ \_ -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        _ <- pushed
+        _ <- pushed
+        suggestAt doc 9
+      lookupKey "band" v `shouldBe` Just (String "offer")
+  it "(o) a generator quieted by three dismissals stays a hint, even when the model says yes (review I2)" $
+    withPython [] $ \ports dir -> do
+      let file n = "src/bistro/booking/commands/close_" <> n <> ".py"
+      v <- withModel ports dir yes $ \_ -> do
+        forM_ ["a", "b", "c"] $ \n -> do
+          doc <- openNew (file n) (named ("Close" <> T.toUpper (T.pack n)))
+          _ <- suggestAt doc 1
+          feedback doc "python-htmx/command" "dismissed"
+        d <- openNew (file "d") ""
+        typeIn d 1 (named "CloseD")
+        _ <- pushed
+        liftIO (threadDelay 1500000)
+        suggestAt d 1
+      lookupKey "band" v `shouldBe` Just (String "hint")
+  it "(p) accepting a recognition off its place says the user's file stays (review I4)" $
+    withPython [] $ \ports dir -> do
+      v <- withModel ports dir yes $ \_ -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        _ <- pushed
+        pushed
+      lookupKey "summary" v `shouldSatisfy` maybe False (\case String t -> "close_table.py here stays" `T.isInfixOf` t; _ -> False)
   it "(i) typing on cancels a model still answering (its token trips)" $
     withPython [] $ \ports dir -> do
       stopped <- withModel ports dir "wait" $ \answers -> do
@@ -1252,6 +1283,19 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         _ <- suggestAt doc 1
         debugState
       lookupKey "recognitionIndexes" st `shouldBe` Just (Number 1)
+  it "(m) after a save, the index and the listing it keeps are current again (review I1)" $
+    withPython [] $ \ports dir -> do
+      (st, _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        _ <- suggestAt doc 1
+        other <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams other Nothing)
+        changeNew doc 1 (ownWay <> "# 1\n")
+        _ <- suggestAt doc 1
+        changeNew doc 2 (ownWay <> "# 2\n")
+        _ <- suggestAt doc 1
+        debugState
+      (lookupKey "recognitionFresh" st, lookupKey "listingsFresh" st) `shouldBe` (Just (Number 1), Just (Number 1))
   sequential . it "(e) a long legacy file: recognition reads only around the edit, and answers fast (Review Focus 3)" $
     withPython [] $ \ports dir -> do
       let legacy = T.concat ["def f_" <> T.pack (show i) <> "(x):\n    return x + " <> T.pack (show i) <> "\n\n" | i <- [1 .. 1000 :: Int]]

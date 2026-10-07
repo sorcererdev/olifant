@@ -391,8 +391,11 @@ handlers env =
           Nothing -> respond (Right Aeson.Null)
           Just (path, line) -> do
             liftIO (withSnapshotState job (suggestOrRecognize path line)) >>= \case
-              (at, Just sg) | Just v <- fst <$> M.lookup path (ssDocs at) -> do
-                n <- liftIO (offer job path v sg)
+              (at, Just sg0) | Just v <- fst <$> M.lookup path (ssDocs at) -> do
+                -- a hint the model has upgraded for this version: the offer
+                upgraded <- liftIO (upgradedFor job path v sg0)
+                let sg = maybe sg0 snd upgraded
+                n <- maybe (liftIO (offer job path v sg)) (pure . fst) upgraded
                 respond (Right (object (suggestionFields path v n sg ++ ["plan" .= planJson False (sgPlan sg)] ++ ["edit" .= workspaceEdit (editsOfPlan at (sgRoot sg) (sgPlan sg))])))
               _ -> respond (Right Aeson.Null)
     , -- an offered suggestion's plan, while its document is as it was
@@ -465,7 +468,7 @@ debugState env = withSnapshotState env (\s0 -> do
                          (s'', found) <- projectFor path s'
                          pure (s'', object ["path" .= path, "version" .= version, "project" .= fmap fst found] : rs))
                      (pure (s0, [])) docs
-  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)], "recognitionIndexes" .= M.size (ssRecognition s)]))
+  pure (s, object ["documents" .= rows, "projects" .= M.mapKeys T.pack (ssLoads s), "broken" .= M.fromList [(T.pack root, why) | (root, Broken why _) <- M.toList (ssProjects s)], "recognitionIndexes" .= M.size (ssRecognition s), "recognitionFresh" .= M.size (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp s) (ssRecognition s0)), "listingsFresh" .= M.size (M.filter ((== ssFilesStamp s) . fst) (ssListings s0))]))
     <&> snd
 
 -- | Ask the client to watch more files (dynamic registration: the protocol
@@ -531,6 +534,24 @@ suggestLater env lspEnv path version line = do
           _ -> pure ()
       _ -> pure ()
 
+-- | The offer a model's yes made of a recognition hint, for this file at
+-- this version (pushed by the suggest job), with its id: what a pull at
+-- any line of the file answers instead of the hint.
+upgradedFor :: Env -> FilePath -> Int -> Suggestion -> IO (Maybe (Int, Suggestion))
+upgradedFor env path version sg = case sgRecognition sg of
+  Just r | Recognize.rcBand r == Recognize.Hint -> do
+    (_, m) <- readIORef (envOffered env)
+    pure $
+      listToMaybe
+        [ (n, ofSuggestion o)
+        | (n, o) <- M.toDescList m
+        , ofPath o == path
+        , ofVersion o == version
+        , Just u <- [sgRecognition (ofSuggestion o)]
+        , Recognize.rcBand u == Recognize.Offer
+        ]
+  _ -> pure Nothing
+
 -- | Keep a suggestion's plan for `olifant/plan`, while its file is at
 -- that version (a file's offers for older versions go): its id.
 offer :: Env -> FilePath -> Int -> Suggestion -> IO Int
@@ -588,11 +609,12 @@ withSnapshotState env work = do
           ssProjects = M.union (ssProjects now) (if ssFilesStamp now == ssFilesStamp before then ssProjects after else M.empty)
         , ssLoads = M.unionWith (+) (ssLoads now) loaded
         , -- what it worked out stands only if nothing changed meanwhile
-          ssListings = M.union (ssListings now) (M.filter ((== ssFilesStamp now) . fst) (ssListings after))
+          -- (a fresh one replaces one gone stale: a save leaves the old in place)
+          ssListings = M.union (M.filter ((== ssFilesStamp now) . fst) (ssListings after)) (ssListings now)
         , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
         , ssEstablished = M.union (ssEstablished now) (ssEstablished after)
         , -- a recognition index it built, while no file changed since
-          ssRecognition = M.union (ssRecognition now) (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp now) (ssRecognition after))
+          ssRecognition = M.union (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp now) (ssRecognition after)) (ssRecognition now)
         }
   pure (after, a)
 

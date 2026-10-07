@@ -22,7 +22,7 @@ import Data.Set qualified as S
 import Data.Text.Encoding qualified as TE
 import Data.Char (isSpace)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, planWith)
@@ -112,7 +112,10 @@ recognitionSuggestion path line s root _ gens r text = suggestion
     summary rel plan =
       let others = [T.pack (takeFileName p) | p <- M.keys (planWrites plan), p /= rel]
           converts = M.member rel (planWrites plan)
-       in T.intercalate "; " (["converts " <> T.pack (takeFileName rel) | converts] <> ["adds " <> T.intercalate ", " others | not (null others)])
+          -- off its place, the convention's file is written where it belongs:
+          -- the user's stays, and they are told so (it is theirs to remove)
+          kept = not converts && rcPlace r < 0.25
+       in T.intercalate "; " (["converts " <> T.pack (takeFileName rel) | converts] <> ["adds " <> T.intercalate ", " others | not (null others)] <> ["your " <> T.pack (takeFileName rel) <> " here stays: remove it once its logic has moved" | kept])
     -- the first line declaring something (where the construct starts)
     declarationLine src fallback =
       fromMaybe fallback (listToMaybe [n | (n, l) <- zip [1 ..] (T.lines src), any (`T.isPrefixOf` T.dropWhile isSpace l) ["class ", "def ", "struct ", "pub struct ", "fn ", "pub fn ", "trait ", "pub trait ", "enum ", "pub enum ", "@"]])
@@ -139,9 +142,15 @@ recognitionUpgrade path sg s = case sgRecognition sg of
         (s'', _, gens) <- indexFor root project lang s'
         let rel = makeRelative root path
         text <- fromMaybe "" <$> readText (prWorkspace project) rel
-        consult recognizer gens (Change rel text) r >>= \case
-          Just r' | rcBand r' == Offer -> (s'',) <$> recognitionSuggestion path (sgAt sg) s'' root project gens r' text
-          _ -> pure (s'', Nothing)
+        counts <- quietCounts root s''
+        -- earned quietness holds: the model never makes a quieted generator loud
+        let quiet g = M.findWithDefault 0 (generatorIdText g) counts >= 3
+        if quiet (rcGenerator r) && isNothing (rcOr r) && isNothing (rcRival r)
+          then pure (s'', Nothing)
+          else
+            consult recognizer gens (Change rel text) r >>= \case
+              Just r' | rcBand r' == Offer, not (quiet (rcGenerator r')) -> (s'',) <$> recognitionSuggestion path (sgAt sg) s'' root project gens r' text
+              _ -> pure (s'', Nothing)
       (s', _) -> pure (s', Nothing)
   _ -> pure (s, Nothing)
 

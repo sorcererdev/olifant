@@ -180,6 +180,10 @@ alone.
 | off its place, but shaped like it | a quiet hint: the dim `⚡`, first in `<leader>ma` with its reasons |
 | otherwise | nothing |
 
+Off its place (`booking/close_table.py`, not `booking/commands/`), accepting writes the
+convention's file where it belongs; yours stays, and the summary says so (*your close_table.py
+here stays: remove it once its logic has moved*).
+
 Inputs come from the path (`booking`, `close_table`), else from the names declared
 (`class CloseTable` → `close_table`), else from the folder; what is still missing the picker
 asks for.
@@ -198,7 +202,9 @@ model = "local"     # a [model.backends.NAME]
 
 the model is asked — only when recognition is unsure (a hint, a choice, a shape that favours
 another convention) — a typed question: which of these conventions is this code, with which
-inputs. The deterministic answer shows first; a yes upgrades it in place. Its inputs are checked
+inputs. The deterministic answer shows first; a yes upgrades it in place (the dim hint becomes
+an offer, wherever the cursor is in the file). A generator you have quieted stays quiet: the
+model never makes it loud again. Its inputs are checked
 against their types; a model that does not answer changes nothing. `olifant doctor` checks the
 backend. `[recognize] enabled = false` turns recognition off for a project; `recognize = false`
 in a `generator.toml` for one generator (a project's starter never is recognised).
