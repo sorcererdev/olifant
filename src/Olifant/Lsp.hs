@@ -11,6 +11,8 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, neverCancel, newCancel)
+import Olifant.Recognize qualified as Recognize
+import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Monad (unless, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -375,7 +377,7 @@ handlers env =
         case found of
           Nothing -> respond (Right Aeson.Null)
           Just (path, line) -> do
-            liftIO (withSnapshotState job (suggestionFor path line)) >>= \case
+            liftIO (withSnapshotState job (suggestOrRecognize path line)) >>= \case
               (at, Just sg) | Just v <- fst <$> M.lookup path (ssDocs at) -> do
                 n <- liftIO (offer job path v sg)
                 respond (Right (object (suggestionFields path v n sg ++ ["plan" .= planJson False (sgPlan sg)] ++ ["edit" .= workspaceEdit (editsOfPlan at (sgRoot sg) (sgPlan sg))])))
@@ -398,13 +400,15 @@ handlers env =
                 , Just (Object doc) <- KM.lookup "textDocument" o
                 , Just (String uri) <- KM.lookup "uri" doc
                 , Just path <- uriToFilePath (Uri uri) ->
-                    Just (path, generator, setsIn o)
+                    Just (path, generator, setsIn o, KM.lookup "recognize" o == Just (Bool True))
               _ -> Nothing
         case (chosen, offered) of
-          (Just (path, generator, sets), _) ->
-            planProgress generator (\progress -> withPlanned job (actionPlanWith progress True path 1 generator sets)) >>= \case
-              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
+          (Just (path, generator, sets, recognising), _) ->
+            -- a recognition's plan (the file converted, or its companions), or the picker's
+            let planned progress = if recognising then recognitionPlan True progress path generator sets else actionPlanWith progress True path 1 generator sets
+             in planProgress generator (\progress -> withPlanned job (planned progress)) >>= \case
+                  Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+                  Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
           (_, Nothing) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no such plan (offered plans last until their document changes)" Nothing))
           (_, Just o)
             | fmap fst (M.lookup (ofPath o) (ssDocs s)) /= Just (ofVersion o) -> respond (Left (TResponseError (InL LSPErrorCodes_ContentModified) "the document changed since this was suggested" Nothing))
@@ -413,7 +417,10 @@ handlers env =
                  in respond (Right (object ["plan" .= planJson False (sgPlan sg), "edit" .= workspaceEdit (editsOfPlan s (sgRoot sg) (sgPlan sg))]))
             | otherwise -> do
                 let sg = ofSuggestion o
-                planProgress (sgLabel sg) (\progress -> withPlanned job (actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg))) >>= \case
+                let replanned progress = case sgRecognition sg of
+                      Just _ -> recognitionPlan True progress (ofPath o) (sgGenerator sg) (sgSets sg)
+                      Nothing -> actionPlanWith progress True (ofPath o) (sgAt sg) (sgGenerator sg) (sgSets sg)
+                planProgress (sgLabel sg) (\progress -> withPlanned job (replanned progress)) >>= \case
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right (at, (root, plan)) -> respond (Right (object ["plan" .= planJson False plan, "edit" .= workspaceEdit (editsOfPlan at root plan)]))
     , -- the project of a document in the shared vocabulary (spec §1b)
@@ -494,7 +501,7 @@ suggestLater env lspEnv path version line = do
   debounce <- scDebounceMs . ssConfig <$> readMVar (envState env)
   void . submit (envJobs env) ("suggest " <> T.pack path) debounce $ \token -> do
     -- superseded by the next edit: its checks stop (review I5)
-    found <- withSnapshot env {envCancel = token} (suggestionFor path line)
+    found <- withSnapshot env {envCancel = token} (suggestOrRecognize path line)
     current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
     case found of
       Just sg | current == Just version -> do
@@ -522,7 +529,16 @@ suggestionFields path version n sg =
   , "lines" .= sgLines sg
   , "at" .= sgAt sg
   , "planId" .= n
+  , "generator" .= sgGenerator sg
   ]
+    <> case sgRecognition sg of
+      Nothing -> []
+      Just r ->
+        [ "band" .= (case Recognize.rcBand r of Recognize.Offer -> "offer" :: T.Text; Recognize.Hint -> "hint")
+        , "or" .= fmap (\(GeneratorId g) -> g) (Recognize.rcOr r)
+        , "reasons" .= Recognize.rcReasons r
+        , "score" .= Recognize.rcScore r
+        ]
 
 -- | Run against the state as it is now, without holding it: what the work
 -- loaded (projects) is kept; documents changed meanwhile are not undone.

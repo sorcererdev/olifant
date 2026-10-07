@@ -30,6 +30,8 @@ import Data.Text (Text)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Catalog (PackCache, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Process (Cancel, neverCancel)
+import Olifant.Generator (Generator)
+import Olifant.Recognize (Index)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany, within)
 import System.FilePath (takeDirectory, (</>))
 
@@ -65,10 +67,12 @@ data ServerState = ServerState
   , -- | the token of the work this state was handed to (a job, a request):
     -- its plans' checks, verifies and model calls stop when it trips
     ssCancel :: Cancel
+  , -- | each project's recognition index per language, for one file stamp
+    ssRecognition :: Map (FilePath, Text) (Int, Index, [Generator])
   }
 
 newServerState :: Ports -> IO ServerState
-newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel) <$> newPackCache
+newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty) <$> newPackCache
 
 -- | A document opened in the editor, at a version, with its text.
 openDoc :: FilePath -> Int -> Text -> ServerState -> ServerState

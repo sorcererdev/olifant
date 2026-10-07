@@ -6,6 +6,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Applicative ((<|>))
 import Control.Monad (forM, forM_, void, when)
+import Data.Foldable (toList)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BSL
@@ -70,6 +71,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   hintsSpec
   completionSpec
   followupsSpec
+  recognitionSpec
   holesSpec
   pickerSpec
   conventionsSpec
@@ -1062,3 +1064,84 @@ withProject files act = withSystemTempDirectory "olifant-lsp" $ \dir0 -> do
   dir <- canonicalizePath dir0
   forM_ ((".olifant/config.toml", "") : files) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
   act dir
+
+-- | Recognitions as suggestions (convention recognition, Task 8).
+recognitionSpec :: Spec
+recognitionSpec = describe "recognition: this looks like a command" $ do
+  let newCommand = "src/bistro/booking/commands/close_table.py"
+      ownWay = "class CloseTable:\n    def __init__(self, repo):\n        self.repo = repo\n\n    def run(self, table_id):\n        table = self.repo.table(table_id)\n        self.repo.save(table)\n"
+      whole t = [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument t))]
+      -- a buffer that is only in the editor (not on disk)
+      openNew path text = do
+        uri <- getDocUri path
+        sendNotification SMethod_TextDocumentDidOpen (DidOpenTextDocumentParams (TextDocumentItem uri "python" 0 text))
+        pure (TextDocumentIdentifier uri)
+      changeNew doc v text = sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier (doc ^. L.uri) v) (whole text))
+      suggestAt doc line =
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "line" .= (line :: Int)]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left err) -> fail (show err)
+      planOf v =
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= lookupKey "planId" v]) >>= \case
+          TResponseMessage _ _ r -> pure r
+      changedFiles v = case lookupKey "edit" v >>= lookupKey "documentChanges" of
+        Just (Array cs) -> [(u, T.concat [t | Just (Array es) <- [KM.lookup "edits" c], Object e <- toList es, Just (String t) <- [KM.lookup "newText" e]]) | Object c <- toList cs, Just (Object td) <- [KM.lookup "textDocument" c], Just (String u) <- [KM.lookup "uri" td]]
+        _ -> []
+  it "(a) recognises a command written by hand in commands/, and converts it, with its test" $
+    withPython [] $ \ports dir -> do
+      ((v, planned), _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        v <- suggestAt doc 1
+        p <- planOf v
+        pure (v, p)
+      (lookupKey "kind" v, lookupKey "band" v, lookupKey "generator" v) `shouldBe` (Just (String "recognition"), Just (String "offer"), Just (String "python-htmx/command"))
+      lookupKey "label" v `shouldBe` Just (String "This looks like a command (Close Table)")
+      files <- either (fail . show) (pure . changedFiles) planned
+      let at name = [t | (u, t) <- files, ("/" <> name) `T.isSuffixOf` u]
+      at "close_table.py" `shouldSatisfy` any (T.isInfixOf "def handle(self, input: CloseTableInput)")
+      at "close_table__test.py" `shouldSatisfy` (not . null)
+  it "(b) a longer file is left alone: only its companions (the test)" $
+    withPython [] $ \ports dir -> do
+      let long = ownWay <> T.concat ["\n    def helper_" <> T.pack (show i) <> "(self):\n        return " <> T.pack (show i) <> "\n" | i <- [1 .. 5 :: Int]]
+      (planned, _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand long
+        suggestAt doc 1 >>= planOf
+      files <- either (fail . show) (pure . changedFiles) planned
+      [u | (u, _) <- files, "/close_table.py" `T.isSuffixOf` u] `shouldBe` []
+      [u | (u, _) <- files, "/close_table__test.py" `T.isSuffixOf` u] `shouldSatisfy` (not . null)
+  it "(c) never offers for an older version: typed on, the old offer is refused, the next is for the new text (Review Focus 1)" $
+    withPython [] $ \ports dir -> do
+      ((old, new, refused), _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        old <- suggestAt doc 1
+        changeNew doc 1 (ownWay <> "\n# more\n")
+        TResponseMessage _ _ refused <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["planId" .= lookupKey "planId" old])
+        new <- suggestAt doc 1
+        pure (old, new, refused)
+      either (\e -> e ^. L.code) (const (InR ErrorCodes_InternalError)) refused `shouldBe` InL LSPErrorCodes_ContentModified
+      (lookupKey "version" new /= lookupKey "version" old) `shouldBe` True
+  it "(d) says nothing of a file that already is the convention, nor when recognition is off" $ do
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+        suggestAt doc 1
+      v `shouldBe` Aeson.Null
+    withPython [] $ \ports dir -> do
+      config <- TIO.readFile (dir </> ".olifant/config.toml")
+      TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[recognize]\nenabled = false\n")
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openNew newCommand ownWay
+        suggestAt doc 1
+      v `shouldBe` Aeson.Null
+  sequential . it "(e) a long legacy file: recognition reads only around the edit, and answers fast (Review Focus 3)" $
+    withPython [] $ \ports dir -> do
+      let legacy = T.concat ["def f_" <> T.pack (show i) <> "(x):\n    return x + " <> T.pack (show i) <> "\n\n" | i <- [1 .. 1000 :: Int]]
+      (times, _) <- inProcessWith ports dir $ do
+        doc <- openNew "src/bistro/legacy.py" legacy
+        forM [1 .. 5 :: Int] $ \_ -> do
+          t0 <- liftIO getCurrentTime
+          _ <- suggestAt doc 1500
+          t1 <- liftIO getCurrentTime
+          pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
+      sort times !! 2 `shouldSatisfy` (< 100)

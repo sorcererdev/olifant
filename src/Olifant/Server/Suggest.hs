@@ -14,6 +14,7 @@ import Olifant.App (actionsIn, generatorsOf)
 import Olifant.Cursor (isSnippet)
 import Olifant.Generation (Plan (..))
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..))
+import Olifant.Recognize (Recognition)
 import Olifant.Server.Actions (actionPlan)
 import Olifant.Server.Edits (FileEdit (..), editsOfPlan)
 import Olifant.Server.State (ServerState (..), memo, projectFor)
@@ -34,6 +35,8 @@ data Suggestion = Suggestion
     sgGenerator :: Text
   , sgSets :: [(Text, Text)]
   , sgAt :: Int
+  , -- | a recognition's band, choice and reasons (convention recognition)
+    sgRecognition :: Maybe Recognition
   }
 
 -- | What follows from an edit at a line (1-based) of a file; nothing when
@@ -65,8 +68,8 @@ suggestionFor path line = memo "suggest" path (T.pack (show line)) $ \s ->
               , let inserted = T.lines (feText e)
               , length inserted <= 8
               , l1 + 1 `elem` [line, line + 1] ->
-                  Suggestion "ghost" (actLabel a) "" (l1 + 1) inserted r plan (actGenerator a) (actSets a) line
-            _ -> Suggestion "followup" (actLabel a) (summary r plan) line [] r plan (actGenerator a) (actSets a) line
+                  Suggestion "ghost" (actLabel a) "" (l1 + 1) inserted r plan (actGenerator a) (actSets a) line Nothing
+            _ -> Suggestion "followup" (actLabel a) (summary r plan) line [] r plan (actGenerator a) (actSets a) line Nothing
       (s',) <$> try candidates
   where
     summary root plan =
