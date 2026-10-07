@@ -26,6 +26,7 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Set qualified as S
+import Data.Maybe (fromMaybe)
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -154,7 +155,15 @@ projectFor file s =
         Nothing -> load root Nothing s
       s' <- case M.lookup root (ssListings s0) of
         Just (stamp, _) | stamp == ssFilesStamp s0 -> pure s0
-        _ -> (\paths -> s0 {ssListings = M.insert root (ssFilesStamp s0, paths) (ssListings s0), ssEstablished = M.insertWith (\_ old -> old) root (S.fromList paths) (ssEstablished s0)}) <$> listFiles (within root (pFiles (ssPorts s0))) "."
+        _ -> do
+          paths <- listFiles (within root (pFiles (ssPorts s0))) "."
+          -- what the project already had: under git, the files it tracks (a
+          -- file written before the server started is still new); else what
+          -- was there when first listed
+          established <- case M.lookup root (ssEstablished s0) of
+            Just known -> pure known
+            Nothing -> fromMaybe (S.fromList paths) <$> pTracked (ssPorts s0) root
+          pure s0 {ssListings = M.insert root (ssFilesStamp s0, paths) (ssListings s0), ssEstablished = M.insert root established (ssEstablished s0)}
       pure (s', (\p -> (root, p {prWorkspace = workspaceOf s' root})) <$> (usable =<< slotOf root s'))
 
 -- | Why the project a file belongs to does not load (loading it if it was

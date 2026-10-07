@@ -2,6 +2,7 @@
 -- use cases, and renders JSON or human output with the spec's exit codes.
 module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) where
 
+import Data.Set (Set)
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined)
@@ -64,6 +65,8 @@ data Runtime = Runtime
     rtGitInit :: FilePath -> Text -> IO (Either Text ())
   , -- | runs a hole's `verify` command (its tests) in a scratch copy
     rtVerifier :: Cancel -> Verifier IO
+  , -- | the files git tracks under a folder (what a project already had)
+    rtTracked :: FilePath -> IO (Maybe (Set FilePath))
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -645,7 +648,7 @@ modelFor cat g
 
 -- | The engine's ports, as the CLI runs them.
 portsOf :: Runtime -> Ports
-portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt)
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt)
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project

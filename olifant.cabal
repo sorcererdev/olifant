@@ -212,6 +212,7 @@ test-suite spec
     Olifant.OutputSpec
     Olifant.Process
     Olifant.Process.Cancel
+    Olifant.ProcessSpec
     Olifant.ProjectModel
     Olifant.ProjectModelSpec
     Olifant.Query
