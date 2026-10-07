@@ -2,7 +2,7 @@
 -- Nothing here throws: a tool that cannot start, exits before reading its
 -- input, or breaks a pipe is reported as 'Left', so callers can turn it into
 -- a miss or a check failure instead of crashing Olifant.
-module Olifant.Process (runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelled) where
+module Olifant.Process (gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelled) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
@@ -12,9 +12,12 @@ import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Set (Set)
+import Data.Set qualified as S
 import Olifant.Process.Cancel (Cancel, cancelled, neverCancel, newCancel)
 import System.Posix.Signals (sigKILL, signalProcessGroup)
-import System.Exit (ExitCode)
+import System.Exit (ExitCode (..))
 import System.IO (hClose, hSetBinaryMode)
 import System.Process (CreateProcess (..), StdStream (..), createProcess, getPid, getProcessExitCode, interruptProcessGroupOf, proc, terminateProcess, waitForProcess)
 
@@ -118,3 +121,13 @@ synchronous :: SomeException -> Maybe SomeException
 synchronous e = case fromException e :: Maybe SomeAsyncException of
   Just _ -> Nothing
   Nothing -> Just e
+
+-- | The files git tracks under a folder, relative to it; nothing when the
+-- folder is in no git repository (or git is not installed). What a project
+-- "already had", for recognition: an untracked file is new.
+gitTracked :: FilePath -> IO (Maybe (Set FilePath))
+gitTracked dir =
+  runBytes "git" ["-C", dir, "ls-files", "-z"] Nothing "" <&> \case
+    Right (ExitSuccess, out, _) -> Just (S.fromList [T.unpack (TE.decodeUtf8Lenient p) | p <- BS.split 0 out, not (BS.null p)])
+    _ -> Nothing
+

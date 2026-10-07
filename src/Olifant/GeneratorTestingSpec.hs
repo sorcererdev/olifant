@@ -270,7 +270,7 @@ spec = do
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 4) 0), rtStdoutIsTty = False
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processCheckerWith
-              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
               , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
@@ -354,7 +354,7 @@ spec = do
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 6) 0), rtStdoutIsTty = False
               , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
-              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
               , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         _ <- runCli rt ["check", "--file", close, "--json"]
         checked <- readIORef out

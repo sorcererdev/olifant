@@ -2239,8 +2239,9 @@ Recognition answers "which convention is this hand-written code, if any", withou
 
 `Server/Recognize` turns a recognition into a `Suggestion` (kind `recognition`): its plan is the
 generator planned with the user's file hidden (`hidePath`), then converting that file (10
-non-blank lines or fewer) or keeping only its companions. Guards: only files new since the
-project was first listed (`ssEstablished`), never a file whose plan would only rewrite itself;
+non-blank lines or fewer) or keeping only its companions. Guards: only new files — untracked
+by git (`pTracked`, the `gitTracked` adapter), else not there when the project was first listed
+(`ssEstablished`), never a file whose plan would only rewrite itself;
 earned quietness (`ssQuiet`, `.olifant/state/recognition.json`) and dismissed shapes
 (`ssDismissed`) from `olifant/recognitionFeedback`. The suggest job tries a follow-up first, a
 recognition next, then (unsure, a model configured) `recognitionUpgrade` for the same version.

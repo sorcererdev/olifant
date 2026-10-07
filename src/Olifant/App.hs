@@ -38,6 +38,7 @@ module Olifant.App
   , fixSteps
   ) where
 
+import Data.Set (Set)
 import Control.Applicative ((<|>))
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
@@ -84,6 +85,9 @@ data Ports = Ports
   , pHomeDir :: Maybe FilePath
   , -- | what `doctor` looks at: installed tools, the model backends
     pDoctor :: DoctorPorts IO
+  , -- | the files version control tracks under a folder (relative to it);
+    -- nothing outside version control
+    pTracked :: FilePath -> IO (Maybe (Set FilePath))
   }
 
 -- | An open project: its root (absolute), its catalog, and the workspace

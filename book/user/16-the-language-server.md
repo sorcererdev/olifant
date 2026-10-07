@@ -168,8 +168,9 @@ alone.
   ones in every file (`self.x = x` says little; `@dataclass(frozen=True)` much more).
 - **What it declares.** A convention about a struct (a class, a fn) is not what code declaring
   none is: an enum in a service's folder is no command.
-- **Only new files.** A file the project had when the server loaded it is what it is; recognition
-  is for files written since (unsaved new buffers, files copied in).
+- **Only new files.** A file the project already has is what it is: recognition is for new ones.
+  In a git repository, new means untracked (written, copied in, saved and reopened — until it is
+  committed); outside git, written since the server first loaded the project.
 
 **How loud:**
 

@@ -15,6 +15,7 @@ import System.IO (Handle, hFlush)
 import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, (.=))
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -1052,7 +1053,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False))
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing)
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []
@@ -1272,6 +1273,21 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
     withPython [] $ \ports dir -> do
       removeFile (dir </> "src/bistro/booking/commands/create_booking__test.py")
       (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+        suggestAt doc 1
+      v `shouldBe` Aeson.Null
+  it "(q) under git, an untracked file already on disk when the server started is new: recognised" $
+    withPython [(newCommand, ownWay)] $ \ports dir -> do
+      (v, _) <- inProcessWith ports {pTracked = \_ -> pure (Just (S.fromList ["src/bistro/booking/commands/create_booking.py"]))} dir $ do
+        doc <- openDoc newCommand "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 3 0) (Position 3 0)) Nothing "\n"))]
+        suggestAt doc 1
+      lookupKey "kind" v `shouldBe` Just (String "recognition")
+  it "(r) under git, a file it tracks is never recognised, whenever it was opened" $
+    withPython [] $ \ports dir -> do
+      removeFile (dir </> "src/bistro/booking/commands/create_booking__test.py")
+      (v, _) <- inProcessWith ports {pTracked = \_ -> pure (Just (S.fromList ["src/bistro/booking/commands/create_booking.py"]))} dir $ do
         doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
         changeDoc doc [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
         suggestAt doc 1
