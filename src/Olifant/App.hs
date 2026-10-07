@@ -7,6 +7,7 @@ module Olifant.App
   , newnessWith
   , baseRefOf
   , legacyOf
+  , migrationFor
   , findingsWith
   , Project (..)
   , projectRoot
@@ -45,6 +46,9 @@ module Olifant.App
 
 import Data.Set (Set)
 import Control.Applicative ((<|>))
+import Control.Monad (forM)
+import Data.Aeson qualified as J
+import Olifant.Glob (matchesGlob)
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.List (find, sortOn)
@@ -62,11 +66,12 @@ import Olifant.Fill (ModelFiller (..))
 import Olifant.Generation
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Checker, Language (..), Syntax, languageFor)
+import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax)
 import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
-import Olifant.Newness (NewLines (..), newLinesOf)
+import Olifant.Newness (NewLines (..), newLinesOf, wholeNew)
+import Olifant.Migration (MigrationReport (..), Switch (..), readRegistry, switchMarkers, unregistered)
 import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), checkFiles, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
@@ -280,6 +285,64 @@ newnessWith base project rel text =
     Left why -> NoBase why
     Right (_, Nothing) -> AllNew
     Right (_, Just b) -> NewIn (newLinesOf b text)
+
+-- | How far the migration has come ([migrate]; none without it): legacy
+-- definitions now and at the base, those new since (not delegates, which
+-- carry their allowance), the switches now and at the base, and markers the
+-- registry lacks.
+migrationFor :: Ports -> Project -> IO (Maybe MigrationReport)
+migrationFor ports project = case catalogMigrate cat of
+  Nothing -> pure Nothing
+  Just mig -> do
+    paths <- listFiles ws "."
+    let legacy = [p | p <- paths, any (`matchesGlob` p) (mgLegacy mig)]
+        kinds = J.object ["any" J..= [J.object ["kind" J..= k] | k <- mgCount mig]]
+        defs text p = case languageFor (catalogLanguages cat) p of
+          Nothing -> pure []
+          Just lang -> either (const []) id <$> querySyntax (pSyntax ports) lang kinds text
+    perFile <- forM legacy $ \p -> do
+      text <- fromMaybe "" <$> readText ws p
+      now <- defs text p
+      base <- pBaseText ports (prRoot project) (mgBase mig) p
+      before <- case base of
+        Left _ -> pure Nothing
+        Right (_, Nothing) -> pure (Just 0)
+        Right (_, Just b) -> Just . length <$> defs b p
+      let newness = case base of
+            Left why -> NoBase why
+            Right (_, Nothing) -> AllNew
+            Right (_, Just b) -> NewIn (newLinesOf b text)
+          ls = T.lines text
+          allowed m = let l = fst (matchStart m) in l > 0 && "olifant:allow legacy-bug-fix-only" `T.isInfixOf` (ls !! (l - 1))
+          added = [nameOf m | m <- now, wholeNew newness (lineRange m), not (allowed m)]
+      pure (length now, before, added, switchMarkers text)
+    registry <- maybe (pure Nothing) (readText ws) (mgSwitches mig)
+    registryBase <- case mgSwitches mig of
+      Nothing -> pure (Just [])
+      Just r ->
+        pBaseText ports (prRoot project) (mgBase mig) r <&> \case
+          Left _ -> Nothing
+          Right (_, Nothing) -> Just []
+          Right (_, Just b) -> Just (map swName (readRegistry b))
+    let switches = maybe [] readRegistry registry
+        befores = [b | (_, b, _, _) <- perFile]
+    pure . Just $
+      MigrationReport
+        { mrLegacyNow = sum [n | (n, _, _, _) <- perFile]
+        , mrLegacyBase = sum <$> sequence befores
+        , mrSwitches = switches
+        , mrSwitchesBase = registryBase
+        , mrAddedLegacy = concat [a | (_, _, a, _) <- perFile]
+        , mrUnregistered = unregistered (concat [m | (_, _, _, m) <- perFile]) switches
+        }
+  where
+    cat = prCatalog project
+    ws = prWorkspace project
+    lineRange m = ((fst (matchStart m) + 1, 1), (fst (matchEnd m) + 1, 1))
+    -- a definition's name: the identifier after `def`/`class`/`fn`
+    nameOf m = case T.words (T.takeWhile (/= '(') (T.takeWhile (/= ':') (matchText m))) of
+      _ : name : _ -> name
+      _ -> T.strip (matchText m)
 
 -- | What "new" is measured from: the base ref ([migrate] base; main).
 baseRefOf :: Project -> Text

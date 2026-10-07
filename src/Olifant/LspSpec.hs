@@ -1145,6 +1145,17 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
         let titles as = [x ^. L.title | InR x <- as]
         titles inLegacy `shouldContain` ["Extract"]
         titles inSrc `shouldNotContain` ["Extract"]
+  it "(f) the project model carries the migration report" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      config <- TIO.readFile (dir </> ".olifant/config.toml")
+      TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+      underGit dir
+      (v, _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Number 2)
   it "(d) when the base moves (the branch merged into main), what was new is not any more (Review Focus 2)" $
     withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
       underGit dir

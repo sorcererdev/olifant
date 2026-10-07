@@ -10,6 +10,8 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as AKM
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Olifant.Cli
 import Olifant.Output (planHuman, planJson)
@@ -71,9 +73,35 @@ runInWith :: Syntax IO -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [Str
 runInWith syntax = runInBase syntax (\_ _ _ -> pure (Left "no base in tests"))
 
 -- | 'runInWith' with the base texts given (the strangler's "new code").
+-- | A field of a JSON object.
+lookupKey :: Aeson.Key -> Aeson.Value -> Maybe Aeson.Value
+lookupKey k = \case
+  Aeson.Object o -> AKM.lookup k o
+  _ -> Nothing
+
 -- | check on new code (only = "new"), with a base given.
 newCodeCheckSpec :: Spec
-newCodeCheckSpec = describe "check: rules on new code" $
+newCodeCheckSpec = describe "check: rules on new code" $ do
+  it "reports the migration: legacy functions now and at the base, extracted, added, switches" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p", "", "def gone(x):", "    return x"]
+        now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t", "", "def seat(p):", "    return p", "", "def waitlist(r):", "    return r", "", "# olifant:allow legacy-bug-fix-only — delegates to booking/commands/notify", "def notify(n):", "    return n"]
+        registryNow = "SWITCHES: dict[str, bool] = {\n    \"close-table\": True,\n}\n"
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\nswitches = \"src/app/switches.py\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", now)
+          , ("/w/src/app/switches.py", registryNow)
+          ]
+        baseOf _ _ p = pure $ case p of
+          "legacy/views.py" -> Right ("c0ffee", Just base)
+          "src/app/switches.py" -> Right ("c0ffee", Just "SWITCHES: dict[str, bool] = {\n}\n")
+          _ -> Right ("c0ffee", Nothing)
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+        m = lookupKey "migration" v
+    (m >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 1 legacy function added (waitlist), legacy 3 → 4 functions; switches: 1 on, 0 off")
   it "reports a definition new since the base, and not one edited" $ do
     tmp <- getTemporaryDirectory
     let base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]

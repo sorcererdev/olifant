@@ -85,6 +85,7 @@ library
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.Lsp
+    Olifant.Migration
     Olifant.Model
     Olifant.Naming
     Olifant.Newness
@@ -209,6 +210,8 @@ test-suite spec
     Olifant.LanguageSpec
     Olifant.Lsp
     Olifant.LspSpec
+    Olifant.Migration
+    Olifant.MigrationSpec
     Olifant.Model
     Olifant.ModelSpec
     Olifant.Naming

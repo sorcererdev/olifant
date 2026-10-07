@@ -43,7 +43,7 @@ import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
-import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, showGenerator, subsOf)
+import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, migrationFor, showGenerator, subsOf)
 import Olifant.Catalog (catalogPackRoots, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
@@ -51,6 +51,7 @@ import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
 import Olifant.Workspace (Workspace (..))
 import Olifant.Server
+import Olifant.Migration (MigrationReport, migrationJson)
 import Data.Foldable qualified as F
 import Olifant.Preview (Field (..), Source (..))
 import Control.Concurrent.Async qualified as Async
@@ -472,7 +473,13 @@ handlers env =
               Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
               _ -> Nothing
         model <- maybe (pure Nothing) (liftIO . withSnapshot job . modelFor) path
-        respond (Right (maybe Aeson.Null toJSON model))
+        -- with the migration report, when the project is migrating
+        mig <- case path of
+          Nothing -> pure Nothing
+          Just p -> liftIO (withSnapshot job (\s -> projectFor p s >>= \case
+            (s', Just (_, project)) -> (s',) <$> migrationFor (ssPorts s') project
+            (s', Nothing) -> pure (s', Nothing)))
+        respond (Right (maybe Aeson.Null (\m -> withMigration mig (toJSON m)) model))
     , -- the holes left in the project of a document: where, which, what for
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) $ \req respond -> inBackground env req respond $ \job -> do
         let path = case req ^. L.params of
@@ -574,6 +581,12 @@ previewJson steps pv =
       OnlyChoice -> "only"
       FromDefault -> "default"
       FromNew -> "new"
+
+-- | A model's JSON with the migration report, if there is one.
+withMigration :: Maybe MigrationReport -> Value -> Value
+withMigration mig = \case
+  Object o | Just m <- mig -> Object (KM.insert "migration" (migrationJson m) o)
+  v -> v
 
 -- | A request's document, as a path.
 documentPath :: Value -> Maybe FilePath

@@ -6,6 +6,7 @@ import Data.Set (Set)
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Newness (NewLines (..))
+import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
@@ -343,6 +344,7 @@ runCommand rt cwd fmt cat = \case
                     (Nothing, _) -> False
                     (Just _, Nothing) -> True
                     (Just rs, Just ((l1, _), (l2, _))) -> any (\(a, b) -> a <= l2 && l1 <= b) rs
+        mig <- migrationFor (portsOf rt) (projectOf rt cat)
         (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf (projectOf rt cat)) (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked >>= chooseInputs
         let fs = filter touched fs0
             drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
@@ -363,6 +365,8 @@ runCommand rt cwd fmt cat = \case
                   ++ (if report then "rules:" : ["  " <> ruleId r <> ": " <> sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat)))) | r <- rules] else [])
                   ++ (if report then "exceptions:" : map exceptionHuman exs else [])
                   ++ ["debt: " <> ruleId r <> " " <> T.pack (show n) <> " existing" | report, r <- rules, let n = length [f | f <- olds, fRule f == ruleId r], n > 0]
+                  ++ (if report then concat [("switches:" : ["  " <> swName s <> ": " <> (if swOn s then "on" else "off") | s <- mrSwitches m]) ++ ["  " <> u <> ": not in the registry" | u <- mrUnregistered m] | Just m <- [mig]] else [])
+                  ++ ["migration: " <> reportLine m | Just m <- [mig]]
                   ++ [ if failed
                          then "check failed"
                          else
@@ -370,7 +374,7 @@ runCommand rt cwd fmt cat = \case
                                old = length olds
                             in "conventions hold (" <> T.pack (show n) <> " finding" <> (if n == 1 then "" else "s") <> ", " <> (if old > 0 then T.pack (show old) <> " existing" else "none blocking") <> ")"
                      ]
-        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ reportJson fs)) human
+        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ ["migration" .= migrationJson m | Just m <- [mig]] ++ reportJson fs)) human
         pure (if failed then ExitFailure 1 else ExitSuccess)
   DoctorCmd -> do
     checks <- doctorChecks (portsOf rt) (projectOf rt cat)
