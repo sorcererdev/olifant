@@ -1148,12 +1148,12 @@ generatePickerSpec = describe "the generate picker" $ do
         doc <- openDoc "pyproject.toml" "toml"
         pick doc [("python-htmx/add-dependency", [])]
       lookupKey "needs" (fieldNamed "port" v) `shouldBe` Just (toJSON (["service"] :: [Text]))
-  it "(f) + New repository: its value fills the choice it serves, and one plan writes both" $
+  it "(f) + New repository: its value fills the choice it serves, and one plan writes both (values it has no input for, carried from the step it serves, are left out)" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do
         doc <- openDoc command "python"
         pickWith doc
-          [ object ["generator" .= ("python-htmx/repository" :: Text), "sets" .= object ["entity" .= ("table" :: Text)], "makes" .= object ["step" .= (1 :: Int), "input" .= ("port" :: Text)]]
+          [ object ["generator" .= ("python-htmx/repository" :: Text), "sets" .= object ["entity" .= ("table" :: Text), "kind" .= ("commands" :: Text), "command" .= ("create_booking" :: Text)], "makes" .= object ["step" .= (1 :: Int), "input" .= ("port" :: Text)]]
           , step "python-htmx/add-dependency" [("kind", "commands"), ("command", "create_booking")]
           ]
       (lookupKey "value" (fieldNamed "port" v), lookupKey "source" (fieldNamed "port" v)) `shouldBe` (Just (String "table_repository"), Just (String "new"))
