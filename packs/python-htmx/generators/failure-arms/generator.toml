@@ -1,5 +1,6 @@
 name = "Add Failure Arms"
 description = "A new failure of a command: add it to the command's failure union, then an arm for it in every match on the union (pyright finds them); each arm's body is a hole"
+summary = "A failure in a command's union, and its arm in every match"
 language = "python"
 version = 1
 examples = [

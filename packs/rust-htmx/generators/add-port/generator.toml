@@ -1,5 +1,6 @@
 name = "Add port"
 description = "A port as a field of a command (a snippet, spec §4.9); wiring it in follows up (wire-command)"
+summary = "A port as a field of a command (a snippet)"
 language = "rust"
 version = 1
 examples = [
@@ -18,6 +19,8 @@ prompt = "The command (use case) that needs the port"
 type   = "enum"
 one_of = "ports"
 prompt = "The port (a file in the service's ports/)"
+# + New in a picker: a repository (its port file is {aggregate}_repository.rs)
+new    = { "service-repository" = "{= aggregate|snake =}_repository" }
 
 [derive]
 service_dir = "{= service|kebab =}/{= service|kebab =}-service"

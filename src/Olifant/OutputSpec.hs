@@ -10,6 +10,8 @@ import Olifant.Output
 import Olifant.Generator (GeneratorId (..), GeneratorWith (..), parseGenerator)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import Control.Monad (forM)
+import System.Directory (listDirectory)
 import Test.Hspec
 
 spec :: Spec
@@ -19,6 +21,13 @@ spec = describe "Olifant.Output (what editors, agents and the language server re
     it "a generator that creates files is create; one that only inserts is extend; one with model holes is fill" $ do
       gens <- traverse load ["command", "add-dependency", "handle-body"]
       map generatorKind gens `shouldBe` ["create", "extend", "fill"]
+    it "every python-htmx and rust-htmx generator has its own summary, under 60 characters" $ do
+      missing <- fmap concat . forM ["python-htmx", "rust-htmx"] $ \pack -> do
+        names <- listDirectory ("packs/" <> pack <> "/generators")
+        fmap concat . forM names $ \n -> do
+          d <- TIO.readFile ("packs/" <> pack <> "/generators/" <> n <> "/generator.toml") >>= either (fail . T.unpack) pure . parseGenerator (GeneratorId (T.pack (pack <> "/" <> n)))
+          pure [T.pack (pack <> "/" <> n) | maybe True ((>= 60) . T.length) (genSummary d)]
+      missing `shouldBe` []
     it "the summary is `summary`, else the description up to its first : ; or —" $ do
       d <- load "command"
       shortSummary d {genSummary = Nothing, genDescription = "A command of a service: commands/NAME.py (its Input)"} `shouldBe` "A command of a service"

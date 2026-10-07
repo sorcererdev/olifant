@@ -1,5 +1,6 @@
 name = "Add Command Dependency"
 description = "Add one dependency (a port) to a command: the command, the service's new() and main.rs (spec §7.1)"
+summary = "A command takes a port: the command, new(), main.rs"
 language = "rust"
 version = 1
 examples = [

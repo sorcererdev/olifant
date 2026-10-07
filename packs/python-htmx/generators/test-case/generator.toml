@@ -1,5 +1,6 @@
 name = "Test case"
 description = "The next test in a __test.py: its behaviour a tab stop, arranged like the file's first test, red until written (a snippet, spec §4.9)"
+summary = "The next test in a test file (a snippet)"
 language = "python"
 version = 1
 examples = [

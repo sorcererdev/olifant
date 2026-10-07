@@ -1,5 +1,6 @@
 name = "Wire"
 description = "Wire a command's (or query's) new port: the module keeps it, every test that builds it passes a fake, and main.py (when it builds it) passes the adapter, adding it once"
+summary = "Wire a command's new port: module, tests, main.py"
 language = "python"
 version = 1
 examples = [

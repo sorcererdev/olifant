@@ -1,5 +1,6 @@
 name = "Failure variant"
 description = "A new failure for a command: a frozen dataclass with a reason, its name a tab stop (a snippet, spec §4.9); failure-arms follows up"
+summary = "A new failure for a command (a snippet)"
 language = "python"
 version = 1
 examples = [

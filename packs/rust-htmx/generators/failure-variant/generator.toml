@@ -1,5 +1,6 @@
 name = "Failure variant"
 description = "A new variant for a command's Failure enum: its #[error] message and its name, as tab stops (a snippet, spec §4.9)"
+summary = "A new Failure variant for a command (a snippet)"
 language = "rust"
 version = 1
 examples = [

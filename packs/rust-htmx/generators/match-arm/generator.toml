@@ -1,5 +1,6 @@
 name = "Next match arm"
 description = "An arm for a case the compiler says this match lacks; its value is a hole the model fills (a snippet, spec §4.9)"
+summary = "The arm a match lacks; the model fills its value"
 language = "rust"
 version = 1
 examples = [

@@ -1,5 +1,6 @@
 name = "Web Resource"
 description = "A web resource: web/RESOURCE/ with routes (the page from a query; a POST per command), failures, templates, a failing stub test wired up; main.py builds and routes it; the home page links it"
+summary = "A web resource: routes, templates, a test"
 language = "python"
 version = 1
 examples = [

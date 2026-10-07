@@ -1,5 +1,6 @@
 name = "Python web app"
 description = "A new python-htmx app: uv, pytest, pyright strict, FastAPI + htmx, a composition root and one passing test (the starter for olifant init)"
+summary = "A new python-htmx app"
 language = "python"
 version = 1
 starter = true

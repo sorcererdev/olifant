@@ -1,5 +1,6 @@
 name = "Service"
 description = "A new service: a package with models/, ports/, commands/ and queries/ (python-htmx layout)"
+summary = "A new service: models, ports, commands, queries"
 language = "python"
 version = 1
 examples = [

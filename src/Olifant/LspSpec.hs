@@ -39,7 +39,8 @@ import Language.LSP.Test
 import Olifant.App (Ports (..))
 import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processCheckerWith, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
-import Olifant.Server (ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState)
+import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor)
+import Olifant.Preview (Field (..), Source (..))
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled)
@@ -1165,6 +1166,18 @@ generatePickerSpec = describe "the generate picker" $ do
         pick doc [("python-htmx/command", [("command", "create_booking")])]
       lookupKey "ready" v `shouldBe` Just (Bool False)
       lookupKey "error" v `shouldSatisfy` maybe False (/= Aeson.Null)
+  it "(i) python-htmx's Add a port offers + New port and + New repository" $
+    withPython [] $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc command "python"
+        pick doc [("python-htmx/add-dependency", [])]
+      lookupKey "new" (fieldNamed "port" v) `shouldBe` Just (toJSON (["port", "repository"] :: [Text]))
+  it "(j) rust-htmx's + New repository gives the port's name as its ports/ file is named" $
+    withProjects [("shop", "rust-htmx", "packs/rust-htmx/fixtures/app")] $ \ports root -> do
+      s <- newServerState ports
+      let file = root </> "shop/billing/billing-service/src/cancel_invoice.rs"
+      (_, pv) <- previewFor file (0, 0) [PickStep "rust-htmx/service-repository" [("service", "billing"), ("aggregate", "payment")] (Just (1, "port")), PickStep "rust-htmx/add-port" [("service", "billing"), ("command", "cancel_invoice")] Nothing] s
+      [(fValue f, fSource f) | fs <- drop 1 (pvFields pv), f <- fs, fName f == "port"] `shouldBe` [(Just "payment_repository", Just FromNew)]
   it "(h) olifant/plan plans steps as one plan" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir $ do
