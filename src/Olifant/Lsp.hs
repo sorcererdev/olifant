@@ -148,6 +148,7 @@ configure env = \case
                 { scDebounceMs = maybe (scDebounceMs (ssConfig s)) id (KM.lookup "debounce_ms" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing)
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
                 , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
+                , scRecognizeAnswers = case KM.lookup "recognize_answers" o of Just (String f) -> Just (T.unpack f); _ -> scRecognizeAnswers (ssConfig s)
                 }
           }
   _ -> pure ()
@@ -519,6 +520,15 @@ suggestLater env lspEnv path version line = do
       Just sg | current == Just version -> do
         n <- offer env path version sg
         runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version n sg)
+        -- unsure: the deterministic answer is out; a configured model may
+        -- sharpen it, for this version, if the buffer has not moved on
+        upgraded <- withSnapshot env {envCancel = token} (recognitionUpgrade path sg)
+        now <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+        case upgraded of
+          Just better | now == Just version -> do
+            m <- offer env path version better
+            runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version m better)
+          _ -> pure ()
       _ -> pure ()
 
 -- | Keep a suggestion's plan for `olifant/plan`, while its file is at

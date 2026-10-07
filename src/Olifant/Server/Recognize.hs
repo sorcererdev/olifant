@@ -8,9 +8,13 @@ module Olifant.Server.Recognize
   , recognitionPlan
   , suggestOrRecognize
   , recognitionFeedback
+  , recognitionUpgrade
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (forM)
+import Olifant.Model (ModelConfig (..))
+import Olifant.Process (Cancel, cancelled)
 import Data.Aeson (Result (..), Value (..), decodeStrict, encode, fromJSON, object, (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
@@ -67,35 +71,42 @@ recognitionFor path line = memo "recognize" path (T.pack (show line)) $ \s ->
               then pure (s'', Nothing)
               else case quieted <$> recognizeIn ix gens (Change rel (region text)) of
                 Nothing -> pure (s'', Nothing)
-                Just r -> (s'',) <$> suggestion s'' root project gens r text
+                Just r -> (s'',) <$> recognitionSuggestion path line s'' root project gens r text
       where
         rel = makeRelative root path
   where
     region text =
       let ls = T.lines text
        in if length ls <= 200 then text else T.unlines (take 200 (drop (max 0 (line - 1 - 100)) ls))
-    suggestion s root project gens r text = do
-      let rel = makeRelative root path
-          gen = listToMaybe [g | g <- gens, genId g == rcGenerator r]
-          missing = [inputName i | Just g <- [gen], i <- genInputs g, not (inputOptional i), inputDefault i == Nothing, inputName i `notElem` map fst (rcInputs r)]
-          start = declarationLine text line
-          label = "This looks like a " <> T.toLower (rcName r) <> maybe "" (\v -> " (" <> v <> ")") (mainInput gen (rcInputs r))
-          base plan = Suggestion "recognition" label "" start [] root plan (generatorIdText (rcGenerator r)) (rcInputs r) start Nothing
-      now <- pNow (ssPorts s)
-      let empty = Plan (rcGenerator r) [] now [] [] [] M.empty [] M.empty M.empty Nothing
-          hint = Just ((base empty) {sgRecognition = Just r {rcBand = Hint}})
-      if rcBand r == Hint || not (null missing)
-        then pure hint
-        else
-          snd <$> recognitionPlan False (const (pure ())) path (generatorIdText (rcGenerator r)) (rcInputs r) s >>= \case
-            Left _ -> pure Nothing
-            Right (_, plan) -> do
-              onDisk <- fileExists (within root (pFiles (ssPorts s))) rel
-              let elsewhere = [p | p <- M.keys (planWrites plan), p /= rel]
-              pure $
-                if null elsewhere && onDisk
-                  then Nothing
-                  else Just ((base plan) {sgSummary = summary rel plan, sgRecognition = Just r})
+
+-- | A recognition as a suggestion: an offer with its plan (a hint when it
+-- is unsure, or an input it could not read is missing); nothing for a file
+-- that already is the convention.
+recognitionSuggestion :: FilePath -> Int -> ServerState -> FilePath -> Project -> [Generator] -> Recognition -> Text -> IO (Maybe Suggestion)
+recognitionSuggestion path line s root project gens r text = suggestion
+  where
+    suggestion = do
+        let rel = makeRelative root path
+            gen = listToMaybe [g | g <- gens, genId g == rcGenerator r]
+            missing = [inputName i | Just g <- [gen], i <- genInputs g, not (inputOptional i), inputDefault i == Nothing, inputName i `notElem` map fst (rcInputs r)]
+            start = declarationLine text line
+            label = "This looks like a " <> T.toLower (rcName r) <> maybe "" (\v -> " (" <> v <> ")") (mainInput gen (rcInputs r))
+            base plan = Suggestion "recognition" label "" start [] root plan (generatorIdText (rcGenerator r)) (rcInputs r) start Nothing
+        now <- pNow (ssPorts s)
+        let empty = Plan (rcGenerator r) [] now [] [] [] M.empty [] M.empty M.empty Nothing
+            hint = Just ((base empty) {sgRecognition = Just r {rcBand = Hint}})
+        if rcBand r == Hint || not (null missing)
+          then pure hint
+          else
+            snd <$> recognitionPlan False (const (pure ())) path (generatorIdText (rcGenerator r)) (rcInputs r) s >>= \case
+              Left _ -> pure Nothing
+              Right (_, plan) -> do
+                onDisk <- fileExists (within root (pFiles (ssPorts s))) rel
+                let elsewhere = [p | p <- M.keys (planWrites plan), p /= rel]
+                pure $
+                  if null elsewhere && onDisk
+                    then Nothing
+                    else Just ((base plan) {sgSummary = summary rel plan, sgRecognition = Just r})
     summary rel plan =
       let others = [T.pack (takeFileName p) | p <- M.keys (planWrites plan), p /= rel]
           converts = M.member rel (planWrites plan)
@@ -113,6 +124,49 @@ recognitionFor path line = memo "recognize" path (T.pack (show line)) $ \s ->
         , Just v <- [lookup (inputName i) inputs]
         , Right n <- [parseName v]
         ]
+
+
+-- | A pushed recognition sharpened by the project's model, when it is unsure
+-- and [recognize] model is set (a recorded answer in tests): the better
+-- suggestion, or nothing.
+recognitionUpgrade :: FilePath -> Suggestion -> ServerState -> IO (ServerState, Maybe Suggestion)
+recognitionUpgrade path sg s = case sgRecognition sg of
+  Just r | unsure r ->
+    projectFor path s >>= \case
+      (s', Just (root, project)) | Just recognizer <- recognizerFor s' project, Just lang <- languageFor (catalogLanguages (prCatalog project)) (makeRelative root path) -> do
+        (s'', _, gens) <- indexFor root project lang s'
+        let rel = makeRelative root path
+        text <- fromMaybe "" <$> readText (prWorkspace project) rel
+        consult recognizer gens (Change rel text) r >>= \case
+          Just r' | rcBand r' == Offer -> (s'',) <$> recognitionSuggestion path (sgAt sg) s'' root project gens r' text
+          _ -> pure (s'', Nothing)
+      (s', _) -> pure (s', Nothing)
+  _ -> pure (s, Nothing)
+
+-- | The model recognition asks, if the project names one: the configured
+-- backend under this work's token, or (tests) a recorded answer.
+recognizerFor :: ServerState -> Project -> Maybe (Recognizer IO)
+recognizerFor s project = do
+  name <- recModel (catalogRecognize (prCatalog project))
+  case scRecognizeAnswers (ssConfig s) of
+    Just recorded -> Just (recordedRecognizer recorded (ssCancel s))
+    Nothing -> do
+      let models = catalogModel (prCatalog project)
+      backend <- lookup name (mcBackends models)
+      Just (curlRecognizer (ssCancel s) (mcTimeout models) backend)
+
+-- | A recorded answer (tests): notes that it was asked; "wait" waits until
+-- the work is cancelled, and notes that too.
+recordedRecognizer :: FilePath -> Cancel -> Recognizer IO
+recordedRecognizer file token = Recognizer $ \_ cands -> do
+  writeFile (file <> ".asked") ""
+  answer <- T.strip . T.pack <$> readFile file
+  if answer == "wait"
+    then do
+      let loop = cancelled token >>= \stop -> if stop then writeFile (file <> ".cancelled") "" else threadDelay 20000 >> loop
+      loop
+      pure (map (const Unsure) cands)
+    else pure (either (const (map (const Unsure) cands)) id (decodeVerdicts (map genId cands) answer))
 
 -- | A generator planned for a file someone is writing: the file treated as
 -- absent, so the convention writes it; then, when the file is short (at most

@@ -45,7 +45,7 @@ import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
 import System.Environment (lookupEnv)
-import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
+import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -1171,6 +1171,50 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         f <- openNew (file "f") (named "CloseF")
         suggestAt f 1
       lookupKey "band" later `shouldBe` Just (String "hint")
+  -- the model, when configured (Task 10): a recorded answer stands in for it
+  let offPlace = "src/bistro/booking/close_table.py"
+      offPlaceText = "from dataclasses import dataclass\n\n@dataclass\nclass CloseTableInput:\n    table_id: str\n\nclass CloseTable:\n    def __init__(self, bookings):\n        self.bookings = bookings\n\n    def handle(self, input):\n        return self.bookings.close(input.table_id)\n"
+      withModel ports dir answer act = do
+        config <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[recognize]\nmodel = \"local\"\n\n[model]\ndefault = \"local\"\n\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9/v1\"\nmodel = \"m\"\n")
+        let answers = dir </> "answers.json"
+        TIO.writeFile answers answer
+        fst <$> inProcessWithConfig [("recognize_answers", String (T.pack answers))] ports dir (act answers)
+      pushed = customNotification (Proxy :: Proxy "olifant/suggestion") >>= \case
+        NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)
+      -- typing (a partial change: what the suggest job reacts to)
+      typeIn doc v text = sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier (doc ^. L.uri) v) [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing text))])
+      yes = "{\"answers\": [{\"generator\": \"python-htmx/command\", \"is\": \"yes\", \"inputs\": {\"command\": \"close_table\"}}]}"
+  it "(h) an unsure recognition is pushed at once, then upgraded when the model says yes" $
+    withPython [] $ \ports dir -> do
+      (first, second) <- withModel ports dir yes $ \_ -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        (,) <$> pushed <*> pushed
+      (lookupKey "band" first, lookupKey "band" second) `shouldBe` (Just (String "hint"), Just (String "offer"))
+      lookupKey "version" second `shouldBe` lookupKey "version" first
+  it "(i) typing on cancels a model still answering (its token trips)" $
+    withPython [] $ \ports dir -> do
+      stopped <- withModel ports dir "wait" $ \answers -> do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        _ <- pushed
+        liftIO (threadDelay 200000)
+        typeIn doc 2 "# more\n"
+        liftIO (timeout 5000000 (let loop = doesFileExist (answers <> ".cancelled") >>= \d -> if d then pure () else threadDelay 50000 >> loop in loop))
+      stopped `shouldBe` Just ()
+  it "(j) with no [recognize] model, the model is never asked" $
+    withPython [] $ \ports dir -> do
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers yes
+      (band, _) <- inProcessWithConfig [("recognize_answers", String (T.pack answers))] ports dir $ do
+        doc <- openNew offPlace ""
+        typeIn doc 1 offPlaceText
+        v <- pushed
+        liftIO (threadDelay 500000)
+        pure (lookupKey "band" v)
+      band `shouldBe` Just (String "hint")
+      doesFileExist (answers <> ".asked") `shouldReturn` False
   sequential . it "(e) a long legacy file: recognition reads only around the edit, and answers fast (Review Focus 3)" $
     withPython [] $ \ports dir -> do
       let legacy = T.concat ["def f_" <> T.pack (show i) <> "(x):\n    return x + " <> T.pack (show i) <> "\n\n" | i <- [1 .. 1000 :: Int]]

@@ -50,6 +50,7 @@ module Olifant.Server
   , recognitionPlan
   , suggestOrRecognize
   , recognitionFeedback
+  , recognitionUpgrade
   , Jobs
   , newJobs
   , submit
@@ -63,7 +64,7 @@ import Olifant.Server.Completion (completionsFor, ghostFor)
 import Olifant.Server.Edits (FileEdit (..), bytePosition, editorPosition, editsOfPlan, smallestChange)
 import Olifant.Server.Fixes (findingsFor, fixEdits, fixPlan)
 import Olifant.Server.Model (modelFor)
-import Olifant.Server.Recognize (recognitionFeedback, recognitionFor, recognitionPlan, suggestOrRecognize)
+import Olifant.Server.Recognize (recognitionFeedback, recognitionFor, recognitionPlan, recognitionUpgrade, suggestOrRecognize)
 import Olifant.Server.Hints (LineHint (..), fileActionsFor, hintsFor)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
 import Olifant.Server.State

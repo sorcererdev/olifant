@@ -39,10 +39,12 @@ import System.FilePath (takeDirectory, (</>))
 -- | The client's settings (`initializationOptions`): how long slow work
 -- waits after typing stops, a model to use instead of the projects', and
 -- (tests) a file of recorded fills that stands in for the model.
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath}
+-- | @scRecognizeAnswers@: a file holding a model's recorded answer, which
+-- recognition uses instead of the model (tests, as fills use @scFills@).
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
