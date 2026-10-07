@@ -21,6 +21,7 @@ packs/elm/
   regions.toml           owned regions (optional; olifant-dev and rust-htmx have one)
   rules.toml             rules: conventions as checks (optional; rust-htmx has one)
   model.toml             how the pack's conventions map onto the project model (optional)
+  tests/recognize/       labelled cases of hand-written code, for recognition (optional)
   SKILL.md               instructions for AI agents (optional; Olifant itself never reads it)
 ```
 
@@ -34,6 +35,7 @@ packs/elm/
 | `regions.toml` | every `gen`, `sync` and `check` | [chapter 5](05-owned-regions.md) |
 | `rules.toml` | `check` (and Durandal, on save) | [chapter 15](15-conventions-that-hold.md) |
 | `model.toml` | the language server's project model | [below](#the-project-model-modeltoml) |
+| `tests/recognize/*.toml` | Olifant's own spec (recognition's precision and recall) | [below](#the-recognition-corpus-testsrecognize) |
 | `SKILL.md` | agent harnesses | [chapter 11](11-olifant-and-agents.md) |
 
 Only directories exactly one level under `generators/` with a `generator.toml` count; the same
@@ -226,6 +228,7 @@ example   = "end of struct BillingService"
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
 | `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
+| `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
 | `imports` | a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check |
 | `[import_merge]` | with `imports`: `pattern` (an expression whose first group is the module and second the comma-separated names) and `write` (a template of `module` and `names`). An import of names from a module the file already imports from adds the new names to that line instead of writing a second one: `from datetime import date` + a fill's `from datetime import date, time` → `from datetime import date, time`. Python's: `pattern = "^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$"`, `write = "from {= module =} import {= names =}"` |
@@ -698,6 +701,31 @@ To see a project's model, ask the language server for it: `olifant/model` with a
 project answers its `elements` (id, kind, name, path, line), its `relations` (from, kind, to)
 and its `problems` (a query that failed, and why), [chapter 16](16-the-language-server.md#the-project-model).
 Nothing draws it yet: it is the seam a view of the whole system builds on.
+
+## The recognition corpus: `tests/recognize/`
+
+How well recognition knows a pack's conventions is measured, not argued. A pack may keep small
+labelled cases of hand-written code, one file each:
+
+```toml
+# packs/python-htmx/tests/recognize/command-own-way.toml
+path   = "src/bistro/booking/commands/close_table.py"   # where it is written
+expect = "command"          # the truth: a generator (or "repository|port"), or "nothing"
+band   = "offer"            # what recognition gives today: offer | hint | nothing
+inputs = { app = "bistro", service = "booking", command = "close_table" }
+# as = "query"; known = "why"   — a known miss: what it gives instead, and why
+text = '''
+class CloseTable:
+    def run(self, table_id):
+        ...
+'''
+```
+
+Olifant's spec pins every case's outcome and reports each corpus's offer precision and recall;
+a change that lowers either fails. The cases worth having are the hard ones: the convention
+written its own way, a copy renamed, the same shape in the wrong folder, and code that only looks
+like it (a data class in `shared/`, an enum beside the commands). python-htmx has 28 (offer
+precision 0.92, recall 0.88); rust-htmx 17 (1.00 and 1.00).
 
 ## The python-htmx pack
 

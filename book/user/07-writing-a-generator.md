@@ -260,6 +260,7 @@ The rest of this chapter is the reference for each part of `generator.toml`.
 | `language` | yes | names the language adapter whose `[check]` runs this generator's `complete` edits (chapter 4); otherwise informational |
 | `version` | no (1) | shown in `show --json`; nothing else reads it yet |
 | `examples` | no | example commands, printed by `show`. Agents copy these, so make them real |
+| `recognize` | no (true) | `false`: hand-written code is never recognised as this generator's ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). A starter never is |
 | `starter` | no (false) | `true` makes this the pack's project generator, the one `olifant init` runs ([chapter 2](02-running-generators.md#start-a-project-olifant-init)). Its first input is `name`. One per pack |
 | `next` | no | for a starter: what to run after `olifant init`, rendered with `name` and printed as the next steps (`next = ["uv sync", "uv run pytest"]`). Only a starter may have it |
 | `[holes.NAME] verify` | no | for a model hole: a command (templates) its fill must pass, usually its tests; failures go back to the model ([chapter 12](12-holes-and-models.md#validation-contained-parses-compiles)) |
