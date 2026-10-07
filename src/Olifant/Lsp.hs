@@ -153,6 +153,7 @@ configure env = \case
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
                 , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
                 , scRecognizeAnswers = case KM.lookup "recognize_answers" o of Just (String f) -> Just (T.unpack f); _ -> scRecognizeAnswers (ssConfig s)
+                , scDecideAnswers = case KM.lookup "decide_answers" o of Just (String f) -> Just (T.unpack f); _ -> scDecideAnswers (ssConfig s)
                 }
           }
   _ -> pure ()
@@ -562,7 +563,7 @@ previewJson steps pv =
             ++ [main p t (firstChange (maybe [] T.lines (M.lookup p (planBefore plan) >>= id)) (T.lines t)) | (p, t) <- M.toList (planWrites plan)]
         )
     main p t first = object ["path" .= p, "text" .= t, "first" .= first]
-    firstChange old new = 1 + length (takeWhile id (zipWith (==) old new))
+    firstChange before after = 1 + length (takeWhile id (zipWith (==) before after))
     fieldJson f =
       object
         [ "name" .= fName f

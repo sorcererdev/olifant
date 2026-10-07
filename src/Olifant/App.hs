@@ -216,7 +216,7 @@ doctorChecks ports project =
       [(T.pack p, why) | (p, why) <- catalogBrokenLanguages cat]
       [(generatorIdText g, why) | (g, _, why) <- catalogBroken cat]
       (catalogModel cat)
-      (recModel (catalogRecognize cat))
+      (catalogDecideModel cat)
   where
     cat = prCatalog project
 

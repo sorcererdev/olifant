@@ -10,6 +10,7 @@ module Olifant.Catalog
   , RecognizeConfig (..)
   , catalogMigrate
   , MigrateConfig (..)
+  , catalogDecideModel
   , catalogPacks
   , catalogPackRoots
   , catalogBroken
@@ -111,6 +112,8 @@ data Catalog = Catalog
     catalogRecognize :: RecognizeConfig
   , -- | `[migrate]`: strangling a legacy codebase (none: not migrating)
     catalogMigrate :: Maybe MigrateConfig
+  , -- | `[decide] model` (typed decisions; `[recognize] model` is its alias)
+    catalogDecideModel :: Maybe Text
   }
 
 -- | `[recognize] enabled` (default true) and `model` (a [model.backends]
@@ -219,14 +222,17 @@ openProjectCatalogWith loadP root paths = do
       recognize <- readText root projectConfig <&> \case
         Nothing -> Right (RecognizeConfig True Nothing)
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= recognizeIn)
+      decide <- readText root projectConfig <&> \case
+        Nothing -> Right Nothing
+        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= decideIn)
       migrate <- readText root projectConfig <&> \case
         Nothing -> Right Nothing
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= migrateIn)
-      pure $ case (,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate of
+      pure $ case (,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide of
         Left err -> Left err
-        Right (userM, projectM, rc, named, rec', mig) ->
+        Right (userM, projectM, rc, named, rec', mig, dec) ->
           let model = fromMaybe (ModelConfig Nothing 2 120 []) (maybe userM Just projectM)
-           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig}))) result
+           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec}))) result
   where
     recognizeIn top =
       Toml.optional "recognize" Toml.table top >>= \case
@@ -234,6 +240,10 @@ openProjectCatalogWith loadP root paths = do
         Just t -> Toml.inKey "recognize" $ do
           Toml.onlyKeys ["enabled", "model"] t
           RecognizeConfig <$> (fromMaybe True <$> Toml.optional "enabled" Toml.bool t) <*> Toml.optional "model" Toml.text t
+    decideIn top =
+      Toml.optional "decide" Toml.table top >>= \case
+        Nothing -> Right Nothing
+        Just t -> Toml.inKey "decide" (Toml.onlyKeys ["model"] t >> Toml.optional "model" Toml.text t)
     migrateIn top =
       Toml.optional "migrate" Toml.table top >>= \case
         Nothing -> Right Nothing
@@ -288,7 +298,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),

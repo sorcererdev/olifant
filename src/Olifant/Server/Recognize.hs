@@ -9,6 +9,7 @@ module Olifant.Server.Recognize
   , suggestOrRecognize
   , recognitionFeedback
   , recognitionUpgrade
+  , deciderFor
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -33,6 +34,7 @@ import Olifant.Language (Language (..), languageFor)
 import Olifant.Naming (Case (Title), parseName, render)
 import Olifant.Recognize
 import Olifant.Server.Actions (fillerFor)
+import Olifant.Decide (Decider, curlDecider, recordedDecider)
 import Olifant.Server.State
 import Olifant.Server.Suggest (Suggestion (..), suggestionFor)
 import Olifant.Workspace (Workspace (..), hidePath, within)
@@ -158,13 +160,26 @@ recognitionUpgrade path sg s = case sgRecognition sg of
 -- backend under this work's token, or (tests) a recorded answer.
 recognizerFor :: ServerState -> Project -> Maybe (Recognizer IO)
 recognizerFor s project = do
-  name <- recModel (catalogRecognize (prCatalog project))
+  name <- catalogDecideModel (prCatalog project)
   case scRecognizeAnswers (ssConfig s) of
     Just recorded -> Just (recordedRecognizer recorded (ssCancel s))
     Nothing -> do
       let models = catalogModel (prCatalog project)
       backend <- lookup name (mcBackends models)
       Just (curlRecognizer (ssCancel s) (mcTimeout models) backend)
+
+-- | The typed decider a project asks, if it names a model ([decide] model,
+-- or [recognize] model): the configured backend under this work's token, or
+-- (tests) recorded answers.
+deciderFor :: ServerState -> Project -> Maybe (Decider IO)
+deciderFor s project = do
+  name <- catalogDecideModel (prCatalog project)
+  case scDecideAnswers (ssConfig s) of
+    Just recorded -> Just (recordedDecider recorded (ssCancel s))
+    Nothing -> do
+      let models = catalogModel (prCatalog project)
+      backend <- lookup name (mcBackends models)
+      Just (curlDecider (ssCancel s) (mcTimeout models) backend)
 
 -- | A recorded answer (tests): notes that it was asked; "wait" waits until
 -- the work is cancelled, and notes that too.

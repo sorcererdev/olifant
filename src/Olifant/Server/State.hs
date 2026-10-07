@@ -45,10 +45,10 @@ import System.FilePath (takeDirectory, (</>))
 -- (tests) a file of recorded fills that stands in for the model.
 -- | @scRecognizeAnswers@: a file holding a model's recorded answer, which
 -- recognition uses instead of the model (tests, as fills use @scFills@).
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath}
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath, scDecideAnswers :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).

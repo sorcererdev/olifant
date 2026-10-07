@@ -50,6 +50,7 @@ library
     Olifant.Cli
     Olifant.Cli.Options
     Olifant.Cursor
+    Olifant.Decide
     Olifant.Doctor
     Olifant.Fill
     Olifant.Generation
@@ -166,6 +167,8 @@ test-suite spec
     Olifant.CliSpec
     Olifant.Cursor
     Olifant.CursorSpec
+    Olifant.Decide
+    Olifant.DecideSpec
     Olifant.Doctor
     Olifant.DoctorSpec
     Olifant.Fill

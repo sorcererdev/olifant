@@ -70,6 +70,11 @@ spec = describe "catalog" $ do
         catalogRecognize cat `shouldBe` RecognizeConfig False (Just "local")
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat ->
         catalogRecognize cat `shouldBe` RecognizeConfig True Nothing
+  describe "[decide] (typed decisions: Jev, progressively)" $
+    it "reads the model; [recognize] model is its alias" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev\"\n")] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "jev"
+      withCatalog [("/proj/.olifant/config.toml", "[recognize]\nmodel = \"local\"\n")] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "local"
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogDecideModel cat `shouldBe` Nothing
   describe "[migrate] (strangling a legacy codebase)" $ do
     it "reads legacy, base, switches, new_work_lines and count, with defaults" $ do
       withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"legacy/**\"]\n")] $ \_ cat ->
