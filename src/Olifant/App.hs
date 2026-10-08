@@ -106,6 +106,9 @@ data Ports = Ports
   , -- | the files at the base (root, ref), project-relative; Left when
     -- there is no base
     pBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
+  , -- | what the base depends on (root, ref): equal stamps, the same base
+    -- (the server's base cache is good while it holds)
+    pBaseStamp :: FilePath -> Text -> IO Text
   }
 
 -- | An open project: its root (absolute), its catalog, and the workspace

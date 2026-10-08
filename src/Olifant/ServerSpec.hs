@@ -11,7 +11,7 @@ import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (noChecker, noSyntax)
 import Olifant.Language.Check (noVerifier)
-import Olifant.Process (cancelled)
+import Olifant.Process (cancelled, gitStateStamp)
 import Olifant.Rules (RulesConfig (..), Severity (..))
 import Olifant.Server
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
@@ -125,7 +125,7 @@ serverWith wrap = do
       , ("/r2/a/src/y.py", "y = 1\n") ]
   reads <- newIORef (0 :: Int)
   counted <- wrap disk {readText = \p -> (if "/.olifant/config.toml" `isSuffixOf` p then modifyIORef' reads (+ 1) else pure ()) >> readText disk p}
-  let ports = Ports counted noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests"))
+  let ports = Ports counted noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef reads)
 

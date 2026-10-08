@@ -45,7 +45,7 @@ import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker,
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
-import Olifant.Process (gitBaseFiles, gitBaseText)
+import Olifant.Process (gitBaseFiles, gitBaseText, gitStateStamp)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled, newCancel)
@@ -1083,7 +1083,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests"))
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []
@@ -1272,6 +1272,22 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
         b <- pullDiagnostics doc
         liftIO (git dir ["checkout", "-q", "main"] >> git dir ["merge", "-q", "feature"])
         sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> legacy)) FileChangeType_Changed])
+        a <- pullDiagnostics doc
+        pure (b, a)
+      ruleIds before `shouldContain` ["no-new-defs"]
+      ruleIds after `shouldNotContain` ["no-new-defs"]
+
+  it "(d2) the base moves with no file event (Linux Neovim watches no files): the next pull sees it (review minor #10)" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      TIO.writeFile (dir </> legacy) (base <> "\ndef waitlist(r):\n    return r\n")
+      git dir ["commit", "-q", "-am", "waitlist"]
+      ((before, after), _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        b <- pullDiagnostics doc
+        liftIO (git dir ["checkout", "-q", "main"] >> git dir ["merge", "-q", "feature"])
+        -- an edit of the buffer, so the pull is not the same answer again
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (base <> "\ndef waitlist(r):\n    return r\n\n")))]
         a <- pullDiagnostics doc
         pure (b, a)
       ruleIds before `shouldContain` ["no-new-defs"]

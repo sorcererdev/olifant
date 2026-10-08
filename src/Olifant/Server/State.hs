@@ -93,7 +93,7 @@ data ServerState = ServerState
     ssEstablished :: Map FilePath (Set FilePath)
   , -- | base texts (root, ref, path), each with the files stamp it was read at:
     -- kept until files change (a save, a pull, a rebase)
-    ssBaseCache :: IORef (Map (FilePath, Text, FilePath) (Int, Either Text (Text, Maybe Text)))
+    ssBaseCache :: IORef (Map (FilePath, Text, FilePath) ((Int, Text), Either Text (Text, Maybe Text)))
   , -- | typed decisions made (by file and what they were about), those being
     -- asked, and what to do when one is made (the editor pulls diagnostics again)
     ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer))
@@ -113,12 +113,15 @@ newServerState ports = do
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
 cachedBase s root ref path = do
+  -- good while the files are as they were and git's state is too (a
+  -- checkout or pull with no file event, as on Linux Neovim, moves the base)
+  git <- pBaseStamp (ssPorts s) root ref
   known <- M.lookup (root, ref, path) <$> readIORef (ssBaseCache s)
   case known of
-    Just (stamp, answer) | stamp == ssFilesStamp s -> pure answer
+    Just ((stamp, gitWas), answer) | stamp == ssFilesStamp s, gitWas == git -> pure answer
     _ -> do
       answer <- pBaseText (ssPorts s) root ref path
-      modifyIORef' (ssBaseCache s) (M.insert (root, ref, path) (ssFilesStamp s, answer))
+      modifyIORef' (ssBaseCache s) (M.insert (root, ref, path) ((ssFilesStamp s, git), answer))
       pure answer
 
 -- | A document opened in the editor, at a version, with its text.
