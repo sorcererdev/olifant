@@ -1351,6 +1351,8 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
     withStrangler $ \ports dir -> do
       original <- TIO.readFile (dir </> views)
       s <- newServerState ports
+      createDirectoryIfMissing True (dir </> "src/bistro/booking/queries")
+      TIO.writeFile (dir </> "src/bistro/booking/queries/seat_party.py") "class SeatParty: ...\nclass SeatPartyInput: ...\n"
       let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "seat_party"), ("function", "seat_party"), ("file", "legacy/views.py")]
       (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
       case planned of
@@ -1362,9 +1364,20 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
           -- the switch, then the old body, line for line
           drop (length (body after) - length oldBody) (body after) `shouldBe` oldBody
           T.unlines (body after) `shouldSatisfy` T.isInfixOf "olifant:switch seat-party"
+  it "(f3) a switch alone over a command that does not exist is refused, saying how (review minor #14)" $
+    withStrangler $ \ports dir -> do
+      s <- newServerState ports
+      let sets = [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("name", "close_table"), ("function", "close_table"), ("file", "legacy/views.py")]
+      (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
+      case planned of
+        Left why -> why `shouldSatisfy` T.isInfixOf "extract-command"
+        Right (_, plan) -> planConflicts plan `shouldNotBe` []
   it "(f2) a switch over a generator function yields the new path's rows, then stops (review #4)" $
     withStrangler $ \ports dir -> do
       s <- newServerState ports
+      createDirectoryIfMissing True (dir </> "src/bistro/booking/queries")
+      TIO.writeFile (dir </> "src/bistro/booking/queries/export_rows.py") "class ExportRows: ...\nclass ExportRowsInput: ...\n"
+      TIO.writeFile (dir </> "src/bistro/booking/commands/close_table.py") "class CloseTable: ...\nclass CloseTableInput: ...\n"
       let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "export_rows"), ("function", "export_rows"), ("file", "legacy/views.py")]
       (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
       case planned of
