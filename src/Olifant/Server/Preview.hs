@@ -20,15 +20,13 @@ import Olifant.Naming qualified as N
 import Olifant.Preview (Field (..), Source (..), fieldsFor, markValue, unmark)
 import Olifant.Recognize (invertPath, pathPattern)
 import Olifant.Server.Actions (actionsFor, fillerFor)
-import Olifant.Server.State (deciderFor, ServerState (..), projectFor)
-import Olifant.Decide (Answer (..), Decider (..), Question (..))
+import Olifant.Server.State (decision, deciderFor, ServerState (..), projectFor)
+import Olifant.Decide (Answer (..), Question (..))
+import Data.Functor ((<&>))
 import Olifant.Migration (functionText, tablesTouched)
 import Olifant.Rules (fingerprint)
 import Olifant.Workspace (Workspace (..))
-import Control.Concurrent (forkIO)
-import Control.Monad (forM, void, when)
-import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
-import Data.Set qualified as S
+import Control.Monad (forM)
 import Olifant.Template (render)
 import System.FilePath (makeRelative, splitDirectories, takeBaseName, takeDirectory, takeExtension)
 
@@ -174,23 +172,15 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
               let stems = [T.pack (takeBaseName m) | m <- models, takeExtension m == ".py", takeBaseName m /= "__init__"]
               pure (service, any (\t -> any (\m -> singular t == singular m) stems) tables)
             pick <- case [svc' | (svc', True) <- owned] of
-              [one] -> pure (Just one)
+              [owner] -> pure (Just owner)
               _ -> case deciderFor s project of
                 Nothing -> pure Nothing
-                Just decider -> do
-                  let key = (rel, fingerprint ["service", text])
-                  known <- M.lookup key <$> readIORef (ssDecisions s)
-                  case known of
-                    Just (Chosen c _) | c `elem` services -> pure (Just c)
-                    Just _ -> pure Nothing
-                    Nothing -> do
-                      fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
-                      when fresh . void . forkIO $ do
-                        answer <- ask decider (Question "service" (services ++ ["new service"]) [] [("function", text), ("services", T.unwords services)])
-                        modifyIORef' (ssDecisions s) (M.insert key answer)
-                      pure Nothing
+                Just decider ->
+                  decision s decider (rel, "service:" <> fn) (fingerprint [text]) (Question "service" (services ++ ["new service"]) [] [("function", text), ("services", T.unwords services)]) (pure ()) <&> \case
+                    Just (Chosen c _) | c `elem` services -> Just c
+                    _ -> Nothing
             pure $ case pick of
-              Just one | length services > 1 || fValue svc == Nothing -> [if fName f == "service" then f {fValue = Just one, fSource = Just FromSuggested, fValid = True, fWhy = Nothing} else f | f <- fields]
+              Just suggested | length services > 1 || fValue svc == Nothing -> [if fName f == "service" then f {fValue = Just suggested, fSource = Just FromSuggested, fValid = True, fWhy = Nothing} else f | f <- fields]
               _ -> fields
       _ -> pure fields
       where

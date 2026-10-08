@@ -1208,6 +1208,20 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
         changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument bigEdit))]
         untilRule ["legacy-bug-fix-only"] doc
       [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c `elem` ["legacy-bug-fix-only", "migrate-new-work"]] `shouldBe` [("legacy-bug-fix-only", Just DiagnosticSeverity_Warning)]
+  it "(j) typing in a big change asks Jev once at a time, not once per keystroke (review #8)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      underGit dir
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "wait"
+      _ <- inProcessWithConfig [("decide_answers", String (T.pack answers))] ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        forM_ [1 .. 5 :: Int] $ \i -> do
+          -- each keystroke changes the function's text
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (T.replace "    return t" ("    t = t * " <> T.pack (show i) <> "\n    return t") bigEdit)))]
+          void (pullDiagnostics doc)
+      asked <- T.lines <$> TIO.readFile (answers <> ".asked")
+      length asked `shouldBe` 1
   it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
     withPython [(legacy, base)] $ \ports dir -> do
       migrating dir "\n[decide]\nmodel = \"jev\"\n"

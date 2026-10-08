@@ -6,6 +6,7 @@ module Olifant.Server.State
   ( ServerState (..)
   , cachedBase
   , deciderFor
+  , decision
   , ServerConfig (..)
   , defaultServerConfig
   , ProjectSlot (..)
@@ -28,8 +29,11 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Decide (Answer, Decider, curlDecider, recordedDecider)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Olifant.Decide (Answer, Decider (..), Question, curlDecider, recordedDecider)
+import Control.Concurrent (forkIO)
+import Control.Exception (finally)
+import Control.Monad (void, when)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Maybe (fromMaybe)
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
@@ -92,7 +96,7 @@ data ServerState = ServerState
     ssBaseCache :: IORef (Map (FilePath, Text, FilePath) (Int, Either Text (Text, Maybe Text)))
   , -- | typed decisions made (by file and what they were about), those being
     -- asked, and what to do when one is made (the editor pulls diagnostics again)
-    ssDecisions :: IORef (Map (FilePath, Text) Answer)
+    ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer))
   , ssAsking :: IORef (Set (FilePath, Text))
   , ssOnDecided :: IORef (IO ())
   }
@@ -250,3 +254,23 @@ deciderFor s project = do
       let models = catalogModel (prCatalog project)
       backend <- lookup name (mcBackends models)
       Just (curlDecider (ssCancel s) (mcTimeout models) backend)
+
+-- | A decision about one thing (a file's function, by question kind and
+-- name: KEY): its latest answer, if any. Asked in the background at most
+-- once at a time, and again (after that one lands) when the thing's text
+-- has changed since its answer (FP): typing in a function asks once per
+-- model round trip, not once per keystroke. ON_DONE runs with each answer.
+decision :: ServerState -> Decider IO -> (FilePath, Text) -> Text -> Question -> IO () -> IO (Maybe Answer)
+decision s decider key fp q onDone = do
+  known <- M.lookup key <$> readIORef (ssDecisions s)
+  when (fmap fst known /= Just fp) $ do
+    fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
+    when fresh . void . forkIO $
+      ( do
+          answer <- ask decider q
+          modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
+          onDone
+      )
+        `finally` atomicModifyIORef' (ssAsking s) (\a -> (S.delete key a, ()))
+  pure (snd <$> known)
+

@@ -11,19 +11,16 @@ import Olifant.App (FixFailure (..), PlanOptions (..), findingsWith, fixSteps, n
 import Olifant.Catalog (describeCatalogError)
 import Olifant.Generation (Plan (..), ProgressEvent, describeConflict, describeGenerationError)
 import Olifant.Server.Actions (fillerFor)
-import Olifant.Rules (Finding (..), RuleDef (..), RulesConfig (..), Severity (..))
+import Olifant.Rules (Finding (..), RuleDef (..), RulesConfig (..), Severity (..), definedName)
 import Olifant.App (Project (..))
 import Olifant.Catalog (Catalog (..))
-import Control.Concurrent (forkIO)
-import Control.Monad (forM, join, void, when)
-import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
+import Control.Monad (forM, join)
+import Data.IORef (readIORef)
 import Data.List (find)
-import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
-import Data.Set qualified as S
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Decide (Answer (..), Decider (..), Question (..))
-import Olifant.Server.State (deciderFor, cachedBase, ServerState (..), memo, projectFor)
+import Olifant.Decide (Answer (..), Question (..))
+import Olifant.Server.State (decision, deciderFor, cachedBase, ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The rules' findings in a file (project-relative paths in them); none
@@ -51,22 +48,15 @@ rawFindings path = memo "findings" path "" $ \s ->
 decided :: ServerState -> Project -> FilePath -> [Finding] -> IO [Finding]
 decided s project path fs = case deciderFor s project of
   Nothing -> pure fs
-  Just decider -> do
-    known <- readIORef (ssDecisions s)
+  Just decider ->
     fmap concat . forM fs $ \f ->
       if fRule f /= "migrate-new-work"
         then pure [f]
-        else case M.lookup (path, fFingerprint f) known of
-          Just (Chosen "new behaviour" _) -> pure [f {fRule = "legacy-bug-fix-only", fSeverity = severityOf "legacy-bug-fix-only", fMessage = "New work goes in the new architecture (legacy is bug-fix-only): this change adds behaviour"}]
-          Just (Chosen "bug fix" _) -> pure []
-          Just _ -> pure [f]
-          Nothing -> do
-            fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert (path, fFingerprint f) a, S.notMember (path, fFingerprint f) a))
-            when fresh . void . forkIO $ do
-              answer <- ask decider (Question "bug-or-new" ["bug fix", "new behaviour"] [] [("function", fText f)])
-              modifyIORef' (ssDecisions s) (M.insert (path, fFingerprint f) answer)
-              join (readIORef (ssOnDecided s))
-            pure [f]
+        else
+          decision s decider (path, "bug-or-new:" <> definedName (fText f)) (fFingerprint f) (Question "bug-or-new" ["bug fix", "new behaviour"] [] [("function", fText f)]) (join (readIORef (ssOnDecided s))) <&> \case
+            Just (Chosen "new behaviour" _) -> [f {fRule = "legacy-bug-fix-only", fSeverity = severityOf "legacy-bug-fix-only", fMessage = "New work goes in the new architecture (legacy is bug-fix-only): this change adds behaviour"}]
+            Just (Chosen "bug fix" _) -> []
+            _ -> [f]
   where
     cat = prCatalog project
     severityOf r = fromMaybe (maybe Warn ruleSeverity (find ((== r) . ruleId) (catalogRules cat))) (lookup r (rcSeverity (catalogRulesConfig cat)))

@@ -18,14 +18,10 @@ import Olifant.Snippet (Snippet)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
 import Olifant.Migration (functionText, readsOrWrites)
 import Olifant.Rules (fingerprint)
-import Olifant.Decide (Answer (..), Decider (..), Question (..))
-import Control.Concurrent (forkIO)
-import Control.Monad (void, when)
-import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
+import Olifant.Decide (Answer (..), Question (..))
 import Data.List (partition)
 import Data.Maybe (fromMaybe, listToMaybe)
-import Data.Set qualified as S
-import Olifant.Server.State (deciderFor, ServerConfig (..), ServerState (..), memo, projectFor)
+import Olifant.Server.State (decision, deciderFor, ServerConfig (..), ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The actions at a position (1-based line, 1-based byte column) of a
@@ -49,22 +45,15 @@ extractOrder s project path acts = case [a | a <- acts, isExtract a] of
   extracts -> do
     content <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative (prRoot project) path)
     let text = fromMaybe "" (listToMaybe [t | a <- extracts, Just f <- [lookup "function" (actSets a)], Just t <- [functionText content f]])
-        key = (path, fingerprint ["command-or-query", text])
+        function = fromMaybe "" (listToMaybe [f | a <- extracts, Just f <- [lookup "function" (actSets a)]])
     preferred <- case readsOrWrites text of
       Just k -> pure (Just k)
       Nothing -> case deciderFor s project of
         Nothing -> pure Nothing
-        Just decider -> do
-          known <- M.lookup key <$> readIORef (ssDecisions s)
-          case known of
-            Just (Chosen k _) -> pure (Just k)
-            Just Unsure -> pure Nothing
-            Nothing -> do
-              fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
-              when fresh . void . forkIO $ do
-                answer <- ask decider (Question "command-or-query" ["command", "query"] [] [("function", text)])
-                modifyIORef' (ssDecisions s) (M.insert key answer)
-              pure Nothing
+        Just decider ->
+          decision s decider (path, "command-or-query:" <> function) (fingerprint [text]) (Question "command-or-query" ["command", "query"] [] [("function", text)]) (pure ()) <&> \case
+            Just (Chosen k _) -> Just k
+            _ -> Nothing
     let first = case preferred of
           Just "query" -> "/extract-query"
           _ -> "/extract-command"
