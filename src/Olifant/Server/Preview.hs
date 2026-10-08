@@ -20,9 +20,17 @@ import Olifant.Naming qualified as N
 import Olifant.Preview (Field (..), Source (..), fieldsFor, markValue, unmark)
 import Olifant.Recognize (invertPath, pathPattern)
 import Olifant.Server.Actions (actionsFor, fillerFor)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.State (deciderFor, ServerState (..), projectFor)
+import Olifant.Decide (Answer (..), Decider (..), Question (..))
+import Olifant.Migration (functionText, tablesTouched)
+import Olifant.Rules (fingerprint)
+import Olifant.Workspace (Workspace (..))
+import Control.Concurrent (forkIO)
+import Control.Monad (forM, void, when)
+import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
+import Data.Set qualified as S
 import Olifant.Template (render)
-import System.FilePath (makeRelative, splitDirectories, takeDirectory)
+import System.FilePath (makeRelative, splitDirectories, takeBaseName, takeDirectory, takeExtension)
 
 -- | One step of a picker's plan: a generator, the values the user set, and
 -- (a `+ New` step) which later step's input its value fills.
@@ -132,7 +140,8 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
                   user = [(n, v) | (n, v) <- psSets st, n `notElem` map fst newValues]
                   fromPath = folderValues (entryDefinition entry) rel
                   fromCursor = [(n, v) | (a, _) <- acts, actGenerator a == generatorIdText (genId g), (n, v) <- actSets a]
-              (d, fields) <- settle entry user newValues fromPath fromCursor
+              (d, fields0) <- settle entry user newValues fromPath fromCursor
+              fields <- if isExtract (psGenerator st) then suggestService fields0 else pure fields0
               -- the plan takes the values you set as you set them (the form may
               -- show one cleared, the plan's own checks decide), then the rest
               let known = map inputName (genInputs g) ++ map fst (genDerived g)
@@ -149,6 +158,44 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
                     Right env -> case render env t of
                       Left _ -> Right (made, w : done)
                       Right v -> Right (M.insertWith (++) into [(input, v)] made, w : done)
+    isExtract g = any (`T.isSuffixOf` g) ["/extract-command", "/extract-query"]
+    -- decision 3: the service whose models the legacy function's SQL names
+    -- (the tables it touches); unsure, a decider's answer (asked once, in
+    -- the background); a suggestion, always yours to change
+    suggestService fields = case (lookupField "service", lookupField "function", lookupField "file") of
+      (Just svc, Just (Field {fValue = Just fn}), Just (Field {fValue = Just file}))
+        | fValue svc == Nothing || fSource svc `notElem` [Just FromYou, Just FromPath, Just FromNew] -> do
+            content <- fromMaybe "" <$> readText (prWorkspace project) (T.unpack file)
+            let text = fromMaybe "" (functionText content fn)
+                tables = tablesTouched text
+                services = fromMaybe [] (fChoices svc)
+            owned <- forM services $ \service -> do
+              models <- listFiles (prWorkspace project) ("src/" <> T.unpack (maybe "" id (fValue =<< lookupField "app")) <> "/" <> T.unpack service <> "/models")
+              let stems = [T.pack (takeBaseName m) | m <- models, takeExtension m == ".py", takeBaseName m /= "__init__"]
+              pure (service, any (\t -> any (\m -> singular t == singular m) stems) tables)
+            pick <- case [svc' | (svc', True) <- owned] of
+              [one] -> pure (Just one)
+              _ -> case deciderFor s project of
+                Nothing -> pure Nothing
+                Just decider -> do
+                  let key = (rel, fingerprint ["service", text])
+                  known <- M.lookup key <$> readIORef (ssDecisions s)
+                  case known of
+                    Just (Chosen c _) | c `elem` services -> pure (Just c)
+                    Just _ -> pure Nothing
+                    Nothing -> do
+                      fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
+                      when fresh . void . forkIO $ do
+                        answer <- ask decider (Question "service" (services ++ ["new service"]) [] [("function", text), ("services", T.unwords services)])
+                        modifyIORef' (ssDecisions s) (M.insert key answer)
+                      pure Nothing
+            pure $ case pick of
+              Just one | length services > 1 || fValue svc == Nothing -> [if fName f == "service" then f {fValue = Just one, fSource = Just FromSuggested, fValid = True, fWhy = Nothing} else f | f <- fields]
+              _ -> fields
+      _ -> pure fields
+      where
+        lookupField n = listToMaybe [f | f <- fields, fName f == n]
+        singular t = T.toLower (fromMaybe t (T.stripSuffix "s" t))
     -- the template the served step's input gives for this `+ New` generator
     newTemplate (into, input) generator = do
       st <- listToMaybe (drop into steps)

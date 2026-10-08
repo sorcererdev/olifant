@@ -39,7 +39,7 @@ import Language.LSP.Test
 import Olifant.App (Ports (..))
 import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processCheckerWith, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
-import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor)
+import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
 import Olifant.Process (gitBaseText)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
@@ -1270,6 +1270,59 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
           let legacyText = M.findWithDefault "" views (planWrites plan)
           legacyText `shouldSatisfy` T.isInfixOf "# olifant:allow legacy-bug-fix-only — delegates to booking/commands/add_to_waitlist\ndef add_to_waitlist(guest, party):"
           legacyText `shouldSatisfy` T.isInfixOf "def close_table(table_id):"
+  it "(e) retire: a switched function keeps only its new path; the function stays, so its callers do (Review Focus 4)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let switched = T.replace "def close_table(table_id):\n" "def close_table(table_id):\n    # olifant:switch close-table → booking/commands/close_table\n    if switches.on(\"close-table\"):\n        result = CloseTable().handle(CloseTableInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {\"id\": table_id, \"open\": False}\n" original
+      TIO.writeFile (dir </> views) switched
+      s <- newServerState ports
+      let line = 1 + length (takeWhile (not . T.isPrefixOf "def close_table") (T.lines switched))
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "switch-retire" line 1 [] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          let after = M.findWithDefault "" views (planWrites plan)
+          after `shouldSatisfy` T.isInfixOf "def close_table(table_id):\n    result = CloseTable().handle(CloseTableInput(id=table_id))\n    if not isinstance(result, NotYet):\n        return {\"id\": table_id, \"open\": False}\n    raise RuntimeError("
+          after `shouldNotSatisfy` T.isInfixOf "UPDATE tables SET open = 0"
+          after `shouldNotSatisfy` T.isInfixOf "olifant:switch close-table"
+          after `shouldSatisfy` T.isInfixOf "def open_table(table_id):"
+  it "(f) a switch over a function with several returns leaves its old body exactly as it was (Review Focus 3)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      s <- newServerState ports
+      let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "seat_party"), ("function", "seat_party"), ("file", "legacy/views.py")]
+      (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          let after = M.findWithDefault "" views (planWrites plan)
+              body t = takeWhile (\l -> T.null l || " " `T.isPrefixOf` l) (drop 1 (dropWhile (not . T.isPrefixOf "def seat_party") (T.lines t)))
+              oldBody = body original
+          -- the switch, then the old body, line for line
+          drop (length (body after) - length oldBody) (body after) `shouldBe` oldBody
+          T.unlines (body after) `shouldSatisfy` T.isInfixOf "olifant:switch seat-party"
+  it "(g) the ⚡ menu offers extract as a command first where the code writes, as a query first where it reads" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let lineOf name = fromIntegral (length (takeWhile (not . T.isPrefixOf ("def " <> name)) (T.lines original))) + 2
+      ((atClose, atToday), _) <- inProcessWith ports dir $ do
+        doc <- openDoc views "python"
+        let titles l = (\as -> [a ^. L.title | InR a <- as, "Extract" `T.isPrefixOf` (a ^. L.title)]) <$> getCodeActions doc (Range (Position l 4) (Position l 4))
+        (,) <$> titles (lineOf "close_table") <*> titles (lineOf "todays_bookings")
+      atClose `shouldBe` ["Extract close_table to a command", "Extract close_table to a query"]
+      atToday `shouldBe` ["Extract todays_bookings to a query", "Extract todays_bookings to a command"]
+  it "(h) extracting suggests the service whose models the function's SQL touches" $
+    withStrangler $ \ports dir -> do
+      -- a second service: which one the work belongs to is a real question
+      createDirectoryIfMissing True (dir </> "src/bistro/kitchen/models")
+      TIO.writeFile (dir </> "src/bistro/kitchen/__init__.py") ""
+      TIO.writeFile (dir </> "src/bistro/kitchen/models/__init__.py") ""
+      TIO.writeFile (dir </> "src/bistro/kitchen/models/dish.py") "class Dish:\n    pass\n"
+      original <- TIO.readFile (dir </> views)
+      let line = length (takeWhile (not . T.isPrefixOf "def close_table") (T.lines original)) + 1
+      s <- newServerState ports
+      (_, pv) <- previewFor (dir </> views) (line, 4) [PickStep "python-strangler/extract-command" [] Nothing] s
+      [(fValue f, fSource f) | fs <- pvFields pv, f <- fs, fName f == "service"] `shouldBe` [(Just "booking", Just FromSuggested)]
   it "(b) a bug fix inside an existing legacy function is quiet" $
     withStrangler $ \ports dir -> do
       original <- TIO.readFile (dir </> views)

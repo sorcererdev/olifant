@@ -72,7 +72,7 @@ import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Newness (NewLines (..), newLinesOf, wholeNew)
 import Olifant.Migration (MigrationReport (..), Switch (..), bigChanges, readRegistry, switchMarkers, unregistered)
-import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), Severity (..), checkFiles, fingerprint, suggestChoice)
+import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), Severity (..), checkFiles, definedName, fingerprint, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
 import Olifant.Template qualified as Tm
@@ -372,6 +372,23 @@ newWorkHints ports project newness files = case catalogMigrate cat of
       | kind <- ["command", "query"]
       ]
 
+-- | A switched function's new path (the strangler's retire): the lines
+-- inside its `if switches.on(…):` block, a level less indented — what the
+-- function becomes once its legacy body goes.
+switchPath :: Text -> Text
+switchPath found =
+  let ls = T.lines found
+      indentOf = T.length . T.takeWhile (== ' ')
+   in case break (T.isPrefixOf "if switches.on(" . T.stripStart) ls of
+        (_, guard : rest) ->
+          let level = indentOf guard
+              body = takeWhile (\l -> T.null (T.strip l) || indentOf l > level) rest
+              inner = case filter (not . T.null . T.strip) body of
+                l : _ -> indentOf l - level
+                [] -> 0
+           in T.intercalate "\n" [T.drop inner l | l <- body, not (T.null (T.strip l))]
+        _ -> ""
+
 -- | What "new" is measured from: the base ref ([migrate] base; main).
 baseRefOf :: Project -> Text
 baseRefOf project = maybe "main" mgBase (catalogMigrate (prCatalog project))
@@ -572,7 +589,7 @@ fixSteps ports project rule rel line n given = do
               let sets = M.union (M.fromList given) (M.fromList (foSets o))
                   -- `finding_head`: the found node's first line (a definition's signature)
                   found = maybe "" rpFinding (foReplace o)
-                  env = M.map Tm.VText (M.insert "finding_head" (fromMaybe "" (listToMaybe (T.lines found))) (M.insert "finding" found sets))
+                  env = M.map Tm.VText (M.insert "finding_name" (definedName found) (M.insert "finding_switch_path" (switchPath found) (M.insert "finding_head" (fromMaybe "" (listToMaybe (T.lines found))) (M.insert "finding" found sets))))
                   defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                   replacement = case foReplace o of
                     Nothing -> Right []

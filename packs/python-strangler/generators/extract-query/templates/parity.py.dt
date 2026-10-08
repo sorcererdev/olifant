@@ -1,0 +1,22 @@
+"""Parity: the legacy {= function =} and the new {= name|snake =} agree.
+
+Pinned before its switch turns on: the same inputs, the same outcome. Fill in
+the inputs (and what "the same" means, if the shapes differ), make it green,
+then turn the switch on in the registry.
+"""
+
+import importlib
+
+from {= module =} import {= Name =}, {= Name =}Input
+
+LEGACY = importlib.import_module("{= file =}".removesuffix(".py").replace("/", "."))
+
+
+def build() -> {= Name =}:
+    return {= Name =}()
+
+
+def test_{= name|snake =}_agrees_with_the_legacy_path() -> None:
+    legacy_result: object = LEGACY.{= function =}({= ? legacy_args: expr | arguments that exercise the legacy function =})
+    new_result: object = build().handle({= Name =}Input({= ? new_args: expr | the same inputs, as the Input's fields =}))
+    assert {= ? same: expr | legacy_result and new_result agree (the legacy shape against the new result) =}, (legacy_result, new_result)

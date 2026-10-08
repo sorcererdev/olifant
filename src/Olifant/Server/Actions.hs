@@ -16,7 +16,16 @@ import Olifant.Generation (Plan (..), ProgressEvent (..), Step (..), describeCon
 import Olifant.Workspace (Workspace (..))
 import Olifant.Snippet (Snippet)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Server.State (ServerConfig (..), ServerState (..), memo, projectFor)
+import Olifant.Migration (functionText, readsOrWrites)
+import Olifant.Rules (fingerprint)
+import Olifant.Decide (Answer (..), Decider (..), Question (..))
+import Control.Concurrent (forkIO)
+import Control.Monad (void, when)
+import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
+import Data.List (partition)
+import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Set qualified as S
+import Olifant.Server.State (deciderFor, ServerConfig (..), ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The actions at a position (1-based line, 1-based byte column) of a
@@ -26,9 +35,43 @@ actionsFor path pos = memo "actions" path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
     (s', Just (root, project)) -> do
-      acts <- actionsAt' (ssPorts s') project (makeRelative root path) pos
+      acts0 <- actionsAt' (ssPorts s') project (makeRelative root path) pos
+      acts <- extractOrder s' project path acts0
       let snippets = M.fromList [(k, isSnippet g) | (k, g) <- generatorsOf project]
       pure (s', [(a, M.findWithDefault False (actGenerator a) snippets) | a <- acts])
+
+-- | Extract as a command or a query (decision 2): the one the function's
+-- code reads as first (it writes: command; it only reads: query); unsure,
+-- a decider's answer (asked once, in the background) decides it.
+extractOrder :: ServerState -> Project -> FilePath -> [Action] -> IO [Action]
+extractOrder s project path acts = case [a | a <- acts, isExtract a] of
+  [] -> pure acts
+  extracts -> do
+    content <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative (prRoot project) path)
+    let text = fromMaybe "" (listToMaybe [t | a <- extracts, Just f <- [lookup "function" (actSets a)], Just t <- [functionText content f]])
+        key = (path, fingerprint ["command-or-query", text])
+    preferred <- case readsOrWrites text of
+      Just k -> pure (Just k)
+      Nothing -> case deciderFor s project of
+        Nothing -> pure Nothing
+        Just decider -> do
+          known <- M.lookup key <$> readIORef (ssDecisions s)
+          case known of
+            Just (Chosen k _) -> pure (Just k)
+            Just Unsure -> pure Nothing
+            Nothing -> do
+              fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
+              when fresh . void . forkIO $ do
+                answer <- ask decider (Question "command-or-query" ["command", "query"] [] [("function", text)])
+                modifyIORef' (ssDecisions s) (M.insert key answer)
+              pure Nothing
+    let first = case preferred of
+          Just "query" -> "/extract-query"
+          _ -> "/extract-command"
+        (lead, rest) = partition (\a -> first `T.isSuffixOf` actGenerator a) extracts
+    pure ([a | a <- acts, not (isExtract a)] ++ lead ++ rest)
+  where
+    isExtract a = any (`T.isSuffixOf` actGenerator a) ["/extract-command", "/extract-query"]
 
 -- | A generator planned at a cursor (1-based line) with its inputs set: the
 -- edits, and the snippet it placed at the cursor, if it is one. With

@@ -11,7 +11,7 @@ import Data.Text qualified as T
 import Olifant.Generator (Choices (..), GeneratorDef, GeneratorWith (..), InputProblem (..), InputSpec (..), InputType (..), Scalar (..), resolveInput)
 
 -- | Where a field's value came from.
-data Source = FromYou | FromPath | FromHere | OnlyChoice | FromDefault | FromNew
+data Source = FromYou | FromPath | FromHere | OnlyChoice | FromDefault | FromNew | FromSuggested
   deriving stock (Eq, Show)
 
 data Field = Field

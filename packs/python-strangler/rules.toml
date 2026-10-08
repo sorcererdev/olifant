@@ -35,3 +35,20 @@ files    = "src/**/*.py"
 match    = { any = [ { kind = "import_from_statement", regex = "^from legacy" }, { kind = "import_statement", regex = "^import legacy" } ] }
 message  = "The new architecture does not reach into legacy code"
 severity = "warn"
+
+# A switched legacy function: once its flag is on and trusted, the legacy body
+# goes; the function keeps only its new path (callers keep calling it).
+[rules.switch-retire]
+files    = "{legacy}"
+match    = { kind = "function_definition", regex = "olifant:switch " }
+message  = "Switched to the new path: when its flag is on and trusted, retire the legacy body"
+severity = "hint"
+
+[[rules.switch-retire.fixes]]
+generator = "python-strangler/retire"
+label     = "Retire the legacy path"
+with      = { file = "{= file =}" }
+replace   = { enclosing = ["function_definition"], text = """{= finding_head =}
+{= finding_switch_path =}
+    raise RuntimeError("{= finding_name =}: the new path declined (NotYet) and the legacy path is retired")""" }
+

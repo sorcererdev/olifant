@@ -22,9 +22,8 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as S
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Server.Recognize (deciderFor)
 import Olifant.Decide (Answer (..), Decider (..), Question (..))
-import Olifant.Server.State (cachedBase, ServerState (..), memo, projectFor)
+import Olifant.Server.State (deciderFor, cachedBase, ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The rules' findings in a file (project-relative paths in them); none

@@ -11,7 +11,7 @@ module Olifant.GeneratorTesting
   , preparePack
   ) where
 
-import Control.Monad (forM, forM_)
+import Control.Monad (filterM, forM, forM_)
 import Data.Functor ((<&>))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -23,7 +23,7 @@ import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Olifant.Catalog
 import Olifant.Generation
 import Olifant.Cursor (afterIndent, afterRule, atCursorIndented, cursorIndent, isSnippet)
-import Olifant.Generator.Definition (AppliesAt (..), GeneratorWith (..))
+import Olifant.Generator.Definition (AppliesAt (..), GeneratorWith (..), UseStep (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Generator (Generator)
 import Olifant.Language.Adapter (Language (..), languageFor)
@@ -33,8 +33,8 @@ import Olifant.Anchor (astQueries)
 import Olifant.Query (Queries (..), processCommand)
 import Olifant.Language (Checker, Syntax, processVerifier)
 import Olifant.Toml qualified as Toml
-import Olifant.Workspace (Workspace (..), memoryWorkspace)
-import System.FilePath (splitDirectories, (</>))
+import Olifant.Workspace (PathState (..), Workspace (..), memoryWorkspace)
+import System.FilePath (dropTrailingPathSeparator, splitDirectories, takeDirectory, (</>))
 
 data PackCase = PackCase
   { caseName :: Text
@@ -122,13 +122,15 @@ runCase root syntax checker bless pc = do
             [] -> "  (trailing whitespace differs)"
 
 -- | A pack's generator ready to run against its fixture (in memory), with
+-- the packs its generators use ([[uses]] of another pack's generator, found
+-- beside it: python-strangler uses python-htmx), and
 -- @overlay@ files laid over it: the workspace, tools, resolver and generator.
 -- Commands run in the fixture on disk, like a project's commands run in the
 -- project; `one_of` (here and in [[uses]] generators) is resolved by
 -- 'generate' against the fixture and the plan so far.
 preparePack :: Workspace IO -> Syntax IO -> Checker IO -> FilePath -> Text -> Text -> [(FilePath, Text)] -> IO (Either Text (Workspace IO, Tools IO, Resolve IO, Generator))
 preparePack root syntax checker packRoot pack generator overlay =
-  openPackCatalog root [(pack, packRoot)] >>= \case
+  withUsedPacks >>= \case
     Left err -> pure (Left (describeCatalogError err))
     Right cat -> case findEntry cat (pack <> "/" <> generator) of
       Left err -> pure (Left (describeCatalogError err))
@@ -144,6 +146,16 @@ preparePack root syntax checker packRoot pack generator overlay =
             let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat), queryUncovered = \_ -> pure (Right [])}
                 tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries, toolVerifier = processVerifier}
             pure (Right (ws, tools, resolver root syntax cat, gen))
+  where
+    -- the pack, and the packs its generators' [[uses]] name (beside it)
+    withUsedPacks =
+      openPackCatalog root [(pack, packRoot)] >>= \case
+        Left err -> pure (Left err)
+        Right own -> do
+          let used = nub [p | e <- catalogEntries own, u <- genUses (entryDefinition e), (p, rest) <- [T.breakOn "/" (useGenerator u)], not (T.null rest), p /= pack]
+              beside p = takeDirectory (dropTrailingPathSeparator packRoot) </> T.unpack p
+          present <- filterM (\p -> (/= Absent) <$> inspectPath root (beside p </> "generators")) used
+          if null present then pure (Right own) else openPackCatalog root ((pack, packRoot) : [(p, beside p) | p <- present])
 
 -- | A case's cursor (`at`): the snippet placed there, and `uncovered`
 -- queries asking the compiler about the match there (spec §4.9).

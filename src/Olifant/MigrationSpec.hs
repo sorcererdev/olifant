@@ -11,6 +11,8 @@ spec = describe "Olifant.Migration" $ do
   let registry = T.unlines ["SWITCHES: dict[str, bool] = {", "    \"close-table\": True,", "    \"seat-party\": False,", "}", "", "def on(name: str) -> bool:", "    return SWITCHES.get(name, False)"]
   it "(a) reads the registry: each switch and whether it is on" $
     readRegistry registry `shouldBe` [Switch "close-table" True, Switch "seat-party" False]
+  it "(a2) reads a registry of lines too (SWITCHES[\"name\"] = True)" $
+    readRegistry "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\nSWITCHES[\"seat-party\"] = False\n" `shouldBe` [Switch "close-table" True, Switch "seat-party" False]
   it "(b) finds switch markers in code" $
     switchMarkers "def f():\n    # olifant:switch close-table → booking/commands/close_table\n    pass\n" `shouldBe` ["close-table"]
   it "(c) the PR line: extracted since the base, legacy added, functions, switches" $ do
@@ -25,6 +27,11 @@ spec = describe "Olifant.Migration" $ do
     bigChanges 15 (NewIn (S.fromList [5 .. 14])) [fn] `shouldBe` []
     bigChanges 15 (NewIn (S.fromList [1 .. 30])) [fn] `shouldBe` []
     bigChanges 15 (NoBase "x") [fn] `shouldBe` []
+  it "(g) reads or writes: SQL that writes, a commit or a save is a command; reads alone, a query; else unsure" $ do
+    readsOrWrites "def f(t):\n    c.execute(\"UPDATE tables SET open = 0 WHERE id = ?\", (t,))\n    c.commit()\n" `shouldBe` Just "command"
+    readsOrWrites "def f(d):\n    return db.rows(\"SELECT * FROM bookings WHERE day = ?\", d)\n" `shouldBe` Just "query"
+    readsOrWrites "def f(x):\n    return x + 1\n" `shouldBe` Nothing
+    readsOrWrites "def f(x):\n    global CURRENT\n    CURRENT = x\n" `shouldBe` Just "command"
   it "(e) legacy added is named; a marker the registry lacks is listed" $ do
     let r = MigrationReport 213 (Just 212) [] (Just []) ["waitlist"] ["close-table"]
     reportLine r `shouldBe` "+0 extracted, 1 legacy function added (waitlist), legacy 212 → 213 functions; switches: 0 on, 0 off"

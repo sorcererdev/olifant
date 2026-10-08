@@ -587,6 +587,7 @@ previewJson steps pv =
       OnlyChoice -> "only"
       FromDefault -> "default"
       FromNew -> "new"
+      FromSuggested -> "suggested"
 
 -- | A model's JSON with the migration report, if there is one.
 withMigration :: Maybe MigrationReport -> Value -> Value

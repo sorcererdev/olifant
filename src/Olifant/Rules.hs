@@ -16,6 +16,7 @@ module Olifant.Rules
   , parseSeverity
   , checkFiles
   , ruleCovers
+  , definedName
   , fingerprint
   , markBaselined
   , suggestChoice
