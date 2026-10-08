@@ -156,6 +156,23 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
     let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
     (lookupKey "migration" v >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 0 legacy functions added, legacy 1 → 1 functions; switches: 1 on, 0 off")
+  it "counts the base over the base's own legacy files: a deleted one is migration done (review #7)" $ do
+    tmp <- getTemporaryDirectory
+    let views = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]
+        gone = T.unlines ["def charge(c):", "    return c", "", "def refund(c):", "    return c"]
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", views)
+          ]
+        baseOf _ _ p = pure $ case p of
+          "legacy/views.py" -> Right ("c0ffee", Just views)
+          "legacy/payments.py" -> Right ("c0ffee", Just gone)
+          _ -> Right ("c0ffee", Nothing)
+    (_, out, _, _) <- runInBaseFiles (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf (\_ _ -> pure (Right ["legacy/views.py", "legacy/payments.py", "README.md"])) "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    (lookupKey "migration" v >>= lookupKey "line") `shouldBe` Just (Aeson.String "+0 extracted, 0 legacy functions added, legacy 4 → 2 functions; switches: 0 on, 0 off")
   it "checks the files a {legacy} rule names (its [migrate] legacy globs)" $ do
     tmp <- getTemporaryDirectory
     let base = T.unlines ["def close_table(t):", "    return t"]
@@ -186,7 +203,10 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     out `shouldSatisfy` T.isInfixOf "\"start\":[7,1]"
 
 runInBase :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runInBase syntax base dir stdinText files tty args = do
+runInBase syntax base = runInBaseFiles syntax base (\_ _ -> pure (Left "no listing"))
+
+runInBaseFiles :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> (FilePath -> Text -> IO (Either Text [FilePath])) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInBaseFiles syntax base baseFiles dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -205,7 +225,7 @@ runInBase syntax base dir stdinText files tty args = do
         , rtSyntax = syntax
         , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
-        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles
         , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier
         }
       args
@@ -230,7 +250,7 @@ runInitWith committed files args = do
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
-        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests")
+        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base")
         , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier
         }
       args

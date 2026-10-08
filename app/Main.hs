@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Olifant.Process (gitBaseText, gitTracked)
+import Olifant.Process (gitBaseFiles, gitBaseText, gitTracked)
 import Control.Exception (SomeException, displayException, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
@@ -56,6 +56,7 @@ main = do
         , rtGitChanged = gitChanged
         , rtTracked = gitTracked
         , rtBaseText = gitBaseText
+        , rtBaseFiles = gitBaseFiles
         , rtDoctor =
             DoctorPorts
               findExecutable

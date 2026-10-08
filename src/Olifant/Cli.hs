@@ -71,6 +71,8 @@ data Runtime = Runtime
     rtTracked :: FilePath -> IO (Maybe (Set FilePath))
   , -- | a file's text at the base (see 'pBaseText')
     rtBaseText :: FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
+  , -- | the files at the base (see 'pBaseFiles')
+    rtBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -714,7 +716,7 @@ modelFor cat g
 
 -- | The engine's ports, as the CLI runs them.
 portsOf :: Runtime -> Ports
-portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt)
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt)
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project

@@ -43,7 +43,7 @@ import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker,
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
-import Olifant.Process (gitBaseText)
+import Olifant.Process (gitBaseFiles, gitBaseText)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled)
@@ -1063,7 +1063,7 @@ withStrangler act = do
     git ["add", "."]
     git ["commit", "-q", "-m", "the monolith"]
     git ["checkout", "-q", "-b", "feature"]
-    act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pBaseText = gitBaseText} dir
+    act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pBaseText = gitBaseText, pBaseFiles = gitBaseFiles} dir
 
 readTree :: FilePath -> IO (M.Map FilePath Text)
 readTree root = M.fromList <$> go root
@@ -1081,7 +1081,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests"))
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests"))
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []

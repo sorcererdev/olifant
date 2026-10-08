@@ -103,6 +103,9 @@ data Ports = Ports
     -- commit's id: Right Nothing when the file is not there (new); Left why
     -- when there is no base (root, ref, project-relative path)
     pBaseText :: FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
+  , -- | the files at the base (root, ref), project-relative; Left when
+    -- there is no base
+    pBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
   }
 
 -- | An open project: its root (absolute), its catalog, and the workspace
@@ -329,12 +332,22 @@ migrationFor ports project = case catalogMigrate cat of
           Left _ -> Nothing
           Right (_, Nothing) -> Just []
           Right (_, Just b) -> Just (map swName (readRegistry b))
+    -- the base counted over the base's own legacy files: a file deleted
+    -- (migrated away) or renamed since still counts there
+    baseCount <-
+      pBaseFiles ports (prRoot project) (mgBase mig) >>= \case
+        Left _ -> pure Nothing
+        Right baseFiles -> fmap (fmap sum . sequence) . forM [p | p <- baseFiles, any (`matchesGlob` p) (mgLegacy mig)] $ \p ->
+          pBaseText ports (prRoot project) (mgBase mig) p >>= \case
+            Right (_, Just b) -> Just . length <$> defs b p
+            Right (_, Nothing) -> pure (Just 0)
+            Left _ -> pure Nothing
     let switches = maybe [] readRegistry registry
         befores = [b | (_, b, _, _) <- perFile]
     pure . Just $
       MigrationReport
         { mrLegacyNow = sum [n | (n, _, _, _) <- perFile]
-        , mrLegacyBase = sum <$> sequence befores
+        , mrLegacyBase = maybe (sum <$> sequence befores) Just baseCount
         , mrSwitches = switches
         , mrSwitchesBase = registryBase
         , mrAddedLegacy = concat [a | (_, _, a, _) <- perFile]
