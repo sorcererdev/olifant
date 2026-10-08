@@ -3,6 +3,12 @@
 -- catalog plus the workspace it reads (disk, or open buffers over disk).
 module Olifant.App
   ( Ports (..)
+  , newnessOf
+  , newnessWith
+  , baseRefOf
+  , legacyOf
+  , migrationFor
+  , findingsWith
   , Project (..)
   , projectRoot
   , nearestProject
@@ -40,6 +46,9 @@ module Olifant.App
 
 import Data.Set (Set)
 import Control.Applicative ((<|>))
+import Control.Monad (forM)
+import Data.Aeson qualified as J
+import Olifant.Glob (matchesGlob)
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.List (find, sortOn)
@@ -57,11 +66,13 @@ import Olifant.Fill (ModelFiller (..))
 import Olifant.Generation
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Checker, Language (..), Syntax, languageFor)
+import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax)
 import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
-import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), checkFiles, suggestChoice)
+import Olifant.Newness (NewLines (..), newLinesOf, wholeNew)
+import Olifant.Migration (MigrationReport (..), Switch (..), bigChanges, readRegistry, switchMarkers, unregistered)
+import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), Severity (..), checkFiles, definedName, fingerprint, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
 import Olifant.Template qualified as Tm
@@ -88,6 +99,13 @@ data Ports = Ports
   , -- | the files version control tracks under a folder (relative to it);
     -- nothing outside version control
     pTracked :: FilePath -> IO (Maybe (Set FilePath))
+  , -- | a file's text at the base (the merge base of HEAD and a ref) and that
+    -- commit's id: Right Nothing when the file is not there (new); Left why
+    -- when there is no base (root, ref, project-relative path)
+    pBaseText :: FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
+  , -- | the files at the base (root, ref), project-relative; Left when
+    -- there is no base
+    pBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
   }
 
 -- | An open project: its root (absolute), its catalog, and the workspace
@@ -130,7 +148,13 @@ openProjectWith cache ports root =
     <&> fmap (\cat -> Project root cat (within root (pFiles ports)))
 
 generatorsOf :: Project -> [(Text, GeneratorDef)]
-generatorsOf project = [(generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries (prCatalog project)]
+generatorsOf project = concat [legacyPaths (generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries (prCatalog project)]
+  where
+    -- `applies_at.path = "{legacy}"`: the project's legacy globs (a copy per
+    -- glob; none without [migrate])
+    legacyPaths (gid, d) = case genAppliesAt d of
+      Just ap | apPath ap == "{legacy}" -> [(gid, d {genAppliesAt = Just ap {apPath = g}}) | g <- legacyOf project]
+      _ -> [(gid, d)]
 
 -- | A generator's [[uses]] steps with the entries they resolve to.
 subsOf :: Catalog -> CatalogEntry -> [(UseStep, Maybe CatalogEntry)]
@@ -195,7 +219,7 @@ doctorChecks ports project =
       [(T.pack p, why) | (p, why) <- catalogBrokenLanguages cat]
       [(generatorIdText g, why) | (g, _, why) <- catalogBroken cat]
       (catalogModel cat)
-      (recModel (catalogRecognize cat))
+      (catalogDecideModel cat)
   where
     cat = prCatalog project
 
@@ -252,15 +276,190 @@ completeAt ports project rel pos = do
   paths <- listFiles ws "."
   completionsAt (pSyntax ports) (catalogLanguages (prCatalog project)) (queriesAt ports project rel (fst pos)) paths (readText ws) (generatorsOf project) rel pos (fromMaybe "" content)
 
+-- | Which lines of a project file (its current TEXT) are new since the
+-- base: against the merge base of HEAD and the base ref.
+newnessOf :: Ports -> Project -> FilePath -> Text -> IO NewLines
+newnessOf ports = newnessWith (pBaseText ports)
+
+-- | 'newnessOf' with the base text from BASE (the server caches it).
+newnessWith :: (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> Project -> FilePath -> Text -> IO NewLines
+newnessWith base project rel text =
+  base (prRoot project) (baseRefOf project) rel <&> \case
+    Left why -> NoBase why
+    Right (_, Nothing) -> AllNew
+    Right (_, Just b) -> NewIn (newLinesOf b text)
+
+-- | How far the migration has come ([migrate]; none without it): legacy
+-- definitions now and at the base, those new since (not delegates, which
+-- carry their allowance), the switches now and at the base, and markers the
+-- registry lacks.
+migrationFor :: Ports -> Project -> IO (Maybe MigrationReport)
+migrationFor ports project = case catalogMigrate cat of
+  Nothing -> pure Nothing
+  Just mig -> do
+    paths <- listFiles ws "."
+    let legacy = [p | p <- paths, any (`matchesGlob` p) (mgLegacy mig)]
+        kinds = J.object ["any" J..= [J.object ["kind" J..= k] | k <- mgCount mig]]
+        defs text p = case languageFor (catalogLanguages cat) p of
+          Nothing -> pure []
+          Just lang -> either (const []) id <$> querySyntax (pSyntax ports) lang kinds text
+    perFile <- forM legacy $ \p -> do
+      text <- fromMaybe "" <$> readText ws p
+      now <- defs text p
+      base <- pBaseText ports (prRoot project) (mgBase mig) p
+      before <- case base of
+        Left _ -> pure Nothing
+        Right (_, Nothing) -> pure (Just 0)
+        Right (_, Just b) -> Just . length <$> defs b p
+      let newness = case base of
+            Left why -> NoBase why
+            Right (_, Nothing) -> AllNew
+            Right (_, Just b) -> NewIn (newLinesOf b text)
+          ls = T.lines text
+          allowed m = let l = fst (matchStart m) in l > 0 && "olifant:allow legacy-bug-fix-only" `T.isInfixOf` (ls !! (l - 1))
+          added = [nameOf m | m <- now, wholeNew newness (lineRange m), not (allowed m)]
+      pure (length now, before, added, switchMarkers text)
+    -- the registry: [migrate] switches, else where the switch generator
+    -- writes it (a switches.py outside the legacy code)
+    let registryPath = case mgSwitches mig of
+          Just r -> Just r
+          Nothing -> listToMaybe [p | p <- paths, takeFileName p == "switches.py", p `notElem` legacy]
+    registry <- maybe (pure Nothing) (readText ws) registryPath
+    registryBase <- case registryPath of
+      Nothing -> pure (Just [])
+      Just r ->
+        pBaseText ports (prRoot project) (mgBase mig) r <&> \case
+          Left _ -> Nothing
+          Right (_, Nothing) -> Just []
+          Right (_, Just b) -> Just (map swName (readRegistry b))
+    -- the base counted over the base's own legacy files: a file deleted
+    -- (migrated away) or renamed since still counts there
+    baseCount <-
+      pBaseFiles ports (prRoot project) (mgBase mig) >>= \case
+        Left _ -> pure Nothing
+        Right baseFiles -> fmap (fmap sum . sequence) . forM [p | p <- baseFiles, any (`matchesGlob` p) (mgLegacy mig)] $ \p ->
+          pBaseText ports (prRoot project) (mgBase mig) p >>= \case
+            Right (_, Just b) -> Just . length <$> defs b p
+            Right (_, Nothing) -> pure (Just 0)
+            Left _ -> pure Nothing
+    let switches = maybe [] readRegistry registry
+        befores = [b | (_, b, _, _) <- perFile]
+    pure . Just $
+      MigrationReport
+        { mrLegacyNow = sum [n | (n, _, _, _) <- perFile]
+        , mrLegacyBase = maybe (sum <$> sequence befores) Just baseCount
+        , mrSwitches = switches
+        , mrSwitchesBase = registryBase
+        , mrAddedLegacy = concat [a | (_, _, a, _) <- perFile]
+        , mrUnregistered = unregistered (concat [m | (_, _, _, m) <- perFile]) switches
+        }
+  where
+    cat = prCatalog project
+    ws = prWorkspace project
+    lineRange m = ((fst (matchStart m) + 1, 1), (fst (matchEnd m) + 1, 1))
+    -- a definition's name: the identifier after `def`/`class`/`fn`
+    nameOf m = case T.words (T.takeWhile (/= '(') (T.takeWhile (/= ':') (matchText m))) of
+      _ : name : _ -> name
+      _ -> T.strip (matchText m)
+
+-- | New work in disguise ([migrate]): a legacy function changed by at least
+-- `new_work_lines` new lines, not wholly new — a quiet hint, with the
+-- extract fixes (a configured decider may sharpen it: the server's job).
+newWorkHints :: Ports -> Project -> (FilePath -> Text -> IO NewLines) -> [FilePath] -> IO [Finding]
+newWorkHints ports project newness files = case catalogMigrate cat of
+  Nothing -> pure []
+  Just mig -> fmap concat . forM [f | f <- files, any (`matchesGlob` f) (mgLegacy mig)] $ \f -> do
+    text <- fromMaybe "" <$> readText ws f
+    case languageFor (catalogLanguages cat) f of
+      Nothing -> pure []
+      Just lang -> do
+        ms <- either (const []) id <$> querySyntax (pSyntax ports) lang (J.object ["any" J..= [J.object ["kind" J..= k] | k <- mgCount mig]]) text
+        n <- newness f text
+        let ranged = [(((fst (matchStart m) + 1, 1), (fst (matchEnd m) + 1, snd (matchEnd m) + 1)), m) | m <- ms]
+            big = bigChanges (mgNewWorkLines mig) n (map fst ranged)
+        pure
+          [ Finding "migrate-new-work" f (Just rng) Hint ("a big change (" <> T.pack (show k) <> " new lines): is this new work? New work goes in the new architecture") (extractFixes f) (matchText m) (fingerprint ["migrate-new-work", matchText m])
+          | (rng, k) <- big
+          , Just m <- [lookup rng ranged]
+          ]
+  where
+    cat = prCatalog project
+    ws = prWorkspace project
+    extractFixes f =
+      [ FixOffer ("python-strangler/extract-" <> kind) (Just ("Extract this as a " <> kind)) [("file", T.pack f)] Nothing []
+      | kind <- ["command", "query"]
+      ]
+
+-- | A node's text with its indentation taken off the lines after the
+-- first (ast-grep gives the first line from the node's column, the rest
+-- whole): the text as if the node were at column 0.
+relativeTo :: Text -> Text -> Text
+relativeTo indent found = case T.lines found of
+  [] -> found
+  l : ls -> T.intercalate "\n" (l : [fromMaybe x (T.stripPrefix indent x) | x <- ls])
+
+-- | A definition's signature: its lines up to the colon that ends it, the
+-- first `:` outside brackets and strings (`def f(\n    a,\n) -> dict:`);
+-- the first line when there is none.
+signatureHead :: Text -> Text
+signatureHead found = case go (0 :: Int) Nothing (T.unpack found) 0 of
+  Just n -> T.intercalate "\n" (take (n + 1) (T.lines found))
+  Nothing -> fromMaybe "" (listToMaybe (T.lines found))
+  where
+    go _ _ [] _ = Nothing
+    go depth (Just q) (c : cs) line
+      | c == '\\' = case cs of
+          d : rest -> go depth (Just q) rest (if d == '\n' then line + 1 else line)
+          [] -> Nothing
+      | c == q = go depth Nothing cs line
+      | otherwise = go depth (Just q) cs (if c == '\n' then line + 1 else line)
+    go depth Nothing (c : cs) line
+      | c == '\n' = go depth Nothing cs (line + 1)
+      | c `elem` ("\"'" :: String) = go depth (Just c) cs line
+      | c `elem` ("([{" :: String) = go (depth + 1) Nothing cs line
+      | c `elem` (")]}" :: String) = go (max 0 (depth - 1)) Nothing cs line
+      | c == ':' && depth == 0 = Just line
+      | otherwise = go depth Nothing cs line
+
+-- | A switched function's new path (the strangler's retire): the lines
+-- inside its `if switches.on(…):` block, a level less indented — what the
+-- function becomes once its legacy body goes.
+switchPath :: Text -> Text
+switchPath found =
+  let ls = T.lines found
+      indentOf = T.length . T.takeWhile (== ' ')
+   in case break (T.isPrefixOf "if switches.on(" . T.stripStart) ls of
+        (_, guard : rest) ->
+          let level = indentOf guard
+              body = takeWhile (\l -> T.null (T.strip l) || indentOf l > level) rest
+              inner = case filter (not . T.null . T.strip) body of
+                l : _ -> indentOf l - level
+                [] -> 0
+           in T.intercalate "\n" [T.drop inner l | l <- body, not (T.null (T.strip l))]
+        _ -> ""
+
+-- | What "new" is measured from: the base ref ([migrate] base; main).
+baseRefOf :: Project -> Text
+baseRefOf project = maybe "main" mgBase (catalogMigrate (prCatalog project))
+
+-- | The project's legacy globs ([migrate] legacy; none).
+legacyOf :: Project -> [Text]
+legacyOf project = maybe [] mgLegacy (catalogMigrate (prCatalog project))
+
 -- | The rules' findings in some project files, each fix's open choices
 -- resolved ('chooseFixInputs'), and the allowances that applied.
 findings :: Ports -> Project -> [FilePath] -> IO ([Finding], [Exception])
-findings ports project files = do
+findings ports project = findingsWith (newnessOf ports project) ports project
+
+-- | 'findings' with a file's newness given (the server caches it).
+findingsWith :: (FilePath -> Text -> IO NewLines) -> Ports -> Project -> [FilePath] -> IO ([Finding], [Exception])
+findingsWith newness ports project files = do
   let cat = prCatalog project
       ws = prWorkspace project
   paths <- listFiles ws "."
   now <- pNow ports
-  checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) (catalogRules cat) paths (readText ws) files
+  hints <- newWorkHints ports project newness files
+  (\(fs, exs) -> (fs ++ hints, exs)) <$> checkFiles (pSyntax ports) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf project) (\f -> readText ws f >>= newness f . fromMaybe "") (catalogRules cat) paths (readText ws) files
     >>= chooseFixInputs ports project paths now
 
 -- | A fix's enum inputs left open are pre-chosen when the finding's code
@@ -437,7 +636,11 @@ fixSteps ports project rule rel line n given = do
             Left err -> pure (Left (FixCatalog err))
             Right gen -> do
               let sets = M.union (M.fromList given) (M.fromList (foSets o))
-                  env = M.map Tm.VText (M.insert "finding" (maybe "" rpFinding (foReplace o)) sets)
+                  -- the found node's text relative to its own indentation (its
+                  -- first line has none; the replacement adds it back to every line);
+                  -- `finding_head`: a definition's whole signature, to its colon
+                  found = maybe "" (\rp -> relativeTo (rpIndent rp) (rpFinding rp)) (foReplace o)
+                  env = M.map Tm.VText (M.insert "finding_name" (definedName found) (M.insert "finding_switch_path" (switchPath found) (M.insert "finding_head" (signatureHead found) (M.insert "finding" found sets))))
                   defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                   replacement = case foReplace o of
                     Nothing -> Right []

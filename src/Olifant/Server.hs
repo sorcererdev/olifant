@@ -51,6 +51,7 @@ module Olifant.Server
   , suggestOrRecognize
   , recognitionFeedback
   , recognitionUpgrade
+  , deciderFor
   , Jobs
   , newJobs
   , submit

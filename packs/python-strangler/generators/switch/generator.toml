@@ -1,0 +1,93 @@
+name = "Switch"
+description = "Put a legacy function behind a switch: its flag on → the new command or query (which may decline: NotYet) → else the old body, unchanged"
+summary = "A legacy function behind a switch to the new path"
+language = "python"
+version = 1
+recognize = false
+examples = [
+  "olifant gen python-strangler/switch --set app=bistro --set service=booking --set kind=commands --set name=close_table --set function=close_table --set file=legacy/views.py",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service the new code lives in"
+
+[inputs.kind]
+type    = "enum"
+choices = ["commands", "queries"]
+default = "commands"
+prompt  = "A command or a query"
+
+[inputs.name]
+type   = "ident"
+prompt = "The new command or query"
+
+[inputs.function]
+type   = "ident"
+prompt = "The legacy function to switch"
+
+[inputs.file]
+type   = "text"
+prompt = "The legacy file (project-relative)"
+
+[derive]
+flag     = "{= name|kebab =}"
+Name     = "{= name|pascal =}"
+module   = "{= app =}.{= service|snake =}.{= kind =}.{= name|snake =}"
+registry = "src/{= app =}/switches.py"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+# a generator function (it yields): the new path's rows are yielded, then it
+# stops (a `return value` would end the iteration with nothing)
+[query.yields]
+files = "{= file =}"
+ast   = { kind = "yield", inside = { kind = "function_definition", has = { field = "name", regex = "^{= function =}$" }, stopBy = "end" } }
+
+# The registry: made the first time, then one line per switch, off.
+[[edits]]
+create    = "{= registry =}"
+template  = "switches.py.dt"
+on_exists = "skip"
+
+[[edits]]
+insert = "{= registry =}"
+at     = "after last line matching ^SWITCHES"
+text   = 'SWITCHES["{= flag =}"] = False'
+unless = { matches = 'SWITCHES\["{= flag =}"\]' }
+
+# The switch, at the start of the function; the old body below it, untouched.
+[[edits]]
+insert = "{= file =}"
+at     = "start of function {= function =}"
+text   = """# olifant:switch {= flag =} → {= service|snake =}/{= kind =}/{= name|snake =}
+if switches.on("{= flag =}"):
+    result = {= ? wiring: expr | the new {= kind|singular =} {= Name =} built with its ports, as src/{= app =}/main.py builds it =}.handle({= Name =}Input({= ? args: expr | this legacy function's parameters as the Input's fields =}))
+    if not isinstance(result, NotYet):
+{= if yields =}        yield from {= ? respond: expr | what this legacy generator yields for that result: an iterable of the items its callers expect =}
+        return{= else =}        return {= ? respond: expr | what this legacy function returns for that result: the shape its callers expect =}{= end =}"""
+unless = { matches = "olifant:switch {= flag =}" }
+
+[[uses]]
+generator = "python-htmx/add-import"
+with      = { file = "{= file =}", line = "from {= app =} import switches" }
+
+[[uses]]
+generator = "python-htmx/add-import"
+with      = { file = "{= file =}", line = "from {= app =}.shared.result import NotYet" }
+
+[[uses]]
+generator = "python-htmx/add-import"
+with      = { file = "{= file =}", line = "from {= module =} import {= Name =}, {= Name =}Input" }

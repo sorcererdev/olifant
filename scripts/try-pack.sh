@@ -45,6 +45,12 @@ sandbox=$(cd "$sandbox" && pwd -P)
 [ -d "$fixture" ] && cp -R "$fixture/." "$sandbox/"
 mkdir -p "$sandbox/.olifant"
 printf '[packs]\n%s = { path = "%s" }\n' "$pack" "$pack_dir" > "$sandbox/.olifant/config.toml"
+# the packs its generators build on ([[uses]] another pack's generator)
+for used in $(grep -ho 'generator *= *"[a-z0-9-]*/' "$pack_dir"/generators/*/generator.toml 2>/dev/null | sed 's/.*"\(.*\)\//\1/' | sort -u); do
+  [ "$used" != "$pack" ] && [ -d "$repo/packs/$used" ] && printf '%s = { path = "%s" }\n' "$used" "$repo/packs/$used" >> "$sandbox/.olifant/config.toml"
+done
+# the pack's own settings for a sandbox (python-strangler: [migrate])
+[ -f "$pack_dir/try.toml" ] && { echo; cat "$pack_dir/try.toml"; } >> "$sandbox/.olifant/config.toml"
 
 # A Python project: its environment (pyright, pytest, the app's deps), so
 # `uv run pytest` works and Olifant's checks start warm.
@@ -56,7 +62,7 @@ if [ -f "$sandbox/pyproject.toml" ]; then
   fi
 fi
 
-git -C "$sandbox" init -q
+git -C "$sandbox" init -q -b main
 git -C "$sandbox" add -A
 git -C "$sandbox" -c user.name=olifant -c user.email=olifant@localhost commit -qm "fixture: $pack"
 

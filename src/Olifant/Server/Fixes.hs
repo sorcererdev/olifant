@@ -7,22 +7,59 @@ import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.App (FixFailure (..), PlanOptions (..), findings, fixSteps, planOptions, planWith)
+import Olifant.App (FixFailure (..), PlanOptions (..), findingsWith, fixSteps, newnessWith, planOptions, planWith)
 import Olifant.Catalog (describeCatalogError)
 import Olifant.Generation (Plan (..), ProgressEvent, describeConflict, describeGenerationError)
 import Olifant.Server.Actions (fillerFor)
-import Olifant.Rules (Finding)
+import Olifant.Rules (Finding (..), RuleDef (..), RulesConfig (..), Severity (..), definedName)
+import Olifant.App (Project (..))
+import Olifant.Catalog (Catalog (..))
+import Control.Monad (forM, join)
+import Data.IORef (readIORef)
+import Data.List (find)
+import Data.Maybe (fromMaybe)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Server.State (ServerState (..), memo, projectFor)
+import Olifant.Decide (Answer (..), Question (..))
+import Olifant.Server.State (decision, deciderFor, cachedBase, ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
 -- | The rules' findings in a file (project-relative paths in them); none
 -- for a file in no project.
 findingsFor :: FilePath -> ServerState -> IO (ServerState, [Finding])
-findingsFor path = memo "findings" path "" $ \s ->
+findingsFor path s0 = do
+  (s1, fs) <- rawFindings path s0
+  -- decisions arrive in the background: applied on every ask, not memoised
+  projectFor path s1 >>= \case
+    (s2, Just (_, project)) -> (s2,) <$> decided s2 project path fs
+    (s2, Nothing) -> pure (s2, fs)
+
+-- | A file's findings as the rules and the migration see them (memoised
+-- per edit).
+rawFindings :: FilePath -> ServerState -> IO (ServerState, [Finding])
+rawFindings path = memo "findings" path "" $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
-    (s', Just (root, project)) -> (s',) . fst <$> findings (ssPorts s') project [makeRelative root path]
+    (s', Just (root, project)) -> (s',) . fst <$> findingsWith (newnessWith (cachedBase s') project) (ssPorts s') project [makeRelative root path]
+
+-- | New work in disguise, sharpened (decision 1): a decider's answer for a
+-- hint — new behaviour makes it the bug-fix-only warning, a bug fix drops
+-- it, unsure keeps the hint. Unanswered, it is asked once in the background
+-- (the deterministic hint stands meanwhile); when it is, the editor is told.
+decided :: ServerState -> Project -> FilePath -> [Finding] -> IO [Finding]
+decided s project path fs = case deciderFor s project of
+  Nothing -> pure fs
+  Just decider ->
+    fmap concat . forM fs $ \f ->
+      if fRule f /= "migrate-new-work"
+        then pure [f]
+        else
+          decision s decider (path, "bug-or-new:" <> definedName (fText f)) (fFingerprint f) (Question "bug-or-new" ["bug fix", "new behaviour"] [] [("function", fText f)]) (join (readIORef (ssOnDecided s))) <&> \case
+            Just (Chosen "new behaviour" _) -> [f {fRule = "legacy-bug-fix-only", fSeverity = severityOf "legacy-bug-fix-only", fMessage = "New work goes in the new architecture (legacy is bug-fix-only): this change adds behaviour"}]
+            Just (Chosen "bug fix" _) -> []
+            _ -> [f]
+  where
+    cat = prCatalog project
+    severityOf r = fromMaybe (maybe Warn ruleSeverity (find ((== r) . ruleId) (catalogRules cat))) (lookup r (rcSeverity (catalogRulesConfig cat)))
 
 -- | The edits of a rule's fix (the @n@th, 1-based) at a line of a file,
 -- with the choices made: planned now, so a finding that moved or went

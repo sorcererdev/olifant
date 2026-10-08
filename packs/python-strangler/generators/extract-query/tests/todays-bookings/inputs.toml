@@ -1,0 +1,8 @@
+now = "2026-10-07T12:00:00Z"
+
+[inputs]
+app = "bistro"
+service = "booking"
+name = "todays_bookings"
+function = "todays_bookings"
+file = "legacy/views.py"

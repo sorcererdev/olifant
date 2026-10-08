@@ -13,6 +13,7 @@ common shared
   ghc-options:        -Wall -Wcompat -Wincomplete-uni-patterns -Wincomplete-record-updates
   build-depends:
     , base                  >=4.18 && <5
+    , array                 >=0.5
     , aeson                 >=2.1
     , bytestring            >=0.11
     , containers            >=0.6
@@ -50,6 +51,7 @@ library
     Olifant.Cli
     Olifant.Cli.Options
     Olifant.Cursor
+    Olifant.Decide
     Olifant.Doctor
     Olifant.Fill
     Olifant.Generation
@@ -85,8 +87,10 @@ library
     Olifant.Language.Support
     Olifant.Language.Syntax
     Olifant.Lsp
+    Olifant.Migration
     Olifant.Model
     Olifant.Naming
+    Olifant.Newness
     Olifant.Output
     Olifant.Preview
     Olifant.Preview.Fields
@@ -164,6 +168,8 @@ test-suite spec
     Olifant.CliSpec
     Olifant.Cursor
     Olifant.CursorSpec
+    Olifant.Decide
+    Olifant.DecideSpec
     Olifant.Doctor
     Olifant.DoctorSpec
     Olifant.Fill
@@ -208,10 +214,14 @@ test-suite spec
     Olifant.LanguageSpec
     Olifant.Lsp
     Olifant.LspSpec
+    Olifant.Migration
+    Olifant.MigrationSpec
     Olifant.Model
     Olifant.ModelSpec
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.Newness
+    Olifant.NewnessSpec
     Olifant.Output
     Olifant.OutputSpec
     Olifant.Preview

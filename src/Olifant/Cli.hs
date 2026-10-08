@@ -5,7 +5,9 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 import Data.Set (Set)
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
-import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined)
+import Olifant.Newness (NewLines (..))
+import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
+import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
@@ -41,7 +43,7 @@ import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
-import System.FilePath (makeRelative, normalise, splitDirectories, takeBaseName, takeFileName, (</>))
+import System.FilePath (dropTrailingPathSeparator, makeRelative, normalise, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -67,6 +69,10 @@ data Runtime = Runtime
     rtVerifier :: Cancel -> Verifier IO
   , -- | the files git tracks under a folder (what a project already had)
     rtTracked :: FilePath -> IO (Maybe (Set FilePath))
+  , -- | a file's text at the base (see 'pBaseText')
+    rtBaseText :: FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
+  , -- | the files at the base (see 'pBaseFiles')
+    rtBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -78,6 +84,10 @@ runCli rt args = case parseOptions args of
   -- `init` makes a project: there is none to open yet
   -- the language server finds its projects itself, file by file
   Right opts | LspCmd <- optCommand opts -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
+  Right opts | InitMigrateCmd paths pack <- optCommand opts ->
+    runInitMigrate rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) paths pack
+  Right opts | InitCmd pack name _ _ <- optCommand opts, T.null pack || T.null name ->
+    failWith rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) 2 "usage" "init needs --pack PACK NAME (a new project), or --migrate PATH (an existing repo)" Nothing []
   Right opts | InitCmd pack name dir plan <- optCommand opts ->
     runInit rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) pack name dir plan
   Right opts -> do
@@ -95,6 +105,60 @@ runCli rt args = case parseOptions args of
 -- in an empty folder. The pack is a directory, or a name under [packs] in
 -- the user config; the user's [model] comes along; regions are fenced; a
 -- first commit is made; the starter's `next` lines say what to run.
+-- | `init --migrate PATH…` in an existing repo: the target pack and the
+-- strangler pack, `[migrate] legacy`, `.olifant/state/` ignored, and today's
+-- findings baselined (nothing fails on day one).
+runInitMigrate :: Runtime -> Format -> [FilePath] -> Text -> IO ExitCode
+runInitMigrate rt fmt paths pack = do
+  let cwd = rtProjectDir rt
+      ws = rtRoot rt
+      configPath = cwd </> ".olifant" </> "config.toml"
+  existing <- readText ws configPath
+  userConfig <- maybe (pure Nothing) (\u -> readText ws (u </> "config.toml")) (rtUserConfigDir rt)
+  let userPacks = [(n, normalise (fromMaybe "." (rtUserConfigDir rt) </> p)) | Just src <- [userConfig], Right ps <- [packsFromConfig src], (n, p) <- ps]
+      resolve p = do
+        let asPath = normalise (cwd </> T.unpack p)
+        isDir <- (== Directory) <$> inspectPath ws asPath
+        pure (if isDir then Just (T.pack (takeFileName asPath), asPath) else (p,) <$> lookup p userPacks)
+  target <- resolve pack
+  -- the strangler pack: configured, else beside the --pack directory
+  strangler <- resolve "python-strangler" >>= \case
+    Just found -> pure (Just found)
+    Nothing -> case target of
+      Just (_, dir) -> do
+        let next = takeDirectory (dropTrailingPathSeparator dir) </> "python-strangler"
+        there <- (== Directory) <$> inspectPath ws next
+        pure (if there then Just ("python-strangler", next) else Nothing)
+      Nothing -> pure Nothing
+  case (existing, target, strangler) of
+    (Just c, _, _) | "[migrate]" `T.isInfixOf` c -> failWith rt fmt 2 "usage" "already migrating: edit [migrate] in .olifant/config.toml" Nothing []
+    (_, Nothing, _) -> failWith rt fmt 2 "usage" ("no pack `" <> pack <> "`") (Just "give a pack's directory, or add it under [packs] in ~/.config/olifant/config.toml") []
+    (_, _, Nothing) -> failWith rt fmt 2 "usage" "no pack `python-strangler`" (Just "add it under [packs] in ~/.config/olifant/config.toml") []
+    (_, Just t, Just s) -> do
+      let packLine (n, p) = n <> " = { path = \"" <> T.pack p <> "\" }\n"
+          migrate = "[migrate]\nlegacy = [" <> T.intercalate ", " ["\"" <> T.pack (dropTrailingPathSeparator p) <> "/**\"" | p <- paths] <> "]\n"
+          withPack c (n, p)
+            | (n <> " = ") `T.isInfixOf` c = c
+            | "[packs]\n" `T.isInfixOf` c = T.replace "[packs]\n" ("[packs]\n" <> packLine (n, p)) c
+            | otherwise = c <> "\n[packs]\n" <> packLine (n, p)
+          config = case existing of
+            Nothing -> "[packs]\n" <> packLine t <> packLine s <> "\n" <> migrate
+            Just c -> withPack (withPack c t) s <> (if "\n" `T.isSuffixOf` c then "\n" else "\n\n") <> migrate
+      writeText ws configPath config
+      -- the language server's local state stays out of git
+      let project = within cwd ws
+      ignored <- readText project ".gitignore"
+      case ignored of
+        Nothing -> writeText project ".gitignore" ".olifant/state/\n"
+        Just g
+          | ".olifant/state/" `elem` map T.strip (T.lines g) -> pure ()
+          | otherwise -> writeText project ".gitignore" (g <> (if T.null g || "\n" `T.isSuffixOf` g then "" else "\n") <> ".olifant/state/\n")
+      -- today's debt, recorded: nothing fails on day one
+      code <- runCli rt (["check", "--baseline"] ++ (if fmt == Human then ["--human"] else ["--json"]))
+      when (fmt == Human) $
+        rtOut rt ("migrating " <> T.intercalate ", " (map T.pack paths) <> ": legacy is bug-fix-only; new work goes to the new architecture\nnext: olifant check, and open the project in your editor\n")
+      pure code
+
 runInit :: Runtime -> Format -> Text -> Text -> Maybe FilePath -> Bool -> IO ExitCode
 runInit rt fmt pack name dirArg plan = do
   let cwd = rtProjectDir rt
@@ -231,6 +295,7 @@ runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt cwd fmt cat = \case
   -- handled before a project is opened (runCli); here for completeness
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
+  InitMigrateCmd paths pack -> runInitMigrate rt fmt paths pack
   LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   ListCmd detail -> do
     (entries, broken, views) <- listGenerators (portsOf rt) (projectOf rt cat) detail
@@ -306,8 +371,8 @@ runCommand rt cwd fmt cat = \case
         emit rt fmt (object (["findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs] ++ reportJson fs)) (T.unlines (map (findingHuman olds) fs))
         pure ExitSuccess
       Nothing | baseline -> do
-        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
-        (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked
+        let checked = [p | p <- paths, any (\r -> isJust (ruleCovers (legacyOf (projectOf rt cat)) r p)) rules]
+        (fs, _) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf (projectOf rt cat)) (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked
         -- Debt only goes down: once a baseline exists, re-baselining keeps
         -- at most each key's old count, unless --accept-new (review I9).
         let current = M.fromListWith (+) [(key f, 1 :: Int) | f <- fs]
@@ -330,7 +395,7 @@ runCommand rt cwd fmt cat = \case
           Just _ -> pure ([], [], M.empty) -- a findings run on the branch's changes
           Nothing -> refreshRegions ReportUnset (projectTools (portsOf rt) (projectOf rt cat)) ws 1 M.empty
         changed <- traverse (rtGitChanged rt (rtProjectDir rt)) changedSince
-        let checked = [p | p <- paths, any (\r -> isJust (matchPathSlots (ruleFiles r) p)) rules]
+        let checked = [p | p <- paths, any (\r -> isJust (ruleCovers (legacyOf (projectOf rt cat)) r p)) rules]
             touched f = case changed of
               Nothing -> True
               Just (Left _) -> True
@@ -340,7 +405,8 @@ runCommand rt cwd fmt cat = \case
                     (Nothing, _) -> False
                     (Just _, Nothing) -> True
                     (Just rs, Just ((l1, _), (l2, _))) -> any (\(a, b) -> a <= l2 && l1 <= b) rs
-        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) rules paths (readText ws) checked >>= chooseInputs
+        mig <- migrationFor (portsOf rt) (projectOf rt cat)
+        (fs0, exs) <- checkFiles (rtSyntax rt) (catalogLanguages cat) (catalogRulesConfig cat) (legacyOf (projectOf rt cat)) (\f -> readText ws f >>= newnessOf (portsOf rt) (projectOf rt cat) f . fromMaybe "") rules paths (readText ws) checked >>= chooseInputs
         let fs = filter touched fs0
             drift = [(editPath e, r) | e <- edits, WillRefresh r _ _ _ <- [editAction e]]
             regionsJson = [object ["file" .= p, "region" .= r, "status" .= ("drift" :: Text)] | (p, r) <- drift] ++ [object ["status" .= ("broken" :: Text), "message" .= describeConflict c] | c <- conflicts]
@@ -360,6 +426,8 @@ runCommand rt cwd fmt cat = \case
                   ++ (if report then "rules:" : ["  " <> ruleId r <> ": " <> sevText (fromMaybe (ruleSeverity r) (lookup (ruleId r) (rcSeverity (catalogRulesConfig cat)))) | r <- rules] else [])
                   ++ (if report then "exceptions:" : map exceptionHuman exs else [])
                   ++ ["debt: " <> ruleId r <> " " <> T.pack (show n) <> " existing" | report, r <- rules, let n = length [f | f <- olds, fRule f == ruleId r], n > 0]
+                  ++ (if report then concat [("switches:" : ["  " <> swName s <> ": " <> (if swOn s then "on" else "off") | s <- mrSwitches m]) ++ ["  " <> u <> ": not in the registry" | u <- mrUnregistered m] | Just m <- [mig]] else [])
+                  ++ ["migration: " <> reportLine m | Just m <- [mig]]
                   ++ [ if failed
                          then "check failed"
                          else
@@ -367,7 +435,7 @@ runCommand rt cwd fmt cat = \case
                                old = length olds
                             in "conventions hold (" <> T.pack (show n) <> " finding" <> (if n == 1 then "" else "s") <> ", " <> (if old > 0 then T.pack (show old) <> " existing" else "none blocking") <> ")"
                      ]
-        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ reportJson fs)) human
+        emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ ["migration" .= migrationJson m | Just m <- [mig]] ++ reportJson fs)) human
         pure (if failed then ExitFailure 1 else ExitSuccess)
   DoctorCmd -> do
     checks <- doctorChecks (portsOf rt) (projectOf rt cat)
@@ -648,7 +716,7 @@ modelFor cat g
 
 -- | The engine's ports, as the CLI runs them.
 portsOf :: Runtime -> Ports
-portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt)
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt)
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project

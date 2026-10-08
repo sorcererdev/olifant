@@ -10,6 +10,8 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as AKM
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Olifant.Cli
 import Olifant.Output (planHuman, planJson)
@@ -68,7 +70,143 @@ runWithAstGrep stdinText files args = do
   runInWith (astGrepSyntax (tmp </> "olifant-test-cache")) "/proj" stdinText files False args
 
 runInWith :: Syntax IO -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
-runInWith syntax dir stdinText files tty args = do
+runInWith syntax = runInBase syntax (\_ _ _ -> pure (Left "no base in tests"))
+
+-- | 'runInWith' with the base texts given (the strangler's "new code").
+-- | A field of a JSON object.
+lookupKey :: Aeson.Key -> Aeson.Value -> Maybe Aeson.Value
+lookupKey k = \case
+  Aeson.Object o -> AKM.lookup k o
+  _ -> Nothing
+
+-- | `olifant init --migrate` in an existing repo.
+initMigrateSpec :: Spec
+initMigrateSpec = describe "init --migrate (an existing repo)" $ do
+  let packs =
+        [ ("/u/config.toml", "[packs]\npython-htmx = { path = \"/packs/py\" }\npython-strangler = { path = \"/packs/ps\" }\n")
+        , ("/packs/py/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+        , ("/packs/py/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+        , ("/packs/ps/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+        , ("/w/legacy/app.py", "def a():\n    return 1\n")
+        ]
+  it "writes the config (both packs, [migrate]) and a baseline, ignoring .olifant/state/" $ do
+    (code, _, _, files, _) <- runInit packs ["init", "--migrate", "legacy", "--human"]
+    code `shouldBe` ExitSuccess
+    let config = M.findWithDefault "" "/w/.olifant/config.toml" files
+    config `shouldSatisfy` T.isInfixOf "python-htmx = { path = \"/packs/py\" }"
+    config `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/ps\" }"
+    config `shouldSatisfy` T.isInfixOf "[migrate]\nlegacy = [\"legacy/**\"]"
+    M.member "/w/.olifant/baseline.toml" files `shouldBe` True
+    M.findWithDefault "" "/w/.gitignore" files `shouldSatisfy` T.isInfixOf ".olifant/state/"
+  it "finds python-strangler beside a --pack directory, with no user config" $ do
+    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml"] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")]
+    (code, out, err, files, _) <- runInit beside ["init", "--migrate", "legacy", "--pack", "/packs/python-htmx", "--human"]
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    M.findWithDefault "" "/w/.olifant/config.toml" files `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/python-strangler\" }"
+  it "refuses when the project is migrating already" $ do
+    (code, out, err, _, _) <- runInit (("/w/.olifant/config.toml", "[migrate]\nlegacy = [\"x/**\"]\n") : packs) ["init", "--migrate", "legacy", "--human"]
+    code `shouldNotBe` ExitSuccess
+    (out <> err) `shouldSatisfy` T.isInfixOf "already migrating"
+  it "appends [migrate] to a project's config, adding the strangler pack, keeping the rest" $ do
+    let existing = "name = \"bistro\"\n\n[packs]\npython-htmx = { path = \"/packs/py\" }\n"
+    (code, _, _, files, _) <- runInit (("/w/.olifant/config.toml", existing) : packs) ["init", "--migrate", "legacy", "--human"]
+    code `shouldBe` ExitSuccess
+    let config = M.findWithDefault "" "/w/.olifant/config.toml" files
+    config `shouldSatisfy` T.isPrefixOf "name = \"bistro\""
+    config `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/ps\" }"
+    config `shouldSatisfy` T.isInfixOf "[migrate]"
+
+-- | check on new code (only = "new"), with a base given.
+newCodeCheckSpec :: Spec
+newCodeCheckSpec = describe "check: rules on new code" $ do
+  it "reports the migration: legacy functions now and at the base, extracted, added, switches" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p", "", "def gone(x):", "    return x"]
+        now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t", "", "def seat(p):", "    return p", "", "def waitlist(r):", "    return r", "", "# olifant:allow legacy-bug-fix-only — delegates to booking/commands/notify", "def notify(n):", "    return n"]
+        registryNow = "SWITCHES: dict[str, bool] = {\n    \"close-table\": True,\n}\n"
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\nswitches = \"src/app/switches.py\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", now)
+          , ("/w/src/app/switches.py", registryNow)
+          ]
+        baseOf _ _ p = pure $ case p of
+          "legacy/views.py" -> Right ("c0ffee", Just base)
+          "src/app/switches.py" -> Right ("c0ffee", Just "SWITCHES: dict[str, bool] = {\n}\n")
+          _ -> Right ("c0ffee", Nothing)
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+        m = lookupKey "migration" v
+    (m >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 1 legacy function added (waitlist), legacy 3 → 4 functions; switches: 1 on, 0 off")
+  it "finds the switch registry where the switch generator writes it (src/<app>/switches.py) when [migrate] names none" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t"]
+        now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t"]
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", now)
+          , ("/w/src/app/switches.py", "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\n")
+          ]
+        baseOf _ _ p = pure $ case p of
+          "legacy/views.py" -> Right ("c0ffee", Just base)
+          _ -> Right ("c0ffee", Nothing)
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    (lookupKey "migration" v >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 0 legacy functions added, legacy 1 → 1 functions; switches: 1 on, 0 off")
+  it "counts the base over the base's own legacy files: a deleted one is migration done (review #7)" $ do
+    tmp <- getTemporaryDirectory
+    let views = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]
+        gone = T.unlines ["def charge(c):", "    return c", "", "def refund(c):", "    return c"]
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", views)
+          ]
+        baseOf _ _ p = pure $ case p of
+          "legacy/views.py" -> Right ("c0ffee", Just views)
+          "legacy/payments.py" -> Right ("c0ffee", Just gone)
+          _ -> Right ("c0ffee", Nothing)
+    (_, out, _, _) <- runInBaseFiles (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf (\_ _ -> pure (Right ["legacy/views.py", "legacy/payments.py", "README.md"])) "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    (lookupKey "migration" v >>= lookupKey "line") `shouldBe` Just (Aeson.String "+0 extracted, 0 legacy functions added, legacy 4 → 2 functions; switches: 0 on, 0 off")
+  it "checks the files a {legacy} rule names (its [migrate] legacy globs)" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t"]
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"{legacy}\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", base <> "\ndef waitlist(r):\n    return r\n")
+          ]
+        baseOf _ _ p = pure (if p == "legacy/views.py" then Right ("c0ffee", Just base) else Right ("c0ffee", Nothing))
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    T.count "no-new-defs" out `shouldBe` 1
+  it "reports a definition new since the base, and not one edited" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]
+        now = T.replace "return t" "return t + 1" base <> "\ndef waitlist(r):\n    return r\n"
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+          , ("/w/.olifant/rules.toml", "[rules.no-new-defs]\nfiles = \"legacy/*.py\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", now)
+          ]
+        baseOf _ _ p = pure (if p == "legacy/views.py" then Right ("c0ffee", Just base) else Right ("c0ffee", Nothing))
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    T.count "no-new-defs" out `shouldBe` 1
+    out `shouldSatisfy` T.isInfixOf "\"start\":[7,1]"
+
+runInBase :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInBase syntax base = runInBaseFiles syntax base (\_ _ -> pure (Left "no listing"))
+
+runInBaseFiles :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> (FilePath -> Text -> IO (Either Text [FilePath])) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
+runInBaseFiles syntax base baseFiles dir stdinText files tty args = do
   (root, snapshot) <- memoryWorkspace files
   out <- newIORef ""
   err <- newIORef ""
@@ -87,7 +225,7 @@ runInWith syntax dir stdinText files tty args = do
         , rtSyntax = syntax
         , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
-        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
+        , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles
         , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier
         }
       args
@@ -112,7 +250,7 @@ runInitWith committed files args = do
         , rtOut = \t -> modifyIORef' out (<> t), rtErr = \t -> modifyIORef' err (<> t)
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
-        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
+        , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base")
         , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier
         }
       args
@@ -126,7 +264,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do

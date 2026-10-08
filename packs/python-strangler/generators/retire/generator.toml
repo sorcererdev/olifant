@@ -1,0 +1,11 @@
+name = "Retire the legacy path"
+description = "A switched legacy function keeps only its new path: the rule switch-retire's fix rewrites it (its legacy body goes); the function itself stays for its callers"
+summary = "Retire a switched function's legacy body"
+language = "python"
+version = 1
+recognize = false
+
+[inputs.file]
+type     = "text"
+optional = true
+prompt   = "The legacy file"

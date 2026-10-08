@@ -158,7 +158,7 @@ recognitionUpgrade path sg s = case sgRecognition sg of
 -- backend under this work's token, or (tests) a recorded answer.
 recognizerFor :: ServerState -> Project -> Maybe (Recognizer IO)
 recognizerFor s project = do
-  name <- recModel (catalogRecognize (prCatalog project))
+  name <- catalogDecideModel (prCatalog project)
   case scRecognizeAnswers (ssConfig s) of
     Just recorded -> Just (recordedRecognizer recorded (ssCancel s))
     Nothing -> do

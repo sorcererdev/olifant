@@ -1,0 +1,40 @@
+name = "Create it as a query"
+description = "New work in legacy code goes in the new architecture: a python-htmx query (and its test); the legacy function only delegates to it"
+summary = "New work as a query; the legacy function delegates"
+language = "python"
+version = 1
+recognize = false
+examples = [
+  "olifant fix legacy-bug-fix-only legacy/views.py --at 220:1 --fix query --set app=bistro --set service=booking",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service the new work belongs to"
+
+[inputs.name]
+type   = "ident"
+prompt = "The query's name (the legacy function's name)"
+
+[inputs.file]
+type     = "text"
+optional = true
+prompt   = "The legacy file the work was started in"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+[[uses]]
+generator = "python-htmx/query"
+with      = { app = "{= app =}", service = "{= service =}", query = "{= name =}" }

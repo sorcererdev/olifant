@@ -21,13 +21,14 @@ import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory)
+import System.FilePath (splitDirectories, takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import System.FilePath ((</>))
 import Olifant.Workspace (diskWorkspace, memoryWorkspace)
 import System.Environment (lookupEnv)
 import Olifant.Rules (FixOffer (..), Finding (..), RulesConfig (..), Severity (..), checkFiles, parseRules)
+import Olifant.Newness (NewLines (..))
 import Olifant.Cli (DoctorPorts (..), Runtime (..), runCli)
 import System.Directory (canonicalizePath)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
@@ -167,16 +168,16 @@ spec = do
           Right rust = parseLanguage "rust" "packs/rust-htmx" langSrc
           path = "billing/billing-service/src/cancel_invoice.rs"
           code = "use std::sync::Arc;\nuse diesel::prelude::*;\n\nfn f() { let x = g().unwrap(); }\n"
-      (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+      (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just code)) [path]
       [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
         `shouldBe` [ ("commands-use-ports", Just 2, Warn, ["rust-htmx/command-dependency", "rust-htmx/service-repository"])
                    , ("commands-no-unwrap", Just 4, Hint, []) ]
       -- the realistic flow: Diesel code, no import yet; one finding per line
       let usage = "fn f(conn: &mut PgConnection) {\n    let rows = invoices::table.filter(invoices::id.eq(1)).load::<Invoice>(conn);\n    diesel::insert_into(invoices::table).values(&x).execute(conn);\n}\n"
-      (uses, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules [path] (\_ -> pure (Just usage)) [path]
+      (uses, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just usage)) [path]
       [(fRule f, fmap (fst . fst) (fRange f)) | f <- uses, fRule f == "commands-use-ports"] `shouldBe` [("commands-use-ports", Just 2), ("commands-use-ports", Just 3)]
       -- the service's own modules are not commands (review: upgraded minor)
-      (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
+      (others, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) [] (\_ -> pure AllNew) rules ["billing/billing-service/src/service.rs"] (\_ -> pure (Just "fn f() { let x = g().unwrap(); }\n")) ["billing/billing-service/src/service.rs"]
       others `shouldBe` []
   describe "python-htmx rules (spec §5.9)" $
     it "flags sqlite3 in a command, ports in the web, adapters outside main, raised failures; the fixture holds" $ do
@@ -186,7 +187,7 @@ spec = do
       let Right rules = parseRules rulesSrc
           Right python = parseLanguage "python" "packs/python-htmx" langSrc
           check path code = do
-            (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules [path] (\_ -> pure (Just code)) [path]
+            (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just code)) [path]
             pure [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
           command = "src/bistro/booking/commands/close_table.py"
       check command "import sqlite3\n\n\ndef f() -> None:\n    db = sqlite3.connect(\"x\")\n    raise TableNotFound(\"t9\")\n"
@@ -203,7 +204,7 @@ spec = do
       -- the fixture is the convention written down: it holds
       fixture <- readTree "packs/python-htmx/fixtures/app"
       let pys = [p | p <- M.keys fixture, ".py" `T.isSuffixOf` T.pack p]
-      (all', _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) rules pys (\p -> pure (M.lookup p fixture)) pys
+      (all', _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) [] (\_ -> pure AllNew) rules pys (\p -> pure (M.lookup p fixture)) pys
       map fRule all' `shouldBe` []
   describe "rust-htmx regions (spec §5.9)" $
     it "a command file created by hand gets its `pub mod` line; ports.rs lists the ports" $ do
@@ -260,6 +261,17 @@ spec = do
         withUv k = findExecutable "uv" >>= \case
           Nothing -> missingTool strict "uv is not installed (brew install uv)"
           Just _ -> k
+    it "the strangler demo (a Flask legacy app beside python-htmx): its tests green, src/ pyright-strict clean" $ withUv $
+      withSystemTempDirectory "olifant-strangler-demo" $ \dir -> do
+        fixture <- M.filterWithKey (\p _ -> not (any (`elem` [".venv", "__pycache__", ".pytest_cache"]) (splitDirectories p))) <$> readTree "packs/python-strangler/fixtures/app"
+        forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+        (testCode, testOut, _) <- readCreateProcessWithExitCode (proc "uv" ["run", "--quiet", "pytest", "-q"]) {cwd = Just dir} ""
+        let lastLine out = case reverse (filter (not . null) (lines out)) of
+              l : _ -> l
+              [] -> ""
+        (testCode, lastLine testOut) `shouldSatisfy` ((== ExitSuccess) . fst)
+        (typeCode, typeOut, _) <- readCreateProcessWithExitCode (proc "uv" ["run", "--quiet", "pyright"]) {cwd = Just dir} ""
+        (typeCode, lastLine typeOut) `shouldBe` (ExitSuccess, "0 errors, 0 warnings, 0 informations")
     it "olifant init makes a project where pytest and pyright are green (north-star project 2 §1)" $ withUv $ do
       tmp <- getTemporaryDirectory
       withSystemTempDirectory "olifant-init" $ \dir0 -> do
@@ -270,7 +282,7 @@ spec = do
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 4) 0), rtStdoutIsTty = False
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processCheckerWith
-              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base")
               , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
@@ -354,7 +366,7 @@ spec = do
               , rtReadStdin = pure "", rtNow = pure (UTCTime (fromGregorian 2026 10 6) 0), rtStdoutIsTty = False
               , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
-              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing
+              , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base")
               , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
         _ <- runCli rt ["check", "--file", close, "--json"]
         checked <- readIORef out

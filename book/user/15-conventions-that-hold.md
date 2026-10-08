@@ -68,6 +68,9 @@ fires where you start, and nested or repeated matches on one line are one findin
 |---|---|---|
 | `files` | yes | the files the rule applies to: a pattern over the project-relative path, as in `[applies_at] path` ([chapter 14](14-editors-and-actions.md#applies_at-where-a-generator-applies)). `*` matches within a segment, `**` across segments, and `{name}` matches one segment (or the part of one between literals) and binds `name`, which becomes an input of the fix |
 | `exclude` | no | globs of files to leave out |
+| `only` | no | `"new"`: a finding stands only where its node is wholly new since the base ([below](#rules-on-new-code-only--new)) |
+| `bind` | no | `{ name = "regex" }`: a slot from the found code, the regex's first capture group (`bind = { flag = "olifant:switch ([A-Za-z0-9_-]+)" }`); usable in `when` and the fixes, like the `files` slots |
+| `when` | no | `{ files = "GLOB", matches = "REGEX" }`: a finding stands only if a line of some file the glob names matches; `matches` is a template over the slots (`'SWITCHES\["{= flag =}"\] *= *True'`) |
 | `match` | one of `match`, `missing` | an ast-grep rule, written as in an AST query ([chapter 6](06-queries-and-choices.md)). Each node it matches is a finding. It is a template over the `files` slots, so `regex = "^pub struct {= command\|pascal =} "` works. The file needs a language adapter |
 | `missing` | one of `match`, `missing` | a path that must exist, as a template over the file: `{= dir =}` (its directory), `{= stem =}` (its name without extension) and `{= file =}` (its path). `..` is allowed. If the path does not exist, the file has a finding with no line |
 | `message` | yes | what is wrong and why it matters, in one sentence |
@@ -345,6 +348,36 @@ any change. Regions are not checked in this mode; run `olifant sync --check` alo
 
 A ref git doesn't know fails the check, and git's message is in the JSON's `errors`:
 `"git diff --relative --no-color -U0 nosuchref --: fatal: bad revision 'nosuchref'"`.
+
+### Rules on new code: `only = "new"`
+
+A rule can judge only what is new. With `only = "new"`, a match stands when every line of its
+node is new since the **base**: the merge-base of `HEAD` and `[migrate] base` (`main` unless
+set). A function written on this branch is new; a function with one line changed (a bug fix) is
+not, nor is one moved up the file, nor one whose `def` line alone changed.
+
+```toml
+[rules.legacy-bug-fix-only]
+files   = "{legacy}"
+only    = "new"
+match   = { any = [{ kind = "function_definition" }, { kind = "class_definition" }] }
+message = "New work goes in the new architecture (legacy is bug-fix-only)"
+```
+
+`files = "{legacy}"` means the globs of `[migrate] legacy` in the project's config
+([chapter 17](17-strangling-a-legacy-codebase.md)); a rule naming `{legacy}` in a project with
+none is broken (`rule-failed`). The newness is worked out against the editor's unsaved text,
+so the warning comes as you type the function, not after the commit.
+
+With no base (no git, or no `main`), the rule does not guess: it is inactive, and says so once,
+as a hint naming why (`rule \`legacy-bug-fix-only\` (only new code) is inactive: no ref
+\`main\``).
+
+A fix on such a rule may use `{= finding_name =}` (the found definition's name) in its `with`,
+and its `replace` may use `{= finding_head =}` (a definition's whole signature, to the colon
+that ends it). `{= finding =}` is the node's code as if it started at column 0; the replacement
+is indented back to where the node was. A file renamed since the base (`git mv`) is compared
+with its old self, so moving code is not new work.
 
 ## In CI and hooks
 

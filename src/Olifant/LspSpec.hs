@@ -27,11 +27,13 @@ import Data.Functor ((<&>))
 import Control.Lens ((%~), (&), (^.))
 import Language.LSP.Protocol.Lens qualified as L
 import System.Exit (ExitCode (..))
-import System.Process (proc, readCreateProcessWithExitCode)
+import System.Process (callProcess, proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
 import Data.List (isInfixOf, sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
+import Olifant.Server.Fixes qualified as Fx
+import Olifant.Rules qualified as Ru
 import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (..), LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
 import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
@@ -39,8 +41,9 @@ import Language.LSP.Test
 import Olifant.App (Ports (..))
 import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processCheckerWith, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
-import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor)
+import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
+import Olifant.Process (gitBaseFiles, gitBaseText)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled)
@@ -49,7 +52,7 @@ import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
 import System.Environment (lookupEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
-import System.FilePath (makeRelative, normalise, takeDirectory, (</>))
+import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (createPipe)
@@ -76,6 +79,8 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   followupsSpec
   recognitionSpec
   generatePickerSpec
+  newCodeSpec
+  stranglerSpec
   holesSpec
   pickerSpec
   conventionsSpec
@@ -1040,6 +1045,26 @@ withPython changed act = do
     TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack pack <> "\" }\n")
     act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")} dir
 
+-- | The python-strangler demo (a Flask legacy app beside a python-htmx one)
+-- under git: main holds it as it is, the work is on a branch `feature`.
+withStrangler :: (Ports -> FilePath -> IO a) -> IO a
+withStrangler act = do
+  tmp <- getTemporaryDirectory
+  htmx <- canonicalizePath "packs/python-htmx"
+  strangler <- canonicalizePath "packs/python-strangler"
+  fixture <- M.filterWithKey (\p _ -> not (any (`elem` [".venv", "__pycache__", ".pytest_cache"]) (splitDirectories p))) <$> readTree "packs/python-strangler/fixtures/app"
+  withSystemTempDirectory "olifant-strangler" $ \dir0 -> do
+    dir <- canonicalizePath dir0
+    forM_ (M.toList fixture) $ \(p, t) -> createDirectoryIfMissing True (takeDirectory (dir </> p)) >> TIO.writeFile (dir </> p) t
+    createDirectoryIfMissing True (dir </> ".olifant")
+    TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack htmx <> "\" }\npython-strangler = { path = \"" <> T.pack strangler <> "\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\nswitches = \"src/bistro/switches.py\"\n")
+    let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+    git ["init", "-q", "-b", "main"]
+    git ["add", "."]
+    git ["commit", "-q", "-m", "the monolith"]
+    git ["checkout", "-q", "-b", "feature"]
+    act plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pBaseText = gitBaseText, pBaseFiles = gitBaseFiles} dir
+
 readTree :: FilePath -> IO (M.Map FilePath Text)
 readTree root = M.fromList <$> go root
   where
@@ -1056,7 +1081,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing)
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests"))
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []
@@ -1091,6 +1116,307 @@ withProject files act = withSystemTempDirectory "olifant-lsp" $ \dir0 -> do
   act dir
 
 -- | Recognitions as suggestions (convention recognition, Task 8).
+-- | Strangling a legacy codebase: rules on new code, against the base.
+newCodeSpec :: Spec
+newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
+  let legacy = "legacy/views.py"
+      base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p"]
+      rule = "[rules.no-new-defs]\nfiles = \"legacy/*.py\"\nonly = \"new\"\nmatch = { kind = \"function_definition\" }\nmessage = \"New work goes in the new architecture\"\n"
+      git dir args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+      underGit dir = do
+        git dir ["init", "-q", "-b", "main"]
+        git dir ["add", "."]
+        git dir ["commit", "-q", "-m", "first"]
+        git dir ["checkout", "-q", "-b", "feature"]
+      ruleIds ds = [c | d <- ds, Just (InR c) <- [d ^. L.code]]
+  it "(a) a definition new on the branch is reported; (b) an edited one is not" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      ((added, edited), _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (base <> "\ndef waitlist(r):\n    return r\n")))]
+        a <- pullDiagnostics doc
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (T.replace "return t" "return t + 1" base)))]
+        e <- pullDiagnostics doc
+        pure (a, e)
+      ruleIds added `shouldContain` ["no-new-defs"]
+      ruleIds edited `shouldNotContain` ["no-new-defs"]
+  it "(c) typing asks git once, not per keystroke (the base is cached until files change)" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      asked <- newIORef (0 :: Int)
+      let counting root ref path = modifyIORef' asked (+ 1) >> gitBaseText root ref path
+      (_, _) <- inProcessWith ports {pBaseText = counting} dir $ do
+        doc <- openDoc legacy "python"
+        forM_ [1 .. 3 :: Int] $ \i -> do
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (base <> "\n# " <> T.pack (show i) <> "\n")))]
+          pullDiagnostics doc
+      readIORef asked `shouldReturn` 1
+  it "(e) a generator applies at {legacy}: in the legacy folder, not elsewhere" $
+    withPython
+      [ (legacy, base)
+      , ("src/bistro/booking/x.py", base)
+      , (".olifant/generators/extract/generator.toml", "description = \"d\"\nlanguage = \"python\"\n[applies_at]\npath = \"{legacy}\"\nnode = { kind = \"function_definition\" }\nlabel = \"Extract\"\n[[edits]]\ncreate = \"x.txt\"\ntext = \"x\"\n")
+      ]
+      $ \ports dir -> do
+        config <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+        ((inLegacy, inSrc), _) <- inProcessWith ports dir $ do
+          a <- openDoc legacy "python"
+          b <- openDoc "src/bistro/booking/x.py" "python"
+          (,) <$> getCodeActions a (Range (Position 1 4) (Position 1 4)) <*> getCodeActions b (Range (Position 1 4) (Position 1 4))
+        let titles as = [x ^. L.title | InR x <- as]
+        titles inLegacy `shouldContain` ["Extract"]
+        titles inSrc `shouldNotContain` ["Extract"]
+  it "(f) the project model carries the migration report" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      config <- TIO.readFile (dir </> ".olifant/config.toml")
+      TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+      underGit dir
+      (v, _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/model")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Number 2)
+  let bigEdit = T.replace "    return t" (T.unlines (replicate 20 "    t = t + 1") <> "    return t") base
+      migrating dir extra = do
+        config <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[migrate]\nlegacy = [\"legacy/**\"]\n" <> extra)
+      untilRule ids doc = do
+        let loop n = do
+              ds <- pullDiagnostics doc
+              if any (`elem` ids) (ruleIds ds) || n <= (0 :: Int) then pure ds else liftIO (threadDelay 100000) >> loop (n - 1)
+        loop 50
+  it "(g) a big change inside a legacy function: a quiet hint (is this new work?)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir ""
+      underGit dir
+      (ds, _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument bigEdit))]
+        pullDiagnostics doc
+      [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c == "migrate-new-work"] `shouldBe` [("migrate-new-work", Just DiagnosticSeverity_Hint)]
+  it "(h) with Jev saying new behaviour, the hint becomes the bug-fix-only warning" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      underGit dir
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"new behaviour\"}}"
+      (ds, _) <- inProcessWithConfig [("decide_answers", String (T.pack answers))] ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument bigEdit))]
+        untilRule ["legacy-bug-fix-only"] doc
+      [(c, d ^. L.severity) | d <- ds, Just (InR c) <- [d ^. L.code], c `elem` ["legacy-bug-fix-only", "migrate-new-work"]] `shouldBe` [("legacy-bug-fix-only", Just DiagnosticSeverity_Warning)]
+  it "(j) typing in a big change asks Jev once at a time, not once per keystroke (review #8)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      underGit dir
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "wait"
+      _ <- inProcessWithConfig [("decide_answers", String (T.pack answers))] ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        forM_ [1 .. 5 :: Int] $ \i -> do
+          -- each keystroke changes the function's text
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (T.replace "    return t" ("    t = t * " <> T.pack (show i) <> "\n    return t") bigEdit)))]
+          void (pullDiagnostics doc)
+      asked <- T.lines <$> TIO.readFile (answers <> ".asked")
+      length asked `shouldBe` 1
+  it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      underGit dir
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"maybe\"}}"
+      ((ds, ms), _) <- inProcessWithConfig [("decide_answers", String (T.pack answers))] ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument bigEdit))]
+        t0 <- liftIO getCurrentTime
+        d <- pullDiagnostics doc
+        t1 <- liftIO getCurrentTime
+        liftIO (threadDelay 500000)
+        d' <- pullDiagnostics doc
+        pure (d', realToFrac (diffUTCTime t1 t0) :: Double)
+      [c | d <- ds, Just (InR c) <- [d ^. L.code], c `elem` ["legacy-bug-fix-only", "migrate-new-work"]] `shouldBe` ["migrate-new-work"]
+      ms `shouldSatisfy` (< 1)
+  it "(d) when the base moves (the branch merged into main), what was new is not any more (Review Focus 2)" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      TIO.writeFile (dir </> legacy) (base <> "\ndef waitlist(r):\n    return r\n")
+      git dir ["commit", "-q", "-am", "waitlist"]
+      ((before, after), _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        b <- pullDiagnostics doc
+        liftIO (git dir ["checkout", "-q", "main"] >> git dir ["merge", "-q", "feature"])
+        sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> legacy)) FileChangeType_Changed])
+        a <- pullDiagnostics doc
+        pure (b, a)
+      ruleIds before `shouldContain` ["no-new-defs"]
+      ruleIds after `shouldNotContain` ["no-new-defs"]
+
+-- | The python-strangler pack on its demo: the rules.
+stranglerSpec :: Spec
+stranglerSpec = describe "python-strangler (the demo monolith)" $ do
+  let views = "legacy/views.py"
+      codes ds = [c | d <- ds, Just (InR c) <- [d ^. L.code]]
+  it "(a) new work in legacy code is warned, with fixes that create it in the new architecture" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      ((ds, titles), _) <- inProcessWith ports dir $ do
+        doc <- openDoc views "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (original <> "\n\ndef add_to_waitlist(guest, party):\n    return {\"guest\": guest, \"party\": party}\n")))]
+        ds <- pullDiagnostics doc
+        let line = length (T.lines original) + 2
+        as <- getCodeActions doc (Range (Position (fromIntegral line) 4) (Position (fromIntegral line) 4))
+        pure (ds, [(a ^. L.title, fmap (lookupKey "generator") (a ^. L.data_)) | InR a <- as])
+      codes ds `shouldContain` ["legacy-bug-fix-only"]
+      -- a fix names its generator: the editor's picker opens on it
+      lookup "Create it as a command" titles `shouldBe` Just (Just (Just (String "python-strangler/delegate-command")))
+      titles <- pure (map fst titles)
+      titles `shouldContain` ["Create it as a command"]
+      titles `shouldContain` ["Create it as a query"]
+  it "(d) the fix creates the command, and the legacy function only delegates to it (with its allowance)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      TIO.writeFile (dir </> views) (original <> "\n\ndef add_to_waitlist(guest, party):\n    return {\"guest\": guest, \"party\": party}\n")
+      s <- newServerState ports
+      let line = length (T.lines original) + 3
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "legacy-bug-fix-only" line 1 [("app", "bistro"), ("service", "booking")] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          M.keys (planWrites plan) `shouldContain` ["src/bistro/booking/commands/add_to_waitlist.py"]
+          let legacyText = M.findWithDefault "" views (planWrites plan)
+          legacyText `shouldSatisfy` T.isInfixOf "# olifant:allow legacy-bug-fix-only — delegates to booking/commands/add_to_waitlist\ndef add_to_waitlist(guest, party):"
+          legacyText `shouldSatisfy` T.isInfixOf "def close_table(table_id):"
+  it "(e) retire: a switched function keeps only its new path; the function stays, so its callers do (Review Focus 4)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let switched = T.replace "def close_table(table_id):\n" "def close_table(table_id):\n    # olifant:switch close-table → booking/commands/close_table\n    if switches.on(\"close-table\"):\n        result = CloseTable().handle(CloseTableInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {\"id\": table_id, \"open\": False}\n" original
+      TIO.writeFile (dir </> views) switched
+      TIO.writeFile (dir </> "src/bistro/switches.py") "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\n"
+      s <- newServerState ports
+      let line = 1 + length (takeWhile (not . T.isPrefixOf "def close_table") (T.lines switched))
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "switch-retire" line 1 [] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          let after = M.findWithDefault "" views (planWrites plan)
+          after `shouldSatisfy` T.isInfixOf "def close_table(table_id):\n    result = CloseTable().handle(CloseTableInput(id=table_id))\n    if not isinstance(result, NotYet):\n        return {\"id\": table_id, \"open\": False}\n    raise RuntimeError("
+          after `shouldNotSatisfy` T.isInfixOf "UPDATE tables SET open = 0"
+          after `shouldNotSatisfy` T.isInfixOf "olifant:switch close-table"
+          after `shouldSatisfy` T.isInfixOf "def open_table(table_id):"
+  it "(e4) retire is offered only once the switch's flag is on in the registry (review #5)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let switched = T.replace "def close_table(table_id):\n" "def close_table(table_id):\n    # olifant:switch close-table → booking/commands/close_table\n    if switches.on(\"close-table\"):\n        result = CloseTable().handle(CloseTableInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {\"id\": table_id, \"open\": False}\n" original
+          line = 1 + length (takeWhile (not . T.isPrefixOf "def close_table") (T.lines switched))
+          registry flag = "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = " <> flag <> "\n"
+          offered = do
+            s <- newServerState ports
+            (_, fs) <- Fx.findingsFor (dir </> views) s
+            pure ("switch-retire" `elem` map Ru.fRule fs)
+      TIO.writeFile (dir </> views) switched
+      TIO.writeFile (dir </> "src/bistro/switches.py") (registry "False")
+      offered `shouldReturn` False
+      TIO.writeFile (dir </> "src/bistro/switches.py") (registry "True")
+      offered `shouldReturn` True
+  it "(e2) retire on a method keeps the class's indentation (review #2)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let method = "\n\nclass Exporter:\n    def run(self, table_id):\n        # olifant:switch close-table → booking/commands/close_table\n        if switches.on(\"close-table\"):\n            result = CloseTable().handle(CloseTableInput(id=table_id))\n            if not isinstance(result, NotYet):\n                return {\"id\": table_id}\n        return legacy_close(table_id)\n"
+      TIO.writeFile (dir </> views) (original <> method)
+      TIO.writeFile (dir </> "src/bistro/switches.py") "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\n"
+      s <- newServerState ports
+      let line = length (T.lines original) + 4
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "switch-retire" line 1 [] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) ->
+          M.findWithDefault "" views (planWrites plan) `shouldSatisfy` T.isInfixOf "class Exporter:\n    def run(self, table_id):\n        result = CloseTable().handle(CloseTableInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {\"id\": table_id}\n        raise RuntimeError("
+  it "(e3) retire on a signature over several lines keeps all of it (review #3)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let fn = "\n\ndef long_sig(\n    table_id,\n    party: dict[str, int] = {\"a\": 1},\n) -> dict:\n    # olifant:switch long-sig → booking/commands/long_sig\n    if switches.on(\"long-sig\"):\n        result = LongSig().handle(LongSigInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {}\n    return {\"old\": True}\n"
+      TIO.writeFile (dir </> views) (original <> fn)
+      TIO.writeFile (dir </> "src/bistro/switches.py") "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"long-sig\"] = True\n"
+      s <- newServerState ports
+      let line = length (T.lines original) + 3
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "switch-retire" line 1 [] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) ->
+          M.findWithDefault "" views (planWrites plan) `shouldSatisfy` T.isInfixOf "def long_sig(\n    table_id,\n    party: dict[str, int] = {\"a\": 1},\n) -> dict:\n    result = LongSig().handle(LongSigInput(id=table_id))\n"
+  it "(f) a switch over a function with several returns leaves its old body exactly as it was (Review Focus 3)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      s <- newServerState ports
+      let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "seat_party"), ("function", "seat_party"), ("file", "legacy/views.py")]
+      (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          let after = M.findWithDefault "" views (planWrites plan)
+              body t = takeWhile (\l -> T.null l || " " `T.isPrefixOf` l) (drop 1 (dropWhile (not . T.isPrefixOf "def seat_party") (T.lines t)))
+              oldBody = body original
+          -- the switch, then the old body, line for line
+          drop (length (body after) - length oldBody) (body after) `shouldBe` oldBody
+          T.unlines (body after) `shouldSatisfy` T.isInfixOf "olifant:switch seat-party"
+  it "(f2) a switch over a generator function yields the new path's rows, then stops (review #4)" $
+    withStrangler $ \ports dir -> do
+      s <- newServerState ports
+      let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "export_rows"), ("function", "export_rows"), ("file", "legacy/views.py")]
+      (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          let after = M.findWithDefault "" views (planWrites plan)
+              body = T.unlines (takeWhile (not . T.isPrefixOf "    \"\"\"The day's") (drop 1 (dropWhile (not . T.isPrefixOf "def export_rows") (T.lines after))))
+          body `shouldSatisfy` T.isInfixOf "            yield from "
+          body `shouldSatisfy` T.isInfixOf "            return\n"
+          -- and a plain function still returns its value
+      (_, plain) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("name", "close_table"), ("function", "close_table"), ("file", "legacy/views.py")] Nothing] s
+      case plain of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> M.findWithDefault "" views (planWrites plan) `shouldNotSatisfy` T.isInfixOf "yield from"
+  it "(g) the ⚡ menu offers extract as a command first where the code writes, as a query first where it reads" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let lineOf name = fromIntegral (length (takeWhile (not . T.isPrefixOf ("def " <> name)) (T.lines original))) + 2
+      ((atClose, atToday), _) <- inProcessWith ports dir $ do
+        doc <- openDoc views "python"
+        let titles l = (\as -> [a ^. L.title | InR a <- as, "Extract" `T.isPrefixOf` (a ^. L.title)]) <$> getCodeActions doc (Range (Position l 4) (Position l 4))
+        (,) <$> titles (lineOf "close_table") <*> titles (lineOf "todays_bookings")
+      atClose `shouldBe` ["Extract close_table to a command", "Extract close_table to a query"]
+      atToday `shouldBe` ["Extract todays_bookings to a query", "Extract todays_bookings to a command"]
+  it "(h) extracting suggests the service whose models the function's SQL touches" $
+    withStrangler $ \ports dir -> do
+      -- a second service: which one the work belongs to is a real question
+      createDirectoryIfMissing True (dir </> "src/bistro/kitchen/models")
+      TIO.writeFile (dir </> "src/bistro/kitchen/__init__.py") ""
+      TIO.writeFile (dir </> "src/bistro/kitchen/models/__init__.py") ""
+      TIO.writeFile (dir </> "src/bistro/kitchen/models/dish.py") "class Dish:\n    pass\n"
+      original <- TIO.readFile (dir </> views)
+      let line = length (takeWhile (not . T.isPrefixOf "def close_table") (T.lines original)) + 1
+      s <- newServerState ports
+      (_, pv) <- previewFor (dir </> views) (line, 4) [PickStep "python-strangler/extract-command" [] Nothing] s
+      [(fValue f, fSource f) | fs <- pvFields pv, f <- fs, fName f == "service"] `shouldBe` [(Just "booking", Just FromSuggested)]
+  it "(b) a bug fix inside an existing legacy function is quiet" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      (ds, _) <- inProcessWith ports dir $ do
+        doc <- openDoc views "python"
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (T.replace "db.audit(f\"closed {table_id}\")" "db.audit(f\"closed table {table_id}\")" original)))]
+        pullDiagnostics doc
+      codes ds `shouldNotContain` ["legacy-bug-fix-only"]
+  it "(c) the new architecture importing legacy code is warned" $
+    withStrangler $ \ports dir -> do
+      TIO.writeFile (dir </> "src/bistro/booking/x.py") "from legacy.utils import money\n\nX = money(1)\n"
+      (ds, _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/x.py" "python"
+        pullDiagnostics doc
+      codes ds `shouldContain` ["new-code-not-legacy"]
+
 -- | The generate picker (the float's list, form and live preview).
 generatePickerSpec :: Spec
 generatePickerSpec = describe "the generate picker" $ do

@@ -4,6 +4,9 @@
 -- whose configuration breaks keeps its last good catalog.
 module Olifant.Server.State
   ( ServerState (..)
+  , cachedBase
+  , deciderFor
+  , decision
   , ServerConfig (..)
   , defaultServerConfig
   , ProjectSlot (..)
@@ -26,12 +29,18 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Set qualified as S
+import Olifant.Decide (Answer, Decider (..), Question, curlDecider, recordedDecider)
+import Control.Concurrent (forkIO)
+import Control.Exception (finally)
+import Control.Monad (void, when)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Maybe (fromMaybe)
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
-import Olifant.Catalog (PackCache, catalogPackRoots, describeCatalogError, newPackCache)
+import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
+import Olifant.Model (ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
@@ -43,10 +52,10 @@ import System.FilePath (takeDirectory, (</>))
 -- (tests) a file of recorded fills that stands in for the model.
 -- | @scRecognizeAnswers@: a file holding a model's recorded answer, which
 -- recognition uses instead of the model (tests, as fills use @scFills@).
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath}
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath, scDecideAnswers :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
@@ -82,10 +91,35 @@ data ServerState = ServerState
   , -- | per project root: the files it had when first listed (recognition
     -- is for files new since)
     ssEstablished :: Map FilePath (Set FilePath)
+  , -- | base texts (root, ref, path), each with the files stamp it was read at:
+    -- kept until files change (a save, a pull, a rebase)
+    ssBaseCache :: IORef (Map (FilePath, Text, FilePath) (Int, Either Text (Text, Maybe Text)))
+  , -- | typed decisions made (by file and what they were about), those being
+    -- asked, and what to do when one is made (the editor pulls diagnostics again)
+    ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer))
+  , ssAsking :: IORef (Set (FilePath, Text))
+  , ssOnDecided :: IORef (IO ())
   }
 
 newServerState :: Ports -> IO ServerState
-newServerState ports = (\cache -> ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty) <$> newPackCache
+newServerState ports = do
+  cache <- newPackCache
+  bases <- newIORef M.empty
+  decisions <- newIORef M.empty
+  asking <- newIORef S.empty
+  onDecided <- newIORef (pure ())
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided)
+
+-- | A file's base text, from the cache while no file changed since.
+cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
+cachedBase s root ref path = do
+  known <- M.lookup (root, ref, path) <$> readIORef (ssBaseCache s)
+  case known of
+    Just (stamp, answer) | stamp == ssFilesStamp s -> pure answer
+    _ -> do
+      answer <- pBaseText (ssPorts s) root ref path
+      modifyIORef' (ssBaseCache s) (M.insert (root, ref, path) (ssFilesStamp s, answer))
+      pure answer
 
 -- | A document opened in the editor, at a version, with its text.
 openDoc :: FilePath -> Int -> Text -> ServerState -> ServerState
@@ -207,3 +241,36 @@ usable :: ProjectSlot -> Maybe Project
 usable = \case
   Loaded p -> Just p
   Broken _ p -> p
+
+-- | The typed decider a project asks, if it names a model ([decide] model,
+-- or [recognize] model): the configured backend under this work's token, or
+-- (tests) recorded answers.
+deciderFor :: ServerState -> Project -> Maybe (Decider IO)
+deciderFor s project = do
+  name <- catalogDecideModel (prCatalog project)
+  case scDecideAnswers (ssConfig s) of
+    Just recorded -> Just (recordedDecider recorded (ssCancel s))
+    Nothing -> do
+      let models = catalogModel (prCatalog project)
+      backend <- lookup name (mcBackends models)
+      Just (curlDecider (ssCancel s) (mcTimeout models) backend)
+
+-- | A decision about one thing (a file's function, by question kind and
+-- name: KEY): its latest answer, if any. Asked in the background at most
+-- once at a time, and again (after that one lands) when the thing's text
+-- has changed since its answer (FP): typing in a function asks once per
+-- model round trip, not once per keystroke. ON_DONE runs with each answer.
+decision :: ServerState -> Decider IO -> (FilePath, Text) -> Text -> Question -> IO () -> IO (Maybe Answer)
+decision s decider key fp q onDone = do
+  known <- M.lookup key <$> readIORef (ssDecisions s)
+  when (fmap fst known /= Just fp) $ do
+    fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
+    when fresh . void . forkIO $
+      ( do
+          answer <- ask decider q
+          modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
+          onDone
+      )
+        `finally` atomicModifyIORef' (ssAsking s) (\a -> (S.delete key a, ()))
+  pure (snd <$> known)
+

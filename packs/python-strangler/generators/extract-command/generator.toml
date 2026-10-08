@@ -1,0 +1,64 @@
+name = "Extract to a command"
+description = "A legacy function moves to the new architecture: a python-htmx command (its body yours to port, or the model's), a parity test against the legacy function, and a switch in front of the old body (off)"
+summary = "Move a legacy function into a command, behind a switch"
+language = "python"
+version = 1
+recognize = false
+examples = [
+  "olifant gen python-strangler/extract-command --set app=bistro --set service=booking --set name=close_table --set function=close_table --set file=legacy/views.py",
+]
+
+[inputs.app]
+type   = "enum"
+one_of = "apps"
+prompt = "The app (the folder under src/ with main.py)"
+
+[inputs.service]
+type   = "enum"
+one_of = "services"
+prompt = "The service it belongs to"
+
+[inputs.name]
+type   = "ident"
+prompt = "The command's name"
+
+[inputs.function]
+type   = "ident"
+prompt = "The legacy function"
+
+[inputs.file]
+type   = "text"
+prompt = "The legacy file (project-relative)"
+
+[derive]
+Name   = "{= name|pascal =}"
+module = "{= app =}.{= service|snake =}.commands.{= name|snake =}"
+
+[query.apps]
+glob  = "src/*/main.py"
+value = "parent folder"
+
+[query.services]
+glob  = "src/{= app =}/*/models"
+value = "parent folder"
+
+# At a legacy function: the cursor's function, its name for both.
+[applies_at]
+path  = "{legacy}"
+node  = { kind = "function_definition" }
+bind  = { function = "^def ([A-Za-z0-9_]+)", name = "^def ([A-Za-z0-9_]+)" }
+file  = "file"
+label = "Extract {= function =} to a command"
+where = "on a legacy function"
+
+[[uses]]
+generator = "python-htmx/command"
+with      = { app = "{= app =}", service = "{= service =}", command = "{= name =}" }
+
+[[edits]]
+create   = "src/{= app =}/{= service|snake =}/commands/{= name|snake =}_parity__test.py"
+template = "parity.py.dt"
+
+[[uses]]
+generator = "python-strangler/switch"
+with      = { app = "{= app =}", service = "{= service =}", kind = "commands", name = "{= name =}", function = "{= function =}", file = "{= file =}" }

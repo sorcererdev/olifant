@@ -65,6 +65,37 @@ In order, it:
 
 `--plan` shows the starter's plan and writes nothing; `--json` gives the plan as JSON.
 
+### An existing repo: `olifant init --migrate`
+
+A codebase you already have, to move to a new architecture a little at a time
+([chapter 17](17-strangling-a-legacy-codebase.md)):
+
+```
+$ olifant init --migrate legacy --pack ~/projects/olifant/packs/python-htmx --human
+baselined 0 findings in .olifant/baseline.toml
+migrating legacy: legacy is bug-fix-only; new work goes to the new architecture
+next: olifant check, and open the project in your editor
+```
+
+`PATH…` are the legacy folders (`legacy` becomes the glob `legacy/**`). It writes into
+`.olifant/config.toml`, keeping what is there:
+
+```toml
+[packs]
+python-htmx = { path = "/Users/you/projects/olifant/packs/python-htmx" }
+python-strangler = { path = "/Users/you/projects/olifant/packs/python-strangler" }
+
+[migrate]
+legacy = ["legacy/**"]
+```
+
+The target pack (`--pack`, a directory or a configured name; without it, one already in the
+config) and `python-strangler` (configured, else beside the `--pack` directory). Then it adds
+`.olifant/state/` to `.gitignore` and records a baseline (`check --baseline`), so the code as it
+is today passes. A project already migrating is refused: `error: already migrating: edit
+[migrate] in .olifant/config.toml`. `olifant init` with neither `--pack PACK NAME` nor
+`--migrate` is a usage error.
+
 ## What does it need? `olifant show`
 
 ```

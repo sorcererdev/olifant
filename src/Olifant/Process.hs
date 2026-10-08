@@ -2,7 +2,7 @@
 -- Nothing here throws: a tool that cannot start, exits before reading its
 -- input, or breaks a pipe is reported as 'Left', so callers can turn it into
 -- a miss or a check failure instead of crashing Olifant.
-module Olifant.Process (gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelled) where
+module Olifant.Process (gitBaseFiles, gitBaseText, gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelled) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
@@ -130,4 +130,49 @@ gitTracked dir =
   runBytes "git" ["-C", dir, "ls-files", "-z"] Nothing "" <&> \case
     Right (ExitSuccess, out, _) -> Just (S.fromList [T.unpack (TE.decodeUtf8Lenient p) | p <- BS.split 0 out, not (BS.null p)])
     _ -> Nothing
+
+-- | The files at the base (the merge base of HEAD and REF), project-relative.
+gitBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
+gitBaseFiles dir ref =
+  gitIn dir ["merge-base", "HEAD", T.unpack ref] >>= \case
+    Left why -> pure (Left why)
+    Right out ->
+      gitIn dir ["ls-tree", "-r", "--name-only", T.unpack (T.strip out)] <&> fmap (map T.unpack . filter (not . T.null) . T.lines)
+
+-- | A file's text at the base: the merge base of HEAD and REF (the commit's
+-- id too, to key caches). Right Nothing: the file is not in that commit (it
+-- is new); Left: why there is no base (no such ref, not a repository).
+gitBaseText :: FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
+gitBaseText dir ref path =
+  git ["merge-base", "HEAD", T.unpack ref] >>= \case
+    Left why -> pure (Left why)
+    Right out -> do
+      let commit = T.strip out
+      let showAt p = git ["show", T.unpack commit <> ":" <> p]
+          absent why = any (`T.isInfixOf` why) ["does not exist", "exists on disk, but not in"]
+      showAt path >>= \case
+        Right text -> pure (Right (commit, Just text))
+        Left why
+          | absent why ->
+              -- moved since the base (git mv): its old self, not new work
+              git ["diff", "-M", "--name-status", T.unpack commit] >>= \case
+                Right listing
+                  | old : _ <- [o | l <- T.lines listing, ("R" : o : n : _) <- [T.splitOn "\t" l `withStatus` 1], T.unpack n == path] ->
+                      showAt (T.unpack old) <&> \case
+                        Right text -> Right (commit, Just text)
+                        Left _ -> Right (commit, Nothing)
+                _ -> pure (Right (commit, Nothing))
+          | otherwise -> pure (Left why)
+  where
+    git = gitIn dir
+    -- `R087`: the status letter, its score dropped
+    withStatus (st : rest) n = T.take n st : rest
+    withStatus [] _ = []
+
+gitIn :: FilePath -> [String] -> IO (Either Text Text)
+gitIn dir args =
+  runBytes "git" (["-C", dir, "-c", "core.quotePath=false"] ++ args) Nothing "" <&> \case
+    Right (ExitSuccess, out, _) -> Right (TE.decodeUtf8Lenient out)
+    Right (_, _, err) -> Left ("git " <> T.pack (unwords args) <> ": " <> T.strip (TE.decodeUtf8Lenient err))
+    Left why -> Left why
 

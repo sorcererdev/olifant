@@ -43,7 +43,7 @@ import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
-import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, showGenerator, subsOf)
+import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, migrationFor, showGenerator, subsOf)
 import Olifant.Catalog (catalogPackRoots, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
@@ -51,6 +51,7 @@ import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
 import Olifant.Workspace (Workspace (..))
 import Olifant.Server
+import Olifant.Migration (MigrationReport, migrationJson)
 import Data.Foldable qualified as F
 import Olifant.Preview (Field (..), Source (..))
 import Control.Concurrent.Async qualified as Async
@@ -152,6 +153,7 @@ configure env = \case
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
                 , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
                 , scRecognizeAnswers = case KM.lookup "recognize_answers" o of Just (String f) -> Just (T.unpack f); _ -> scRecognizeAnswers (ssConfig s)
+                , scDecideAnswers = case KM.lookup "decide_answers" o of Just (String f) -> Just (T.unpack f); _ -> scDecideAnswers (ssConfig s)
                 }
           }
   _ -> pure ()
@@ -193,7 +195,12 @@ handlers env =
         let key = case msg ^. L.params . L.id of InL n -> T.pack (show n); InR t -> t
         liftIO (readIORef (envRunning env)) >>= maybe (pure ()) liftIO . M.lookup key
     , -- watch every project's `.olifant/`; packs are watched as projects load
-      notificationHandler SMethod_Initialized (\_ -> watch env [GlobPattern (InL (Pattern "**/.olifant/**"))])
+      notificationHandler SMethod_Initialized $ \_ -> do
+        watch env [GlobPattern (InL (Pattern "**/.olifant/**"))]
+        -- a typed decision made in the background: the editor pulls diagnostics again
+        lspEnv <- getLspEnv
+        st <- liftIO (readMVar (envState env))
+        liftIO (writeIORef (ssOnDecided st) (runLspT lspEnv (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))))
     , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
         let item = msg ^. L.params . L.textDocument
         atPath (item ^. L.uri) $ \path -> do
@@ -472,7 +479,13 @@ handlers env =
               Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
               _ -> Nothing
         model <- maybe (pure Nothing) (liftIO . withSnapshot job . modelFor) path
-        respond (Right (maybe Aeson.Null toJSON model))
+        -- with the migration report, when the project is migrating
+        mig <- case path of
+          Nothing -> pure Nothing
+          Just p -> liftIO (withSnapshot job (\s -> projectFor p s >>= \case
+            (s', Just (_, project)) -> (s',) <$> migrationFor (ssPorts s') project
+            (s', Nothing) -> pure (s', Nothing)))
+        respond (Right (maybe Aeson.Null (\m -> withMigration mig (toJSON m)) model))
     , -- the holes left in the project of a document: where, which, what for
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/holes")) $ \req respond -> inBackground env req respond $ \job -> do
         let path = case req ^. L.params of
@@ -555,7 +568,7 @@ previewJson steps pv =
             ++ [main p t (firstChange (maybe [] T.lines (M.lookup p (planBefore plan) >>= id)) (T.lines t)) | (p, t) <- M.toList (planWrites plan)]
         )
     main p t first = object ["path" .= p, "text" .= t, "first" .= first]
-    firstChange old new = 1 + length (takeWhile id (zipWith (==) old new))
+    firstChange xs ys = 1 + length (takeWhile id (zipWith (==) xs ys))
     fieldJson f =
       object
         [ "name" .= fName f
@@ -574,6 +587,13 @@ previewJson steps pv =
       OnlyChoice -> "only"
       FromDefault -> "default"
       FromNew -> "new"
+      FromSuggested -> "suggested"
+
+-- | A model's JSON with the migration report, if there is one.
+withMigration :: Maybe MigrationReport -> Value -> Value
+withMigration mig = \case
+  Object o | Just m <- mig -> Object (KM.insert "migration" (migrationJson m) o)
+  v -> v
 
 -- | A request's document, as a path.
 documentPath :: Value -> Maybe FilePath
@@ -767,7 +787,7 @@ fixActions env path from to = do
             , _disabled = Nothing
             , _edit = Nothing
             , _command = Nothing
-            , _data_ = Just (object ["kind" .= ("fix" :: T.Text), "path" .= path, "rule" .= fRule f, "line" .= line, "index" .= i, "sets" .= M.fromList (foSets o), "missing" .= map fst (foChoices o), "choices" .= M.fromList (foChoices o), "version" .= version])
+            , _data_ = Just (object ["kind" .= ("fix" :: T.Text), "path" .= path, "rule" .= fRule f, "generator" .= foGenerator o, "line" .= line, "index" .= i, "sets" .= M.fromList (foSets o), "missing" .= map fst (foChoices o), "choices" .= M.fromList (foChoices o), "version" .= version])
             }
         | (d, f, line) <- here
         , (i, o) <- zip [1 :: Int ..] (fFixes f)
