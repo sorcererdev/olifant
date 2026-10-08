@@ -77,7 +77,7 @@ fixPlan fill progress path rule line n sets s =
       fmap (s',) $
         fixSteps (ssPorts s') project rule (makeRelative root path) line n sets >>= \case
           Left failure -> pure (Left (describeFix failure))
-          Right (context, steps) ->
+          Right (context, steps, warnings) ->
             fillerFor fill s' project >>= \case
              Left why -> pure (Left why)
              Right filler ->
@@ -85,7 +85,7 @@ fixPlan fill progress path rule line n sets s =
               Left why -> pure (Left why)
               Right plan
                 | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))
-                | otherwise -> pure (Right (root, plan))
+                | otherwise -> pure (Right (root, plan {planWarnings = planWarnings plan ++ warnings}))
   where
     describeFix = \case
       FixNotFound why -> why <> " (the code changed since: ask for the actions again)"

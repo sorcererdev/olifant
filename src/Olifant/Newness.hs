@@ -1,6 +1,6 @@
 -- | Which lines of a file are new since a base: what "new work" is, for
 -- rules that judge only new code (`only = "new"`, the strangler work).
-module Olifant.Newness (NewLines (..), newLinesOf, wholeNew, newCount, lcsPairs) where
+module Olifant.Newness (NewLines (..), newLinesOf, newSince, wholeNew, newCount, wasDefined, definedName, lcsPairs) where
 
 import Data.Array qualified as A
 import Data.IntMap.Strict qualified as IM
@@ -9,10 +9,13 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Maybe (listToMaybe)
 
 -- | A file's new lines (1-based): all of it (no base version: a new or
 -- untracked file), some, or unknown (no base: why).
-data NewLines = AllNew | NewIn (Set Int) | NoBase Text
+-- `NewIn` carries the names defined at the base too: a definition there is
+-- not new work, even rewritten whole (a small function's bug fix).
+data NewLines = AllNew | NewIn (Set Int) (Set Text) | NoBase Text
   deriving stock (Eq, Show)
 
 -- | The lines of NOW that are new since BASE: not in a longest common
@@ -102,11 +105,38 @@ wholeNew :: NewLines -> ((Int, Int), (Int, Int)) -> Bool
 wholeNew n ((l1, _), (l2, _)) = case n of
   AllNew -> True
   NoBase _ -> False
-  NewIn s -> all (`S.member` s) [l1 .. l2]
+  NewIn s _ -> all (`S.member` s) [l1 .. l2]
 
 -- | How many lines of a range are new.
 newCount :: NewLines -> ((Int, Int), (Int, Int)) -> Int
 newCount n ((l1, _), (l2, _)) = case n of
   AllNew -> l2 - l1 + 1
   NoBase _ -> 0
-  NewIn s -> length (filter (`S.member` s) [l1 .. l2])
+  NewIn s _ -> length (filter (`S.member` s) [l1 .. l2])
+
+-- | A file's newness against its base text: the new lines, and the names
+-- the base defines.
+newSince :: Text -> Text -> NewLines
+newSince base now = NewIn (newLinesOf base now) (S.fromList [n | l <- T.lines base, let n = definedName l, defines l, not (T.null n)])
+  where
+    defines l = case T.words (T.stripStart l) of
+      kw : _ -> kw `elem` definitionKeywords
+      [] -> False
+
+-- | Whether a name was defined at the base (unknown base: no).
+wasDefined :: NewLines -> Text -> Bool
+wasDefined n name = case n of
+  NewIn _ names -> name `S.member` names
+  _ -> False
+
+-- | The name a definition's first line defines (after def/class/fn/struct/…);
+-- else its first word.
+definedName :: Text -> Text
+definedName what = case T.words (T.map (\c -> if c `elem` ("(:<{" :: String) then ' ' else c) (maybe "" id (listToMaybe (T.lines what)))) of
+  kw : name : _ | kw `elem` definitionKeywords -> if kw `elem` ["async", "pub"] then definedName (T.unwords (name : drop 2 (T.words what))) else name
+  w : _ -> w
+  [] -> ""
+
+definitionKeywords :: [Text]
+definitionKeywords = ["def", "async", "class", "fn", "pub", "struct", "enum", "trait"]
+

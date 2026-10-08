@@ -5,13 +5,12 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 import Data.Set (Set)
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
-import Olifant.Newness (NewLines (..))
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
-import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), matchPathSlots)
+import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..))
 import Control.Monad (forM_, unless, when)
 import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
 import Data.Aeson.KeyMap qualified as KM
@@ -73,6 +72,8 @@ data Runtime = Runtime
     rtBaseText :: FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
   , -- | the files at the base (see 'pBaseFiles')
     rtBaseFiles :: FilePath -> Text -> IO (Either Text [FilePath])
+  , -- | what the base depends on (see 'pBaseStamp')
+    rtBaseStamp :: FilePath -> Text -> IO Text
   }
 
 runCli :: Runtime -> [String] -> IO ExitCode
@@ -523,7 +524,7 @@ runCommand rt cwd fmt cat = \case
       Left (FixUsage why) -> failWith rt fmt 2 "usage" why Nothing []
       Left (FixCatalog err) -> catalogFailure rt fmt err
       Left (FixFailed why) -> failWith rt fmt 1 "fix_failed" why Nothing []
-      Right (context, steps) -> runSteps rt cwd fmt cat g context steps
+      Right (context, steps, warnings) -> runStepsWith warnings rt cwd fmt cat g context steps
 
 -- | Snippets (spec §5.3): a snippet needs `--at`; its line is read from the
 -- overlay's text when there is one.
@@ -539,7 +540,11 @@ placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,
 -- with the fix's context files shown to the model).
 runSteps :: Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
-runSteps rt cwd fmt cat g context steps = do
+runSteps = runStepsWith []
+
+-- | 'runSteps', with warnings for the plan (a fix's: a definition's callers).
+runStepsWith :: [Text] -> Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
+runStepsWith warnings rt cwd fmt cat g context steps = do
   -- `--overlay FILE` (spec §4.8): plan against the editor's unsaved text.
   overlaid <- case genOverlay g of
     Just _ | not (genPlanOnly g) -> pure (Left "--overlay needs --plan (an unsaved buffer is planned, never written)")
@@ -567,8 +572,9 @@ runSteps rt cwd fmt cat g context steps = do
               }
       planWith (portsOf rt) project po steps >>= \case
         Left err -> generationFailure rt fmt err
-        Right plan -> do
-          let applied = poMode po == Apply && not (hasConflicts plan)
+        Right plan0 -> do
+          let plan = plan0 {planWarnings = planWarnings plan0 ++ warnings}
+              applied = poMode po == Apply && not (hasConflicts plan)
           emit rt fmt (planJson applied plan) (planHuman applied plan)
           pure (if hasConflicts plan then ExitFailure 5 else ExitSuccess)
 
@@ -716,7 +722,7 @@ modelFor cat g
 
 -- | The engine's ports, as the CLI runs them.
 portsOf :: Runtime -> Ports
-portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt)
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt) (rtBaseStamp rt)
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project

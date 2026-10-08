@@ -2,7 +2,7 @@
 -- Nothing here throws: a tool that cannot start, exits before reading its
 -- input, or breaks a pipe is reported as 'Left', so callers can turn it into
 -- a miss or a check failure instead of crashing Olifant.
-module Olifant.Process (gitBaseFiles, gitBaseText, gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelled) where
+module Olifant.Process (gitBaseFiles, gitBaseText, gitStateStamp, gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelled) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
@@ -17,7 +17,9 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Process.Cancel (Cancel, cancelled, neverCancel, newCancel)
 import System.Posix.Signals (sigKILL, signalProcessGroup)
+import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (ExitCode (..))
+import System.FilePath (takeDirectory, (</>))
 import System.IO (hClose, hSetBinaryMode)
 import System.Process (CreateProcess (..), StdStream (..), createProcess, getPid, getProcessExitCode, interruptProcessGroupOf, proc, terminateProcess, waitForProcess)
 
@@ -175,4 +177,36 @@ gitIn dir args =
     Right (ExitSuccess, out, _) -> Right (TE.decodeUtf8Lenient out)
     Right (_, _, err) -> Left ("git " <> T.pack (unwords args) <> ": " <> T.strip (TE.decodeUtf8Lenient err))
     Left why -> Left why
+
+-- | What the base (the merge base of HEAD and REF) depends on, read with no
+-- process: HEAD, the branch it names, REF and packed-refs. A checkout, a
+-- commit, a pull or a fetch of REF changes it; equal stamps, the same base.
+gitStateStamp :: FilePath -> Text -> IO Text
+gitStateStamp dir ref = do
+  gitDir <- findGitDir dir
+  case gitDir of
+    Nothing -> pure ""
+    Just g -> do
+      headText <- readOr (g </> "HEAD")
+      let branch = T.strip <$> T.stripPrefix "ref:" (T.strip headText)
+          common = g
+      named <- maybe (pure "") (\b -> readOr (common </> T.unpack b)) branch
+      refText <- readOr (common </> "refs" </> "heads" </> T.unpack ref)
+      packed <- readOr (common </> "packed-refs")
+      pure (T.intercalate "\0" [headText, named, refText, packed])
+  where
+    readOr p = (either (const "") id <$> (try (TE.decodeUtf8Lenient <$> BS.readFile p) :: IO (Either IOException Text)))
+    -- `.git` is a folder, or (a worktree) a file naming one
+    findGitDir d = do
+      let dotGit = d </> ".git"
+      isDir <- doesDirectoryExist dotGit
+      isFile <- doesFileExist dotGit
+      if isDir
+        then pure (Just dotGit)
+        else
+          if isFile
+            then (\t -> T.unpack . T.strip <$> T.stripPrefix "gitdir:" (T.strip t)) <$> readOr dotGit
+            else
+              let up = takeDirectory d
+               in if up == d then pure Nothing else findGitDir up
 

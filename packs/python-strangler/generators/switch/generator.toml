@@ -56,6 +56,12 @@ value = "parent folder"
 files = "{= file =}"
 ast   = { kind = "yield", inside = { kind = "function_definition", has = { field = "name", regex = "^{= function =}$" }, stopBy = "end" } }
 
+# A switch is over a command or query that exists (extract makes it first,
+# earlier in the same plan): its import must not break the legacy module.
+[requires]
+exists = ["src/{= app =}/{= service|snake =}/{= kind =}/{= name|snake =}.py"]
+hint   = "the {= kind|singular =} {= name|snake =} does not exist yet: extract it (python-strangler/extract-{= kind|singular =}), which makes it and the switch together"
+
 # The registry: made the first time, then one line per switch, off.
 [[edits]]
 create    = "{= registry =}"

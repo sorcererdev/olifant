@@ -88,17 +88,20 @@ curlDecider token timeout backend = Decider $ \q ->
     system = "You make one typed decision about a codebase. Answer only with the JSON asked for."
 
 -- | Recorded answers (tests): `{"answers": {KIND: CHOICE or {choice, fields}}}`;
--- "wait" waits until the work is cancelled (then unsure). Each question asked
+-- "wait" waits until the file holds an answer, or the work is cancelled
+-- (then unsure). Each question asked
 -- is noted in FILE.asked.
 recordedDecider :: FilePath -> Cancel -> Decider IO
 recordedDecider file token = Decider $ \q -> do
   appendFile (file <> ".asked") (T.unpack (qKind q) <> "\n")
-  answer <- T.strip . T.pack <$> readFile file
-  if answer == "wait"
-    then do
-      let loop = cancelled token >>= \stop -> if stop then pure () else threadDelay 20000 >> loop
-      loop
-      pure Unsure
-    else pure $ case eitherDecodeStrict (TE.encodeUtf8 answer) of
+  -- "wait": until the file holds an answer, or the work is cancelled
+  let current = T.strip . T.pack <$> readFile file
+      loop = do
+        answer <- current
+        stop <- cancelled token
+        if answer /= "wait" then pure (Just answer) else if stop then pure Nothing else threadDelay 20000 >> loop
+  loop >>= \case
+    Nothing -> pure Unsure
+    Just answer -> pure $ case eitherDecodeStrict (TE.encodeUtf8 answer) of
       Right (Object o) | Just (Object as) <- KM.lookup "answers" o, Just v <- KM.lookup (Key.fromText (qKind q)) as -> validated q (fromValue v)
       _ -> Unsure

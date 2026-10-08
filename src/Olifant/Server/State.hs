@@ -31,7 +31,7 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Decide (Answer, Decider (..), Question, curlDecider, recordedDecider)
 import Control.Concurrent (forkIO)
-import Control.Exception (finally)
+import Control.Exception (SomeException, finally, try)
 import Control.Monad (void, when)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Maybe (fromMaybe)
@@ -93,7 +93,7 @@ data ServerState = ServerState
     ssEstablished :: Map FilePath (Set FilePath)
   , -- | base texts (root, ref, path), each with the files stamp it was read at:
     -- kept until files change (a save, a pull, a rebase)
-    ssBaseCache :: IORef (Map (FilePath, Text, FilePath) (Int, Either Text (Text, Maybe Text)))
+    ssBaseCache :: IORef (Map (FilePath, Text, FilePath) ((Int, Text), Either Text (Text, Maybe Text)))
   , -- | typed decisions made (by file and what they were about), those being
     -- asked, and what to do when one is made (the editor pulls diagnostics again)
     ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer))
@@ -113,12 +113,15 @@ newServerState ports = do
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
 cachedBase s root ref path = do
+  -- good while the files are as they were and git's state is too (a
+  -- checkout or pull with no file event, as on Linux Neovim, moves the base)
+  git <- pBaseStamp (ssPorts s) root ref
   known <- M.lookup (root, ref, path) <$> readIORef (ssBaseCache s)
   case known of
-    Just (stamp, answer) | stamp == ssFilesStamp s -> pure answer
+    Just ((stamp, gitWas), answer) | stamp == ssFilesStamp s, gitWas == git -> pure answer
     _ -> do
       answer <- pBaseText (ssPorts s) root ref path
-      modifyIORef' (ssBaseCache s) (M.insert (root, ref, path) (ssFilesStamp s, answer))
+      modifyIORef' (ssBaseCache s) (M.insert (root, ref, path) ((ssFilesStamp s, git), answer))
       pure answer
 
 -- | A document opened in the editor, at a version, with its text.
@@ -249,11 +252,13 @@ deciderFor :: ServerState -> Project -> Maybe (Decider IO)
 deciderFor s project = do
   name <- catalogDecideModel (prCatalog project)
   case scDecideAnswers (ssConfig s) of
-    Just recorded -> Just (recordedDecider recorded (ssCancel s))
+    -- a decision outlives the request that asked it (it is answered in the
+    -- background): not that request's token; the model's timeout bounds it
+    Just recorded -> Just (recordedDecider recorded neverCancel)
     Nothing -> do
       let models = catalogModel (prCatalog project)
       backend <- lookup name (mcBackends models)
-      Just (curlDecider (ssCancel s) (mcTimeout models) backend)
+      Just (curlDecider neverCancel (mcTimeout models) backend)
 
 -- | A decision about one thing (a file's function, by question kind and
 -- name: KEY): its latest answer, if any. Asked in the background at most
@@ -266,10 +271,12 @@ decision s decider key fp q onDone = do
   when (fmap fst known /= Just fp) $ do
     fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
     when fresh . void . forkIO $
-      ( do
-          answer <- ask decider q
-          modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
-          onDone
+      -- a failure is no answer: nothing kept, asked again on a later pull
+      ( try (ask decider q) >>= \case
+          Left (_ :: SomeException) -> pure ()
+          Right answer -> do
+            modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
+            onDone
       )
         `finally` atomicModifyIORef' (ssAsking s) (\a -> (S.delete key a, ()))
   pure (snd <$> known)

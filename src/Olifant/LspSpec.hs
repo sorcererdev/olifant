@@ -33,6 +33,8 @@ import Control.Monad.IO.Class (liftIO)
 import Data.List (isInfixOf, sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
+import Olifant.Server.State qualified as St
+import Olifant.Decide qualified as De
 import Olifant.Rules qualified as Ru
 import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (..), LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
 import Data.Text.Encoding qualified as TE
@@ -43,10 +45,10 @@ import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker,
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
-import Olifant.Process (gitBaseFiles, gitBaseText)
+import Olifant.Process (gitBaseFiles, gitBaseText, gitStateStamp)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
-import Olifant.Process (cancelled)
+import Olifant.Process (cancelled, newCancel)
 import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
@@ -1081,7 +1083,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests"))
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []
@@ -1222,6 +1224,27 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
           void (pullDiagnostics doc)
       asked <- T.lines <$> TIO.readFile (answers <> ".asked")
       length asked `shouldBe` 1
+  it "(k) a decision outlives the request that asked: its cancelled token does not make it unsure (review minor #9)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      let answers = dir </> "answers.json"
+          q = De.Question "bug-or-new" ["bug fix", "new behaviour"] [] []
+      TIO.writeFile answers "wait"
+      (token, trip) <- newCancel
+      trip
+      s0 <- newServerState ports
+      let s = s0 {ssConfig = (ssConfig s0) {scDecideAnswers = Just answers}, ssCancel = token}
+      (s', Just (_, project)) <- St.projectFor (dir </> legacy) s
+      let Just decider = St.deciderFor s' project
+          ask' = St.decision s' decider (legacy, "bug-or-new:f") "fp1" q (pure ())
+      _ <- ask'
+      threadDelay 200000
+      TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"bug fix\"}}"
+      let poll n = ask' >>= \case
+            Just a -> pure (Just a)
+            Nothing | n > (0 :: Int) -> threadDelay 50000 >> poll (n - 1)
+            Nothing -> pure Nothing
+      poll 40 `shouldReturn` Just (De.Chosen "bug fix" [])
   it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
     withPython [(legacy, base)] $ \ports dir -> do
       migrating dir "\n[decide]\nmodel = \"jev\"\n"
@@ -1249,6 +1272,22 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
         b <- pullDiagnostics doc
         liftIO (git dir ["checkout", "-q", "main"] >> git dir ["merge", "-q", "feature"])
         sendNotification SMethod_WorkspaceDidChangeWatchedFiles (DidChangeWatchedFilesParams [FileEvent (filePathToUri (dir </> legacy)) FileChangeType_Changed])
+        a <- pullDiagnostics doc
+        pure (b, a)
+      ruleIds before `shouldContain` ["no-new-defs"]
+      ruleIds after `shouldNotContain` ["no-new-defs"]
+
+  it "(d2) the base moves with no file event (Linux Neovim watches no files): the next pull sees it (review minor #10)" $
+    withPython [(legacy, base), (".olifant/rules.toml", rule)] $ \ports dir -> do
+      underGit dir
+      TIO.writeFile (dir </> legacy) (base <> "\ndef waitlist(r):\n    return r\n")
+      git dir ["commit", "-q", "-am", "waitlist"]
+      ((before, after), _) <- inProcessWith ports {pBaseText = gitBaseText} dir $ do
+        doc <- openDoc legacy "python"
+        b <- pullDiagnostics doc
+        liftIO (git dir ["checkout", "-q", "main"] >> git dir ["merge", "-q", "feature"])
+        -- an edit of the buffer, so the pull is not the same answer again
+        changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (base <> "\ndef waitlist(r):\n    return r\n\n")))]
         a <- pullDiagnostics doc
         pure (b, a)
       ruleIds before `shouldContain` ["no-new-defs"]
@@ -1306,6 +1345,8 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
           after `shouldNotSatisfy` T.isInfixOf "UPDATE tables SET open = 0"
           after `shouldNotSatisfy` T.isInfixOf "olifant:switch close-table"
           after `shouldSatisfy` T.isInfixOf "def open_table(table_id):"
+          -- its callers are named: they keep calling it (review minor #15)
+          planWarnings plan `shouldSatisfy` any (\w -> "legacy/app.py:56" `T.isInfixOf` w && "close_table" `T.isInfixOf` w)
   it "(e4) retire is offered only once the switch's flag is on in the registry (review #5)" $
     withStrangler $ \ports dir -> do
       original <- TIO.readFile (dir </> views)
@@ -1351,6 +1392,8 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
     withStrangler $ \ports dir -> do
       original <- TIO.readFile (dir </> views)
       s <- newServerState ports
+      createDirectoryIfMissing True (dir </> "src/bistro/booking/queries")
+      TIO.writeFile (dir </> "src/bistro/booking/queries/seat_party.py") "class SeatParty: ...\nclass SeatPartyInput: ...\n"
       let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "seat_party"), ("function", "seat_party"), ("file", "legacy/views.py")]
       (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
       case planned of
@@ -1362,9 +1405,20 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
           -- the switch, then the old body, line for line
           drop (length (body after) - length oldBody) (body after) `shouldBe` oldBody
           T.unlines (body after) `shouldSatisfy` T.isInfixOf "olifant:switch seat-party"
+  it "(f3) a switch alone over a command that does not exist is refused, saying how (review minor #14)" $
+    withStrangler $ \ports dir -> do
+      s <- newServerState ports
+      let sets = [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("name", "close_table"), ("function", "close_table"), ("file", "legacy/views.py")]
+      (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
+      case planned of
+        Left why -> why `shouldSatisfy` T.isInfixOf "extract-command"
+        Right (_, plan) -> planConflicts plan `shouldNotBe` []
   it "(f2) a switch over a generator function yields the new path's rows, then stops (review #4)" $
     withStrangler $ \ports dir -> do
       s <- newServerState ports
+      createDirectoryIfMissing True (dir </> "src/bistro/booking/queries")
+      TIO.writeFile (dir </> "src/bistro/booking/queries/export_rows.py") "class ExportRows: ...\nclass ExportRowsInput: ...\n"
+      TIO.writeFile (dir </> "src/bistro/booking/commands/close_table.py") "class CloseTable: ...\nclass CloseTableInput: ...\n"
       let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "export_rows"), ("function", "export_rows"), ("file", "legacy/views.py")]
       (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
       case planned of

@@ -43,7 +43,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Actions (matchPathSlots)
 import Olifant.Glob (matchesGlob)
-import Olifant.Newness (NewLines (..), wholeNew)
+import Olifant.Newness (NewLines (..), definedName, wasDefined, wholeNew)
 import Olifant.Language (Language (..), Match (..), Rule, Syntax (..), describeSyntaxFailure, languageFor, renderRule, ruleFromTree)
 import Olifant.Template (Template, Value (..), describeTemplateError, freeVariables, parseTemplate, render)
 import Olifant.Toml (Table, inKey, list, onlyKeys, optional, parseToml, required, table, text)
@@ -259,11 +259,14 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
       -- base; the others are dropped before their fixes are worked out (each
       -- costs a query: every old function in a legacy file did, per keystroke)
       newness <- if any (ruleOnlyNew . fst) applicable then newIn f else pure AllNew
-      let stands r rng = not (ruleOnlyNew r) || wholeNew newness rng
+      -- wholly new, and not a name the base defined (a bug fix may rewrite a
+      -- small function whole)
+      let isNew rng what = wholeNew newness rng && not (wasDefined newness (definedName what))
+          stands r rng what = not (ruleOnlyNew r) || isNew rng what
       raw0 <- concat <$> traverse (\(r, slots) -> found f content lang r slots (stands r)) applicable
       let onlyNew = [ruleId r | (r, _) <- applicable, ruleOnlyNew r]
           isNewOnly fd = fRule fd `elem` onlyNew
-          raw = [fd | fd <- raw0, not (isNewOnly fd) || maybe False (wholeNew newness) (fRange fd)]
+          raw = [fd | fd <- raw0, not (isNewOnly fd) || maybe False (\rng -> isNew rng (fText fd)) (fRange fd)]
           noBase = case newness of
             NoBase why -> [(r, why) | r <- onlyNew]
             _ -> []
@@ -290,7 +293,7 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
             -- the path inside it are one finding).
             Right ms -> do
               let slotsOf m = slots ++ [(k, v) | (k, re) <- ruleBind r, Just v <- [firstCapture re (matchText m)]]
-              kept <- filterM (holds r . slotsOf) [m | m <- outermost ms, stands (range content m)]
+              kept <- filterM (holds r . slotsOf) [m | m <- outermost ms, stands (range content m) (matchText m)]
               traverse (\m -> withReplacements content l m (pairs f (slotsOf m) r (matchText m)) (finding f r (slotsOf m) (Just (range content m)) (matchText m))) kept
             Left failure -> pure [cannotRun f r (describeSyntaxFailure failure)]
         (Nothing, _) -> pure [cannotRun f r "no language adapter for this file"]
@@ -429,14 +432,6 @@ parseAllows prefix content = catMaybes [allowAt i l | (i, l) <- zip [1 ..] (T.li
           rest = T.strip (T.drop (T.length r) after)
           stripped = T.strip (T.dropWhile (`elem` ("—-:" :: String)) rest)
        in if T.null stripped then Nothing else Just stripped
-
--- | The name a definition's text defines: the identifier after its keyword
--- (`def b(x):` → b); else its first word.
-definedName :: Text -> Text
-definedName what = case T.words (T.map (\c -> if c `elem` ("(:<{" :: String) then ' ' else c) (fromMaybe "" (listToMaybe (T.lines what)))) of
-  kw : name : _ | kw `elem` ["def", "async", "class", "fn", "pub", "struct", "enum", "trait"] -> if kw `elem` ["async", "pub"] then definedName (T.unwords (name : drop 2 (T.words what))) else name
-  w : _ -> w
-  [] -> ""
 
 -- | A regex's first capture group in a text (the whole match without one).
 firstCapture :: Text -> Text -> Maybe Text
