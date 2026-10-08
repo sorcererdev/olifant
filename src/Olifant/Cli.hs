@@ -43,7 +43,7 @@ import Olifant.Generator (AppliesAt (..), Generator, generatorName, EnvError (..
 import Olifant.Language (Checker, Language (..), Syntax, languageFor)
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
-import System.FilePath (dropTrailingPathSeparator, makeRelative, normalise, splitDirectories, takeBaseName, takeFileName, (</>))
+import System.FilePath (dropTrailingPathSeparator, makeRelative, normalise, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 import System.Exit (ExitCode (..))
 
 data Runtime = Runtime
@@ -119,7 +119,15 @@ runInitMigrate rt fmt paths pack = do
         isDir <- (== Directory) <$> inspectPath ws asPath
         pure (if isDir then Just (T.pack (takeFileName asPath), asPath) else (p,) <$> lookup p userPacks)
   target <- resolve pack
-  strangler <- resolve "python-strangler"
+  -- the strangler pack: configured, else beside the --pack directory
+  strangler <- resolve "python-strangler" >>= \case
+    Just found -> pure (Just found)
+    Nothing -> case target of
+      Just (_, dir) -> do
+        let next = takeDirectory (dropTrailingPathSeparator dir) </> "python-strangler"
+        there <- (== Directory) <$> inspectPath ws next
+        pure (if there then Just ("python-strangler", next) else Nothing)
+      Nothing -> pure Nothing
   case (existing, target, strangler) of
     (Just c, _, _) | "[migrate]" `T.isInfixOf` c -> failWith rt fmt 2 "usage" "already migrating: edit [migrate] in .olifant/config.toml" Nothing []
     (_, Nothing, _) -> failWith rt fmt 2 "usage" ("no pack `" <> pack <> "`") (Just "give a pack's directory, or add it under [packs] in ~/.config/olifant/config.toml") []

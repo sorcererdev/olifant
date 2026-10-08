@@ -98,6 +98,11 @@ initMigrateSpec = describe "init --migrate (an existing repo)" $ do
     config `shouldSatisfy` T.isInfixOf "[migrate]\nlegacy = [\"legacy/**\"]"
     M.member "/w/.olifant/baseline.toml" files `shouldBe` True
     M.findWithDefault "" "/w/.gitignore" files `shouldSatisfy` T.isInfixOf ".olifant/state/"
+  it "finds python-strangler beside a --pack directory, with no user config" $ do
+    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml"] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")]
+    (code, out, err, files, _) <- runInit beside ["init", "--migrate", "legacy", "--pack", "/packs/python-htmx", "--human"]
+    (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
+    M.findWithDefault "" "/w/.olifant/config.toml" files `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/python-strangler\" }"
   it "refuses when the project is migrating already" $ do
     (code, out, err, _, _) <- runInit (("/w/.olifant/config.toml", "[migrate]\nlegacy = [\"x/**\"]\n") : packs) ["init", "--migrate", "legacy", "--human"]
     code `shouldNotBe` ExitSuccess
