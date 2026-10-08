@@ -25,7 +25,9 @@ module Olifant.Rules
   , Replacement (..)
   ) where
 
-import Control.Monad ((>=>))
+import Control.Monad (filterM, (>=>))
+import Data.Functor ((<&>))
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
 import Data.Aeson qualified as J
@@ -67,6 +69,11 @@ data RuleDef = RuleDef
   -- ^ ranked: the first is offered first
   , ruleOnlyNew :: Bool
   -- ^ `only = "new"`: a match counts only if it is wholly new since the base
+  , ruleBind :: [(Text, Text)]
+  -- ^ `bind = { name = "regex" }`: slots from the found code (the first capture group)
+  , ruleWhen :: Maybe (Text, Template)
+  -- ^ `when = { files, matches }`: a finding stands only if a line of a file
+  -- the glob names matches (a regex, a template over the slots)
   }
   deriving stock (Show)
 
@@ -124,7 +131,7 @@ parseRules src = do
   traverse (\(k, v) -> inKey ("rules." <> k) (table v >>= rule k)) (M.toList rs)
   where
     rule k t = do
-      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix", "fixes", "since", "why", "only"] t
+      onlyKeys ["files", "exclude", "match", "missing", "message", "severity", "fix", "fixes", "since", "why", "only", "bind", "when"] t
       files <- required "files" text t
       exclude <- fromMaybe [] <$> optional "exclude" (list text) t
       message0 <- required "message" text t
@@ -147,7 +154,17 @@ parseRules src = do
         Nothing -> Right False
         Just "new" -> Right True
         Just other -> Left ("`only = \"" <> other <> "\"`: the one choice is only = \"new\" (code new since the base)")
-      pure (RuleDef k files exclude check message severity (one ++ many) onlyNew)
+      binds <- maybe (Right []) (\b -> table b >>= traverse (\(n, v) -> (n,) <$> (text v >>= regexOk n)) . M.toList) (M.lookup "bind" t)
+      whenDef <- case M.lookup "when" t of
+        Nothing -> Right Nothing
+        Just w -> inKey "when" $ do
+          wt <- table w
+          onlyKeys ["files", "matches"] wt
+          (,) <$> required "files" text wt <*> (required "matches" text wt >>= tmpl) <&> Just
+      pure (RuleDef k files exclude check message severity (one ++ many) onlyNew binds whenDef)
+    regexOk n re = case makeRegexM (T.unpack re) :: Maybe Regex of
+      Just _ -> Right re
+      Nothing -> Left ("`bind." <> n <> "`: not a regular expression: " <> re)
     ruleSev s =
       parseSeverity s >>= \case
         Off -> Left "a rule's severity is hint, warn, error (turn it off in the project's [rules])"
@@ -271,7 +288,10 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
           querySyntax syntax l q content >>= \case
             -- One finding where matches nest: the outermost (an import and
             -- the path inside it are one finding).
-            Right ms -> traverse (\m -> withReplacements content l m (pairs f slots r (matchText m)) (finding f r slots (Just (range content m)) (matchText m))) [m | m <- outermost ms, stands (range content m)]
+            Right ms -> do
+              let slotsOf m = slots ++ [(k, v) | (k, re) <- ruleBind r, Just v <- [firstCapture re (matchText m)]]
+              kept <- filterM (holds r . slotsOf) [m | m <- outermost ms, stands (range content m)]
+              traverse (\m -> withReplacements content l m (pairs f (slotsOf m) r (matchText m)) (finding f r (slotsOf m) (Just (range content m)) (matchText m))) kept
             Left failure -> pure [cannotRun f r (describeSyntaxFailure failure)]
         (Nothing, _) -> pure [cannotRun f r "no language adapter for this file"]
         (_, Left err) -> pure [cannotRun f r (describeTemplateError err)]
@@ -281,6 +301,18 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
               Right p | collapse (T.unpack p) `notElem` paths -> [finding f r slots Nothing p]
               Right _ -> []
               Left err -> [cannotRun f r (describeTemplateError err)]
+    -- `when`: some line of a file the glob names matches
+    holds r slots' = case ruleWhen r of
+      Nothing -> pure True
+      Just (glob, tmpl) -> case render (M.fromList [(k, VText v) | (k, v) <- slots']) tmpl of
+        Left _ -> pure False
+        Right re -> case makeRegexM (T.unpack re) :: Maybe Regex of
+          Nothing -> pure False
+          Just rx -> anyM (\p -> maybe False (any (matchTest rx . T.unpack) . T.lines) <$> readFile' p) [p | p <- paths, matchesGlob glob p]
+    anyM _ [] = pure False
+    anyM p (x : xs) = p x >>= \case
+      True -> pure True
+      False -> anyM p xs
     -- A rule that cannot run is an error: a gate must never pass silently
     -- because it could not look (review C2).
     cannotRun f r why = Finding "rule-failed" f Nothing Error ("rule `" <> ruleId r <> "` could not run on " <> T.pack f <> ": " <> why) [] "" (fingerprint ["rule-failed", ruleId r])
@@ -405,4 +437,14 @@ definedName what = case T.words (T.map (\c -> if c `elem` ("(:<{" :: String) the
   kw : name : _ | kw `elem` ["def", "async", "class", "fn", "pub", "struct", "enum", "trait"] -> if kw `elem` ["async", "pub"] then definedName (T.unwords (name : drop 2 (T.words what))) else name
   w : _ -> w
   [] -> ""
+
+-- | A regex's first capture group in a text (the whole match without one).
+firstCapture :: Text -> Text -> Maybe Text
+firstCapture re t = do
+  rx <- makeRegexM (T.unpack re) :: Maybe Regex
+  AllTextSubmatches groups <- matchM rx (T.unpack t) :: Maybe (AllTextSubmatches [] String)
+  case groups of
+    _ : g : _ -> Just (T.pack g)
+    [whole] -> Just (T.pack whole)
+    [] -> Nothing
 

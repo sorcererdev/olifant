@@ -377,6 +377,37 @@ newWorkHints ports project newness files = case catalogMigrate cat of
       | kind <- ["command", "query"]
       ]
 
+-- | A node's text with its indentation taken off the lines after the
+-- first (ast-grep gives the first line from the node's column, the rest
+-- whole): the text as if the node were at column 0.
+relativeTo :: Text -> Text -> Text
+relativeTo indent found = case T.lines found of
+  [] -> found
+  l : ls -> T.intercalate "\n" (l : [fromMaybe x (T.stripPrefix indent x) | x <- ls])
+
+-- | A definition's signature: its lines up to the colon that ends it, the
+-- first `:` outside brackets and strings (`def f(\n    a,\n) -> dict:`);
+-- the first line when there is none.
+signatureHead :: Text -> Text
+signatureHead found = case go (0 :: Int) Nothing (T.unpack found) 0 of
+  Just n -> T.intercalate "\n" (take (n + 1) (T.lines found))
+  Nothing -> fromMaybe "" (listToMaybe (T.lines found))
+  where
+    go _ _ [] _ = Nothing
+    go depth (Just q) (c : cs) line
+      | c == '\\' = case cs of
+          d : rest -> go depth (Just q) rest (if d == '\n' then line + 1 else line)
+          [] -> Nothing
+      | c == q = go depth Nothing cs line
+      | otherwise = go depth (Just q) cs (if c == '\n' then line + 1 else line)
+    go depth Nothing (c : cs) line
+      | c == '\n' = go depth Nothing cs (line + 1)
+      | c `elem` ("\"'" :: String) = go depth (Just c) cs line
+      | c `elem` ("([{" :: String) = go (depth + 1) Nothing cs line
+      | c `elem` (")]}" :: String) = go (max 0 (depth - 1)) Nothing cs line
+      | c == ':' && depth == 0 = Just line
+      | otherwise = go depth Nothing cs line
+
 -- | A switched function's new path (the strangler's retire): the lines
 -- inside its `if switches.on(…):` block, a level less indented — what the
 -- function becomes once its legacy body goes.
@@ -592,9 +623,11 @@ fixSteps ports project rule rel line n given = do
             Left err -> pure (Left (FixCatalog err))
             Right gen -> do
               let sets = M.union (M.fromList given) (M.fromList (foSets o))
-                  -- `finding_head`: the found node's first line (a definition's signature)
-                  found = maybe "" rpFinding (foReplace o)
-                  env = M.map Tm.VText (M.insert "finding_name" (definedName found) (M.insert "finding_switch_path" (switchPath found) (M.insert "finding_head" (fromMaybe "" (listToMaybe (T.lines found))) (M.insert "finding" found sets))))
+                  -- the found node's text relative to its own indentation (its
+                  -- first line has none; the replacement adds it back to every line);
+                  -- `finding_head`: a definition's whole signature, to its colon
+                  found = maybe "" (\rp -> relativeTo (rpIndent rp) (rpFinding rp)) (foReplace o)
+                  env = M.map Tm.VText (M.insert "finding_name" (definedName found) (M.insert "finding_switch_path" (switchPath found) (M.insert "finding_head" (signatureHead found) (M.insert "finding" found sets))))
                   defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                   replacement = case foReplace o of
                     Nothing -> Right []

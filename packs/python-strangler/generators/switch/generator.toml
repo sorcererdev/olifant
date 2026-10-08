@@ -50,6 +50,12 @@ value = "parent folder"
 glob  = "src/{= app =}/*/models"
 value = "parent folder"
 
+# a generator function (it yields): the new path's rows are yielded, then it
+# stops (a `return value` would end the iteration with nothing)
+[query.yields]
+files = "{= file =}"
+ast   = { kind = "yield", inside = { kind = "function_definition", has = { field = "name", regex = "^{= function =}$" }, stopBy = "end" } }
+
 # The registry: made the first time, then one line per switch, off.
 [[edits]]
 create    = "{= registry =}"
@@ -70,7 +76,8 @@ text   = """# olifant:switch {= flag =} → {= service|snake =}/{= kind =}/{= na
 if switches.on("{= flag =}"):
     result = {= ? wiring: expr | the new {= kind|singular =} {= Name =} built with its ports, as src/{= app =}/main.py builds it =}.handle({= Name =}Input({= ? args: expr | this legacy function's parameters as the Input's fields =}))
     if not isinstance(result, NotYet):
-        return {= ? respond: expr | what this legacy function returns for that result: the shape its callers expect =}"""
+{= if yields =}        yield from {= ? respond: expr | what this legacy generator yields for that result: an iterable of the items its callers expect =}
+        return{= else =}        return {= ? respond: expr | what this legacy function returns for that result: the shape its callers expect =}{= end =}"""
 unless = { matches = "olifant:switch {= flag =}" }
 
 [[uses]]

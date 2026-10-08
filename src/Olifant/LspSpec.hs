@@ -32,6 +32,8 @@ import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
 import Data.List (isInfixOf, sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
+import Olifant.Server.Fixes qualified as Fx
+import Olifant.Rules qualified as Ru
 import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (..), LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
 import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
@@ -1278,6 +1280,7 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
       original <- TIO.readFile (dir </> views)
       let switched = T.replace "def close_table(table_id):\n" "def close_table(table_id):\n    # olifant:switch close-table → booking/commands/close_table\n    if switches.on(\"close-table\"):\n        result = CloseTable().handle(CloseTableInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {\"id\": table_id, \"open\": False}\n" original
       TIO.writeFile (dir </> views) switched
+      TIO.writeFile (dir </> "src/bistro/switches.py") "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\n"
       s <- newServerState ports
       let line = 1 + length (takeWhile (not . T.isPrefixOf "def close_table") (T.lines switched))
       (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "switch-retire" line 1 [] s
@@ -1289,6 +1292,47 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
           after `shouldNotSatisfy` T.isInfixOf "UPDATE tables SET open = 0"
           after `shouldNotSatisfy` T.isInfixOf "olifant:switch close-table"
           after `shouldSatisfy` T.isInfixOf "def open_table(table_id):"
+  it "(e4) retire is offered only once the switch's flag is on in the registry (review #5)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let switched = T.replace "def close_table(table_id):\n" "def close_table(table_id):\n    # olifant:switch close-table → booking/commands/close_table\n    if switches.on(\"close-table\"):\n        result = CloseTable().handle(CloseTableInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {\"id\": table_id, \"open\": False}\n" original
+          line = 1 + length (takeWhile (not . T.isPrefixOf "def close_table") (T.lines switched))
+          registry flag = "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = " <> flag <> "\n"
+          offered = do
+            s <- newServerState ports
+            (_, fs) <- Fx.findingsFor (dir </> views) s
+            pure ("switch-retire" `elem` map Ru.fRule fs)
+      TIO.writeFile (dir </> views) switched
+      TIO.writeFile (dir </> "src/bistro/switches.py") (registry "False")
+      offered `shouldReturn` False
+      TIO.writeFile (dir </> "src/bistro/switches.py") (registry "True")
+      offered `shouldReturn` True
+  it "(e2) retire on a method keeps the class's indentation (review #2)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let method = "\n\nclass Exporter:\n    def run(self, table_id):\n        # olifant:switch close-table → booking/commands/close_table\n        if switches.on(\"close-table\"):\n            result = CloseTable().handle(CloseTableInput(id=table_id))\n            if not isinstance(result, NotYet):\n                return {\"id\": table_id}\n        return legacy_close(table_id)\n"
+      TIO.writeFile (dir </> views) (original <> method)
+      TIO.writeFile (dir </> "src/bistro/switches.py") "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\n"
+      s <- newServerState ports
+      let line = length (T.lines original) + 4
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "switch-retire" line 1 [] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) ->
+          M.findWithDefault "" views (planWrites plan) `shouldSatisfy` T.isInfixOf "class Exporter:\n    def run(self, table_id):\n        result = CloseTable().handle(CloseTableInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {\"id\": table_id}\n        raise RuntimeError("
+  it "(e3) retire on a signature over several lines keeps all of it (review #3)" $
+    withStrangler $ \ports dir -> do
+      original <- TIO.readFile (dir </> views)
+      let fn = "\n\ndef long_sig(\n    table_id,\n    party: dict[str, int] = {\"a\": 1},\n) -> dict:\n    # olifant:switch long-sig → booking/commands/long_sig\n    if switches.on(\"long-sig\"):\n        result = LongSig().handle(LongSigInput(id=table_id))\n        if not isinstance(result, NotYet):\n            return {}\n    return {\"old\": True}\n"
+      TIO.writeFile (dir </> views) (original <> fn)
+      TIO.writeFile (dir </> "src/bistro/switches.py") "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"long-sig\"] = True\n"
+      s <- newServerState ports
+      let line = length (T.lines original) + 3
+      (_, planned) <- fixPlan False (const (pure ())) (dir </> views) "switch-retire" line 1 [] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) ->
+          M.findWithDefault "" views (planWrites plan) `shouldSatisfy` T.isInfixOf "def long_sig(\n    table_id,\n    party: dict[str, int] = {\"a\": 1},\n) -> dict:\n    result = LongSig().handle(LongSigInput(id=table_id))\n"
   it "(f) a switch over a function with several returns leaves its old body exactly as it was (Review Focus 3)" $
     withStrangler $ \ports dir -> do
       original <- TIO.readFile (dir </> views)
@@ -1304,6 +1348,23 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
           -- the switch, then the old body, line for line
           drop (length (body after) - length oldBody) (body after) `shouldBe` oldBody
           T.unlines (body after) `shouldSatisfy` T.isInfixOf "olifant:switch seat-party"
+  it "(f2) a switch over a generator function yields the new path's rows, then stops (review #4)" $
+    withStrangler $ \ports dir -> do
+      s <- newServerState ports
+      let sets = [("app", "bistro"), ("service", "booking"), ("kind", "queries"), ("name", "export_rows"), ("function", "export_rows"), ("file", "legacy/views.py")]
+      (_, planned) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" sets Nothing] s
+      case planned of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> do
+          let after = M.findWithDefault "" views (planWrites plan)
+              body = T.unlines (takeWhile (not . T.isPrefixOf "    \"\"\"The day's") (drop 1 (dropWhile (not . T.isPrefixOf "def export_rows") (T.lines after))))
+          body `shouldSatisfy` T.isInfixOf "            yield from "
+          body `shouldSatisfy` T.isInfixOf "            return\n"
+          -- and a plain function still returns its value
+      (_, plain) <- stepsPlanWith (const (pure ())) False (dir </> views) (0, 0) [PickStep "python-strangler/switch" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("name", "close_table"), ("function", "close_table"), ("file", "legacy/views.py")] Nothing] s
+      case plain of
+        Left why -> expectationFailure (T.unpack why)
+        Right (_, plan) -> M.findWithDefault "" views (planWrites plan) `shouldNotSatisfy` T.isInfixOf "yield from"
   it "(g) the ⚡ menu offers extract as a command first where the code writes, as a query first where it reads" $
     withStrangler $ \ports dir -> do
       original <- TIO.readFile (dir </> views)

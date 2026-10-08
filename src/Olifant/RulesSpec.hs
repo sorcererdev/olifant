@@ -113,6 +113,13 @@ spec = describe "rules (spec §5.9)" $ do
       (fs, _) <- checkFiles counting [python] none ["legacy/**"] (\_ -> pure (NewIn (S.fromList [4, 5]))) rs [f] (\_ -> pure (Just legacyFile)) [f]
       map fRule fs `shouldBe` ["no-new-defs"]
       readIORef calls `shouldReturn` 2
+    it "(k) `bind` takes values from the found code; `when` keeps a finding only where another file says so (review #5)" $ do
+      let ruleText = "[rules.flag-on]\nfiles = \"legacy/*.py\"\nmatch = { kind = \"function_definition\" }\nbind = { fn = \"^def ([a-z]+)\" }\nwhen = { files = \"flags/*.txt\", matches = \"^{= fn =} = on$\" }\nmessage = \"its flag is on\"\n"
+          Right rs = parseRules ruleText
+          f = "legacy/views.py"
+          files = M.fromList [(f, legacyFile), ("flags/x.txt", "a = off\nb = on\n")]
+          (fs, _) = runIdentity (checkFiles defs [python] none [] (\_ -> Identity AllNew) rs (M.keys files) (\p -> Identity (M.lookup p files)) [f])
+      [fText fd | fd <- fs] `shouldBe` ["def b(x):\n    return x\n"]
     it "(f) a file outside the legacy globs is not checked" $ do
       let Right rs = parseRules legacyRule
       fst (runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity AllNew) rs ["src/x.py"] (\_ -> Identity (Just legacyFile)) ["src/x.py"])) `shouldBe` []

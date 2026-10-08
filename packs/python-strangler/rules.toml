@@ -41,6 +41,10 @@ severity = "warn"
 [rules.switch-retire]
 files    = "{legacy}"
 match    = { kind = "function_definition", regex = "olifant:switch " }
+# only once its flag is on in the registry: retiring a switch that is off
+# would send every caller down the untrusted path
+bind     = { flag = "olifant:switch ([A-Za-z0-9_-]+)" }
+when     = { files = "**/switches.py", matches = 'SWITCHES\["{= flag =}"\] *= *True' }
 message  = "Switched to the new path: when its flag is on and trusted, retire the legacy body"
 severity = "hint"
 
