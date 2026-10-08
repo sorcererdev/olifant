@@ -72,7 +72,7 @@ import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Newness (NewLines (..), newLinesOf, wholeNew)
 import Olifant.Migration (MigrationReport (..), Switch (..), bigChanges, readRegistry, switchMarkers, unregistered)
-import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), RulesConfig (..), Severity (..), checkFiles, definedName, fingerprint, suggestChoice)
+import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), Severity (..), checkFiles, definedName, fingerprint, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
 import Olifant.Template qualified as Tm

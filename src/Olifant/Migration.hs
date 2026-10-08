@@ -44,8 +44,10 @@ data MigrationReport = MigrationReport
 -- | The registry's entries: `SWITCHES["name"] = True|False` lines, or
 -- `"name": True|False,` lines inside `SWITCHES = {…}`.
 readRegistry :: Text -> [Switch]
-readRegistry text = mapMaybe line (T.lines text) ++ mapMaybe entry (takeWhile (not . closes) (drop 1 (dropWhile (not . opens) (T.lines text))))
+readRegistry text = mapMaybe line ls ++ mapMaybe entry (takeWhile (not . closes) (drop 1 (dropWhile (not . opens) ls)))
   where
+    -- a line's code: a trailing comment is not part of a value
+    ls = map (fst . T.breakOn "#") (T.lines text)
     line l = do
       rest <- T.stripPrefix "SWITCHES[\"" (T.strip l)
       let (name, after) = T.breakOn "\"]" rest
@@ -106,12 +108,22 @@ bigChanges threshold newness fns = [(fn, n) | fn <- fns, not (wholeNew newness f
 -- commit, a save, a module global assigned) or a query (it only reads: SQL
 -- that selects, a fetch), or unsure — decision 2's deterministic answer.
 readsOrWrites :: Text -> Maybe Text
-readsOrWrites text
-  | any (`T.isInfixOf` upper) ["INSERT ", "UPDATE ", "DELETE "] || any (`T.isInfixOf` text) [".commit(", ".save(", ".add(", "global "] = Just "command"
+readsOrWrites text0
+  | any (`T.isInfixOf` upper) ["INSERT ", "UPDATE ", "DELETE "] || any (`T.isInfixOf` text) [".commit(", ".save(", "global "] = Just "command"
   | "SELECT " `T.isInfixOf` upper || any (`T.isInfixOf` text) [".fetch", "db.rows(", "db.row("] = Just "query"
   | otherwise = Nothing
   where
+    -- the code, not its comments (`# update the cache` is prose)
+    text = T.unlines (map codeOf (T.lines text0))
     upper = T.toUpper text
+    codeOf l = T.pack (go Nothing (T.unpack l))
+      where
+        go _ [] = []
+        go Nothing ('#' : _) = []
+        go Nothing (c : cs) | c `elem` ("\"'" :: String) = c : go (Just c) cs
+        go (Just q) ('\\' : c : cs) = '\\' : c : go (Just q) cs
+        go (Just q) (c : cs) | c == q = c : go Nothing cs
+        go st (c : cs) = c : go st cs
 
 -- | The tables a function's SQL names (FROM, INTO, UPDATE, JOIN …).
 tablesTouched :: Text -> [Text]
@@ -130,6 +142,6 @@ functionText content name =
        in Just (T.unlines (def : takeWhile (\l -> T.null (T.strip l) || indentOf l > level) rest))
     _ -> Nothing
   where
-    isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.stripStart l
+    isDef l = any (\kw -> (kw <> name <> "(") `T.isPrefixOf` T.stripStart l) ["def ", "async def "]
     indentOf = T.length . T.takeWhile (== ' ')
 

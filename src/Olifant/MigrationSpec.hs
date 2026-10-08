@@ -32,6 +32,14 @@ spec = describe "Olifant.Migration" $ do
     readsOrWrites "def f(d):\n    return db.rows(\"SELECT * FROM bookings WHERE day = ?\", d)\n" `shouldBe` Just "query"
     readsOrWrites "def f(x):\n    return x + 1\n" `shouldBe` Nothing
     readsOrWrites "def f(x):\n    global CURRENT\n    CURRENT = x\n" `shouldBe` Just "command"
+  it "(a3) a trailing comment on a registry line is not part of its value (review minor #12)" $
+    readRegistry "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True  # trusted since 10-07\n\"seat-party\": True,  # inline\n" `shouldBe` [Switch "close-table" True]
+  it "(g2) reads or writes: comments are not code; a set's add is not a write (review minor #13)" $ do
+    readsOrWrites "def f(x):\n    # update the cache later\n    return x + 1\n" `shouldBe` Nothing
+    readsOrWrites "def f(xs):\n    seen = set()\n    seen.add(xs)\n    return seen\n" `shouldBe` Nothing
+    readsOrWrites "def f(d):\n    # select the rows\n    db.execute(\"DELETE FROM t WHERE d = ?\", d)\n" `shouldBe` Just "command"
+  it "(g3) a function's text is found for an async def too (review minor #13)" $
+    functionText "async def fetch(x):\n    return x\n\ndef other():\n    pass\n" "fetch" `shouldBe` Just "async def fetch(x):\n    return x\n\n"
   it "(e) legacy added is named; a marker the registry lacks is listed" $ do
     let r = MigrationReport 213 (Just 212) [] (Just []) ["waitlist"] ["close-table"]
     reportLine r `shouldBe` "+0 extracted, 1 legacy function added (waitlist), legacy 212 → 213 functions; switches: 0 on, 0 off"

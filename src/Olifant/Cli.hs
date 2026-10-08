@@ -5,13 +5,12 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 import Data.Set (Set)
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
-import Olifant.Newness (NewLines (..))
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
-import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..), matchPathSlots)
+import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..))
 import Control.Monad (forM_, unless, when)
 import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
 import Data.Aeson.KeyMap qualified as KM
