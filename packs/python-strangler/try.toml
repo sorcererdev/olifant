@@ -1,0 +1,4 @@
+# A sandbox of the demo monolith (scripts/try-pack.sh python-strangler):
+# legacy/ is the monolith, src/ the new architecture.
+[migrate]
+legacy = ["legacy/**"]
