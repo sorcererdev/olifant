@@ -177,7 +177,7 @@ From the bottom up:
 | **Uncovered** | The cases the compiler says the `match` at the cursor lacks: the `uncovered` query | `Uncovered.hs`: `uncoveredAt`, `uncoveredQuery` | Glob, Holes, Language, Query, Template, Workspace |
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
 | **Rules** | Rules (spec §5.9): parse `rules.toml` and the project's `[rules]`, check files against them, honour and report the exceptions, fingerprint findings for the baseline | `Rules.hs`: `RuleDef`, `RuleCheck`, `Severity`, `RulesConfig`, `Finding`, `Exception`, `parseRules`, `parseRulesConfig`, `parseSeverity`, `checkFiles`, `fingerprint` | Actions (`matchPathSlots`), Glob, Language, Template, Toml |
-| **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): an LCS over lines, common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `wholeNew`, `newCount` | none |
+| **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): Myers' O(ND) diff over lines (cost follows the edits, not the file; past 1,000 edits lines pair by text), common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `lcsPairs`, `wholeNew`, `newCount` | none |
 | **Migration** | The strangler's report and its pure parts: the switch registry, `olifant:switch` markers, what a PR extracted and added, big changes, whether a function reads or writes, the tables its SQL names, a switched function's text | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `readsOrWrites`, `tablesTouched`, `functionText` | Newness |
 | **Decide** | Typed decisions (Jev, progressively): a `Question` of a kind with its options, a `Decider` that answers one or is `Unsure`; validated, so an answer outside the options is `Unsure`. Nothing depends on an answer arriving | `Decide.hs`: `Question`, `Answer`, `Decider`, `noDecider`, `validated`, `decisionPrompt`, `decodeAnswer`, `curlDecider`, `recordedDecider` | Model, Process |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
@@ -337,7 +337,9 @@ adds a sixth: the process's own environment (what is on its `PATH`, which variab
 and a quick probe of the model. `olifant check --changed-since` adds a seventh: git, for the
 lines a branch changed. The strangler adds `pBaseText` (`Process.gitBaseText`: a file's text at
 the merge-base of `HEAD` and a ref, `git merge-base` then `git show`), which the language server
-caches per file until the files change on disk (`Server/State.cachedBase`). Each is a **port**. A port is a record of functions,
+caches per file until the files change on disk (`Server/State.cachedBase`); it follows a rename
+(`git diff -M`) to the file's old path. `pBaseFiles` (`Process.gitBaseFiles`, `git ls-tree` at
+the merge-base) lets the report count the base over the base's own files. Each is a **port**. A port is a record of functions,
 parameterised by the monad `m` it runs in:
 
 ```haskell
@@ -2300,7 +2302,12 @@ engine features plus a pack (`python-strangler`):
   deterministic answer stands meanwhile. Three kinds: `bug-or-new` (a big change in a legacy
   function, `Server/Fixes.decided`), `command-or-query` (when `readsOrWrites` is unsure,
   `Server/Actions.extractOrder`) and `service` (when the SQL's tables name no single service's
-  model, `Server/Preview`'s `suggestService`; the value's source is `suggested`).
+  model, `Server/Preview`'s `suggestService`; the value's source is `suggested`). Each goes
+  through `Server/State.decision`: one decision per (file, kind, function name), at most one ask
+  in flight, asked again once it lands if the function's text changed since.
+- **Rules that look elsewhere** (`Rules`: `bind`, `when`): a slot captured from the found code,
+  and a condition on another file's lines; retire is offered only once the registry says the
+  flag is on.
 - **Fix data names its generator** (`Lsp`, a fix's `data.generator`), so the editor fills a
   fix's inputs in the generate picker and resolves the fix with them.
 

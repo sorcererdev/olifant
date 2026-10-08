@@ -117,6 +117,8 @@ def close_table(table_id):
 SWITCHES["close-table"] = False
 ```
 
+A generator function (one that yields) gets `yield from` the new path's items, then `return`.
+
 The new code may decline a case it does not cover yet, by returning `NotYet(reason)`
 (`bistro.shared.result`): the old body runs it. So a command can go live for the cases it
 handles, and grow.
@@ -128,8 +130,9 @@ tests still pass: where the new path declines, the old one answers.
 
 ### Retiring the old path
 
-On a switched function, a hint: **Switched to the new path: when its flag is on and trusted,
-retire the legacy body**. Its fix, **Retire the legacy path**, keeps the function (its callers
+Once a switch's flag is on in the registry, a hint on its function: **Switched to the new
+path: when its flag is on and trusted, retire the legacy body** (never while it is off: retiring
+then would send every caller down the untrusted path). Its fix, **Retire the legacy path**, keeps the function (its callers
 keep calling it) and only its new path:
 
 ```python
@@ -154,7 +157,8 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
 - **extracted**: switches the base did not have;
 - **legacy functions added**: new legacy functions *without* an allowance (a delegate doesn't
   count; it carries `olifant:allow`);
-- **legacy N → M functions**: definitions in the legacy globs, at the base and now;
+- **legacy N → M functions**: definitions in the legacy globs, at the base (over the base's own
+  files, so a file deleted since counts there) and now; a file renamed with `git mv` is not new;
 - **switches**: the registry's, on and off.
 
 `--report` lists each switch; `--json` has it all under `migration`. In Neovim,
