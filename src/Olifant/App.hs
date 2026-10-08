@@ -51,7 +51,8 @@ import Data.Aeson qualified as J
 import Olifant.Glob (matchesGlob)
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
-import Data.List (find, sortOn)
+import Data.Char (isAlphaNum)
+import Data.List (find, sortOn, sort)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -79,7 +80,7 @@ import Olifant.Template qualified as Tm
 import Olifant.Template.Syntax (Segment (..), Template (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Workspace (PathState (..), Workspace (..), within)
-import System.FilePath (takeBaseName, takeDirectory, takeFileName, (</>))
+import System.FilePath (takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 import Olifant.Doctor (Check, DoctorInput (..), DoctorPorts, doctor)
 
 -- | What the engine needs from the world: the file system (absolute
@@ -393,6 +394,40 @@ newWorkHints ports project newness files = case catalogMigrate cat of
       | kind <- ["command", "query"]
       ]
 
+-- | Whether a node's text is a definition (def, class, fn, …).
+isDefinition :: Text -> Bool
+isDefinition t = case T.words (T.stripStart t) of
+  kw : _ -> kw `elem` ["def", "async", "class", "fn", "pub", "struct", "enum", "trait"]
+  [] -> False
+
+-- | Where NAME is called (`NAME(`, not part of a longer name), in files
+-- with REL's extension, its own definition (LINES of REL) left out:
+-- `path:line`, in path order.
+callersOf :: Workspace IO -> FilePath -> (Int, Int) -> Text -> IO [Text]
+callersOf ws rel (l1, l2) name
+  | T.null name = pure []
+  | otherwise = do
+      paths <- listFiles ws "."
+      fmap concat . forM (sort [p | p <- paths, takeExtension p == takeExtension rel]) $ \p -> do
+        text <- fromMaybe "" <$> readText ws p
+        pure
+          [ T.pack p <> ":" <> T.pack (show i)
+          | (i, l) <- zip [1 :: Int ..] (T.lines text)
+          , not (p == rel && i >= l1 && i <= l2)
+          , calls l
+          ]
+  where
+    calls l = any starts (T.breakOnAll (name <> "(") l)
+    starts (before, _) = case T.unsnoc before of
+      Just (_, c) -> not (isAlphaNum c || c == '_') && not ("def " `T.isSuffixOf` before)
+      Nothing -> True
+
+-- | The plan's note about a definition's callers.
+callersNote :: Text -> [Text] -> [Text]
+callersNote _ [] = []
+callersNote name cs =
+  [ name <> " stays, so its " <> T.pack (show (length cs)) <> " caller(s) keep working: " <> T.intercalate ", " (take 10 cs) <> (if length cs > 10 then ", …" else "") ]
+
 -- | A node's text with its indentation taken off the lines after the
 -- first (ast-grep gives the first line from the node's column, the rest
 -- whole): the text as if the node were at column 0.
@@ -622,7 +657,7 @@ data FixFailure
 -- | The steps of a rule's fix (spec §5.9) at a line: the replacement
 -- first, while its lines are where the rule saw them, then the fix's
 -- generator; and the files the fix shows the model.
-fixSteps :: Ports -> Project -> Text -> FilePath -> Int -> Int -> [(Text, Text)] -> IO (Either FixFailure ([(FilePath, Text)], [Step]))
+fixSteps :: Ports -> Project -> Text -> FilePath -> Int -> Int -> [(Text, Text)] -> IO (Either FixFailure ([(FilePath, Text)], [Step], [Text]))
 fixSteps ports project rule rel line n given = do
   let cat = prCatalog project
       ws = prWorkspace project
@@ -652,6 +687,10 @@ fixSteps ports project rule rel line n given = do
                       let text = T.intercalate "\n" [if T.null l then l else rpIndent rp <> l | l <- T.lines rendered]
                       pure [Step (replaceGenerator rel (rpLines rp) (rpOld rp) (Template text [Lit text])) M.empty]
               context <- fmap catMaybes . traverse (\t -> either (const (pure Nothing)) (\p -> fmap (T.unpack p,) <$> readText ws (T.unpack p)) (render env t)) $ concatMap fdContext (take 1 defs)
+              -- a definition rewritten in place keeps its callers: say who they are
+              warnings <- case foReplace o of
+                Just rp | isDefinition found -> callersNote (definedName found) <$> callersOf ws rel (rpLines rp) (definedName found)
+                _ -> pure []
               pure $ case replacement of
                 Left why -> Left (FixFailed why)
-                Right first' -> Right (context, first' ++ [Step gen sets])
+                Right first' -> Right (context, first' ++ [Step gen sets], warnings)

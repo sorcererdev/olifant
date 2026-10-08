@@ -143,8 +143,9 @@ def close_table(table_id):
     raise RuntimeError("close_table: the new path declined (NotYet) and the legacy path is retired")
 ```
 
-Retire when the new path declines nothing the callers need. The registry line stays: delete it
-in the same PR.
+The review names the function's callers, which keep working (`close_table stays, so its 4
+caller(s) keep working: legacy/app.py:56, legacy/tests/test_views.py:80, …`). Retire when the
+new path declines nothing they need. The registry line stays: delete it in the same PR.
 
 ## Each PR: the report
 
@@ -159,7 +160,7 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
   count; it carries `olifant:allow`);
 - **legacy N → M functions**: definitions in the legacy globs, at the base (over the base's own
   files, so a file deleted since counts there) and now; a file renamed with `git mv` is not new;
-- **switches**: the registry's, on and off.
+- **switches**: the registry's, on and off (a trailing `# comment` on a line is fine).
 
 `--report` lists each switch; `--json` has it all under `migration`. In Neovim,
 `:DurandalMigration` shows the line and the switches in a float.
@@ -173,7 +174,7 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
 | `switch-retire` | a hint on a switched legacy function, with the retire fix |
 | `migrate-new-work` | a hint on a big change in a legacy function (15+ new lines, `[migrate] new_work_lines`): is this new work? With a model, the answer sharpens it (below) |
 | `extract-command`, `extract-query` | the command or query, the parity test, the switch |
-| `switch` | a switch over a function, and its registry line |
+| `switch` | a switch over a function, and its registry line; refused (with a hint to extract) when its command or query does not exist yet, since its import would break the legacy module |
 | `delegate-command`, `delegate-query` | new work's command or query, used by the bug-fix-only fixes |
 
 `only = "new"` and `{legacy}` are general: any rule can use them ([chapter 15](15-conventions-that-hold.md#rules-on-new-code-only--new)).

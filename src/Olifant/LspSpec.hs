@@ -1345,6 +1345,8 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
           after `shouldNotSatisfy` T.isInfixOf "UPDATE tables SET open = 0"
           after `shouldNotSatisfy` T.isInfixOf "olifant:switch close-table"
           after `shouldSatisfy` T.isInfixOf "def open_table(table_id):"
+          -- its callers are named: they keep calling it (review minor #15)
+          planWarnings plan `shouldSatisfy` any (\w -> "legacy/app.py:56" `T.isInfixOf` w && "close_table" `T.isInfixOf` w)
   it "(e4) retire is offered only once the switch's flag is on in the registry (review #5)" $
     withStrangler $ \ports dir -> do
       original <- TIO.readFile (dir </> views)
