@@ -134,6 +134,23 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
         m = lookupKey "migration" v
     (m >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 1 legacy function added (waitlist), legacy 3 → 4 functions; switches: 1 on, 0 off")
+  it "finds the switch registry where the switch generator writes it (src/<app>/switches.py) when [migrate] names none" $ do
+    tmp <- getTemporaryDirectory
+    let base = T.unlines ["def close_table(t):", "    return t"]
+        now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t"]
+        files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/w/legacy/views.py", now)
+          , ("/w/src/app/switches.py", "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\n")
+          ]
+        baseOf _ _ p = pure $ case p of
+          "legacy/views.py" -> Right ("c0ffee", Just base)
+          _ -> Right ("c0ffee", Nothing)
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    (lookupKey "migration" v >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 0 legacy functions added, legacy 1 → 1 functions; switches: 1 on, 0 off")
   it "checks the files a {legacy} rule names (its [migrate] legacy globs)" $ do
     tmp <- getTemporaryDirectory
     let base = T.unlines ["def close_table(t):", "    return t"]

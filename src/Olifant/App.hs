@@ -316,8 +316,13 @@ migrationFor ports project = case catalogMigrate cat of
           allowed m = let l = fst (matchStart m) in l > 0 && "olifant:allow legacy-bug-fix-only" `T.isInfixOf` (ls !! (l - 1))
           added = [nameOf m | m <- now, wholeNew newness (lineRange m), not (allowed m)]
       pure (length now, before, added, switchMarkers text)
-    registry <- maybe (pure Nothing) (readText ws) (mgSwitches mig)
-    registryBase <- case mgSwitches mig of
+    -- the registry: [migrate] switches, else where the switch generator
+    -- writes it (a switches.py outside the legacy code)
+    let registryPath = case mgSwitches mig of
+          Just r -> Just r
+          Nothing -> listToMaybe [p | p <- paths, takeFileName p == "switches.py", p `notElem` legacy]
+    registry <- maybe (pure Nothing) (readText ws) registryPath
+    registryBase <- case registryPath of
       Nothing -> pure (Just [])
       Just r ->
         pBaseText ports (prRoot project) (mgBase mig) r <&> \case
