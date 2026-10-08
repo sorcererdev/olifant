@@ -31,7 +31,7 @@ import Data.Set (Set)
 import Data.Set qualified as S
 import Olifant.Decide (Answer, Decider (..), Question, curlDecider, recordedDecider)
 import Control.Concurrent (forkIO)
-import Control.Exception (finally)
+import Control.Exception (SomeException, finally, try)
 import Control.Monad (void, when)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Maybe (fromMaybe)
@@ -249,11 +249,13 @@ deciderFor :: ServerState -> Project -> Maybe (Decider IO)
 deciderFor s project = do
   name <- catalogDecideModel (prCatalog project)
   case scDecideAnswers (ssConfig s) of
-    Just recorded -> Just (recordedDecider recorded (ssCancel s))
+    -- a decision outlives the request that asked it (it is answered in the
+    -- background): not that request's token; the model's timeout bounds it
+    Just recorded -> Just (recordedDecider recorded neverCancel)
     Nothing -> do
       let models = catalogModel (prCatalog project)
       backend <- lookup name (mcBackends models)
-      Just (curlDecider (ssCancel s) (mcTimeout models) backend)
+      Just (curlDecider neverCancel (mcTimeout models) backend)
 
 -- | A decision about one thing (a file's function, by question kind and
 -- name: KEY): its latest answer, if any. Asked in the background at most
@@ -266,10 +268,12 @@ decision s decider key fp q onDone = do
   when (fmap fst known /= Just fp) $ do
     fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
     when fresh . void . forkIO $
-      ( do
-          answer <- ask decider q
-          modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
-          onDone
+      -- a failure is no answer: nothing kept, asked again on a later pull
+      ( try (ask decider q) >>= \case
+          Left (_ :: SomeException) -> pure ()
+          Right answer -> do
+            modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
+            onDone
       )
         `finally` atomicModifyIORef' (ssAsking s) (\a -> (S.delete key a, ()))
   pure (snd <$> known)

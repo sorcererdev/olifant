@@ -33,6 +33,8 @@ import Control.Monad.IO.Class (liftIO)
 import Data.List (isInfixOf, sort)
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
+import Olifant.Server.State qualified as St
+import Olifant.Decide qualified as De
 import Olifant.Rules qualified as Ru
 import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (..), LspId (..), SMethod (..), TCustomMessage (..), TNotificationMessage (..), TRequestMessage (..), TResponseMessage (..))
 import Data.Text.Encoding qualified as TE
@@ -46,7 +48,7 @@ import Olifant.Preview (Field (..), Source (..))
 import Olifant.Process (gitBaseFiles, gitBaseText)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language.Check (CheckFailure (..), noVerifier)
-import Olifant.Process (cancelled)
+import Olifant.Process (cancelled, newCancel)
 import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
@@ -1222,6 +1224,27 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
           void (pullDiagnostics doc)
       asked <- T.lines <$> TIO.readFile (answers <> ".asked")
       length asked `shouldBe` 1
+  it "(k) a decision outlives the request that asked: its cancelled token does not make it unsure (review minor #9)" $
+    withPython [(legacy, base)] $ \ports dir -> do
+      migrating dir "\n[decide]\nmodel = \"jev\"\n"
+      let answers = dir </> "answers.json"
+          q = De.Question "bug-or-new" ["bug fix", "new behaviour"] [] []
+      TIO.writeFile answers "wait"
+      (token, trip) <- newCancel
+      trip
+      s0 <- newServerState ports
+      let s = s0 {ssConfig = (ssConfig s0) {scDecideAnswers = Just answers}, ssCancel = token}
+      (s', Just (_, project)) <- St.projectFor (dir </> legacy) s
+      let Just decider = St.deciderFor s' project
+          ask' = St.decision s' decider (legacy, "bug-or-new:f") "fp1" q (pure ())
+      _ <- ask'
+      threadDelay 200000
+      TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"bug fix\"}}"
+      let poll n = ask' >>= \case
+            Just a -> pure (Just a)
+            Nothing | n > (0 :: Int) -> threadDelay 50000 >> poll (n - 1)
+            Nothing -> pure Nothing
+      poll 40 `shouldReturn` Just (De.Chosen "bug fix" [])
   it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
     withPython [(legacy, base)] $ \ports dir -> do
       migrating dir "\n[decide]\nmodel = \"jev\"\n"
