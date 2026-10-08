@@ -16,3 +16,4 @@
 14. [Olifant in your editor: `[applies_at]`, `olifant actions`, hints, ghost text and follow-ups, snippets (`cursor`, `[holes.NAME]`, `trigger`, `after`, `gen --at`, `olifant complete`), the Python chain, conventions on save, `files`, `--progress` and `olifant doctor`](14-editors-and-actions.md)
 15. [Conventions that hold: rules, exceptions, `olifant check` and the baseline](15-conventions-that-hold.md)
 16. [The language server: `olifant lsp`, projects across roots, what it answers, the project model](16-the-language-server.md)
+17. [Strangling a legacy codebase: `init --migrate`, `only = "new"`, extract and switches, retiring, the report, decisions](17-strangling-a-legacy-codebase.md)
