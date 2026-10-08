@@ -3,6 +3,7 @@
 module Olifant.RulesSpec (spec) where
 
 import Data.Functor.Identity (Identity (..), runIdentity)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -102,6 +103,16 @@ spec = describe "rules (spec §5.9)" $ do
           f = "legacy/views.py"
           (fs, _) = runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity (NewIn (S.fromList [4, 5]))) rs [f] (\_ -> Identity (Just legacyFile)) [f])
       [foSets o | fd <- fs, o <- fFixes fd] `shouldBe` [[("name", "b")]]
+    it "(h) an old definition costs no query for its fix's code (only new ones are fixed)" $ do
+      -- every query counted: one for the matches, then one per kept finding's replacement
+      calls <- newIORef (0 :: Int)
+      let counting = Syntax $ \l r t -> modifyIORef' calls (+ 1) >> pure (runIdentity (querySyntax defs l r t))
+          ruleText = legacyRule <> "[[rules.no-new-defs.fixes]]\ngenerator = \"p/delegate\"\nreplace = { enclosing = [\"function_definition\"], text = \"pass\" }\n"
+          Right rs = parseRules ruleText
+          f = "legacy/views.py"
+      (fs, _) <- checkFiles counting [python] none ["legacy/**"] (\_ -> pure (NewIn (S.fromList [4, 5]))) rs [f] (\_ -> pure (Just legacyFile)) [f]
+      map fRule fs `shouldBe` ["no-new-defs"]
+      readIORef calls `shouldReturn` 2
     it "(f) a file outside the legacy globs is not checked" $ do
       let Right rs = parseRules legacyRule
       fst (runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity AllNew) rs ["src/x.py"] (\_ -> Identity (Just legacyFile)) ["src/x.py"])) `shouldBe` []

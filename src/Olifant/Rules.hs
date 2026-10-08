@@ -238,9 +238,12 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
       let lang = languageFor langs f
           allows = maybe [] (\l -> parseAllows (langComment l) content) lang
           applicable = [(r, slots) | r <- rules, severityOf r /= Off, Just slots <- [slotsFor r f], not (any (`matchesGlob` f) (ruleExclude r))]
-      raw0 <- concat <$> traverse (\(r, slots) -> found f content lang r slots) applicable
-      -- only = "new": a finding stands when its node is wholly new since the base
+      -- only = "new": a finding stands when its node is wholly new since the
+      -- base; the others are dropped before their fixes are worked out (each
+      -- costs a query: every old function in a legacy file did, per keystroke)
       newness <- if any (ruleOnlyNew . fst) applicable then newIn f else pure AllNew
+      let stands r rng = not (ruleOnlyNew r) || wholeNew newness rng
+      raw0 <- concat <$> traverse (\(r, slots) -> found f content lang r slots (stands r)) applicable
       let onlyNew = [ruleId r | (r, _) <- applicable, ruleOnlyNew r]
           isNewOnly fd = fRule fd `elem` onlyNew
           raw = [fd | fd <- raw0, not (isNewOnly fd) || maybe False (wholeNew newness) (fRange fd)]
@@ -262,13 +265,13 @@ checkFiles syntax langs config legacy newIn rules paths readFile' files = do
           configExceptions = nub [Exception r (where' globs) (Just reason) False | Right (r, globs, reason) <- used]
           sorted = sortOn (\fd -> (fmap fst (fRange fd), fRule fd)) (kept ++ unknown ++ noReason)
       pure (sorted, commentExceptions ++ configExceptions, noBase)
-    found f content lang r slots = case ruleCheck r of
+    found f content lang r slots stands = case ruleCheck r of
       RuleMatch rule -> case (lang, renderRule (M.fromList [(k, VText v) | (k, v) <- slots]) rule) of
         (Just l, Right q) ->
           querySyntax syntax l q content >>= \case
             -- One finding where matches nest: the outermost (an import and
             -- the path inside it are one finding).
-            Right ms -> traverse (\m -> withReplacements content l m (pairs f slots r (matchText m)) (finding f r slots (Just (range content m)) (matchText m))) (outermost ms)
+            Right ms -> traverse (\m -> withReplacements content l m (pairs f slots r (matchText m)) (finding f r slots (Just (range content m)) (matchText m))) [m | m <- outermost ms, stands (range content m)]
             Left failure -> pure [cannotRun f r (describeSyntaxFailure failure)]
         (Nothing, _) -> pure [cannotRun f r "no language adapter for this file"]
         (_, Left err) -> pure [cannotRun f r (describeTemplateError err)]
