@@ -787,7 +787,7 @@ fixActions env path from to = do
             , _disabled = Nothing
             , _edit = Nothing
             , _command = Nothing
-            , _data_ = Just (object ["kind" .= ("fix" :: T.Text), "path" .= path, "rule" .= fRule f, "line" .= line, "index" .= i, "sets" .= M.fromList (foSets o), "missing" .= map fst (foChoices o), "choices" .= M.fromList (foChoices o), "version" .= version])
+            , _data_ = Just (object ["kind" .= ("fix" :: T.Text), "path" .= path, "rule" .= fRule f, "generator" .= foGenerator o, "line" .= line, "index" .= i, "sets" .= M.fromList (foSets o), "missing" .= map fst (foChoices o), "choices" .= M.fromList (foChoices o), "version" .= version])
             }
         | (d, f, line) <- here
         , (i, o) <- zip [1 :: Int ..] (fFixes f)

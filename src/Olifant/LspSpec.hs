@@ -1252,8 +1252,11 @@ stranglerSpec = describe "python-strangler (the demo monolith)" $ do
         ds <- pullDiagnostics doc
         let line = length (T.lines original) + 2
         as <- getCodeActions doc (Range (Position (fromIntegral line) 4) (Position (fromIntegral line) 4))
-        pure (ds, [a ^. L.title | InR a <- as])
+        pure (ds, [(a ^. L.title, fmap (lookupKey "generator") (a ^. L.data_)) | InR a <- as])
       codes ds `shouldContain` ["legacy-bug-fix-only"]
+      -- a fix names its generator: the editor's picker opens on it
+      lookup "Create it as a command" titles `shouldBe` Just (Just (Just (String "python-strangler/delegate-command")))
+      titles <- pure (map fst titles)
       titles `shouldContain` ["Create it as a command"]
       titles `shouldContain` ["Create it as a query"]
   it "(d) the fix creates the command, and the legacy function only delegates to it (with its allowance)" $
