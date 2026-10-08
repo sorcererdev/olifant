@@ -70,7 +70,7 @@ import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor
 import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
-import Olifant.Newness (NewLines (..), newLinesOf, wholeNew)
+import Olifant.Newness (NewLines (..), newSince, wholeNew)
 import Olifant.Migration (MigrationReport (..), Switch (..), bigChanges, readRegistry, switchMarkers, unregistered)
 import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), Severity (..), checkFiles, definedName, fingerprint, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
@@ -290,7 +290,7 @@ newnessWith base project rel text =
   base (prRoot project) (baseRefOf project) rel <&> \case
     Left why -> NoBase why
     Right (_, Nothing) -> AllNew
-    Right (_, Just b) -> NewIn (newLinesOf b text)
+    Right (_, Just b) -> newSince b text
 
 -- | How far the migration has come ([migrate]; none without it): legacy
 -- definitions now and at the base, those new since (not delegates, which
@@ -317,7 +317,7 @@ migrationFor ports project = case catalogMigrate cat of
       let newness = case base of
             Left why -> NoBase why
             Right (_, Nothing) -> AllNew
-            Right (_, Just b) -> NewIn (newLinesOf b text)
+            Right (_, Just b) -> newSince b text
           ls = T.lines text
           allowed m = let l = fst (matchStart m) in l > 0 && "olifant:allow legacy-bug-fix-only" `T.isInfixOf` (ls !! (l - 1))
           added = [nameOf m | m <- now, wholeNew newness (lineRange m), not (allowed m)]

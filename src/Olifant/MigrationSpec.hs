@@ -23,9 +23,9 @@ spec = describe "Olifant.Migration" $ do
     reportLine r `shouldBe` "legacy 211 functions (no base); switches: 1 on, 0 off"
   it "(f) a big change: a function not wholly new with at least N new lines (decision 1)" $ do
     let fn = ((1, 1), (30, 1))
-    bigChanges 15 (NewIn (S.fromList [5 .. 24])) [fn] `shouldBe` [(fn, 20)]
-    bigChanges 15 (NewIn (S.fromList [5 .. 14])) [fn] `shouldBe` []
-    bigChanges 15 (NewIn (S.fromList [1 .. 30])) [fn] `shouldBe` []
+    bigChanges 15 (NewIn (S.fromList [5 .. 24]) S.empty) [fn] `shouldBe` [(fn, 20)]
+    bigChanges 15 (NewIn (S.fromList [5 .. 14]) S.empty) [fn] `shouldBe` []
+    bigChanges 15 (NewIn (S.fromList [1 .. 30]) S.empty) [fn] `shouldBe` []
     bigChanges 15 (NoBase "x") [fn] `shouldBe` []
   it "(g) reads or writes: SQL that writes, a commit or a save is a command; reads alone, a query; else unsure" $ do
     readsOrWrites "def f(t):\n    c.execute(\"UPDATE tables SET open = 0 WHERE id = ?\", (t,))\n    c.commit()\n" `shouldBe` Just "command"

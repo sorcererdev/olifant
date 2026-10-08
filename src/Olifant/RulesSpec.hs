@@ -88,11 +88,11 @@ spec :: Spec
 spec = describe "rules (spec §5.9)" $ do
   describe "only = \"new\", {legacy}" $ do
     it "(a) reports a definition that is wholly new" $
-      map fRule (checkLegacy ["legacy/**"] (NewIn (S.fromList [4, 5]))) `shouldBe` ["no-new-defs"]
+      map fRule (checkLegacy ["legacy/**"] (NewIn (S.fromList [4, 5]) S.empty)) `shouldBe` ["no-new-defs"]
     it "(b) not a definition with any old line" $
-      checkLegacy ["legacy/**"] (NewIn (S.fromList [5])) `shouldBe` []
+      checkLegacy ["legacy/**"] (NewIn (S.fromList [5]) S.empty) `shouldBe` []
     it "(c) not a definition whose def line alone changed (Review Focus 1)" $
-      checkLegacy ["legacy/**"] (NewIn (S.fromList [4])) `shouldBe` []
+      checkLegacy ["legacy/**"] (NewIn (S.fromList [4]) S.empty) `shouldBe` []
     it "(d) without a base: one note that the rule is inactive, saying why" $
       [(fRule f, fSeverity f, "no ref `main`" `T.isInfixOf` fMessage f) | f <- checkLegacy ["legacy/**"] (NoBase "no ref `main`")] `shouldBe` [("rule-inactive", Hint, True)]
     it "(e) {legacy} with no [migrate] legacy is a rule error" $
@@ -101,7 +101,7 @@ spec = describe "rules (spec §5.9)" $ do
       let ruleText = legacyRule <> "[[rules.no-new-defs.fixes]]\ngenerator = \"p/delegate\"\nwith = { name = \"{= finding_name =}\" }\n"
           Right rs = parseRules ruleText
           f = "legacy/views.py"
-          (fs, _) = runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity (NewIn (S.fromList [4, 5]))) rs [f] (\_ -> Identity (Just legacyFile)) [f])
+          (fs, _) = runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity (NewIn (S.fromList [4, 5]) S.empty)) rs [f] (\_ -> Identity (Just legacyFile)) [f])
       [foSets o | fd <- fs, o <- fFixes fd] `shouldBe` [[("name", "b")]]
     it "(h) an old definition costs no query for its fix's code (only new ones are fixed)" $ do
       -- every query counted: one for the matches, then one per kept finding's replacement
@@ -110,7 +110,7 @@ spec = describe "rules (spec §5.9)" $ do
           ruleText = legacyRule <> "[[rules.no-new-defs.fixes]]\ngenerator = \"p/delegate\"\nreplace = { enclosing = [\"function_definition\"], text = \"pass\" }\n"
           Right rs = parseRules ruleText
           f = "legacy/views.py"
-      (fs, _) <- checkFiles counting [python] none ["legacy/**"] (\_ -> pure (NewIn (S.fromList [4, 5]))) rs [f] (\_ -> pure (Just legacyFile)) [f]
+      (fs, _) <- checkFiles counting [python] none ["legacy/**"] (\_ -> pure (NewIn (S.fromList [4, 5]) S.empty)) rs [f] (\_ -> pure (Just legacyFile)) [f]
       map fRule fs `shouldBe` ["no-new-defs"]
       readIORef calls `shouldReturn` 2
     it "(k) `bind` takes values from the found code; `when` keeps a finding only where another file says so (review #5)" $ do
@@ -120,6 +120,8 @@ spec = describe "rules (spec §5.9)" $ do
           files = M.fromList [(f, legacyFile), ("flags/x.txt", "a = off\nb = on\n")]
           (fs, _) = runIdentity (checkFiles defs [python] none [] (\_ -> Identity AllNew) rs (M.keys files) (\p -> Identity (M.lookup p files)) [f])
       [fText fd | fd <- fs] `shouldBe` ["def b(x):\n    return x\n"]
+    it "(l) a bug fix that rewrites every line of a small function is not new work: its name was there (review minor #11)" $
+      checkLegacy ["legacy/**"] (NewIn (S.fromList [4, 5]) (S.fromList ["a", "b"])) `shouldBe` []
     it "(f) a file outside the legacy globs is not checked" $ do
       let Right rs = parseRules legacyRule
       fst (runIdentity (checkFiles defs [python] none ["legacy/**"] (\_ -> Identity AllNew) rs ["src/x.py"] (\_ -> Identity (Just legacyFile)) ["src/x.py"])) `shouldBe` []
