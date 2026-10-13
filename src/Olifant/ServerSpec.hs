@@ -792,6 +792,60 @@ blockSpecs = describe "blocks" $ do
     putMVar release ()
     (_, Just judged) <- wait testing
     blockState judged `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(R2-1) a waive while an edit's test runs is refused; the test lands, the block judged on the edit" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    let s = openDoc (root </> moduleRel) 1 written s0
+        edited = T.replace "seats > 2)" "seats > 2)  # mine" written
+        s1 = changeDoc (root </> moduleRel) 2 edited s
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    map muLine (survivors judged) `shouldBe` [6]
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) s1)
+    waitUntil ((>= 1) <$> gEntered gate)
+    (_, waived) <- blockWaive (root </> moduleRel) 6 "by design" s1
+    either id (const "waived") waived `shouldBe` "your edit is being tested; waive once its verdict lands"
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just judged
+    gOpen gate
+    (_, Just tested) <- wait testing
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    (blockOn b, blockState b) `shouldBe` (edited, blockState tested)
+    blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(R2-1) an accept while an edit's test runs is refused; the test lands, the block judged on the edit" $ do
+    gate <- newGate
+    let kills t = if "seats >= 2" `T.isInfixOf` t then failing "assert 0 == 1" else redOnStub t
+    (s0, _) <- blocksGated gate kills []
+    let s = openDoc (root </> moduleRel) 1 written s0
+        edited = T.replace "seats > 2)" "seats > 2)  # mine" written
+        s1 = changeDoc (root </> moduleRel) 2 edited s
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    blockState judged `shouldBe` Judged []
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) s1)
+    waitUntil ((>= 1) <$> gEntered gate)
+    (_, accepted) <- blockAccept (root </> moduleRel) s1
+    either id (const "accepted") accepted `shouldBe` "your edit is being tested; accept once its verdict lands"
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just judged
+    gOpen gate
+    void (wait testing)
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    (blockOn b, blockState b) `shouldBe` (edited, Judged [])
+  it "(R2-1) a kill while an edit's test runs does not drop it: the test settles on the block as the kill left it" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    let s = openDoc (root </> moduleRel) 1 written s0
+        edited = T.replace "seats > 2)" "seats > 2)  # mine" written
+        s1 = changeDoc (root </> moduleRel) 2 edited s
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) s1)
+    waitUntil ((>= 1) <$> gEntered gate)
+    (_, Right _) <- blockKill (root </> moduleRel) 6 s1
+    gOpen gate
+    void (wait testing)
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    blockOn b `shouldBe` edited
+    blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
   it "(N1) a draft that fails, then an edit: the edit is tested" $ do
     (s0, _) <- blocks redOnStub []
     (filler, _, release) <- stalledFiller

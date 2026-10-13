@@ -20,6 +20,7 @@ module Olifant.Server.Block
   , withBlock
   , settle
   , settleOn
+  , awaitingVerdict
   , testNow
   , fileOf
   , tshow
@@ -468,11 +469,12 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
                    | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
     stopped <- cancelled (ssCancel s)
     if stopped then pure (Left "the judge was cancelled; a newer test runs") else case verdicts of
-      Left why -> settleOn s root killedBefore "judge" ("cannot run: " <> why) (Just now) (CannotRun why) b
+      -- a judge stands on the text its test passed on (blockOn as the test left it)
+      Left why -> settle s root killedBefore "judge" ("cannot run: " <> why) (CannotRun why) b
       Right vs -> do
         let surviving = [m | (m, Survived) <- vs]
             killed = length vs - length surviving
-        settleOn s root killed "judge" (tshow killed <> "/" <> tshow (length vs) <> " killed") (Just now) (Judge surviving) b >>= \case
+        settle s root killed "judge" (tshow killed <> "/" <> tshow (length vs) <> " killed") (Judge surviving) b >>= \case
           -- in Jev's order: what it already said now, the rest as it answers
           Right judged -> Right . fromMaybe judged <$> reorder s decider now testText False (blockFile judged)
           other -> pure other
@@ -498,10 +500,19 @@ reorder s decider moduleText testText push file =
 -- (a kill's) accepted: its module's code block is judged again, and pushed.
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockAccept path = withBlock path $ \s root project _ b killed ->
-  settle s root killed "accept" "accepted" Accept b >>= \case
+  awaitingVerdict s b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
     Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
     Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
     other -> pure (fmap (,[]) other)
+
+-- | Why a move on the block's verdict (waive, accept) must wait, if it
+-- must: a test of a text other than the one the verdict stands on has
+-- begun since (the person's edit, its verdict still to land).
+awaitingVerdict :: ServerState -> Block -> Text -> IO (Maybe Text)
+awaitingVerdict s b move =
+  M.lookup (blockFile b) <$> readIORef (ssBlockSeen s) <&> \case
+    Just seen | seen /= blockOn b -> Just ("your edit is being tested; " <> move <> " once its verdict lands")
+    _ -> Nothing
 
 -- | A new test accepted: the function it calls begins on it (red), as a
 -- begin on that test would, and is pushed.
@@ -634,7 +645,8 @@ settle :: ServerState -> FilePath -> Int -> Text -> Text -> Move -> Block -> IO 
 settle s root killed name result = settleOn s root killed name result Nothing
 
 -- | 'settle', the state it lands established on the file's text ON (a
--- test's, a draft's, a judge's); without one, on the text it was.
+-- test's, a draft's, a waiver's); without one, on the text it was (a
+-- judge's verdict stands on the text its test passed on).
 settleOn :: ServerState -> FilePath -> Int -> Text -> Text -> Maybe Text -> Move -> Block -> IO (Either Text Block)
 settleOn s root killed name result on move b = case step move b of
   Left why -> pure (Left why)

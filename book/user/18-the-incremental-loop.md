@@ -222,6 +222,9 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 - **`the block moved on`** — a draft, a test or a judge finished after you rejected or accepted
   the block, or after another move (a later edit's test): nothing lands, and the step log says
   `stale:` before what it would have been.
+- **`your edit is being tested; waive once its verdict lands`** (or `accept`) — you typed in the
+  span and its test is still running: the survivors you see are the text's before it. Wait for
+  the HUD to change, then waive or accept what the new verdict shows.
 - **`a draft is in flight; wait for it, then test or press next`** — `test` while the model
   writes: the draft's own test settles the block.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a block starts

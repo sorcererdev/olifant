@@ -2339,7 +2339,8 @@ machine served by the server:
   (`blockVersion`, bumped by every move stored and by Jev's reorder: a move begun on an older version
   is stale, logged and dropped; a test of the newest text, none begun since, settles again on the
   block as it stands, each time another move landed first), and a new block through `claim`, one atomic check-and-insert.
-  `test` is refused while a draft is in flight; a draft that fails puts back the state it began
+  `test` is refused while a draft is in flight, and `waive` and `accept` while a test of a text
+  other than the verdict's has begun (`awaitingVerdict`: `ssBlockSeen` against `blockOn`); a draft that fails puts back the state it began
   from, testing the file again when it is no longer the text that state was established on
   (`blockOn`). `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
   with `planWith` under `DraftStance` (the test file, or for a test the module, in its context),

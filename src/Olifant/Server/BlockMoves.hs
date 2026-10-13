@@ -19,7 +19,7 @@ import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, 
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
-import Olifant.Server.Block (appendStep, claim, fileOf, settle, settleOn, testNow, tshow, withBlock)
+import Olifant.Server.Block (appendStep, awaitingVerdict, claim, fileOf, settle, settleOn, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -60,6 +60,8 @@ blockWaive path line reason0 = withBlock path $ \s root project lang b killed ->
   let reason = T.unwords (T.words reason0)
       rel = makeRelative root (blockFile b)
   when (T.null reason) (throwE "a waiver needs a reason")
+  -- its line is the verdict's: an edit still being tested moves it
+  lift (awaitingVerdict s b "waive") >>= maybe (pure ()) throwE
   let ops = nub [muOperator m | m <- survivors b, muLine m == line]
   when (null ops) (throwE "no unwaived survivor on that line")
   now <- lift (readText (prWorkspace project) rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure

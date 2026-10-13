@@ -52,7 +52,7 @@ data Block = Block
     blockState :: BlockState,
     blockDrafts :: [Draft],
     -- | the file's text the state was established on (the server records
-    -- it as a test, a draft or a judge lands; the base when it began): a
+    -- it as a test, a draft or a waiver lands; the base when it began): a
     -- draft that fails puts back a state the file may have left
     blockOn :: Text,
     -- | bumped by every move the server stores: a result begun on an
