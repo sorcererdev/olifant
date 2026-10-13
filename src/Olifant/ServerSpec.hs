@@ -478,6 +478,24 @@ blockSpecs = describe "blocks" $ do
     length [() | Right _ <- results] `shouldBe` 1
     [why | Left why <- results] `shouldSatisfy` all ("pending" `T.isInfixOf`)
     M.size <$> readIORef (ssBlocks s) `shouldReturn` 1
+  it "(I2) a draft that fails its test writes its last attempt (never the placeholder) and keeps it as a red draft" $ do
+    (s0, _) <- blocks (const (failing "assert 0 == 1")) []
+    let mine = T.replace "raise NotImplementedError(\"later\")" "return 0  # mine, half done" stubbed
+        s = (openDoc (root </> moduleRel) 1 mine s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (b, [edit])) <- blockDraft ignore (root </> moduleRel) s
+    let written' = applyChange (feRange edit) (feText edit) mine
+    T.lines written' !! 5 `shouldBe` "        return int(seats > 2)"
+    written' `shouldSatisfy` (not . ("olifant: body" `T.isInfixOf`))
+    blockState b `shouldSatisfy` \case Red _ -> True; _ -> False
+    map (\d -> (draftText d, draftBy d, "red" `T.isPrefixOf` draftOutcome d)) (blockDrafts b) `shouldBe` [("        return int(seats > 2)", "recorded", True)]
+  it "(I2) a draft that never produced an attempt makes no edits and no draft" $ do
+    (s0, _) <- blocks redOnStub [("nofill.toml", "[fills]\narrange = \"x = 1\"\n")]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "nofill.toml")}}
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    (_, none) <- blockDraft ignore (root </> moduleRel) s
+    none `shouldSatisfy` either ("no recorded fill" `T.isInfixOf`) (const False)
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")

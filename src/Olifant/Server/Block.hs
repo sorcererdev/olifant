@@ -32,7 +32,7 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, withExceptT)
 import Data.Aeson (Value, object, (.=))
 import Data.Char (isAlphaNum)
-import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isSuffixOf, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -46,10 +46,11 @@ import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, pla
 import Olifant.Block
 import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
-import Olifant.Fill (ModelFiller (..), Stance (..))
+import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (projectFiles)
+import Olifant.Generation.FillPhase (applyFills, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
+import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
@@ -187,29 +188,41 @@ draftIn progress s root project lang b drafting killed filler = do
               | otherwise -> pure (trPassed run)
           pure (VerifyKills (T.pack rel) (keep ++ new) new moduleRel (muText m))
       pure (template, ("arrange", verify))
-  let gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
+  -- each fill the model offers, the last kept: a draft that fails its test
+  -- is written as its last attempt, never as the placeholder
+  attempts <- lift (newIORef M.empty)
+  let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) (\fills -> modifyIORef' attempts (M.union fills)) r >> pure r)}
+      gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
       context = [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
-      options = planOptions {poFiller = Just filler, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
+      options = planOptions {poFiller = Just recording, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
   latest <- lift (maybe (pure started) ($ file) (ssLiveVersion s))
   when (latest /= started) (throwE "the file changed while drafting; your text stands")
-  let planned = M.findWithDefault text rel (planWrites plan)
-      changed = changedSpan text planned (blockSpan b)
+  tried <- lift (readIORef attempts)
+  (planned, outcome, edits) <- case planHoles plan of
+    h : _ | HoleFilled _ _ <- phStatus h -> pure (M.findWithDefault text rel (planWrites plan), Right (), editsOfPlan s root plan)
+    h : _
+      | HoleUnfilled why <- phStatus h ->
+          case M.lookup (holeName (phSite h)) tried of
+            Nothing -> throwE ("the model gave no draft: " <> why)
+            Just attempt -> do
+              let langOf = languageFor (catalogLanguages (prCatalog project))
+                  written = M.findWithDefault text rel (applyFills langOf (planWrites plan) [(phSite h, attempt)])
+                  (range, new) = smallestChange text written
+              pure (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text])
+      | HoleSkipped why <- phStatus h -> throwE why
+    _ -> throwE "the draft made no hole"
+  let changed = changedSpan text planned (blockSpan b)
       grown = length (T.splitOn "\n" planned) - length (T.splitOn "\n" text)
       -- a test block keeps its whole test (its def to its assertion)
       sp@(l1, l2) = case blockKind b of
         Code -> changed
         TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" planned)))
-      outcome = case map phStatus (planHoles plan) of
-        HoleFilled _ _ : _ -> Right ()
-        HoleUnfilled why : _ -> Left (Failure Nothing why "")
-        HoleSkipped why : _ -> Left (Failure Nothing why "")
-        [] -> Left (Failure Nothing "the draft made no hole" "")
   b' <- ExceptT (settle s root killed "draft" (either (const "red") (const "green") outcome) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
-  pure (b', editsOfPlan s root plan)
+  pure (b', edits)
 
 -- | Run the block's test on the editor's text: red, green (then judged) or
 -- broken; its span is the lines new since the block began.
@@ -303,7 +316,7 @@ reorder s decider moduleText testText push file =
       stored <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup file m of
         Just (now, _) | now == b, ordered /= ms -> (M.insert file (b', killed) m, True)
         _ -> (m, False)
-      when (stored && push) (readIORef (ssOnBlock s) >>= \pushed -> pushed b' killed)
+      when (stored && push) (pushed s b' killed)
       pure (if stored then Just b' else Nothing)
     _ -> pure Nothing
 
