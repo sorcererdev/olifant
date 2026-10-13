@@ -30,7 +30,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Anchor (Position)
-import Olifant.Language (Rule)
+import Olifant.Language (Rule, TestId)
 import Olifant.Query (ChoiceValue (..), Query)
 import Olifant.Template (Binding, Template)
 import Olifant.Template.Syntax (Segment (..), Template (..))
@@ -79,7 +79,11 @@ data GeneratorWith src = Generator
 
 -- | How a hole's fill is verified: by a command (rendered, or its templates),
 -- or by the language's test runner over the module's tests (@verify = "tests"@).
-data Verify cmd = VerifyCommand cmd | VerifyTests
+-- Only the engine builds the last two (a draft's checks, never the TOML):
+-- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft);
+-- 'VerifyKills' wants it to pass on the files and fail with the mutant's
+-- file (path, text) in place.
+data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId FilePath Text
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef

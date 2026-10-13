@@ -48,6 +48,7 @@ library
     Olifant.Anchor.Resolve
     Olifant.App
     Olifant.Block
+    Olifant.Block.Draft
     Olifant.Catalog
     Olifant.Cli
     Olifant.Cli.Options
@@ -166,6 +167,7 @@ test-suite spec
     Olifant.App
     Olifant.AppSpec
     Olifant.Block
+    Olifant.Block.Draft
     Olifant.BlockSpec
     Olifant.Catalog
     Olifant.CatalogSpec

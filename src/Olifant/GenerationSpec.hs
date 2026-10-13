@@ -15,10 +15,12 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
+import Olifant.Generation.FillPhase (fillPhase)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
 import Olifant.Generator
+import Data.Foldable (fold)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), QueryFailure (..), failed, noQueries)
@@ -702,7 +704,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     M.lookup "src/A.elm" files `shouldBe` Just "a = 7\n"
     statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 1)]
     reqs <- readIORef calls
-    map (\h -> (fhName h, fhPrevious h)) (frHoles (reqs !! 1)) `shouldBe` [("a", Just ("BAD", "src/A.elm: BAD is not defined"))]
+    map (\h -> (fhName h, fhPrevious h)) (frHoles (reqs !! 1)) `shouldBe` [("a", [("BAD", "src/A.elm: BAD is not defined")])]
   it "(c) keeps the good fill and the bad hole's placeholder (Review Focus 1)" $ do
     (tools, _) <- withFiller (replicate 3 (Right (M.fromList [("a", "BAD"), ("b", "2")])))
     (plan, files) <- run1 tools
@@ -800,7 +802,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       [(holeName (phSite h), phStatus h) | h <- planHoles plan] `shouldBe` [("v", HoleFilled "fake" 2)]
       (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = GOOD\n"
       reqs <- readIORef calls
-      [fmap (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [Just "the tests failed:"]
+      [map (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [["the tests failed:"]]
       -- {= cache =} and {= context =} reach the verifier, which expands them
       take 1 <$> readIORef seen `shouldReturn` [["run-tests", "src/V.elm", "{= cache =}/venv-{= context =}"]]
     it "(d) review I3: tests that cannot run are not the fill's fault: one attempt, no retry" $ do
@@ -819,6 +821,33 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
       [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "FAILED test_v" `T.isInfixOf` why; _ -> False)
       (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = Debug.todo \"olifant: v\"\n"
+  describe "drafts: VerifyRedAt and VerifyKills (engine-built verifiers)" $ do
+    let site = HoleSite "v" "expr" "the value" "src/V.elm" 1 "Debug.todo \"olifant: v\""
+        base = M.fromList [("src/V.elm", "v = Debug.todo \"olifant: v\"\n")]
+        red l = Failure l "AssertionError" ""
+        outcome verify runner = do
+          (ws, _) <- memoryWorkspace []
+          let filler = Filler (\_ -> pure (Right (M.fromList [("v", "1")])))
+              tools = (basicTools noSyntax noChecker [holeLang]) {toolFiller = Just (ModelFiller "fake" 0 filler), toolTester = runner}
+          (_, hs, _) <- fillPhase ws tools (M.singleton "v" verify) [] base [PlannedHole site (HoleUnfilled "") Nothing]
+          pure (map phStatus hs)
+        ran r = Runner (\_ _ _ -> pure (Right r))
+    it "(d) VerifyRedAt: a test that passes before any code exists fails verification" $ do
+      st <- outcome (VerifyRedAt "t" 3) (ran (TestRun ["t"] [] Nothing))
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "does not test the new behaviour" `T.isInfixOf` why; _ -> False
+    it "(d) VerifyRedAt: red at the assert line stands; red elsewhere or broken does not" $ do
+      outcome (VerifyRedAt "t" 3) (ran (TestRun [] [("t", red (Just 3))] Nothing)) `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyRedAt "t" 3) (ran (TestRun [] [("t", red (Just 2))] Nothing))
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "fails before its assertion (line 2)" `T.isInfixOf` why; _ -> False
+      st' <- outcome (VerifyRedAt "t" 3) (ran (TestRun [] [] (Just "import error")))
+      st' `shouldSatisfy` \case [HoleUnfilled why] -> "the test cannot run: import error" `T.isInfixOf` why; _ -> False
+    it "(e) VerifyKills: stands only if the tests pass on the files and fail with the mutant in place" $ do
+      let runner = Runner (\_ _ files -> pure (Right (if "mutant" `T.isInfixOf` fold files then TestRun [] [("t", red (Just 3))] Nothing else TestRun ["t"] [] Nothing)))
+      outcome (VerifyKills "t" "src/M.elm" "mutant") runner `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyKills "t" "src/M.elm" "same") runner
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "does not notice the mutant" `T.isInfixOf` why; _ -> False
+      st' <- outcome (VerifyKills "t" "src/M.elm" "mutant") (ran (TestRun [] [("t", red (Just 3))] Nothing))
+      st' `shouldSatisfy` \case [HoleUnfilled why] -> "fails on the current code" `T.isInfixOf` why; _ -> False
   it "(q) a block whose continuation lines came one level too deep is read one level up, when that compiles (pack-opens)" $ do
     let blockLang = l
           where
@@ -1040,7 +1069,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (plan, _) <- run1 tools
     statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 1)]
     reqs <- readIORef calls
-    map (fmap snd . fhPrevious) (frHoles (reqs !! 1)) `shouldBe` [Just "does not parse as expr"]
+    map (map snd . fhPrevious) (frHoles (reqs !! 1)) `shouldBe` [["does not parse as expr"]]
 
 completeSpec :: Spec
 completeSpec = describe "generate (complete edits)" $ do

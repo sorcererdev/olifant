@@ -1,13 +1,14 @@
 module Olifant.BlockSpec (spec) where
 
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.Maybe (isJust)
 import Data.Text qualified as T
 import Hedgehog (Gen)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Block
-import Olifant.Language (Failure (..))
+import Olifant.Language (Failure (..), parseLanguage)
+import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
 import Test.Hspec
 import Test.Hspec.Hedgehog (forAll, hedgehog, success, (===))
@@ -76,3 +77,27 @@ spec = describe "Olifant.Block" $ do
           Right b' -> (b', case mv of Judge ms -> all (isJust . muWaived) ms; Waive _ _ -> null (survivors b'); _ -> lastJudgedClean)
         (end, clean) = foldl walk (b0, False) moves
     if blockState end == Accepted then clean === True else success
+
+  describe "drafts" $ do
+    pythonToml <- runIO (TIO.readFile "packs/python-htmx/languages/python.toml")
+    let Right py = parseLanguage "python" "packs/python-htmx" pythonToml
+        file = T.unlines ["class CloseTable:", "    def handle(self, input: CloseTableInput) -> CloseTableOutput:", "        raise NotImplementedError()"]
+        test = T.unlines ["def test_closes_a_table() -> None:", "    close = CloseTable(repo)", "    assert close.handle(CloseTableInput(id=\"1\")) == Ok(None)"]
+        red = Failure (Just 3) "AssertionError: assert None == Ok(None)" ""
+    it "(a) the draft template puts one block hole at the span with the test's words, assertion and failure" $ do
+      let Right (_, instruction) = draftTemplate py file (3, 3) "src/x__test.py::test_closes_a_table" red test
+      instruction `shouldSatisfy` ("closes a table" `T.isInfixOf`)
+      instruction `shouldSatisfy` ("assert close.handle" `T.isInfixOf`)
+      instruction `shouldSatisfy` ("AssertionError" `T.isInfixOf`)
+      instruction `shouldSatisfy` ("least code" `T.isInfixOf`)
+    it "(b) the kill stub is a new test with the name and assertion as tab stops and the arrangement as a hole" $ do
+      let (at, stub) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+      at `shouldBe` 4
+      stub `shouldSatisfy` ("def test_${1:" `T.isInfixOf`)
+      stub `shouldSatisfy` ("assert ${2:" `T.isInfixOf`)
+      stub `shouldSatisfy` ("olifant: arrange" `T.isInfixOf`)
+    it "(c) the stubbed test's placeholder becomes a stmt hole at its indentation" $ do
+      let (_, stub) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+          stubbed = test <> stub
+      testDraftTemplate py stubbed 7 `shouldSatisfy` isRight
+      testDraftTemplate py stubbed 1 `shouldSatisfy` isLeft

@@ -27,14 +27,14 @@ import Olifant.Template (Value (..), render)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import System.FilePath (splitDirectories)
 
--- | A hole being tried: attempts so far and the previous (fill, why).
-data Try = Try {tryHole :: PlannedHole, tryAttempts :: Int, tryPrevious :: Maybe (Text, Text)}
+-- | A hole being tried: attempts so far and every previous (fill, why), oldest first.
+data Try = Try {tryHole :: PlannedHole, tryAttempts :: Int, tryPrevious :: [(Text, Text)]}
 
 fillPhase :: Monad m => Workspace m -> Tools m -> Map Text (Verify [Text]) -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
 fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   Nothing -> pure (base, holes, [])
   Just _ | null holes -> pure (base, holes, [])
-  Just mf -> loop mf 1 M.empty [] [] [Try h 0 Nothing | h <- holes]
+  Just mf -> loop mf 1 M.empty [] [] [Try h 0 [] | h <- holes]
   where
     -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
     -- @stuck@: holes given up on for a reason no retry can change (their
@@ -43,7 +43,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
      True -> pure (finish mf accepted notes (stuck ++ [(t, "cancelled") | t <- pending]))
      False -> do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
-      reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools))
+      reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools) (toolStance tools))
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
           next accepted' notes' failed0
             | null failed || r >= 1 + max 0 (mfRetries mf) = do
@@ -122,6 +122,8 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               (scope, everything) <- projectFiles (with stood) lang [holeFile (site t)]
               outcome <- case verify of
                 VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
+                VerifyRedAt tid line -> verifyRedAt lang tid line everything
+                VerifyKills tid path mutated -> verifyKills lang tid path mutated everything
                 VerifyTests -> case langTest lang of
                   Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
                   Just td -> runTestsIn (toolTester tools) lang [T.pack (testsForFile td (holeFile (site t)))] everything <&> \case
@@ -130,15 +132,19 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
                       | Just why <- trBroken run -> Right (False, why)
                       | null (trFailed run) -> Right (True, "")
                       | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
+              let failedPrefix = case verify of
+                    VerifyRedAt {} -> ""
+                    VerifyKills {} -> ""
+                    _ -> "the tests failed:\n"
               pure $ case outcome of
                 Right (True, _) -> (t, f, Nothing)
-                Right (False, out) -> (t, f, Just ("the tests failed:\n" <> T.intercalate "\n" (lastN 40 (T.lines out))))
+                Right (False, out) -> (t, f, Just (failedPrefix <> T.intercalate "\n" (lastN 40 (T.lines out))))
                 Left why -> (t, f, Just ("the tests could not run: " <> describeCheckFailure why))
             _ -> pure (t, f, Nothing)
           let good' = [(t, f) | (t, f, Nothing) <- verified]
               verifyFailed = [(t, f, why) | (t, f, Just why) <- verified]
               accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
-              failed = noFill ++ [(t {tryPrevious = Just (f, why)}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash ++ verifyFailed]
+              failed = noFill ++ [(t {tryPrevious = tryPrevious t ++ [(f, why)]}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash ++ verifyFailed]
           forM_ good' (\(t, _) -> toolProgress tools (Filled (name t) (tryAttempts t)))
           next accepted' (maybe notes (: notes) note) failed
 
@@ -149,6 +155,30 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
             _ -> h
           warnings = ["holes were filled but not compile-checked: " <> n | n <- nub notes, not (M.null accepted)]
        in (applyFills langOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
+
+    -- A test draft: the test must fail, and at exactly its assertion line.
+    verifyRedAt lang tid line everything =
+      runTestsIn (toolTester tools) lang [tid] everything <&> \case
+        Left why -> Left (CheckFailed why)
+        Right run
+          | Just why <- trBroken run -> Right (False, "the test cannot run: " <> why)
+          | [(_, f)] <- trFailed run, fLine f == Just line -> Right (True, "")
+          | [(_, f)] <- trFailed run -> Right (False, "the test fails before its assertion (line " <> maybe "?" (T.pack . show) (fLine f) <> "): " <> fMessage f)
+          | otherwise -> Right (False, "the test passes before any code exists: it does not test the new behaviour")
+
+    -- A kill: the test passes on the files and fails with the mutant in place.
+    verifyKills lang tid path mutated everything = do
+      onOriginal <- runTestsIn (toolTester tools) lang [tid] everything
+      onMutant <- runTestsIn (toolTester tools) lang [tid] (M.insert path mutated everything)
+      pure $ case (onOriginal, onMutant) of
+        (Left why, _) -> Left (CheckFailed why)
+        (_, Left why) -> Left (CheckFailed why)
+        (Right o, Right m)
+          | Just why <- trBroken o -> Right (False, "the new test cannot run: " <> why)
+          | not (null (trFailed o)) -> Right (False, "the new test fails on the current code")
+          | Just why <- trBroken m -> Right (False, "the new test cannot run with the mutant in place: " <> why)
+          | null (trFailed m) -> Right (False, "the new test does not notice the mutant (" <> T.pack path <> ")")
+          | otherwise -> Right (True, "")
 
     name = holeName . site
     -- a repeated hole's name less its "[file:line]"
