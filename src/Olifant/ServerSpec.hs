@@ -143,6 +143,11 @@ blockSpecs = describe "blocks" $ do
     hud b `shouldSatisfy` ("test_closes_a_table" `T.isInfixOf`)
     fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
     steps s >>= (`shouldSatisfy` ("block 1\tbegin\tperson" `T.isInfixOf`))
+  it "(a2) the function under test is the first call the module defines: a port's call in an assertion is passed over" $ do
+    let ported = T.unlines ["from shop.close_table import CloseTable", "", "", "def test_closes_a_table() -> None:", "    table = CloseTable()", "    assert table.log.entries() == [] and table.handle(4) == 1"]
+    (s, _) <- blocks redOnStub [(testRel, ported)]
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    (blockFile b, blockSpan b) `shouldBe` (root </> moduleRel, (6, 6))
   it "(b) a second begin in the same file is refused while one is pending; a module with no test says to write one" $ do
     (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
     (_, Right _) <- blockBegin ignore (root </> testRel) 6 s

@@ -30,7 +30,7 @@ import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, wit
 import Data.Aeson (Value, object, (.=))
 import Data.Char (isAlphaNum)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
-import Data.List (isSuffixOf)
+import Data.List (isSuffixOf, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
@@ -94,7 +94,7 @@ blockBegin progress path line s0 =
       let tests = [T.pack testRel <> "::" <> n | n <- testNames testText]
           atCursor = defAbove line (if onTest then testText else moduleText)
           cursorTest = [t | onTest, Just n <- [atCursor], let t = T.pack testRel <> "::" <> n, t `elem` tests]
-          calling = [t | not onTest, Just n <- [atCursor], t <- tests, calledIn (testName t) testText == Just n]
+          calling = [t | not onTest, Just n <- [atCursor], t <- tests, n `elem` callsIn (testName t) testText]
           spanOf tid = lift (underTest syntax lang testText tid moduleText) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
           atFunction = case atCursor of
             Nothing -> throwE ("no function at line " <> T.pack (show line))
@@ -347,12 +347,14 @@ appendStep ports root b move result = do
   void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))
 
 -- | The function a test exercises: the first `.NAME(` call on its assert
--- lines (else the last in its body), found in the module → its body's
--- lines (1-based, inclusive).
+-- lines (then its body's, last first) that the module defines → its body's
+-- lines (1-based, inclusive). A port's call (`bookings.booking_at(`) is
+-- passed over.
 underTest :: Syntax IO -> Language -> Text -> TestId -> Text -> IO (Maybe (Int, Int))
-underTest syntax lang testText tid moduleText = case calledIn (testName tid) testText of
-  Nothing -> pure Nothing
-  Just name -> functionSpan syntax lang name moduleText
+underTest syntax lang testText tid moduleText = firstFound (callsIn (testName tid) testText)
+  where
+    firstFound [] = pure Nothing
+    firstFound (n : ns) = functionSpan syntax lang n moduleText >>= maybe (firstFound ns) (pure . Just)
 
 -- | A function's body (the language's `function NAME` target), 1-based.
 functionSpan :: Syntax IO -> Language -> Text -> Text -> IO (Maybe (Int, Int))
@@ -398,9 +400,9 @@ changedSpan old new fallback
     shared = length (takeWhile id (take (min (length os) (length ns) - common) (zipWith (==) (reverse os) (reverse ns))))
     lastNew = length ns - shared
 
--- | The function a test calls (see 'underTest').
-calledIn :: Text -> Text -> Maybe Text
-calledIn name testText = listToMaybe (concatMap calls asserts) <|> listToMaybe (reverse (concatMap calls body))
+-- | The functions a test calls, most likely under test first (see 'underTest').
+callsIn :: Text -> Text -> [Text]
+callsIn name testText = nub (concatMap calls asserts ++ reverse (concatMap calls body))
   where
     body = testBody name testText
     asserts = filter (("assert" `T.isPrefixOf`) . T.strip) body
