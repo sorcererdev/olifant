@@ -2336,7 +2336,7 @@ machine served by the server:
   the test file lacks it (`addImports`, the fill phase's), and accepting that block begins the
   function on it. Every
   move lands through `settle`, a compare-and-swap on the stored block's number and version
-  (`blockVersion`, bumped by every move stored: a test, draft or judge begun on an older version
+  (`blockVersion`, bumped by every move stored and by Jev's reorder: a move begun on an older version
   is stale, logged and dropped), and a new block through `claim`, one atomic check-and-insert.
   `test` is refused while a draft is in flight; a draft that fails puts back the state it began
   from, testing the file again when it is no longer the text that state was established on

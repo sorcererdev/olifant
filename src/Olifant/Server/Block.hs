@@ -462,7 +462,8 @@ reorder s decider moduleText testText push file =
   M.lookup file <$> readIORef (ssBlocks s) >>= \case
     Just (b, killed) | Judged ms <- blockState b -> do
       ordered <- orderSurvivors s decider b moduleText testText (void (reorder s decider moduleText testText True file)) ms
-      let b' = b {blockState = Judged ordered}
+      -- a new version: a move begun on the old order is stale, not its eraser
+      let b' = b {blockState = Judged ordered, blockVersion = blockVersion b + 1}
       -- only over the block as it was (a move meanwhile wins)
       stored <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup file m of
         Just (now, _) | now == b, ordered /= ms -> (M.insert file (b', killed) m, True)

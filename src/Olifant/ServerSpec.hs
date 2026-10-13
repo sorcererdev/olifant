@@ -23,6 +23,7 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
+import Olifant.Server.Block (settle)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
 import Olifant.Fill (FillRequest (..), Filler (..), ModelFiller (..))
@@ -423,6 +424,9 @@ blockSpecs = describe "blocks" $ do
       (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
       map muDim (survivors judged) `shouldBe` [False]
       waitUntil (any (all muDim . survivors) <$> readIORef pushed)
+      fmap (map muDim . survivors . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just [True]
+      -- the order is a move: one begun on the block before it is stale, the order stands
+      (settle s root 0 "waive" "why" (Block.Waive 6 "boundary" "why") judged >>= either pure (const (pure "landed"))) `shouldReturn` "the block moved on"
       fmap (map muDim . survivors . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just [True]
   it "(i2) a waive on a line with two operators' survivors writes a comment for each; judged again, both stay waived" $ do
     (s0, _) <- blocksOnSyntax numbersToo (Right . redOnStub . M.findWithDefault "" moduleRel) []
