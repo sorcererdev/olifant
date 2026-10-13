@@ -19,6 +19,9 @@ module Olifant.Server.Block
     -- * for the other moves ("Olifant.Server.BlockMoves")
   , withBlock
   , settle
+  , settleOn
+  , awaitingVerdict
+  , spanEdited
   , testNow
   , fileOf
   , tshow
@@ -51,17 +54,19 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (applyFills, projectFiles)
+import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
+import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
+import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor)
 import Olifant.Server.Edits (FileEdit (..), editsOfPlan, smallestChange)
 import Olifant.Server.BlockJev (orderSurvivors)
-import Olifant.Server.State (ServerState (..), deciderFor, projectFor)
+import Olifant.Server.State (ServerState (..), deciderFor, projectFor, workspaceOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, makeRelative, splitDirectories, (</>))
 
@@ -83,13 +88,17 @@ blockBegin :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (
 blockBegin progress path line s0 = fmap (fmap fst) <$> blockStart progress path line s0
 
 -- | 'blockBegin', with the stub the editor expands when it opened one: the
--- test file (absolute), the line to put it at, and its text (tab stops for
--- the test's name and assertion, a hole for its arrangement). A function
--- no test calls (no test file, or none of its tests calls it) begins a
--- test block on the stub at the end of its test file (a new file starts
--- with the import of the function, or of its class, in Python), drafted
--- red at its assertion; accepted, the function begins on it.
-blockStart :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text)))
+-- test file (absolute), the line to put it at, its text (tab stops for
+-- the test's name and assertion, a hole for its arrangement), and the
+-- edits the editor applies first (the line counts them). A function no
+-- test calls (no test file, or none of its tests calls it) begins a test
+-- block on the stub at the end of its test file, drafted red at its
+-- assertion; accepted, the function begins on it. The stub needs the
+-- import of the function, or of its class, in Python: a new file starts
+-- with it; a file that lacks it gains it, as the adapter's imports join a
+-- file's (merged into the line importing from its module, else after the
+-- last import).
+blockStart :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text, [FileEdit])))
 blockStart progress path line s0 =
   projectFor path s0 >>= \case
     (s, Nothing) -> pure (s, Left (T.pack path <> " is in no Olifant project"))
@@ -119,8 +128,13 @@ blockStart progress path line s0 =
       case untested of
         Just n -> do
           let base = fromMaybe "" testText0
-              (at, stub) = testStub lang base
-              body = maybe stub (\imp -> imp <> "\n" <> stub) (if isJust testText0 then Nothing else importOf lang moduleRel moduleText n)
+              (at0, stub) = testStub lang base
+              imp = importOf lang moduleRel moduleText n
+              -- an existing file: the import joins its imports (unless it has it), the stub after
+              imported = maybe base (\i -> if isJust testText0 then addImports lang [i] base else base) imp
+              edits = [FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range new | imported /= base, let (range, new) = smallestChange base imported]
+              at = at0 + length (T.splitOn "\n" imported) - length (T.splitOn "\n" base)
+              body = maybe stub (\i -> i <> "\n" <> stub) (if isJust testText0 then Nothing else imp)
               defAt = at + length (takeWhile (not . ("def " `T.isPrefixOf`)) (T.splitOn "\n" body))
           k <- number
           let tb = begin k testFile (TestFor Nothing) base (defAt, defAt + 2) (T.pack testRel) (Failure Nothing "a new test: write its name and assertion" "")
@@ -128,7 +142,7 @@ blockStart progress path line s0 =
           unless claimed (throwE pendingHere)
           lift (modifyIORef' (ssBlockSeen s) (M.insert testFile base))
           lift (appendStep (ssPorts s) root tb "begin" (hud tb))
-          pure (tb, Just (testFile, at, body))
+          pure (tb, Just (testFile, at, body, edits))
         Nothing -> do
           testText <- maybe (throwE ("no test for this module yet; write one (its name and assertion) in " <> T.pack testRel <> ", then begin on it")) pure testText0
           lift (progress (Verifying (T.pack testRel)))
@@ -196,18 +210,49 @@ blockDraft progress path = withBlock path $ \s root project lang b killed ->
   fillerFor True s project >>= \case
     Left why -> pure (Left why)
     Right Nothing -> pure (Left "no model is configured ([model] in .olifant/config.toml); write the body yourself, the block still judges it")
-    Right (Just filler) ->
-      -- Drafting is stored and pushed at once: only reject is open while the model writes
-      settle s root killed "drafting" "asked for a draft" StartDraft b >>= \case
+    Right (Just filler) -> do
+      -- a test block's stub not ready to draft is refused before anything moves
+      text <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
+      let ready = case blockKind b of
+            TestFor _ -> void (testDraftParts lang b text)
+            Code -> Right ()
+      case ready of
         Left why -> pure (Left why)
-        Right drafting -> do
-          pushed s drafting killed
-          runExceptT (draftIn progress s root project lang b drafting killed filler) >>= \case
-            Right done -> pure (Right done)
-            Left why -> do
-              -- nothing lands: back to the state it began from, unless the block moved on
-              settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (\back -> pushed s back killed)
-              pure (Left why)
+        -- Drafting is stored and pushed at once: only reject is open while the model writes
+        Right () ->
+          settle s root killed "drafting" "asked for a draft" StartDraft b >>= \case
+            Left why -> pure (Left why)
+            Right drafting -> do
+              pushed s drafting killed
+              runExceptT (draftIn progress s root project lang b drafting killed filler) >>= \case
+                Right done -> pure (Right done)
+                Left why -> do
+                  -- nothing lands: back to the state it began from, unless the block moved on
+                  settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
+                  pure (Left why)
+
+-- | A failed draft put its block's state back: pushed, or, when the file
+-- as the editor has it now is no longer the text that state was
+-- established on (the person typed while the model wrote: that edit's
+-- test was the draft's to settle, or is still running and will be
+-- stale), tested again first, as an edit is, on that text.
+restored :: ServerState -> FilePath -> Project -> Language -> Int -> Block -> IO ()
+restored s root project lang killed back = do
+  let file = blockFile back
+  live <- maybe (pure Nothing) ($ file) (ssLiveDoc s)
+  now <- maybe (fromMaybe "" <$> readText (prWorkspace project) (makeRelative root file)) (pure . snd) live
+  -- the project as the editor has it now, for the test
+  let current = maybe s (\doc -> s {ssDocs = M.insert file doc (ssDocs s)}) live
+      project' = project {prWorkspace = workspaceOf current root}
+  if now == blockOn back
+    then pushed s back killed
+    else
+      testNow current root project' lang back killed False >>= \case
+        Right tested -> do
+          killed' <- maybe killed snd . M.lookup (blockFile tested) <$> readIORef (ssBlocks s)
+          pushed s tested killed'
+        -- the block moved on meanwhile: whatever moved it pushed it
+        Left _ -> pure ()
 
 -- | Tell the adapter a block changed with no request asking (it pushes it).
 pushed :: ServerState -> Block -> Int -> IO ()
@@ -235,13 +280,9 @@ draftIn progress s root project lang b drafting killed filler = do
       (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
       pure (template, ("body", VerifyIds [blockTestId b]), [(T.unpack (fileOf (blockTestId b)), testText)])
     TestFor killing -> do
-      let (s1, s2) = blockSpan b
-          candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
-      (line, template) <- maybe (throwE "the test has no arrangement left to draft: its placeholder is gone") pure (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
-      let new = newTests b text
+      ((line, template), newTest, new) <- except (testDraftParts lang b text)
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
-      newTest <- maybe (throwE "name the new test first: its name is still the stub's") pure (listToMaybe new)
       verify <- case killing of
         -- a new test: it must fail, at its assertion
         Nothing -> pure (VerifyRedAt newTest (line + 1))
@@ -266,7 +307,7 @@ draftIn progress s root project lang b drafting killed filler = do
       options = planOptions {poFiller = Just recording, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
-  latest <- lift (maybe (pure started) ($ file) (ssLiveVersion s))
+  latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
   when (latest /= started) (throwE "the file changed while drafting; your text stands")
   tried <- lift (readIORef attempts)
   (planned, outcome, edits) <- case planHoles plan of
@@ -289,14 +330,31 @@ draftIn progress s root project lang b drafting killed filler = do
         Code -> changed
         TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" planned)))
-  b' <- ExceptT (settle s root killed "draft" (either (const "red") (const "green") outcome) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
+  b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+
+-- | A test block's stub as a draft needs it: its arrangement's line and
+-- hole, its new test and all its new tests; or why it cannot be drafted yet.
+testDraftParts :: Language -> Block -> Text -> Either Text ((Int, Template), TestId, [TestId])
+testDraftParts lang b text = do
+  let (s1, s2) = blockSpan b
+      candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
+      new = newTests b text
+  hole <- maybe (Left "the test has no arrangement left to draft: its placeholder is gone") Right (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
+  -- the stub names its test `test_name` until the person types over it
+  newTest <- case new of
+    t : _ | all ((/= stubName) . testName) new -> Right t
+    _ -> Left "name the new test first: its name is still the stub's"
+  pure (hole, newTest, new)
 
 -- | Run the block's test on the editor's text: red, green (then judged) or
 -- broken; its span is the lines new since the block began.
 blockTest :: FilePath -> ServerState -> IO (ServerState, Either Text Block)
-blockTest path = withBlock path $ \s root project lang b killed -> testNow s root project lang b killed False
+blockTest path = withBlock path $ \s root project lang b killed -> case blockState b of
+  -- its result and the draft's would race: the later would land over the newer
+  Drafting _ -> pure (Left "a draft is in flight; wait for it, then test or press next")
+  _ -> testNow s root project lang b killed False
 
 -- | 'blockTest' on the block's file as it is now. APPLIED: that text is the
 -- latest draft, as the editor applied it: no edit of the person's (no "you"
@@ -310,11 +368,41 @@ testNow s root project lang b killed applied = do
   let ids = case (blockKind b, newTests b now) of
         (TestFor _, new@(_ : _)) -> new
         _ -> [blockTestId b]
-  runOver s ws lang ids >>= \case
+      -- a test of the newest text (no test or draft begun since) that finds
+      -- the block moved on meanwhile (an older test landed first, Jev
+      -- reordered) settles once more, on the block as it now stands
+      -- (again each time another move lands first, while that still holds:
+      -- each round needs a newer version, so it ends)
+      settleTest result move = attempt b killed
+        where
+          attempt on k =
+            settleOn s root k "test" result (Just now) move on >>= \case
+              Left moved -> do
+                current <- M.lookup (blockFile b) <$> readIORef (ssBlocks s)
+                seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
+                case current of
+                  Just (c, k')
+                    | blockId c == blockId b, blockVersion c /= blockVersion on, not (isDrafting (blockState c)), seen == Just now -> attempt c k'
+                  _ -> pure (Left moved)
+              landed -> pure landed
+  ran <- runOver s ws lang ids
+  -- work cancelled (a newer edit's test superseded it) is no result: nothing settles
+  stopped <- cancelled (ssCancel s)
+  if stopped
+    then do
+      -- the text it tested is untested again (unless a newer test began):
+      -- the job that cancelled it, finding that text, tests it
+      atomicModifyIORef' (ssBlockSeen s) (\m -> (if M.lookup (blockFile b) m == Just now then M.insert (blockFile b) (blockOn b) m else m, ()))
+      pure (Left "the test was cancelled; a newer one runs")
+    else case ran of
     -- a runner that cannot start is a test that cannot run: never judged
-    Left why -> settle s root killed "test" ("cannot run: " <> why) (CannotRun why) b
+    Left why -> settleTest ("cannot run: " <> why) (CannotRun why)
     Right run -> do
-      let new = newLinesOf (blockBase b) now
+      -- its span runs from its first new line to its last; an import (a
+      -- stub's, joined to the file's) or a blank line is no line of the block's
+      let numbered = M.fromList (zip [1 ..] (T.splitOn "\n" now))
+          ownLine l = not (T.null (T.strip l)) && not (isImportLine lang l)
+          new = S.filter (maybe False ownLine . (`M.lookup` numbered)) (newLinesOf (blockBase b) now)
           sp = if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
           (move, result) = case (trBroken run, trFailed run) of
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)
@@ -323,7 +411,7 @@ testNow s root project lang b killed applied = do
             (_, (_, f) : _) -> (landed sp (Left f), "red")
             _ -> (landed sp (Right ()), "green")
           landed = if applied then Applied else Edited
-      settle s root killed "test" result move b >>= \case
+      settleTest result move >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
@@ -386,7 +474,15 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
                  Right base
                    | Just why <- trBroken base -> pure (Left why)
                    | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
-    case verdicts of
+    stopped <- cancelled (ssCancel s)
+    if stopped
+      then do
+        -- green and unjudged: its text is untested again (unless a newer test
+        -- began), so the job that cancelled it, finding that text, tests it
+        atomicModifyIORef' (ssBlockSeen s) (\m -> (if M.lookup (blockFile b) m == Just (blockOn b) then M.insert (blockFile b) (blockBase b) m else m, ()))
+        pure (Left "the judge was cancelled; a newer test runs")
+      else case verdicts of
+      -- a judge stands on the text its test passed on (blockOn as the test left it)
       Left why -> settle s root killedBefore "judge" ("cannot run: " <> why) (CannotRun why) b
       Right vs -> do
         let surviving = [m | (m, Survived) <- vs]
@@ -403,7 +499,8 @@ reorder s decider moduleText testText push file =
   M.lookup file <$> readIORef (ssBlocks s) >>= \case
     Just (b, killed) | Judged ms <- blockState b -> do
       ordered <- orderSurvivors s decider b moduleText testText (void (reorder s decider moduleText testText True file)) ms
-      let b' = b {blockState = Judged ordered}
+      -- a new version: a move begun on the old order is stale, not its eraser
+      let b' = b {blockState = Judged ordered, blockVersion = blockVersion b + 1}
       -- only over the block as it was (a move meanwhile wins)
       stored <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup file m of
         Just (now, _) | now == b, ordered /= ms -> (M.insert file (b', killed) m, True)
@@ -416,10 +513,44 @@ reorder s decider moduleText testText push file =
 -- (a kill's) accepted: its module's code block is judged again, and pushed.
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockAccept path = withBlock path $ \s root project _ b killed ->
-  settle s root killed "accept" "accepted" Accept b >>= \case
+  awaitingVerdict s root project b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
     Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
     Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
     other -> pure (fmap (,[]) other)
+
+-- | Why a move on the block's verdict (waive, accept) must wait, if it
+-- must: a test of a text other than the one the verdict stands on has
+-- begun since (the person's edit, its verdict still to land).
+-- An edit of the span not tested yet (its pause still to run) waits too.
+awaitingVerdict :: ServerState -> FilePath -> Project -> Block -> Text -> IO (Maybe Text)
+awaitingVerdict s root project b move = do
+  seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
+  untested <- spanEdited s root project b
+  pure $
+    if maybe False (/= blockOn b) seen || isJust untested
+      then Just ("your edit is being tested; " <> move <> " once its verdict lands")
+      else Nothing
+
+-- | The block's file now, when the change since the text last tested
+-- touches the block's span (an edit of the block's, to be tested).
+spanEdited :: ServerState -> FilePath -> Project -> Block -> IO (Maybe Text)
+spanEdited s root project b = do
+  now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
+  seen <- fromMaybe (blockBase b) . M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
+  pure (if now == seen || not (touches seen now (blockSpan b)) then Nothing else Just now)
+
+-- | Whether the change from OLD to NEW touches the lines of a span
+-- (1-based, inclusive), as the lines of either text count: lines changed
+-- or deleted within it, or lines inserted inside it or right after it.
+touches :: Text -> Text -> (Int, Int) -> Bool
+touches old new (s1, s2) = hit (p + 1, length os - q) || hit (p + 1, length ns - q)
+  where
+    (os, ns) = (T.splitOn "\n" old, T.splitOn "\n" new)
+    p = length (takeWhile id (zipWith (==) os ns))
+    q = length (takeWhile id (take (min (length os) (length ns) - p) (zipWith (==) (reverse os) (reverse ns))))
+    hit (a, z)
+      | z < a = a >= s1 && a <= s2 + 1
+      | otherwise = a <= s2 && z >= s1
 
 -- | A new test accepted: the function it calls begins on it (red), as a
 -- begin on that test would, and is pushed.
@@ -542,22 +673,32 @@ withBlock path work s0 =
           Just lang -> (s,) <$> work s root project lang b killed
 
 -- | Take a move on the block B as it was read: the block as it now stands
--- is kept (a finished one dropped), and the move logged. Blocks are
--- written from requests and background jobs at once: the move lands only
--- while the stored block is still B's (its number, and its state's kind),
--- one atomic step; a block gone or moved on meanwhile refuses it.
+-- is kept (a finished one dropped, its version bumped), and the move
+-- logged. Blocks are written from requests and background jobs at once
+-- (a test, a draft, a judge each runs a while): the move lands only while
+-- the stored block is still B (its number, and its version), one atomic
+-- step; a result begun on a block gone or moved on meanwhile is stale,
+-- logged as such and dropped.
 settle :: ServerState -> FilePath -> Int -> Text -> Text -> Move -> Block -> IO (Either Text Block)
-settle s root killed name result move b = case step move b of
+settle s root killed name result = settleOn s root killed name result Nothing
+
+-- | 'settle', the state it lands established on the file's text ON (a
+-- test's, a draft's, a waiver's); without one, on the text it was (a
+-- judge's verdict stands on the text its test passed on).
+settleOn :: ServerState -> FilePath -> Int -> Text -> Text -> Maybe Text -> Move -> Block -> IO (Either Text Block)
+settleOn s root killed name result on move b = case step move b of
   Left why -> pure (Left why)
-  Right b' -> do
+  Right stepped -> do
+    let b' = maybe stepped (\t -> stepped {blockOn = t}) on
+        stored = b' {blockVersion = blockVersion b + 1}
     landed <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup (blockFile b) m of
       Just (now, _)
-        | blockId now == blockId b, stateName (blockState now) == stateName (blockState b) ->
-            ((if pending b' then M.insert (blockFile b') (b', killed) else M.delete (blockFile b')) m, True)
+        | blockId now == blockId b, blockVersion now == blockVersion b ->
+            ((if pending stored then M.insert (blockFile stored) (stored, killed) else M.delete (blockFile stored)) m, True)
       _ -> (m, False)
     if landed
-      then appendStep (ssPorts s) root b' name result >> pure (Right b')
-      else pure (Left "the block moved on")
+      then appendStep (ssPorts s) root stored name result >> pure (Right stored)
+      else appendStep (ssPorts s) root b' name ("stale: " <> result) >> pure (Left "the block moved on")
 
 -- | Store a new block in its file unless a block is pending there or in
 -- one of OTHERS (its test file): one atomic step, so two begins at once
@@ -599,6 +740,16 @@ testBody name text = case dropWhile (not . isDef) (T.lines text) of
   where
     isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
     indentOf = T.length . T.takeWhile (== ' ')
+
+isDrafting :: BlockState -> Bool
+isDrafting = \case
+  Drafting _ -> True
+  _ -> False
+
+-- | The name a stub's test has until the person types its own (the stub's
+-- tab stop, `test_${1:name}`, left as it was).
+stubName :: Text
+stubName = "test_name"
 
 -- | A test block's new tests: those its file defines now and did not when
 -- the block began (the person named them in the stub).

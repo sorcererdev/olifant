@@ -3,7 +3,7 @@
 -- expands) or waive one (a comment on its line) — and the editor's edits
 -- of a block's file, told apart: a draft it applied, the person's edit
 -- inside the span, or an edit elsewhere (nothing to do).
-module Olifant.Server.BlockMoves (blockKill, blockWaive, blockChanged) where
+module Olifant.Server.BlockMoves (blockKill, blockWaive, blockChanged, blockEdited) where
 
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
@@ -11,7 +11,7 @@ import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
 import Data.List (find, nub)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Project (..))
@@ -19,7 +19,7 @@ import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, 
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
-import Olifant.Server.Block (appendStep, claim, fileOf, settle, testNow, tshow, withBlock)
+import Olifant.Server.Block (appendStep, awaitingVerdict, claim, fileOf, settle, settleOn, spanEdited, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -60,13 +60,15 @@ blockWaive path line reason0 = withBlock path $ \s root project lang b killed ->
   let reason = T.unwords (T.words reason0)
       rel = makeRelative root (blockFile b)
   when (T.null reason) (throwE "a waiver needs a reason")
+  -- its line is the verdict's: an edit still being tested moves it
+  lift (awaitingVerdict s root project b "waive") >>= maybe (pure ()) throwE
   let ops = nub [muOperator m | m <- survivors b, muLine m == line]
   when (null ops) (throwE "no unwaived survivor on that line")
   now <- lift (readText (prWorkspace project) rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
   let waived = foldl (\acc op -> waiverLine lang acc line op reason) now ops
       (range, text) = smallestChange now waived
       version = fst <$> M.lookup (blockFile b) (ssDocs s)
-      waiveAll b0 = foldl (\acc op -> acc >>= \bk -> ExceptT (settle s root killed "waive" (op <> ": " <> reason) (Waive line op reason) bk)) (pure b0) ops
+      waiveAll b0 = foldl (\acc op -> acc >>= \bk -> ExceptT (settleOn s root killed "waive" (op <> ": " <> reason) (Just waived) (Waive line op reason) bk)) (pure b0) ops
   b' <- waiveAll b
   -- the editor applying the comments is not an edit of the block's
   lift (modifyIORef' (ssBlockSeen s) (M.insert (blockFile b) waived))
@@ -77,36 +79,34 @@ blockWaive path line reason0 = withBlock path $ \s root project lang b killed ->
 -- tested as theirs; an edit elsewhere, or of a file with no block of its
 -- own, does nothing (Nothing).
 blockChanged :: FilePath -> ServerState -> IO (ServerState, Maybe Block)
-blockChanged path s0 = do
+blockChanged path s0 =
+  spanEdit path s0 >>= \case
+    (s, Nothing) -> pure (s, Nothing)
+    (s, Just (b, killed, root, project, now)) -> do
+      let spanText = T.intercalate "\n" (take (snd (blockSpan b) - fst (blockSpan b) + 1) (drop (fst (blockSpan b) - 1) (T.splitOn "\n" now)))
+          applied = case listToMaybe (reverse (blockDrafts b)) of
+            Just d -> draftBy d /= "you" && draftText d == spanText
+            Nothing -> False
+      case languageFor (catalogLanguages (prCatalog project)) (makeRelative root (blockFile b)) of
+        Nothing -> pure (s, Nothing)
+        Just lang -> (s,) . either (const Nothing) Just <$> testNow s root project lang b killed applied
+
+-- | Whether the file's text now is an edit of its block's span (since the
+-- text last tested): the adapter tests it once typing settles, and only
+-- such an edit supersedes the test or judge running for the block (an
+-- edit elsewhere leaves it to land).
+blockEdited :: FilePath -> ServerState -> IO (ServerState, Bool)
+blockEdited path s0 = fmap isJust <$> spanEdit path s0
+
+-- | The file's block (its killed count, project and root) and the file
+-- now, when the change since the text last tested touches the block's span.
+spanEdit :: FilePath -> ServerState -> IO (ServerState, Maybe (Block, Int, FilePath, Project, Text))
+spanEdit path s0 = do
   let file = normalisePath path
   own <- M.lookup file <$> readIORef (ssBlocks s0)
   case own of
     Nothing -> pure (s0, Nothing)
-    Just (b, _) ->
+    Just (b, killed) ->
       projectFor file s0 >>= \case
         (s, Nothing) -> pure (s, Nothing)
-        (s, Just (root, project)) -> do
-          now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root file)
-          seen <- fromMaybe (blockBase b) . M.lookup file <$> readIORef (ssBlockSeen s)
-          let spanText = T.intercalate "\n" (take (snd (blockSpan b) - fst (blockSpan b) + 1) (drop (fst (blockSpan b) - 1) (T.splitOn "\n" now)))
-              applied = case listToMaybe (reverse (blockDrafts b)) of
-                Just d -> draftBy d /= "you" && draftText d == spanText
-                Nothing -> False
-          if now == seen || not (touches seen now (blockSpan b))
-            then pure (s, Nothing)
-            else case languageFor (catalogLanguages (prCatalog project)) (makeRelative root file) of
-              Nothing -> pure (s, Nothing)
-              Just lang -> (s,) . either (const Nothing) Just <$> testNow s root project lang b (maybe 0 snd own) applied
-
--- | Whether the change from OLD to NEW touches the lines of a span
--- (1-based, inclusive), as the lines of either text count: lines changed
--- or deleted within it, or lines inserted inside it or right after it.
-touches :: Text -> Text -> (Int, Int) -> Bool
-touches old new (s1, s2) = hit (p + 1, length os - q) || hit (p + 1, length ns - q)
-  where
-    (os, ns) = (T.splitOn "\n" old, T.splitOn "\n" new)
-    p = length (takeWhile id (zipWith (==) os ns))
-    q = length (takeWhile id (take (min (length os) (length ns) - p) (zipWith (==) (reverse os) (reverse ns))))
-    hit (a, z)
-      | z < a = a >= s1 && a <= s2 + 1
-      | otherwise = a <= s2 && z >= s1
+        (s, Just (root, project)) -> (s,) . fmap (b,killed,root,project,) <$> spanEdited s root project b

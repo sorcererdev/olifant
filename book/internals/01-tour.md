@@ -2306,7 +2306,8 @@ engine features plus a pack (`python-strangler`):
   `Server/Actions.extractOrder`) and `service` (when the SQL's tables name no single service's
   model, `Server/Preview`'s `suggestService`; the value's source is `suggested`). Each goes
   through `Server/State.decision`: one decision per (file, kind, function name), at most one ask
-  in flight, asked again once it lands if the function's text changed since.
+  in flight (the answers and the asks in flight share `ssDecisions`, so knowing and claiming
+  are one atomic step), asked again once it lands if the function's text changed since.
 - **Rules that look elsewhere** (`Rules`: `bind`, `when`): a slot captured from the found code,
   and a condition on another file's lines; retire is offered only once the registry says the
   flag is on.
@@ -2331,10 +2332,18 @@ machine served by the server:
   its assertions first, until the module defines one, located by the language's `function NAME`
   target) and begins Red, or judges a green function at once; on a function no test calls,
   `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`testStub`) and
-  answers the stub for the editor, and accepting that block begins the function on it. Every
-  move lands through `settle`, a compare-and-swap on the stored block's number and state kind
-  (a block that moved on refuses a late result), and a new block through `claim`, one atomic
-  check-and-insert. `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
+  answers the stub for the editor, with the function's import as an edit to apply first when
+  the test file lacks it (`addImports`, the fill phase's), and accepting that block begins the
+  function on it. Every
+  move lands through `settle`, a compare-and-swap on the stored block's number and version
+  (`blockVersion`, bumped by every move stored and by Jev's reorder: a move begun on an older version
+  is stale, logged and dropped; a test of the newest text, none begun since, settles again on the
+  block as it stands, each time another move landed first), and a new block through `claim`, one atomic check-and-insert.
+  `test` is refused while a draft is in flight, and `waive` and `accept` while a test of a text
+  other than the verdict's has begun, or an edit of the span awaits its test (`awaitingVerdict`:
+  `ssBlockSeen` against `blockOn`, and `spanEdited`); a draft that fails puts back the state it began
+  from, testing the file again when it is no longer the text that state was established on
+  (`blockOn`). `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
   with `planWith` under `DraftStance` (the test file, or for a test the module, in its context),
   verified by `VerifyIds` (the block's test), `VerifyRedAt` (a new test fails at its assertion)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
@@ -2355,8 +2364,9 @@ machine served by the server:
   (`mutant-equivalent`, `mutant-matters`), asked in the background through the server's
   decisions; each answer that lands reorders and pushes the block (`ssOnBlock`).
 - **`Lsp`** has one `blockRequest` per move, in the background like the other slow requests; every
-  block a move changed is pushed as `olifant/block`, and `didChange` on a file with a block
-  submits `blockLater` (the debounce; a newer edit cancels it).
+  block a move changed is pushed as `olifant/block`, and `didChange` that edits a block's span
+  (`blockEdited`, against the text last tested) submits `blockLater` (the debounce; a newer such
+  edit cancels it, an edit elsewhere in the file leaves the running test or judge to land).
 
 The specs drive it with a scripted runner (`scriptedRunner`, `scriptFileRunner`: verdicts by
 test id, or by the files' text) and a syntax that knows the one container and site they need;

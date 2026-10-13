@@ -9,8 +9,9 @@ cannot be rubber-stamped.
 ## What you see
 
 1. Cursor on a function no test calls, `begin`: the stub of its first test opens at the end of
-   its test file (a new file starts with the function's import: `from
-   bistro.booking.commands.close_table import CloseTable`), the cursor on its name. You write the
+   its test file, with the function's import (`from
+   bistro.booking.commands.close_table import CloseTable`: a new file starts with it; a file
+   without it gains it among its imports), the cursor on its name. You write the
    test's **name and assertion**; `draft` fills the arrangement between them, verified: the test
    runs and fails *at the assertion*. That test block is judged clean at once; `accept` it.
 2. The function begins on that red test (as `begin` on a red test does: on a test, it runs, it is
@@ -70,7 +71,9 @@ pending). The HUD's state says which are open.
 
 **Editing is a move too.** Type in the span and pause: the test reruns on the buffer's text
 (nothing needs saving), and the block is red or green as your text is; green is judged. A draft
-arriving after you typed is not applied: your text stands. Typing outside the span does nothing.
+arriving after you typed is not applied: your text stands. A draft that fails puts the block back
+as it was, tested again first if you typed while the model wrote. Typing outside the span does
+nothing.
 
 **One block per file.** A second `begin` in a file with a pending block is refused (`a block is
 pending in this file: accept or reject it first`).
@@ -160,7 +163,8 @@ Each move appends one line to `.olifant/state/steps.log`: time, block, move, who
 ```
 
 It answers what commits cannot: which lines a model drafted, which you wrote, what was waived and
-why. (`test person` after a draft is the test of the draft as the editor applied it.)
+why. (`test person` after a draft is the test of the draft as the editor applied it; a result
+that finished after the block moved on is logged `stale: …` and not applied.)
 
 ## Configuring tests: `[test]`
 
@@ -189,8 +193,9 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 - **Python only.** The operators are Python's; a language with a `[test]` table but no operators
   is begun and drafted but cannot be judged (`cannot run: no mutation operators for …`), so its
   blocks are never accepted.
-- **A new test file's import is Python's, and only the function's** (or its class's): a name your
-  assertion uses beyond it you import yourself.
+- **A stub's import is Python's, and only the function's** (or its class's): a name your
+  assertion uses beyond it you import yourself. A file importing it already (on one line or
+  several, in brackets) gains nothing; one importing from its module gains the name there.
 - **A draft that fails its test is written anyway**, its last attempt marked red, for you to
   finish by hand; a model that offered nothing changes nothing. A draft sees the test file (a
   test's draft, the module) beside the rejected drafts.
@@ -212,10 +217,17 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 - **`no test for this module yet; write one …`** — `begin` was in a module whose test file does not
   exist, the cursor on no function. Put it in the function to have its test's stub opened, or
   write the test where the message says, then begin on it.
-- **`name the new test first`** — `draft` on a stub whose name is still the stub's: type it (and
-  the assertion), then draft.
-- **`the block moved on`** — a draft or a test finished after you rejected or accepted the block,
-  or after another move: nothing lands.
+- **`name the new test first`** — `draft` on a stub whose name is still the stub's (`test_name`):
+  type it (and the assertion), then draft.
+- **`the block moved on`** — a draft, a test or a judge finished after you rejected or accepted
+  the block, or after another move (a later edit's test): nothing lands, and the step log says
+  `stale:` before what it would have been.
+- **`your edit is being tested; waive once its verdict lands`** (or `accept`) — you typed in the
+  span and its test has not landed yet (or the pause before it has not run): the survivors you
+  see are the text's before it. Wait for the HUD to change, then waive or accept what the new
+  verdict shows.
+- **`a draft is in flight; wait for it, then test or press next`** — `test` while the model
+  writes: the draft's own test settles the block.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a block starts
   from what is red. Begin in the function instead to judge it.
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a

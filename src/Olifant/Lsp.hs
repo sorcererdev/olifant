@@ -129,7 +129,7 @@ serverDefinition ports = do
   state <- newServerState ports >>= newMVar
   -- a draft asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
-  modifyMVar_ state (\s -> pure s {ssLiveVersion = Just (\path -> fmap fst . M.lookup path . ssDocs <$> readMVar state)})
+  modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
   env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel
   pure
     ServerDefinition
@@ -232,10 +232,12 @@ handlers env =
           Just vf -> atPath uri $ \path -> do
             let version = fromIntegral (virtualFileVersion vf)
             update env (changeDoc path version (virtualFileText vf))
-            -- a block in this file: tested again once typing settles
-            hasBlock <- liftIO (M.member (normalisePath path) <$> (readIORef . ssBlocks =<< readMVar (envState env)))
+            -- an edit of a block's span: tested again once typing settles (it
+            -- supersedes the block's running test or judge; an edit elsewhere
+            -- in the file leaves that to land)
+            edited <- liftIO (withSnapshot env (blockEdited (normalisePath path)))
             lspEnv0 <- getLspEnv
-            if hasBlock then liftIO (blockLater env lspEnv0 (normalisePath path) version) else pure ()
+            if edited then liftIO (blockLater env lspEnv0 (normalisePath path) version) else pure ()
             -- what follows from this edit, once typing settles
             case lastEditedLine (msg ^. L.params . L.contentChanges) of
               Nothing -> pure ()
@@ -516,8 +518,9 @@ handlers env =
       blockRequest env (Proxy :: Proxy "olifant/block/begin") $ \job path params -> case positionOf params of
         Nothing -> pure (Left "olifant/block/begin needs a position")
         -- a function with no test: the stub of its first test, which the editor expands
+        -- (and the edits to apply before it: its import, in a file that lacks it)
         Just (line, _) -> liftIO . moved (withSnapshot job (blockStart (const (pure ())) path (line + 1))) $ \(b, stub) ->
-          pure (["snippet" .= object ["file" .= f, "line" .= at, "body" .= body] | Just (f, at, body) <- [stub]], [b])
+          pure (concat [("snippet" .= object ["file" .= f, "line" .= at, "body" .= body]) : editsField edits | Just (f, at, body, edits) <- [stub]], [b])
     , blockRequest env (Proxy :: Proxy "olifant/block/draft") $ \job path _ -> drafted job path
     , blockRequest env (Proxy :: Proxy "olifant/block/next") $ \job path _ -> drafted job path
     , blockRequest env (Proxy :: Proxy "olifant/block/test") $ \job path _ -> liftIO (moved (withSnapshot job (blockTest path)) (\b -> pure ([], [b])))
