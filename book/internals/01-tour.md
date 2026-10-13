@@ -2306,7 +2306,8 @@ engine features plus a pack (`python-strangler`):
   `Server/Actions.extractOrder`) and `service` (when the SQL's tables name no single service's
   model, `Server/Preview`'s `suggestService`; the value's source is `suggested`). Each goes
   through `Server/State.decision`: one decision per (file, kind, function name), at most one ask
-  in flight, asked again once it lands if the function's text changed since.
+  in flight (the answers and the asks in flight share `ssDecisions`, so knowing and claiming
+  are one atomic step), asked again once it lands if the function's text changed since.
 - **Rules that look elsewhere** (`Rules`: `bind`, `when`): a slot captured from the found code,
   and a condition on another file's lines; retire is offered only once the registry says the
   flag is on.

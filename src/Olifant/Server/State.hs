@@ -7,6 +7,7 @@ module Olifant.Server.State
   , cachedBase
   , deciderFor
   , decision
+  , decisionsNow
   , ServerConfig (..)
   , defaultServerConfig
   , ProjectSlot (..)
@@ -98,10 +99,10 @@ data ServerState = ServerState
   , -- | base texts (root, ref, path), each with the files stamp it was read at:
     -- kept until files change (a save, a pull, a rebase)
     ssBaseCache :: IORef (Map (FilePath, Text, FilePath) ((Int, Text), Either Text (Text, Maybe Text)))
-  , -- | typed decisions made (by file and what they were about), those being
-    -- asked, and what to do when one is made (the editor pulls diagnostics again)
-    ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer))
-  , ssAsking :: IORef (Set (FilePath, Text))
+  , -- | typed decisions made (by file and what they were about) and those
+    -- being asked, in one place (one atomic step tells known from asked);
+    -- and what to do when one is made (the editor pulls diagnostics again)
+    ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer), Set (FilePath, Text))
   , ssOnDecided :: IORef (IO ())
   , -- | the loop's pending block in each file (absolute path), with how many
     -- of its mutants were killed when last judged; the next block's number
@@ -125,14 +126,13 @@ newServerState :: Ports -> IO ServerState
 newServerState ports = do
   cache <- newPackCache
   bases <- newIORef M.empty
-  decisions <- newIORef M.empty
-  asking <- newIORef S.empty
+  decisions <- newIORef (M.empty, S.empty)
   onDecided <- newIORef (pure ())
   blocks <- newIORef M.empty
   nextBlock <- newIORef 1
   seen <- newIORef M.empty
   onBlock <- newIORef (\_ _ -> pure ())
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided blocks nextBlock Nothing seen onBlock Nothing)
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided blocks nextBlock Nothing seen onBlock Nothing)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
@@ -285,25 +285,32 @@ deciderFor s project = do
       backend <- lookup name (mcBackends models)
       Just (curlDecider neverCancel (mcTimeout models) backend)
 
+-- | The decisions made, and those being asked (tests).
+decisionsNow :: ServerState -> IO (Map (FilePath, Text) (Text, Answer), Set (FilePath, Text))
+decisionsNow s = readIORef (ssDecisions s)
+
 -- | A decision about one thing (a file's function, by question kind and
 -- name: KEY): its latest answer, if any. Asked in the background at most
 -- once at a time, and again (after that one lands) when the thing's text
 -- has changed since its answer (FP): typing in a function asks once per
 -- model round trip, not once per keystroke. ON_DONE runs with each answer.
+-- What is known and whether to ask are one atomic step: callers at once
+-- see the answer, or that it is being asked, and only one asks.
 decision :: ServerState -> Decider IO -> (FilePath, Text) -> Text -> Question -> IO () -> IO (Maybe Answer)
 decision s decider key fp q onDone = do
-  known <- M.lookup key <$> readIORef (ssDecisions s)
-  when (fmap fst known /= Just fp) $ do
-    fresh <- atomicModifyIORef' (ssAsking s) (\a -> (S.insert key a, S.notMember key a))
-    when fresh . void . forkIO $
-      -- a failure is no answer: nothing kept, asked again on a later pull
-      ( try (ask decider q) >>= \case
-          Left (_ :: SomeException) -> pure ()
-          Right answer -> do
-            -- answers land at once from many threads (Jev asks per survivor)
-            atomicModifyIORef' (ssDecisions s) (\m -> (M.insert key (fp, answer) m, ()))
-            onDone
-      )
-        `finally` atomicModifyIORef' (ssAsking s) (\a -> (S.delete key a, ()))
+  (known, fresh) <- atomicModifyIORef' (ssDecisions s) $ \(answers, asking) ->
+    let known = M.lookup key answers
+        fresh = fmap fst known /= Just fp && S.notMember key asking
+     in ((answers, if fresh then S.insert key asking else asking), (known, fresh))
+  when fresh . void . forkIO $
+    -- a failure is no answer: nothing kept, asked again on a later pull
+    ( try (ask decider q) >>= \case
+        Left (_ :: SomeException) -> pure ()
+        Right answer -> do
+          -- answers land at once from many threads (Jev asks per survivor)
+          atomicModifyIORef' (ssDecisions s) (\(answers, asking) -> ((M.insert key (fp, answer) answers, asking), ()))
+          onDone
+    )
+      `finally` atomicModifyIORef' (ssDecisions s) (\(answers, asking) -> ((answers, S.delete key asking), ()))
   pure (snd <$> known)
 

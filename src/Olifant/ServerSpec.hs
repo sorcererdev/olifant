@@ -20,7 +20,9 @@ import Olifant.Mutate (Mutant (..))
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
 import System.FilePath (makeRelative, (</>))
-import Control.Concurrent.Async (async, wait)
+import Control.Concurrent.Async (async, replicateConcurrently_, wait)
+import Data.Set qualified as S
+import Olifant.Server.State qualified as St
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
 import Olifant.Fill (FillRequest (..), Filler (..), ModelFiller (..))
@@ -436,8 +438,18 @@ blockSpecs = describe "blocks" $ do
         -- as the server does: each answer orders again
         again = void (orderSurvivors s (Just counting) b stubbed testText again ms)
     again
-    threadDelay 300000
+    -- the four questions answered and none in flight: nothing more is asked
+    waitUntil (settled s 4)
     readIORef asked `shouldReturn` 4
+  it "(k2) a decision asked by many at once is asked once" $ do
+    (s, _) <- blocks redOnStub []
+    asked <- newIORef (0 :: Int)
+    let counting = De.Decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
+        q = De.Question "mutant-matters" [] [] []
+        keys = [(root </> moduleRel, "matters:" <> T.pack (show i)) | i <- [1 .. 300 :: Int]]
+    mapM_ (\key -> replicateConcurrently_ 8 (St.decision s counting key "fp" q (pure ()))) keys
+    waitUntil (settled s (length keys))
+    readIORef asked `shouldReturn` length keys
   it "(l) when the kill's test block is accepted, the code block is judged again and the killed mutant is gone" $ do
     (s0, _) <- blocksOn killedBy []
     pushed <- newIORef []
@@ -780,6 +792,10 @@ expandStub at body text = T.intercalate "\n" (take (at - 1) ls ++ [named] ++ dro
 -- | Edits of one text, applied as the editor does (each over the last).
 applyEdits :: [FileEdit] -> Text -> Text
 applyEdits edits text = foldl (\t e -> applyChange (feRange e) (feText e) t) text edits
+
+-- | The decisions: N answered, and none being asked.
+settled :: ServerState -> Int -> IO Bool
+settled s n = (\(known, asking) -> M.size known == n && S.null asking) <$> St.decisionsNow s
 
 -- | A block as it stands, whatever moves it took to stand there.
 unversioned :: Block -> Block
