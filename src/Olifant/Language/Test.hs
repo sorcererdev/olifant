@@ -7,12 +7,21 @@ module Olifant.Language.Test
   , TestRun (..)
   , Runner (..)
   , noRunner
+  , scriptedRunner
+  , scriptFileRunner
   , parsePytest
   , testsForFile
   ) where
 
+import Control.Exception (SomeException, try)
+import Data.Aeson (Value (..), eitherDecodeStrict)
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString qualified as BS
 import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as M
 import Data.Maybe (listToMaybe)
+import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -40,6 +49,30 @@ newtype Runner m = Runner {runTests :: Language -> [TestId] -> Map FilePath Text
 -- | No runner at all: every run is refused.
 noRunner :: Applicative m => Runner m
 noRunner = Runner (\_ _ _ -> pure (Left "no test runner"))
+
+-- | Verdicts by test id, never looking at the files (tests): `"pass"`, or
+-- `{"line": N, "message": "…"}` for a failure. A file's id runs every
+-- scripted test in it; an id the script does not name passes.
+scriptedRunner :: Applicative m => Map TestId Value -> Runner m
+scriptedRunner script = Runner $ \_ ids _ ->
+  let failing i = [(k, f) | (k, v) <- M.toList script, k == i || (i <> "::") `T.isPrefixOf` k, Just f <- [failureIn v]]
+      failed = concatMap failing ids
+   in pure (Right (TestRun [i | i <- ids, null (failing i)] failed Nothing))
+  where
+    failureIn = \case
+      Object o -> Just (Failure (KM.lookup "line" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing) (case KM.lookup "message" o of Just (String m) -> m; _ -> "failed") "")
+      _ -> Nothing
+
+-- | 'scriptedRunner' over a JSON file, read again at every run (a test may
+-- change what it says between runs); a file that does not read is a
+-- runner that cannot start.
+scriptFileRunner :: FilePath -> Runner IO
+scriptFileRunner file = Runner $ \lang ids files ->
+  (try (BS.readFile file) :: IO (Either SomeException BS.ByteString)) >>= \case
+    Left e -> pure (Left ("the test script does not read: " <> T.pack (show e)))
+    Right bytes -> case eitherDecodeStrict bytes of
+      Right (Object o) -> runTests (scriptedRunner (M.fromList [(Key.toText k, v) | (k, v) <- KM.toList o])) lang ids files
+      _ -> pure (Left ("the test script is not a JSON object: " <> T.pack file))
 
 -- | A module's test file, from the language's @tests_for@: @{= dir =}@ and
 -- @{= stem =}@ are the module's folder and name.

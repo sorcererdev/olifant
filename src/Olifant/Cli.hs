@@ -4,7 +4,7 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 
 import Data.Set (Set)
 import Control.Applicative ((<|>))
-import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
+import Olifant.Fill (ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
@@ -571,6 +571,7 @@ runStepsWith warnings rt cwd fmt cat g context steps = do
               , poProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())
               , poNow = genNow g
               , poCancel = neverCancel
+              , poStance = FillStance
               }
       planWith (portsOf rt) project po steps >>= \case
         Left err -> generationFailure rt fmt err
