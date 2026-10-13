@@ -15,17 +15,19 @@ cannot be rubber-stamped.
    test's **name and assertion**; `draft` fills the arrangement between them, verified: the test
    runs and fails *at the assertion*. That test block is judged clean at once; `accept` it.
 2. The function begins on that red test (as `begin` on a red test does: on a test, it runs, it is
-   red, and the editor jumps to the function it calls). Its body is a **pending span**, with a soft
-   background and a HUD line above it: `▸ test_closes_a_table · red: NotImplementedError: …`, then
-   `drafting…` while the model writes (only `reject` is open then).
+   red, and the editor jumps to the function it calls). Its body is inside a **magic circle**: the
+   highlighted span with the HUD line above it; nothing leaves the circle until every survivor is
+   killed or waived. The HUD reads `▸ test_closes_a_table · red: NotImplementedError: … · draft`
+   (red, and the next step), then `drafting…` while the model writes (only `reject` is open then).
 3. The draft lands: `▸ test_closes_a_table · draft 1 · green · judging…`. You read it. It is the
    *least* code that passes (the fake-it stance, on purpose): if it is too simple, your test was;
    add a case.
-4. `· 1 survivor`. Line 53's `>` → `>=` survives: no test notices the boundary. You decide it
-   matters. `kill` opens a new test stub; you write its name and assertion; the arrangement is
+4. `· 1 survivor · kill or waive`. Line 53's `>` → `>=` survives (the note on the line says so,
+   `> → >= survives · kill / waive`): no test notices the boundary. You decide it matters. `kill`
+   (`<leader>mk`) opens a new test stub; you write its name and assertion; the arrangement is
    drafted and verified both ways (it passes on your code and fails on the mutant).
 5. `clean ✓ accept`. `accept`: the highlight goes, and one line lands in the step log. Or you waive
-   a survivor with a one-line reason, edit the span by hand (the test reruns on a pause), ask for
+   a survivor with a one-line reason (`<leader>mw`), edit the span by hand (the test reruns on a pause), ask for
    the `next` candidate, or `reject` to put the body back as it was.
 
 ## Try it
@@ -51,12 +53,13 @@ def test_closes_a_table() -> None:
 
 Open it in Neovim with durandal.nvim, cursor on the test, `<leader>mb`. With a `[model]`
 configured ([chapter 12](12-holes-and-models.md)), the draft follows at once; with none, write
-the body yourself: the block still tests and judges it.
+the body yourself: the circle still tests and judges it.
 
 ## The moves
 
-`:DurandalBlock MOVE`, and each one in the ⚡ menu (`Block: MOVE`, first while a block is
-pending). The HUD's state says which are open.
+`:DurandalCircle MOVE` (`:DurandalBlock` is the same command), and each one in the ⚡ menu
+(`Circle: MOVE`, first while a magic circle is open). The HUD's state says which are open, and
+its last words are the next step when it is yours (`· draft`, `· kill or waive`, `✓ accept`).
 
 | move | key | when | what it does |
 |---|---|---|---|
@@ -64,8 +67,8 @@ pending). The HUD's state says which are open.
 | `draft` | | red or green, no draft yet | the span as a hole a model fills, verified by the block's test (below) |
 | `next` | `<leader>mn` | after a draft | another candidate; the drafts so far go to the model as *not this, rejected by the person* |
 | `test` | | red, green, can't run | run the block's test on the buffer's text now |
-| `kill` | | a survivor on the cursor's line | a test stub at the end of the test file, in its own block |
-| `waive` | | a survivor on the cursor's line | asks why (`vim.ui.input`); writes the reason on the line |
+| `kill` | `<leader>mk` | judged, a survivor stands | the survivor on the cursor's line, or the top-ranked one when the line has none: a test stub at the end of the test file, in its own circle |
+| `waive` | `<leader>mw` | a survivor on the cursor's line | asks why (`vim.ui.input`); writes the reason on the line |
 | `accept` | `<leader>my` | judged, no unwaived survivor | done: the block's marks go |
 | `reject` | `<leader>mx` | any time | the file's text as it was when the block began |
 
@@ -75,8 +78,8 @@ arriving after you typed is not applied: your text stands. A draft that fails pu
 as it was, tested again first if you typed while the model wrote. Typing outside the span does
 nothing.
 
-**One block per file.** A second `begin` in a file with a pending block is refused (`a block is
-pending in this file: accept or reject it first`).
+**One magic circle per file.** A second `begin` in a file where a circle is open is refused (`a
+magic circle is open in this file: accept or reject it first`).
 
 ## The forcing
 
@@ -117,7 +120,7 @@ A survivor is a warning on its line, with the mutation at the end of it:
         if input.party > table.seats:          > → >= survives
 ```
 
-**Kill** it: `:DurandalBlock kill` on that line opens the stub at the end of the test file, the
+**Kill** it: `<leader>mk` (`:DurandalCircle kill`) on that line opens the stub at the end of the test file, the
 cursor on its name:
 
 ```python
@@ -126,12 +129,12 @@ def test_name() -> None:
     assert ...
 ```
 
-Type the name and the assertion (`Tab` walks them), then `:DurandalBlock draft` in the test file.
+Type the name and the assertion (`Tab` walks them), then `:DurandalCircle draft` in the test file.
 The arrangement is drafted and verified both ways: the new test, and every test that passed
 before, must pass on your code, and the new test must fail with the mutant in place (a sibling
 test that was red before is passed over). `accept` the test, and the code block is judged again without that survivor.
 
-**Waive** it: `:DurandalBlock waive` asks why, and the reason goes on the line, in the style of
+**Waive** it: `<leader>mw` (`:DurandalCircle waive`) asks why, and the reason goes on the line, in the style of
 rules' allowances:
 
 ```python
@@ -147,7 +150,8 @@ With a decision model configured (`[decide] model = "<a backend name>"`, [chapte
 each survivor gets two questions in the background: *is it equivalent to the original?*
 (`mutant-equivalent`: an equivalent one is dimmed, a hint rather than a warning, and listed last)
 and *how much does it matter?* (`mutant-matters`: high first). The block is pushed again as the
-answers land. Without one, survivors stay in file order.
+answers land. Without one, survivors stay in file order. `kill` off a survivor's line takes the
+first unwaived survivor in this order.
 
 The questions are typed (a fixed set of options; "unsure" always allowed; an answer outside the
 options changes nothing) and the decision model never writes code. Today any backend from
@@ -157,11 +161,12 @@ are shaped for, but no Jev backend exists yet.
 
 ## The step log
 
-Each move appends one line to `.olifant/state/steps.log`: time, block, move, who, result.
+Each move appends one line to `.olifant/state/steps.log`: time, block (the circle's number), move,
+who, result.
 (`olifant init` puts `.olifant/state/` in `.gitignore`; in a project made before, add it.)
 
 ```
-2026-10-13T04:06:42Z	block 1	begin	person	▸ test_closes_a_table · red: NotImplementedError: …
+2026-10-13T04:06:42Z	block 1	begin	person	▸ test_closes_a_table · red: NotImplementedError: … · draft
 2026-10-13T04:06:43Z	block 1	draft	qwen3-coder:30b	green
 2026-10-13T04:06:44Z	block 1	test	person	green
 2026-10-13T04:06:44Z	block 1	judge	mutation	1/1 killed
@@ -215,7 +220,8 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 - **An edit above the span leaves it stale** until the next test of the block: its lines are where
   they were.
 - **A line with several survivors is waived together**, one reason for each operator's comment.
-- **Waive and kill act on the cursor's line**, not on one survivor of several there.
+- **Waive acts on the cursor's line**, not on one survivor of several there. **Kill takes the
+  survivor on the cursor's line**, or the top-ranked one when the line has none.
 - **Mutants are capped at 20** per block; a long body is judged in part.
 
 ## Mistakes
@@ -225,8 +231,8 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
   write the test where the message says, then begin on it.
 - **`name the new test first`** — `draft` on a stub whose name is still the stub's (`test_name`):
   type it (and the assertion), then draft.
-- **`the block moved on`** — a draft, a test or a judge finished after you rejected or accepted
-  the block, or after another move (a later edit's test): nothing lands, and the step log says
+- **`the magic circle moved on`** — a draft, a test or a judge finished after you rejected or
+  accepted the circle, or after another move (a later edit's test): nothing lands, and the step log says
   `stale:` before what it would have been.
 - **`your edit is being tested; waive once its verdict lands`** (or `accept`) — you typed in the
   span and its test has not landed yet (or the pause before it has not run): the survivors you
@@ -234,11 +240,12 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
   verdict shows.
 - **`a draft is in flight; wait for it, then test or press next`** — `test` while the model
   writes: the draft's own test settles the block.
+- **`no survivor left to kill`** — `kill` with every survivor waived (or none): `accept`.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a block starts
   from what is red. Begin in the function instead to judge it.
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a
   missing name). Fix it, then `test`.
-- **`no model is configured`** — `draft` with no `[model]`: write the body; the block still judges
-  it.
+- **`no model is configured`** — `draft` with no `[model]`: write the body; the magic circle still
+  judges it.
 - **`the buffer changed while drafting; your text stands`** — you typed while the model wrote. Ask
   again with `draft` or `next`, or keep typing.
