@@ -36,7 +36,7 @@ import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (noChecker, noRunner, noSyntax)
 import Olifant.Language.Check (noVerifier)
-import Olifant.Process (cancelled, gitStateStamp)
+import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
 import Olifant.Server
 import Olifant.Workspace (Workspace (..), memoryWorkspace)
@@ -739,6 +739,15 @@ blockSpecs = describe "blocks" $ do
     Just (b, _) <- blockFor (root </> moduleRel) s
     blockOn b `shouldBe` newer
     blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(M-3) a test whose work was cancelled (a newer edit's test supersedes it) settles nothing" $ do
+    (s0, _) <- blocks redOnStub []
+    let s = openDoc (root </> moduleRel) 1 stubbed s0
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    (token, trip) <- newCancel
+    trip
+    (_, tested) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s) {ssCancel = token}
+    tested `shouldSatisfy` either (const True) (const False)
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
   it "(N1) a draft that fails, then an edit: the edit is tested" $ do
     (s0, _) <- blocks redOnStub []
     (filler, _, release) <- stalledFiller

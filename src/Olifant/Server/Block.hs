@@ -60,6 +60,7 @@ import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (.
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
+import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor)
 import Olifant.Server.Edits (FileEdit (..), editsOfPlan, smallestChange)
 import Olifant.Server.BlockJev (orderSurvivors)
@@ -377,7 +378,10 @@ testNow s root project lang b killed applied = do
               Just (c, k) | blockId c == blockId b, not (isDrafting (blockState c)), seen == Just now -> settleOn s root k "test" result (Just now) move c
               _ -> pure (Left moved)
           landed -> pure landed
-  runOver s ws lang ids >>= \case
+  ran <- runOver s ws lang ids
+  -- work cancelled (a newer edit's test superseded it) is no result: nothing settles
+  stopped <- cancelled (ssCancel s)
+  if stopped then pure (Left "the test was cancelled; a newer one runs") else case ran of
     -- a runner that cannot start is a test that cannot run: never judged
     Left why -> settleTest ("cannot run: " <> why) (CannotRun why)
     Right run -> do
@@ -457,7 +461,8 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
                  Right base
                    | Just why <- trBroken base -> pure (Left why)
                    | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
-    case verdicts of
+    stopped <- cancelled (ssCancel s)
+    if stopped then pure (Left "the judge was cancelled; a newer test runs") else case verdicts of
       Left why -> settleOn s root killedBefore "judge" ("cannot run: " <> why) (Just now) (CannotRun why) b
       Right vs -> do
         let surviving = [m | (m, Survived) <- vs]
