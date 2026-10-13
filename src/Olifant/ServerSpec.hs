@@ -211,6 +211,12 @@ blockSpecs = describe "blocks" $ do
     (tb2, unchanged, opened2) <- start already
     unchanged `shouldBe` already
     T.splitOn "\n" opened2 !! (fst (blockSpan tb2) - 1) `shouldBe` "def test_kills_the_boundary() -> None:"
+    -- an import over several lines (parenthesised) has it already, or gains it inside
+    let wrapped names = T.replace "import CloseTable\n" ("import (\n" <> T.concat ["    " <> n <> ",\n" | n <- names] <> ")\n") testText
+    (_, kept, _) <- start (wrapped ["CloseTable", "Reopen"])
+    kept `shouldBe` wrapped ["CloseTable", "Reopen"]
+    (_, joined, _) <- start (wrapped ["CloseTable"])
+    joined `shouldBe` wrapped ["CloseTable", "Reopen"]
     -- a file with no import yet: it goes first
     (_, top, _) <- start (T.unlines ["def test_other() -> None:", "    assert 1 == 1"])
     T.lines top `shouldBe` ["from shop.close_table import Reopen", "", "def test_other() -> None:", "    assert 1 == 1"]

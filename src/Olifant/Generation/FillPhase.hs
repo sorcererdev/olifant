@@ -326,6 +326,16 @@ merging m l = case (makeRegexM (T.unpack (mergePattern m)) :: Maybe Regex) of
     Just (AllTextSubmatches (_ : modu : names : _)) -> Just (T.pack modu, filter (not . T.null) (map T.strip (T.splitOn "," (T.pack names))))
     _ -> Nothing
 
+-- | The line at I and those up to the one closing the bracket it opens at
+-- its end, as one (each stripped), and the closing line's index.
+spanning :: [Text] -> Int -> Maybe (Text, Int)
+spanning ls i = case drop i ls of
+  l : rest
+    | "(" `T.isSuffixOf` T.stripEnd l
+    , (inner, close : _) <- break (T.isInfixOf ")") rest ->
+        Just (T.concat (map T.strip (l : inner ++ [close])), i + length inner + 1)
+  _ -> Nothing
+
 -- | A top-level import line, by the language's `imports`.
 isImportLine :: Language -> Text -> Bool
 isImportLine lang l = not (T.isPrefixOf " " l) && not (T.isPrefixOf "\t" l) && maybe False (`matches` l) (langImports lang)
@@ -350,6 +360,21 @@ addImports lang new t = case langImports lang of
             more -> case render (M.fromList [("module", VText modu), ("names", VText (T.intercalate ", " (have ++ more)))]) (mergeWrite m) of
               Right merged -> take i ls ++ [merged] ++ drop (i + 1) ls
               Left _ -> ls
+      -- one written over several lines (its bracket open at the end of its
+      -- first, closed lines later): its names read as one line's
+      | Just m <- langImportMerge lang
+      , Just (modu, names) <- merging m line
+      , (i, end, have) : _ <- [(i, end, ns) | (i, l) <- zip [0 :: Int ..] ls, i >= headerEnd ls, topLevel l, Just (joined, end) <- [spanning ls i], Just (mo, ns) <- [merging m joined], mo == modu] =
+          case filter (`notElem` have) names of
+            [] -> ls
+            -- the closing bracket on a line of its own: each name a line above it
+            more
+              | T.strip (ls !! end) == ")" ->
+                  let indent = if end - 1 > i then T.takeWhile (`elem` (" \t" :: String)) (ls !! (end - 1)) else "    "
+                   in take end ls ++ [indent <> n <> "," | n <- more] ++ drop end ls
+              | otherwise -> case render (M.fromList [("module", VText modu), ("names", VText (T.intercalate ", " (have ++ more)))]) (mergeWrite m) of
+                  Right merged -> take i ls ++ [merged] ++ drop (end + 1) ls
+                  Left _ -> ls
       | otherwise = case [i | (i, l) <- zip [0 :: Int ..] ls, i >= headerEnd ls, topLevel l, matches re l] of
           [] ->
             let (header, rest) = splitAt (headerEnd ls) ls
