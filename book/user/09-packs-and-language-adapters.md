@@ -226,7 +226,8 @@ example   = "end of struct BillingService"
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
-| `[check]` | `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
+| `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
+| `[test]` | how this language's tests run, for the incremental loop ([chapter 18](18-the-incremental-loop.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`), `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). See [below](#presets-check-and-test) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
@@ -285,11 +286,7 @@ branch = "{= pattern =} => {= body =},"
 # cargo, over the whole workspace (spec §5.6, §9). Diesel adapters need libpq
 # and the template's real db crate, so they are left out of the build.
 [check]
-command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}"]
-context = ["**/Cargo.toml", "Cargo.lock"]
-format  = "rustc-json"
-root      = ["Cargo.toml"]
-root_pick = "outermost"
+preset = "cargo"
 
 [targets.enum]
 phrase = "enum NAME"
@@ -298,11 +295,24 @@ items = { kind = "enum_variant" }
 example = "end of enum RefundInvoiceFailure"
 ```
 
+The `cargo` preset stands for
+
+```toml
+command   = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]
+context   = ["**/Cargo.toml", "Cargo.lock"]
+format    = "rustc-json"
+exclusive = true
+root      = ["Cargo.toml"]
+root_pick = "outermost"
+```
+
 - **No `{= files =}`.** cargo finds the sources itself, from the manifests, so `context`
   copies every `Cargo.toml` (and a `Cargo.lock`, when the project has one) beside the `.rs`
   files.
-- **`--target-dir {= cache =}`.** The scratch copy is new each round; the build directory is
-  not, so dependencies compile once per machine (`~/.cache/olifant/check/rust`).
+- **`--target-dir {= cache =}/target-{= context =}`.** The scratch copy is new each round; the
+  build directory is not, so dependencies compile once per machine and workspace shape
+  (`~/.cache/olifant/check/rust`). `exclusive`: cargo's build directory is not safe to share
+  between checks running at once.
 - **`root`, `root_pick = "outermost"`.** In a repository holding several Rust projects, a
   check runs in the Cargo workspace around the files it judges: the outermost folder with a
   `Cargo.toml` (a crate's own `Cargo.toml` sits inside the workspace's).
@@ -341,7 +351,17 @@ placeholder = 'raise NotImplementedError("{= message|python_string =}")'
 branch = "case {= pattern =}:\n    {= body =}"
 
 [check]
-command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
+preset = "pyright"
+
+[test]
+preset    = "pytest"
+tests_for = "{= dir =}/{= stem =}__test.py"
+```
+
+The `pyright` preset stands for
+
+```toml
+command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
 context = ["pyproject.toml", "uv.lock"]
 format  = "pyright-json"
 root    = ["pyproject.toml"]
@@ -356,10 +376,11 @@ root    = ["pyproject.toml"]
   project, so its version is pinned in `uv.lock`, and strict mode comes from the project's own
   `pyproject.toml` (`[tool.pyright] typeCheckingMode = "strict"`). `--frozen` uses the lock
   as it is and never rewrites it.
-- **`env UV_PROJECT_ENVIRONMENT={= cache =}/venv`.** The scratch copy is new each round, so
-  a `.venv` inside it would be built again every time. The environment lives in the cache
-  instead (`~/.cache/olifant/check/python/venv`), as cargo's build directory does, so only
-  the first check on a machine installs anything.
+- **`UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}`.** The scratch copy is new each
+  round, so a `.venv` inside it would be built again every time. The environment lives in the
+  cache instead (`~/.cache/olifant/check/python/venv-…`, one per `pyproject.toml` and
+  `uv.lock`), as cargo's build directory does, so only the first check on a machine installs
+  anything. The preset says it; a pack never does.
 - **The program is `uv`.** The command starts with `env`, so Olifant looks past it and its
   `NAME=value` settings to what it runs. Without `uv`, a `complete` edit says
   `` `uv` is not installed (needed to check python) ``, and `olifant doctor` says how to
@@ -477,6 +498,29 @@ Olifant never looks inside `.venv`, `__pycache__` or `.pytest_cache`, as it neve
 inside `node_modules` or `target` ([chapter 6](06-queries-and-choices.md)). The pack's
 fixture and tests are in [chapter 10](10-testing-generators.md#the-python-pack), and its two
 generators, chained in an editor, in [chapter 14](14-editors-and-actions.md#the-python-chain).
+
+### Presets: `[check]` and `[test]`
+
+A check or a test run needs Olifant's plumbing (its cache, a venv kept there, the tool's output
+format). A **preset** says it once, in Olifant, so a pack writes only what is its own:
+
+| table | preset | what it runs |
+|---|---|---|
+| `[check]` | `pyright` | `uv run pyright --outputjson` in the project's venv in Olifant's cache; `pyright-json`; rooted at `pyproject.toml` |
+| `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
+| `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml` |
+
+Any key you write beside `preset` wins over the preset's: `[check] preset = "pyright"` with your
+own `root = ["apps/web/pyproject.toml"]` keeps the rest. An unknown preset is a load error naming
+the known ones (`` `preset`: unknown test preset `jest`; expected one of pytest ``).
+
+`[test]` also says where a module's tests live: `tests_for`, a template of the module's folder
+(`{= dir =}`) and name without its extension (`{= stem =}`). The loop finds a module's test file
+by it, and a test file's module by it backwards.
+
+Tests run like checks: in a scratch copy of the project's files as the editor has them (nothing
+needs saving), rooted at the package around the tests (`root`). A run that cannot start (a test
+file that does not import, a collection error) is said apart from a red test.
 
 ### Hole kinds: `[holes.KIND]`
 

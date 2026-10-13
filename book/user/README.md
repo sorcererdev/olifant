@@ -8,7 +8,7 @@
 6. [Queries, `one_of` and `unless`](06-queries-and-choices.md)
 7. [Writing your own generator](07-writing-a-generator.md)
 8. [Composing generators: `+`, `--steps` and `[[uses]]`](08-composing-generators.md)
-9. [Packs and language adapters (Elm, Haskell, Rust and Python)](09-packs-and-language-adapters.md)
+9. [Packs and language adapters (Elm, Haskell, Rust and Python), presets, `[test]`](09-packs-and-language-adapters.md)
 10. [Testing generators: snapshots and blessing](10-testing-generators.md)
 11. [Olifant and AI agents](11-olifant-and-agents.md)
 12. [Holes and models](12-holes-and-models.md)
@@ -17,3 +17,4 @@
 15. [Conventions that hold: rules, exceptions, `olifant check` and the baseline](15-conventions-that-hold.md)
 16. [The language server: `olifant lsp`, projects across roots, what it answers, the project model](16-the-language-server.md)
 17. [Strangling a legacy codebase: `init --migrate`, `only = "new"`, extract and switches, retiring, the report, decisions](17-strangling-a-legacy-codebase.md)
+18. [The incremental loop: blocks, drafts, mutation, kill and waive, the step log, `[test]`](18-the-incremental-loop.md)

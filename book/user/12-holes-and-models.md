@@ -319,6 +319,24 @@ binding the name, or none, leave it to the model's retry. `--progress` reports i
 `{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the
 name from a message (`supportUndefined`; pyright's does, the others don't yet).
 
+### Drafts: the loop's holes
+
+The incremental loop ([chapter 18](18-the-incremental-loop.md)) drafts through the same fill
+phase: a draft is a model hole made on demand, of kind `block` over a function's body or
+`stmt` for a test's arrangement, so it is parsed, checked, auto-imported and retried as any hole
+is. Two things differ.
+
+- **The stance.** A draft's request asks for *the least code that makes this test pass and no
+  more: do not generalise beyond what the tests ask*. A constant is a good draft for one test;
+  the next test asks for more. Drafts the person rejected (`next`) go with the request as
+  *previous drafts (rejected by the person)*.
+- **The verifier is the block's.** A body is verified by its one test (it must pass). A test's
+  arrangement is verified the other way: the test must fail *at its assertion line* (an error in
+  the setup, or a pass with no code yet, is a failed draft). A kill's test must pass on the code
+  and fail with the mutant in place. Each failure goes back to the model as the reason, as a
+  `verify` command's output does; when the retries run out, the hole's placeholder is written and the
+  block stays red with the reason, to finish by hand.
+
 ### Retries with the reason
 
 A hole whose fill failed goes back to the model, in a new request holding only the failing
