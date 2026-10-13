@@ -47,6 +47,7 @@ library
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.App
+    Olifant.Block
     Olifant.Catalog
     Olifant.Cli
     Olifant.Cli.Options
@@ -91,6 +92,7 @@ library
     Olifant.Lsp
     Olifant.Migration
     Olifant.Model
+    Olifant.Mutate
     Olifant.Naming
     Olifant.Newness
     Olifant.Output
@@ -163,6 +165,8 @@ test-suite spec
     Olifant.AnchorSpec
     Olifant.App
     Olifant.AppSpec
+    Olifant.Block
+    Olifant.BlockSpec
     Olifant.Catalog
     Olifant.CatalogSpec
     Olifant.Cli
@@ -222,6 +226,8 @@ test-suite spec
     Olifant.MigrationSpec
     Olifant.Model
     Olifant.ModelSpec
+    Olifant.Mutate
+    Olifant.MutateSpec
     Olifant.Naming
     Olifant.NamingSpec
     Olifant.Newness
