@@ -848,6 +848,13 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       st `shouldSatisfy` \case [HoleUnfilled why] -> "does not notice the mutant" `T.isInfixOf` why; _ -> False
       st' <- outcome (VerifyKills "t" "src/M.elm" "mutant") (ran (TestRun [] [("t", red (Just 3))] Nothing))
       st' `shouldSatisfy` \case [HoleUnfilled why] -> "fails on the current code" `T.isInfixOf` why; _ -> False
+    it "(f) VerifyIds: runs exactly the tests named (a block's one test), not the module's test file" $ do
+      seen <- newIORef []
+      let runner = Runner (\_ ids _ -> modifyIORef' seen (++ ids) >> pure (Right (TestRun ids [] Nothing)))
+      outcome (VerifyIds ["src/V__test.elm::t"]) runner `shouldReturn` [HoleFilled "fake" 1]
+      readIORef seen `shouldReturn` ["src/V__test.elm::t"]
+      st <- outcome (VerifyIds ["t"]) (ran (TestRun [] [("t", red Nothing)] Nothing))
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "the tests failed" `T.isInfixOf` why && "AssertionError" `T.isInfixOf` why; _ -> False
   it "(q) a block whose continuation lines came one level too deep is read one level up, when that compiles (pack-opens)" $ do
     let blockLang = l
           where

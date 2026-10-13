@@ -79,11 +79,12 @@ data GeneratorWith src = Generator
 
 -- | How a hole's fill is verified: by a command (rendered, or its templates),
 -- or by the language's test runner over the module's tests (@verify = "tests"@).
--- Only the engine builds the last two (a draft's checks, never the TOML):
+-- Only the engine builds the last three (a draft's checks, never the TOML):
 -- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft);
 -- 'VerifyKills' wants it to pass on the files and fail with the mutant's
--- file (path, text) in place.
-data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId FilePath Text
+-- file (path, text) in place; 'VerifyIds' wants those tests (a block's one
+-- test) to pass, as 'VerifyTests' wants the module's.
+data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId FilePath Text | VerifyIds [TestId]
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef

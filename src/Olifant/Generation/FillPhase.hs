@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, projectFiles) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -119,19 +119,15 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           verified <- forM stood $ \(t, f) -> case (M.lookup (bare (name t)) verifyFor, langOf (holeFile (site t))) of
             (Just verify, Just lang) -> do
               toolProgress tools (Verifying (name t))
-              (scope, everything) <- projectFiles (with stood) lang [holeFile (site t)]
+              (scope, everything) <- projectFiles ws (with stood) lang [holeFile (site t)]
               outcome <- case verify of
                 VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
                 VerifyRedAt tid line -> verifyRedAt lang tid line everything
                 VerifyKills tid path mutated -> verifyKills lang tid path mutated everything
                 VerifyTests -> case langTest lang of
                   Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
-                  Just td -> runTestsIn (toolTester tools) lang [T.pack (testsForFile td (holeFile (site t)))] everything <&> \case
-                    Left why -> Left (CheckFailed why)
-                    Right run
-                      | Just why <- trBroken run -> Right (False, why)
-                      | null (trFailed run) -> Right (True, "")
-                      | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
+                  Just td -> verifyTests lang [T.pack (testsForFile td (holeFile (site t)))] everything
+                VerifyIds ids -> verifyTests lang ids everything
               let failedPrefix = case verify of
                     VerifyRedAt {} -> ""
                     VerifyKills {} -> ""
@@ -155,6 +151,15 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
             _ -> h
           warnings = ["holes were filled but not compile-checked: " <> n | n <- nub notes, not (M.null accepted)]
        in (applyFills langOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
+
+    -- The tests (a module's file, or a block's one test) must pass.
+    verifyTests lang ids everything =
+      runTestsIn (toolTester tools) lang ids everything <&> \case
+        Left why -> Left (CheckFailed why)
+        Right run
+          | Just why <- trBroken run -> Right (False, why)
+          | null (trFailed run) -> Right (True, "")
+          | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
 
     -- A test draft: the test must fail, and at exactly its assertion line.
     verifyRedAt lang tid line everything =
@@ -255,22 +260,24 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
       let names = nub [langName l | s <- sites, Just l <- [languageFor (toolLanguages tools) (holeFile s)], isJust (langCheck l)]
           langs = [l | l <- toolLanguages tools, langName l `elem` names]
       foldM (\(acc, note) lang -> (\(b, n) -> (M.unionWith (++) acc b, maybe note Just n)) <$> checkLang files lang [holeFile s | s <- sites, fmap langName (languageFor (toolLanguages tools) (holeFile s)) == Just (langName lang)]) (M.empty, Nothing) langs
-    -- The language's files and its check's context, from disk, with the
-    -- plan's versions over them: what a check (or a verify) runs over.
-    -- Only the judged files' package ([check] root): its scope, and its
-    -- files by project path.
-    projectFiles files lang judged = do
-      paths <- listFiles ws "."
-      let (scope, chosen) = checkScope lang (nub (paths ++ M.keys files)) judged
-          wanted = S.fromList chosen
-      disk <- forM [p | p <- chosen, M.notMember p files] (\p -> (p,) <$> readText ws p)
-      pure (scope, M.union (M.filterWithKey (\p _ -> p `S.member` wanted) files) (M.fromList [(p, t) | (p, Just t) <- disk]))
     checkLang files lang judged = do
-      (scope, all') <- projectFiles files lang judged
+      (scope, all') <- projectFiles ws files lang judged
       toolProgress tools (Checking (langName lang))
       runCheckIn (toolChecker tools) lang scope all' >>= \case
         Left f -> pure (M.empty, Just (describeCheckFailure f)) -- parse validation stands; the plan says so
         Right report -> pure (M.fromListWith (flip (++)) [(p, [T.pack p <> ": " <> why]) | (p, why) <- reportBroken report], Nothing)
+
+-- | The language's files and its check's context, from disk, with FILES
+-- (a plan's versions) over them: what a check, a verify or a test run runs
+-- over. Only the judged files' package ([check] root): its scope, and its
+-- files by project path.
+projectFiles :: Monad m => Workspace m -> Map FilePath Text -> Language -> [FilePath] -> m (FilePath, Map FilePath Text)
+projectFiles ws files lang judged = do
+  paths <- listFiles ws "."
+  let (scope, chosen) = checkScope lang (nub (paths ++ M.keys files)) judged
+      wanted = S.fromList chosen
+  disk <- forM [p | p <- chosen, M.notMember p files] (\p -> (p,) <$> readText ws p)
+  pure (scope, M.union (M.filterWithKey (\p _ -> p `S.member` wanted) files) (M.fromList [(p, t) | (p, Just t) <- disk]))
 
 -- | Every fill in place of its placeholder. Placeholders name their hole
 -- (adapters must use @{= hole =}@), so each is found by its text wherever
