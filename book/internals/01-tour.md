@@ -2368,8 +2368,9 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   decisions; each answer that lands reorders and pushes the block (`ssOnBlock`).
 - **`Server/Tests`** runs a file's tests whole, outside any block (`olifant/tests/run`):
   `testsRun` takes a module to its test file (`testsForFile`) and a test file to itself, and runs
-  that file as one id with `Server/Block.runOver` over the snapshot's documents, timed; a runner
-  that cannot start is a broken run. `testsJson` is the answer the editor reads.
+  that file as one id with `Server/Block.runOver` over the snapshot's documents, timed; a test file
+  whose module is gone (`testShaped`: named as `tests_for` names test files) runs itself; a runner
+  that cannot start is a broken run, and `Lsp` answers a run the editor cancelled `RequestCancelled`. `testsJson` is the answer the editor reads.
 - **`Lsp`** has one `blockRequest` per move, in the background like the other slow requests; every
   block a move changed is pushed as `olifant/block`, and `didChange` that edits a block's span
   (`blockEdited`, against the text last tested) submits `blockLater` (the debounce; a newer such
