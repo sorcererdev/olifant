@@ -31,7 +31,8 @@ import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Data.List (nub)
 import Olifant.Anchor (astQueries)
 import Olifant.Query (Queries (..), processCommand)
-import Olifant.Language (Checker, Syntax, processVerifier)
+import Olifant.Language (Checker, Syntax, processRunner, processVerifier)
+import Olifant.Process (neverCancel)
 import Olifant.Toml qualified as Toml
 import Olifant.Workspace (PathState (..), Workspace (..), memoryWorkspace)
 import System.FilePath (dropTrailingPathSeparator, splitDirectories, takeDirectory, (</>))
@@ -144,7 +145,7 @@ preparePack root syntax checker packRoot pack generator overlay =
             fixture <- forM fixturePaths $ \p -> (p,) . fromMaybe "" <$> readText root (fixtureDir </> p)
             (ws, _) <- memoryWorkspace (M.toList (M.fromList overlay `M.union` M.fromList fixture))
             let queries = Queries {queryCommand = processCommand fixtureDir, queryAst = astQueries syntax (catalogLanguages cat), queryUncovered = \_ -> pure (Right [])}
-                tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries, toolVerifier = processVerifier}
+                tools = (basicTools syntax checker (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = queries, toolVerifier = processVerifier, toolTester = processRunner neverCancel 120}
             pure (Right (ws, tools, resolver root syntax cat, gen))
   where
     -- the pack, and the packs its generators' [[uses]] name (beside it)

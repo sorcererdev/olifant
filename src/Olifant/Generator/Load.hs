@@ -64,7 +64,7 @@ parseGenerator gid src = do
   name <- optional "name" text top
   holeTables <- maybe (Right []) (pure . M.toList) =<< optional "holes" (shaped "[holes.NAME] tables, one per hole" table) top
   holes <- traverse (\(k, v) -> inKey ("holes." <> k) ((k,) <$> (table v >>= holeSourceFrom))) holeTables
-  verify <- fmap concat . traverse (\(k, v) -> inKey ("holes." <> k) (table v >>= \t -> maybe [] (\vs -> [(k, vs)]) <$> optional "verify" (list (text >=> tmpl)) t)) $ holeTables
+  verify <- fmap concat . traverse (\(k, v) -> inKey ("holes." <> k) (table v >>= \t -> maybe [] (\vs -> [(k, vs)]) <$> optional "verify" verifyFrom t)) $ holeTables
   -- `starter`: the pack's project generator; `next`: what to run after `olifant init`
   starter <- fromMaybe False <$> optional "starter" bool top
   recognize <- fromMaybe True <$> optional "recognize" bool top
@@ -224,6 +224,14 @@ scalarDefault = \case
 
 deriveFrom :: Table -> Either Text [(Text, Template)]
 deriveFrom tbl = traverse (\(k, v) -> inKey ("derive." <> k) ((,) k <$> (text v >>= tmpl))) (M.toList tbl)
+
+-- | A hole's @verify@: a command (a list of templates), or the string
+-- @"tests"@, the language's own test runner over the module's tests.
+verifyFrom :: Tree -> Either Text (Verify [Template])
+verifyFrom = \case
+  TText "tests" -> Right VerifyTests
+  TText other -> Left ("expected a command (a list) or \"tests\", got \"" <> other <> "\"")
+  v -> VerifyCommand <$> list (text >=> tmpl) v
 
 holeSourceFrom :: Table -> Either Text HoleSource
 holeSourceFrom t = do

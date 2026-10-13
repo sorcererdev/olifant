@@ -63,7 +63,7 @@ data PlanItem
   | -- | a `[requires] holds` that rendered empty: the hint
     PlanRefuse StepPath Text
   | -- | a hole's `verify` command, rendered (the hole's name, argv)
-    PlanVerify Text [Text]
+    PlanVerify Text (Verify [Text])
   | PlanEdit StepPath RenderedEdit
   | -- | globs of files the model sees when filling (a generator's `context`)
     PlanContext [Text]
@@ -97,7 +97,7 @@ expand resolve bindQ choose now prior ancestors path gen0 sets = do
   context <- except (first (StepTemplate path) (traverse (render env) (genContext gen)))
   -- {= cache =} and {= context =} are the verifier's to expand (as a check's)
   let verifyEnv = M.union env (M.fromList [("cache", VText "{= cache =}"), ("context", VText "{= context =}")])
-  verifies <- except (first (StepTemplate path) (traverse (\(n, ts) -> (n,) <$> traverse (render verifyEnv) ts) (genVerify gen)))
+  verifies <- except (first (StepTemplate path) (traverse (\(n, v) -> (n,) <$> traverse (traverse (render verifyEnv)) v) (genVerify gen)))
   let own = map (PlanEdit path) rendered
   -- Each use sees what the run, this generator and earlier uses create.
   nested <- foldM (\acc (k, u) -> (acc ++) <$> expandUse env (prior ++ created (own ++ acc)) k u) [] (zip [1 :: Int ..] (genUses gen))

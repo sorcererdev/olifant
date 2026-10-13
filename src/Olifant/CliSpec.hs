@@ -22,7 +22,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
-import Olifant.Language (Syntax, noChecker, noSyntax, noVerifier)
+import Olifant.Language (Syntax, noChecker, noRunner, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -226,7 +226,7 @@ runInBaseFiles syntax base baseFiles dir stdinText files tty args = do
         , rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], ["src/b.x"]))
         , rtDoctor = DoctorPorts (\e -> pure (if take 4 e == "nope" then Nothing else Just ("/bin/" <> e))) (pure "/usr/bin") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = base, rtBaseFiles = baseFiles, rtBaseStamp = \_ _ -> pure ""
-        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier
+        , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = const noRunner
         }
       args
   (,,,) code <$> readIORef out <*> readIORef err <*> snapshot
@@ -251,7 +251,7 @@ runInitWith committed files args = do
         , rtSyntax = noSyntax, rtChecker = const noChecker
         , rtGitChanged = \_ _ -> pure (Right ([], []))
         , rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
-        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier
+        , rtGitInit = \d m -> modifyIORef' gits (++ [(d, m)]) >> pure committed, rtVerifier = const noVerifier, rtTester = const noRunner
         }
       args
   (,,,,) code <$> readIORef out <*> readIORef err <*> snapshot <*> readIORef gits

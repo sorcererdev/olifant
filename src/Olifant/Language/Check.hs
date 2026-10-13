@@ -13,6 +13,8 @@ module Olifant.Language.Check
   , processVerifier
   , processVerifierWith
   , processVerifierCancellable
+  , processRunner
+  , runTestsIn
   , compileClean
   , checkProgram
   , contextKey
@@ -41,7 +43,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), Language (..), matchesGlob)
+import Olifant.Language.Adapter (CheckDef (..), Language (..), TestDef (..), matchesGlob)
+import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Language.Support (supportFor)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
@@ -97,6 +100,38 @@ processVerifierCancellable token secs = Verifier $ \lang argv files -> case (arg
           Right TimedOut -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
           Right (Finished code out err) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
 
+-- | The language's test command over a scratch copy of the files (as a
+-- verify runs, with @{= cache =}@ and @{= context =}@; the one argument
+-- @{= tests =}@ becomes the test ids), stopped after @secs@ seconds, its
+-- report read by the test format.
+processRunner :: Cancel -> Int -> Runner IO
+processRunner token secs = Runner $ \lang ids files -> case langTest lang of
+  Nothing -> pure (Left (langName lang <> " has no [test] in its adapter"))
+  Just td -> case (testCommand td, checkProgram (testCommand td)) of
+    ([], _) -> pure (Left "empty test command")
+    (_, Nothing) -> pure (Left "the test command runs no program")
+    (exe : args, Just program) ->
+      (findExecutable (T.unpack program) >>= \case
+        Nothing -> pure Nothing
+        Just _ -> findExecutable (T.unpack exe)) >>= \case
+        Nothing -> pure (Left ("`" <> program <> "` is not installed (needed to run the tests)"))
+        Just path -> withSystemTempDirectory "olifant-test" $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          forM_ (M.toList files) $ \(p, t) -> do
+            createDirectoryIfMissing True (takeDirectory (tmp </> p))
+            BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
+          cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
+          createDirectoryIfMissing True cache
+          let ctx = contextKeyOf (testContext td) files
+              expand a
+                | T.strip a == "{= tests =}" = map T.unpack ids
+                | otherwise = [T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))]
+          runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" <&> \case
+            Left why -> Left why
+            Right Cancelled -> Left "cancelled"
+            Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show secs) <> " s)")))
+            Right (Finished code out err) -> Right (parsePytest code (TE.decodeUtf8With lenientDecode (out <> err)))
+
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))
 
@@ -133,8 +168,12 @@ processCheckerWith token = Checker $ \lang files -> case langCheck lang of
 -- files (pyproject.toml, uv.lock…), so each project and lockfile gets its own
 -- environment in the cache, and a changed lock a fresh one.
 contextKey :: CheckDef -> Map FilePath Text -> Text
-contextKey check files =
-  let ctx = [(p, t) | (p, t) <- M.toAscList files, any (`matchesGlob` p) (checkContext check)]
+contextKey check = contextKeyOf (checkContext check)
+
+-- | 'contextKey' of the context globs themselves (a [test] has its own).
+contextKeyOf :: [Text] -> Map FilePath Text -> Text
+contextKeyOf globs files =
+  let ctx = [(p, t) | (p, t) <- M.toAscList files, any (`matchesGlob` p) globs]
       bytes = BS.unpack (TE.encodeUtf8 (T.concat [T.pack p <> "\0" <> t <> "\0" | (p, t) <- ctx]))
       fnv = foldl (\h b -> (h `xor` fromIntegral b) * 1099511628211) (14695981039346656037 :: Word64) bytes
    in T.pack (take 12 (showHex fnv ""))
@@ -251,13 +290,20 @@ checkScope lang paths judged = (scope, [p | p <- paths, Just rel <- [inside scop
   where
     check = langCheck lang
     globs = langFiles lang ++ maybe [] checkContext check
+    scope = packageScope (maybe [] checkRoot check) (maybe False checkRootOutermost check) paths judged
+
+-- | The package of the judged files: the nearest folder (or the outermost)
+-- holding one of the root markers; the project, "", when there is none or
+-- the files sit in different packages.
+packageScope :: [Text] -> Bool -> [FilePath] -> [FilePath] -> FilePath
+packageScope roots outermost paths judged = case nub (map packageOf judged) of
+  [one] -> one
+  _ -> ""
+  where
     present = S.fromList paths
-    scope = case nub (map packageOf judged) of
-      [one] -> one
-      _ -> ""
-    packageOf f = case [d | d <- ancestors (takeDirectory f), any (\m -> joined d (T.unpack m) `S.member` present) (maybe [] checkRoot check)] of
+    packageOf f = case [d | d <- ancestors (takeDirectory f), any (\m -> joined d (T.unpack m) `S.member` present) roots] of
       [] -> ""
-      nearest : further -> if maybe False checkRootOutermost check then foldl (\_ d -> d) nearest further else nearest
+      nearest : further -> if outermost then foldl (\_ d -> d) nearest further else nearest
     -- nearest first, the project ("") last
     ancestors d
       | d `elem` [".", "", "/"] = [""]
@@ -284,6 +330,21 @@ runVerifyIn verifier lang scope argv files = runVerify verifier lang (map fromSc
     fromScope a
       | null scope = a
       | otherwise = maybe a T.pack (inside scope (T.unpack a))
+
+-- | The tests (ids of the project) run inside the judged files' package
+-- (the nearest folder with one of the language's @[test] root@ markers): the
+-- runner sees ids and files from that scope; the ids it reports say project
+-- paths again.
+runTestsIn :: Monad m => Runner m -> Language -> [TestId] -> Map FilePath Text -> m (Either Text TestRun)
+runTestsIn runner lang ids files = fmap (upTo scope) <$> runTests runner lang (map fromScope ids) (into scope files)
+  where
+    scope = packageScope (maybe [] testRoot (langTest lang)) False (M.keys files) (map (T.unpack . T.takeWhile (/= ':')) ids)
+    fromScope a
+      | null scope = a
+      | otherwise = maybe a T.pack (inside scope (T.unpack a))
+    upTo "" run = run
+    upTo sc run = run {trPassed = map up (trPassed run), trFailed = [(up i, f) | (i, f) <- trFailed run]}
+      where up i = T.pack sc <> "/" <> i
 
 into :: FilePath -> Map FilePath Text -> Map FilePath Text
 into "" files = files

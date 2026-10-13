@@ -66,6 +66,8 @@ data Runtime = Runtime
     rtGitInit :: FilePath -> Text -> IO (Either Text ())
   , -- | runs a hole's `verify` command (its tests) in a scratch copy
     rtVerifier :: Cancel -> Verifier IO
+  , -- | runs a hole's tests (`verify = "tests"`) with the language's test runner
+    rtTester :: Cancel -> Runner IO
   , -- | the files git tracks under a folder (what a project already had)
     rtTracked :: FilePath -> IO (Maybe (Set FilePath))
   , -- | a file's text at the base (see 'pBaseText')
@@ -722,7 +724,7 @@ modelFor cat g
 
 -- | The engine's ports, as the CLI runs them.
 portsOf :: Runtime -> Ports
-portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt) (rtBaseStamp rt)
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtTester rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt) (rtBaseStamp rt)
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project

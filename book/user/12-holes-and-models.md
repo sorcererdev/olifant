@@ -293,12 +293,17 @@ usually its tests:
 ```toml
 [holes.body]
 source = "model"
-verify = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "src/bistro/booking/commands/cancel_booking__test.py"]
+verify = "tests"
 ```
+
+`verify = "tests"` runs the language's `[test]` runner (python's is `preset = "pytest"`)
+over the tests of the module the hole is in (the `tests_for` template: `close_table.py`'s
+are `close_table__test.py`), and tells the model which test failed and where. A command
+is the general form: `verify = ["pytest", "-q", "src/bistro/booking/commands/cancel_booking__test.py"]`.
 
 After a fill parses and compiles, Olifant runs the command in a scratch copy of the project
 (the language's files and its check's context, with every standing fill in place), as a
-check runs, with `{= cache =}` and `{= context =}`. Exit 0: the fill stands. Otherwise the
+check runs. Exit 0 (or no failing test): the fill stands. Otherwise the
 last 40 lines of what it printed go back to the model as "the tests failed: …", and it
 retries; when the retries run out the hole keeps its placeholder, with that output as the
 reason. A command that runs past 120 seconds is stopped ("the tests timed out (120 s)").

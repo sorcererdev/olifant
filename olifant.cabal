@@ -87,6 +87,7 @@ library
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Language.Test
     Olifant.Lsp
     Olifant.Migration
     Olifant.Model
@@ -213,6 +214,7 @@ test-suite spec
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Language.Test
     Olifant.LanguageSpec
     Olifant.Lsp
     Olifant.LspSpec

@@ -22,6 +22,7 @@ module Olifant.Generator.Definition
   , ListItem (..)
   , FieldSpec (..)
   , HoleSource (..)
+  , Verify (..)
   , describeHoleSource
   ) where
 
@@ -66,8 +67,8 @@ data GeneratorWith src = Generator
     -- this generator's holes, e.g. the models a codec reads
     genContext :: [Template]
   , -- | `[holes.NAME] verify`: per model hole, a command its fill must pass
-    -- (its tests), templates over the generator's values
-    genVerify :: [(Text, [Template])]
+    -- (its tests), templates over the generator's values; or `"tests"`
+    genVerify :: [(Text, Verify [Template])]
   , -- | `recognize` (default true): whether hand-written code may be
     -- recognised as this generator's (convention recognition)
     genRecognize :: Bool
@@ -75,6 +76,11 @@ data GeneratorWith src = Generator
     genSummary :: Maybe Text
   }
   deriving stock (Show, Functor, Foldable, Traversable)
+
+-- | How a hole's fill is verified: by a command (rendered, or its templates),
+-- or by the language's test runner over the module's tests (@verify = "tests"@).
+data Verify cmd = VerifyCommand cmd | VerifyTests
+  deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef
 

@@ -274,7 +274,7 @@ parseSpec = describe "parseGenerator" $ do
     let withHoles extra = parseGenerator (GeneratorId "p/s") (T.unlines (["description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"{= ? V: ident | v =} {= ? b: block | b =}\""] ++ extra))
     it "reads a model hole's verify command; refuses verify on a tab stop (pack-opens)" $ do
       let verifying src = parseGenerator (GeneratorId "p/s") (T.unlines (["description = \"d\"", "language = \"x\"", "[[edits]]", "create = \"a\"", "text = \"{= ? b: block | b =}\""] ++ src))
-      fmap (map (fmap length) . genVerify) (verifying ["[holes.b]", "source = \"model\"", "verify = [\"pytest\", \"{= x =}\"]"]) `shouldBe` Right [("b", 2)]
+      fmap (map (fmap (fmap length)) . genVerify) (verifying ["[holes.b]", "source = \"model\"", "verify = [\"pytest\", \"{= x =}\"]"]) `shouldBe` Right [("b", VerifyCommand 2)]
       verifying ["[holes.b]", "source = \"yours\"", "verify = [\"pytest\"]"] `shouldSatisfy` either ("`verify` is for model holes" `T.isInfixOf`) (const False)
     it "(a) reads yours and derived (model is the default)" $
       fmap (map (fmap describeHoleSource) . genHoles) (withHoles ["[holes.V]", "source = \"yours\"", "[holes.b]", "source = \"derived\"", "value = \"pending\""])

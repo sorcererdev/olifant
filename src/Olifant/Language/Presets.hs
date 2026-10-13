@@ -20,6 +20,16 @@ presets :: Map (Text, Text) Table
 presets =
   M.fromList
     [ (("check", "pyright"), M.fromList (("command", TList (uv ["pyright", "--outputjson"])) : ("format", TText "pyright-json") : pyProject))
+    , ( ("check", "cargo")
+      , M.fromList
+          [ ("command", TList (map TText ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]))
+          , ("context", TList [TText "**/Cargo.toml", TText "Cargo.lock"])
+          , ("format", TText "rustc-json")
+          , ("exclusive", TBool True)
+          , ("root", TList [TText "Cargo.toml"])
+          , ("root_pick", TText "outermost")
+          ]
+      )
     , (("test", "pytest"), M.fromList (("command", TList (uv ["pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"])) : ("format", TText "pytest") : pyProject))
     ]
 

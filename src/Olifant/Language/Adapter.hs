@@ -25,7 +25,7 @@ import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.Presets (applyPreset)
 import Olifant.Language.Rule
-import Olifant.Language.Support (knownFormats)
+import Olifant.Language.Support (knownFormats, knownTestFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
 import Olifant.Toml
@@ -170,7 +170,6 @@ parseLanguage name packRoot src = do
       if format `elem` knownTestFormats then Right () else Left ("`format`: unknown test format `" <> format <> "`; expected one of " <> T.intercalate ", " knownTestFormats)
       TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
-    knownTestFormats = ["pytest"]
     checkFrom t0 = do
       onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent"] t0
       t <- applyPreset "check" t0

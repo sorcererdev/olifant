@@ -13,7 +13,7 @@ import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
 import Olifant.Generation.Tools (Verifier (..))
 import Olifant.Language.Check (noVerifier, processVerifierWith)
-import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noSyntax, parseLanguage, processChecker, processCheckerWith)
+import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noRunner, noSyntax, parseLanguage, processChecker, processCheckerWith)
 import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
@@ -283,7 +283,7 @@ spec = do
               , rtOut = \_ -> pure (), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = processCheckerWith
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
-              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = const noRunner }
         runCli rt ["init", "--pack", packs, "demo"] `shouldReturn` ExitSuccess
         env <- getEnvironment
         let project = dir </> "demo"
@@ -367,7 +367,7 @@ spec = do
               , rtOut = \t -> modifyIORef' out (<> t), rtErr = \_ -> pure ()
               , rtSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), rtChecker = const noChecker
               , rtGitChanged = \_ _ -> pure (Right ([], [])), rtDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), rtTracked = \_ -> pure Nothing, rtBaseText = \_ _ _ -> pure (Left "no base in tests"), rtBaseFiles = \_ _ -> pure (Left "no base"), rtBaseStamp = \_ _ -> pure ""
-              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier }
+              , rtGitInit = \_ _ -> pure (Right ()), rtVerifier = const noVerifier, rtTester = const noRunner }
         _ <- runCli rt ["check", "--file", close, "--json"]
         checked <- readIORef out
         checked `shouldSatisfy` T.isInfixOf "\"missing\":[\"port\"]"

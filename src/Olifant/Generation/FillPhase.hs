@@ -16,6 +16,7 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
+import Olifant.Generator.Definition (Verify (..))
 import Olifant.Generation.Plan (HoleStatus (..), PlannedHole (..))
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..), dedented)
@@ -29,7 +30,7 @@ import System.FilePath (splitDirectories)
 -- | A hole being tried: attempts so far and the previous (fill, why).
 data Try = Try {tryHole :: PlannedHole, tryAttempts :: Int, tryPrevious :: Maybe (Text, Text)}
 
-fillPhase :: Monad m => Workspace m -> Tools m -> Map Text [Text] -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
+fillPhase :: Monad m => Workspace m -> Tools m -> Map Text (Verify [Text]) -> [(Text, Text)] -> Map FilePath Text -> [PlannedHole] -> m (Map FilePath Text, [PlannedHole], [Text])
 fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   Nothing -> pure (base, holes, [])
   Just _ | null holes -> pure (base, holes, [])
@@ -116,10 +117,20 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           -- A hole with `verify`: its fill must also pass that command (its
           -- tests), run over the files with every standing fill in place.
           verified <- forM stood $ \(t, f) -> case (M.lookup (bare (name t)) verifyFor, langOf (holeFile (site t))) of
-            (Just argv, Just lang) -> do
+            (Just verify, Just lang) -> do
               toolProgress tools (Verifying (name t))
               (scope, everything) <- projectFiles (with stood) lang [holeFile (site t)]
-              runVerifyIn (toolVerifier tools) lang scope argv everything <&> \case
+              outcome <- case verify of
+                VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
+                VerifyTests -> case langTest lang of
+                  Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
+                  Just td -> runTestsIn (toolTester tools) lang [T.pack (testsForFile td (holeFile (site t)))] everything <&> \case
+                    Left why -> Left (CheckFailed why)
+                    Right run
+                      | Just why <- trBroken run -> Right (False, why)
+                      | null (trFailed run) -> Right (True, "")
+                      | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
+              pure $ case outcome of
                 Right (True, _) -> (t, f, Nothing)
                 Right (False, out) -> (t, f, Just ("the tests failed:\n" <> T.intercalate "\n" (lastN 40 (T.lines out))))
                 Left why -> (t, f, Just ("the tests could not run: " <> describeCheckFailure why))

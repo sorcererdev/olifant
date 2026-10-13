@@ -92,6 +92,8 @@ data Ports = Ports
   , -- | checks and verifies, stopped (their processes killed) when the token trips
     pChecker :: Cancel -> Checker IO
   , pVerifier :: Cancel -> Verifier IO
+  , -- | runs a hole's tests (`verify = "tests"`), killed when the token trips
+    pTester :: Cancel -> Runner IO
   , pNow :: IO UTCTime
   , pUserConfigDir :: Maybe FilePath
   , pHomeDir :: Maybe FilePath
@@ -232,7 +234,7 @@ doctorChecks ports project =
 -- queries.
 projectTools :: Ports -> Project -> Tools IO
 projectTools ports project =
-  (basicTools (pSyntax ports) (pChecker ports neverCancel) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries ports project, toolVerifier = pVerifier ports neverCancel}
+  (basicTools (pSyntax ports) (pChecker ports neverCancel) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries ports project, toolVerifier = pVerifier ports neverCancel, toolTester = pTester ports neverCancel}
   where
     cat = prCatalog project
 
@@ -612,6 +614,7 @@ planWith ports project po steps = do
           , toolProgress = poProgress po
           , toolChecker = pChecker ports (poCancel po)
           , toolVerifier = pVerifier ports (poCancel po)
+          , toolTester = pTester ports (poCancel po)
           , toolCancelled = cancelled (poCancel po)
           }
   generate (prWorkspace project) (resolver (pFiles ports) (pSyntax ports) cat) tools steps now (poMode po) <&> fmap finish
