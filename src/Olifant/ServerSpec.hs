@@ -883,6 +883,31 @@ blockSpecs = describe "blocks" $ do
     fmap (blockState . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just Green
     (_, Just judged) <- blockChanged (root </> moduleRel) s1
     blockState judged `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(R3-2) an accept between an edit and its test (the pause not run yet) is refused; tested, it is open" $ do
+    let kills t = if "seats >= 2" `T.isInfixOf` t then failing "assert 0 == 1" else redOnStub t
+    (s0, _) <- blocks kills []
+    let s = openDoc (root </> moduleRel) 1 written s0
+        edited = T.replace "seats > 2)" "seats > 2)  # mine" written
+        s1 = changeDoc (root </> moduleRel) 2 edited s
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    blockState judged `shouldBe` Judged []
+    (_, accepted) <- blockAccept (root </> moduleRel) s1
+    either id (const "accepted") accepted `shouldBe` "your edit is being tested; accept once its verdict lands"
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just judged
+    (_, Just _) <- blockChanged (root </> moduleRel) s1
+    (_, Right (done, _)) <- blockAccept (root </> moduleRel) s1
+    blockState done `shouldBe` Accepted
+  it "(R3-2) a waive between an edit and its test (the pause not run yet) is refused; tested, it is open" $ do
+    (s0, _) <- blocks redOnStub []
+    let s = openDoc (root </> moduleRel) 1 written s0
+        s1 = changeDoc (root </> moduleRel) 2 (T.replace "seats > 2)" "seats > 2)  # mine" written) s
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, waived) <- blockWaive (root </> moduleRel) 6 "by design" s1
+    either id (const "waived") waived `shouldBe` "your edit is being tested; waive once its verdict lands"
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just judged
+    (_, Just _) <- blockChanged (root </> moduleRel) s1
+    (_, Right _) <- blockWaive (root </> moduleRel) 6 "by design" s1
+    pure ()
   it "(N1) a draft that fails, then an edit: the edit is tested" $ do
     (s0, _) <- blocks redOnStub []
     (filler, _, release) <- stalledFiller

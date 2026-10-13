@@ -21,6 +21,7 @@ module Olifant.Server.Block
   , settle
   , settleOn
   , awaitingVerdict
+  , spanEdited
   , testNow
   , fileOf
   , tshow
@@ -512,7 +513,7 @@ reorder s decider moduleText testText push file =
 -- (a kill's) accepted: its module's code block is judged again, and pushed.
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockAccept path = withBlock path $ \s root project _ b killed ->
-  awaitingVerdict s b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
+  awaitingVerdict s root project b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
     Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
     Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
     other -> pure (fmap (,[]) other)
@@ -520,11 +521,36 @@ blockAccept path = withBlock path $ \s root project _ b killed ->
 -- | Why a move on the block's verdict (waive, accept) must wait, if it
 -- must: a test of a text other than the one the verdict stands on has
 -- begun since (the person's edit, its verdict still to land).
-awaitingVerdict :: ServerState -> Block -> Text -> IO (Maybe Text)
-awaitingVerdict s b move =
-  M.lookup (blockFile b) <$> readIORef (ssBlockSeen s) <&> \case
-    Just seen | seen /= blockOn b -> Just ("your edit is being tested; " <> move <> " once its verdict lands")
-    _ -> Nothing
+-- An edit of the span not tested yet (its pause still to run) waits too.
+awaitingVerdict :: ServerState -> FilePath -> Project -> Block -> Text -> IO (Maybe Text)
+awaitingVerdict s root project b move = do
+  seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
+  untested <- spanEdited s root project b
+  pure $
+    if maybe False (/= blockOn b) seen || isJust untested
+      then Just ("your edit is being tested; " <> move <> " once its verdict lands")
+      else Nothing
+
+-- | The block's file now, when the change since the text last tested
+-- touches the block's span (an edit of the block's, to be tested).
+spanEdited :: ServerState -> FilePath -> Project -> Block -> IO (Maybe Text)
+spanEdited s root project b = do
+  now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
+  seen <- fromMaybe (blockBase b) . M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
+  pure (if now == seen || not (touches seen now (blockSpan b)) then Nothing else Just now)
+
+-- | Whether the change from OLD to NEW touches the lines of a span
+-- (1-based, inclusive), as the lines of either text count: lines changed
+-- or deleted within it, or lines inserted inside it or right after it.
+touches :: Text -> Text -> (Int, Int) -> Bool
+touches old new (s1, s2) = hit (p + 1, length os - q) || hit (p + 1, length ns - q)
+  where
+    (os, ns) = (T.splitOn "\n" old, T.splitOn "\n" new)
+    p = length (takeWhile id (zipWith (==) os ns))
+    q = length (takeWhile id (take (min (length os) (length ns) - p) (zipWith (==) (reverse os) (reverse ns))))
+    hit (a, z)
+      | z < a = a >= s1 && a <= s2 + 1
+      | otherwise = a <= s2 && z >= s1
 
 -- | A new test accepted: the function it calls begins on it (red), as a
 -- begin on that test would, and is pushed.

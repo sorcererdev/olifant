@@ -11,7 +11,7 @@ import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
 import Data.List (find, nub)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Project (..))
@@ -19,7 +19,7 @@ import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, 
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
-import Olifant.Server.Block (appendStep, awaitingVerdict, claim, fileOf, settle, settleOn, testNow, tshow, withBlock)
+import Olifant.Server.Block (appendStep, awaitingVerdict, claim, fileOf, settle, settleOn, spanEdited, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -61,7 +61,7 @@ blockWaive path line reason0 = withBlock path $ \s root project lang b killed ->
       rel = makeRelative root (blockFile b)
   when (T.null reason) (throwE "a waiver needs a reason")
   -- its line is the verdict's: an edit still being tested moves it
-  lift (awaitingVerdict s b "waive") >>= maybe (pure ()) throwE
+  lift (awaitingVerdict s root project b "waive") >>= maybe (pure ()) throwE
   let ops = nub [muOperator m | m <- survivors b, muLine m == line]
   when (null ops) (throwE "no unwaived survivor on that line")
   now <- lift (readText (prWorkspace project) rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
@@ -109,20 +109,4 @@ spanEdit path s0 = do
     Just (b, killed) ->
       projectFor file s0 >>= \case
         (s, Nothing) -> pure (s, Nothing)
-        (s, Just (root, project)) -> do
-          now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root file)
-          seen <- fromMaybe (blockBase b) . M.lookup file <$> readIORef (ssBlockSeen s)
-          pure (s, if now == seen || not (touches seen now (blockSpan b)) then Nothing else Just (b, killed, root, project, now))
-
--- | Whether the change from OLD to NEW touches the lines of a span
--- (1-based, inclusive), as the lines of either text count: lines changed
--- or deleted within it, or lines inserted inside it or right after it.
-touches :: Text -> Text -> (Int, Int) -> Bool
-touches old new (s1, s2) = hit (p + 1, length os - q) || hit (p + 1, length ns - q)
-  where
-    (os, ns) = (T.splitOn "\n" old, T.splitOn "\n" new)
-    p = length (takeWhile id (zipWith (==) os ns))
-    q = length (takeWhile id (take (min (length os) (length ns) - p) (zipWith (==) (reverse os) (reverse ns))))
-    hit (a, z)
-      | z < a = a >= s1 && a <= s2 + 1
-      | otherwise = a <= s2 && z >= s1
+        (s, Just (root, project)) -> (s,) . fmap (b,killed,root,project,) <$> spanEdited s root project b
