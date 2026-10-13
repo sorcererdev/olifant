@@ -2,7 +2,7 @@
 -- or a Haskell transform of the matched text), the sites they fire on within
 -- the lines in scope, and the waivers a line can carry. Running the mutants
 -- is `Olifant.Block`'s judge, not this module's.
-module Olifant.Mutate (Mutant (..), Operator (..), mutantsOf, waiverOn, waiverLine, capMutants) where
+module Olifant.Mutate (Mutant (..), Verdict (..), judge, Operator (..), mutantsOf, waiverOn, waiverLine, capMutants) where
 
 import Data.Aeson (Value)
 import Data.ByteString qualified as BS
@@ -16,21 +16,8 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language (Language (..), Match (..), Rewrite (..), Syntax (..), SyntaxFailure)
-
--- | One mutation of a file: the line, the operator that made it, what it
--- changed from and to, and the whole mutated file. `muWaived` holds the
--- reason a surviving mutant was accepted; `muDim` marks one Jev thinks
--- equivalent to the original.
-data Mutant = Mutant
-  { muLine :: Int,
-    muOperator :: Text,
-    muFrom :: Text,
-    muTo :: Text,
-    muText :: Text,
-    muWaived :: Maybe Text,
-    muDim :: Bool
-  }
-  deriving stock (Eq, Show)
+import Olifant.Mutate.Run (Verdict (..), judge)
+import Olifant.Mutate.Types (Mutant (..))
 
 -- | A way to break code: an ast-grep rule with a fix that rewrites each match,
 -- or one whose matched text a Haskell function transforms (`Nothing`: no mutant).

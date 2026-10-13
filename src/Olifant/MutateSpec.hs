@@ -2,11 +2,19 @@
 
 module Olifant.MutateSpec (spec) where
 
+import Control.Monad (forM)
 import Data.List (find, sort)
+import Data.Map.Strict qualified as M
+import Data.Text (Text)
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
+import Olifant.Toml (int, list, optional, parseToml, required, table, text)
+import Olifant.Process (neverCancel)
+import System.Directory (doesDirectoryExist, listDirectory)
+import System.FilePath (makeRelative)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Language (..), Syntax, parseLanguage)
+import Olifant.Language (Failure (..), Language (..), Runner (..), Syntax, TestRun (..), parseLanguage, processRunner)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Mutate
 import Olifant.Mutate.Python (pythonOperators)
@@ -79,3 +87,72 @@ spec = describe "Olifant.Mutate" $ do
   it "(i) the number operator is a transform: 4 becomes 5" $ withSg $ \sg -> do
     Right ms <- mutantsOf sg py pythonOperators (T.unlines ["def f():", "    return x + 4"]) (S.fromList [1, 2])
     [(muOperator m, muTo m) | m <- ms, muLine m == 2] `shouldSatisfy` elem ("number", "5")
+
+  describe "judge" $ do
+    let fake outcome = Runner (\_ _ fs -> pure (outcome fs))
+        m1 = Mutant 2 "boundary" "<" "<=" "MUTANT-1" Nothing False
+        m2 = Mutant 3 "string" "\"x\"" "\"\"" "MUTANT-2" Nothing False
+        files = M.fromList [("src/a.py", "ORIGINAL"), ("src/a__test.py", "t")]
+    it "(a) a mutant whose tests fail is killed; one whose tests pass survives" $ do
+      Right vs <- judge (fake (\fs -> Right (if M.lookup "src/a.py" fs == Just "MUTANT-1" then TestRun [] [("t", Failure Nothing "x" "")] Nothing else TestRun ["t"] [] Nothing))) 2 py "src/a.py" files "src/a__test.py" [m1, m2]
+      map snd vs `shouldBe` [Killed, Survived]
+    it "(b) results keep the mutants' order whatever finishes first" $ do
+      Right vs <- judge (fake (const (Right (TestRun ["t"] [] Nothing)))) 4 py "src/a.py" files "src/a__test.py" [m1, m2]
+      map fst vs `shouldBe` [m1, m2]
+    it "(c) a timed-out or broken run is killed" $ do
+      Right vs <- judge (fake (const (Right (TestRun [] [] (Just "the tests timed out (30 s)"))))) 2 py "src/a.py" files "src/a__test.py" [m1]
+      map snd vs `shouldBe` [Killed]
+    it "(d) the runner failing to start is reported, not a verdict" $
+      judge (fake (const (Left "uv is not installed"))) 2 py "src/a.py" files "src/a__test.py" [m1] `shouldReturn` Left "uv is not installed"
+
+  describe "pack cases" $ sequential $ do
+    bless <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_BLESS")
+    let caseFile = "packs/python-htmx/tests/mutate/create-booking/case.toml"
+    it "python-htmx create-booking: the survivors are the ones the case names" $ do
+      uvPath <- findExecutable "uv"
+      sgPath <- findExecutable "ast-grep"
+      case (uvPath, sgPath) of
+        (Nothing, _) -> missing "uv is not installed (brew install uv)"
+        (_, Nothing) -> missing "ast-grep is not installed (brew install ast-grep)"
+        _ -> do
+          Right tbl <- parseToml <$> TIO.readFile caseFile
+          let Right (file, linesSpec, expected) = (,,) <$> required "file" text tbl <*> required "lines" text tbl <*> required "survivors" (list (\t -> table t >>= \r -> (,,) <$> (fromInteger <$> required "line" int r) <*> required "operator" text r <*> optional "to" text r)) tbl
+              [lo, hi] = map (read . T.unpack) (T.splitOn "-" linesSpec) :: [Int]
+          project <- readTree "packs/python-htmx/fixtures/app"
+          let Just source = M.lookup (T.unpack file) project
+          started <- getCurrentTime
+          Right ms <- mutantsOf (astGrepSyntax (tmp </> "olifant-test-cache")) py pythonOperators source (S.fromList [lo .. hi])
+          Right verdicts <- judge (processRunner neverCancel 60) 4 py (T.unpack file) project "src/bistro/booking/commands/create_booking__test.py" (capMutants 20 ms)
+          finished <- getCurrentTime
+          putStrLn ("  mutants judged: " <> show (length verdicts) <> ", wall time " <> show (diffUTCTime finished started))
+          let actual = [(muLine m, muOperator m, muTo m) | (m, Survived) <- verdicts]
+          if bless
+            then TIO.writeFile caseFile (blessed file linesSpec actual)
+            else do
+              sort [(l, o) | (l, o, _) <- actual] `shouldBe` sort [(l, o) | (l, o, _) <- expected]
+              [(l, o, t) | (l, o, Just t) <- expected] `shouldSatisfy` all (`elem` actual)
+  where
+    missing why = do
+      strict <- (== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS"
+      if strict then expectationFailure ("required tool missing: " <> why) else pendingWith why
+    blessed :: Text -> Text -> [(Int, Text, Text)] -> Text
+    blessed file linesSpec actual =
+      T.unlines $
+        [ "# create_booking's handle, as the fixture has it, judged by its own tests.",
+          "file  = \"" <> file <> "\"",
+          "lines = \"" <> linesSpec <> "\"",
+          "# What the fixture's four tests do not notice. Blessed with OLIFANT_BLESS=1.",
+          "survivors = ["
+        ]
+          ++ ["  { line = " <> T.pack (show l) <> ", operator = \"" <> o <> "\"" <> (if o == "boundary" then ", to = \"" <> t <> "\"" else "") <> " }," | (l, o, t) <- actual]
+          ++ ["]"]
+
+readTree :: FilePath -> IO (M.Map FilePath Text)
+readTree root = M.fromList <$> go root
+  where
+    go d = do
+      names <- listDirectory d
+      fmap concat . forM names $ \n -> do
+        let p = d </> n
+        isDir <- doesDirectoryExist p
+        if isDir then go p else (\t -> [(makeRelative root p, t)]) <$> TIO.readFile p

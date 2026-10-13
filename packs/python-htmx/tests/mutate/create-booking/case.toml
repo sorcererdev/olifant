@@ -1,0 +1,10 @@
+# create_booking's handle, as the fixture has it, judged by its own tests.
+file  = "src/bistro/booking/commands/create_booking.py"
+lines = "50-59"          # handle's body
+# What the fixture's four tests do not notice. Blessed with OLIFANT_BLESS=1.
+survivors = [
+  { line = 53, operator = "boundary", to = ">=" },
+  { line = 52, operator = "string" },
+  { line = 54, operator = "string" },
+  { line = 56, operator = "string" },
+]
