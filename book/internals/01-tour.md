@@ -2362,8 +2362,9 @@ machine served by the server:
   (`mutant-equivalent`, `mutant-matters`), asked in the background through the server's
   decisions; each answer that lands reorders and pushes the block (`ssOnBlock`).
 - **`Lsp`** has one `blockRequest` per move, in the background like the other slow requests; every
-  block a move changed is pushed as `olifant/block`, and `didChange` on a file with a block
-  submits `blockLater` (the debounce; a newer edit cancels it).
+  block a move changed is pushed as `olifant/block`, and `didChange` that edits a block's span
+  (`blockEdited`, against the text last tested) submits `blockLater` (the debounce; a newer such
+  edit cancels it, an edit elsewhere in the file leaves the running test or judge to land).
 
 The specs drive it with a scripted runner (`scriptedRunner`, `scriptFileRunner`: verdicts by
 test id, or by the files' text) and a syntax that knows the one container and site they need;

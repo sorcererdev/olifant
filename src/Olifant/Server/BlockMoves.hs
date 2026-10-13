@@ -3,7 +3,7 @@
 -- expands) or waive one (a comment on its line) — and the editor's edits
 -- of a block's file, told apart: a draft it applied, the person's edit
 -- inside the span, or an edit elsewhere (nothing to do).
-module Olifant.Server.BlockMoves (blockKill, blockWaive, blockChanged) where
+module Olifant.Server.BlockMoves (blockKill, blockWaive, blockChanged, blockEdited) where
 
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
@@ -11,7 +11,7 @@ import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
 import Data.List (find, nub)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Project (..))
@@ -77,26 +77,40 @@ blockWaive path line reason0 = withBlock path $ \s root project lang b killed ->
 -- tested as theirs; an edit elsewhere, or of a file with no block of its
 -- own, does nothing (Nothing).
 blockChanged :: FilePath -> ServerState -> IO (ServerState, Maybe Block)
-blockChanged path s0 = do
+blockChanged path s0 =
+  spanEdit path s0 >>= \case
+    (s, Nothing) -> pure (s, Nothing)
+    (s, Just (b, killed, root, project, now)) -> do
+      let spanText = T.intercalate "\n" (take (snd (blockSpan b) - fst (blockSpan b) + 1) (drop (fst (blockSpan b) - 1) (T.splitOn "\n" now)))
+          applied = case listToMaybe (reverse (blockDrafts b)) of
+            Just d -> draftBy d /= "you" && draftText d == spanText
+            Nothing -> False
+      case languageFor (catalogLanguages (prCatalog project)) (makeRelative root (blockFile b)) of
+        Nothing -> pure (s, Nothing)
+        Just lang -> (s,) . either (const Nothing) Just <$> testNow s root project lang b killed applied
+
+-- | Whether the file's text now is an edit of its block's span (since the
+-- text last tested): the adapter tests it once typing settles, and only
+-- such an edit supersedes the test or judge running for the block (an
+-- edit elsewhere leaves it to land).
+blockEdited :: FilePath -> ServerState -> IO (ServerState, Bool)
+blockEdited path s0 = fmap isJust <$> spanEdit path s0
+
+-- | The file's block (its killed count, project and root) and the file
+-- now, when the change since the text last tested touches the block's span.
+spanEdit :: FilePath -> ServerState -> IO (ServerState, Maybe (Block, Int, FilePath, Project, Text))
+spanEdit path s0 = do
   let file = normalisePath path
   own <- M.lookup file <$> readIORef (ssBlocks s0)
   case own of
     Nothing -> pure (s0, Nothing)
-    Just (b, _) ->
+    Just (b, killed) ->
       projectFor file s0 >>= \case
         (s, Nothing) -> pure (s, Nothing)
         (s, Just (root, project)) -> do
           now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root file)
           seen <- fromMaybe (blockBase b) . M.lookup file <$> readIORef (ssBlockSeen s)
-          let spanText = T.intercalate "\n" (take (snd (blockSpan b) - fst (blockSpan b) + 1) (drop (fst (blockSpan b) - 1) (T.splitOn "\n" now)))
-              applied = case listToMaybe (reverse (blockDrafts b)) of
-                Just d -> draftBy d /= "you" && draftText d == spanText
-                Nothing -> False
-          if now == seen || not (touches seen now (blockSpan b))
-            then pure (s, Nothing)
-            else case languageFor (catalogLanguages (prCatalog project)) (makeRelative root file) of
-              Nothing -> pure (s, Nothing)
-              Just lang -> (s,) . either (const Nothing) Just <$> testNow s root project lang b (maybe 0 snd own) applied
+          pure (s, if now == seen || not (touches seen now (blockSpan b)) then Nothing else Just (b, killed, root, project, now))
 
 -- | Whether the change from OLD to NEW touches the lines of a span
 -- (1-based, inclusive), as the lines of either text count: lines changed

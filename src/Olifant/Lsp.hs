@@ -232,10 +232,12 @@ handlers env =
           Just vf -> atPath uri $ \path -> do
             let version = fromIntegral (virtualFileVersion vf)
             update env (changeDoc path version (virtualFileText vf))
-            -- a block in this file: tested again once typing settles
-            hasBlock <- liftIO (M.member (normalisePath path) <$> (readIORef . ssBlocks =<< readMVar (envState env)))
+            -- an edit of a block's span: tested again once typing settles (it
+            -- supersedes the block's running test or judge; an edit elsewhere
+            -- in the file leaves that to land)
+            edited <- liftIO (withSnapshot env (blockEdited (normalisePath path)))
             lspEnv0 <- getLspEnv
-            if hasBlock then liftIO (blockLater env lspEnv0 (normalisePath path) version) else pure ()
+            if edited then liftIO (blockLater env lspEnv0 (normalisePath path) version) else pure ()
             -- what follows from this edit, once typing settles
             case lastEditedLine (msg ^. L.params . L.contentChanges) of
               Nothing -> pure ()

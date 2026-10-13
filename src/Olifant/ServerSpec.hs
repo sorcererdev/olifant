@@ -748,6 +748,42 @@ blockSpecs = describe "blocks" $ do
     (_, tested) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s) {ssCancel = token}
     tested `shouldSatisfy` either (const True) (const False)
     fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+  it "(N-1) an edit outside the span while an in-span edit's test runs is no edit of the block's: that test is not superseded, and lands" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    let s = openDoc (root </> moduleRel) 1 stubbed s0
+        outside = T.replace "n > 0" "n > 1" written
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    -- typed in the span: an edit of the block's (the adapter submits its test)
+    let s1 = changeDoc (root </> moduleRel) 2 written s
+    (_, True) <- blockEdited (root </> moduleRel) s1
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) s1)
+    waitUntil ((>= 1) <$> gEntered gate)
+    -- then outside it, while that test runs: no edit of the block's (nothing submitted, nothing cancelled)
+    (_, False) <- blockEdited (root </> moduleRel) (changeDoc (root </> moduleRel) 3 outside s)
+    -- in the span again: it would supersede the test
+    (_, True) <- blockEdited (root </> moduleRel) (changeDoc (root </> moduleRel) 3 (T.replace "seats > 2)" "seats > 3)" outside) s)
+    gOpen gate
+    (_, Just tested) <- wait testing
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    (blockOn b, blockState b) `shouldBe` (written, blockState tested)
+  it "(N-1) an edit outside the span while the block is judged does not supersede the judge: it lands" $ do
+    (s0, _) <- blocks redOnStub []
+    release <- newEmptyMVar
+    entered <- newIORef (0 :: Int)
+    let within _ c = Runner (\l i f -> atomicModifyIORef' entered (\n -> (n + 1, ())) >> readMVar release >> runTests (pTester (ssPorts s0) c) l i f)
+        s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssPorts = (ssPorts s0) {pTesterWithin = within}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    let s1 = changeDoc (root </> moduleRel) 2 written s
+    testing <- async (blockChanged (root </> moduleRel) s1)
+    waitUntil ((>= 1) <$> readIORef entered)
+    fmap (blockState . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just Green
+    (_, False) <- blockEdited (root </> moduleRel) (changeDoc (root </> moduleRel) 3 (T.replace "n > 0" "n > 1" written) s)
+    putMVar release ()
+    (_, Just judged) <- wait testing
+    blockState judged `shouldSatisfy` \case Judged _ -> True; _ -> False
   it "(N1) a draft that fails, then an edit: the edit is tested" $ do
     (s0, _) <- blocks redOnStub []
     (filler, _, release) <- stalledFiller
