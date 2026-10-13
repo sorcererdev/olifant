@@ -9,7 +9,7 @@ module Olifant.Server.Tests
   ) where
 
 import Control.Monad.Trans.Class (lift)
-import Control.Monad (unless, when)
+import Control.Monad (when)
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Aeson (Value, object, (.=))
 import Data.Maybe (isJust)
@@ -22,7 +22,7 @@ import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..)
 import Olifant.Server.Block (runOver)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (makeRelative, (</>))
+import System.FilePath (makeRelative, takeExtension, takeFileName, (</>))
 
 -- | A run of a file's tests: the test file that ran (absolute), what it
 -- said, and its wall time in seconds.
@@ -49,13 +49,29 @@ testsRun path s0 =
       when (T.null (T.strip (testsFor td))) (throwE (langName lang <> "'s tests_for names no test file: nothing to run"))
       paths <- lift (listFiles ws ".")
       let isTest = testsForFile td rel == rel || any (\m -> m /= rel && testsForFile td m == rel) paths
-          testRel = if isTest then rel else testsForFile td rel
-      exists <- lift (isJust <$> readText ws testRel)
-      unless exists $ throwE ("no test file for this module yet: " <> T.pack testRel)
+          mapped = testsForFile td rel
+      moduleTests <- lift (isJust <$> readText ws mapped)
+      testRel <- case () of
+        _
+          | isTest -> pure rel
+          | moduleTests -> pure mapped
+          -- a test file whose module is gone: named as test files are
+          | testShaped td rel -> pure rel
+          | otherwise -> throwE ("no test file for this module yet: " <> T.pack mapped)
       start <- lift getMonotonicTime
       run <- lift (either (TestRun [] [] . Just) id <$> runOver s ws lang [T.pack testRel])
       end <- lift getMonotonicTime
       pure (TestsAnswer (normalisePath (root </> testRel)) run (end - start))
+
+-- | Whether a file is named as `tests_for` names test files: its name ends
+-- as the pattern does after the module's name (`__test.py`), and that
+-- ending says more than the extension does.
+testShaped :: TestDef -> FilePath -> Bool
+testShaped td rel =
+  case T.breakOn "{= stem =}" (testsFor td) of
+    (_, rest) | Just ending <- T.stripPrefix "{= stem =}" rest ->
+      not (T.null ending) && not ("{=" `T.isInfixOf` ending) && ending /= T.pack (takeExtension rel) && ending `T.isSuffixOf` T.pack (takeFileName rel)
+    _ -> False
 
 -- | The answer as the editor reads it: `file`, `passed` (ids), `failed`
 -- (id, line or null, message, output), `broken` (why, or null), `seconds`.

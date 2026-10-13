@@ -154,6 +154,10 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     readIORef seen `shouldReturn` [[T.pack testRel]]
     trPassed (taRun a) `shouldBe` [testId]
     taSeconds a `shouldSatisfy` (>= 0)
+  it "answers the run's wall time in seconds" $ do
+    (s, _) <- blocksRun blockSyntax (threadDelay 50000) (\_ _ -> Right (TestRun [testId] [] Nothing)) []
+    (_, Right a) <- testsRun (root </> moduleRel) s
+    taSeconds a `shouldSatisfy` (>= 0.05)
   it "on a test file, runs that file" $ do
     (s, _) <- recording passing []
     (_, Right a) <- testsRun (root </> testRel) s
@@ -162,6 +166,21 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     (s, _) <- recording (\files -> if "unsaved" `T.isInfixOf` M.findWithDefault "" testRel files then Right (TestRun [testId] [] Nothing) else Right (failing "saved text ran")) []
     (_, Right a) <- testsRun (root </> testRel) (openDoc (root </> testRel) 1 (testText <> "# unsaved\n") s)
     trFailed (taRun a) `shouldBe` []
+  it "runs the editor's text: an open, unsaved module is what its tests run over" $ do
+    (s, _) <- recording (\files -> if "unsaved" `T.isInfixOf` M.findWithDefault "" moduleRel files then Right (TestRun [testId] [] Nothing) else Right (failing "saved text ran")) []
+    (_, Right a) <- testsRun (root </> moduleRel) (openDoc (root </> moduleRel) 1 (stubbed <> "# unsaved\n") s)
+    trFailed (taRun a) `shouldBe` []
+  it "on a test file whose module is gone, runs that file" $ do
+    seen <- newIORef ([] :: [[Text]])
+    (s, _) <- blocksRun blockSyntax (pure ()) (\ids _ -> Right (TestRun ids [] Nothing)) [("src/shop/orphan__test.py", "def test_alone() -> None:\n    assert True\n")]
+    let s' = s {ssPorts = (ssPorts s) {pTester = \c -> Runner (\l ids f -> modifyIORef' seen (++ [ids]) >> runTests (pTester (ssPorts s) c) l ids f)}}
+    (_, Right a) <- testsRun (root </> "src/shop/orphan__test.py") s'
+    taFile a `shouldBe` root </> "src/shop/orphan__test.py"
+    readIORef seen `shouldReturn` [["src/shop/orphan__test.py"]]
+  it "refuses a language whose tests_for names no file, in one sentence" $ do
+    (s, _) <- recording passing [("/pack/languages/blank.toml", "files = [\"**/*.md\"]\ncomment = \"#\"\ngrammar = \"python\"\n[test]\npreset = \"pytest\"\ntests_for = \"\"\n"), ("notes/a.md", "a\n")]
+    (_, answer) <- testsRun (root </> "notes/a.md") s
+    answer `shouldSatisfy` either (== "blank's tests_for names no test file: nothing to run") (const False)
   it "refuses a language with no [test] table, in one sentence" $ do
     (s, _) <- recording passing [plain, ("notes/a.txt", "a\n")]
     (_, answer) <- testsRun (root </> "notes/a.txt") s
@@ -186,7 +205,7 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     lookupIn "broken" json `shouldBe` Just Null
     failed `shouldBe` [J.object ["id" J..= testId, "line" J..= (6 :: Int), "message" J..= ("assert 0 == 1" :: Text), "output" J..= ("E   assert 0 == 1" :: Text)]]
     lookupIn "seconds" json `shouldSatisfy` \case Just (Number _) -> True; _ -> False
-  it "answers a run that could not judge the tests as broken, with the reason" $ do
+  it "answers a run whose tests could not run as broken, with the reason" $ do
     (s, _) <- recording (\_ -> Right (TestRun [] [] (Just "ImportError: no module named shop"))) []
     (_, Right a) <- testsRun (root </> moduleRel) s
     lookupIn "broken" (testsJson a) `shouldBe` Just (String "ImportError: no module named shop")
