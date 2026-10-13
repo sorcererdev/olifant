@@ -170,6 +170,21 @@ blockSpecs = describe "blocks" $ do
     (_, judged) <- blockJudge (root </> moduleRel) s
     judged `shouldSatisfy` either (const True) (const False)
     runs `shouldReturn` 1
+  it "(d2) a runner that cannot start makes the block Broken too, and nothing is judged (Review Focus 2)" $ do
+    (s0, runs) <- blocksWith (\t -> if "seats > 2" `T.isInfixOf` t then Left "uv is not installed" else Right (redOnStub t)) []
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s0
+    let s = changeDoc (root </> moduleRel) 2 written s0
+    (_, Right b) <- blockTest (root </> moduleRel) s
+    blockState b `shouldBe` Block.Broken "uv is not installed"
+    fmap (blockState . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (Block.Broken "uv is not installed")
+    (_, judged) <- blockJudge (root </> moduleRel) s
+    judged `shouldSatisfy` either (const True) (const False)
+    runs `shouldReturn` 2
+    steps s >>= (`shouldSatisfy` ("\ttest\tperson\tcannot run: uv is not installed" `T.isInfixOf`))
+  it "(d3) begin on a test file whose run is broken, the cursor on no test: Broken on the first test" $ do
+    (s, _) <- blocks (const (TestRun [] [] (Just "ImportError: no module named shop"))) []
+    (_, Right b) <- blockBegin ignore (root </> testRel) 1 s
+    (blockTestId b, blockState b) `shouldBe` (testId, Block.Broken "ImportError: no module named shop")
   it "(e) with no [model], draft says so and the block stays Red (Review Focus 5)" $ do
     (s, _) <- blocks redOnStub []
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
@@ -249,7 +264,11 @@ redOnStub t
 -- pack at /pack) whose runner answers by the module's text, and how many
 -- runs it made.
 blocks :: (Text -> TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
-blocks verdict extra = do
+blocks verdict = blocksWith (Right . verdict)
+
+-- | 'blocks' whose runner may fail to run at all (Left).
+blocksWith :: (Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
+blocksWith verdict extra = do
   pack <- readTree =<< canonicalizePath "packs/python-htmx"
   (disk, _) <-
     memoryWorkspace $
@@ -262,7 +281,7 @@ blocks verdict extra = do
   runs <- newIORef (0 :: Int)
   let runner = Runner $ \_ _ files -> do
         modifyIORef' runs (+ 1)
-        pure (Right (verdict (M.findWithDefault "" moduleRel files)))
+        pure (verdict (M.findWithDefault "" moduleRel files))
       ports = Ports disk blockSyntax (const noChecker) (const noVerifier) (const runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef runs)

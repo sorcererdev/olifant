@@ -86,7 +86,7 @@ blockBegin progress path line s0 =
             pure ((begin n file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st})
       b <- case (trBroken run, trFailed run) of
         (Just why, _)
-          | onTest, Just tid <- chosen -> spanOf tid >>= \sp -> new tid sp (Broken why)
+          | onTest, Just tid <- listToMaybe (cursorTest ++ tests) -> spanOf tid >>= \sp -> new tid sp (Broken why)
           | onTest -> throwE ("the tests cannot run: " <> why)
           | otherwise -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp (Broken why)
         (_, failed@((first, f0) : _)) -> do
@@ -144,7 +144,8 @@ blockTest path = withBlock path $ \s root project lang b killed -> do
   let ws = prWorkspace project
   now <- fromMaybe "" <$> readText ws (makeRelative root (blockFile b))
   runOver s ws lang [blockTestId b] >>= \case
-    Left why -> pure (Left why)
+    -- a runner that cannot start is a test that cannot run: never judged
+    Left why -> settle s root killed "test" ("cannot run: " <> why) (CannotRun why) b
     Right run -> do
       let new = newLinesOf (blockBase b) now
           sp = if S.null new then blockSpan b else (S.findMin new, S.findMax new)
