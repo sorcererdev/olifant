@@ -54,6 +54,7 @@ import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
 import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
+import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
@@ -206,18 +207,26 @@ blockDraft progress path = withBlock path $ \s root project lang b killed ->
   fillerFor True s project >>= \case
     Left why -> pure (Left why)
     Right Nothing -> pure (Left "no model is configured ([model] in .olifant/config.toml); write the body yourself, the block still judges it")
-    Right (Just filler) ->
-      -- Drafting is stored and pushed at once: only reject is open while the model writes
-      settle s root killed "drafting" "asked for a draft" StartDraft b >>= \case
+    Right (Just filler) -> do
+      -- a test block's stub not ready to draft is refused before anything moves
+      text <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
+      let ready = case blockKind b of
+            TestFor _ -> void (testDraftParts lang b text)
+            Code -> Right ()
+      case ready of
         Left why -> pure (Left why)
-        Right drafting -> do
-          pushed s drafting killed
-          runExceptT (draftIn progress s root project lang b drafting killed filler) >>= \case
-            Right done -> pure (Right done)
-            Left why -> do
-              -- nothing lands: back to the state it began from, unless the block moved on
-              settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
-              pure (Left why)
+        -- Drafting is stored and pushed at once: only reject is open while the model writes
+        Right () ->
+          settle s root killed "drafting" "asked for a draft" StartDraft b >>= \case
+            Left why -> pure (Left why)
+            Right drafting -> do
+              pushed s drafting killed
+              runExceptT (draftIn progress s root project lang b drafting killed filler) >>= \case
+                Right done -> pure (Right done)
+                Left why -> do
+                  -- nothing lands: back to the state it began from, unless the block moved on
+                  settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
+                  pure (Left why)
 
 -- | A failed draft put its block's state back: pushed, or, when the file
 -- as the editor has it now is no longer the text that state was
@@ -268,16 +277,9 @@ draftIn progress s root project lang b drafting killed filler = do
       (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
       pure (template, ("body", VerifyIds [blockTestId b]), [(T.unpack (fileOf (blockTestId b)), testText)])
     TestFor killing -> do
-      let (s1, s2) = blockSpan b
-          candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
-      (line, template) <- maybe (throwE "the test has no arrangement left to draft: its placeholder is gone") pure (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
-      let new = newTests b text
+      ((line, template), newTest, new) <- except (testDraftParts lang b text)
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
-      -- the stub names its test `test_name` until the person types over it
-      newTest <- case new of
-        t : _ | all ((/= stubName) . testName) new -> pure t
-        _ -> throwE "name the new test first: its name is still the stub's"
       verify <- case killing of
         -- a new test: it must fail, at its assertion
         Nothing -> pure (VerifyRedAt newTest (line + 1))
@@ -328,6 +330,20 @@ draftIn progress s root project lang b drafting killed filler = do
   b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+
+-- | A test block's stub as a draft needs it: its arrangement's line and
+-- hole, its new test and all its new tests; or why it cannot be drafted yet.
+testDraftParts :: Language -> Block -> Text -> Either Text ((Int, Template), TestId, [TestId])
+testDraftParts lang b text = do
+  let (s1, s2) = blockSpan b
+      candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
+      new = newTests b text
+  hole <- maybe (Left "the test has no arrangement left to draft: its placeholder is gone") Right (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
+  -- the stub names its test `test_name` until the person types over it
+  newTest <- case new of
+    t : _ | all ((/= stubName) . testName) new -> Right t
+    _ -> Left "name the new test first: its name is still the stub's"
+  pure (hole, newTest, new)
 
 -- | Run the block's test on the editor's text: red, green (then judged) or
 -- broken; its span is the lines new since the block began.
