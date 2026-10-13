@@ -846,6 +846,43 @@ blockSpecs = describe "blocks" $ do
     Just (b, _) <- blockFor (root </> moduleRel) s
     blockOn b `shouldBe` edited
     blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(R3-1) an edit's test cancelled by a job that then finds nothing new (typed and undone): the edit is still tested" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    let s = openDoc (root </> moduleRel) 1 written s0
+        edited = T.replace "seats > 2)" "seats > 2)  # mine" written
+        s1 = changeDoc (root </> moduleRel) 2 edited s
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (token, trip) <- newCancel
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) s1 {ssCancel = token})
+    waitUntil ((>= 1) <$> gEntered gate)
+    -- a character typed in the span cancels it; undone before the next job runs
+    trip
+    gOpen gate
+    (_, none) <- wait testing
+    none `shouldBe` Nothing
+    -- that job: the text as the cancelled test had it, still untested
+    (_, Just tested) <- blockChanged (root </> moduleRel) s1
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    fmap (blockOn . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just edited
+  it "(R3-1) a judge cancelled by a job that then finds nothing new: the next job tests and judges again" $ do
+    (s0, _) <- blocks redOnStub []
+    release <- newEmptyMVar
+    entered <- newIORef (0 :: Int)
+    let within _ c = Runner (\l i f -> atomicModifyIORef' entered (\n -> (n + 1, ())) >> readMVar release >> runTests (pTester (ssPorts s0) c) l i f)
+        s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssPorts = (ssPorts s0) {pTesterWithin = within}}
+        s1 = changeDoc (root </> moduleRel) 2 written s
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (token, trip) <- newCancel
+    judging <- async (blockChanged (root </> moduleRel) s1 {ssCancel = token})
+    waitUntil ((>= 1) <$> readIORef entered)
+    trip
+    putMVar release ()
+    void (wait judging)
+    fmap (blockState . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just Green
+    (_, Just judged) <- blockChanged (root </> moduleRel) s1
+    blockState judged `shouldSatisfy` \case Judged _ -> True; _ -> False
   it "(N1) a draft that fails, then an edit: the edit is tested" $ do
     (s0, _) <- blocks redOnStub []
     (filler, _, release) <- stalledFiller

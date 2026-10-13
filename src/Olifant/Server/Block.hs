@@ -387,7 +387,13 @@ testNow s root project lang b killed applied = do
   ran <- runOver s ws lang ids
   -- work cancelled (a newer edit's test superseded it) is no result: nothing settles
   stopped <- cancelled (ssCancel s)
-  if stopped then pure (Left "the test was cancelled; a newer one runs") else case ran of
+  if stopped
+    then do
+      -- the text it tested is untested again (unless a newer test began):
+      -- the job that cancelled it, finding that text, tests it
+      atomicModifyIORef' (ssBlockSeen s) (\m -> (if M.lookup (blockFile b) m == Just now then M.insert (blockFile b) (blockOn b) m else m, ()))
+      pure (Left "the test was cancelled; a newer one runs")
+    else case ran of
     -- a runner that cannot start is a test that cannot run: never judged
     Left why -> settleTest ("cannot run: " <> why) (CannotRun why)
     Right run -> do
@@ -468,7 +474,13 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
                    | Just why <- trBroken base -> pure (Left why)
                    | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
     stopped <- cancelled (ssCancel s)
-    if stopped then pure (Left "the judge was cancelled; a newer test runs") else case verdicts of
+    if stopped
+      then do
+        -- green and unjudged: its text is untested again (unless a newer test
+        -- began), so the job that cancelled it, finding that text, tests it
+        atomicModifyIORef' (ssBlockSeen s) (\m -> (if M.lookup (blockFile b) m == Just (blockOn b) then M.insert (blockFile b) (blockBase b) m else m, ()))
+        pure (Left "the judge was cancelled; a newer test runs")
+      else case verdicts of
       -- a judge stands on the text its test passed on (blockOn as the test left it)
       Left why -> settle s root killedBefore "judge" ("cannot run: " <> why) (CannotRun why) b
       Right vs -> do
