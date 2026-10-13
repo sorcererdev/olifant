@@ -369,15 +369,20 @@ testNow s root project lang b killed applied = do
       -- a test of the newest text (no test or draft begun since) that finds
       -- the block moved on meanwhile (an older test landed first, Jev
       -- reordered) settles once more, on the block as it now stands
-      settleTest result move =
-        settleOn s root killed "test" result (Just now) move b >>= \case
-          Left moved -> do
-            current <- M.lookup (blockFile b) <$> readIORef (ssBlocks s)
-            seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
-            case current of
-              Just (c, k) | blockId c == blockId b, not (isDrafting (blockState c)), seen == Just now -> settleOn s root k "test" result (Just now) move c
-              _ -> pure (Left moved)
-          landed -> pure landed
+      -- (again each time another move lands first, while that still holds:
+      -- each round needs a newer version, so it ends)
+      settleTest result move = attempt b killed
+        where
+          attempt on k =
+            settleOn s root k "test" result (Just now) move on >>= \case
+              Left moved -> do
+                current <- M.lookup (blockFile b) <$> readIORef (ssBlocks s)
+                seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
+                case current of
+                  Just (c, k')
+                    | blockId c == blockId b, blockVersion c /= blockVersion on, not (isDrafting (blockState c)), seen == Just now -> attempt c k'
+                  _ -> pure (Left moved)
+              landed -> pure landed
   ran <- runOver s ws lang ids
   -- work cancelled (a newer edit's test superseded it) is no result: nothing settles
   stopped <- cancelled (ssCancel s)
