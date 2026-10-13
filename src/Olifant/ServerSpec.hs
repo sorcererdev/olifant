@@ -583,6 +583,23 @@ blockSpecs = describe "blocks" $ do
     M.lookup "/r1" (ssLoads s2) `shouldBe` M.lookup "/r1" (ssLoads s1)
     s3 <- filesChanged ["/r1/.olifant/config.toml"] s2
     M.lookup "/r1" (ssLoads s3) `shouldBe` fmap (+ 1) (M.lookup "/r1" (ssLoads s1))
+  it "(I1) an edit made before a draft started, tested while it drafts, does not knock the draft out" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    -- the person typed in the span, then asked for a draft before the pause ran the test
+    let typed = changeDoc (root </> moduleRel) 2 (T.replace "\"later\"" "\"later!\"" stubbed) s
+    gArm gate
+    drafting <- async (blockDraft ignore (root </> moduleRel) typed)
+    waitUntil ((>= 1) <$> gEntered gate)
+    testing <- async (blockChanged (root </> moduleRel) typed)
+    threadDelay 200000
+    gOpen gate
+    (_, tested) <- wait testing
+    tested `shouldBe` Nothing
+    (_, Right (b, _)) <- wait drafting
+    blockState b `shouldBe` Green
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")

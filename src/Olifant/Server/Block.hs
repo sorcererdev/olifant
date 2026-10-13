@@ -221,6 +221,9 @@ draftIn progress s root project lang b drafting killed filler = do
       ws = prWorkspace project
       started = fst <$> M.lookup file (ssDocs s)
   text <- lift (readText ws rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
+  -- the text the draft plans on is seen: an edit made before it (its test
+  -- still to come) does not knock the draft out; one made after it does
+  lift (modifyIORef' (ssBlockSeen s) (M.insert file text))
   -- the hole, its verifier, and the file beside it the model sees (spec §5):
   -- a code draft its test file, a test draft its module
   (template, verify, beside) <- case blockKind b of
