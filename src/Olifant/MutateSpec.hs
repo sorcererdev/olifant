@@ -104,6 +104,8 @@ spec = describe "Olifant.Mutate" $ do
       map snd vs `shouldBe` [Killed]
     it "(d) the runner failing to start is reported, not a verdict" $
       judge (fake (const (Left "uv is not installed"))) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1] `shouldReturn` Left "uv is not installed"
+    it "(g) each mutant's run gets five times the baseline's wall time: at least 5 s, at most 120 s" $
+      map judgeTimeout [0.2, 1.01, 3, 30] `shouldBe` [5, 6, 15, 120]
     it "(e) judged by the tests that passed before only: a sibling test red on every run kills nothing" $ do
       let sibling fs = Right (TestRun ["t" | M.lookup "src/a.py" fs /= Just "MUTANT-1"] ([("u", Failure Nothing "red before" "")] ++ [("t", Failure Nothing "x" "") | M.lookup "src/a.py" fs == Just "MUTANT-1"]) Nothing)
       Right vs <- judge (fake sibling) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1, m2]

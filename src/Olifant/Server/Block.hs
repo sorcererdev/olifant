@@ -41,6 +41,7 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (defaultTimeLocale, formatTime)
+import GHC.Clock (getMonotonicTime)
 import Olifant.Anchor (locateContainer)
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, planWith)
 import Olifant.Block
@@ -52,7 +53,7 @@ import Olifant.Generation.FillPhase (applyFills, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
-import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, mutantsOf)
+import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
 import Olifant.Server.Actions (fillerFor)
@@ -287,13 +288,16 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
         Right [] -> pure (Right [])
         Right ms -> do
           (_, files) <- projectFiles ws M.empty lang [T.unpack testFile]
-          let tester = pTester (ssPorts s) (ssCancel s)
-          -- the baseline: which tests pass on the files as they are
-          runTestsIn tester lang [testFile] files >>= \case
+          -- the baseline: which tests pass on the files as they are, and how
+          -- long they take (each mutant's run gets a timeout from it)
+          t0 <- getMonotonicTime
+          baseline <- runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [testFile] files
+          t1 <- getMonotonicTime
+          case baseline of
             Left why -> pure (Left why)
             Right base
               | Just why <- trBroken base -> pure (Left why)
-              | otherwise -> judge tester 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
+              | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
     case verdicts of
       Left why -> settle s root killedBefore "judge" ("cannot run: " <> why) (CannotRun why) b
       Right vs -> do

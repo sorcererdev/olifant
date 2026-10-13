@@ -164,7 +164,7 @@ configure env = \case
                 , scTestScript = script s
                 }
           , -- (tests) scripted verdicts stand in for the test runner
-            ssPorts = maybe (ssPorts s) (\f -> (ssPorts s) {pTester = const (scriptFileRunner f)}) (script s)
+            ssPorts = maybe (ssPorts s) (\f -> (ssPorts s) {pTester = const (scriptFileRunner f), pTesterWithin = \_ _ -> scriptFileRunner f}) (script s)
           }
       where
         script s = case KM.lookup "test_script" o of Just (String f) -> Just (T.unpack f); _ -> scTestScript (ssConfig s)

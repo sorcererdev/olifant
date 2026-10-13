@@ -496,6 +496,13 @@ blockSpecs = describe "blocks" $ do
     (_, none) <- blockDraft ignore (root </> moduleRel) s
     none `shouldSatisfy` either ("no recorded fill" `T.isInfixOf`) (const False)
     fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+  it "(I3) the judge runs each mutant with a timeout of its own, from the baseline's wall time" $ do
+    (s0, _) <- blocks redOnStub []
+    seen <- newIORef []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssPorts = (ssPorts s0) {pTesterWithin = \secs c -> Runner (\l i f -> atomicModifyIORef' seen (\xs -> (secs : xs, ())) >> runTests (pTester (ssPorts s0) c) l i f)}}
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    map muLine (survivors judged) `shouldBe` [6]
+    readIORef seen `shouldReturn` [5]
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -618,7 +625,7 @@ blocksHooked syntax hook verdict extra = do
       narrow ids run
         | not (null ids), all ("::" `T.isInfixOf`) ids = run {trPassed = filter (`elem` ids) (trPassed run), trFailed = filter ((`elem` ids) . fst) (trFailed run)}
         | otherwise = run
-      ports = Ports disk syntax (const noChecker) (const noVerifier) (const runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+      ports = Ports disk syntax (const noChecker) (const noVerifier) (const runner) (\_ _ -> runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef runs)
 
@@ -697,7 +704,7 @@ serverWith wrap = do
       , ("/r2/a/src/y.py", "y = 1\n") ]
   reads <- newIORef (0 :: Int)
   counted <- wrap disk {readText = \p -> (if "/.olifant/config.toml" `isSuffixOf` p then modifyIORef' reads (+ 1) else pure ()) >> readText disk p}
-  let ports = Ports counted noSyntax (const noChecker) (const noVerifier) (const noRunner) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+  let ports = Ports counted noSyntax (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef reads)
 

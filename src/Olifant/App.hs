@@ -94,6 +94,8 @@ data Ports = Ports
   , pVerifier :: Cancel -> Verifier IO
   , -- | runs a hole's tests (`verify = "tests"`), killed when the token trips
     pTester :: Cancel -> Runner IO
+  , -- | 'pTester' stopped after that many seconds (a mutant's run: the judge's own timeout)
+    pTesterWithin :: Int -> Cancel -> Runner IO
   , pNow :: IO UTCTime
   , pUserConfigDir :: Maybe FilePath
   , pHomeDir :: Maybe FilePath

@@ -2,7 +2,7 @@
 -- or a Haskell transform of the matched text), the sites they fire on within
 -- the lines in scope, and the waivers a line can carry. Running the mutants
 -- is `Olifant.Block`'s judge, not this module's.
-module Olifant.Mutate (Mutant (..), Verdict (..), judge, Operator (..), mutantsOf, waiverOn, waiverLine, capMutants) where
+module Olifant.Mutate (Mutant (..), Verdict (..), judge, judgeTimeout, Operator (..), mutantsOf, waiverOn, waiverLine, capMutants) where
 
 import Data.Aeson (Value)
 import Data.ByteString qualified as BS
@@ -16,7 +16,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Olifant.Language (Language (..), Match (..), Rewrite (..), Syntax (..), SyntaxFailure)
-import Olifant.Mutate.Run (Verdict (..), judge)
+import Olifant.Mutate.Run (Verdict (..), judge, judgeTimeout)
 import Olifant.Mutate.Types (Mutant (..))
 
 -- | A way to break code: an ast-grep rule with a fix that rewrites each match,

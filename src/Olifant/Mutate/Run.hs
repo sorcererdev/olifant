@@ -1,5 +1,5 @@
 -- | Judging mutants: each one's file run over the project in its own shadow.
-module Olifant.Mutate.Run (Verdict (..), judge) where
+module Olifant.Mutate.Run (Verdict (..), judge, judgeTimeout) where
 
 import Control.Concurrent.Async (forConcurrently)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
@@ -32,3 +32,9 @@ judge runner workers lang path files testFile passing mutants
           runTestsIn runner lang [testFile] (M.insert path (muText m) files)
             <&> fmap (\run -> (m, if isNothing (trBroken run) && not (any ((`elem` passing) . fst) (trFailed run)) then Survived else Killed))
       pure (sequence results)
+
+-- | A mutant's run may take five times the baseline run's wall time (in
+-- seconds), at least 5 s and at most 120 s: a mutant that loops forever
+-- (a timeout is a kill) holds the judge seconds, not minutes.
+judgeTimeout :: Double -> Int
+judgeTimeout secs = min 120 (max 5 (ceiling (5 * secs)))
