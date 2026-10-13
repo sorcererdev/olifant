@@ -108,10 +108,10 @@ data ServerState = ServerState
     -- of its mutants were killed when last judged; the next block's number
     ssBlocks :: IORef (Map FilePath (Block, Int))
   , ssNextBlock :: IORef Int
-  , -- | a document's version as the editor has it now, not as this state
-    -- saw it (the adapter's live documents): long work (a draft) asks it
-    -- before its result lands. None: this state's documents are the truth
-    ssLiveVersion :: Maybe (FilePath -> IO (Maybe Int))
+  , -- | a document as the editor has it now (its version and text), not as
+    -- this state saw it (the adapter's live documents): long work (a draft)
+    -- asks it before its result lands. None: this state's documents are the truth
+    ssLiveDoc :: Maybe (FilePath -> IO (Maybe (Int, Text)))
   , -- | each block's file as it was when its test last ran (or it began):
     -- what an edit is told apart from (inside the span, or not)
     ssBlockSeen :: IORef (Map FilePath Text)

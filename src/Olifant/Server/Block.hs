@@ -62,7 +62,7 @@ import Olifant.Newness (newLinesOf)
 import Olifant.Server.Actions (fillerFor)
 import Olifant.Server.Edits (FileEdit (..), editsOfPlan, smallestChange)
 import Olifant.Server.BlockJev (orderSurvivors)
-import Olifant.Server.State (ServerState (..), deciderFor, projectFor)
+import Olifant.Server.State (ServerState (..), deciderFor, projectFor, workspaceOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, makeRelative, splitDirectories, (</>))
 
@@ -220,16 +220,22 @@ blockDraft progress path = withBlock path $ \s root project lang b killed ->
               pure (Left why)
 
 -- | A failed draft put its block's state back: pushed, or, when the file
--- is no longer the text that state was established on (the person typed
--- while the model wrote, and that edit's test was the draft's to settle),
--- tested again first, as an edit is.
+-- as the editor has it now is no longer the text that state was
+-- established on (the person typed while the model wrote: that edit's
+-- test was the draft's to settle, or is still running and will be
+-- stale), tested again first, as an edit is, on that text.
 restored :: ServerState -> FilePath -> Project -> Language -> Int -> Block -> IO ()
 restored s root project lang killed back = do
-  now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile back))
+  let file = blockFile back
+  live <- maybe (pure Nothing) ($ file) (ssLiveDoc s)
+  now <- maybe (fromMaybe "" <$> readText (prWorkspace project) (makeRelative root file)) (pure . snd) live
+  -- the project as the editor has it now, for the test
+  let current = maybe s (\doc -> s {ssDocs = M.insert file doc (ssDocs s)}) live
+      project' = project {prWorkspace = workspaceOf current root}
   if now == blockOn back
     then pushed s back killed
     else
-      testNow s root project lang back killed False >>= \case
+      testNow current root project' lang back killed False >>= \case
         Right tested -> do
           killed' <- maybe killed snd . M.lookup (blockFile tested) <$> readIORef (ssBlocks s)
           pushed s tested killed'
@@ -296,7 +302,7 @@ draftIn progress s root project lang b drafting killed filler = do
       options = planOptions {poFiller = Just recording, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
-  latest <- lift (maybe (pure started) ($ file) (ssLiveVersion s))
+  latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
   when (latest /= started) (throwE "the file changed while drafting; your text stands")
   tried <- lift (readIORef attempts)
   (planned, outcome, edits) <- case planHoles plan of

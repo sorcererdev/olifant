@@ -129,7 +129,7 @@ serverDefinition ports = do
   state <- newServerState ports >>= newMVar
   -- a draft asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
-  modifyMVar_ state (\s -> pure s {ssLiveVersion = Just (\path -> fmap fst . M.lookup path . ssDocs <$> readMVar state)})
+  modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
   env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel
   pure
     ServerDefinition

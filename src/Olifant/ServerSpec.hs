@@ -226,10 +226,10 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocks redOnStub []
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
-    (_, moved) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 2))}
+    (_, moved) <- blockDraft ignore (root </> moduleRel) s {ssLiveDoc = Just (\_ -> pure (Just (2, stubbed)))}
     either id (const "drafted") moved `shouldBe` "the file changed while drafting; your text stands"
     fmap (unversioned . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (unversioned b)
-    (_, Right (b', edits)) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 1))}
+    (_, Right (b', edits)) <- blockDraft ignore (root </> moduleRel) s {ssLiveDoc = Just (\_ -> pure (Just (1, stubbed)))}
     blockState b' `shouldBe` Green
     map draftBy (blockDrafts b') `shouldBe` ["recorded"]
     blockSpan b' `shouldBe` (6, 6)
@@ -526,7 +526,7 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocks redOnStub []
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
-    (_, Left _) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 2))}
+    (_, Left _) <- blockDraft ignore (root </> moduleRel) s {ssLiveDoc = Just (\_ -> pure (Just (2, stubbed)))}
     fmap (unversioned . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (unversioned b)
   it "(I1) an edit's test that finishes after a reject does nothing" $ do
     gate <- newGate
@@ -668,6 +668,31 @@ blockSpecs = describe "blocks" $ do
     (_, tested) <- wait testing
     tested `shouldBe` Nothing
     putMVar release ()
+    (_, Left _) <- wait drafting
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(I-1) an edit newer than the draft, its test still running when the draft fails: the block ends on the edit's verdict" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    (filler, entered, release) <- stalledFiller
+    -- the editor's documents now, as the adapter holds them
+    live <- newIORef (1, stubbed)
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler, ssLiveDoc = Just (\_ -> Just <$> readIORef live)}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    -- the draft plans on the stub
+    drafting <- async (blockDraft ignore (root </> moduleRel) s)
+    takeMVar entered
+    -- the person types the body; the pause's test starts (held)
+    writeIORef live (2, written)
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s))
+    waitUntil ((>= 1) <$> gEntered gate)
+    -- the model gives up: the state before the draft is put back
+    putMVar release ()
+    waitUntil (maybe False (\(b, _) -> case blockState b of Drafting _ -> False; _ -> True) <$> blockFor (root </> moduleRel) s)
+    -- then the edit's test result arrives
+    gOpen gate
+    void (wait testing)
     (_, Left _) <- wait drafting
     Just (b, _) <- blockFor (root </> moduleRel) s
     blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
