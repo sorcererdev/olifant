@@ -39,6 +39,7 @@ import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
+import Olifant.Block (Block)
 import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Model (ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
@@ -99,6 +100,14 @@ data ServerState = ServerState
     ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer))
   , ssAsking :: IORef (Set (FilePath, Text))
   , ssOnDecided :: IORef (IO ())
+  , -- | the loop's pending block in each file (absolute path), with how many
+    -- of its mutants were killed when last judged; the next block's number
+    ssBlocks :: IORef (Map FilePath (Block, Int))
+  , ssNextBlock :: IORef Int
+  , -- | a document's version as the editor has it now, not as this state
+    -- saw it (the adapter's live documents): long work (a draft) asks it
+    -- before its result lands. None: this state's documents are the truth
+    ssLiveVersion :: Maybe (FilePath -> IO (Maybe Int))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -108,7 +117,9 @@ newServerState ports = do
   decisions <- newIORef M.empty
   asking <- newIORef S.empty
   onDecided <- newIORef (pure ())
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided)
+  blocks <- newIORef M.empty
+  nextBlock <- newIORef 1
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided blocks nextBlock Nothing)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

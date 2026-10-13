@@ -59,8 +59,19 @@ module Olifant.Server
   , Preview (..)
   , previewFor
   , stepsPlanWith
+  , blockFor
+  , blockBegin
+  , blockDraft
+  , blockTest
+  , blockJudge
+  , blockAccept
+  , blockReject
+  , blockJson
+  , appendStep
+  , underTest
   ) where
 
+import Olifant.Server.Block (appendStep, blockAccept, blockBegin, blockDraft, blockFor, blockJson, blockJudge, blockReject, blockTest, underTest)
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress)
 import Olifant.Server.Holes (Hole (..), fillHoleEdits, fillHolePlan, holeAt, holesFor)
 import Olifant.Server.Regions (regionEdits)

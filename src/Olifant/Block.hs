@@ -45,7 +45,7 @@ data Block = Block
     blockKind :: Kind,
     blockBase :: Text,
     blockSpan :: (Int, Int),
-    blockTest :: TestId,
+    blockTestId :: TestId,
     blockState :: BlockState,
     blockDrafts :: [Draft]
   }
@@ -142,7 +142,7 @@ survivors b = case blockState b of
 hud :: Block -> Text
 hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
   where
-    testName = snd (T.breakOnEnd "::" (blockTest b))
+    testName = snd (T.breakOnEnd "::" (blockTestId b))
     draftPart
       | null (blockDrafts b) = ""
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "

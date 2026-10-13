@@ -1,6 +1,23 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Olifant.ServerSpec (spec) where
 
 import Control.Concurrent (threadDelay)
+import Control.Monad (forM)
+import Data.Aeson (Value (..), (.:))
+import Data.Aeson qualified as J
+import Data.Aeson.Types (parseMaybe)
+import Data.ByteString.Lazy qualified as BL
+import Data.Char (isAlphaNum)
+import Data.Map.Strict qualified as M
+import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as TIO
+import Olifant.Block (Block (..), BlockState (Accepted, Green, Judged, Red, Rejected), Draft (..), hud, open, survivors)
+import Olifant.Block qualified as Block
+import Olifant.Mutate (Mutant (..))
+import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
+import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
+import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (wait)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isSuffixOf)
@@ -107,6 +124,187 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
     b <- submit jobs "suggest /r1/x.py" 50 (\_ -> modifyIORef' ran (++ ["b"]))
     (,) <$> wait a <*> wait b `shouldReturn` (Nothing, Just ())
     readIORef ran `shouldReturn` ["b"]
+  blockSpecs
+
+-- | The loop's blocks over a tiny Python project (the real python-htmx
+-- pack, in memory), a scripted test runner and a syntax that knows the one
+-- container and the one boundary site the cases need.
+blockSpecs :: Spec
+blockSpecs = describe "blocks" $ do
+  it "(a) begin on a red test finds the function under test and starts Red" $ do
+    (s, _) <- blocks redOnStub []
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    blockFile b `shouldBe` root </> moduleRel
+    blockSpan b `shouldBe` (6, 6)
+    blockTestId b `shouldBe` testId
+    blockState b `shouldSatisfy` \case Red _ -> True; _ -> False
+    hud b `shouldSatisfy` ("test_closes_a_table" `T.isInfixOf`)
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+    steps s >>= (`shouldSatisfy` ("block 1\tbegin\tperson" `T.isInfixOf`))
+  it "(b) a second begin in the same file is refused while one is pending; a module with no test says to write one" $ do
+    (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, again) <- blockBegin ignore (root </> moduleRel) 6 s
+    again `shouldSatisfy` either ("pending" `T.isInfixOf`) (const False)
+    (_, lonely) <- blockBegin ignore (root </> "src/shop/lonely.py") 2 s
+    lonely `shouldSatisfy` either ("no test for this module yet" `T.isInfixOf`) (const False)
+  it "(c) draft lands only if the document is still the version it planned against (Review Focus 1)" $ do
+    (s0, _) <- blocks redOnStub []
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    (_, moved) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 2))}
+    either id (const "drafted") moved `shouldBe` "the file changed while drafting; your text stands"
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+    (_, Right (b', edits)) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 1))}
+    blockState b' `shouldBe` Green
+    map draftBy (blockDrafts b') `shouldBe` ["recorded"]
+    blockSpan b' `shouldBe` (6, 6)
+    map feVersion edits `shouldBe` [Just 1]
+    map feText edits `shouldSatisfy` any ("return int(seats > 2)" `T.isInfixOf`)
+    steps s >>= (`shouldSatisfy` ("\tdraft\trecorded\tgreen" `T.isInfixOf`))
+  it "(d) a test that cannot run makes the block Broken and skips judging (Review Focus 2)" $ do
+    (s, runs) <- blocks (const (TestRun [] [] (Just "ImportError: no module named shop"))) []
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    blockState b `shouldBe` Block.Broken "ImportError: no module named shop"
+    open b `shouldBe` ["test", "reject"]
+    (_, judged) <- blockJudge (root </> moduleRel) s
+    judged `shouldSatisfy` either (const True) (const False)
+    runs `shouldReturn` 1
+  it "(e) with no [model], draft says so and the block stays Red (Review Focus 5)" $ do
+    (s, _) <- blocks redOnStub []
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    (_, drafted) <- blockDraft ignore (root </> moduleRel) s
+    drafted `shouldSatisfy` either ("no model is configured" `T.isInfixOf`) (const False)
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+  it "(f) a green test is judged; survivors come from the span's new lines only" $ do
+    -- green for the written body and for its boundary mutant (seats >= 2)
+    (s0, _) <- blocks redOnStub []
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s0
+    let s = changeDoc (root </> moduleRel) 2 written s0
+    (_, Right b) <- blockTest (root </> moduleRel) s
+    blockSpan b `shouldBe` (6, 6)
+    -- `n > 0` on line 10 is a boundary site too, outside the span: no mutant
+    map (\m -> (muLine m, muOperator m, muFrom m, muTo m)) (survivors b) `shouldBe` [(6, "boundary", ">", ">=")]
+    Just (_, killed) <- blockFor (root </> moduleRel) s
+    killed `shouldBe` 0
+    let json = blockJson b killed
+    field "state" json `shouldBe` Just (String "judged")
+    field "killed" json `shouldBe` Just (Number 0)
+    log' <- steps s
+    log' `shouldSatisfy` ("\ttest\tperson\tgreen" `T.isInfixOf`)
+    log' `shouldSatisfy` ("\tjudge\tmutation\t0/1 killed" `T.isInfixOf`)
+  it "(g) accept after a clean judge; reject restores the base text; both finish the block and log a step" $ do
+    -- the mutant fails the test: killed
+    let kills t = if "seats >= 2" `T.isInfixOf` t then failing "assert 0 == 1" else redOnStub t
+    (s0, _) <- blocks kills []
+    -- a hand-written green body, begun on: judged at once
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right b) <- blockBegin ignore (root </> moduleRel) 6 s
+    blockState b `shouldBe` Judged []
+    (_, Right (done, [])) <- blockAccept (root </> moduleRel) s
+    blockState done `shouldBe` Accepted
+    blockFor (root </> moduleRel) s `shouldReturn` Nothing
+    -- a red block, typed green, then rejected: back to the stub
+    let s1 = openDoc (root </> moduleRel) 1 stubbed s0
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s1
+    let s2 = changeDoc (root </> moduleRel) 2 written s1
+    (_, Right _) <- blockTest (root </> moduleRel) s2
+    (_, Right (gone, [edit])) <- blockReject (root </> moduleRel) s2
+    blockState gone `shouldBe` Rejected
+    (fePath edit, feVersion edit) `shouldBe` (root </> moduleRel, Just 2)
+    applyChange (feRange edit) (feText edit) written `shouldBe` stubbed
+    blockFor (root </> moduleRel) s2 `shouldReturn` Nothing
+    log' <- steps s
+    log' `shouldSatisfy` ("block 1\taccept\tperson" `T.isInfixOf`)
+    log' `shouldSatisfy` ("block 2\treject\tperson" `T.isInfixOf`)
+    log' `shouldSatisfy` ("\tbegin\t" `T.isInfixOf`)
+  where
+    ignore = const (pure ())
+    steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
+    field k v = parseMaybe (J.withObject "block" (.: k)) v :: Maybe Value
+
+root, moduleRel, testRel :: FilePath
+root = "/r"
+moduleRel = "src/shop/close_table.py"
+testRel = "src/shop/close_table__test.py"
+
+testId :: Text
+testId = "src/shop/close_table__test.py::test_closes_a_table"
+
+stubbed, written, testText :: Text
+stubbed = T.unlines ["class CloseTable:", "    def __init__(self) -> None:", "        self.closed = 0", "", "    def handle(self, seats: int) -> int:", "        raise NotImplementedError(\"later\")", "", "", "def unrelated(n: int) -> bool:", "    return n > 0"]
+written = T.replace "raise NotImplementedError(\"later\")" "return int(seats > 2)" stubbed
+testText = T.unlines ["from shop.close_table import CloseTable", "", "", "def test_closes_a_table() -> None:", "    table = CloseTable()", "    assert table.handle(4) == 1"]
+
+failing :: Text -> TestRun
+failing why = TestRun [] [(testId, Failure (Just 6) why "")] Nothing
+
+-- | Red while the body is the stub, green once written.
+redOnStub :: Text -> TestRun
+redOnStub t
+  | "NotImplementedError" `T.isInfixOf` t = failing "NotImplementedError: later"
+  | otherwise = TestRun [testId] [] Nothing
+
+-- | A server over /r (the module, its test, recorded fills; the python-htmx
+-- pack at /pack) whose runner answers by the module's text, and how many
+-- runs it made.
+blocks :: (Text -> TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
+blocks verdict extra = do
+  pack <- readTree =<< canonicalizePath "packs/python-htmx"
+  (disk, _) <-
+    memoryWorkspace $
+      [("/pack" </> p, t) | (p, t) <- M.toList pack]
+        ++ [ (root </> ".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")
+           , (root </> moduleRel, stubbed)
+           , (root </> testRel, testText)
+           , (root </> "fills.toml", "[fills]\nbody = \"return int(seats > 2)\"\n") ]
+        ++ [(root </> p, t) | (p, t) <- extra]
+  runs <- newIORef (0 :: Int)
+  let runner = Runner $ \_ _ files -> do
+        modifyIORef' runs (+ 1)
+        pure (Right (verdict (M.findWithDefault "" moduleRel files)))
+      ports = Ports disk blockSyntax (const noChecker) (const noVerifier) (const runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+  s <- newServerState ports
+  pure (s, readIORef runs)
+
+-- | `function handle`'s body (the lines under its def, deeper than it), and
+-- a boundary rewrite (`a > b` to `a >= b`) at every `>`; nothing else.
+blockSyntax :: Syntax IO
+blockSyntax = Syntax query rewrite
+  where
+    query _ rule src
+      | "^handle$" `T.isInfixOf` TE.decodeUtf8 (BL.toStrict (J.encode rule)) = pure (Right (body src))
+      | otherwise = pure (Right [])
+    rewrite _ rule _ src
+      | parseMaybe (J.withObject "rule" (.: "pattern")) rule == Just ("$A > $B" :: Text) = pure (Right (boundaries src))
+      | otherwise = pure (Right [])
+    indentOf = T.length . T.takeWhile (== ' ')
+    body src =
+      let ls = zip [0 ..] (T.splitOn "\n" src)
+       in case [(i, l) | (i, l) <- ls, "def handle(" `T.isInfixOf` l] of
+            [(i, d)] -> case takeWhile (\(_, l) -> not (T.null (T.strip l)) && indentOf l > indentOf d) (drop (i + 1) ls) of
+              under@((first, _) : _) -> let (end, l) = last under in [Match (first, 8) (end, T.length l) "" (0, 0)]
+              [] -> []
+            _ -> []
+    boundaries src =
+      [ Rewrite (i, col) (i, col + T.length w) w (T.replace " > " " >= " w) (offset + col, offset + col + T.length w)
+      | (i, l, offset) <- zip3 [0 ..] (T.splitOn "\n" src) (scanl (\o x -> o + T.length x + 1) 0 (T.splitOn "\n" src))
+      , " > " `T.isInfixOf` l
+      , let (pre, post) = T.breakOn " > " l
+            a = T.takeWhileEnd isAlphaNum pre
+            w = a <> " > " <> T.takeWhile isAlphaNum (T.drop 3 post)
+            col = T.length pre - T.length a
+      ]
+
+readTree :: FilePath -> IO (M.Map FilePath Text)
+readTree dir = M.fromList <$> go dir
+  where
+    go d = do
+      names <- listDirectory d
+      fmap concat . forM names $ \n -> do
+        let p = d </> n
+        isDir <- doesDirectoryExist p
+        if isDir then go p else (\t -> [(makeRelative dir p, t)]) <$> TIO.readFile p
 
 -- | Two roots: /r1 (commands-use-ports off), /r2 (error) holding a nested
 -- project /r2/a; and how often a project config was read.
