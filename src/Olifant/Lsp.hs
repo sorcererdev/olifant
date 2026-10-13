@@ -554,7 +554,7 @@ data BlockAnswer = BlockAnswer (Either FilePath Block) [(Key.Key, Value)]
 blockRequest :: KnownSymbol m => Env -> Proxy m -> (Env -> FilePath -> Value -> LspM () Moved) -> Handlers (LspM ())
 blockRequest env method work = requestHandler (SMethod_CustomMethod method) $ \req respond -> inBackground env req respond $ \job ->
   case documentPath (req ^. L.params) of
-    Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "a block move needs a textDocument" Nothing))
+    Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "a magic circle move needs a textDocument" Nothing))
     Just path ->
       work job path (req ^. L.params) >>= \case
         Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
@@ -579,7 +579,7 @@ moved run answer =
     Left why -> pure (Left why)
     Right a -> answer a <&> \(fields, changed) -> case changed of
       b : _ -> Right (BlockAnswer (Right b) fields, changed)
-      [] -> Left "the move changed no block"
+      [] -> Left "the move changed no magic circle"
 
 -- | Draft or next: under progress (the model writes), with its edits.
 drafted :: Env -> FilePath -> LspM () Moved

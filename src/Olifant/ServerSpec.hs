@@ -158,7 +158,7 @@ blockSpecs = describe "blocks" $ do
     (s, _) <- blocks redOnStub []
     (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
     (_, again) <- blockBegin ignore (root </> moduleRel) 6 s
-    again `shouldSatisfy` either ("pending" `T.isInfixOf`) (const False)
+    again `shouldSatisfy` either ("a magic circle is open" `T.isInfixOf`) (const False)
   it "(I5) on a module with no test file, begin opens the stub as the new file's: the module's import first" $ do
     (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
     (_, Right (tb, Just (file, at, body, edits))) <- blockStart ignore (root </> "src/shop/lonely.py") 2 s
@@ -169,7 +169,7 @@ blockSpecs = describe "blocks" $ do
     fmap fst <$> blockFor file s `shouldReturn` Just tb
     -- one block per file: the function cannot begin again meanwhile
     (_, again) <- blockBegin ignore (root </> "src/shop/lonely.py") 2 s
-    again `shouldSatisfy` either ("pending" `T.isInfixOf`) (const False)
+    again `shouldSatisfy` either ("a magic circle is open" `T.isInfixOf`) (const False)
   it "(I5) begin on a function no test calls: the stub at the end of its test file, drafted red at its assertion, accepted; then the function begins on it" $ do
     (s0, _) <- blocksOn killedBy []
     let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
@@ -334,8 +334,6 @@ blockSpecs = describe "blocks" $ do
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
     map muLine (survivors judged) `shouldBe` [6]
-    (_, nowhere) <- blockKill (root </> moduleRel) 3 s
-    nowhere `shouldSatisfy` either ("no survivor" `T.isInfixOf`) (const False)
     (_, Right (code, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
     (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
     body `shouldSatisfy` ("def test_${1:name}()" `T.isInfixOf`)
@@ -361,6 +359,23 @@ blockSpecs = describe "blocks" $ do
     blockState refused `shouldSatisfy` \case Red f -> "does not notice the mutant" `T.isInfixOf` fMessage f; _ -> False
     steps s >>= (`shouldSatisfy` ("block 1\tkill\tperson\tboundary on line 6" `T.isInfixOf`))
     steps s >>= (`shouldSatisfy` ("block 2\tbegin\tperson" `T.isInfixOf`))
+  it "(h2) kill off a survivor's line takes the top-ranked survivor: the stub and the test block are that mutant's; with none left it is refused" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    let [boundary] = survivors judged
+    (_, Right (code, testFile, at, body)) <- blockKill (root </> moduleRel) 3 s
+    (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
+    body `shouldSatisfy` ("def test_${1:name}()" `T.isInfixOf`)
+    Just (tb, 0) <- blockFor testFile s
+    (blockSpan tb, blockKind tb) `shouldBe` ((9, 11), Block.TestFor (Just boundary))
+    steps s >>= (`shouldSatisfy` ("block 1\tkill\tperson\tboundary on line 6" `T.isInfixOf`))
+    (w0, _) <- blocks redOnStub []
+    let w = openDoc (root </> moduleRel) 1 written w0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 w
+    (_, Right _) <- blockWaive (root </> moduleRel) 6 "inclusive by design" w
+    (_, none) <- blockKill (root </> moduleRel) 3 w
+    either id (const "killed") none `shouldBe` "no survivor left to kill"
   it "(i) waive writes the comment on the survivor's line and reopens accept" $ do
     (s0, _) <- blocks redOnStub []
     let s = openDoc (root </> moduleRel) 1 written s0
@@ -435,7 +450,7 @@ blockSpecs = describe "blocks" $ do
       waitUntil (any (all muDim . survivors) <$> readIORef pushed)
       fmap (map muDim . survivors . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just [True]
       -- the order is a move: one begun on the block before it is stale, the order stands
-      (settle s root 0 "waive" "why" (Block.Waive 6 "boundary" "why") judged >>= either pure (const (pure "landed"))) `shouldReturn` "the block moved on"
+      (settle s root 0 "waive" "why" (Block.Waive 6 "boundary" "why") judged >>= either pure (const (pure "landed"))) `shouldReturn` "the magic circle moved on"
       fmap (map muDim . survivors . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just [True]
   it "(i2) a waive on a line with two operators' survivors writes a comment for each; judged again, both stay waived" $ do
     (s0, _) <- blocksOnSyntax numbersToo (Right . redOnStub . M.findWithDefault "" moduleRel) []
@@ -545,7 +560,7 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockReject (root </> moduleRel) s
     gOpen gate
     (_, landed) <- wait drafting
-    either id (const "landed") landed `shouldBe` "the block moved on"
+    either id (const "landed") landed `shouldBe` "the magic circle moved on"
     blockFor (root </> moduleRel) s `shouldReturn` Nothing
   it "(I1) a draft that fails puts the block's state back" $ do
     (s0, _) <- blocks redOnStub []
@@ -576,7 +591,7 @@ blockSpecs = describe "blocks" $ do
     gOpen gate
     results <- mapM (fmap snd . wait) [one, two]
     length [() | Right _ <- results] `shouldBe` 1
-    [why | Left why <- results] `shouldSatisfy` all ("pending" `T.isInfixOf`)
+    [why | Left why <- results] `shouldSatisfy` all ("a magic circle is open" `T.isInfixOf`)
     M.size <$> readIORef (ssBlocks s) `shouldReturn` 1
   it "(I2) a draft that fails its test writes its last attempt (never the placeholder) and keeps it as a red draft" $ do
     (s0, _) <- blocks (const (failing "assert 0 == 1")) []
@@ -942,7 +957,7 @@ blockSpecs = describe "blocks" $ do
     -- the first judge lands: it judged the text before, so the green stands
     putMVar r1 ()
     (_, stale) <- wait first'
-    either id (const "landed") stale `shouldBe` "the block moved on"
+    either id (const "landed") stale `shouldBe` "the magic circle moved on"
     fmap (blockState . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just Green
     steps s >>= (`shouldSatisfy` ("\tjudge\tmutation\tstale: 0/1 killed" `T.isInfixOf`))
     putMVar r2 ()

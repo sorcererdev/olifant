@@ -107,14 +107,14 @@ blockStart progress path line s0 =
           ws = prWorkspace project
           syntax = pSyntax (ssPorts s)
       lang <- maybe (throwE ("no language knows " <> T.pack rel)) pure (languageFor (catalogLanguages (prCatalog project)) rel)
-      td <- maybe (throwE (langName lang <> " has no [test] table: a block needs its tests")) pure (langTest lang)
+      td <- maybe (throwE (langName lang <> " has no [test] table: a magic circle needs its tests")) pure (langTest lang)
       paths <- lift (listFiles ws ".")
       let moduleRel = fromMaybe rel (listToMaybe [m | m <- paths, m /= rel, testsForFile td m == rel])
           onTest = moduleRel /= rel
           testRel = if onTest then rel else testsForFile td rel
           file = normalisePath (root </> moduleRel)
           testFile = normalisePath (root </> testRel)
-          pendingHere = "a block is pending in this file: accept or reject it first"
+          pendingHere = "a magic circle is open in this file: accept or reject it first"
       busy <- lift (isJust <$> blockFor file s)
       when busy (throwE pendingHere)
       moduleText <- lift (readText ws moduleRel) >>= maybe (throwE ("cannot read " <> T.pack moduleRel)) pure
@@ -209,7 +209,7 @@ blockDraft :: (ProgressEvent -> IO ()) -> FilePath -> ServerState -> IO (ServerS
 blockDraft progress path = withBlock path $ \s root project lang b killed ->
   fillerFor True s project >>= \case
     Left why -> pure (Left why)
-    Right Nothing -> pure (Left "no model is configured ([model] in .olifant/config.toml); write the body yourself, the block still judges it")
+    Right Nothing -> pure (Left "no model is configured ([model] in .olifant/config.toml); write the body yourself, the magic circle still judges it")
     Right (Just filler) -> do
       -- a test block's stub not ready to draft is refused before anything moves
       text <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
@@ -664,7 +664,7 @@ functionSpan syntax lang name text = either (const Nothing) (\(a, z) -> Just (a 
 withBlock :: FilePath -> (ServerState -> FilePath -> Project -> Language -> Block -> Int -> IO (Either Text a)) -> ServerState -> IO (ServerState, Either Text a)
 withBlock path work s0 =
   blockFor path s0 >>= \case
-    Nothing -> pure (s0, Left "no block is pending in this file; begin one on a red test")
+    Nothing -> pure (s0, Left "no magic circle is open in this file; begin one on a red test")
     Just (b, killed) ->
       projectFor (blockFile b) s0 >>= \case
         (s, Nothing) -> pure (s, Left (T.pack (blockFile b) <> " is in no Olifant project"))
@@ -698,7 +698,7 @@ settleOn s root killed name result on move b = case step move b of
       _ -> (m, False)
     if landed
       then appendStep (ssPorts s) root stored name result >> pure (Right stored)
-      else appendStep (ssPorts s) root b' name ("stale: " <> result) >> pure (Left "the block moved on")
+      else appendStep (ssPorts s) root b' name ("stale: " <> result) >> pure (Left "the magic circle moved on")
 
 -- | Store a new block in its file unless a block is pending there or in
 -- one of OTHERS (its test file): one atomic step, so two begins at once

@@ -104,10 +104,30 @@ spec = describe "Olifant.Block" $ do
     -- next on a clean judged block, failed: clean judged again, accept open
     let j = step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0))
     open (step' DraftFailed (step' StartDraft j)) `shouldSatisfy` ("accept" `elem`)
-  it "(h) the HUD says where we are" $ do
-    hud b0 `shouldBe` "▸ test_f · red: AssertionError: assert None == Ok(None)"
-    hud (step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 1 survivor"
+  it "(h) the HUD says where we are, and the next step" $ do
+    hud b0 `shouldBe` "▸ test_f · red: AssertionError: assert None == Ok(None) · draft"
+    hud (step' (Drafted "y" "qwen" (Left red)) b0) `shouldBe` "▸ test_f · draft 1 · red: AssertionError: assert None == Ok(None)"
+    hud (step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 1 survivor · kill or waive"
+    hud (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 2 survivors · kill or waive each"
+    hud (step' (Waive 2 "number" "r") (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0))) `shouldBe` "▸ test_f · draft 1 · 1 survivor · kill or waive"
     hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · clean ✓ accept"
+  it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
+    let g = step' (Drafted "x" "qwen" (Right ())) b0
+        first = m {muLine = 5, muOperator = "number", muFrom = "1", muTo = "2"}
+        onTwo = m
+        third = m {muLine = 7, muOperator = "compare"}
+        j = step' (Judge [first, onTwo, third]) g
+    killTarget 2 j `shouldBe` Right onTwo
+    killTarget 9 j `shouldBe` Right first
+    step (Kill 9) j `shouldBe` Right j
+    -- a waived survivor is passed over: the next in order is the top
+    let w = step' (Waive 5 "number" "any count") j
+    killTarget 9 w `shouldBe` Right onTwo
+    killTarget 5 w `shouldBe` Right onTwo
+    let none = step' (Waive 7 "compare" "r") (step' (Waive 2 "boundary" "r") w)
+    killTarget 2 none `shouldBe` Left "no survivor left to kill"
+    step (Kill 2) none `shouldBe` Left "no survivor left to kill"
+    killTarget 2 g `shouldSatisfy` isLeft
   it "(i) property: Accepted is reachable only through a clean Judged" $ hedgehog $ do
     moves <- forAll (Gen.list (Range.linear 0 12) genMove)
     let walk (b, lastJudgedClean) mv = case step mv b of
