@@ -52,7 +52,7 @@ import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
-import Olifant.Workspace (Workspace (..))
+import Olifant.Workspace (Workspace (..), normalisePath)
 import Olifant.Server
 import Olifant.Migration (MigrationReport, migrationJson)
 import Data.Foldable qualified as F
@@ -233,9 +233,9 @@ handlers env =
             let version = fromIntegral (virtualFileVersion vf)
             update env (changeDoc path version (virtualFileText vf))
             -- a block in this file: tested again once typing settles
-            hasBlock <- liftIO (M.member path <$> (readIORef . ssBlocks =<< readMVar (envState env)))
+            hasBlock <- liftIO (M.member (normalisePath path) <$> (readIORef . ssBlocks =<< readMVar (envState env)))
             lspEnv0 <- getLspEnv
-            if hasBlock then liftIO (blockLater env lspEnv0 path version) else pure ()
+            if hasBlock then liftIO (blockLater env lspEnv0 (normalisePath path) version) else pure ()
             -- what follows from this edit, once typing settles
             case lastEditedLine (msg ^. L.params . L.contentChanges) of
               Nothing -> pure ()

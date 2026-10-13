@@ -27,7 +27,9 @@ orderSurvivors s (Just decider) b moduleText testText onDone ms = do
     weigh m = do
       let mutated = lineOf (muLine m) (muText m)
           context = [("original", lineOf (muLine m) moduleText), ("mutant", mutated), ("tests", asserts)]
-          ask kind options = decision s decider (blockFile b, kind <> " " <> muOperator m <> " " <> T.pack (show (muLine m))) mutated (Question kind options [] context) onDone
+          -- each mutant its own: two of one operator may share a line
+          key kind = (blockFile b, T.intercalate " " [kind, muOperator m, T.pack (show (muLine m)), muFrom m, muTo m, mutated])
+          ask kind options = decision s decider (key kind) mutated (Question kind options [] context) onDone
       equivalent <- ask "mutant-equivalent" ["equivalent", "changes-behaviour"]
       matters <- ask "mutant-matters" ["low", "medium", "high"]
       let weight = case matters of

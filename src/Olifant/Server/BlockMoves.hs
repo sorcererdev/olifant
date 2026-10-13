@@ -9,7 +9,7 @@ import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
-import Data.List (find)
+import Data.List (find, nub)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -50,20 +50,22 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
     appendStep (ssPorts s) root tb "begin" (hud tb)
   pure (b', testFile, at, body)
 
--- | Waive the unwaived survivor on a line, for a reason: the comment that
--- says so, written on its line (one edit), and the survivor waived.
+-- | Waive the unwaived survivors on a line, for a reason: one comment per
+-- operator, written on its line (one edit), and each survivor waived.
 blockWaive :: FilePath -> Int -> Text -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockWaive path line reason0 = withBlock path $ \s root project lang b killed -> runExceptT $ do
   let reason = T.unwords (T.words reason0)
       rel = makeRelative root (blockFile b)
   when (T.null reason) (throwE "a waiver needs a reason")
-  m <- maybe (throwE "no unwaived survivor on that line") pure (find ((== line) . muLine) (survivors b))
+  let ops = nub [muOperator m | m <- survivors b, muLine m == line]
+  when (null ops) (throwE "no unwaived survivor on that line")
   now <- lift (readText (prWorkspace project) rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
-  let waived = waiverLine lang now line (muOperator m) reason
+  let waived = foldl (\acc op -> waiverLine lang acc line op reason) now ops
       (range, text) = smallestChange now waived
       version = fst <$> M.lookup (blockFile b) (ssDocs s)
-  b' <- ExceptT (settle s root killed "waive" (muOperator m <> ": " <> reason) (Waive line reason) b)
-  -- the editor applying the comment is not an edit of the block's
+      waiveAll b0 = foldl (\acc op -> acc >>= \bk -> ExceptT (settle s root killed "waive" (op <> ": " <> reason) (Waive line op reason) bk)) (pure b0) ops
+  b' <- waiveAll b
+  -- the editor applying the comments is not an edit of the block's
   lift (modifyIORef' (ssBlockSeen s) (M.insert (blockFile b) waived))
   pure (b', [FileEdit (blockFile b) version False range text | now /= waived])
 

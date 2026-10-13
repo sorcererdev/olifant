@@ -3,12 +3,12 @@
 module Olifant.ServerSpec (spec) where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM)
+import Control.Monad (forM, void)
 import Data.Aeson (Value (..), (.:))
 import Data.Aeson qualified as J
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, isDigit)
 import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
@@ -340,6 +340,34 @@ blockSpecs = describe "blocks" $ do
       map muDim (survivors judged) `shouldBe` [False]
       waitUntil (any (all muDim . survivors) <$> readIORef pushed)
       fmap (map muDim . survivors . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just [True]
+  it "(i2) a waive on a line with two operators' survivors writes a comment for each; judged again, both stay waived" $ do
+    (s0, _) <- blocksOnSyntax numbersToo (Right . redOnStub . M.findWithDefault "" moduleRel) []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    map (\m -> (muLine m, muOperator m)) (survivors judged) `shouldBe` [(6, "boundary"), (6, "number")]
+    (_, Right (b, [edit])) <- blockWaive (root </> moduleRel) 6 "by design" s
+    let commented = applyChange (feRange edit) (feText edit) written
+    T.lines commented !! 5 `shouldBe` "        return int(seats > 2)  # olifant: boundary ok: by design  # olifant: number ok: by design"
+    survivors b `shouldBe` []
+    open b `shouldSatisfy` elem "accept"
+    -- the comments carry both: judged again from the file, nothing survives unwaived
+    (_, Right again) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 2 commented s)
+    case blockState again of
+      Judged ms -> map (\m -> (muOperator m, fmap ("by design" `T.isPrefixOf`) (muWaived m))) ms `shouldBe` [("boundary", Just True), ("number", Just True)]
+      other -> expectationFailure ("expected Judged, got " <> show other)
+    survivors again `shouldBe` []
+  it "(k2) Jev asks about two mutants of one operator on one line once each, not without end" $ do
+    (s, _) <- blocks redOnStub []
+    asked <- newIORef (0 :: Int)
+    let b = Block.begin 1 (root </> moduleRel) Block.Code stubbed (1, 10) testId (Failure Nothing "" "")
+        twin from to line = Mutant 10 "boundary" from to (T.unlines [if i == 10 then line else l | (i, l) <- zip [1 :: Int ..] (T.lines stubbed)]) Nothing False
+        ms = [twin "a > b" "a >= b" "    return a >= b and c > d", twin "c > d" "c >= d" "    return a > b and c >= d"]
+        counting = De.Decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
+        -- as the server does: each answer orders again
+        again = void (orderSurvivors s (Just counting) b stubbed testText again ms)
+    again
+    threadDelay 300000
+    readIORef asked `shouldReturn` 4
   it "(l) when the kill's test block is accepted, the code block is judged again and the killed mutant is gone" $ do
     (s0, _) <- blocksOn killedBy []
     pushed <- newIORef []
@@ -362,6 +390,7 @@ blockSpecs = describe "blocks" $ do
     map (\(b, k) -> (blockId b, k)) <$> readIORef pushed `shouldReturn` [(blockId code, 1)]
     log' <- steps s
     log' `shouldSatisfy` ("block 2\taccept\tperson" `T.isInfixOf`)
+    log' `shouldSatisfy` ("block 1\trejudge\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("block 1\tjudge\tmutation\t1/1 killed" `T.isInfixOf`)
   where
     ignore = const (pure ())
@@ -428,7 +457,11 @@ blocksWith verdict = blocksOn (verdict . M.findWithDefault "" moduleRel)
 
 -- | 'blocksWith' whose runner answers by every file it is given.
 blocksOn :: (M.Map FilePath Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
-blocksOn verdict extra = do
+blocksOn = blocksOnSyntax blockSyntax
+
+-- | 'blocksOn' over another syntax.
+blocksOnSyntax :: Syntax IO -> (M.Map FilePath Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
+blocksOnSyntax syntax verdict extra = do
   pack <- readTree =<< canonicalizePath "packs/python-htmx"
   (disk, _) <-
     memoryWorkspace $
@@ -442,7 +475,7 @@ blocksOn verdict extra = do
   let runner = Runner $ \_ _ files -> do
         modifyIORef' runs (+ 1)
         pure (verdict files)
-      ports = Ports disk blockSyntax (const noChecker) (const noVerifier) (const runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+      ports = Ports disk syntax (const noChecker) (const noVerifier) (const runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef runs)
 
@@ -474,6 +507,25 @@ blockSyntax = Syntax query rewrite
             w = a <> " > " <> T.takeWhile isAlphaNum (T.drop 3 post)
             col = T.length pre - T.length a
       ]
+
+-- | 'blockSyntax', and every integer is a site of the `number` operator.
+numbersToo :: Syntax IO
+numbersToo = blockSyntax {querySyntax = query}
+  where
+    query lang rule src
+      | parseMaybe (J.withObject "rule" (.: "kind")) rule == Just ("integer" :: Text) = pure (Right (integers src))
+      | otherwise = querySyntax blockSyntax lang rule src
+    integers src =
+      [ Match (i, col) (i, col + T.length w) w (offset + col, offset + col + T.length w)
+      | (i, l, offset) <- zip3 [0 ..] (T.splitOn "\n" src) (scanl (\o x -> o + T.length x + 1) 0 (T.splitOn "\n" src))
+      , (col, w) <- runs 0 l
+      ]
+    runs col l = case T.break isDigit l of
+      (_, "") -> []
+      (pre, rest) ->
+        let (w, after') = T.span isDigit rest
+            start = col + T.length pre
+         in (start, w) : runs (start + T.length w) after'
 
 readTree :: FilePath -> IO (M.Map FilePath Text)
 readTree dir = M.fromList <$> go dir

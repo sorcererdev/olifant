@@ -56,9 +56,14 @@ data Move
   = StartDraft
   | Drafted Text Text (Either Failure ())
   | Edited (Int, Int) (Either Failure ())
+  | -- | the latest draft, as the editor applied it, tested: no draft of the person's
+    Applied (Int, Int) (Either Failure ())
   | CannotRun Text
   | Judge [Mutant]
-  | Waive Int Text
+  | -- | a judged block judged again (its test file gained a test): green until it is
+    Rejudge
+  | -- | the line, the operator, the reason
+    Waive Int Text Text
   | Kill Int
   | Accept
   | Reject
@@ -76,12 +81,16 @@ step mv b
       (StartDraft, s) | s /= Drafting && not (broken s) -> Right b {blockState = Drafting}
       (Drafted text by outcome, s) | s `elem` [Drafting, Green] || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
       (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b))
+      (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
+      (Rejudge, Judged _) -> Right b {blockState = Green}
       (CannotRun why, _) -> Right b {blockState = Broken why}
       (Judge ms, Green) -> Right b {blockState = Judged ms}
-      (Waive line reason, Judged ms)
-        | any (\m -> muLine m == line && isNothing (muWaived m)) ms ->
-            Right b {blockState = Judged [if muLine m == line then m {muWaived = Just reason} else m | m <- ms]}
+      (Waive line op reason, Judged ms)
+        | any (\m -> here m && isNothing (muWaived m)) ms ->
+            Right b {blockState = Judged [if here m then m {muWaived = Just reason} else m | m <- ms]}
         | otherwise -> Left "no unwaived survivor on that line"
+        where
+          here m = muLine m == line && muOperator m == op
       (Kill line, Judged ms)
         | any ((== line) . muLine) ms -> Right b
         | otherwise -> Left "no survivor on that line to kill"
@@ -107,9 +116,11 @@ moveName = \case
   StartDraft -> "draft"
   Drafted {} -> "draft"
   Edited {} -> "edit"
+  Applied {} -> "test"
+  Rejudge -> "rejudge"
   CannotRun _ -> "test"
   Judge _ -> "judge"
-  Waive _ _ -> "waive"
+  Waive {} -> "waive"
   Kill _ -> "kill"
   Accept -> "accept"
   Reject -> "reject"

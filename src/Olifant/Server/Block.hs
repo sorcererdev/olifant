@@ -196,10 +196,10 @@ testNow s root project lang b killed applied = do
           sp = if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
           (move, result) = case (trBroken run, trFailed run) of
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)
-            (_, (_, f) : _) -> (Edited sp (Left f), "red")
-            _ -> (Edited sp (Right ()), "green")
-          keepDrafts b' = if applied then b' {blockDrafts = blockDrafts b} else b'
-      settleBy s root killed "test" result (fmap keepDrafts . step move) b >>= \case
+            (_, (_, f) : _) -> (landed sp (Left f), "red")
+            _ -> (landed sp (Right ()), "green")
+          landed = if applied then Applied else Edited
+      settle s root killed "test" result move b >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
@@ -280,11 +280,13 @@ rejudgeFor s root project testFile = do
       let file = normalisePath (root </> moduleRel)
       M.lookup file <$> readIORef (ssBlocks s) >>= \case
         Just (cb, killed) | blockKind cb == Code, Judged _ <- blockState cb, Just lang <- languageFor langs moduleRel ->
-          judgeIn s root project lang cb {blockState = Green} killed >>= \case
-            Right cb' -> do
-              killed' <- maybe killed snd . M.lookup file <$> readIORef (ssBlocks s)
-              readIORef (ssOnBlock s) >>= \push -> push cb' killed'
-            Left _ -> pure ()
+          settle s root killed "rejudge" "its test file gained a test" Rejudge cb
+            >>= either (pure . Left) (\green -> judgeIn s root project lang green killed)
+            >>= \case
+              Right cb' -> do
+                killed' <- maybe killed snd . M.lookup file <$> readIORef (ssBlocks s)
+                readIORef (ssOnBlock s) >>= \push -> push cb' killed'
+              Left _ -> pure ()
         _ -> pure ()
 
 -- | The module a test file tests (by the language's `tests_for`).
@@ -371,15 +373,11 @@ withBlock path work s0 =
 -- | Take a move: the block as it now stands is kept (a finished one
 -- dropped), and the move logged.
 settle :: ServerState -> FilePath -> Int -> Text -> Text -> Move -> Block -> IO (Either Text Block)
-settle s root killed name result move = settleBy s root killed name result (step move)
-
--- | 'settle' with the move already taken (a block as the machine left it,
--- touched up).
-settleBy :: ServerState -> FilePath -> Int -> Text -> Text -> (Block -> Either Text Block) -> Block -> IO (Either Text Block)
-settleBy s root killed name result moved b = case moved b of
+settle s root killed name result move b = case step move b of
   Left why -> pure (Left why)
   Right b' -> do
-    modifyIORef' (ssBlocks s) (if pending b' then M.insert (blockFile b') (b', killed) else M.delete (blockFile b'))
+    -- blocks are written from requests and background jobs at once
+    atomicModifyIORef' (ssBlocks s) (\m -> ((if pending b' then M.insert (blockFile b') (b', killed) else M.delete (blockFile b')) m, ()))
     appendStep (ssPorts s) root b' name result
     pure (Right b')
 

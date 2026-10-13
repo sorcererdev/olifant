@@ -26,9 +26,14 @@ spec = describe "Olifant.Block" $ do
             Drafted "x" "m" (Right ()),
             Drafted "y" "m" (Left red),
             Edited (2, 2) (Right ()),
+            Applied (2, 2) (Right ()),
+            Applied (2, 2) (Left red),
             Judge [],
             Judge [m],
-            Waive 2 "r",
+            Judge [m, m {muOperator = "number"}],
+            Rejudge,
+            Waive 2 "boundary" "r",
+            Waive 2 "number" "r",
             Accept,
             Reject
           ]
@@ -47,8 +52,21 @@ spec = describe "Olifant.Block" $ do
     open (step' (Judge []) g) `shouldSatisfy` ("accept" `elem`)
     let j = step' (Judge [m]) g
     open j `shouldSatisfy` \o -> "accept" `notElem` o && "kill" `elem` o && "waive" `elem` o
-    survivors (step' (Waive 2 "inclusive by design") j) `shouldBe` []
-    open (step' (Waive 2 "inclusive by design") j) `shouldSatisfy` ("accept" `elem`)
+    survivors (step' (Waive 2 "boundary" "inclusive by design") j) `shouldBe` []
+    open (step' (Waive 2 "boundary" "inclusive by design") j) `shouldSatisfy` ("accept" `elem`)
+  it "(c2) a waiver is for one operator: another on the same line stays a survivor" $ do
+    let g = step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0)
+        j = step' (Judge [m, m {muOperator = "number", muFrom = "1", muTo = "2"}]) g
+        one = step' (Waive 2 "boundary" "inclusive") j
+    map muOperator (survivors one) `shouldBe` ["number"]
+    open one `shouldSatisfy` ("accept" `notElem`)
+    step (Waive 2 "boundary" "again") one `shouldSatisfy` isLeft
+    survivors (step' (Waive 2 "number" "any count") one) `shouldBe` []
+  it "(c3) Rejudge takes a judged block back to Green, from Judged only" $ do
+    let j = step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)
+    blockState (step' Rejudge j) `shouldBe` Green
+    step Rejudge b0 `shouldSatisfy` isLeft
+    open (step' Rejudge j) `shouldBe` open (step' (Drafted "x" "qwen" (Right ())) b0)
   it "(d) accept from anything but a clean Judged is refused, with a reason" $ do
     step Accept b0 `shouldSatisfy` either ("test" `T.isInfixOf`) (const False)
     let j = step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)
@@ -59,6 +77,13 @@ spec = describe "Olifant.Block" $ do
     map draftBy (blockDrafts e) `shouldBe` ["you"]
     blockSpan e `shouldBe` (2, 3)
     map draftBy (blockDrafts (step' (Edited (2, 4) (Right ())) e)) `shouldBe` ["you"]
+  it "(e2) an applied draft, tested, lands its outcome and makes no 'you' draft; with no draft it is refused" $ do
+    let d = step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0)
+        a = step' (Applied (2, 2) (Left red)) d
+    blockState a `shouldBe` Red red
+    map draftBy (blockDrafts a) `shouldBe` ["qwen"]
+    blockState (step' (Applied (2, 2) (Right ())) a) `shouldBe` Green
+    step (Applied (2, 2) (Right ())) b0 `shouldSatisfy` isLeft
   it "(f) a test that cannot run is Broken, and nothing else is open but reject/test (Review Focus 2)" $ do
     let br = step' (CannotRun "ImportError: nope") b0
     blockState br `shouldBe` Broken "ImportError: nope"
@@ -74,7 +99,7 @@ spec = describe "Olifant.Block" $ do
     moves <- forAll (Gen.list (Range.linear 0 12) genMove)
     let walk (b, lastJudgedClean) mv = case step mv b of
           Left _ -> (b, lastJudgedClean)
-          Right b' -> (b', case mv of Judge ms -> all (isJust . muWaived) ms; Waive _ _ -> null (survivors b'); _ -> lastJudgedClean)
+          Right b' -> (b', case mv of Judge ms -> all (isJust . muWaived) ms; Waive {} -> null (survivors b'); Rejudge -> False; _ -> lastJudgedClean)
         (end, clean) = foldl walk (b0, False) moves
     if blockState end == Accepted then clean === True else success
 
