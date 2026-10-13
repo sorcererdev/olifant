@@ -158,8 +158,8 @@ blockSpecs = describe "blocks" $ do
     again `shouldSatisfy` either ("pending" `T.isInfixOf`) (const False)
   it "(I5) on a module with no test file, begin opens the stub as the new file's: the module's import first" $ do
     (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
-    (_, Right (tb, Just (file, at, body))) <- blockStart ignore (root </> "src/shop/lonely.py") 2 s
-    (file, at) `shouldBe` (root </> "src/shop/lonely__test.py", 1)
+    (_, Right (tb, Just (file, at, body, edits))) <- blockStart ignore (root </> "src/shop/lonely.py") 2 s
+    (file, at, edits) `shouldBe` (root </> "src/shop/lonely__test.py", 1, [])
     take 4 (T.lines body) `shouldBe` ["from shop.lonely import alone", "", "", "def test_${1:name}() -> None:"]
     (blockFile tb, blockKind tb, blockSpan tb, blockBase tb) `shouldBe` (file, Block.TestFor Nothing, (4, 6), "")
     blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
@@ -171,12 +171,13 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocksOn killedBy []
     let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
         s = (openDoc (root </> moduleRel) 1 module' s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
-    (_, Right (tb, Just (testFile, at, body))) <- blockStart ignore (root </> moduleRel) 15 s
-    (testFile, at) `shouldBe` (root </> testRel, 7)
+    (_, Right (tb, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+    -- the editor imports Reopen (with CloseTable), then expands the stub
+    (testFile, at, length imports) `shouldBe` (root </> testRel, 7, 1)
     body `shouldSatisfy` ("def test_${1:name}()" `T.isInfixOf`)
     (blockFile tb, blockKind tb, blockSpan tb) `shouldBe` (testFile, Block.TestFor Nothing, (9, 11))
     -- the person names it and writes its assertion; the arrangement drafted: red at the assertion stands
-    let named = T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body testText))
+    let named = T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body (applyEdits imports testText)))
         st = openDoc testFile 1 named s
     (_, Right (drafted, [edit])) <- blockDraft ignore testFile st
     blockState drafted `shouldBe` Green
@@ -190,12 +191,32 @@ blockSpecs = describe "blocks" $ do
     Just (code, _) <- blockFor (root </> moduleRel) st2
     (blockKind code, blockTestId code, blockSpan code) `shouldBe` (Block.Code, T.pack testRel <> "::test_reopens_again", (15, 15))
     blockState code `shouldSatisfy` \case Red _ -> True; _ -> False
+  it "(N5) begin on a function no test calls, its test file not importing it: the import is added once, then the stub" $ do
+    let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        start existing = do
+          (s0, _) <- blocksOn killedBy [(testRel, existing)]
+          (_, Right (tb, Just (_, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 (openDoc (root </> moduleRel) 1 reopen s0)
+          pure (tb, applyEdits imports existing, expandStub at body (applyEdits imports existing))
+    -- the file imports CloseTable only: Reopen joins it (the adapter's import_merge)
+    (tb, imported, opened) <- start testText
+    imported `shouldBe` T.replace "import CloseTable\n" "import CloseTable, Reopen\n" testText
+    length (filter ("import" `T.isInfixOf`) (T.lines opened)) `shouldBe` 1
+    T.splitOn "\n" opened !! (fst (blockSpan tb) - 1) `shouldBe` "def test_kills_the_boundary() -> None:"
+    blockBase tb `shouldBe` testText
+    -- a file that imports it already gets no second import
+    let already = T.replace "import CloseTable\n" "import CloseTable, Reopen\n" testText
+    (tb2, unchanged, opened2) <- start already
+    unchanged `shouldBe` already
+    T.splitOn "\n" opened2 !! (fst (blockSpan tb2) - 1) `shouldBe` "def test_kills_the_boundary() -> None:"
+    -- a file with no import yet: it goes first
+    (_, top, _) <- start (T.unlines ["def test_other() -> None:", "    assert 1 == 1"])
+    T.lines top `shouldBe` ["from shop.close_table import Reopen", "", "def test_other() -> None:", "    assert 1 == 1"]
   it "(I5) a test block's test that passes before any code exists is red" $ do
     (s0, _) <- blocksOn (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files) []
     let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
         s = openDoc (root </> moduleRel) 1 module' s0
-    (_, Right (_, Just (testFile, at, body))) <- blockStart ignore (root </> moduleRel) 15 s
-    let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at body testText)
+    (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+    let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at body (applyEdits imports testText))
     (_, Just tested) <- blockChanged testFile (openDoc testFile 2 named s)
     blockState tested `shouldSatisfy` \case Red f -> "passes before any code exists" `T.isInfixOf` fMessage f; _ -> False
 
@@ -755,6 +776,10 @@ expandStub at body text = T.intercalate "\n" (take (at - 1) ls ++ [named] ++ dro
   where
     ls = T.splitOn "\n" text
     named = T.replace "${1:name}" "kills_the_boundary" (T.replace "${2:...}" "table.handle(2) == 0" body)
+
+-- | Edits of one text, applied as the editor does (each over the last).
+applyEdits :: [FileEdit] -> Text -> Text
+applyEdits edits text = foldl (\t e -> applyChange (feRange e) (feText e) t) text edits
 
 -- | A block as it stands, whatever moves it took to stand there.
 unversioned :: Block -> Block

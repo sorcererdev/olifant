@@ -2331,7 +2331,9 @@ machine served by the server:
   its assertions first, until the module defines one, located by the language's `function NAME`
   target) and begins Red, or judges a green function at once; on a function no test calls,
   `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`testStub`) and
-  answers the stub for the editor, and accepting that block begins the function on it. Every
+  answers the stub for the editor, with the function's import as an edit to apply first when
+  the test file lacks it (`addImports`, the fill phase's), and accepting that block begins the
+  function on it. Every
   move lands through `settle`, a compare-and-swap on the stored block's number and version
   (`blockVersion`, bumped by every move stored: a test, draft or judge begun on an older version
   is stale, logged and dropped), and a new block through `claim`, one atomic check-and-insert.

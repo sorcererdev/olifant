@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, projectFiles) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, projectFiles) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))

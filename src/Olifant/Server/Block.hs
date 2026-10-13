@@ -52,7 +52,7 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (applyFills, projectFiles)
+import Olifant.Generation.FillPhase (addImports, applyFills, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
@@ -84,13 +84,17 @@ blockBegin :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (
 blockBegin progress path line s0 = fmap (fmap fst) <$> blockStart progress path line s0
 
 -- | 'blockBegin', with the stub the editor expands when it opened one: the
--- test file (absolute), the line to put it at, and its text (tab stops for
--- the test's name and assertion, a hole for its arrangement). A function
--- no test calls (no test file, or none of its tests calls it) begins a
--- test block on the stub at the end of its test file (a new file starts
--- with the import of the function, or of its class, in Python), drafted
--- red at its assertion; accepted, the function begins on it.
-blockStart :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text)))
+-- test file (absolute), the line to put it at, its text (tab stops for
+-- the test's name and assertion, a hole for its arrangement), and the
+-- edits the editor applies first (the line counts them). A function no
+-- test calls (no test file, or none of its tests calls it) begins a test
+-- block on the stub at the end of its test file, drafted red at its
+-- assertion; accepted, the function begins on it. The stub needs the
+-- import of the function, or of its class, in Python: a new file starts
+-- with it; a file that lacks it gains it, as the adapter's imports join a
+-- file's (merged into the line importing from its module, else after the
+-- last import).
+blockStart :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text, [FileEdit])))
 blockStart progress path line s0 =
   projectFor path s0 >>= \case
     (s, Nothing) -> pure (s, Left (T.pack path <> " is in no Olifant project"))
@@ -120,8 +124,13 @@ blockStart progress path line s0 =
       case untested of
         Just n -> do
           let base = fromMaybe "" testText0
-              (at, stub) = testStub lang base
-              body = maybe stub (\imp -> imp <> "\n" <> stub) (if isJust testText0 then Nothing else importOf lang moduleRel moduleText n)
+              (at0, stub) = testStub lang base
+              imp = importOf lang moduleRel moduleText n
+              -- an existing file: the import joins its imports (unless it has it), the stub after
+              imported = maybe base (\i -> if isJust testText0 then addImports lang [i] base else base) imp
+              edits = [FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range new | imported /= base, let (range, new) = smallestChange base imported]
+              at = at0 + length (T.splitOn "\n" imported) - length (T.splitOn "\n" base)
+              body = maybe stub (\i -> i <> "\n" <> stub) (if isJust testText0 then Nothing else imp)
               defAt = at + length (takeWhile (not . ("def " `T.isPrefixOf`)) (T.splitOn "\n" body))
           k <- number
           let tb = begin k testFile (TestFor Nothing) base (defAt, defAt + 2) (T.pack testRel) (Failure Nothing "a new test: write its name and assertion" "")
@@ -129,7 +138,7 @@ blockStart progress path line s0 =
           unless claimed (throwE pendingHere)
           lift (modifyIORef' (ssBlockSeen s) (M.insert testFile base))
           lift (appendStep (ssPorts s) root tb "begin" (hud tb))
-          pure (tb, Just (testFile, at, body))
+          pure (tb, Just (testFile, at, body, edits))
         Nothing -> do
           testText <- maybe (throwE ("no test for this module yet; write one (its name and assertion) in " <> T.pack testRel <> ", then begin on it")) pure testText0
           lift (progress (Verifying (T.pack testRel)))

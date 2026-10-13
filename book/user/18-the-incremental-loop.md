@@ -9,8 +9,9 @@ cannot be rubber-stamped.
 ## What you see
 
 1. Cursor on a function no test calls, `begin`: the stub of its first test opens at the end of
-   its test file (a new file starts with the function's import: `from
-   bistro.booking.commands.close_table import CloseTable`), the cursor on its name. You write the
+   its test file, with the function's import (`from
+   bistro.booking.commands.close_table import CloseTable`: a new file starts with it; a file
+   without it gains it among its imports), the cursor on its name. You write the
    test's **name and assertion**; `draft` fills the arrangement between them, verified: the test
    runs and fails *at the assertion*. That test block is judged clean at once; `accept` it.
 2. The function begins on that red test (as `begin` on a red test does: on a test, it runs, it is
@@ -192,8 +193,9 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 - **Python only.** The operators are Python's; a language with a `[test]` table but no operators
   is begun and drafted but cannot be judged (`cannot run: no mutation operators for …`), so its
   blocks are never accepted.
-- **A new test file's import is Python's, and only the function's** (or its class's): a name your
-  assertion uses beyond it you import yourself.
+- **A stub's import is Python's, and only the function's** (or its class's): a name your
+  assertion uses beyond it you import yourself. A file importing it already (on one line) gains
+  nothing.
 - **A draft that fails its test is written anyway**, its last attempt marked red, for you to
   finish by hand; a model that offered nothing changes nothing. A draft sees the test file (a
   test's draft, the module) beside the rejected drafts.
