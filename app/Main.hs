@@ -13,7 +13,7 @@ import Data.Maybe (fromMaybe, isJust)
 import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
 import System.Process (readProcessWithExitCode)
-import Olifant.Language (processCheckerWith, processVerifierCancellable)
+import Olifant.Language (processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Workspace (diskWorkspace)
 import System.Directory (XdgDirectory (XdgCache, XdgConfig), getCurrentDirectory, getHomeDirectory, getXdgDirectory)
@@ -49,6 +49,7 @@ main = do
         , rtStdoutIsTty = tty
         , rtGitInit = gitInit
         , rtVerifier = (`processVerifierCancellable` 120)
+        , rtTester = flip processRunner
         , rtOut = TIO.putStr
         , rtErr = TIO.hPutStr stderr
         , rtSyntax = astGrepSyntax cache

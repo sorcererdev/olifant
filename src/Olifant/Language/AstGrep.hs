@@ -2,10 +2,12 @@
 -- Custom grammars (pack sources) are compiled once with `cc` into the cache.
 module Olifant.Language.AstGrep (astGrepSyntax) where
 
-import Data.Aeson (FromJSON (..), eitherDecodeStrict, encode, withObject, (.:))
+import Data.Aeson (FromJSON (..), ToJSON, Value, eitherDecodeStrict, encode, withObject, (.:), (.:?))
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
@@ -21,30 +23,45 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Info (os)
 
-newtype Found = Found Match
+-- | One ast-grep match: the node and, when the rule had a fix, its replacement.
+data Found = Found Match (Maybe Text)
 
 instance FromJSON Found where
   parseJSON = withObject "match" $ \o -> do
     r <- o .: "range"
     s <- r .: "start"
     e <- r .: "end"
+    bytes <- r .: "byteOffset"
     t <- o .: "text"
+    replacement <- o .:? "replacement"
     pos <- (,) <$> ((,) <$> s .: "line" <*> s .: "column") <*> ((,) <$> e .: "line" <*> e .: "column")
-    pure (Found (Match (fst pos) (snd pos) t))
+    range <- (,) <$> bytes .: "start" <*> bytes .: "end"
+    pure (Found (Match (fst pos) (snd pos) t range) replacement)
 
 astGrepSyntax :: FilePath -> Syntax IO
-astGrepSyntax cache = Syntax $ \lang rule source ->
+astGrepSyntax cache =
+  Syntax
+    { querySyntax = \lang rule source -> fmap (map (\(Found m _) -> m)) <$> scan cache lang rule Nothing source,
+      rewriteSyntax = \lang rule fixed source ->
+        fmap (map (\(Found (Match s e t b) r) -> Rewrite s e t (fromMaybe t r) b)) <$> scan cache lang rule (Just fixed) source
+    }
+
+-- | `sg scan` one inline rule (with its `fix`, if any) over a text.
+scan :: FilePath -> Language -> Value -> Maybe Text -> Text -> IO (Either SyntaxFailure [Found])
+scan cache lang rule fixed source =
   findExecutable "ast-grep" >>= \case
     Nothing -> pure (Left (SyntaxToolMissing "ast-grep is not installed (brew install ast-grep)"))
     Just sg ->
       prepare cache lang >>= \case
         Left f -> pure (Left f)
         Right dir -> do
-          let yaml = "id: olifant\nlanguage: " <> langName lang <> "\nrule: " <> TE.decodeUtf8 (BL.toStrict (encode rule)) <> "\n"
+          let yaml = "id: olifant\nlanguage: " <> langName lang <> "\nrule: " <> asJson rule <> "\n" <> maybe "" (\f -> "fix: " <> asJson f <> "\n") fixed
+              asJson :: ToJSON a => a -> Text
+              asJson = TE.decodeUtf8 . BL.toStrict . encode
           ran <- runBytes sg ["scan", "--stdin", "--inline-rules", T.unpack yaml, "--json=compact"] (Just dir) (TE.encodeUtf8 source)
           pure $ case ran of
             Left why -> Left (SyntaxFailed ("ast-grep failed: " <> why))
-            Right (ExitSuccess, out, _) -> either (Left . SyntaxFailed . T.pack) (Right . map (\(Found m) -> m)) (eitherDecodeStrict out)
+            Right (ExitSuccess, out, _) -> either (Left . SyntaxFailed . T.pack) Right (eitherDecodeStrict out)
             Right (ExitFailure _, _, err) -> Left (SyntaxFailed ("ast-grep failed: " <> T.strip (TE.decodeUtf8With lenientDecode err)))
 
 -- | A directory whose sgconfig.yml registers the language (custom grammars only).

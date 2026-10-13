@@ -21,6 +21,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Proxy (Proxy (..))
+import GHC.TypeLits (KnownSymbol)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Functor ((<&>))
@@ -41,7 +42,7 @@ import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noSyntax, processCheckerWith, processVerifierCancellable)
+import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), querying, noChecker, noRunner, noSyntax, processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
@@ -88,6 +89,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   conventionsSpec
   scaleSpec
   concurrencySpec
+  blockSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -199,7 +201,7 @@ fixesSpec = describe "rule findings and their fixes" $ do
   it "(f) answers an error, and keeps serving, when a request throws (review I4)" $
     withPython [] $ \ports dir -> do
       -- a tool that throws instead of answering (a file deleted mid-read, an unreadable folder)
-      let throwing = Syntax (\_ _ _ -> ioError (userError "the disk went away"))
+      let throwing = querying (\_ _ _ -> ioError (userError "the disk went away"))
       ((answer, after), code) <- inProcessWith ports {pSyntax = throwing} dir $ do
         doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
         TResponseMessage _ _ answer <- request SMethod_TextDocumentCodeAction (CodeActionParams Nothing Nothing doc (Range (Position 0 0) (Position 0 0)) (CodeActionContext [] Nothing Nothing))
@@ -519,7 +521,7 @@ holesSpec = describe "progress, holes and verify" $ do
     fills <- canonicalizePath (handCase <> "/fills.toml")
     withPythonChecked (M.toList given) $ \ports dir -> do
       events <- newIORef []
-      s0 <- newServerState ports {pVerifier = (`processVerifierCancellable` 120)}
+      s0 <- newServerState ports {pVerifier = (`processVerifierCancellable` 120), pTester = (`processRunner` 120), pTesterWithin = flip processRunner}
       let s1 = s0 {ssConfig = (ssConfig s0) {scFills = Just fills}}
       (_, planned) <- actionPlanWith (\e -> modifyIORef' events (++ [e])) True (dir </> command) 50 "python-htmx/handle-body" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "create_booking")] s1
       seen <- readIORef events
@@ -926,6 +928,77 @@ withPackCopies act = do
 
 -- | Slow work runs beside the requests that come meanwhile (the server
 -- reads on; progress can begin).
+-- | The loop's blocks over the protocol: `olifant/block/<move>` requests
+-- and the `olifant/block` push, with a scripted test runner.
+blockSpec :: Spec
+blockSpec = describe "olifant/block" $ do
+  let testRel = "src/bistro/booking/commands/create_booking__test.py"
+      moduleRel = "src/bistro/booking/commands/create_booking.py"
+      red = T.pack testRel <> "::test_a_party_larger_than_the_table_is_refused"
+      redScript = Aeson.encode (object [Key.fromText red .= object ["line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text)]])
+      move :: Text -> Value -> Session (Either Text Value)
+      move = \case
+        "begin" -> blockMove (Proxy :: Proxy "olifant/block/begin")
+        "test" -> blockMove (Proxy :: Proxy "olifant/block/test")
+        "accept" -> blockMove (Proxy :: Proxy "olifant/block/accept")
+        other -> const (fail ("no move " <> T.unpack other))
+      pushed = (customNotification (Proxy :: Proxy "olifant/block") >>= \case NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)) <|> (anyMessage >> pushed)
+      onDoc doc extra = object (["textDocument" .= object ["uri" .= (doc ^. L.uri)]] ++ extra)
+      at file = do
+        text <- TIO.readFile file
+        pure (length (takeWhile (not . ("def test_a_party_larger" `T.isInfixOf`)) (T.lines text)) + 1)
+  it "(f) olifant/block/begin on the fixture's red test answers a Red block and pushes olifant/block; accept is refused while a survivor stands" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script redScript
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        ((begun, push, tested, refused), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc testRel "python"
+          begun <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          push <- pushed
+          -- the test passes now: green, judged; the runner passes every mutant too
+          liftIO (TIO.writeFile script "{}")
+          tested <- move "test" (onDoc doc [])
+          refused <- move "accept" (onDoc doc [])
+          pure (begun, push, tested, refused)
+        let blockOf = either (const Nothing) (lookupKey "block")
+        (lookupKey "state" =<< blockOf begun) `shouldBe` Just (String "red")
+        (lookupKey "file" =<< blockOf begun) `shouldBe` Just (String (T.pack (dir </> moduleRel)))
+        lookupKey "uri" push `shouldBe` Just (toJSON (filePathToUri (dir </> moduleRel)))
+        (lookupKey "state" =<< lookupKey "block" push) `shouldBe` Just (String "red")
+        (lookupKey "state" =<< blockOf tested) `shouldBe` Just (String "judged")
+        refused `shouldSatisfy` either ("survivor(s): kill or waive each, then accept" `T.isInfixOf`) (const False)
+  it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          fills = tmp </> "fills.toml"
+      BSL.writeFile script redScript
+      TIO.writeFile fills "[fills]\nbody = \"return Ok(None)\"\n"
+      entered <- newEmptyMVar
+      gate <- newEmptyMVar
+      -- the draft's check waits until the test has changed the module
+      let gated = Checker $ \lang files -> tryPutMVar entered () >> takeMVar gate >> runCheck noChecker lang files
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        (answer, _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("fills", String (T.pack fills))] ports {pChecker = const gated} dir $ do
+          doc <- openDoc testRel "python"
+          code <- openDoc moduleRel "python"
+          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          rid <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) (onDoc code [])
+          liftIO (timeout 30000000 (takeMVar entered)) >>= maybe (fail "the draft never checked") pure
+          changeDoc code [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# typed meanwhile\n"))]
+          liftIO (threadDelay 300000) -- the change is in before the draft goes on
+          liftIO (putMVar gate () >> forkIO (let loop = putMVar gate () >> loop in loop))
+          let awaitDraft = responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) rid <|> (anyMessage >> awaitDraft)
+          TResponseMessage _ _ r <- awaitDraft
+          pure (either (Left . (^. L.message)) Right r)
+        either id (const "drafted") answer `shouldBe` "the file changed while drafting; your text stands"
+
+-- | An `olifant/block/<move>` request: its answer, or the error's sentence.
+blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
+blockMove method params = request (SMethod_CustomMethod method) params <&> \(TResponseMessage _ _ r) -> either (Left . (^. L.message)) Right r
+
 concurrencySpec :: Spec
 concurrencySpec = describe "slow work, and requests meanwhile" $ do
   -- holes, the model and completion read or plan over a project: one
@@ -949,7 +1022,7 @@ concurrencySpec = describe "slow work, and requests meanwhile" $ do
               hold = atomicModifyIORef' armed (False,) >>= \held -> when held (putMVar entered () >> takeMVar gate)
               gated = disk {readText = \p -> when ("/py/" `isInfixOf` p) hold >> readText disk p}
               -- the first syntax query after arming (completion plans over the open buffer)
-              slowSyntax = Syntax (\l q t -> hold >> querySyntax (pSyntax ports) l q t)
+              slowSyntax = querying (\l q t -> hold >> querySyntax (pSyntax ports) l q t)
           _ <- forkIO (threadDelay 5000000 >> void (tryPutMVar gate ()))
           (first, _) <- inProcessWith ports {pFiles = gated, pSyntax = slowSyntax} root $ do
             py <- openDoc "py/src/bistro/booking/commands/create_booking.py" "python"
@@ -1083,7 +1156,7 @@ inProcess :: FilePath -> Session a -> IO (a, Maybe Int)
 inProcess = inProcessWith plainPorts
 
 plainPorts :: Ports
-plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+plainPorts = Ports (diskWorkspace "/") noSyntax (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 6) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
 
 inProcessWith :: Ports -> FilePath -> Session a -> IO (a, Maybe Int)
 inProcessWith = inProcessWithConfig []

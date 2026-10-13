@@ -293,12 +293,17 @@ usually its tests:
 ```toml
 [holes.body]
 source = "model"
-verify = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "src/bistro/booking/commands/cancel_booking__test.py"]
+verify = "tests"
 ```
+
+`verify = "tests"` runs the language's `[test]` runner (python's is `preset = "pytest"`)
+over the tests of the module the hole is in (the `tests_for` template: `close_table.py`'s
+are `close_table__test.py`), and tells the model which test failed and where. A command
+is the general form: `verify = ["pytest", "-q", "src/bistro/booking/commands/cancel_booking__test.py"]`.
 
 After a fill parses and compiles, Olifant runs the command in a scratch copy of the project
 (the language's files and its check's context, with every standing fill in place), as a
-check runs, with `{= cache =}` and `{= context =}`. Exit 0: the fill stands. Otherwise the
+check runs. Exit 0 (or no failing test): the fill stands. Otherwise the
 last 40 lines of what it printed go back to the model as "the tests failed: …", and it
 retries; when the retries run out the hole keeps its placeholder, with that output as the
 reason. A command that runs past 120 seconds is stopped ("the tests timed out (120 s)").
@@ -313,6 +318,24 @@ alias binds its alias (`from datetime import date as d` binds `d`, not `date`). 
 binding the name, or none, leave it to the model's retry. `--progress` reports it as
 `{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the
 name from a message (`supportUndefined`; pyright's does, the others don't yet).
+
+### Drafts: the loop's holes
+
+The incremental loop ([chapter 18](18-the-incremental-loop.md)) drafts through the same fill
+phase: a draft is a model hole made on demand, of kind `block` over a function's body or
+`stmt` for a test's arrangement, so it is parsed, checked, auto-imported and retried as any hole
+is. Two things differ.
+
+- **The stance.** A draft's request asks for *the least code that makes this test pass and no
+  more: do not generalise beyond what the tests ask*. A constant is a good draft for one test;
+  the next test asks for more. Drafts the person rejected (`next`) go with the request as
+  *previous drafts (rejected by the person)*.
+- **The verifier is the block's.** A body is verified by its one test (it must pass). A test's
+  arrangement is verified the other way: the test must fail *at its assertion line* (an error in
+  the setup, or a pass with no code yet, is a failed draft). A kill's test must pass on the code
+  and fail with the mutant in place. Each failure goes back to the model as the reason, as a
+  `verify` command's output does; when the retries run out, the hole's placeholder is written and the
+  block stays red with the reason, to finish by hand.
 
 ### Retries with the reason
 

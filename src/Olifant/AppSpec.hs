@@ -1,7 +1,12 @@
 module Olifant.AppSpec (spec) where
 
 import Control.Monad (forM, forM_)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as M
+import Olifant.Fill (FillRequest (..), Filler (..), ModelFiller (..), Stance (..))
+import Olifant.Generation (Step (..))
+import Olifant.Generator (replaceGenerator)
+import Olifant.Template (parseTemplate)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -9,7 +14,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Actions (Action (..))
 import Olifant.App
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (noChecker)
+import Olifant.Language (noChecker, noRunner)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Rules (Finding (..), FixOffer (..))
@@ -36,6 +41,13 @@ spec = describe "Olifant.App" $ do
           line = 1 + length (takeWhile (not . T.isInfixOf "def __init__") (T.lines (given M.! file)))
       acts <- actionsAt' ports project file (line, 5)
       map actLabel acts `shouldSatisfy` elem "Add a port"
+  it "plans with the stance it is given (a draft asks for the least code)" $
+    withPythonProject [("src/x.py", "x = 1\n")] $ \ports project -> do
+      seen <- newIORef []
+      let filler = ModelFiller "fake" 0 (Filler (\req -> modifyIORef' seen (++ [frStance req]) >> pure (Right (M.fromList [("body", "x = 2")]))))
+          template = either (error . show) id (parseTemplate "{= ? body: block | anything =}")
+      Right _ <- planWith ports project planOptions {poFiller = Just filler, poStance = DraftStance} [Step (replaceGenerator "src/x.py" (1, 1) "x = 1" template) M.empty]
+      readIORef seen `shouldReturn` [DraftStance]
   where
     closeTable = "src/bistro/booking/commands/close_table.py"
     closeTableText = T.unlines ["import sqlite3", "", "", "class CloseTableInput:", "    pass", "", "", "class CloseTable:", "    def __init__(self) -> None:", "        \"\"\"Its ports.\"\"\"", "", "    def handle(self, input: CloseTableInput) -> None:", "        raise NotImplementedError(\"later\")"]
@@ -55,7 +67,7 @@ withPythonProject changed act = do
     TIO.writeFile (dir </> ".olifant/config.toml") ("[packs]\npython-htmx = { path = \"" <> T.pack packs <> "\" }\n")
     let ports = Ports
           { pFiles = diskWorkspace "/", pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pChecker = const noChecker
-          , pVerifier = const noVerifier, pNow = pure (UTCTime (fromGregorian 2026 10 6) 0), pUserConfigDir = Nothing, pHomeDir = Nothing
+          , pVerifier = const noVerifier, pTester = const noRunner, pTesterWithin = \_ _ -> noRunner, pNow = pure (UTCTime (fromGregorian 2026 10 6) 0), pUserConfigDir = Nothing, pHomeDir = Nothing
           , pDoctor = DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False), pTracked = \_ -> pure Nothing, pBaseText = \_ _ _ -> pure (Left "no base in tests"), pBaseFiles = \_ _ -> pure (Left "no base in tests"), pBaseStamp = \_ _ -> pure "" }
     openProject ports dir >>= \case
       Left _ -> fail "the project's catalog did not load"

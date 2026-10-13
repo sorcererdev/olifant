@@ -22,6 +22,7 @@ module Olifant.Generator.Definition
   , ListItem (..)
   , FieldSpec (..)
   , HoleSource (..)
+  , Verify (..)
   , describeHoleSource
   ) where
 
@@ -29,7 +30,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Anchor (Position)
-import Olifant.Language (Rule)
+import Olifant.Language (Rule, TestId)
 import Olifant.Query (ChoiceValue (..), Query)
 import Olifant.Template (Binding, Template)
 import Olifant.Template.Syntax (Segment (..), Template (..))
@@ -66,8 +67,8 @@ data GeneratorWith src = Generator
     -- this generator's holes, e.g. the models a codec reads
     genContext :: [Template]
   , -- | `[holes.NAME] verify`: per model hole, a command its fill must pass
-    -- (its tests), templates over the generator's values
-    genVerify :: [(Text, [Template])]
+    -- (its tests), templates over the generator's values; or `"tests"`
+    genVerify :: [(Text, Verify [Template])]
   , -- | `recognize` (default true): whether hand-written code may be
     -- recognised as this generator's (convention recognition)
     genRecognize :: Bool
@@ -75,6 +76,17 @@ data GeneratorWith src = Generator
     genSummary :: Maybe Text
   }
   deriving stock (Show, Functor, Foldable, Traversable)
+
+-- | How a hole's fill is verified: by a command (rendered, or its templates),
+-- or by the language's test runner over the module's tests (@verify = "tests"@).
+-- Only the engine builds the last three (a draft's checks, never the TOML):
+-- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft);
+-- 'VerifyKills' runs a test file: the tests that passed before and the new
+-- ones must pass on the files, and a new one fail with the mutant's file
+-- (path, text) in place (a sibling test already red is passed over); 'VerifyIds' wants those tests (a block's one
+-- test) to pass, as 'VerifyTests' wants the module's.
+data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId [TestId] [TestId] FilePath Text | VerifyIds [TestId]
+  deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef
 

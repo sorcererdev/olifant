@@ -4,6 +4,7 @@
 module Olifant.Fill
   ( FillHole (..)
   , FillRequest (..)
+  , Stance (..)
   , Filler (..)
   , ModelFiller (..)
   , parseFills
@@ -25,15 +26,21 @@ data FillHole = FillHole
   , fhInstruction :: Text
   , fhFile :: FilePath
   , fhContext :: Text
-  , fhPrevious :: Maybe (Text, Text)
+  , fhPrevious :: [(Text, Text)]
+  -- ^ every earlier attempt (fill, why it failed), oldest first
   , fhImports :: Bool
   -- ^ the fill may begin with import lines (the language says how they look)
   }
   deriving stock (Eq, Show)
 
+-- | How the model is asked: to fill holes well, or (a draft) to write the
+-- least code that makes one failing test pass.
+data Stance = FillStance | DraftStance
+  deriving stock (Eq, Show)
+
 -- | 'frContext': related files the model should see (a fix's context, e.g.
 -- the port's trait it must call).
-data FillRequest = FillRequest {frHoles :: [FillHole], frInputs :: [(Text, Text)], frContext :: [(FilePath, Text)]}
+data FillRequest = FillRequest {frHoles :: [FillHole], frInputs :: [(Text, Text)], frContext :: [(FilePath, Text)], frStance :: Stance}
   deriving stock (Eq, Show)
 
 -- | The port to a model: fills by hole name, or why there are none.

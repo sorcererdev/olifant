@@ -43,7 +43,7 @@ text = "{= ? body: block | handle for {= command|pascal =}: make every test in {
 # The fill stands only when the module's tests pass.
 [holes.body]
 source = "model"
-verify = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "-p", "no:cacheprovider", "src/{= app =}/{= service|snake =}/{= kind =}/{= command|snake =}__test.py"]
+verify = "tests"
 
 # In an editor: chosen from the ⚡ menu on handle's raise NotImplementedError.
 [applies_at]

@@ -16,15 +16,11 @@ branch = "{= pattern =} => {= body =},"
 # different workspaces at once (two projects, the server's threads) would
 # otherwise build each other's crates of the same name.
 [check]
-command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]
-context = ["**/Cargo.toml", "Cargo.lock"]
-format  = "rustc-json"
-# cargo's build cache is not safe to share between checks running at once:
-# each check gets a cache of its own while it runs ({= cache =} is its slot's)
-exclusive = true
-# a check runs in the judged file's Cargo workspace: the outermost Cargo.toml
-root      = ["Cargo.toml"]
-root_pick = "outermost"
+preset = "cargo"
+# (the preset: `cargo check --workspace`, diesel adapters excluded, one target
+# dir per workspace shape; an exclusive check, its cache its slot's, since
+# cargo's build cache is not safe to share between checks running at once; run
+# in the judged file's outermost Cargo workspace)
 
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.

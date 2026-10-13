@@ -63,7 +63,7 @@ import Olifant.Anchor (astQueries)
 import Olifant.Catalog
 import Olifant.ProjectModel (ProjectModel, buildModel)
 import Olifant.Cursor (afterIndent, afterRule, atCursor, atCursorIndented, cursorIndent, isSnippet)
-import Olifant.Fill (ModelFiller (..))
+import Olifant.Fill (ModelFiller (..), Stance (..))
 import Olifant.Generation
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
@@ -92,6 +92,10 @@ data Ports = Ports
   , -- | checks and verifies, stopped (their processes killed) when the token trips
     pChecker :: Cancel -> Checker IO
   , pVerifier :: Cancel -> Verifier IO
+  , -- | runs a hole's tests (`verify = "tests"`), killed when the token trips
+    pTester :: Cancel -> Runner IO
+  , -- | 'pTester' stopped after that many seconds (a mutant's run: the judge's own timeout)
+    pTesterWithin :: Int -> Cancel -> Runner IO
   , pNow :: IO UTCTime
   , pUserConfigDir :: Maybe FilePath
   , pHomeDir :: Maybe FilePath
@@ -232,7 +236,7 @@ doctorChecks ports project =
 -- queries.
 projectTools :: Ports -> Project -> Tools IO
 projectTools ports project =
-  (basicTools (pSyntax ports) (pChecker ports neverCancel) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries ports project, toolVerifier = pVerifier ports neverCancel}
+  (basicTools (pSyntax ports) (pChecker ports neverCancel) (catalogLanguages cat)) {toolRegions = catalogRegions cat, toolQueries = projectQueries ports project, toolVerifier = pVerifier ports neverCancel, toolTester = pTester ports neverCancel}
   where
     cat = prCatalog project
 
@@ -592,11 +596,14 @@ data PlanOptions = PlanOptions
   , -- | stops the plan (between fills) and its checks, verifies and model
     -- calls, their processes killed (superseded work in the server)
     poCancel :: Cancel
+  , -- | how the model is asked: to fill well, or (a block's draft) to write
+    -- the least code that makes its test pass
+    poStance :: Stance
   }
 
 -- | Plan only, no cursor, no model, no progress.
 planOptions :: PlanOptions
-planOptions = PlanOptions PlanOnly Nothing Nothing False [] (const (pure ())) Nothing neverCancel
+planOptions = PlanOptions PlanOnly Nothing Nothing False [] (const (pure ())) Nothing neverCancel FillStance
 
 -- | Run plan steps (model, fills, regions): the plan, with the snippet at
 -- the cursor and the catalog's load warnings.
@@ -612,7 +619,9 @@ planWith ports project po steps = do
           , toolProgress = poProgress po
           , toolChecker = pChecker ports (poCancel po)
           , toolVerifier = pVerifier ports (poCancel po)
+          , toolTester = pTester ports (poCancel po)
           , toolCancelled = cancelled (poCancel po)
+          , toolStance = poStance po
           }
   generate (prWorkspace project) (resolver (pFiles ports) (pSyntax ports) cat) tools steps now (poMode po) <&> fmap finish
   where

@@ -39,6 +39,8 @@ import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
+import Olifant.Fill (ModelFiller)
+import Olifant.Block (Block)
 import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Model (ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
@@ -52,10 +54,12 @@ import System.FilePath (takeDirectory, (</>))
 -- (tests) a file of recorded fills that stands in for the model.
 -- | @scRecognizeAnswers@: a file holding a model's recorded answer, which
 -- recognition uses instead of the model (tests, as fills use @scFills@).
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath, scDecideAnswers :: Maybe FilePath}
+-- @scTestScript@: a file of scripted test verdicts, which the server's
+-- test runner answers from instead of running anything (tests).
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
@@ -99,6 +103,22 @@ data ServerState = ServerState
     ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer))
   , ssAsking :: IORef (Set (FilePath, Text))
   , ssOnDecided :: IORef (IO ())
+  , -- | the loop's pending block in each file (absolute path), with how many
+    -- of its mutants were killed when last judged; the next block's number
+    ssBlocks :: IORef (Map FilePath (Block, Int))
+  , ssNextBlock :: IORef Int
+  , -- | a document's version as the editor has it now, not as this state
+    -- saw it (the adapter's live documents): long work (a draft) asks it
+    -- before its result lands. None: this state's documents are the truth
+    ssLiveVersion :: Maybe (FilePath -> IO (Maybe Int))
+  , -- | each block's file as it was when its test last ran (or it began):
+    -- what an edit is told apart from (inside the span, or not)
+    ssBlockSeen :: IORef (Map FilePath Text)
+  , -- | what to do when a block changes with no request asking (the judge
+    -- of a test's code block, Jev's order): the adapter pushes it
+    ssOnBlock :: IORef (Block -> Int -> IO ())
+  , -- | a filler that answers instead of any model (tests)
+    ssTestFiller :: Maybe (ModelFiller IO)
   }
 
 newServerState :: Ports -> IO ServerState
@@ -108,7 +128,11 @@ newServerState ports = do
   decisions <- newIORef M.empty
   asking <- newIORef S.empty
   onDecided <- newIORef (pure ())
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided)
+  blocks <- newIORef M.empty
+  nextBlock <- newIORef 1
+  seen <- newIORef M.empty
+  onBlock <- newIORef (\_ _ -> pure ())
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided blocks nextBlock Nothing seen onBlock Nothing)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
@@ -230,7 +254,8 @@ filesChanged paths s0 = foldr (\root next -> next >>= catalogChanged root) (pure
     s = s0 {ssFilesStamp = ssFilesStamp s0 + 1, ssGeneration = ssGeneration s0 + 1}
     affected = [root | (root, slot) <- M.toList (ssProjects s), any (touches root slot) paths]
     touches root slot path =
-      (root </> ".olifant") `isAncestorOf` path || any (`isAncestorOf` path) (maybe [] (catalogPackRoots . prCatalog) (usable slot))
+      -- the loop's step log (`.olifant/state/`) is no configuration
+      ((root </> ".olifant") `isAncestorOf` path && not ((root </> ".olifant/state") `isAncestorOf` path)) || any (`isAncestorOf` path) (maybe [] (catalogPackRoots . prCatalog) (usable slot))
     isAncestorOf dir path = (normalisePath dir <> "/") `isPrefixOf` normalisePath path
 
 load :: FilePath -> Maybe Project -> ServerState -> IO ServerState
@@ -275,7 +300,8 @@ decision s decider key fp q onDone = do
       ( try (ask decider q) >>= \case
           Left (_ :: SomeException) -> pure ()
           Right answer -> do
-            modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
+            -- answers land at once from many threads (Jev asks per survivor)
+            atomicModifyIORef' (ssDecisions s) (\m -> (M.insert key (fp, answer) m, ()))
             onDone
       )
         `finally` atomicModifyIORef' (ssAsking s) (\a -> (S.delete key a, ()))

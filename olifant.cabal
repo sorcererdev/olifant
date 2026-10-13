@@ -47,6 +47,8 @@ library
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.App
+    Olifant.Block
+    Olifant.Block.Draft
     Olifant.Catalog
     Olifant.Cli
     Olifant.Cli.Options
@@ -81,14 +83,20 @@ library
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Header
+    Olifant.Language.Presets
     Olifant.Language.Pyright
     Olifant.Language.Rule
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Language.Test
     Olifant.Lsp
     Olifant.Migration
     Olifant.Model
+    Olifant.Mutate
+    Olifant.Mutate.Python
+    Olifant.Mutate.Run
+    Olifant.Mutate.Types
     Olifant.Naming
     Olifant.Newness
     Olifant.Output
@@ -111,6 +119,9 @@ library
     Olifant.Rules
     Olifant.Server
     Olifant.Server.Actions
+    Olifant.Server.Block
+    Olifant.Server.BlockJev
+    Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Edits
     Olifant.Server.Fixes
@@ -161,6 +172,9 @@ test-suite spec
     Olifant.AnchorSpec
     Olifant.App
     Olifant.AppSpec
+    Olifant.Block
+    Olifant.Block.Draft
+    Olifant.BlockSpec
     Olifant.Catalog
     Olifant.CatalogSpec
     Olifant.Cli
@@ -206,11 +220,13 @@ test-suite spec
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Header
+    Olifant.Language.Presets
     Olifant.Language.Pyright
     Olifant.Language.Rule
     Olifant.Language.Rustc
     Olifant.Language.Support
     Olifant.Language.Syntax
+    Olifant.Language.Test
     Olifant.LanguageSpec
     Olifant.Lsp
     Olifant.LspSpec
@@ -218,6 +234,11 @@ test-suite spec
     Olifant.MigrationSpec
     Olifant.Model
     Olifant.ModelSpec
+    Olifant.Mutate
+    Olifant.Mutate.Python
+    Olifant.Mutate.Run
+    Olifant.Mutate.Types
+    Olifant.MutateSpec
     Olifant.Naming
     Olifant.NamingSpec
     Olifant.Newness
@@ -250,6 +271,9 @@ test-suite spec
     Olifant.RulesSpec
     Olifant.Server
     Olifant.Server.Actions
+    Olifant.Server.Block
+    Olifant.Server.BlockJev
+    Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Edits
     Olifant.Server.Fixes

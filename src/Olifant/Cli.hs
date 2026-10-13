@@ -4,7 +4,7 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 
 import Data.Set (Set)
 import Control.Applicative ((<|>))
-import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
+import Olifant.Fill (ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
 import Olifant.Rules (Exception (..), FixOffer (..), Finding (..), RuleDef (..), RulesConfig (..), checkFiles, markBaselined, ruleCovers)
 import Olifant.Rules qualified as R
@@ -66,6 +66,9 @@ data Runtime = Runtime
     rtGitInit :: FilePath -> Text -> IO (Either Text ())
   , -- | runs a hole's `verify` command (its tests) in a scratch copy
     rtVerifier :: Cancel -> Verifier IO
+  , -- | runs a hole's tests (`verify = "tests"`) with the language's test runner
+    -- (stopped after that many seconds)
+    rtTester :: Int -> Cancel -> Runner IO
   , -- | the files git tracks under a folder (what a project already had)
     rtTracked :: FilePath -> IO (Maybe (Set FilePath))
   , -- | a file's text at the base (see 'pBaseText')
@@ -569,6 +572,7 @@ runStepsWith warnings rt cwd fmt cat g context steps = do
               , poProgress = if genProgress g then rtErr rt . (<> "\n") . encodeJson . progressJson else const (pure ())
               , poNow = genNow g
               , poCancel = neverCancel
+              , poStance = FillStance
               }
       planWith (portsOf rt) project po steps >>= \case
         Left err -> generationFailure rt fmt err
@@ -722,7 +726,7 @@ modelFor cat g
 
 -- | The engine's ports, as the CLI runs them.
 portsOf :: Runtime -> Ports
-portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt) (rtBaseStamp rt)
+portsOf rt = Ports (rtRoot rt) (rtSyntax rt) (rtChecker rt) (rtVerifier rt) (rtTester rt 120) (rtTester rt) (rtNow rt) (rtUserConfigDir rt) (rtHomeDir rt) (rtDoctor rt) (rtTracked rt) (rtBaseText rt) (rtBaseFiles rt) (rtBaseStamp rt)
 
 -- | The project Olifant runs in, reading disk.
 projectOf :: Runtime -> Catalog -> Project

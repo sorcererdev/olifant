@@ -1,5 +1,5 @@
 -- | Which compiler support a `[check] format` selects (spec §5.6).
-module Olifant.Language.Support (supportFor, knownFormats) where
+module Olifant.Language.Support (supportFor, knownFormats, knownTestFormats) where
 
 import Data.Text (Text)
 import Olifant.Language.Diagnostics (CompilerSupport (..))
@@ -18,3 +18,7 @@ supportFor f = case [s | s <- supports, supportFormat s == f] of
 
 knownFormats :: [Text]
 knownFormats = map supportFormat supports
+
+-- | The @[test] format@s a test runner can read.
+knownTestFormats :: [Text]
+knownTestFormats = ["pytest"]

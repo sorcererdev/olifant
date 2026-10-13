@@ -7,13 +7,13 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Olifant.Fill (FillHole (..), FillRequest (..))
+import Olifant.Fill (FillHole (..), FillRequest (..), Stance (..))
 import Olifant.Model
 import Olifant.Toml (parseToml)
 import Test.Hspec
 
 request :: FillRequest
-request = FillRequest [FillHole "status" "expr" "the HTTP status" "a.rs" "x => \10214status\10215," (Just ("BAD", "a.rs: BAD is not defined")) False] [("failure", "too_late")] []
+request = FillRequest [FillHole "status" "expr" "the HTTP status" "a.rs" "x => \10214status\10215," [("BAD", "a.rs: BAD is not defined")] False] [("failure", "too_late")] [] FillStance
 
 spec :: Spec
 spec = describe "Olifant.Model (spec §6.4)" $ do
@@ -31,6 +31,12 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
   it "asks an openai-compatible endpoint for tagged blocks, with the rules and the holes" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") request)))
     mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"m\"", "\"role\":\"system\"", "<fill name=\\\"NAME\\\">", "status", "the HTTP status", "a.rs: BAD is not defined", "failure = too_late"]
+  it "(c) a draft request uses the drafts stance and lists every previous attempt" $ do
+    let req = FillRequest [FillHole "body" "block" "i" "a.py" "ctx" [("return 1", "rejected by the person"), ("return 2", "the tests failed: x")] False] [] [] DraftStance
+        asText = TE.decodeUtf8 . BL.toStrict . encode
+    mapM_ (\k -> requestBody (OpenAICompatible "u" "m") req `shouldSatisfy` \v -> k `T.isInfixOf` asText v)
+      ["least code that makes this test pass", "return 1", "rejected by the person", "return 2", "attempt 2:", "Previous attempts (do not repeat them):"]
+    requestBody (OpenAICompatible "u" "m") request `shouldSatisfy` \v -> not ("least code" `T.isInfixOf` asText v)
   it "says a fill may begin with imports only where the language moves them, once, and on a retry" $ do
     let withImports = request {frHoles = [h {fhImports = True} | h <- frHoles request]}
         rule = "start the fill with the import line"

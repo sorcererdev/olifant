@@ -10,6 +10,7 @@ module Olifant.Model
   , backendKinds
   , backendModel
   , systemPrompt
+  , draftSystemPrompt
   , userPrompt
   , requestBody
   , decodeFills
@@ -34,7 +35,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
-import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..))
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytes, runBytesCancellable)
 import Olifant.Toml (Table, inKey, int, onlyKeys, optional, required, table, text)
 import System.Directory (findExecutable)
@@ -89,6 +90,15 @@ systemPrompt =
     , "matching the surrounding style. No surrounding code, no explanations, no markdown."
     ]
 
+-- | The fill prompt for a draft: the least code that makes the test pass.
+draftSystemPrompt :: Text
+draftSystemPrompt =
+  systemPrompt
+    <> T.unlines
+      [ "Write the least code that makes this test pass and no more: do not generalise beyond what the tests ask,"
+      , "do not handle cases no test names. If the simplest passing code is a constant, write the constant."
+      ]
+
 userPrompt :: FillRequest -> Text
 userPrompt req =
   T.unlines $
@@ -117,10 +127,17 @@ userPrompt req =
       , "Instruction: " <> fhInstruction h
       ]
         ++ ["The file around it:", "```", fhContext h, "```"]
-        ++ maybe [] (\(f, why) -> ["Your previous fill was:", "```", f, "```", "It failed: " <> why, "Fix it." <> (if fhImports h then " If it failed on a name that is not defined, add that name's import line first." else "")]) (fhPrevious h)
+        ++ previous h
+
+    previous h
+      | null (fhPrevious h) = []
+      | otherwise =
+          ["Previous attempts (do not repeat them):"]
+            ++ concat [["attempt " <> T.pack (show n) <> ":", "```", f, "```", "why: " <> why] | (n, (f, why)) <- zip [1 :: Int ..] (fhPrevious h)]
+            ++ ["Fix it." <> (if fhImports h then " If it failed on a name that is not defined, add that name's import line first." else "")]
 
 requestBody :: Backend -> FillRequest -> Value
-requestBody b req = chatBody b systemPrompt (userPrompt req)
+requestBody b req = chatBody b (case frStance req of DraftStance -> draftSystemPrompt; FillStance -> systemPrompt) (userPrompt req)
 
 -- | A chat request: a system prompt and one user message.
 chatBody :: Backend -> Text -> Text -> Value

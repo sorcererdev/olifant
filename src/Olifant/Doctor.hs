@@ -9,10 +9,9 @@ module Olifant.Doctor
   , doctor
   ) where
 
-import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (CheckDef (..), Language (..), checkProgram)
+import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram)
 import Olifant.Model (Backend (..), ModelConfig (..))
 
 data Status = Ok | Warn | Bad
@@ -49,9 +48,9 @@ data DoctorPorts m = DoctorPorts
 doctor :: Monad m => DoctorPorts m -> DoctorInput -> m [Check]
 doctor ports di = do
   astGrep <- tool "ast-grep" "ast-grep" "brew install ast-grep (or cargo install ast-grep)"
-  checkTools <- traverse checkTool (mapMaybe (\l -> (l,) <$> langCheck l) (diLanguages di))
+  tools <- traverse languageTools (diLanguages di)
   model <- modelCheck
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat checkTools ++ [model] ++ recognizeCheck)
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck)
   where
     recognizeCheck = case diRecognizeModel di of
       Nothing -> []
@@ -72,9 +71,17 @@ doctor ports di = do
         Nothing -> do
           path <- dpPath ports
           pure (Check name Bad ("`" <> T.pack exe <> "` is not on this PATH: " <> path) (Just fix))
-    checkTool (lang, check) = case checkProgram (checkCommand check) of
-      Just exe -> pure <$> tool ("check tool " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (installHint exe)
+    languageTools lang =
+      (++)
+        <$> maybe (pure []) (commandTool "check tool" lang . checkCommand) (langCheck lang)
+        <*> maybe (pure []) (testRunner lang) (langTest lang)
+    -- one line for a command's program, named by what it is for
+    commandTool kind lang command = case checkProgram command of
+      Just exe -> pure <$> tool (kind <> " " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (installHint exe)
       Nothing -> pure []
+    testRunner lang td = do
+      cs <- commandTool "test runner" lang (testCommand td)
+      pure [c {checkDetail = if checkStatus c == Ok then checkDetail c <> "; tests_for = " <> testsFor td else checkDetail c} | c <- cs]
     modelCheck = case (mcDefault (diModel di), mcBackends (diModel di)) of
       (Nothing, []) -> pure (Check "model" Warn "no [model] configured: holes stay placeholders" (Just modelSnippet))
       (Nothing, _) -> pure (Check "model" Warn "[model] has backends but no default" (Just "set `default = \"NAME\"` under [model]"))

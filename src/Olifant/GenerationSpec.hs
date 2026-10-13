@@ -15,10 +15,12 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
+import Olifant.Generation.FillPhase (fillPhase)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
 import Olifant.Generator
+import Data.Foldable (fold)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Language
 import Olifant.Query (AstQuery (..), AstSelect (..), Query (..), Queries (..), QueryFailure (..), failed, noQueries)
@@ -640,7 +642,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
         , "[[edits]]", "create = \"src/A.elm\"", "text = \"a = {= ? a: expr | the a value =}\\n\""
         , "[[edits]]", "create = \"src/B.elm\"", "text = \"b = {= ? b: expr | the b value =}\\n\"" ]
       -- `!!` does not parse; a file containing BAD does not compile.
-      parses = Syntax $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "!!" | "!!" `T.isInfixOf` content])
+      parses = querying $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "!!" (0, 0) | "!!" `T.isInfixOf` content])
       compiles = Checker $ \_ files -> pure (Right (CheckReport [] [(p, "BAD is not defined") | (p, t) <- M.toList files, "BAD" `T.isInfixOf` t] []))
       withFiller replies = do
         calls <- newIORef []
@@ -702,7 +704,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     M.lookup "src/A.elm" files `shouldBe` Just "a = 7\n"
     statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 1)]
     reqs <- readIORef calls
-    map (\h -> (fhName h, fhPrevious h)) (frHoles (reqs !! 1)) `shouldBe` [("a", Just ("BAD", "src/A.elm: BAD is not defined"))]
+    map (\h -> (fhName h, fhPrevious h)) (frHoles (reqs !! 1)) `shouldBe` [("a", [("BAD", "src/A.elm: BAD is not defined")])]
   it "(c) keeps the good fill and the bad hole's placeholder (Review Focus 1)" $ do
     (tools, _) <- withFiller (replicate 3 (Right (M.fromList [("a", "BAD"), ("b", "2")])))
     (plan, files) <- run1 tools
@@ -748,7 +750,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
           , "[[edits]]", "create = \"src/c.py\"", "text = \"\\\"\\\"\\\"Codec.\\\"\\\"\\\"\\n\\nfrom x import Slot\\n\\n\\ndef decode(t: str) -> Slot:\\n    return {= ? decode: expr | read it =}\\n\"" ]
     calls <- newIORef []
     let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> pure (Right (M.fromList [("decode", "from datetime import date\nfrom x import Slot\n\nSlot(day=date.fromisoformat(t))")]))
-        sawCode = Syntax $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "import" | "import" `T.isInfixOf` content])
+        sawCode = querying $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "import" (0, 0) | "import" `T.isInfixOf` content])
         tools = (basicTools sawCode compiles [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
     (ws, snap) <- memoryWorkspace []
     Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
@@ -800,7 +802,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       [(holeName (phSite h), phStatus h) | h <- planHoles plan] `shouldBe` [("v", HoleFilled "fake" 2)]
       (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = GOOD\n"
       reqs <- readIORef calls
-      [fmap (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [Just "the tests failed:"]
+      [map (T.take 17 . snd) (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [["the tests failed:"]]
       -- {= cache =} and {= context =} reach the verifier, which expands them
       take 1 <$> readIORef seen `shouldReturn` [["run-tests", "src/V.elm", "{= cache =}/venv-{= context =}"]]
     it "(d) review I3: tests that cannot run are not the fill's fault: one attempt, no retry" $ do
@@ -819,6 +821,49 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
       [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "FAILED test_v" `T.isInfixOf` why; _ -> False)
       (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = Debug.todo \"olifant: v\"\n"
+  describe "drafts: VerifyRedAt and VerifyKills (engine-built verifiers)" $ do
+    let site = HoleSite "v" "expr" "the value" "src/V.elm" 1 "Debug.todo \"olifant: v\""
+        base = M.fromList [("src/V.elm", "v = Debug.todo \"olifant: v\"\n")]
+        red l = Failure l "AssertionError" ""
+        outcome verify runner = do
+          (ws, _) <- memoryWorkspace []
+          let filler = Filler (\_ -> pure (Right (M.fromList [("v", "1")])))
+              tools = (basicTools noSyntax noChecker [holeLang]) {toolFiller = Just (ModelFiller "fake" 0 filler), toolTester = runner}
+          (_, hs, _) <- fillPhase ws tools (M.singleton "v" verify) [] base [PlannedHole site (HoleUnfilled "") Nothing]
+          pure (map phStatus hs)
+        ran r = Runner (\_ _ _ -> pure (Right r))
+    it "(d) VerifyRedAt: a test that passes before any code exists fails verification" $ do
+      st <- outcome (VerifyRedAt "t" 3) (ran (TestRun ["t"] [] Nothing))
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "does not test the new behaviour" `T.isInfixOf` why; _ -> False
+    it "(d) VerifyRedAt: red at the assert line stands; red elsewhere or broken does not" $ do
+      outcome (VerifyRedAt "t" 3) (ran (TestRun [] [("t", red (Just 3))] Nothing)) `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyRedAt "t" 3) (ran (TestRun [] [("t", red (Just 2))] Nothing))
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "fails before its assertion (line 2)" `T.isInfixOf` why; _ -> False
+      st' <- outcome (VerifyRedAt "t" 3) (ran (TestRun [] [] (Just "import error")))
+      st' `shouldSatisfy` \case [HoleUnfilled why] -> "the test cannot run: import error" `T.isInfixOf` why; _ -> False
+    it "(e) VerifyKills: stands only if the tests pass on the files and fail with the mutant in place" $ do
+      let runner = Runner (\_ _ files -> pure (Right (if "mutant" `T.isInfixOf` fold files then TestRun [] [("t", red (Just 3))] Nothing else TestRun ["t"] [] Nothing)))
+      outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "mutant") runner `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "same") runner
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "does not notice the mutant" `T.isInfixOf` why; _ -> False
+      st' <- outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "mutant") (ran (TestRun [] [("t", red (Just 3))] Nothing))
+      st' `shouldSatisfy` \case [HoleUnfilled why] -> "fails on the current code" `T.isInfixOf` why; _ -> False
+    it "(e2) VerifyKills: a sibling test red before is passed over; one that passed before must still pass, and the new one must fail on the mutant" $ do
+      -- "u" is red on every run; "k" passed before; "t" is the new test
+      let runner broke = Runner (\_ _ files -> pure (Right (if "mutant" `T.isInfixOf` fold files then TestRun ["k"] [("t", red (Just 3)), ("u", red (Just 9))] Nothing else TestRun (["t"] ++ ["k" | not broke]) ([("u", red (Just 9))] ++ [("k", red (Just 5)) | broke]) Nothing)))
+      outcome (VerifyKills "f" ["k", "t"] ["t"] "src/M.elm" "mutant") (runner False) `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyKills "f" ["k", "t"] ["t"] "src/M.elm" "mutant") (runner True)
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "k passed before and fails now" `T.isInfixOf` why; _ -> False
+      -- the mutant fails only the sibling: not noticed
+      st' <- outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "mutant") (Runner (\_ _ files -> pure (Right (TestRun ["t" | True] ([("u", red (Just 9))] ++ [("u2", red (Just 9)) | "mutant" `T.isInfixOf` fold files]) Nothing))))
+      st' `shouldSatisfy` \case [HoleUnfilled why] -> "does not notice the mutant" `T.isInfixOf` why; _ -> False
+    it "(f) VerifyIds: runs exactly the tests named (a block's one test), not the module's test file" $ do
+      seen <- newIORef []
+      let runner = Runner (\_ ids _ -> modifyIORef' seen (++ ids) >> pure (Right (TestRun ids [] Nothing)))
+      outcome (VerifyIds ["src/V__test.elm::t"]) runner `shouldReturn` [HoleFilled "fake" 1]
+      readIORef seen `shouldReturn` ["src/V__test.elm::t"]
+      st <- outcome (VerifyIds ["t"]) (ran (TestRun [] [("t", red Nothing)] Nothing))
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "the tests failed" `T.isInfixOf` why && "AssertionError" `T.isInfixOf` why; _ -> False
   it "(q) a block whose continuation lines came one level too deep is read one level up, when that compiles (pack-opens)" $ do
     let blockLang = l
           where
@@ -1040,7 +1085,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (plan, _) <- run1 tools
     statuses plan `shouldBe` [("a", HoleFilled "fake" 2), ("b", HoleFilled "fake" 1)]
     reqs <- readIORef calls
-    map (fmap snd . fhPrevious) (frHoles (reqs !! 1)) `shouldBe` [Just "does not parse as expr"]
+    map (map snd . fhPrevious) (frHoles (reqs !! 1)) `shouldBe` [["does not parse as expr"]]
 
 completeSpec :: Spec
 completeSpec = describe "generate (complete edits)" $ do
@@ -1118,8 +1163,8 @@ completeSpec = describe "generate (complete edits)" $ do
   it "chooses the body by `where` when two edits complete the same bare name (Review Focus 2)" $ do
     -- `where` needs Syntax; a fake one maps each target phrase to the case it names.
     let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\nchange r =\n    case r of\n        Nothing ->\n            0\n\nview p =\n    case p of\n        Home ->\n            1\n"
-        syntax = Syntax $ \_ rule _ -> pure . Right $
-          if "change" `T.isInfixOf` T.pack (show rule) then [Match (4, 4) (6, 13) "case r of"] else [Match (9, 4) (11, 13) "case p of"]
+        syntax = querying $ \_ rule _ -> pure . Right $
+          if "change" `T.isInfixOf` T.pack (show rule) then [Match (4, 4) (6, 13) "case r of" (0, 0)] else [Match (9, 4) (11, 13) "case p of" (0, 0)]
         two = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"elm\""
           , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
@@ -1137,7 +1182,7 @@ completeSpec = describe "generate (complete edits)" $ do
     out `shouldSatisfy` ("        Settings _ ->\n            3" `T.isInfixOf`)
   it "is a conflict, not a guess, when an unmatched site could be either constructor (review)" $ do
     let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\npageName p =\n    case p of\n        Home ->\n            \"home\"\n"
-        syntax = Syntax $ \_ _ _ -> pure (Right [])
+        syntax = querying $ \_ _ _ -> pure (Right [])
         two =
           generatorFrom . T.unlines $
             [ "description = \"d\"", "language = \"elm\""
@@ -1167,7 +1212,7 @@ completeSpec = describe "generate (complete edits)" $ do
     (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just page
   it "narrows candidates to constructors visible at the site (Route cannot see Main)" $ do
     let routeElm = "module Route exposing (..)\n\ntoPath r =\n    case r of\n        Home ->\n            \"/\"\n"
-        syntax = Syntax $ \_ _ _ -> pure (Right [])
+        syntax = querying $ \_ _ _ -> pure (Right [])
         two =
           generatorFrom . T.unlines $
             [ "description = \"d\"", "language = \"elm\""
@@ -1291,8 +1336,8 @@ regionSpec = describe "generate (owned regions)" $ do
             , "items = { kind = \"case_of_branch\" }", "example = \"end of case in update\""
             ]
         variants = RegionDef "variants" "list.txt" (AstQueryQ (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")])) (ItemTemplate t) False (Just "#") Nothing Nothing
-        fake = Syntax $ \_ rule _ -> pure . Right $
-          if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 1) "A -> 1", Match (7, 8) (8, 1) "B -> 2"] else [Match (2, 4) (8, 1) "case"]
+        fake = querying $ \_ rule _ -> pure . Right $
+          if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 1) "A -> 1" (0, 0), Match (7, 8) (8, 1) "B -> 2" (0, 0)] else [Match (2, 4) (8, 1) "case" (0, 0)]
     (ws, snap) <- memoryWorkspace [("src/A.elm", "x"), ("list.txt", "# olifant:region variants\n# olifant:end variants\n")]
     let queries = noQueries {queryAst = astQueries fake [caseLang]}
     Right _ <- generate ws noResolve (noTools {toolRegions = [variants], toolQueries = queries}) [Step unit (M.fromList [("name", "b")])] now Apply
@@ -1301,10 +1346,10 @@ regionSpec = describe "generate (owned regions)" $ do
     let Right t = parseTemplate "{= head =}"
         Right lang = parseLanguage "x" "/p" "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.type]\nphrase = \"type NAME\"\ncontainer = { kind = \"t\" }\nitems = { kind = \"v\" }\nexample = \"end of type T\"\n"
         -- The container is the whole text; items are the lines holding "| ".
-        bars = Syntax $ \_ rule content -> pure . Right $
+        bars = querying $ \_ rule content -> pure . Right $
           if "\"all\"" `isInfixOf` BL.unpack (encode rule)
-            then [Match (i, 2) (i, T.length l) (T.strip l) | (i, l) <- zip [0 ..] (T.lines content), "| " `T.isInfixOf` l]
-            else [Match (0, 0) (length (T.lines content), 0) content]
+            then [Match (i, 2) (i, T.length l) (T.strip l) (0, 0) | (i, l) <- zip [0 ..] (T.lines content), "| " `T.isInfixOf` l]
+            else [Match (0, 0) (length (T.lines content), 0) content (0, 0)]
         variants = RegionDef "variants" "list.txt" (AstQueryQ (AstQuery "a.x" (ItemsOf "type T") [("head", "[|] ([A-Z])")])) (ItemTemplate t) False (Just "#") Nothing Nothing
         addC = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"a.x\"", "at = \"after last line matching [|] \"", "text = \"| C\""]
     (ws, snap) <- memoryWorkspace [("a.x", "type T\n  = A\n  | B\n"), ("list.txt", "# olifant:region variants\n# olifant:end variants\n")]
@@ -1328,9 +1373,9 @@ isChecking = \case
 parseCheckSpec :: Spec
 parseCheckSpec = describe "parse pre-check (spec §4.6)" $ do
   let -- `;;` is a syntax error; the ERROR node is the `;;` itself.
-      errors = Syntax $ \_ rule content -> pure . Right $
+      errors = querying $ \_ rule content -> pure . Right $
         if rule == object ["kind" .= ("ERROR" :: Text)]
-          then [Match (i, c) (i, c + 2) ";;" | (i, l) <- zip [0 ..] (T.lines content), Just c <- [T.length . fst <$> nonEmpty (T.breakOn ";;" l)]]
+          then [Match (i, c) (i, c + 2) ";;" (0, 0) | (i, l) <- zip [0 ..] (T.lines content), Just c <- [T.length . fst <$> nonEmpty (T.breakOn ";;" l)]]
           else []
       nonEmpty (a, b) = if T.null b then Nothing else Just (a, b)
       tools checker = basicTools errors checker [elmLang]

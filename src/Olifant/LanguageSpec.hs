@@ -8,18 +8,20 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.ByteString qualified as BS
 import Data.List (nub)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe)
+import System.Exit (ExitCode (..))
+import System.FilePath (makeRelative)
 import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
-import System.Directory (findExecutable, getTemporaryDirectory)
+import System.Directory (doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory)
 import System.Environment (lookupEnv)
-import System.FilePath ((</>))
+import System.FilePath (takeExtension, (</>))
 import Olifant.Template (Value (..))
 import Control.Concurrent.Async (mapConcurrently)
-import Control.Monad (forM_)
+import Control.Monad (filterM, forM, forM_)
 import System.IO.Temp (withSystemTempDirectory)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
@@ -27,6 +29,7 @@ import Olifant.Language.Header (headerEnd)
 import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
 import Olifant.Output (anchorsHuman)
+import Olifant.Process (neverCancel)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Test.Hspec
 
@@ -51,6 +54,85 @@ elmToml =
 
 spec :: Spec
 spec = do
+  describe "presets" $ do
+    let py = parseLanguage "python" "/pack" . T.unlines
+    it "(a) [test] preset = \"pytest\" fills command, context, format and root" $ do
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""]
+          Just t = langTest lang
+      testFormat t `shouldBe` "pytest"
+      testRoot t `shouldBe` ["pyproject.toml"]
+      testsFor t `shouldBe` "{= dir =}/{= stem =}__test.py"
+      last (testCommand t) `shouldBe` "{= tests =}"
+    it "(b) the table's own keys win over the preset's" $ do
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
+      fmap testRoot (langTest lang) `shouldBe` Just ["setup.cfg"]
+    it "(c) an unknown preset names the ones that exist" $
+      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"jest\"", "tests_for = \"x\""]
+        `shouldSatisfy` either (\e -> "pytest" `T.isInfixOf` e && "jest" `T.isInfixOf` e) (const False)
+    it "(d) [test] needs tests_for" $
+      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""] `shouldSatisfy` either ("tests_for" `T.isInfixOf`) (const False)
+    it "(e) [check] preset = \"pyright\" is the old table" $ do
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""]
+      fmap checkFormat (langCheck lang) `shouldBe` Just "pyright-json"
+      fmap checkRoot (langCheck lang) `shouldBe` Just ["pyproject.toml"]
+  describe "Olifant.Language.Test" $ do
+    it "(a) parsePytest: one failed, four passed, the failing line" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/pytest/one-failed.txt"
+      let run = parsePytest (ExitFailure 1) out
+      length (trPassed run) `shouldBe` 4
+      map fst (trFailed run) `shouldBe` ["src/bistro/booking/commands/close_table__test.py::test_close_table_succeeds"]
+      fmap (fLine . snd) (listToMaybe (trFailed run)) `shouldBe` Just (Just 14)
+      fmap (T.take 19 . fMessage . snd) (listToMaybe (trFailed run)) `shouldBe` Just "NotImplementedError"
+      trBroken run `shouldBe` Nothing
+    it "(b) all passed" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
+      parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
+    it "(c) testsForFile: the module's test file" $
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py") "src/bistro/booking/commands/close_table.py"
+        `shouldBe` "src/bistro/booking/commands/close_table__test.py"
+    it "(d) a run that could not start is broken, not red" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
+      let run = parsePytest (ExitFailure 2) out
+      trFailed run `shouldBe` []
+      trBroken run `shouldSatisfy` maybe False ("ImportError" `T.isInfixOf`)
+    it "(d2) a failing method of a test class keeps its line and message" $ do
+      let out = T.unlines
+            [ "=================================== FAILURES ==================================="
+            , "______________________________ TestX.test_y ______________________________"
+            , "pkg/a__test.py:7: in test_y"
+            , "    assert add(1, 2) == 4"
+            , "E   assert 3 == 4"
+            , "==================================== PASSES ===================================="
+            , "=========================== short test summary info ============================"
+            , "FAILED pkg/a__test.py::TestX::test_y"
+            , "1 failed in 0.01s" ]
+          run = parsePytest (ExitFailure 1) out
+      fmap (fLine . snd) (listToMaybe (trFailed run)) `shouldBe` Just (Just 7)
+      fmap (fMessage . snd) (listToMaybe (trFailed run)) `shouldBe` Just "assert 3 == 4"
+    it "(e) processRunner on the fixture: a red test is red at its assert (uv)" $ do
+      strict <- (== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS"
+      findExecutable "uv" >>= \case
+        Nothing -> if strict then expectationFailure "required tool missing: uv" else pendingWith "uv is not installed"
+        Just _ -> do
+          fixture <- readFixtureTree "packs/python-htmx/fixtures/app"
+          toml <- TIO.readFile "packs/python-htmx/languages/python.toml"
+          let Right lang = parseLanguage "python" "packs/python-htmx" toml
+              red = "src/bistro/booking/commands/red__test.py"
+              files = M.insert red "def test_red() -> None:\n    assert 1 == 2\n" fixture
+          run <- runTestsIn (processRunner neverCancel 120) lang [T.pack red] files
+          fmap (map fst . trFailed) run `shouldBe` Right [T.pack red <> "::test_red"]
+          fmap (map (fLine . snd) . trFailed) run `shouldBe` Right [Just 2]
+  describe "the configuration budget (spec §3)" $ do
+    it "(f) no pack TOML names Olifant's cache" $ do
+      let walk d = do
+            entries <- listDirectory d
+            concat <$> mapM (\e -> let p = d </> e in doesDirectoryExist p >>= \isDir -> if isDir then walk p else pure [p | takeExtension p == ".toml"]) entries
+      files <- walk "packs"
+      bad <- filterM (fmap ("{= cache =}" `T.isInfixOf`) . TIO.readFile) files
+      bad `shouldBe` []
+    it "(g) python.toml is no longer than before [test] (123 lines)" $ do
+      src <- TIO.readFile "packs/python-htmx/languages/python.toml"
+      length (T.lines src) `shouldSatisfy` (<= 123)
   describe "parseLanguage" $ do
     it "reads an adapter, resolving the grammar source against the pack" $ do
       let Right lang = parseLanguage "elm" "/packs/elm" elmToml
@@ -206,6 +288,10 @@ spec = do
     it "(c) end of call NAME in FUNCTION opens an empty argument list" $ withPython $ \syn lang file ->
       fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
 
+  describe "rewriting (ast-grep, a rule with a fix)" $
+    it "gives each match its replacement and its byte range" $ withPython $ \syn lang _ ->
+      rewriteSyntax syn lang (object ["pattern" .= ("$A > $B" :: Text)]) "$A >= $B" "if é > b:\n    pass\n"
+        `shouldReturn` Right [Rewrite (0, 3) (0, 8) "é > b" "é >= b" (3, 9)]
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
@@ -651,3 +737,13 @@ withAstGrepOn fixtureFile k =
       let Right elm = parseLanguage "elm" "packs/elm" src
       file <- TIO.readFile ("packs/elm/fixtures/app" </> fixtureFile)
       k (astGrepSyntax (tmp </> "olifant-test-cache")) elm file
+
+readFixtureTree :: FilePath -> IO (M.Map FilePath Text)
+readFixtureTree root = M.fromList <$> go root
+  where
+    go d = do
+      names <- listDirectory d
+      fmap concat . forM names $ \n -> do
+        let p = d </> n
+        isDir <- doesDirectoryExist p
+        if isDir then go p else (\t -> [(makeRelative root p, t)]) <$> TIO.readFile p

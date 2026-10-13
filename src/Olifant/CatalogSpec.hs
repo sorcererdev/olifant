@@ -16,7 +16,7 @@ import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..))
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), render)
-import Olifant.Language (Language (..), Match (..), Syntax (..), noSyntax)
+import Olifant.Language (Language (..), Match (..), Syntax (..), querying, noSyntax)
 import Olifant.Region (RegionDefWith (..))
 import Olifant.Workspace
 import Test.Hspec
@@ -134,11 +134,11 @@ spec = describe "catalog" $ do
     let lang = "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.case_in]\nphrase = \"case in FUNCTION\"\ncontainer = { kind = \"c\" }\nitems = { kind = \"b\" }\nexample = \"end of case in update\"\n"
         gen matching = "description = \"d\"\nlanguage = \"x\"\n[inputs.page]\ntype = \"ident\"\n[[edits]]\ninsert = \"Main.x\"\nat = \"end of case in update\"\nfragment = { file = \"fixture:Main.x\", items_of = \"case in update\", matching = \"" <> matching <> "\" }\nbind = { page = \"sample_page\" }\n"
         -- The container, then two items; the second spans two lines, its body indented 12 (the node starts at column 8).
-        branches = [Match (3, 8) (3, 20) "Home -> home", Match (5, 8) (6, 29) "( GotSamplePageMsg sub, SamplePage page ) ->\n            SamplePage.update sub"]
-        fakeWith items = Syntax $ \_ rule _ -> pure . Right $
+        branches = [Match (3, 8) (3, 20) "Home -> home" (0, 0), Match (5, 8) (6, 29) "( GotSamplePageMsg sub, SamplePage page ) ->\n            SamplePage.update sub" (0, 0)]
+        fakeWith items = querying $ \_ rule _ -> pure . Right $
           if "\"all\"" `isInfixOf` BL.unpack (encode rule)
             then items
-            else [Match (2, 4) (9, 29) "case"]
+            else [Match (2, 4) (9, 29) "case" (0, 0)]
         load = loadWith branches
         loadWith items matching = do
           (root, _) <- memoryWorkspace [("/packs/p/languages/x.toml", lang), ("/packs/p/fixtures/app/Main.x", "x\n"), ("/packs/p/generators/g/generator.toml", gen matching)]
@@ -162,12 +162,12 @@ spec = describe "catalog" $ do
         r <- loadGenerator root (fakeWith branches) cat entry
         either describeCatalogError (const "") r `shouldSatisfy` ("outside" `T.isInfixOf`)
     it "drops the CR of a CRLF file's lines" $ do
-      Right g <- loadWith [Match (5, 8) (6, 29) "( GotSamplePageMsg sub, SamplePage page ) ->\r\n            SamplePage.update sub"] "GotSamplePageMsg"
+      Right g <- loadWith [Match (5, 8) (6, 29) "( GotSamplePageMsg sub, SamplePage page ) ->\r\n            SamplePage.update sub" (0, 0)] "GotSamplePageMsg"
       let [Insert _ _ src _] = genEdits g
           Right name = parseName "settings"
       render (M.fromList [("page", VName name)]) src `shouldBe` Right "( GotSettingsMsg sub, Settings page ) ->\n    Settings.update sub"
     it "dedents tab-indented lines by the node's column" $ do
-      Right g <- loadWith [Match (5, 1) (7, 2) "fn sample_page() {\n\t\tbody();\n\t}"] "sample_page"
+      Right g <- loadWith [Match (5, 1) (7, 2) "fn sample_page() {\n\t\tbody();\n\t}" (0, 0)] "sample_page"
       let [Insert _ _ src _] = genEdits g
           Right name = parseName "settings"
       render (M.fromList [("page", VName name)]) src `shouldBe` Right "fn settings() {\n\tbody();\n}"

@@ -1,11 +1,11 @@
 -- | The tools a generation may use: the syntax and check ports, the language
 -- adapters and owned regions from the catalog, and the command runner for
 -- queries (commands, AST). `noTools` needs nothing installed.
-module Olifant.Generation.Tools (Tools (..), ProgressEvent (..), Verifier (..), noVerifier, noTools, basicTools) where
+module Olifant.Generation.Tools (Tools (..), ProgressEvent (..), Verifier (..), noVerifier, Runner (..), noRunner, noTools, basicTools) where
 
 import Data.Text (Text)
 
-import Olifant.Fill (ModelFiller)
+import Olifant.Fill (ModelFiller, Stance (..))
 import Olifant.Language
 import Olifant.Query (Queries, noQueries)
 import Olifant.Region (RegionDef)
@@ -24,9 +24,13 @@ data Tools m = Tools
     toolFillContext :: [(FilePath, Text)]
   , -- | runs a hole's `verify` command over the files as the plan has them
     toolVerifier :: Verifier m
+  , -- | runs a hole's `verify = "tests"`: the language's test runner
+    toolTester :: Runner m
   , -- | whether the plan was cancelled (the language server's superseded
     -- work): the fill phase stops between rounds
     toolCancelled :: m Bool
+  , -- | how the model is asked: to fill (the default) or to draft the least code
+    toolStance :: Stance
   }
 
 
@@ -40,4 +44,4 @@ noTools = basicTools noSyntax noChecker []
 
 -- | Syntax, checker and languages, with no regions and no commands.
 basicTools :: Applicative m => Syntax m -> Checker m -> [Language] -> Tools m
-basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier (pure False)
+basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier noRunner (pure False) FillStance

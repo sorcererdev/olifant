@@ -26,11 +26,11 @@ pattern = "^from ([A-Za-z0-9_.]+) import \\(?([A-Za-z0-9_, ]+)\\)?$"
 write   = "from {= module =} import {= names =}"
 
 [check]
-command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
-context = ["pyproject.toml", "uv.lock"]
-format  = "pyright-json"
-# a check runs in the judged file's package: the nearest folder with a pyproject.toml
-root    = ["pyproject.toml"]
+preset = "pyright"
+# Tests: pytest through uv; a module's tests live beside it as NAME__test.py.
+[test]
+preset    = "pytest"
+tests_for = "{= dir =}/{= stem =}__test.py"
 
 # Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
 # result), so it fits any type under pyright strict and needs no import; it

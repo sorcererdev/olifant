@@ -67,6 +67,17 @@ spec = describe "olifant doctor (spec §4.7)" $ do
         [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
     checkStatus c `shouldBe` Bad
     checkFix c `shouldSatisfy` maybe False ("brew install uv" `T.isInfixOf`)
+  it "(f) a language with [test] gets a test runner line: the program found, and where its tests live" $ do
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
+        run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing))
+        [ok] = [c | c <- run ["ast-grep", "uv"], checkName c == "test runner uv (python)"]
+        [bad] = [c | c <- run ["ast-grep"], checkName c == "test runner uv (python)"]
+    checkStatus ok `shouldBe` Ok
+    checkDetail ok `shouldSatisfy` T.isInfixOf "tests_for = {= dir =}/{= stem =}__test.py"
+    checkStatus bad `shouldBe` Bad
+    checkDetail bad `shouldSatisfy` (\d -> "uv" `T.isInfixOf` d && "/usr/bin:/bin" `T.isInfixOf` d)
+  it "(g) a language without [test] gets no test runner line" $
+    [checkName c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local)), "test runner" `T.isPrefixOf` checkName c] `shouldBe` []
   it "reports a broken language adapter or generator as an error" $ do
     let broken = DoctorInput (Just "/proj") ["p"] [] [("p/languages/x.toml", "bad grammar")] [("p/gen", "unknown key")]
         cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing))
