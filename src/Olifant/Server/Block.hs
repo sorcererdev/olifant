@@ -259,7 +259,10 @@ draftIn progress s root project lang b drafting killed filler = do
       let new = newTests b text
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
-      newTest <- maybe (throwE "name the new test first: its name is still the stub's") pure (listToMaybe new)
+      -- the stub names its test `test_name` until the person types over it
+      newTest <- case new of
+        t : _ | all ((/= stubName) . testName) new -> pure t
+        _ -> throwE "name the new test first: its name is still the stub's"
       verify <- case killing of
         -- a new test: it must fail, at its assertion
         Nothing -> pure (VerifyRedAt newTest (line + 1))
@@ -629,6 +632,11 @@ testBody name text = case dropWhile (not . isDef) (T.lines text) of
   where
     isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
     indentOf = T.length . T.takeWhile (== ' ')
+
+-- | The name a stub's test has until the person types its own (the stub's
+-- tab stop, `test_${1:name}`, left as it was).
+stubName :: Text
+stubName = "test_name"
 
 -- | A test block's new tests: those its file defines now and did not when
 -- the block began (the person named them in the stub).

@@ -690,6 +690,20 @@ blockSpecs = describe "blocks" $ do
     either id (const "tested") tested `shouldBe` "a draft is in flight; wait for it, then test or press next"
     putMVar release ()
     void (wait drafting)
+  it "(N4) a test block whose new test still has the stub's name (test_name) is not drafted; named, it is" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    -- the editor expands the stub; the name's tab stop left as it was
+    let unnamed = expandStub at (T.replace "${1:name}" "name" body) testText
+    T.lines unnamed `shouldSatisfy` elem "def test_name() -> None:"
+    (_, refused) <- blockDraft ignore testFile (openDoc testFile 1 unnamed s)
+    either id (const "drafted") refused `shouldBe` "name the new test first: its name is still the stub's"
+    Just (tb, _) <- blockFor testFile s
+    blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s)
+    blockState drafted `shouldBe` Green
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")

@@ -215,8 +215,8 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 - **`no test for this module yet; write one …`** — `begin` was in a module whose test file does not
   exist, the cursor on no function. Put it in the function to have its test's stub opened, or
   write the test where the message says, then begin on it.
-- **`name the new test first`** — `draft` on a stub whose name is still the stub's: type it (and
-  the assertion), then draft.
+- **`name the new test first`** — `draft` on a stub whose name is still the stub's (`test_name`):
+  type it (and the assertion), then draft.
 - **`the block moved on`** — a draft, a test or a judge finished after you rejected or accepted
   the block, or after another move (a later edit's test): nothing lands, and the step log says
   `stale:` before what it would have been.
