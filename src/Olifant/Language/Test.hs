@@ -37,6 +37,7 @@ data TestRun = TestRun {trPassed :: [TestId], trFailed :: [(TestId, Failure)], t
 -- never throws.
 newtype Runner m = Runner {runTests :: Language -> [TestId] -> Map FilePath Text -> m (Either Text TestRun)}
 
+-- | No runner at all: every run is refused.
 noRunner :: Applicative m => Runner m
 noRunner = Runner (\_ _ _ -> pure (Left "no test runner"))
 
@@ -58,7 +59,8 @@ parsePytest code out = TestRun passed failed broken
     passed = [idOf rest | ("PASSED", rest) <- summary]
     failed = [(tid, failureOf tid rest) | (s, rest) <- summary, s `elem` ["FAILED", "ERROR"], let tid = idOf rest]
     failureOf tid rest =
-      let name = T.takeWhileEnd (/= ':') tid
+      let -- pytest heads a class method's section `TestX.test_y`
+          name = T.replace "::" "." (T.drop 2 (snd (T.breakOn "::" tid)))
           section = takeWhile (not . isRule) (drop 1 (dropWhile (not . isHeaderOf name) ls))
           line = listToMaybe [n | l <- reverse section, Just n <- [lineOf (T.takeWhile (/= ':') tid) l]]
           said = case T.breakOn " - " rest of

@@ -35,6 +35,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
 import Data.List (isPrefixOf, nub, sort)
+import Data.Maybe (fromMaybe)
 import Data.Set qualified as S
 import Olifant.Workspace (pruned)
 import Data.Map.Strict (Map)
@@ -77,28 +78,41 @@ processVerifierWith = processVerifierCancellable neverCancel
 
 -- | 'processVerifierWith', killed when the token is tripped ("cancelled").
 processVerifierCancellable :: Cancel -> Int -> Verifier IO
-processVerifierCancellable token secs = Verifier $ \lang argv files -> case (argv, checkProgram argv) of
-  ([], _) -> pure (Left (CheckFailed "empty verify command"))
-  (_, Nothing) -> pure (Left (CheckFailed "the verify command runs no program"))
+processVerifierCancellable token secs = Verifier $ \lang argv files ->
+  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) (const Nothing) files <&> \case
+    Left ScratchEmpty -> Left (CheckFailed "empty verify command")
+    Left ScratchNoProgram -> Left (CheckFailed "the verify command runs no program")
+    Left (ScratchMissing program) -> Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)"))
+    Left (ScratchFailed why) -> Left (CheckFailed why)
+    Right Cancelled -> Left (CheckFailed "cancelled")
+    Right TimedOut -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
+    Right (Finished code out err) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
+
+-- | Why 'scratchRun' ran nothing.
+data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | ScratchFailed Text
+
+-- | A command run in a scratch copy of the files, as a check runs: its
+-- program (past a leading @env@) must be installed; @{= cache =}@ and
+-- @{= context =}@ (the given key) are expanded in its arguments, and
+-- @special@ may replace a whole argument by several. Stopped after @secs@.
+scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
+scratchRun token secs lang prefix command ctx special files = case (command, checkProgram command) of
+  ([], _) -> pure (Left ScratchEmpty)
+  (_, Nothing) -> pure (Left ScratchNoProgram)
   (exe : args, Just program) ->
     (findExecutable (T.unpack program) >>= \case
       Nothing -> pure Nothing
       Just _ -> findExecutable (T.unpack exe)) >>= \case
-      Nothing -> pure (Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)")))
-      Just path -> withSystemTempDirectory "olifant-verify" $ \tmp0 -> do
+      Nothing -> pure (Left (ScratchMissing program))
+      Just path -> withSystemTempDirectory prefix $ \tmp0 -> do
         tmp <- canonicalizePath tmp0
         forM_ (M.toList files) $ \(p, t) -> do
           createDirectoryIfMissing True (takeDirectory (tmp </> p))
           BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
         cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
         createDirectoryIfMissing True cache
-        let ctx = maybe "none" (`contextKey` files) (langCheck lang)
-            expand a = T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))
-        runBytesCancellable token (Just secs) path (map expand args) (Just tmp) "" <&> \case
-          Left why -> Left (CheckFailed why)
-          Right Cancelled -> Left (CheckFailed "cancelled")
-          Right TimedOut -> Right (False, "the tests timed out (" <> T.pack (show secs) <> " s)")
-          Right (Finished code out err) -> Right (code == ExitSuccess, TE.decodeUtf8With lenientDecode (out <> err))
+        let expand a = fromMaybe [T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))] (special (T.strip a))
+        either (Left . ScratchFailed) Right <$> runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) ""
 
 -- | The language's test command over a scratch copy of the files (as a
 -- verify runs, with @{= cache =}@ and @{= context =}@; the one argument
@@ -107,30 +121,15 @@ processVerifierCancellable token secs = Verifier $ \lang argv files -> case (arg
 processRunner :: Cancel -> Int -> Runner IO
 processRunner token secs = Runner $ \lang ids files -> case langTest lang of
   Nothing -> pure (Left (langName lang <> " has no [test] in its adapter"))
-  Just td -> case (testCommand td, checkProgram (testCommand td)) of
-    ([], _) -> pure (Left "empty test command")
-    (_, Nothing) -> pure (Left "the test command runs no program")
-    (exe : args, Just program) ->
-      (findExecutable (T.unpack program) >>= \case
-        Nothing -> pure Nothing
-        Just _ -> findExecutable (T.unpack exe)) >>= \case
-        Nothing -> pure (Left ("`" <> program <> "` is not installed (needed to run the tests)"))
-        Just path -> withSystemTempDirectory "olifant-test" $ \tmp0 -> do
-          tmp <- canonicalizePath tmp0
-          forM_ (M.toList files) $ \(p, t) -> do
-            createDirectoryIfMissing True (takeDirectory (tmp </> p))
-            BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
-          cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
-          createDirectoryIfMissing True cache
-          let ctx = contextKeyOf (testContext td) files
-              expand a
-                | T.strip a == "{= tests =}" = map T.unpack ids
-                | otherwise = [T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))]
-          runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" <&> \case
-            Left why -> Left why
-            Right Cancelled -> Left "cancelled"
-            Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show secs) <> " s)")))
-            Right (Finished code out err) -> Right (parsePytest code (TE.decodeUtf8With lenientDecode (out <> err)))
+  Just td ->
+    scratchRun token secs lang "olifant-test" (testCommand td) (contextKeyOf (testContext td) files) (\a -> if a == "{= tests =}" then Just (map T.unpack ids) else Nothing) files <&> \case
+      Left ScratchEmpty -> Left "empty test command"
+      Left ScratchNoProgram -> Left "the test command runs no program"
+      Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
+      Left (ScratchFailed why) -> Left why
+      Right Cancelled -> Left "cancelled"
+      Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show secs) <> " s)")))
+      Right (Finished code out err) -> Right (parsePytest code (TE.decodeUtf8With lenientDecode (out <> err)))
 
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))

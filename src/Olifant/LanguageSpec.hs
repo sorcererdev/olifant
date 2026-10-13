@@ -95,6 +95,20 @@ spec = do
       let run = parsePytest (ExitFailure 2) out
       trFailed run `shouldBe` []
       trBroken run `shouldSatisfy` maybe False ("ImportError" `T.isInfixOf`)
+    it "(d2) a failing method of a test class keeps its line and message" $ do
+      let out = T.unlines
+            [ "=================================== FAILURES ==================================="
+            , "______________________________ TestX.test_y ______________________________"
+            , "pkg/a__test.py:7: in test_y"
+            , "    assert add(1, 2) == 4"
+            , "E   assert 3 == 4"
+            , "==================================== PASSES ===================================="
+            , "=========================== short test summary info ============================"
+            , "FAILED pkg/a__test.py::TestX::test_y"
+            , "1 failed in 0.01s" ]
+          run = parsePytest (ExitFailure 1) out
+      fmap (fLine . snd) (listToMaybe (trFailed run)) `shouldBe` Just (Just 7)
+      fmap (fMessage . snd) (listToMaybe (trFailed run)) `shouldBe` Just "assert 3 == 4"
     it "(e) processRunner on the fixture: a red test is red at its assert (uv)" $ do
       strict <- (== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS"
       findExecutable "uv" >>= \case
