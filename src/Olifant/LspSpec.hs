@@ -90,6 +90,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   scaleSpec
   concurrencySpec
   blockSpec
+  testsRunSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -994,6 +995,40 @@ blockSpec = describe "olifant/block" $ do
           TResponseMessage _ _ r <- awaitDraft
           pure (either (Left . (^. L.message)) Right r)
         either id (const "drafted") answer `shouldBe` "the file changed while drafting; your text stands"
+
+-- | `olifant/tests/run`: a file's tests, run whole, with a scripted runner.
+testsRunSpec :: Spec
+testsRunSpec = describe "olifant/tests/run" $ do
+  let testRel = "src/bistro/booking/commands/create_booking__test.py"
+      moduleRel = "src/bistro/booking/commands/create_booking.py"
+      red = T.pack testRel <> "::test_a_party_larger_than_the_table_is_refused"
+      run doc = blockMove (Proxy :: Proxy "olifant/tests/run") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]])
+  it "answers the test file's run: passed, failed with line and message, broken with why" $
+    withSystemTempDirectory "olifant-tests" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        ((passing, failing, broken), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc moduleRel "python"
+          passing <- run doc
+          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText red .= object ["line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text)]])))
+          failing <- run doc
+          liftIO (removeFile script)
+          broken <- run doc
+          pure (passing, failing, broken)
+        let field k = either (const Nothing) (lookupKey k)
+        field "file" passing `shouldBe` Just (String (T.pack (dir </> testRel)))
+        field "passed" passing `shouldBe` Just (toJSON [T.pack testRel])
+        field "failed" passing `shouldBe` Just (toJSON ([] :: [Value]))
+        field "broken" passing `shouldBe` Just Aeson.Null
+        field "seconds" passing `shouldSatisfy` \case Just (Number _) -> True; _ -> False
+        field "failed" failing `shouldBe` Just (toJSON [object ["id" .= red, "line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text), "output" .= ("" :: Text)]])
+        field "passed" failing `shouldBe` Just (toJSON ([] :: [Text]))
+        field "broken" broken `shouldSatisfy` \case Just (String why) -> "the test script does not read" `T.isPrefixOf` why; _ -> False
+  it "refuses a module with no test file yet, in one sentence" $
+    withPython [("src/bistro/lonely.py", "def alone() -> int:\n    return 1\n")] $ \ports dir -> do
+      (answer, _) <- inProcessWithConfig [] ports dir (openDoc "src/bistro/lonely.py" "python" >>= run)
+      answer `shouldBe` Left "no test file for this module yet: src/bistro/lonely__test.py"
 
 -- | An `olifant/block/<move>` request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
