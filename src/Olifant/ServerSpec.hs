@@ -23,6 +23,7 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, wait)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
+import Olifant.Fill (FillRequest (..), Filler (..), ModelFiller (..))
 import System.IO.Temp (withSystemTempDirectory)
 import Data.List (isSuffixOf)
 import Data.Text (Text)
@@ -503,6 +504,22 @@ blockSpecs = describe "blocks" $ do
     (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
     map muLine (survivors judged) `shouldBe` [6]
     readIORef seen `shouldReturn` [5]
+  it "(I4) a code draft sees the test file; a test draft sees the module" $ do
+    (s0, _) <- blocksOn killedBy []
+    seen <- newIORef []
+    let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()")]))))
+        s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just recording}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (_, [edit])) <- blockDraft ignore (root </> moduleRel) s
+    [code] <- readIORef seen
+    lookup testRel code `shouldBe` Just testText
+    -- judged, a survivor killed: its test drafted with the module in view
+    let s1 = changeDoc (root </> moduleRel) 2 (applyChange (feRange edit) (feText edit) stubbed) s
+    (_, Just _) <- blockChanged (root </> moduleRel) s1
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s1
+    (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
+    test : _ <- readIORef seen
+    lookup moduleRel test `shouldBe` Just written
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")

@@ -104,6 +104,7 @@ actionPlanWith progress fill path line generator sets s =
 -- client gave some (tests); else the client's model, or the project's.
 fillerFor :: Bool -> ServerState -> Project -> IO (Either Text (Maybe (ModelFiller IO)))
 fillerFor False _ _ = pure (Right Nothing)
+fillerFor True s _ | Just filler <- ssTestFiller s = pure (Right (Just filler))
 fillerFor True s project = case scFills (ssConfig s) of
   Just file ->
     readText (pFiles (ssPorts s)) file <&> \case

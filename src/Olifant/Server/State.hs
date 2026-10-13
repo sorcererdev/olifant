@@ -39,6 +39,7 @@ import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
+import Olifant.Fill (ModelFiller)
 import Olifant.Block (Block)
 import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Model (ModelConfig (..))
@@ -116,6 +117,8 @@ data ServerState = ServerState
   , -- | what to do when a block changes with no request asking (the judge
     -- of a test's code block, Jev's order): the adapter pushes it
     ssOnBlock :: IORef (Block -> Int -> IO ())
+  , -- | a filler that answers instead of any model (tests)
+    ssTestFiller :: Maybe (ModelFiller IO)
   }
 
 newServerState :: Ports -> IO ServerState
@@ -129,7 +132,7 @@ newServerState ports = do
   nextBlock <- newIORef 1
   seen <- newIORef M.empty
   onBlock <- newIORef (\_ _ -> pure ())
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided blocks nextBlock Nothing seen onBlock)
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided blocks nextBlock Nothing seen onBlock Nothing)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

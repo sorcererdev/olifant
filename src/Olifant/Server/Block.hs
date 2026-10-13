@@ -162,24 +162,28 @@ draftIn progress s root project lang b drafting killed filler = do
       ws = prWorkspace project
       started = fst <$> M.lookup file (ssDocs s)
   text <- lift (readText ws rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
-  (template, verify) <- case blockKind b of
+  -- the hole, its verifier, and the file beside it the model sees (spec §5):
+  -- a code draft its test file, a test draft its module
+  (template, verify, beside) <- case blockKind b of
     Code -> do
       let failure = case blockState b of
             Red f -> f
             _ -> Failure Nothing "the person asked for another draft" ""
       testText <- fromMaybe "" <$> lift (readText ws (T.unpack (fileOf (blockTestId b))))
       (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
-      pure (template, ("body", VerifyIds [blockTestId b]))
+      pure (template, ("body", VerifyIds [blockTestId b]), [(T.unpack (fileOf (blockTestId b)), testText)])
     TestFor killing -> do
       let (s1, s2) = blockSpan b
           candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
       (line, template) <- maybe (throwE "the test has no arrangement left to draft: its placeholder is gone") pure (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
       let new = newTests b text
+      tested <- lift (moduleOf project lang rel)
+      moduleText <- maybe (pure Nothing) (lift . readText ws) tested
       verify <- case killing of
         Nothing -> pure (VerifyRedAt (blockTestId b) (line + 1))
         Just m -> do
           when (null new) (throwE "name the new test first: its name is still the stub's")
-          moduleRel <- lift (moduleOf project lang rel) >>= maybe (throwE ("no module is tested by " <> T.pack rel)) pure
+          moduleRel <- maybe (throwE ("no module is tested by " <> T.pack rel)) pure tested
           -- what passed before the stub: it must still pass (a sibling red then is passed over)
           (_, files) <- lift (projectFiles ws M.empty lang [rel])
           keep <- lift (runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack rel] (M.insert rel (blockBase b) files)) >>= \case
@@ -188,14 +192,14 @@ draftIn progress s root project lang b drafting killed filler = do
               | Just why <- trBroken run -> throwE ("the tests cannot run: " <> why)
               | otherwise -> pure (trPassed run)
           pure (VerifyKills (T.pack rel) (keep ++ new) new moduleRel (muText m))
-      pure (template, ("arrange", verify))
+      pure (template, ("arrange", verify), [(m, t) | Just m <- [tested], Just t <- [moduleText]])
   -- each fill the model offers, the last kept: a draft that fails its test
   -- is written as its last attempt, never as the placeholder
   attempts <- lift (newIORef M.empty)
   let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) (\fills -> modifyIORef' attempts (M.union fills)) r >> pure r)}
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
-      context = [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
+      context = beside ++ [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
       options = planOptions {poFiller = Just recording, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
