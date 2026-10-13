@@ -4,6 +4,7 @@ module Olifant.Language.Adapter
   , Grammar (..)
   , TargetDef (..)
   , CheckDef (..)
+  , TestDef (..)
   , HoleKind (..)
   , ImportMerge (..)
   , parseLanguage
@@ -22,6 +23,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
+import Olifant.Language.Presets (applyPreset)
 import Olifant.Language.Rule
 import Olifant.Language.Support (knownFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
@@ -58,6 +60,8 @@ data Language = Language
   , langKeywords :: [Text]
   -- ^ `keywords`: the language's reserved words, which recognition keeps
   -- as they are (names become their case shape)
+  , langTest :: Maybe TestDef
+  -- ^ `[test]`: how the tests of a file are run (a preset names the plumbing)
   }
   deriving stock (Show)
 
@@ -101,10 +105,17 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool}
   deriving stock (Eq, Show)
 
+-- | A language's test runner: the command (its @{= tests =}@ stands for the
+-- test files), the context files and package root as in 'CheckDef', the
+-- report format, and where a module's tests live (@tests_for@, a template
+-- over the module's path).
+data TestDef = TestDef {testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text}
+  deriving stock (Eq, Show)
+
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -119,7 +130,8 @@ parseLanguage name packRoot src = do
   separator <- optional "separator" text top
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
   keywords <- fromMaybe [] <$> optional "keywords" (list text) top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords)
+  test <- optional "test" (table >=> testFrom) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case
@@ -151,8 +163,17 @@ parseLanguage name packRoot src = do
         <*> (fromMaybe True <$> optional "spaced" bool t)
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
-    checkFrom t = do
-      onlyKeys ["command", "context", "format", "root", "root_pick", "exclusive", "concurrent"] t
+    testFrom t0 = do
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for"] t0
+      t <- applyPreset "test" t0
+      format <- required "format" text t
+      if format `elem` knownTestFormats then Right () else Left ("`format`: unknown test format `" <> format <> "`; expected one of " <> T.intercalate ", " knownTestFormats)
+      TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
+        <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
+    knownTestFormats = ["pytest"]
+    checkFrom t0 = do
+      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent"] t0
+      t <- applyPreset "check" t0
       format <- required "format" text t
       if format `elem` knownFormats
         then Right ()

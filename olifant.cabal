@@ -81,6 +81,7 @@ library
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Header
+    Olifant.Language.Presets
     Olifant.Language.Pyright
     Olifant.Language.Rule
     Olifant.Language.Rustc
@@ -206,6 +207,7 @@ test-suite spec
     Olifant.Language.Elm
     Olifant.Language.Ghc
     Olifant.Language.Header
+    Olifant.Language.Presets
     Olifant.Language.Pyright
     Olifant.Language.Rule
     Olifant.Language.Rustc

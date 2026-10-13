@@ -14,12 +14,12 @@ import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
-import System.Directory (findExecutable, getTemporaryDirectory)
+import System.Directory (doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory)
 import System.Environment (lookupEnv)
-import System.FilePath ((</>))
+import System.FilePath (takeExtension, (</>))
 import Olifant.Template (Value (..))
 import Control.Concurrent.Async (mapConcurrently)
-import Control.Monad (forM_)
+import Control.Monad (filterM, forM_)
 import System.IO.Temp (withSystemTempDirectory)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
@@ -51,6 +51,38 @@ elmToml =
 
 spec :: Spec
 spec = do
+  describe "presets" $ do
+    let py = parseLanguage "python" "/pack" . T.unlines
+    it "(a) [test] preset = \"pytest\" fills command, context, format and root" $ do
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""]
+          Just t = langTest lang
+      testFormat t `shouldBe` "pytest"
+      testRoot t `shouldBe` ["pyproject.toml"]
+      testsFor t `shouldBe` "{= dir =}/{= stem =}__test.py"
+      last (testCommand t) `shouldBe` "{= tests =}"
+    it "(b) the table's own keys win over the preset's" $ do
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"tests/test_{= stem =}.py\"", "root = [\"setup.cfg\"]"]
+      fmap testRoot (langTest lang) `shouldBe` Just ["setup.cfg"]
+    it "(c) an unknown preset names the ones that exist" $
+      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"jest\"", "tests_for = \"x\""]
+        `shouldSatisfy` either (\e -> "pytest" `T.isInfixOf` e && "jest" `T.isInfixOf` e) (const False)
+    it "(d) [test] needs tests_for" $
+      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""] `shouldSatisfy` either ("tests_for" `T.isInfixOf`) (const False)
+    it "(e) [check] preset = \"pyright\" is the old table" $ do
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""]
+      fmap checkFormat (langCheck lang) `shouldBe` Just "pyright-json"
+      fmap checkRoot (langCheck lang) `shouldBe` Just ["pyproject.toml"]
+  describe "the configuration budget (spec §3)" $ do
+    it "(f) no pack TOML names Olifant's cache" $ do
+      let walk d = do
+            entries <- listDirectory d
+            concat <$> mapM (\e -> let p = d </> e in doesDirectoryExist p >>= \isDir -> if isDir then walk p else pure [p | takeExtension p == ".toml"]) entries
+      files <- walk "packs"
+      bad <- filterM (fmap ("{= cache =}" `T.isInfixOf`) . TIO.readFile) files
+      bad `shouldBe` []
+    it "(g) python.toml is no longer than before [test] (123 lines)" $ do
+      src <- TIO.readFile "packs/python-htmx/languages/python.toml"
+      length (T.lines src) `shouldSatisfy` (<= 123)
   describe "parseLanguage" $ do
     it "reads an adapter, resolving the grammar source against the pack" $ do
       let Right lang = parseLanguage "elm" "/packs/elm" elmToml
