@@ -213,7 +213,7 @@ handlers env =
         lspEnv <- getLspEnv
         st <- liftIO (readMVar (envState env))
         liftIO (writeIORef (ssOnDecided st) (runLspT lspEnv (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))))
-        -- a block that changed with no request asking (judged again, Jev's order)
+        -- a block that changed with no request asking (judged again, the decision model's order)
         liftIO (writeIORef (ssOnBlock st) (\b killed -> runLspT lspEnv (pushBlock (blockFile b) (Just (b, killed)))))
     , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
         let item = msg ^. L.params . L.textDocument

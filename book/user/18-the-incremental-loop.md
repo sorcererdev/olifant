@@ -141,13 +141,19 @@ rules' allowances:
 The comment travels with the code, so the next judging of that line knows it. Waivers are data:
 which operators people waive says which should stay in the preset.
 
-### Jev orders the survivors
+### The decision model orders the survivors
 
-With a decision model (`[decide]`, [chapter 17](17-strangling-a-legacy-codebase.md#with-a-model-decisions-progressively)),
+With a decision model configured (`[decide] model = "<a backend name>"`, [chapter 17](17-strangling-a-legacy-codebase.md#with-a-model-decisions-progressively)),
 each survivor gets two questions in the background: *is it equivalent to the original?*
 (`mutant-equivalent`: an equivalent one is dimmed, a hint rather than a warning, and listed last)
 and *how much does it matter?* (`mutant-matters`: high first). The block is pushed again as the
-answers land. Without one, survivors stay in file order. Jev never writes code.
+answers land. Without one, survivors stay in file order.
+
+The questions are typed (a fixed set of options; "unsure" always allowed; an answer outside the
+options changes nothing) and the decision model never writes code. Today any backend from
+`[model.backends]` can answer them, a local Ollama model included; a key is needed only if that
+backend needs one. A dedicated decision model such as TypeSafe AI's Jev is what the questions
+are shaped for, but no Jev backend exists yet.
 
 ## The step log
 

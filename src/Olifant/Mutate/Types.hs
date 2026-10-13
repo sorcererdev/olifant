@@ -5,7 +5,7 @@ import Data.Text (Text)
 
 -- | One mutation of a file: the line, the operator that made it, what it
 -- changed from and to, and the whole mutated file. `muWaived` holds the
--- reason a surviving mutant was accepted; `muDim` marks one Jev thinks
+-- reason a surviving mutant was accepted; `muDim` marks one the decision model thinks
 -- equivalent to the original.
 data Mutant = Mutant
   { muLine :: Int,

@@ -1,4 +1,4 @@
--- | Internal to Olifant.Recognize: asking a model (Jev, or a local LLM) when
+-- | Internal to Olifant.Recognize: asking the decision model (`[decide] model`) when
 -- the deterministic answer is unsure — a hint, a choice, a rival shape. A
 -- typed question: which of these conventions is this code, with which
 -- inputs. Optional and never trusted blindly: inputs are validated, a
