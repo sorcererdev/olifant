@@ -6,6 +6,7 @@
 module Olifant.Server.Block
   ( blockFor
   , blockBegin
+  , blockStart
   , blockDraft
   , blockTest
   , blockJudge
@@ -32,8 +33,9 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, withExceptT)
 import Data.Aeson (Value, object, (.=))
 import Data.Char (isAlphaNum)
+import Data.Functor ((<&>))
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
-import Data.List (isSuffixOf, nub)
+import Data.List (isSuffixOf, nub, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
@@ -61,7 +63,7 @@ import Olifant.Server.Edits (FileEdit (..), editsOfPlan, smallestChange)
 import Olifant.Server.BlockJev (orderSurvivors)
 import Olifant.Server.State (ServerState (..), deciderFor, projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (makeRelative, (</>))
+import System.FilePath (dropExtension, makeRelative, splitDirectories, (</>))
 
 -- | The pending block of a file (its module or its test), with how many of
 -- its mutants were killed when it was last judged.
@@ -73,10 +75,22 @@ blockFor path s = do
 
 -- | Begin a block at a cursor (1-based line). On a test file: its red test
 -- (the one at the cursor, else the first) and the function it calls. On a
--- module: its test file's red test, or, all green, the function at the
--- cursor, judged at once. A test that cannot run begins a Broken block.
+-- module: the red test calling the function at the cursor, or, those
+-- green, that function, judged at once; a function no test calls opens
+-- the stub of its first test instead (see 'blockStart'). A test that
+-- cannot run begins a Broken block.
 blockBegin :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text Block)
-blockBegin progress path line s0 =
+blockBegin progress path line s0 = fmap (fmap fst) <$> blockStart progress path line s0
+
+-- | 'blockBegin', with the stub the editor expands when it opened one: the
+-- test file (absolute), the line to put it at, and its text (tab stops for
+-- the test's name and assertion, a hole for its arrangement). A function
+-- no test calls (no test file, or none of its tests calls it) begins a
+-- test block on the stub at the end of its test file (a new file starts
+-- with the import of the function, or of its class, in Python), drafted
+-- red at its assertion; accepted, the function begins on it.
+blockStart :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text)))
+blockStart progress path line s0 =
   projectFor path s0 >>= \case
     (s, Nothing) -> pure (s, Left (T.pack path <> " is in no Olifant project"))
     (s, Just (root, project)) -> fmap (s,) . runExceptT $ do
@@ -90,42 +104,87 @@ blockBegin progress path line s0 =
           onTest = moduleRel /= rel
           testRel = if onTest then rel else testsForFile td rel
           file = normalisePath (root </> moduleRel)
+          testFile = normalisePath (root </> testRel)
+          pendingHere = "a block is pending in this file: accept or reject it first"
       busy <- lift (isJust <$> blockFor file s)
-      when busy (throwE "a block is pending in this file: accept or reject it first")
+      when busy (throwE pendingHere)
       moduleText <- lift (readText ws moduleRel) >>= maybe (throwE ("cannot read " <> T.pack moduleRel)) pure
-      testText <- lift (readText ws testRel) >>= maybe (throwE ("no test for this module yet; write one (its name and assertion) in " <> T.pack testRel <> ", then begin on it")) pure
-      lift (progress (Verifying (T.pack testRel)))
-      run <- ExceptT (runOver s ws lang [T.pack testRel])
-      let tests = [T.pack testRel <> "::" <> n | n <- testNames testText]
-          atCursor = defAbove line (if onTest then testText else moduleText)
-          cursorTest = [t | onTest, Just n <- [atCursor], let t = T.pack testRel <> "::" <> n, t `elem` tests]
-          calling = [t | not onTest, Just n <- [atCursor], t <- tests, n `elem` callsIn (testName t) testText]
-          spanOf tid = lift (underTest syntax lang testText tid moduleText) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
-          atFunction = case atCursor of
-            Nothing -> throwE ("no function at line " <> T.pack (show line))
-            Just n -> lift (functionSpan syntax lang n moduleText) >>= maybe (throwE ("cannot find function " <> n <> " in " <> T.pack moduleRel)) pure
-          chosen = listToMaybe (cursorTest ++ calling)
-          new tid sp st = do
-            n <- lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
-            pure ((begin n file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st})
-      b <- case (trBroken run, trFailed run) of
-        (Just why, _)
-          | onTest, Just tid <- listToMaybe (cursorTest ++ tests) -> spanOf tid >>= \sp -> new tid sp (Broken why)
-          | onTest -> throwE ("the tests cannot run: " <> why)
-          | otherwise -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp (Broken why)
-        (_, failed@((first, f0) : _)) -> do
-          let (tid, f) = fromMaybe (first, f0) (listToMaybe [(t, f') | t <- cursorTest ++ calling, Just f' <- [lookup t failed]])
-          sp <- spanOf tid
-          new tid sp (Red f)
-        _
-          | onTest -> throwE "every test here passes; write a failing one (its name and assertion) and begin on it"
-          | otherwise -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp Green
-      claimed <- lift (claim s [normalisePath (root </> testRel)] b)
-      unless claimed (throwE "a block is pending in this file: accept or reject it first")
-      lift (modifyIORef' (ssBlockSeen s) (M.insert file moduleText))
-      lift (appendStep (ssPorts s) root b "begin" (hud b))
-      -- a hand-written green body goes straight to the judge
-      if blockState b == Green then lift (either (const b) id <$> judgeIn s root project lang b 0) else pure b
+      testText0 <- lift (readText ws testRel)
+      let atCursor = defAbove line (if onTest then fromMaybe "" testText0 else moduleText)
+          number = lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
+      -- a function no test calls: its first test's stub opens
+      untested <- case (onTest, atCursor) of
+        (False, Just n) | not (any (calledIn n) (maybe [] (\t -> map (`testBody` t) (testNames t)) testText0)) -> lift (functionSpan syntax lang n moduleText) <&> fmap (const n)
+        _ -> pure Nothing
+      case untested of
+        Just n -> do
+          let base = fromMaybe "" testText0
+              (at, stub) = testStub lang base
+              body = maybe stub (\imp -> imp <> "\n" <> stub) (if isJust testText0 then Nothing else importOf lang moduleRel moduleText n)
+              defAt = at + length (takeWhile (not . ("def " `T.isPrefixOf`)) (T.splitOn "\n" body))
+          k <- number
+          let tb = begin k testFile (TestFor Nothing) base (defAt, defAt + 2) (T.pack testRel) (Failure Nothing "a new test: write its name and assertion" "")
+          claimed <- lift (claim s [file] tb)
+          unless claimed (throwE pendingHere)
+          lift (modifyIORef' (ssBlockSeen s) (M.insert testFile base))
+          lift (appendStep (ssPorts s) root tb "begin" (hud tb))
+          pure (tb, Just (testFile, at, body))
+        Nothing -> do
+          testText <- maybe (throwE ("no test for this module yet; write one (its name and assertion) in " <> T.pack testRel <> ", then begin on it")) pure testText0
+          lift (progress (Verifying (T.pack testRel)))
+          run <- ExceptT (runOver s ws lang [T.pack testRel])
+          let tests = [T.pack testRel <> "::" <> n | n <- testNames testText]
+              cursorTest = [t | onTest, Just n <- [atCursor], let t = T.pack testRel <> "::" <> n, t `elem` tests]
+              calling = [t | not onTest, Just n <- [atCursor], t <- tests, n `elem` callsIn (testName t) testText]
+              spanOf tid = lift (underTest syntax lang testText tid moduleText) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
+              atFunction = case atCursor of
+                Nothing -> throwE ("no function at line " <> T.pack (show line))
+                Just n -> lift (functionSpan syntax lang n moduleText) >>= maybe (throwE ("cannot find function " <> n <> " in " <> T.pack moduleRel)) pure
+              chosen = listToMaybe (cursorTest ++ calling)
+              new tid sp st = do
+                k <- number
+                pure ((begin k file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st})
+          b <- case (trBroken run, trFailed run) of
+            (Just why, _)
+              | onTest, Just tid <- listToMaybe (cursorTest ++ tests) -> spanOf tid >>= \sp -> new tid sp (Broken why)
+              | onTest -> throwE ("the tests cannot run: " <> why)
+              | otherwise -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp (Broken why)
+            (_, failed@((first, f0) : _))
+              -- the tests calling the function pass: another test red is not its
+              | not onTest, not (null calling), all (`notElem` map fst failed) calling -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp Green
+              | otherwise -> do
+                  let (tid, f) = fromMaybe (first, f0) (listToMaybe [(t, f') | t <- cursorTest ++ calling, Just f' <- [lookup t failed]])
+                  sp <- spanOf tid
+                  new tid sp (Red f)
+            _
+              | onTest -> throwE "every test here passes; write a failing one (its name and assertion) and begin on it"
+              | otherwise -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp Green
+          claimed <- lift (claim s [testFile] b)
+          unless claimed (throwE pendingHere)
+          lift (modifyIORef' (ssBlockSeen s) (M.insert file moduleText))
+          lift (appendStep (ssPorts s) root b "begin" (hud b))
+          -- a hand-written green body goes straight to the judge
+          (,Nothing) <$> if blockState b == Green then lift (either (const b) id <$> judgeIn s root project lang b 0) else pure b
+
+-- | Whether a test's lines call a function by its name (as a method or not).
+calledIn :: Text -> [Text] -> Bool
+calledIn n = any (\l -> any (\(pre, _) -> T.null pre || not (ident (T.last pre))) (T.breakOnAll (n <> "(") l))
+
+-- | The line importing a function into a new test file (the class it is a
+-- method of, if any): Python's `from pkg.module import Name`, the module's
+-- path less its `src/` folder; none for another language.
+importOf :: Language -> FilePath -> Text -> Text -> Maybe Text
+importOf lang moduleRel moduleText fn
+  | langName lang /= "python" = Nothing
+  | otherwise = Just ("from " <> dotted <> " import " <> owner)
+  where
+    dotted = T.intercalate "." (map T.pack (splitDirectories (dropExtension (fromMaybe moduleRel (stripPrefix "src/" moduleRel)))))
+    ls = T.lines moduleText
+    owner = case break (\l -> ("def " <> fn <> "(") `T.isPrefixOf` T.strip l) ls of
+      (above, d : _) | T.isPrefixOf " " d || T.isPrefixOf "\t" d -> case [l | l <- reverse above, not (T.null (T.strip l)), not (" " `T.isPrefixOf` l || "\t" `T.isPrefixOf` l)] of
+        l : _ | Just c <- T.stripPrefix "class " l -> T.takeWhile ident c
+        _ -> fn
+      _ -> fn
 
 -- | Draft (or the next draft): the block's span made a hole the model fills
 -- with the drafts stance, verified by the block's one test; the edits write
@@ -179,10 +238,11 @@ draftIn progress s root project lang b drafting killed filler = do
       let new = newTests b text
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
+      newTest <- maybe (throwE "name the new test first: its name is still the stub's") pure (listToMaybe new)
       verify <- case killing of
-        Nothing -> pure (VerifyRedAt (blockTestId b) (line + 1))
+        -- a new test: it must fail, at its assertion
+        Nothing -> pure (VerifyRedAt newTest (line + 1))
         Just m -> do
-          when (null new) (throwE "name the new test first: its name is still the stub's")
           moduleRel <- maybe (throwE ("no module is tested by " <> T.pack rel)) pure tested
           -- what passed before the stub: it must still pass (a sibling red then is passed over)
           (_, files) <- lift (projectFiles ws M.empty lang [rel])
@@ -254,12 +314,30 @@ testNow s root project lang b killed applied = do
           sp = if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
           (move, result) = case (trBroken run, trFailed run) of
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)
+            -- a new test is green for its block when it fails at its assertion
+            _ | TestFor Nothing <- blockKind b -> either (\f -> (landed sp (Left f), "red")) (const (landed sp (Right ()), "green")) (redAtAssertion b now run)
             (_, (_, f) : _) -> (landed sp (Left f), "red")
             _ -> (landed sp (Right ()), "green")
           landed = if applied then Applied else Edited
       settle s root killed "test" result move b >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
+
+-- | A new test's run as its test block takes it: Right when it fails at
+-- its assertion (it tests what is not written yet), else why not.
+redAtAssertion :: Block -> Text -> TestRun -> Either Failure ()
+redAtAssertion b now run = case newTests b now of
+  [] -> Left (Failure Nothing "name the new test and write its assertion" "")
+  t : _ -> case lookup t (trFailed run) of
+    Nothing -> Left (Failure Nothing "the test passes before any code exists: it does not test the new behaviour" "")
+    Just f
+      | fLine f == assertion t -> Right ()
+      | otherwise -> Left f {fMessage = "the test fails before its assertion: " <> fMessage f}
+  where
+    numbered = zip [1 :: Int ..] (T.splitOn "\n" now)
+    assertion t = case dropWhile (\(_, l) -> not (("def " <> testName t <> "(") `T.isPrefixOf` T.strip l)) numbered of
+      _ : rest -> listToMaybe [i | (i, l) <- rest, "assert" `T.isPrefixOf` T.strip l]
+      [] -> Nothing
 
 -- | Judge a green block: the mutants of its span's new lines (the whole
 -- span when none is new: a body begun on as it was), each run against the
@@ -333,8 +411,21 @@ reorder s decider moduleText testText push file =
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockAccept path = withBlock path $ \s root project _ b killed ->
   settle s root killed "accept" "accepted" Accept b >>= \case
+    Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
     Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
     other -> pure (fmap (,[]) other)
+
+-- | A new test accepted: the function it calls begins on it (red), as a
+-- begin on that test would, and is pushed.
+beginOnNewTest :: ServerState -> FilePath -> Project -> Block -> IO ()
+beginOnNewTest s root project b = do
+  now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
+  case [i | t : _ <- [newTests b now], (i, l) <- zip [1 ..] (T.splitOn "\n" now), ("def " <> testName t <> "(") `T.isPrefixOf` T.strip l] of
+    defLine : _ ->
+      blockBegin (const (pure ())) (blockFile b) defLine s >>= \case
+        (_, Right code) -> pushed s code 0
+        (_, Left _) -> pure ()
+    [] -> pure ()
 
 -- | A test file gained a test: its module's judged code block is judged
 -- again (its test is green: what was judged still stands), and pushed.

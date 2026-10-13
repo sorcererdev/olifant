@@ -17,6 +17,7 @@ module Olifant.Block
     draftTemplate,
     testDraftTemplate,
     killStub,
+    testStub,
     instructionFor,
   )
 where
@@ -24,7 +25,7 @@ where
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, testDraftTemplate)
+import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, testDraftTemplate, testStub)
 import Olifant.Language (Failure (..), TestId)
 import Olifant.Mutate (Mutant (..))
 

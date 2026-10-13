@@ -8,13 +8,15 @@ cannot be rubber-stamped.
 
 ## What you see
 
-1. Cursor on a function with no test, `begin`: Olifant says where the test goes —
-   `no test for this module yet; write one (its name and assertion) in
-   src/bistro/booking/commands/close_table__test.py, then begin on it`. You write the test's
-   **name and assertion**.
-2. `begin` on the test. It runs, it is red, and the editor jumps to the function it calls. Its
-   body is a **pending span**, with a soft background and a HUD line above it:
-   `▸ test_closes_a_table · red: NotImplementedError: …`, then `drafting…`.
+1. Cursor on a function no test calls, `begin`: the stub of its first test opens at the end of
+   its test file (a new file starts with the function's import: `from
+   bistro.booking.commands.close_table import CloseTable`), the cursor on its name. You write the
+   test's **name and assertion**; `draft` fills the arrangement between them, verified: the test
+   runs and fails *at the assertion*. That test block is judged clean at once; `accept` it.
+2. The function begins on that red test (as `begin` on a red test does: on a test, it runs, it is
+   red, and the editor jumps to the function it calls). Its body is a **pending span**, with a soft
+   background and a HUD line above it: `▸ test_closes_a_table · red: NotImplementedError: …`, then
+   `drafting…` while the model writes (only `reject` is open then).
 3. The draft lands: `▸ test_closes_a_table · draft 1 · green · judging…`. You read it. It is the
    *least* code that passes (the fake-it stance, on purpose): if it is too simple, your test was;
    add a case.
@@ -33,7 +35,8 @@ $ cd /tmp/bistro
 $ olifant gen python-htmx/command --set app=bistro --set service=booking --set command=close_table
 ```
 
-The command's test file is a stub, red until you write its first case. Make it yours:
+The command's test file is a stub, red until you write its first case. Delete it and `begin` in
+`handle` to have the stub of its first test opened for you, or make it yours:
 
 ```python
 from bistro.booking.commands.close_table import CloseTable, CloseTableInput
@@ -56,7 +59,7 @@ pending). The HUD's state says which are open.
 
 | move | key | when | what it does |
 |---|---|---|---|
-| `begin` | `<leader>mb` | on a test, or in a function | on a red test: a block over the body of the function it calls, red; the draft starts. On a function whose tests pass: a block over its body, judged at once. On a module with no test file: says which file to write |
+| `begin` | `<leader>mb` | on a test, or in a function | on a red test: a block over the body of the function it calls, red; the draft starts. On a function whose tests pass: a block over its body, judged at once. On a function no test calls: the stub of its first test at the end of its test file, a test block of its own (accepted, the function begins on it) |
 | `draft` | | red or green, no draft yet | the span as a hole a model fills, verified by the block's test (below) |
 | `next` | `<leader>mn` | after a draft | another candidate; the drafts so far go to the model as *not this, rejected by the person* |
 | `test` | | red, green, can't run | run the block's test on the buffer's text now |
@@ -78,7 +81,7 @@ The person's part of each block is the part that cannot be delegated:
 
 - **A test's name and assertion.** The model drafts only the arrangement between them, and a
   test draft must fail *at the assertion* before any code exists: one that errors in its setup,
-  or passes already, is a failed draft.
+  or passes already, is a failed draft. A new test's block is green when its test is red there.
 - **Reading a draft.** The drafts stance asks the model for the least code that passes, so a
   constant (`return Ok(None)`) is a correct draft for one test. Every generalisation needs a test
   that asks for it.
@@ -89,8 +92,10 @@ The person's part of each block is the part that cannot be delegated:
 ## Mutation and waivers
 
 When a block goes green it is judged: its lines new since the block began (all the span's, for a
-body you began on as it was) are mutated, each mutant run against the block's test file. A
-mutant the tests notice is **killed**; one they don't **survives**.
+body you began on as it was) are mutated, each mutant run against the block's test file. The
+file runs once unmutated first: the tests that pass there are the judges. A mutant one of them
+fails is **killed**; one they all pass **survives**. A test that was already red (the next one,
+being written) judges nothing, and a file that does not run at all is `cannot run`, not judged.
 
 Python's operators: `boundary` (`<` ↔ `<=`, `>` ↔ `>=`), `equality` (`==` ↔ `!=`), `negate` (a
 condition), `and-or`, `arith` (an arithmetic swap), `number` (±1), `string` (→ `""`),
@@ -99,7 +104,9 @@ mutants per block, in file order.
 
 Mutants never touch your file. Each runs in a **shadow**: the project's files as the editor has
 them, the mutated file over its own, the test runner rooted there; four at a time. A mutant
-that breaks the test file (it no longer imports) or times out counts as killed.
+that breaks the test file (it no longer imports) or times out counts as killed. Each mutant may
+take five times as long as the unmutated run did (at least 5 s, at most 120 s), so one that loops
+forever costs seconds.
 
 A survivor is a warning on its line, with the mutation at the end of it:
 
@@ -117,8 +124,9 @@ def test_name() -> None:
 ```
 
 Type the name and the assertion (`Tab` walks them), then `:DurandalBlock draft` in the test file.
-The arrangement is drafted and verified both ways: the test must pass on your code and fail with
-the mutant in place. `accept` the test, and the code block is judged again without that survivor.
+The arrangement is drafted and verified both ways: the new test, and every test that passed
+before, must pass on your code, and the new test must fail with the mutant in place (a sibling
+test that was red before is passed over). `accept` the test, and the code block is judged again without that survivor.
 
 **Waive** it: `:DurandalBlock waive` asks why, and the reason goes on the line, in the style of
 rules' allowances:
@@ -180,10 +188,16 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 
 - **Python only.** The operators are Python's; a language with a `[test]` table but no operators
   is begun and drafted but judged with no mutants.
+- **A new test file's import is Python's, and only the function's** (or its class's): a name your
+  assertion uses beyond it you import yourself.
+- **A draft that fails its test is written anyway**, its last attempt marked red, for you to
+  finish by hand; a model that offered nothing changes nothing. A draft sees the test file (a
+  test's draft, the module) beside the rejected drafts.
 - **One block per file**, and one test block in a test file.
 - **The function under test is found by a method call** (`.NAME(` in the test, its assertions
   first). A test of a bare function (`assert add(1, 2) == 3`) is not located yet: begin in the
-  function instead.
+  function instead. So is the function a new test calls, once you accept it: a new test of a
+  bare function leaves you to begin in the function.
 - **The span can swell.** A draft that adds an import shows the span from the import line down,
   when the import merged into the file's imports.
 - **An edit above the span leaves it stale** until the next test of the block: its lines are where
@@ -195,7 +209,12 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 ## Mistakes
 
 - **`no test for this module yet; write one …`** — `begin` was in a module whose test file does not
-  exist. Write it where the message says, then begin on the test.
+  exist, the cursor on no function. Put it in the function to have its test's stub opened, or
+  write the test where the message says, then begin on it.
+- **`name the new test first`** — `draft` on a stub whose name is still the stub's: type it (and
+  the assertion), then draft.
+- **`the block moved on`** — a draft or a test finished after you rejected or accepted the block,
+  or after another move: nothing lands.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a block starts
   from what is red. Begin in the function instead to judge it.
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a

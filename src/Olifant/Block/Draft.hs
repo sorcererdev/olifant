@@ -6,6 +6,7 @@ module Olifant.Block.Draft
   ( draftTemplate,
     testDraftTemplate,
     killStub,
+    testStub,
     instructionFor,
   )
 where
@@ -48,11 +49,15 @@ testDraftTemplate lang testText line
       either (Left . describeTemplateError) Right . parseTemplate $
         T.intercalate "\n" (take (line - 1) ls ++ [indent <> "{= ? arrange: stmt | " <> arrangeInstruction <> " =}"] ++ drop line ls)
 
--- | Where a new test goes (the line after the file's last non-blank line)
--- and the stub: a test whose name and assertion are tab stops and whose
--- arrangement is a stmt hole, for a survivor to be killed by.
+-- | A kill's stub: 'testStub', for a survivor to be killed by.
 killStub :: Language -> Text -> Mutant -> (Int, Text)
-killStub lang testText _mutant = (lastNonBlank + 1, stub)
+killStub lang testText _mutant = testStub lang testText
+
+-- | Where a new test goes (the line after the file's last non-blank line)
+-- and the stub: two blank lines, then a test whose name and assertion are
+-- tab stops and whose arrangement is a stmt hole.
+testStub :: Language -> Text -> (Int, Text)
+testStub lang testText = (lastNonBlank + 1, stub)
   where
     lastNonBlank = length (dropWhileEnd' (T.null . T.strip) (T.splitOn "\n" testText))
     ind = langIndent lang

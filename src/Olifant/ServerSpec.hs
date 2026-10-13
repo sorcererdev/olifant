@@ -151,13 +151,54 @@ blockSpecs = describe "blocks" $ do
     (s, _) <- blocks redOnStub [(testRel, ported)]
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
     (blockFile b, blockSpan b) `shouldBe` (root </> moduleRel, (6, 6))
-  it "(b) a second begin in the same file is refused while one is pending; a module with no test says to write one" $ do
-    (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
+  it "(b) a second begin in the same file is refused while one is pending" $ do
+    (s, _) <- blocks redOnStub []
     (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
     (_, again) <- blockBegin ignore (root </> moduleRel) 6 s
     again `shouldSatisfy` either ("pending" `T.isInfixOf`) (const False)
-    (_, lonely) <- blockBegin ignore (root </> "src/shop/lonely.py") 2 s
-    lonely `shouldSatisfy` either ("no test for this module yet" `T.isInfixOf`) (const False)
+  it "(I5) on a module with no test file, begin opens the stub as the new file's: the module's import first" $ do
+    (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
+    (_, Right (tb, Just (file, at, body))) <- blockStart ignore (root </> "src/shop/lonely.py") 2 s
+    (file, at) `shouldBe` (root </> "src/shop/lonely__test.py", 1)
+    take 4 (T.lines body) `shouldBe` ["from shop.lonely import alone", "", "", "def test_${1:name}() -> None:"]
+    (blockFile tb, blockKind tb, blockSpan tb, blockBase tb) `shouldBe` (file, Block.TestFor Nothing, (4, 6), "")
+    blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    fmap fst <$> blockFor file s `shouldReturn` Just tb
+    -- one block per file: the function cannot begin again meanwhile
+    (_, again) <- blockBegin ignore (root </> "src/shop/lonely.py") 2 s
+    again `shouldSatisfy` either ("pending" `T.isInfixOf`) (const False)
+  it "(I5) begin on a function no test calls: the stub at the end of its test file, drafted red at its assertion, accepted; then the function begins on it" $ do
+    (s0, _) <- blocksOn killedBy []
+    let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        s = (openDoc (root </> moduleRel) 1 module' s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right (tb, Just (testFile, at, body))) <- blockStart ignore (root </> moduleRel) 15 s
+    (testFile, at) `shouldBe` (root </> testRel, 7)
+    body `shouldSatisfy` ("def test_${1:name}()" `T.isInfixOf`)
+    (blockFile tb, blockKind tb, blockSpan tb) `shouldBe` (testFile, Block.TestFor Nothing, (9, 11))
+    -- the person names it and writes its assertion; the arrangement drafted: red at the assertion stands
+    let named = T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body testText))
+        st = openDoc testFile 1 named s
+    (_, Right (drafted, [edit])) <- blockDraft ignore testFile st
+    blockState drafted `shouldBe` Green
+    -- applied: red at its assertion is a test block's green; judged, accepted
+    let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) named) st
+    (_, Just tested) <- blockChanged testFile st2
+    blockState tested `shouldBe` Judged []
+    (_, Right (done, [])) <- blockAccept testFile st2
+    blockState done `shouldBe` Accepted
+    -- the function begins on its new red test
+    Just (code, _) <- blockFor (root </> moduleRel) st2
+    (blockKind code, blockTestId code, blockSpan code) `shouldBe` (Block.Code, T.pack testRel <> "::test_reopens_again", (15, 15))
+    blockState code `shouldSatisfy` \case Red _ -> True; _ -> False
+  it "(I5) a test block's test that passes before any code exists is red" $ do
+    (s0, _) <- blocksOn (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files) []
+    let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        s = openDoc (root </> moduleRel) 1 module' s0
+    (_, Right (_, Just (testFile, at, body))) <- blockStart ignore (root </> moduleRel) 15 s
+    let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at body testText)
+    (_, Just tested) <- blockChanged testFile (openDoc testFile 2 named s)
+    blockState tested `shouldSatisfy` \case Red f -> "passes before any code exists" `T.isInfixOf` fMessage f; _ -> False
+
   it "(c) draft lands only if the document is still the version it planned against (Review Focus 1)" $ do
     (s0, _) <- blocks redOnStub []
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
@@ -651,16 +692,16 @@ blocksHooked syntax hook verdict extra = do
 blockSyntax :: Syntax IO
 blockSyntax = Syntax query rewrite
   where
-    query _ rule src
-      | "^handle$" `T.isInfixOf` TE.decodeUtf8 (BL.toStrict (J.encode rule)) = pure (Right (body src))
-      | otherwise = pure (Right [])
+    query _ rule src = case T.breakOn "\"^" (TE.decodeUtf8 (BL.toStrict (J.encode rule))) of
+      (_, r) | not (T.null r), "$\"" `T.isInfixOf` r -> pure (Right (body (T.takeWhile (/= '$') (T.drop 2 r)) src))
+      _ -> pure (Right [])
     rewrite _ rule _ src
       | parseMaybe (J.withObject "rule" (.: "pattern")) rule == Just ("$A > $B" :: Text) = pure (Right (boundaries src))
       | otherwise = pure (Right [])
     indentOf = T.length . T.takeWhile (== ' ')
-    body src =
+    body name src =
       let ls = zip [0 ..] (T.splitOn "\n" src)
-       in case [(i, l) | (i, l) <- ls, "def handle(" `T.isInfixOf` l] of
+       in case [(i, l) | (i, l) <- ls, ("def " <> name <> "(") `T.isInfixOf` l] of
             [(i, d)] -> case takeWhile (\(_, l) -> not (T.null (T.strip l)) && indentOf l > indentOf d) (drop (i + 1) ls) of
               under@((first, _) : _) -> let (end, l) = last under in [Match (first, 8) (end, T.length l) "" (0, 0)]
               [] -> []

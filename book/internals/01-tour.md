@@ -180,7 +180,7 @@ From the bottom up:
 | **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): Myers' O(ND) diff over lines (cost follows the edits, not the file; past 1,000 edits lines pair by text), common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `lcsPairs`, `wholeNew`, `newCount` | none |
 | **Migration** | The strangler's report and its pure parts: the switch registry, `olifant:switch` markers, what a PR extracted and added, big changes, whether a function reads or writes, the tables its SQL names, a switched function's text | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `readsOrWrites`, `tablesTouched`, `functionText` | Newness |
 | **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, the waivers a line carries, and the judge that runs each mutant in its own shadow, N at a time. `Mutate/Python` holds Python's operators | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `waiverOn`, `waiverLine`, `judge`, `Verdict`; `Mutate/Python`'s `pythonOperators`. Internal: `Mutate/Run`, `Mutate/Types` | Language |
-| **Block** | The incremental loop's block as a pure state machine (Red, Drafting, Green, Judged, Broken, Accepted, Rejected; `Accepted` only from a `Judged` with every survivor waived), the moves open in each state, the HUD line; and the draft templates (a function body or a test's arrangement as a hole, the instruction, a kill's stub) | `Block.hs`: `Block`, `BlockState`, `Kind`, `Draft`, `Move`, `begin`, `step`, `open`, `hud`, `survivors`, `pending`, `draftTemplate`, `testDraftTemplate`, `killStub`, `instructionFor`. Internal: `Block/Draft` | Language, Mutate, Template |
+| **Block** | The incremental loop's block as a pure state machine (Red, Drafting (with the state it began from, which `DraftFailed` puts back), Green, Judged, Broken, Accepted, Rejected; `Accepted` only from a `Judged` with every survivor waived), the moves open in each state, the HUD line; and the draft templates (a function body or a test's arrangement as a hole, the instruction, a kill's stub) | `Block.hs`: `Block`, `BlockState`, `Kind`, `Draft`, `Move`, `begin`, `step`, `open`, `hud`, `survivors`, `pending`, `draftTemplate`, `testDraftTemplate`, `testStub`, `killStub`, `instructionFor`. Internal: `Block/Draft` | Language, Mutate, Template |
 | **Decide** | Typed decisions (Jev, progressively): a `Question` of a kind with its options, a `Decider` that answers one or is `Unsure`; validated, so an answer outside the options is `Unsure`. Nothing depends on an answer arriving | `Decide.hs`: `Question`, `Answer`, `Decider`, `noDecider`, `validated`, `decisionPrompt`, `decodeAnswer`, `curlDecider`, `recordedDecider` | Model, Process |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
 | **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses; snippets for a completion menu (spec §4.9) | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `Completion`, `actionsAt`, `actionsInFile`, `completionsAt`, `describeRule`, `matchPathSlots` | Cursor, Generator, Language, Query, Template |
@@ -2329,13 +2329,22 @@ machine served by the server:
   `.olifant/state/steps.log`). `blockBegin` runs the test file (`runOver`: the runner over the
   editor's text), finds the function under test (`underTest`: each `.NAME(` call the test makes,
   its assertions first, until the module defines one, located by the language's `function NAME`
-  target) and begins Red, or judges a green function at once. `blockDraft` makes the span a hole
-  and plans it with `planWith` under `DraftStance`, verified by `VerifyIds` (the block's test),
-  `VerifyRedAt` (a new test fails at its assertion) or `VerifyKills` (passes, and fails on the
-  mutant); its edits are versioned, so the editor applies them only to the buffer it planned on.
-  `judgeIn` mutates the span's lines new since `blockBase` (`newLinesOf`) with the language's
-  operators, caps them at 20 and runs them through `Mutate.judge`: each mutant's file over the
-  project in the runner's own temp tree, four at a time.
+  target) and begins Red, or judges a green function at once; on a function no test calls,
+  `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`testStub`) and
+  answers the stub for the editor, and accepting that block begins the function on it. Every
+  move lands through `settle`, a compare-and-swap on the stored block's number and state kind
+  (a block that moved on refuses a late result), and a new block through `claim`, one atomic
+  check-and-insert. `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
+  with `planWith` under `DraftStance` (the test file, or for a test the module, in its context),
+  verified by `VerifyIds` (the block's test), `VerifyRedAt` (a new test fails at its assertion)
+  or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
+  mutant); an unfilled hole writes the model's last attempt as a red draft. Its edits are
+  versioned, so the editor applies them only to the buffer it planned on. `judgeIn` runs the
+  test file once unmutated (the baseline: its passing tests are the judges, its wall time sets
+  each mutant's timeout, `judgeTimeout`, through `pTesterWithin`), mutates the span's lines new
+  since `blockBase` (`newLinesOf`) with the language's operators, caps them at 20 and runs them
+  through `Mutate.judge`: each mutant's file over the project in the runner's own temp tree,
+  four at a time.
 - **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file, and the stub the editor
   expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
   debounced reaction to an edit of a block's file: the draft the editor applied (`Applied`) or the

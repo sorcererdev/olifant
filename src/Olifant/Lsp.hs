@@ -515,7 +515,9 @@ handlers env =
       -- finished) and pushes it
       blockRequest env (Proxy :: Proxy "olifant/block/begin") $ \job path params -> case positionOf params of
         Nothing -> pure (Left "olifant/block/begin needs a position")
-        Just (line, _) -> liftIO (moved (withSnapshot job (blockBegin (const (pure ())) path (line + 1))) (\b -> pure ([], [b])))
+        -- a function with no test: the stub of its first test, which the editor expands
+        Just (line, _) -> liftIO . moved (withSnapshot job (blockStart (const (pure ())) path (line + 1))) $ \(b, stub) ->
+          pure (["snippet" .= object ["file" .= f, "line" .= at, "body" .= body] | Just (f, at, body) <- [stub]], [b])
     , blockRequest env (Proxy :: Proxy "olifant/block/draft") $ \job path _ -> drafted job path
     , blockRequest env (Proxy :: Proxy "olifant/block/next") $ \job path _ -> drafted job path
     , blockRequest env (Proxy :: Proxy "olifant/block/test") $ \job path _ -> liftIO (moved (withSnapshot job (blockTest path)) (\b -> pure ([], [b])))
