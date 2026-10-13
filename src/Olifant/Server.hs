@@ -78,7 +78,7 @@ module Olifant.Server
   , underTest
   ) where
 
-import Olifant.Server.BlockJev (orderSurvivors)
+import Olifant.Server.BlockDecide (orderSurvivors)
 import Olifant.Server.BlockMoves (blockChanged, blockEdited, blockKill, blockWaive)
 import Olifant.Server.Block (appendStep, blockAccept, blockBegin, blockDraft, blockStart, blockFor, blockJson, blockJudge, blockReject, blockTest, stateName, underTest)
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress)

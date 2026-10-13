@@ -116,7 +116,7 @@ data ServerState = ServerState
     -- what an edit is told apart from (inside the span, or not)
     ssBlockSeen :: IORef (Map FilePath Text)
   , -- | what to do when a block changes with no request asking (the judge
-    -- of a test's code block, Jev's order): the adapter pushes it
+    -- of a test's code block, the decision model's order): the adapter pushes it
     ssOnBlock :: IORef (Block -> Int -> IO ())
   , -- | a filler that answers instead of any model (tests)
     ssTestFiller :: Maybe (ModelFiller IO)
@@ -307,7 +307,7 @@ decision s decider key fp q onDone = do
     ( try (ask decider q) >>= \case
         Left (_ :: SomeException) -> pure ()
         Right answer -> do
-          -- answers land at once from many threads (Jev asks per survivor)
+          -- answers land at once from many threads (one question per survivor)
           atomicModifyIORef' (ssDecisions s) (\(answers, asking) -> ((M.insert key (fp, answer) answers, asking), ()))
           onDone
     )

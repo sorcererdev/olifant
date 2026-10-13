@@ -65,7 +65,7 @@ import Olifant.Newness (newLinesOf)
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor)
 import Olifant.Server.Edits (FileEdit (..), editsOfPlan, smallestChange)
-import Olifant.Server.BlockJev (orderSurvivors)
+import Olifant.Server.BlockDecide (orderSurvivors)
 import Olifant.Server.State (ServerState (..), deciderFor, projectFor, workspaceOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, makeRelative, splitDirectories, (</>))
@@ -369,7 +369,7 @@ testNow s root project lang b killed applied = do
         (TestFor _, new@(_ : _)) -> new
         _ -> [blockTestId b]
       -- a test of the newest text (no test or draft begun since) that finds
-      -- the block moved on meanwhile (an older test landed first, Jev
+      -- the block moved on meanwhile (an older test landed first, the decider
       -- reordered) settles once more, on the block as it now stands
       -- (again each time another move lands first, while that still holds:
       -- each round needs a newer version, so it ends)
@@ -439,7 +439,7 @@ blockJudge :: FilePath -> ServerState -> IO (ServerState, Either Text Block)
 blockJudge path = withBlock path $ \s root project lang b killed -> judgeIn s root project lang b killed
 
 -- | A test block is not mutated: green, it is judged. A code block's
--- survivors come in Jev's order (what it already said; the rest as it
+-- survivors come in the decision model's order (what it already said; the rest as it
 -- answers, pushed).
 judgeIn :: ServerState -> FilePath -> Project -> Language -> Block -> Int -> IO (Either Text Block)
 judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind b) of
@@ -488,11 +488,11 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
         let surviving = [m | (m, Survived) <- vs]
             killed = length vs - length surviving
         settle s root killed "judge" (tshow killed <> "/" <> tshow (length vs) <> " killed") (Judge surviving) b >>= \case
-          -- in Jev's order: what it already said now, the rest as it answers
+          -- in the decision model's order: what it already said now, the rest as it answers
           Right judged -> Right . fromMaybe judged <$> reorder s decider now testText False (blockFile judged)
           other -> pure other
 
--- | The file's judged block in Jev's order, stored (and, PUSH, pushed)
+-- | The file's judged block in the decision model's order, stored (and, PUSH, pushed)
 -- when that changed it; each answer that lands later orders it again.
 reorder :: ServerState -> Maybe (Decider IO) -> Text -> Text -> Bool -> FilePath -> IO (Maybe Block)
 reorder s decider moduleText testText push file =

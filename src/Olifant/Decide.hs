@@ -1,4 +1,4 @@
--- | Typed decisions (Jev, or any model), progressively: a question with
+-- | Typed decisions, progressively (Jev-shaped; today any chat model behind `[decide] model`): a question with
 -- known options, an answer validated against them, "unsure" always
 -- allowed. Asked only where the deterministic answer is unsure; everything
 -- works without it (spec: strangler-design.md §3.4).

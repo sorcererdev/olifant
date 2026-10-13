@@ -1,9 +1,9 @@
--- | Internal to Olifant.Server: Jev orders a judged block's survivors. Each
+-- | Internal to Olifant.Server: the decision model orders a judged block's survivors. Each
 -- is asked about twice, in the background through the decisions the server
 -- keeps: is it equivalent to the original (dimmed, and last), and how much
 -- does it matter (high first). What is not known yet leaves a survivor
 -- undimmed and in the middle; with no decider they stay in file order.
-module Olifant.Server.BlockJev (orderSurvivors) where
+module Olifant.Server.BlockDecide (orderSurvivors) where
 
 import Data.List (sortOn)
 import Data.Ord (Down (..))
@@ -14,7 +14,7 @@ import Olifant.Decide (Answer (..), Decider, Question (..))
 import Olifant.Mutate (Mutant (..))
 import Olifant.Server.State (ServerState, decision)
 
--- | The survivors of BLOCK in Jev's order, given the module's text and its
+-- | The survivors of BLOCK in the decision model's order, given the module's text and its
 -- test file's; ON_DONE runs as each answer lands (the caller orders again).
 orderSurvivors :: ServerState -> Maybe (Decider IO) -> Block -> Text -> Text -> IO () -> [Mutant] -> IO [Mutant]
 orderSurvivors _ Nothing _ _ _ _ ms = pure ms
