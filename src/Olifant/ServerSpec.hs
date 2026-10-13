@@ -213,6 +213,18 @@ blockSpecs = describe "blocks" $ do
     -- a file with no import yet: it goes first
     (_, top, _) <- start (T.unlines ["def test_other() -> None:", "    assert 1 == 1"])
     T.lines top `shouldBe` ["from shop.close_table import Reopen", "", "def test_other() -> None:", "    assert 1 == 1"]
+  it "(I-2) the stub's import is no line of the test block: tested after an edit, its span is the new test's" $ do
+    (s0, _) <- blocksOn killedBy []
+    let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        s = openDoc (root </> moduleRel) 1 reopen s0
+    (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+    length imports `shouldBe` 1
+    -- the editor imports, expands the stub; the person names it and writes its assertion
+    let named = T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body (applyEdits imports testText)))
+    (_, Just tested) <- blockChanged testFile (openDoc testFile 2 named s)
+    let ls = T.splitOn "\n" named
+    ls !! (fst (blockSpan tested) - 1) `shouldBe` "def test_reopens_again() -> None:"
+    ls !! (snd (blockSpan tested) - 1) `shouldBe` "    assert Reopen().again() == 1"
   it "(I5) a test block's test that passes before any code exists is red" $ do
     (s0, _) <- blocksOn (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files) []
     let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]

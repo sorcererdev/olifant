@@ -52,7 +52,7 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (addImports, applyFills, projectFiles)
+import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
@@ -353,7 +353,11 @@ testNow s root project lang b killed applied = do
     -- a runner that cannot start is a test that cannot run: never judged
     Left why -> settleOn s root killed "test" ("cannot run: " <> why) (Just now) (CannotRun why) b
     Right run -> do
-      let new = newLinesOf (blockBase b) now
+      -- its span runs from its first new line to its last; an import (a
+      -- stub's, joined to the file's) or a blank line is no line of the block's
+      let numbered = M.fromList (zip [1 ..] (T.splitOn "\n" now))
+          ownLine l = not (T.null (T.strip l)) && not (isImportLine lang l)
+          new = S.filter (maybe False ownLine . (`M.lookup` numbered)) (newLinesOf (blockBase b) now)
           sp = if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
           (move, result) = case (trBroken run, trFailed run) of
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)

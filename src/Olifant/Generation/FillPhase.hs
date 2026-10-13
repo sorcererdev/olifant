@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, projectFiles) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -325,6 +325,10 @@ merging m l = case (makeRegexM (T.unpack (mergePattern m)) :: Maybe Regex) of
   Just re -> case matchM re (T.unpack l) of
     Just (AllTextSubmatches (_ : modu : names : _)) -> Just (T.pack modu, filter (not . T.null) (map T.strip (T.splitOn "," (T.pack names))))
     _ -> Nothing
+
+-- | A top-level import line, by the language's `imports`.
+isImportLine :: Language -> Text -> Bool
+isImportLine lang l = not (T.isPrefixOf " " l) && not (T.isPrefixOf "\t" l) && maybe False (`matches` l) (langImports lang)
 
 -- | Each import line the file lacks, in order: merged into the line that
 -- imports from its module (`[import_merge]`), or put after the file's last
