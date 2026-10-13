@@ -2321,13 +2321,14 @@ machine served by the server. The person's "magic circle" is a `Block` internall
 
 - **`Block`** is the machine: `step move block` is `Left why` (one sentence for the person) or
   the block after the move; `open` lists the moves a state allows and `hud` writes its line (ending on the person's next
-  step: `· draft`, `· kill or waive`); `killTarget` is the survivor a kill takes (the cursor
+  step: `· draft`, `· name it, then draft` on an untouched test stub, none after a model's failed
+  draft, `· kill or waive`); `killTarget` is the survivor a kill takes (the cursor
   line's, or the first unwaived in the stored order).
   A property spec pins that `Accepted` is reachable only through a `Judged` whose survivors are
   all waived. `Block/Draft` turns a span into a template with one `block` hole (or a test's
   placeholder into a `stmt` hole), with the instruction from the test's name, its assertions and
   why it fails.
-- **`Server/Block`** keeps each file's pending block (`ssBlocks`, keyed by the module's path, found
+- **`Server/Block`** keeps each file's open circle (a `Block` internally) (`ssBlocks`, keyed by the module's path, found
   from its test file too), runs the moves and writes each to the step log (`appendStep`,
   `.olifant/state/steps.log`). `blockBegin` runs the test file (`runOver`: the runner over the
   editor's text), finds the function under test (`underTest`: each `.NAME(` call the test makes,

@@ -182,9 +182,9 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       | null (blockDrafts b) = ""
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "
     statePart = case blockState b of
-      Red f
-        | null (blockDrafts b) -> "red: " <> fMessage f <> " · draft"
-        | otherwise -> "red: " <> fMessage f
+      Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, redCue] of
+        [] -> "red"
+        parts -> T.intercalate " · " parts
       Drafting _ -> "drafting…"
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
@@ -194,6 +194,13 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Broken why -> "cannot run: " <> why
       Accepted -> "accepted"
       Rejected -> "rejected"
+    -- red's next step: none once the model's draft failed (it tried; the
+    -- person reads it); a test's stub nobody has typed in is named first
+    -- (draft refuses a stub still called test_name); else draft
+    redCue = case (reverse (blockDrafts b), blockKind b) of
+      (d : _, _) | draftBy d /= "you" -> ""
+      ([], TestFor _) -> "name it, then draft"
+      _ -> "draft"
 
 -- | Not yet Accepted or Rejected.
 pending :: Block -> Bool
