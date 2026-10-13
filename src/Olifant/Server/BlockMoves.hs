@@ -9,13 +9,13 @@ import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
-import Data.List (find, nub)
+import Data.List (nub)
 import Data.Map.Strict qualified as M
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Project (..))
-import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, killStub, survivors)
+import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, killStub, killTarget, survivors)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
@@ -25,21 +25,22 @@ import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, (</>))
 
--- | Kill the survivor on a line (1-based): the code block stays as it is;
+-- | Kill the survivor on a line (1-based), or the top-ranked one when the
+-- line has none ('killTarget'): the code block stays as it is;
 -- a test block opens in its test file on the stub the editor expands — the
 -- test file, the line to put it at, and the stub (tab stops for the test's
 -- name and assertion, a hole for its arrangement).
 blockKill :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, FilePath, Int, Text))
 blockKill path line = withBlock path $ \s root project lang b killed -> runExceptT $ do
-  when (blockKind b /= Code) (throwE "kill a survivor from its code block, in its module")
-  m <- maybe (throwE "no survivor on that line to kill") pure (find ((== line) . muLine) (survivors b))
+  when (blockKind b /= Code) (throwE "kill a survivor from the code's magic circle, in its module")
+  m <- either throwE pure (killTarget line b)
   let testRel = T.unpack (fileOf (blockTestId b))
       testFile = normalisePath (root </> testRel)
   busy <- lift (M.member testFile <$> readIORef (ssBlocks s))
   when busy (throwE pendingTest)
   testText <- lift (readText (prWorkspace project) testRel) >>= maybe (throwE ("cannot read " <> T.pack testRel)) pure
   let (at, body) = killStub lang testText m
-  b' <- ExceptT (settle s root killed "kill" (muOperator m <> " on line " <> tshow line) (Kill line) b)
+  b' <- ExceptT (settle s root killed "kill" (muOperator m <> " on line " <> tshow (muLine m)) (Kill (muLine m)) b)
   n <- lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
   -- the stub's two blank lines, then its def, arrangement and assertion;
   -- its test is the test file's (its name is the person's to type)
@@ -51,7 +52,7 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
     appendStep (ssPorts s) root tb "begin" (hud tb)
   pure (b', testFile, at, body)
   where
-    pendingTest = "a test block is pending in the test file: accept or reject it first"
+    pendingTest = "a magic circle is open in the test file: accept or reject it first"
 
 -- | Waive the unwaived survivors on a line, for a reason: one comment per
 -- operator, written on its line (one edit), and each survivor waived.

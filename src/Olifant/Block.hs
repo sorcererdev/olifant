@@ -1,7 +1,7 @@
--- | A block: one pending change of a few lines, bounded by one test, and
--- the pure machine that moves it from red to accepted. No IO here; the
--- server feeds it what happened (a draft landed, the judge came back) and
--- shows the person `open` and `hud`.
+-- | A block (the person's "magic circle"): one pending change of a few
+-- lines, bounded by one test, and the pure machine that moves it from red
+-- to accepted. No IO here; the server feeds it what happened (a draft
+-- landed, the judge came back) and shows the person `open` and `hud`.
 module Olifant.Block
   ( Kind (..),
     Draft (..),
@@ -12,6 +12,7 @@ module Olifant.Block
     step,
     open,
     survivors,
+    killTarget,
     hud,
     pending,
     draftTemplate,
@@ -22,7 +23,9 @@ module Olifant.Block
   )
 where
 
-import Data.Maybe (isJust, isNothing)
+import Control.Applicative ((<|>))
+import Data.List (find)
+import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, testDraftTemplate, testStub)
@@ -88,7 +91,7 @@ begin i file kind base sp test failure =
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
 step mv b
-  | not (pending b) = Left "this block is finished; begin another"
+  | not (pending b) = Left "this circle is closed; begin another"
   | otherwise = case (mv, blockState b) of
       (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s}
       (DraftFailed, Drafting before) -> Right b {blockState = before}
@@ -104,13 +107,11 @@ step mv b
         | otherwise -> Left "no unwaived survivor on that line"
         where
           here m = muLine m == line && muOperator m == op
-      (Kill line, Judged ms)
-        | any ((== line) . muLine) ms -> Right b
-        | otherwise -> Left "no survivor on that line to kill"
+      (Kill line, Judged _) -> b <$ killTarget line b
       (Accept, Judged ms)
         | all (isJust . muWaived) ms -> Right b {blockState = Accepted}
         | otherwise -> Left (T.pack (show (length (filter (isNothing . muWaived) ms))) <> " survivor(s): kill or waive each, then accept")
-      (Accept, _) -> Left "accept needs the test green and the block judged"
+      (Accept, _) -> Left "accept needs the test green and the circle judged"
       (Reject, _) -> Right b {blockState = Rejected}
       _ -> Left ("`" <> moveName mv <> "` is not open here")
   where
@@ -164,7 +165,15 @@ survivors b = case blockState b of
   Judged ms -> unwaived ms
   _ -> []
 
--- | The one HUD line.
+-- | The survivor a kill on a line (1-based) takes: the unwaived one on
+-- that line, or else the first unwaived in the block's order (the decision
+-- model's ranking, when it has ranked them).
+killTarget :: Int -> Block -> Either Text Mutant
+killTarget line b = maybe (Left "no survivor left to kill") Right (find ((== line) . muLine) left <|> listToMaybe left)
+  where
+    left = survivors b
+
+-- | The one HUD line: where the block is, and the next step when it is the person's.
 hud :: Block -> Text
 hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
   where
@@ -173,16 +182,25 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       | null (blockDrafts b) = ""
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "
     statePart = case blockState b of
-      Red f -> "red: " <> fMessage f
+      Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, redCue] of
+        [] -> "red"
+        parts -> T.intercalate " · " parts
       Drafting _ -> "drafting…"
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         0 -> "clean ✓ accept"
-        1 -> "1 survivor"
-        n -> T.pack (show n) <> " survivors"
+        1 -> "1 survivor · kill or waive"
+        n -> T.pack (show n) <> " survivors · kill or waive each"
       Broken why -> "cannot run: " <> why
       Accepted -> "accepted"
       Rejected -> "rejected"
+    -- red's next step: none once the model's draft failed (it tried; the
+    -- person reads it); a test's stub nobody has typed in is named first
+    -- (draft refuses a stub still called test_name); else draft
+    redCue = case (reverse (blockDrafts b), blockKind b) of
+      (d : _, _) | draftBy d /= "you" -> ""
+      ([], TestFor _) -> "name it, then draft"
+      _ -> "draft"
 
 -- | Not yet Accepted or Rejected.
 pending :: Block -> Bool
