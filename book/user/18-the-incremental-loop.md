@@ -181,6 +181,9 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 - **Python only.** The operators are Python's; a language with a `[test]` table but no operators
   is begun and drafted but judged with no mutants.
 - **One block per file**, and one test block in a test file.
+- **The function under test is found by a method call** (`.NAME(` in the test, its assertions
+  first). A test of a bare function (`assert add(1, 2) == 3`) is not located yet: begin in the
+  function instead.
 - **The span can swell.** A draft that adds an import shows the span from the import line down,
   when the import merged into the file's imports.
 - **An edit above the span leaves it stale** until the next test of the block: its lines are where
