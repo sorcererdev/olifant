@@ -712,6 +712,9 @@ blockSpecs = describe "blocks" $ do
     gArm gate
     testing <- async (blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s))
     waitUntil ((>= 1) <$> gEntered gate)
+    -- and types again (its own test not begun yet): the editor's text is a third one
+    let third = T.replace "seats > 2)" "seats > 2)  # third" written
+    writeIORef live (3, third)
     -- the model gives up: the state before the draft is put back
     putMVar release ()
     waitUntil (maybe False (\(b, _) -> case blockState b of Drafting _ -> False; _ -> True) <$> blockFor (root </> moduleRel) s)
@@ -721,6 +724,8 @@ blockSpecs = describe "blocks" $ do
     (_, Left _) <- wait drafting
     Just (b, _) <- blockFor (root </> moduleRel) s
     blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+    -- tested on the editor's text as the draft failed (only the restore's retest saw it)
+    blockOn b `shouldBe` third
   it "(retry) two edits' tests begun on one version, the older landing first: the newer settles once more, on the newest text" $ do
     -- runs 1 and 2 (the two edits' tests) each wait for their own release
     calls <- newIORef (0 :: Int)
