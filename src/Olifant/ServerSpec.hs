@@ -561,6 +561,28 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
     test : _ <- readIORef seen
     lookup moduleRel test `shouldBe` Just written
+  it "(M1) a language with no mutation operators cannot be judged: accept stays closed" $ do
+    (s0, _) <- blocks (const (TestRun [testId] [] Nothing)) [("src/shop/close_table.snk", written)]
+    python <- maybe "" id <$> readText (portsFiles s0) "/pack/languages/python.toml"
+    writeText (portsFiles s0) "/pack/languages/snake.toml" (T.replace "files = [\"**/*.py\"]" "files = [\"**/*.snk\"]" python)
+    (_, Right b) <- blockBegin ignore (root </> "src/shop/close_table.snk") 6 s0
+    blockState b `shouldBe` Block.Broken "no mutation operators for snake"
+    open b `shouldSatisfy` notElem "accept"
+  it "(M5) a green draft that changes nothing is judged at once (no edit comes back to test)" $ do
+    (s0, _) <- blocks redOnStub []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    blockState judged `shouldSatisfy` \case Judged _ -> True; _ -> False
+    (_, Right (b, edits)) <- blockDraft ignore (root </> moduleRel) s
+    edits `shouldBe` []
+    blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(M2) the step log changing under .olifant/state/ does not load the project again" $ do
+    (s0, _) <- server
+    (s1, Just _) <- projectFor "/r1/src/x.py" s0
+    s2 <- filesChanged ["/r1/.olifant/state/steps.log"] s1
+    M.lookup "/r1" (ssLoads s2) `shouldBe` M.lookup "/r1" (ssLoads s1)
+    s3 <- filesChanged ["/r1/.olifant/config.toml"] s2
+    M.lookup "/r1" (ssLoads s3) `shouldBe` fmap (+ 1) (M.lookup "/r1" (ssLoads s1))
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")

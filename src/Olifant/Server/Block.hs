@@ -287,7 +287,8 @@ draftIn progress s root project lang b drafting killed filler = do
         TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" planned)))
   b' <- ExceptT (settle s root killed "draft" (either (const "red") (const "green") outcome) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
-  pure (b', edits)
+  -- a green draft that changes nothing brings no edit back to be tested: judged now
+  if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
 
 -- | Run the block's test on the editor's text: red, green (then judged) or
 -- broken; its span is the lines new since the block began.
@@ -364,22 +365,24 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
     let new = S.filter (\l -> l >= l1 && l <= l2) (newLinesOf (blockBase b) now)
         scope = if S.null new then S.fromList [l1 .. l2] else new
         operators = if langName lang == "python" then pythonOperators else []
-    verdicts <-
-      mutantsOf (pSyntax (ssPorts s)) lang operators now scope >>= \case
-        Left f -> pure (Left (describeSyntaxFailure f))
-        Right [] -> pure (Right [])
-        Right ms -> do
-          (_, files) <- projectFiles ws M.empty lang [T.unpack testFile]
-          -- the baseline: which tests pass on the files as they are, and how
-          -- long they take (each mutant's run gets a timeout from it)
-          t0 <- getMonotonicTime
-          baseline <- runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [testFile] files
-          t1 <- getMonotonicTime
-          case baseline of
-            Left why -> pure (Left why)
-            Right base
-              | Just why <- trBroken base -> pure (Left why)
-              | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
+    verdicts <- case operators of
+      -- nothing to mutate is nothing judged: accept stays closed
+      [] -> pure (Left ("no mutation operators for " <> langName lang))
+      _ -> mutantsOf (pSyntax (ssPorts s)) lang operators now scope >>= \case
+             Left f -> pure (Left (describeSyntaxFailure f))
+             Right [] -> pure (Right [])
+             Right ms -> do
+               (_, files) <- projectFiles ws M.empty lang [T.unpack testFile]
+               -- the baseline: which tests pass on the files as they are, and how
+               -- long they take (each mutant's run gets a timeout from it)
+               t0 <- getMonotonicTime
+               baseline <- runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [testFile] files
+               t1 <- getMonotonicTime
+               case baseline of
+                 Left why -> pure (Left why)
+                 Right base
+                   | Just why <- trBroken base -> pure (Left why)
+                   | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
     case verdicts of
       Left why -> settle s root killedBefore "judge" ("cannot run: " <> why) (CannotRun why) b
       Right vs -> do

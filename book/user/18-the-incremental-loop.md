@@ -187,7 +187,8 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 ## What works today, and its limits
 
 - **Python only.** The operators are Python's; a language with a `[test]` table but no operators
-  is begun and drafted but judged with no mutants.
+  is begun and drafted but cannot be judged (`cannot run: no mutation operators for …`), so its
+  blocks are never accepted.
 - **A new test file's import is Python's, and only the function's** (or its class's): a name your
   assertion uses beyond it you import yourself.
 - **A draft that fails its test is written anyway**, its last attempt marked red, for you to
