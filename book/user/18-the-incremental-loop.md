@@ -201,6 +201,16 @@ When no preset fits, `command` (with `{= tests =}` for the test ids), `format` (
 say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-holes-and-models.md)).
 `olifant doctor` has a line for the runner (`test runner uv (python)`).
 
+## Running a file's tests
+
+Outside a magic circle you can run a file's tests whole: `:DurandalTest` (`<leader>mt`) in
+durandal.nvim, `olifant/tests/run` on the wire. In a module it runs the module's test file (the
+one `tests_for` names); in a test file, that file. The run is over the editor's text, unsaved
+buffers included, through the same `[test]` runner as the loop. The editor shows the summary
+(`7 passed · 2 failed · 1.3 s`, or `broken: <why>` when the run could not judge the tests), each
+failed test with its line, message and output, and an error on each failed test's line.
+A module with no test file yet is refused, naming the file its tests would be in.
+
 ## What works today, and its limits
 
 - **Python only.** The operators are Python's; a language with a `[test]` table but no operators
