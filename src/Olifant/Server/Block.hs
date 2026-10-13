@@ -3,7 +3,24 @@
 -- hole its one test verifies, tested again on the editor's text, judged by
 -- mutation, then accepted or rejected; every move is a line of the step
 -- log. The machine is "Olifant.Block"'s: this module tells it what happened.
-module Olifant.Server.Block (blockFor, blockBegin, blockDraft, blockTest, blockJudge, blockAccept, blockReject, blockJson, appendStep, underTest) where
+module Olifant.Server.Block
+  ( blockFor
+  , blockBegin
+  , blockDraft
+  , blockTest
+  , blockJudge
+  , blockAccept
+  , blockReject
+  , blockJson
+  , appendStep
+  , underTest
+    -- * for the other moves ("Olifant.Server.BlockMoves")
+  , withBlock
+  , settle
+  , testNow
+  , fileOf
+  , tshow
+  ) where
 
 import Control.Applicative ((<|>))
 import Control.Exception (SomeException, try)
@@ -24,6 +41,7 @@ import Data.Time (defaultTimeLocale, formatTime)
 import Olifant.Anchor (locateContainer)
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, planWith)
 import Olifant.Block
+import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
@@ -35,7 +53,8 @@ import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
 import Olifant.Server.Actions (fillerFor)
 import Olifant.Server.Edits (FileEdit (..), editsOfPlan, smallestChange)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.BlockJev (orderSurvivors)
+import Olifant.Server.State (ServerState (..), deciderFor, projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, (</>))
 
@@ -97,28 +116,42 @@ blockBegin progress path line s0 =
           | onTest -> throwE "every test here passes; write a failing one (its name and assertion) and begin on it"
           | otherwise -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp Green
       lift (modifyIORef' (ssBlocks s) (M.insert file (b, 0)))
+      lift (modifyIORef' (ssBlockSeen s) (M.insert file moduleText))
       lift (appendStep (ssPorts s) root b "begin" (hud b))
       -- a hand-written green body goes straight to the judge
-      if blockState b == Green then lift (either (const b) id <$> judgeIn s root ws lang b 0) else pure b
+      if blockState b == Green then lift (either (const b) id <$> judgeIn s root project lang b 0) else pure b
 
 -- | Draft (or the next draft): the block's span made a hole the model fills
 -- with the drafts stance, verified by the block's one test; the edits write
 -- the file. Nothing lands if the document moved on while the model wrote.
+-- A test block's hole is its stub's arrangement: a kill's must pass on the
+-- code and fail on the mutant, a new test's fail at its assertion.
 blockDraft :: (ProgressEvent -> IO ()) -> FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockDraft progress path = withBlock path $ \s root project lang b killed -> runExceptT $ do
   let file = blockFile b
       rel = makeRelative root file
       ws = prWorkspace project
       started = fst <$> M.lookup file (ssDocs s)
-      failure = case blockState b of
-        Red f -> f
-        _ -> Failure Nothing "the person asked for another draft" ""
   drafting <- except (step StartDraft b)
   filler <- ExceptT (fillerFor True s project) >>= maybe (throwE "no model is configured ([model] in .olifant/config.toml); write the body yourself, the block still judges it") pure
   text <- lift (readText ws rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
-  testText <- fromMaybe "" <$> lift (readText ws (T.unpack (fileOf (blockTestId b))))
-  (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
-  let gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [("body", VerifyIds [blockTestId b])]}
+  (template, verify) <- case blockKind b of
+    Code -> do
+      let failure = case blockState b of
+            Red f -> f
+            _ -> Failure Nothing "the person asked for another draft" ""
+      testText <- fromMaybe "" <$> lift (readText ws (T.unpack (fileOf (blockTestId b))))
+      (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
+      pure (template, ("body", VerifyIds [blockTestId b]))
+    TestFor killing -> do
+      let (s1, s2) = blockSpan b
+          candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
+      (line, template) <- maybe (throwE "the test has no arrangement left to draft: its placeholder is gone") pure (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
+      verify <- case killing of
+        Nothing -> pure (VerifyRedAt (blockTestId b) (line + 1))
+        Just m -> lift (moduleOf project lang rel) >>= maybe (throwE ("no module is tested by " <> T.pack rel)) (\moduleRel -> pure (VerifyKills (blockTestId b) moduleRel (muText m)))
+      pure (template, ("arrange", verify))
+  let gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
       context = [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
       options = planOptions {poFiller = Just filler, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
@@ -127,7 +160,12 @@ blockDraft progress path = withBlock path $ \s root project lang b killed -> run
   latest <- lift (maybe (pure started) ($ file) (ssLiveVersion s))
   when (latest /= started) (throwE "the file changed while drafting; your text stands")
   let planned = M.findWithDefault text rel (planWrites plan)
-      sp@(l1, l2) = changedSpan text planned (blockSpan b)
+      changed = changedSpan text planned (blockSpan b)
+      grown = length (T.splitOn "\n" planned) - length (T.splitOn "\n" text)
+      -- a test block keeps its whole test (its def to its assertion)
+      sp@(l1, l2) = case blockKind b of
+        Code -> changed
+        TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" planned)))
       outcome = case map phStatus (planHoles plan) of
         HoleFilled _ _ : _ -> Right ()
@@ -140,37 +178,52 @@ blockDraft progress path = withBlock path $ \s root project lang b killed -> run
 -- | Run the block's test on the editor's text: red, green (then judged) or
 -- broken; its span is the lines new since the block began.
 blockTest :: FilePath -> ServerState -> IO (ServerState, Either Text Block)
-blockTest path = withBlock path $ \s root project lang b killed -> do
+blockTest path = withBlock path $ \s root project lang b killed -> testNow s root project lang b killed False
+
+-- | 'blockTest' on the block's file as it is now. APPLIED: that text is the
+-- latest draft, as the editor applied it: no edit of the person's (no "you"
+-- draft), and the draft's span stands.
+testNow :: ServerState -> FilePath -> Project -> Language -> Block -> Int -> Bool -> IO (Either Text Block)
+testNow s root project lang b killed applied = do
   let ws = prWorkspace project
   now <- fromMaybe "" <$> readText ws (makeRelative root (blockFile b))
+  modifyIORef' (ssBlockSeen s) (M.insert (blockFile b) now)
   runOver s ws lang [blockTestId b] >>= \case
     -- a runner that cannot start is a test that cannot run: never judged
     Left why -> settle s root killed "test" ("cannot run: " <> why) (CannotRun why) b
     Right run -> do
       let new = newLinesOf (blockBase b) now
-          sp = if S.null new then blockSpan b else (S.findMin new, S.findMax new)
+          sp = if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
           (move, result) = case (trBroken run, trFailed run) of
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)
             (_, (_, f) : _) -> (Edited sp (Left f), "red")
             _ -> (Edited sp (Right ()), "green")
-      settle s root killed "test" result move b >>= \case
-        Right b' | blockState b' == Green -> judgeIn s root ws lang b' killed
+          keepDrafts b' = if applied then b' {blockDrafts = blockDrafts b} else b'
+      settleBy s root killed "test" result (fmap keepDrafts . step move) b >>= \case
+        Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
 -- | Judge a green block: the mutants of its span's new lines (the whole
 -- span when none is new: a body begun on as it was), each run against the
 -- test's file.
 blockJudge :: FilePath -> ServerState -> IO (ServerState, Either Text Block)
-blockJudge path = withBlock path $ \s root project lang b killed -> judgeIn s root (prWorkspace project) lang b killed
+blockJudge path = withBlock path $ \s root project lang b killed -> judgeIn s root project lang b killed
 
-judgeIn :: ServerState -> FilePath -> Workspace IO -> Language -> Block -> Int -> IO (Either Text Block)
-judgeIn s root ws lang b killedBefore = case step (Judge []) b of
-  Left why -> pure (Left why)
-  Right _ -> do
-    let rel = makeRelative root (blockFile b)
+-- | A test block is not mutated: green, it is judged. A code block's
+-- survivors come in Jev's order (what it already said; the rest as it
+-- answers, pushed).
+judgeIn :: ServerState -> FilePath -> Project -> Language -> Block -> Int -> IO (Either Text Block)
+judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind b) of
+  (Left why, _) -> pure (Left why)
+  (Right _, TestFor _) -> settle s root killedBefore "judge" "a test: nothing to mutate" (Judge []) b
+  (Right _, Code) -> do
+    let ws = prWorkspace project
+        rel = makeRelative root (blockFile b)
         (l1, l2) = blockSpan b
         testFile = fileOf (blockTestId b)
+        decider = deciderFor s project
     now <- fromMaybe "" <$> readText ws rel
+    testText <- fromMaybe "" <$> readText ws (T.unpack testFile)
     let new = S.filter (\l -> l >= l1 && l <= l2) (newLinesOf (blockBase b) now)
         scope = if S.null new then S.fromList [l1 .. l2] else new
         operators = if langName lang == "python" then pythonOperators else []
@@ -185,12 +238,61 @@ judgeIn s root ws lang b killedBefore = case step (Judge []) b of
       Right vs -> do
         let surviving = [m | (m, Survived) <- vs]
             killed = length vs - length surviving
-        settle s root killed "judge" (tshow killed <> "/" <> tshow (length vs) <> " killed") (Judge surviving) b
+        settle s root killed "judge" (tshow killed <> "/" <> tshow (length vs) <> " killed") (Judge surviving) b >>= \case
+          -- in Jev's order: what it already said now, the rest as it answers
+          Right judged -> Right . fromMaybe judged <$> reorder s decider now testText False (blockFile judged)
+          other -> pure other
 
--- | Accept a judged block whose survivors are all waived.
+-- | The file's judged block in Jev's order, stored (and, PUSH, pushed)
+-- when that changed it; each answer that lands later orders it again.
+reorder :: ServerState -> Maybe (Decider IO) -> Text -> Text -> Bool -> FilePath -> IO (Maybe Block)
+reorder s decider moduleText testText push file =
+  M.lookup file <$> readIORef (ssBlocks s) >>= \case
+    Just (b, killed) | Judged ms <- blockState b -> do
+      ordered <- orderSurvivors s decider b moduleText testText (void (reorder s decider moduleText testText True file)) ms
+      let b' = b {blockState = Judged ordered}
+      -- only over the block as it was (a move meanwhile wins)
+      stored <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup file m of
+        Just (now, _) | now == b, ordered /= ms -> (M.insert file (b', killed) m, True)
+        _ -> (m, False)
+      when (stored && push) (readIORef (ssOnBlock s) >>= \pushed -> pushed b' killed)
+      pure (if stored then Just b' else Nothing)
+    _ -> pure Nothing
+
+-- | Accept a judged block whose survivors are all waived. A test block
+-- (a kill's) accepted: its module's code block is judged again, and pushed.
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
-blockAccept path = withBlock path $ \s root _ _ b killed ->
-  fmap (,[]) <$> settle s root killed "accept" "accepted" Accept b
+blockAccept path = withBlock path $ \s root project _ b killed ->
+  settle s root killed "accept" "accepted" Accept b >>= \case
+    Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
+    other -> pure (fmap (,[]) other)
+
+-- | A test file gained a test: its module's judged code block is judged
+-- again (its test is green: what was judged still stands), and pushed.
+rejudgeFor :: ServerState -> FilePath -> Project -> FilePath -> IO ()
+rejudgeFor s root project testFile = do
+  let rel = makeRelative root testFile
+      langs = catalogLanguages (prCatalog project)
+  found <- maybe (pure Nothing) (\tl -> moduleOf project tl rel) (languageFor langs rel)
+  case found of
+    Nothing -> pure ()
+    Just moduleRel -> do
+      let file = normalisePath (root </> moduleRel)
+      M.lookup file <$> readIORef (ssBlocks s) >>= \case
+        Just (cb, killed) | blockKind cb == Code, Judged _ <- blockState cb, Just lang <- languageFor langs moduleRel ->
+          judgeIn s root project lang cb {blockState = Green} killed >>= \case
+            Right cb' -> do
+              killed' <- maybe killed snd . M.lookup file <$> readIORef (ssBlocks s)
+              readIORef (ssOnBlock s) >>= \push -> push cb' killed'
+            Left _ -> pure ()
+        _ -> pure ()
+
+-- | The module a test file tests (by the language's `tests_for`).
+moduleOf :: Project -> Language -> FilePath -> IO (Maybe FilePath)
+moduleOf project lang testRel = case langTest lang of
+  Nothing -> pure Nothing
+  Just td -> listToMaybe . filter (\m -> m /= testRel && testsForFile td m == testRel) <$> listFiles (prWorkspace project) "."
+
 
 -- | Reject a block: its file goes back to the text it had when it began.
 blockReject :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
@@ -269,7 +371,12 @@ withBlock path work s0 =
 -- | Take a move: the block as it now stands is kept (a finished one
 -- dropped), and the move logged.
 settle :: ServerState -> FilePath -> Int -> Text -> Text -> Move -> Block -> IO (Either Text Block)
-settle s root killed name result move b = case step move b of
+settle s root killed name result move = settleBy s root killed name result (step move)
+
+-- | 'settle' with the move already taken (a block as the machine left it,
+-- touched up).
+settleBy :: ServerState -> FilePath -> Int -> Text -> Text -> (Block -> Either Text Block) -> Block -> IO (Either Text Block)
+settleBy s root killed name result moved b = case moved b of
   Left why -> pure (Left why)
   Right b' -> do
     modifyIORef' (ssBlocks s) (if pending b' then M.insert (blockFile b') (b', killed) else M.delete (blockFile b'))

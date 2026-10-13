@@ -120,6 +120,8 @@ library
     Olifant.Server
     Olifant.Server.Actions
     Olifant.Server.Block
+    Olifant.Server.BlockJev
+    Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Edits
     Olifant.Server.Fixes
@@ -270,6 +272,8 @@ test-suite spec
     Olifant.Server
     Olifant.Server.Actions
     Olifant.Server.Block
+    Olifant.Server.BlockJev
+    Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Edits
     Olifant.Server.Fixes

@@ -19,7 +19,9 @@ import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Sy
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
 import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (wait)
-import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
+import Olifant.Decide qualified as De
+import System.IO.Temp (withSystemTempDirectory)
 import Data.List (isSuffixOf)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
@@ -233,6 +235,134 @@ blockSpecs = describe "blocks" $ do
     log' `shouldSatisfy` ("block 1\taccept\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("block 2\treject\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("\tbegin\t" `T.isInfixOf`)
+  it "(h) kill opens a test block in the test file with the stub at the end; drafting it is verified both ways" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    map muLine (survivors judged) `shouldBe` [6]
+    (_, nowhere) <- blockKill (root </> moduleRel) 3 s
+    nowhere `shouldSatisfy` either ("no survivor" `T.isInfixOf`) (const False)
+    (_, Right (code, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
+    body `shouldSatisfy` ("def test_${1:name}()" `T.isInfixOf`)
+    Just (tb, 0) <- blockFor testFile s
+    let [boundary] = survivors judged
+    (blockFile tb, blockSpan tb, blockKind tb) `shouldBe` (testFile, (9, 11), Block.TestFor (Just boundary))
+    blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    -- the code block is still the module's
+    fmap (blockId . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (blockId judged)
+    -- the editor expands the stub; the model arranges; the mutant fails it: it stands
+    let st = openDoc testFile 1 (expandStub at body testText) s
+    (_, Right (drafted, edits)) <- blockDraft ignore testFile st
+    blockState drafted `shouldBe` Green
+    map draftBy (blockDrafts drafted) `shouldBe` ["recorded"]
+    map fePath edits `shouldBe` [testFile]
+    map feText edits `shouldSatisfy` any ("table = CloseTable()" `T.isInfixOf`)
+    -- a runner the mutant never fails: the draft does not stand
+    (n0, _) <- blocksOn (\files -> if "seats >= 2" `T.isInfixOf` M.findWithDefault "" moduleRel files then Right (TestRun [testId] [] Nothing) else killedBy files) []
+    let n = (openDoc (root </> moduleRel) 1 written n0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 n
+    (_, Right (_, nf, nat, nbody)) <- blockKill (root </> moduleRel) 6 n
+    (_, Right (refused, _)) <- blockDraft ignore nf (openDoc nf 1 (expandStub nat nbody testText) n)
+    blockState refused `shouldSatisfy` \case Red f -> "does not notice the mutant" `T.isInfixOf` fMessage f; _ -> False
+    steps s >>= (`shouldSatisfy` ("block 1\tkill\tperson\tboundary on line 6" `T.isInfixOf`))
+    steps s >>= (`shouldSatisfy` ("block 2\tbegin\tperson" `T.isInfixOf`))
+  it "(i) waive writes the comment on the survivor's line and reopens accept" $ do
+    (s0, _) <- blocks redOnStub []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    open judged `shouldSatisfy` notElem "accept"
+    (_, empty') <- blockWaive (root </> moduleRel) 6 "  " s
+    either id (const "waived") empty' `shouldBe` "a waiver needs a reason"
+    (_, wrong) <- blockWaive (root </> moduleRel) 5 "why" s
+    either id (const "waived") wrong `shouldBe` "no unwaived survivor on that line"
+    (_, Right (b, [edit])) <- blockWaive (root </> moduleRel) 6 "inclusive by design" s
+    (fePath edit, feVersion edit) `shouldBe` (root </> moduleRel, Just 1)
+    let commented = applyChange (feRange edit) (feText edit) written
+    T.lines commented !! 5 `shouldBe` "        return int(seats > 2)  # olifant: boundary ok: inclusive by design"
+    survivors b `shouldBe` []
+    open b `shouldSatisfy` elem "accept"
+    -- the editor applies the waiver: that is no edit of the block's
+    (_, none) <- blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 commented s)
+    none `shouldBe` Nothing
+    steps s >>= (`shouldSatisfy` ("\twaive\tperson\tboundary: inclusive by design" `T.isInfixOf`))
+  it "(j) an edit inside the span reruns the test and makes a \"you\" draft; an applied draft makes none; outside the span nothing happens" $ do
+    (s0, runs) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    ran <- runs
+    -- outside the span (line 10), and a file with no block: nothing runs
+    (_, outside) <- blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 (T.replace "n > 0" "n > 1" stubbed) s)
+    outside `shouldBe` Nothing
+    (_, elsewhere) <- blockChanged (root </> "src/shop/lonely.py") s
+    elsewhere `shouldBe` Nothing
+    runs `shouldReturn` ran
+    -- by hand inside the span: tested, judged, a "you" draft
+    (_, Just mine) <- blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s)
+    map draftBy (blockDrafts mine) `shouldBe` ["you"]
+    blockState mine `shouldSatisfy` \case Judged _ -> True; _ -> False
+    -- a draft the editor applied: tested and judged, no "you" draft
+    (t0, _) <- blocks redOnStub []
+    let t = (openDoc (root </> moduleRel) 1 stubbed t0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 t
+    (_, Right (_, [edit])) <- blockDraft ignore (root </> moduleRel) t
+    (_, Just applied) <- blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 (applyChange (feRange edit) (feText edit) stubbed) t)
+    map draftBy (blockDrafts applied) `shouldBe` ["recorded"]
+    blockState applied `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(k) Jev: survivors it thinks equivalent are dimmed and last, the rest by how much they matter; with no decider, file order" $ do
+    (s, _) <- blocks redOnStub []
+    let b = Block.begin 1 (root </> moduleRel) Block.Code stubbed (1, 10) testId (Failure Nothing "" "")
+        lineOf n = T.lines stubbed !! (n - 1)
+        mutant n op to = Mutant n op "" "" (T.unlines [if i == n then to else l | (i, l) <- zip [1 ..] (T.lines stubbed)]) Nothing False
+        ms = [mutant 3 "number" "        self.closed = 1", mutant 6 "string" (T.replace "later" "" (lineOf 6)), mutant 10 "boundary" "    return n >= 0"]
+        jev = De.Decider $ \q -> pure $ case (De.qKind q, lookup "mutant" (De.qContext q)) of
+          ("mutant-equivalent", Just m) | "\"\"" `T.isInfixOf` m -> De.Chosen "equivalent" []
+          ("mutant-equivalent", _) -> De.Chosen "changes-behaviour" []
+          ("mutant-matters", Just m) | ">=" `T.isInfixOf` m -> De.Chosen "high" []
+          _ -> De.Unsure
+    orderSurvivors s Nothing b stubbed testText (pure ()) ms >>= (`shouldBe` ms)
+    answered <- newIORef (0 :: Int)
+    first' <- orderSurvivors s (Just jev) b stubbed testText (atomicModifyIORef' answered (\n -> (n + 1, ()))) ms
+    first' `shouldBe` ms -- nothing known yet: as given
+    waitUntil ((>= 6) <$> readIORef answered)
+    ordered <- orderSurvivors s (Just jev) b stubbed testText (pure ()) ms
+    map (\m -> (muLine m, muDim m)) ordered `shouldBe` [(10, False), (3, False), (6, True)]
+  it "(k) with a recorded decider answering \"equivalent\", the judged block's survivors are dimmed once it answers, and pushed" $
+    withSystemTempDirectory "olifant-jev" $ \dir -> do
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "{\"answers\": {\"mutant-equivalent\": \"equivalent\", \"mutant-matters\": \"low\"}}"
+      (s0, _) <- blocks redOnStub []
+      writeText (portsFiles s0) (root </> ".olifant/config.toml") "[packs]\npython-htmx = { path = \"/pack\" }\n\n[decide]\nmodel = \"jev\"\n"
+      pushed <- newIORef []
+      writeIORef (ssOnBlock s0) (\b _ -> atomicModifyIORef' pushed (\bs -> (b : bs, ())))
+      let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scDecideAnswers = Just answers}}
+      (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+      map muDim (survivors judged) `shouldBe` [False]
+      waitUntil (any (all muDim . survivors) <$> readIORef pushed)
+      fmap (map muDim . survivors . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just [True]
+  it "(l) when the kill's test block is accepted, the code block is judged again and the killed mutant is gone" $ do
+    (s0, _) <- blocksOn killedBy []
+    pushed <- newIORef []
+    writeIORef (ssOnBlock s0) (\b k -> modifyIORef' pushed ((b, k) :))
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    let stubbedTest = expandStub at body testText
+        st = openDoc testFile 1 stubbedTest s
+    (_, Right (_, [edit])) <- blockDraft ignore testFile st
+    let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) stubbedTest) st
+    (_, Just tested) <- blockChanged testFile st2
+    map draftBy (blockDrafts tested) `shouldBe` ["recorded"]
+    blockState tested `shouldBe` Judged []
+    (_, Right (done, [])) <- blockAccept testFile st2
+    blockState done `shouldBe` Accepted
+    M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
+    Just (code, killed) <- blockFor (root </> moduleRel) s
+    (blockState code, killed) `shouldBe` (Judged [], 1)
+    map (\(b, k) -> (blockId b, k)) <$> readIORef pushed `shouldReturn` [(blockId code, 1)]
+    log' <- steps s
+    log' `shouldSatisfy` ("block 2\taccept\tperson" `T.isInfixOf`)
+    log' `shouldSatisfy` ("block 1\tjudge\tmutation\t1/1 killed" `T.isInfixOf`)
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -254,6 +384,32 @@ testText = T.unlines ["from shop.close_table import CloseTable", "", "", "def te
 failing :: Text -> TestRun
 failing why = TestRun [] [(testId, Failure (Just 6) why "")] Nothing
 
+-- | The module's test file as 'redOnStub' runs it, but a test calling
+-- `handle(2)` fails on the boundary mutant (`seats >= 2`): it kills it;
+-- the kill's stub, still to be arranged, fails at its placeholder.
+killedBy :: M.Map FilePath Text -> Either Text TestRun
+killedBy files
+  | "seats >= 2" `T.isInfixOf` m && "handle(2)" `T.isInfixOf` t = Right (failing "assert 1 == 0")
+  | "olifant: arrange" `T.isInfixOf` t = Right (TestRun [] [(T.pack testRel <> "::test_kills_the_boundary", Failure (Just 10) "NotImplementedError" "")] Nothing)
+  | otherwise = Right (redOnStub m)
+  where
+    (m, t) = (M.findWithDefault "" moduleRel files, M.findWithDefault "" testRel files)
+
+-- | The test file as the editor leaves it once it expands a kill's stub
+-- (its line AT replaced) and the person names the test and its assertion.
+expandStub :: Int -> Text -> Text -> Text
+expandStub at body text = T.intercalate "\n" (take (at - 1) ls ++ [named] ++ drop at ls)
+  where
+    ls = T.splitOn "\n" text
+    named = T.replace "${1:name}" "kills_the_boundary" (T.replace "${2:...}" "table.handle(2) == 0" body)
+
+-- | Until a condition holds (five seconds at most).
+waitUntil :: IO Bool -> IO ()
+waitUntil ready = go (250 :: Int)
+  where
+    go 0 = expectationFailure "waited five seconds"
+    go n = ready >>= \done -> if done then pure () else threadDelay 20000 >> go (n - 1)
+
 -- | Red while the body is the stub, green once written.
 redOnStub :: Text -> TestRun
 redOnStub t
@@ -268,7 +424,11 @@ blocks verdict = blocksWith (Right . verdict)
 
 -- | 'blocks' whose runner may fail to run at all (Left).
 blocksWith :: (Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
-blocksWith verdict extra = do
+blocksWith verdict = blocksOn (verdict . M.findWithDefault "" moduleRel)
+
+-- | 'blocksWith' whose runner answers by every file it is given.
+blocksOn :: (M.Map FilePath Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
+blocksOn verdict extra = do
   pack <- readTree =<< canonicalizePath "packs/python-htmx"
   (disk, _) <-
     memoryWorkspace $
@@ -276,12 +436,12 @@ blocksWith verdict extra = do
         ++ [ (root </> ".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")
            , (root </> moduleRel, stubbed)
            , (root </> testRel, testText)
-           , (root </> "fills.toml", "[fills]\nbody = \"return int(seats > 2)\"\n") ]
+           , (root </> "fills.toml", "[fills]\nbody = \"return int(seats > 2)\"\narrange = \"table = CloseTable()\"\n") ]
         ++ [(root </> p, t) | (p, t) <- extra]
   runs <- newIORef (0 :: Int)
   let runner = Runner $ \_ _ files -> do
         modifyIORef' runs (+ 1)
-        pure (verdict (M.findWithDefault "" moduleRel files))
+        pure (verdict files)
       ports = Ports disk blockSyntax (const noChecker) (const noVerifier) (const runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef runs)

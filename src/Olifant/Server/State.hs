@@ -53,10 +53,12 @@ import System.FilePath (takeDirectory, (</>))
 -- (tests) a file of recorded fills that stands in for the model.
 -- | @scRecognizeAnswers@: a file holding a model's recorded answer, which
 -- recognition uses instead of the model (tests, as fills use @scFills@).
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath, scDecideAnswers :: Maybe FilePath}
+-- @scTestScript@: a file of scripted test verdicts, which the server's
+-- test runner answers from instead of running anything (tests).
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
@@ -108,6 +110,12 @@ data ServerState = ServerState
     -- saw it (the adapter's live documents): long work (a draft) asks it
     -- before its result lands. None: this state's documents are the truth
     ssLiveVersion :: Maybe (FilePath -> IO (Maybe Int))
+  , -- | each block's file as it was when its test last ran (or it began):
+    -- what an edit is told apart from (inside the span, or not)
+    ssBlockSeen :: IORef (Map FilePath Text)
+  , -- | what to do when a block changes with no request asking (the judge
+    -- of a test's code block, Jev's order): the adapter pushes it
+    ssOnBlock :: IORef (Block -> Int -> IO ())
   }
 
 newServerState :: Ports -> IO ServerState
@@ -119,7 +127,9 @@ newServerState ports = do
   onDecided <- newIORef (pure ())
   blocks <- newIORef M.empty
   nextBlock <- newIORef 1
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided blocks nextBlock Nothing)
+  seen <- newIORef M.empty
+  onBlock <- newIORef (\_ _ -> pure ())
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions asking onDecided blocks nextBlock Nothing seen onBlock)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))
@@ -286,7 +296,8 @@ decision s decider key fp q onDone = do
       ( try (ask decider q) >>= \case
           Left (_ :: SomeException) -> pure ()
           Right answer -> do
-            modifyIORef' (ssDecisions s) (M.insert key (fp, answer))
+            -- answers land at once from many threads (Jev asks per survivor)
+            atomicModifyIORef' (ssDecisions s) (\m -> (M.insert key (fp, answer) m, ()))
             onDone
       )
         `finally` atomicModifyIORef' (ssAsking s) (\a -> (S.delete key a, ()))

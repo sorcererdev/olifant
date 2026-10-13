@@ -66,11 +66,17 @@ module Olifant.Server
   , blockJudge
   , blockAccept
   , blockReject
+  , blockKill
+  , blockWaive
+  , blockChanged
+  , orderSurvivors
   , blockJson
   , appendStep
   , underTest
   ) where
 
+import Olifant.Server.BlockJev (orderSurvivors)
+import Olifant.Server.BlockMoves (blockChanged, blockKill, blockWaive)
 import Olifant.Server.Block (appendStep, blockAccept, blockBegin, blockDraft, blockFor, blockJson, blockJudge, blockReject, blockTest, underTest)
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress)
 import Olifant.Server.Holes (Hole (..), fillHoleEdits, fillHolePlan, holeAt, holesFor)
