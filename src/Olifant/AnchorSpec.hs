@@ -56,11 +56,11 @@ genPhrase = Phrase <$> Gen.enumBounded <*> Gen.choice [marker, line, named]
 -- | A fake syntax port: the container rule matches lines 2-8; the items rule
 -- (recognised by its "all") returns two branches plus one nested in the first.
 fakeSyntax :: Syntax Identity
-fakeSyntax = Syntax $ \_ rule _ -> Identity . Right $
+fakeSyntax = querying $ \_ rule _ -> Identity . Right $
   let json = BL.unpack (encode rule)
    in if "\"all\"" `isInfixOf` json
-        then [Match (3, 8) (5, 20) "A -> …", Match (4, 12) (4, 20) "nested", Match (7, 8) (8, 20) "B -> …"]
-        else [Match (2, 4) (8, 20) "case x of …"]
+        then [Match (3, 8) (5, 20) "A -> …" (0, 0), Match (4, 12) (4, 20) "nested" (0, 0), Match (7, 8) (8, 20) "B -> …" (0, 0)]
+        else [Match (2, 4) (8, 20) "case x of …" (0, 0)]
 
 caseTarget :: Language
 caseTarget = lang
@@ -106,10 +106,10 @@ resolveSpec = do
       runIdentity (resolveLayers noSyntax Nothing [PhraseAnchor "end of type Msg"] source) `shouldSatisfy` either (any (("no language adapter" `T.isInfixOf`) . missReason)) (const False)
   describe "resolveLayers (items sharing a line with their container)" $ do
     -- `[ a, b ]` on one line: the container is line 1, cols 4-12; items a and b.
-    let inline = Syntax $ \_ rule _ -> Identity . Right $
+    let inline = querying $ \_ rule _ -> Identity . Right $
           if "\"all\"" `isInfixOf` BL.unpack (encode rule)
-            then [Match (1, 6) (1, 7) "a", Match (1, 9) (1, 10) "b"]
-            else [Match (1, 4) (1, 12) "[ a, b ]"]
+            then [Match (1, 6) (1, 7) "a" (0, 0), Match (1, 9) (1, 10) "b" (0, 0)]
+            else [Match (1, 4) (1, 12) "[ a, b ]" (0, 0)]
         src = "x =\n    [ a, b ]\ny = 2\n"
         resolve p = runIdentity (resolveLayers inline (Just caseTarget) [PhraseAnchor p] src)
     it "misses `end of` when the last item does not end its line (review)" $
@@ -125,10 +125,10 @@ resolveSpec = do
       fmap (map (\r -> (M.lookup "path" r, M.lookup "line" r, M.lookup "head" r))) (runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")]) (M.keys files) reader))
         `shouldBe` Right [(Just (VText "src/A.elm"), Just (VInt 4), Just (VText "A")), (Just (VText "src/A.elm"), Just (VInt 8), Just (VText "B"))]
     it "gives no records for a file without the target (Review Focus 1)" $
-      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/B.elm" (ItemsOf "case in update") []) (M.keys files) reader))
+      fmap length (runIdentity (astQueries (querying (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/B.elm" (ItemsOf "case in update") []) (M.keys files) reader))
         `shouldBe` Right 0
     it "is an error when the target appears twice in a file" $
-      runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a", Match (2, 0) (3, 0) "b"]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
+      runIdentity (astQueries (querying (\_ _ _ -> Identity (Right [Match (0, 0) (1, 0) "a" (0, 0), Match (2, 0) (3, 0) "b" (0, 0)]))) [caseTarget] (AstQuery "src/A.elm" (ItemsOf "case in update") []) (M.keys files) reader)
         `shouldSatisfy` either (("src/A.elm" `T.isInfixOf`) . failureWhy) (const False)
     it "rejects an unknown target kind even when the glob matches no file" $
       runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "nowhere/*.elm" (ItemsOf "typo in update") []) (M.keys files) reader)
@@ -136,7 +136,7 @@ resolveSpec = do
     it "skips files without a language adapter when the glob has a wildcard, but not a named file" $ do
       let files' = M.insert "src/data.json" "{}" files
           reader' p = Identity (M.lookup p files')
-      fmap length (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/*" (ItemsOf "case in update") []) (M.keys files') reader'))
+      fmap length (runIdentity (astQueries (querying (\_ _ _ -> Identity (Right []))) [caseTarget] (AstQuery "src/*" (ItemsOf "case in update") []) (M.keys files') reader'))
         `shouldBe` Right 0
       runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/data.json" (ItemsOf "case in update") []) (M.keys files') reader')
         `shouldSatisfy` either (("no language adapter for src/data.json" `T.isInfixOf`) . failureWhy) (const False)
@@ -145,7 +145,7 @@ resolveSpec = do
       runIdentity (astQueries fakeSyntax [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("regex", RText tpl)])) []) (M.keys files) reader)
         `shouldSatisfy` either (("ast src/A.elm (rule)" `T.isInfixOf`) . failureWhy) (const False)
     it "drops the CR of a CRLF file from text and each fields" $
-      fmap (map (\r -> (M.lookup "text" r, M.lookup "rhs" r))) (runIdentity (astQueries (Syntax (\_ _ _ -> Identity (Right [Match (0, 0) (1, 5) "A ->\r\n    a"]))) [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("kind", RLit "x")])) [("rhs", "->(.*)")]) (M.keys files) reader))
+      fmap (map (\r -> (M.lookup "text" r, M.lookup "rhs" r))) (runIdentity (astQueries (querying (\_ _ _ -> Identity (Right [Match (0, 0) (1, 5) "A ->\r\n    a" (0, 0)]))) [caseTarget] (AstQuery "src/A.elm" (RawRule (RObject [("kind", RLit "x")])) [("rhs", "->(.*)")]) (M.keys files) reader))
         `shouldBe` Right [(Just (VText "A ->\n    a"), Just (VText ""))]
   describe "spacing copied from neighbouring items" $ do
     it "end of puts a blank line before the text when the last two items are separated by one" $
@@ -153,50 +153,50 @@ resolveSpec = do
     it "start of puts a blank line after the text when the first two items are separated by one" $
       fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "start of case in update"] source)) `shouldBe` Right BlankAfter
     it "copies nothing from a one-item container (Review Focus 4)" $ do
-      let one = Syntax $ \_ rule _ -> Identity . Right $
-            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …"] else [Match (2, 4) (4, 20) "case"]
+      let one = querying $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …" (0, 0)] else [Match (2, 4) (4, 20) "case" (0, 0)]
       fmap locSpacing (runIdentity (resolveLayers one (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right NoSpacing
     it "insertLines adds the blank line unless the text already has it" $ do
       insertLines (Located 1 "" "" "x" BlankBefore Nothing "") "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
       insertLines (Located 1 "" "" "x" BlankBefore Nothing "") "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
   describe "opening an empty container (spec §7.1)" $ do
-    let emptyAt c = Syntax $ \_ rule _ -> Identity . Right $
+    let emptyAt c = querying $ \_ rule _ -> Identity . Right $
           if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [] else [c]
         resolveIn syn phrase src = runIdentity (resolveLayers syn (Just caseTarget) [PhraseAnchor phrase] src)
         apply c phrase snippet src = fmap (\l -> snd (insertLines l snippet src)) (resolveIn (emptyAt c) phrase src)
     it "opens a one-line container that shares its line (Review Focus 1)" $
-      apply (Match (0, 10) (0, 12) "()") "end of case in update" "x: X," "pub fn new() -> Self {\n"
+      apply (Match (0, 10) (0, 12) "()" (0, 0)) "end of case in update" "x: X," "pub fn new() -> Self {\n"
         `shouldBe` Right "pub fn new(\n    x: X,\n) -> Self {\n"
     it "inserts into a container spread over lines, at its comment's indentation (Review Focus 2)" $
-      apply (Match (0, 14) (2, 5) "{\n        -- deps\n    }") "end of case in update" "y: Y," "    Inv { a } {\n        -- deps\n    }\n"
+      apply (Match (0, 14) (2, 5) "{\n        -- deps\n    }" (0, 0)) "end of case in update" "y: Y," "    Inv { a } {\n        -- deps\n    }\n"
         `shouldBe` Right "    Inv { a } {\n        -- deps\n        y: Y,\n    }\n"
     it "uses the container's indentation plus one level when nothing is inside" $
-      apply (Match (0, 6) (1, 5) "{\n    }") "start of case in update" "z: Z," "    S {\n    }\n"
+      apply (Match (0, 6) (1, 5) "{\n    }" (0, 0)) "start of case in update" "z: Z," "    S {\n    }\n"
         `shouldBe` Right "    S {\n        z: Z,\n    }\n"
     it "opens only bracketed containers: a whole-file container with no items is still refused" $
-      apply (Match (0, 0) (2, 9) "use a;\n\nfn b() {}") "end of case in update" "mod c;" "use a;\n\nfn b() {}\n"
+      apply (Match (0, 0) (2, 9) "use a;\n\nfn b() {}" (0, 0)) "end of case in update" "mod c;" "use a;\n\nfn b() {}\n"
         `shouldSatisfy` either (const True) (const False)
     it "refuses a container whose content is not one of its items, rather than delete it" $ do
       let refused r = either (\m -> "not one of the target's items" `T.isInfixOf` describeMisses m) (const False) r
-      apply (Match (0, 24) (0, 30) "(true)") "end of case in update" "x.clone()," "    let n = Svc::new(true);\n" `shouldSatisfy` refused
-      apply (Match (0, 12) (2, 5) "{\n        ..Default::default()\n    }") "end of case in update" "y: Y," "    let v = V {\n        ..Default::default()\n    };\n" `shouldSatisfy` refused
+      apply (Match (0, 24) (0, 30) "(true)" (0, 0)) "end of case in update" "x.clone()," "    let n = Svc::new(true);\n" `shouldSatisfy` refused
+      apply (Match (0, 12) (2, 5) "{\n        ..Default::default()\n    }" (0, 0)) "end of case in update" "y: Y," "    let v = V {\n        ..Default::default()\n    };\n" `shouldSatisfy` refused
     it "drops a leading separator from the text when it opens a container: the text is the first item" $
-      apply (Match (0, 10) (0, 12) "[]") "end of case in update" ", Parser.map A" "    oneOf []\n"
+      apply (Match (0, 10) (0, 12) "[]" (0, 0)) "end of case in update" ", Parser.map A" "    oneOf []\n"
         `shouldBe` Right "    oneOf [\n        Parser.map A\n    ]\n"
     it "does not count a commented-out copy of the snippet as present" $ do
       let src = "S {\n    -- x: X,\n    y: Y,\n}\n"
-          withItem = Syntax $ \_ rule _ -> Identity . Right $
-            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (2, 4) (2, 9) "y: Y,"] else [Match (0, 2) (3, 1) "{\n    -- x: X,\n    y: Y,\n}"]
+          withItem = querying $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (2, 4) (2, 9) "y: Y," (0, 0)] else [Match (0, 2) (3, 1) "{\n    -- x: X,\n    y: Y,\n}" (0, 0)]
       fmap (\l -> presentAt l "x: X," src) (resolveIn withItem "end of case in update" src) `shouldBe` Right False
     it "still finds text that carries its own comment lines" $ do
       let src = "S {\n    y: Y,\n    -- note\n    x: X,\n}\n"
-          withItem = Syntax $ \_ rule _ -> Identity . Right $
-            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (1, 4) (1, 9) "y: Y,", Match (3, 4) (3, 9) "x: X,"] else [Match (0, 2) (4, 1) "{\n    y: Y,\n    -- note\n    x: X,\n}"]
+          withItem = querying $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (1, 4) (1, 9) "y: Y," (0, 0), Match (3, 4) (3, 9) "x: X," (0, 0)] else [Match (0, 2) (4, 1) "{\n    y: Y,\n    -- note\n    x: X,\n}" (0, 0)]
       fmap (\l -> presentAt l "-- note\nx: X," src) (resolveIn withItem "end of case in update" src) `shouldBe` Right True
     it "finds the snippet already there once the container has it (Review Focus 3)" $ do
       let opened = "pub fn new(\n    x: X,\n) -> Self {\n"
-          withItem = Syntax $ \_ rule _ -> Identity . Right $
-            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (1, 4) (1, 9) "x: X,"] else [Match (0, 10) (2, 1) "(\n    x: X,\n)"]
+          withItem = querying $ \_ rule _ -> Identity . Right $
+            if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (1, 4) (1, 9) "x: X," (0, 0)] else [Match (0, 10) (2, 1) "(\n    x: X,\n)" (0, 0)]
       fmap (\l -> presentAt l "x: X," opened) (resolveIn withItem "end of case in update" opened) `shouldBe` Right True
   describe "start of file / end of file (any file, no adapter needed)" $ do
     let at p c = fmap locLine (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor p] c))

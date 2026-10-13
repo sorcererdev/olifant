@@ -44,7 +44,7 @@ failureArms = generator . T.unlines $
 
 -- An outer enum (lines 0–3) and a variant (line 2, cols 4–19).
 matches :: Syntax Identity
-matches = Syntax $ \_ _ _ -> Identity (Right [Match (0, 0) (3, 1) "pub enum RefundInvoiceFailure {…}", Match (2, 4) (2, 19) "AlreadyRefunded"])
+matches = querying $ \_ _ _ -> Identity (Right [Match (0, 0) (3, 1) "pub enum RefundInvoiceFailure {…}" (0, 0), Match (2, 4) (2, 19) "AlreadyRefunded" (0, 0)])
 
 file :: FilePath
 file = "billing/billing-service/src/refund_invoice.rs"
@@ -69,7 +69,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
     at matches [("g", failureArms)] "notes/readme.md" (1, 1) `shouldBe` []
   it "(e) parses the text it is given, not the file (Review Focus 2)" $ do
     seen <- newIORef []
-    let recording = Syntax $ \_ _ content -> modifyIORef' seen (content :) >> pure (Right [])
+    let recording = querying $ \_ _ content -> modifyIORef' seen (content :) >> pure (Right [])
     _ <- actionsAt recording [rust] noQueries [] (const (pure Nothing)) [("g", failureArms)] file (1, 1) "unsaved text"
     readIORef seen `shouldReturn` ["unsaved text"]
   it "(f) moves a bound value that is not a valid choice into missing (Review Focus 3)" $ do
@@ -83,7 +83,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
     map (\a -> (actSets a, actMissing a)) acts `shouldBe` [([("command", "refund_invoice")], ["service"])]
   it "(g) renders path slots into the node rule (a command's own struct)" $ do
     seen <- newIORef []
-    let recording = Syntax $ \_ rule _ -> modifyIORef' seen (rule :) >> pure (Right [])
+    let recording = querying $ \_ rule _ -> modifyIORef' seen (rule :) >> pure (Right [])
         own = generator . T.unlines $
           [ "description = \"d\"", "language = \"rust\""
           , "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\""
@@ -94,7 +94,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
   it "(i) reads COL as a UTF-8 byte column (Neovim's), not a character column (review I1)" $ do
     -- "éé x yz": x is character 3 (0-based) but byte 5; ast-grep reports characters.
     let content = "\233\233 x yz\n"
-        onX = Syntax $ \_ _ _ -> Identity (Right [Match (0, 3) (0, 4) "x"])
+        onX = querying $ \_ _ _ -> Identity (Right [Match (0, 3) (0, 4) "x" (0, 0)])
         acts c = runIdentity (actionsAt onX [rust] noQueries [] (const (pure Nothing)) [("g", failureArms)] file (1, c) content)
     map actGenerator (acts 6) `shouldBe` ["g"]
     acts 4 `shouldBe` []
@@ -114,7 +114,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
           [ "description = \"A failure\"", "language = \"rust\"", "[[edits]]", "cursor = true", "text = \"x\""
           , "[applies_at]", "path = \"**/*.rs\"", "after = { kind = \"class_definition\" }", "trigger = '^[[:space:]]*$'" ]
         -- a class on 0-based lines 2–4
-        classAt = Syntax $ \_ _ _ -> Identity (Right [Match (2, 0) (4, 15) "class X:\n    reason: str"])
+        classAt = querying $ \_ _ _ -> Identity (Right [Match (2, 0) (4, 15) "class X:\n    reason: str" (0, 0)])
         src = T.unlines ["import x", "", "class X:", "    reason: str", "    more: int", "", "", "def f(): pass"]
         on line = runIdentity (actionsAt classAt [rust] noQueries [] (const (pure Nothing)) [("p/after", afterClass)] file (line, 1) src)
     it "applies on the line right after the node, and after blank lines only" $ do
@@ -194,7 +194,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
       complete [("g", failureArms)] `shouldBe` []
   describe "--file: every place in a file (spec §4.6)" $ do
     let inFile syn gens path content = runIdentity (actionsInFile syn [rust] noQueries [] (const (pure Nothing)) gens path content)
-        threeVariants = Syntax $ \_ _ _ -> Identity (Right [Match (3, 4) (3, 9) "Third", Match (1, 4) (1, 9) "First", Match (2, 4) (2, 10) "Second"])
+        threeVariants = querying $ \_ _ _ -> Identity (Right [Match (3, 4) (3, 9) "Third" (0, 0), Match (1, 4) (1, 9) "First" (0, 0), Match (2, 4) (2, 10) "Second" (0, 0)])
     it "(a) a generator without node applies to the whole file (no range)" $ do
       let whole = generator . T.unlines $ ["description = \"d\"", "language = \"rust\"", "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\"", "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\"", "label = \"Whole\""]
       fst (inFile matches [("w", whole)] file "x") `shouldBe` [FileAction (Action "w" "Whole" [("command", "refund_invoice"), ("service", "billing")] [] []) Nothing]
@@ -202,14 +202,14 @@ spec = describe "olifant actions (spec §4.6)" $ do
       map (\fa -> (lookup "failure" (actSets (faAction fa)), faRange fa)) (fst (inFile threeVariants [("g", failureArms)] file "enum E {\n    First,\n    Second,\n    Third,\n}\n"))
         `shouldBe` [ (Just "First", Just (Range (2, 5) (2, 10))), (Just "Second", Just (Range (3, 5) (3, 11))), (Just "Third", Just (Range (4, 5) (4, 10))) ]
     it "(b2) ranges are UTF-8 byte columns" $ do
-      let onX = Syntax $ \_ _ _ -> Identity (Right [Match (0, 2) (0, 3) "x"])
+      let onX = querying $ \_ _ _ -> Identity (Right [Match (0, 2) (0, 3) "x" (0, 0)])
       map faRange (fst (inFile onX [("g", failureArms)] file "\233 x\n")) `shouldBe` [Just (Range (1, 4) (1, 5))]
     it "(c) a path match with no node is nearby, not an action" $ do
-      let (acts, near) = inFile (Syntax $ \_ _ _ -> Identity (Right [])) [("g", failureArms)] file "x"
+      let (acts, near) = inFile (querying $ \_ _ _ -> Identity (Right [])) [("g", failureArms)] file "x"
       acts `shouldBe` []
       map (\n -> (nbGenerator n, nbLabel n)) near `shouldBe` [("g", "Add arms")]
     it "(c2) nearby says what the rule looks for: `where` rendered with the path, else the rule in words" $ do
-      let none = Syntax $ \_ _ _ -> Identity (Right [])
+      let none = querying $ \_ _ _ -> Identity (Right [])
           own w = generator . T.unlines $
             [ "description = \"d\"", "language = \"rust\""
             , "[inputs.service]", "type = \"ident\"", "[inputs.command]", "type = \"ident\""
@@ -218,7 +218,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
       map nbWhy (snd (inFile none [("g", own ["where = \"on a field of the {= command|pascal =} struct\""])] file "x")) `shouldBe` ["on a field of the RefundInvoice struct"]
       map nbWhy (snd (inFile none [("g", own [])] file "x")) `shouldBe` ["a `field_declaration` inside a `struct_item` matching /^pub struct RefundInvoice /"]
     it "(c3) a search that failed says so, and suggests olifant doctor — not \"none yet\" (review I3)" $ do
-      let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed (brew install ast-grep)"))
+      let broken = querying $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed (brew install ast-grep)"))
       map nbWhy (snd (inFile broken [("g", failureArms)] file "x")) `shouldSatisfy` all (\w -> "cannot search this file" `T.isInfixOf` w && "ast-grep is not installed" `T.isInfixOf` w && "olifant doctor" `T.isInfixOf` w)
     it "(c4) no near miss when a path-bound value is not a valid choice (lib.rs is not a command) (review I4)" $ do
       let enumGen = generator . T.unlines $
@@ -227,7 +227,7 @@ spec = describe "olifant actions (spec §4.6)" $ do
             , "[inputs.command]", "type = \"ident\""
             , "[query.services]", "glob = \"*/*-service\"", "value = \"parent folder\""
             , "[applies_at]", "path = \"{service}/*-service/src/{command}.rs\"", "node = { kind = \"struct_item\" }" ]
-          none = Syntax $ \_ _ _ -> Identity (Right [])
+          none = querying $ \_ _ _ -> Identity (Right [])
           near ps = snd (runIdentity (actionsInFile none [rust] noQueries ps (const (pure Nothing)) [("g", enumGen)] file "x"))
       near ["shipping/shipping-service/lib.rs"] `shouldBe` []
       map nbGenerator (near ["billing/billing-service/lib.rs"]) `shouldBe` ["g"]

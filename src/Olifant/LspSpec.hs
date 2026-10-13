@@ -41,7 +41,7 @@ import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), noChecker, noRunner, noSyntax, processCheckerWith, processRunner, processVerifierCancellable)
+import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), querying, noChecker, noRunner, noSyntax, processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
@@ -199,7 +199,7 @@ fixesSpec = describe "rule findings and their fixes" $ do
   it "(f) answers an error, and keeps serving, when a request throws (review I4)" $
     withPython [] $ \ports dir -> do
       -- a tool that throws instead of answering (a file deleted mid-read, an unreadable folder)
-      let throwing = Syntax (\_ _ _ -> ioError (userError "the disk went away"))
+      let throwing = querying (\_ _ _ -> ioError (userError "the disk went away"))
       ((answer, after), code) <- inProcessWith ports {pSyntax = throwing} dir $ do
         doc <- openDoc "src/bistro/booking/commands/create_booking.py" "python"
         TResponseMessage _ _ answer <- request SMethod_TextDocumentCodeAction (CodeActionParams Nothing Nothing doc (Range (Position 0 0) (Position 0 0)) (CodeActionContext [] Nothing Nothing))
@@ -949,7 +949,7 @@ concurrencySpec = describe "slow work, and requests meanwhile" $ do
               hold = atomicModifyIORef' armed (False,) >>= \held -> when held (putMVar entered () >> takeMVar gate)
               gated = disk {readText = \p -> when ("/py/" `isInfixOf` p) hold >> readText disk p}
               -- the first syntax query after arming (completion plans over the open buffer)
-              slowSyntax = Syntax (\l q t -> hold >> querySyntax (pSyntax ports) l q t)
+              slowSyntax = querying (\l q t -> hold >> querySyntax (pSyntax ports) l q t)
           _ <- forkIO (threadDelay 5000000 >> void (tryPutMVar gate ()))
           (first, _) <- inProcessWith ports {pFiles = gated, pSyntax = slowSyntax} root $ do
             py <- openDoc "py/src/bistro/booking/commands/create_booking.py" "python"

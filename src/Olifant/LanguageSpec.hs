@@ -288,6 +288,10 @@ spec = do
     it "(c) end of call NAME in FUNCTION opens an empty argument list" $ withPython $ \syn lang file ->
       fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
 
+  describe "rewriting (ast-grep, a rule with a fix)" $
+    it "gives each match its replacement and its byte range" $ withPython $ \syn lang _ ->
+      rewriteSyntax syn lang (object ["pattern" .= ("$A > $B" :: Text)]) "$A >= $B" "if é > b:\n    pass\n"
+        `shouldReturn` Right [Rewrite (0, 3) (0, 8) "é > b" "é >= b" (3, 9)]
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))

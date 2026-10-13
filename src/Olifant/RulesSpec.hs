@@ -7,7 +7,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (Language, Match (..), Syntax (..), SyntaxFailure (..), parseLanguage)
+import Olifant.Language (Language, Match (..), Syntax (..), querying, SyntaxFailure (..), parseLanguage)
 import Olifant.Newness (NewLines (..))
 import Data.Set qualified as S
 import Olifant.Rules
@@ -42,8 +42,8 @@ rules = r
 
 -- Every line containing `use diesel` is a use_declaration match (0-based).
 diesel :: Syntax Identity
-diesel = Syntax $ \_ _ content ->
-  Identity (Right [Match (i, 0) (i, T.length l) l | (i, l) <- zip [0 ..] (T.lines content), "use diesel" `T.isPrefixOf` T.stripStart l])
+diesel = querying $ \_ _ content ->
+  Identity (Right [Match (i, 0) (i, T.length l) l (0, 0) | (i, l) <- zip [0 ..] (T.lines content), "use diesel" `T.isPrefixOf` T.stripStart l])
 
 cmd :: FilePath
 cmd = "billing/billing-service/src/cancel_invoice.rs"
@@ -65,11 +65,11 @@ python :: Language
 python = either (error . T.unpack) id (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
 
 defs :: Syntax Identity
-defs = Syntax $ \_ _ content ->
+defs = querying $ \_ _ content ->
   let ls = zip [0 ..] (T.lines content)
       starts = [i | (i, l) <- ls, "def " `T.isPrefixOf` l]
       end i = last (i : [j | (j, l) <- takeWhile (\(j, l) -> j == i || T.null l || " " `T.isPrefixOf` l) (drop i ls), not (T.null (T.strip l))])
-   in Identity (Right [Match (i, 0) (end i, T.length (snd (ls !! end i))) (T.unlines [l | (j, l) <- ls, j >= i, j <= end i]) | i <- starts])
+   in Identity (Right [Match (i, 0) (end i, T.length (snd (ls !! end i))) (T.unlines [l | (j, l) <- ls, j >= i, j <= end i]) (0, 0) | i <- starts])
 
 -- | `only = "new"` rules over a legacy file with two functions (lines 1–2, 4–5).
 legacyRule :: Text
@@ -106,7 +106,7 @@ spec = describe "rules (spec §5.9)" $ do
     it "(h) an old definition costs no query for its fix's code (only new ones are fixed)" $ do
       -- every query counted: one for the matches, then one per kept finding's replacement
       calls <- newIORef (0 :: Int)
-      let counting = Syntax $ \l r t -> modifyIORef' calls (+ 1) >> pure (runIdentity (querySyntax defs l r t))
+      let counting = querying $ \l r t -> modifyIORef' calls (+ 1) >> pure (runIdentity (querySyntax defs l r t))
           ruleText = legacyRule <> "[[rules.no-new-defs.fixes]]\ngenerator = \"p/delegate\"\nreplace = { enclosing = [\"function_definition\"], text = \"pass\" }\n"
           Right rs = parseRules ruleText
           f = "legacy/views.py"
@@ -171,7 +171,7 @@ spec = describe "rules (spec §5.9)" $ do
         [ [ FixOffer "rust-htmx/command-dependency" (Just "Use an existing port") [("command", "cancel_invoice"), ("service", "billing")] Nothing []
           , FixOffer "rust-htmx/service-repository" (Just "Add a new repository port") [("service", "billing")] Nothing [] ] ]
     it "keeps one finding where matches nest (the outermost)" $ do
-      let nested = Syntax $ \_ _ _ -> Identity (Right [Match (0, 4) (0, 10) "diesel", Match (0, 0) (0, 20) "use diesel::prelude"])
+      let nested = querying $ \_ _ _ -> Identity (Right [Match (0, 4) (0, 10) "diesel" (0, 0), Match (0, 0) (0, 20) "use diesel::prelude" (0, 0)])
           (fs, _) = runIdentity (checkFiles nested [rust] none [] (\_ -> Identity AllNew) rules [cmd] (\_ -> Identity (Just "use diesel::prelude;\n")) [cmd])
       map fRange fs `shouldBe` [Just ((1, 1), (1, 21))]
     it "pre-chooses the choice whose words appear in the code" $ do
@@ -185,16 +185,16 @@ spec = describe "rules (spec §5.9)" $ do
           , "replace = [ { enclosing = [\"use_declaration\"], text = \"\" }, { enclosing = [\"let_declaration\", \"expression_statement\"], text = \"{= ? call: stmt | do {= finding =} through a port =}\" } ]" ]
         Right [r] = parseRules withReplace
         -- the rule matches `diesel::x`; enclosing queries see the import or the let
-        syn = Syntax $ \_ rule content ->
+        syn = querying $ \_ rule content ->
           let txt = T.pack (show rule)
               hits = [(i, l) | (i, l) <- zip [0 ..] (T.lines content), "diesel::x" `T.isInfixOf` l]
               col l = T.length (fst (T.breakOn "diesel::x" l))
            in Identity . Right $
                 if "use_declaration" `T.isInfixOf` txt && not ("let_declaration" `T.isInfixOf` txt)
-                  then [Match (i, 0) (i, T.length l) (T.strip l) | (i, l) <- hits, "use " `T.isPrefixOf` T.strip l]
+                  then [Match (i, 0) (i, T.length l) (T.strip l) (0, 0) | (i, l) <- hits, "use " `T.isPrefixOf` T.strip l]
                   else if "let_declaration" `T.isInfixOf` txt
-                    then [Match (i, 4) (i, T.length l) (T.strip l) | (i, l) <- hits, "let " `T.isPrefixOf` T.strip l]
-                    else [Match (i, col l) (i, col l + 9) "diesel::x" | (i, l) <- hits]
+                    then [Match (i, 4) (i, T.length l) (T.strip l) (0, 0) | (i, l) <- hits, "let " `T.isPrefixOf` T.strip l]
+                    else [Match (i, col l) (i, col l + 9) "diesel::x" (0, 0) | (i, l) <- hits]
         offersFor content = map (map foReplace . fFixes) (fst (runIdentity (checkFiles syn [rust] none [] (\_ -> Identity AllNew) [r] [cmd] (\_ -> Identity (Just content)) [cmd])))
     it "replaces the enclosing statement (lines, old text, indent, the node's code)" $
       map (fmap (fmap (\rp -> (rpLines rp, rpOld rp, rpIndent rp, rpFinding rp)))) (offersFor "fn f() {\n    let rows = diesel::x;\n}\n")
@@ -204,7 +204,7 @@ spec = describe "rules (spec §5.9)" $ do
         `shouldBe` [[Just ((1, 1), "")]]
   describe "rules that cannot run (review C2)" $ do
     it "a syntax failure is an error finding, not silence" $ do
-      let broken = Syntax $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed"))
+      let broken = querying $ \_ _ _ -> Identity (Left (SyntaxToolMissing "ast-grep is not installed"))
           (fs, _) = runIdentity (checkFiles broken [rust] none [] (\_ -> Identity AllNew) rules [cmd] (\_ -> Identity (Just "use diesel::x;\n")) [cmd])
       map (\f -> (fRule f, fSeverity f)) fs `shouldBe` [("rule-failed", Error)]
       map fMessage fs `shouldSatisfy` all ("ast-grep is not installed" `T.isInfixOf`)

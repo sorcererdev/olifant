@@ -13,7 +13,7 @@ import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
 import Olifant.Generation.Tools (Verifier (..))
 import Olifant.Language.Check (noVerifier, processVerifierWith)
-import Olifant.Language (HoleKind (..), Language (..), Syntax (..), SyntaxFailure (..), compileClean, noChecker, noRunner, noSyntax, parseLanguage, processChecker, processCheckerWith)
+import Olifant.Language (HoleKind (..), Language (..), Syntax (..), querying, SyntaxFailure (..), compileClean, noChecker, noRunner, noSyntax, parseLanguage, processChecker, processCheckerWith)
 import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
@@ -93,7 +93,7 @@ spec = do
             , ("/packs/p/fixtures/app/a.x", "x\n")
             , ("/packs/p/generators/g/tests/basic/inputs.toml", "now = \"2026-09-27T15:30:00Z\"\n")
             ]
-          missingAstGrep = Syntax (\_ _ _ -> pure (Left (SyntaxToolMissing "ast-grep is not installed")))
+          missingAstGrep = querying (\_ _ _ -> pure (Left (SyntaxToolMissing "ast-grep is not installed")))
       (root, _) <- memoryWorkspace files
       [c] <- discoverCases root "/packs"
       runCase root missingAstGrep noChecker False c >>= \case

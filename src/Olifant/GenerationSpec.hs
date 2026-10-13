@@ -642,7 +642,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
         , "[[edits]]", "create = \"src/A.elm\"", "text = \"a = {= ? a: expr | the a value =}\\n\""
         , "[[edits]]", "create = \"src/B.elm\"", "text = \"b = {= ? b: expr | the b value =}\\n\"" ]
       -- `!!` does not parse; a file containing BAD does not compile.
-      parses = Syntax $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "!!" | "!!" `T.isInfixOf` content])
+      parses = querying $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "!!" (0, 0) | "!!" `T.isInfixOf` content])
       compiles = Checker $ \_ files -> pure (Right (CheckReport [] [(p, "BAD is not defined") | (p, t) <- M.toList files, "BAD" `T.isInfixOf` t] []))
       withFiller replies = do
         calls <- newIORef []
@@ -750,7 +750,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
           , "[[edits]]", "create = \"src/c.py\"", "text = \"\\\"\\\"\\\"Codec.\\\"\\\"\\\"\\n\\nfrom x import Slot\\n\\n\\ndef decode(t: str) -> Slot:\\n    return {= ? decode: expr | read it =}\\n\"" ]
     calls <- newIORef []
     let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> pure (Right (M.fromList [("decode", "from datetime import date\nfrom x import Slot\n\nSlot(day=date.fromisoformat(t))")]))
-        sawCode = Syntax $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "import" | "import" `T.isInfixOf` content])
+        sawCode = querying $ \_ _ content -> pure (Right [Match (0, 0) (0, 1) "import" (0, 0) | "import" `T.isInfixOf` content])
         tools = (basicTools sawCode compiles [pyLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
     (ws, snap) <- memoryWorkspace []
     Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
@@ -1147,8 +1147,8 @@ completeSpec = describe "generate (complete edits)" $ do
   it "chooses the body by `where` when two edits complete the same bare name (Review Focus 2)" $ do
     -- `where` needs Syntax; a fake one maps each target phrase to the case it names.
     let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\nchange r =\n    case r of\n        Nothing ->\n            0\n\nview p =\n    case p of\n        Home ->\n            1\n"
-        syntax = Syntax $ \_ rule _ -> pure . Right $
-          if "change" `T.isInfixOf` T.pack (show rule) then [Match (4, 4) (6, 13) "case r of"] else [Match (9, 4) (11, 13) "case p of"]
+        syntax = querying $ \_ rule _ -> pure . Right $
+          if "change" `T.isInfixOf` T.pack (show rule) then [Match (4, 4) (6, 13) "case r of" (0, 0)] else [Match (9, 4) (11, 13) "case p of" (0, 0)]
         two = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"elm\""
           , "[[edits]]", "complete = \"Route.Settings\"", "where = \"case in change\"", "text = \"{= pattern =} ->\\n    2\""
@@ -1166,7 +1166,7 @@ completeSpec = describe "generate (complete edits)" $ do
     out `shouldSatisfy` ("        Settings _ ->\n            3" `T.isInfixOf`)
   it "is a conflict, not a guess, when an unmatched site could be either constructor (review)" $ do
     let mainElm = "module Main exposing (main)\nimport Route exposing (Route)\n\npageName p =\n    case p of\n        Home ->\n            \"home\"\n"
-        syntax = Syntax $ \_ _ _ -> pure (Right [])
+        syntax = querying $ \_ _ _ -> pure (Right [])
         two =
           generatorFrom . T.unlines $
             [ "description = \"d\"", "language = \"elm\""
@@ -1196,7 +1196,7 @@ completeSpec = describe "generate (complete edits)" $ do
     (M.lookup "src/A.elm" <$> snapshot) `shouldReturn` Just page
   it "narrows candidates to constructors visible at the site (Route cannot see Main)" $ do
     let routeElm = "module Route exposing (..)\n\ntoPath r =\n    case r of\n        Home ->\n            \"/\"\n"
-        syntax = Syntax $ \_ _ _ -> pure (Right [])
+        syntax = querying $ \_ _ _ -> pure (Right [])
         two =
           generatorFrom . T.unlines $
             [ "description = \"d\"", "language = \"elm\""
@@ -1320,8 +1320,8 @@ regionSpec = describe "generate (owned regions)" $ do
             , "items = { kind = \"case_of_branch\" }", "example = \"end of case in update\""
             ]
         variants = RegionDef "variants" "list.txt" (AstQueryQ (AstQuery "src/A.elm" (ItemsOf "case in update") [("head", "^([A-Z]+)")])) (ItemTemplate t) False (Just "#") Nothing Nothing
-        fake = Syntax $ \_ rule _ -> pure . Right $
-          if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 1) "A -> 1", Match (7, 8) (8, 1) "B -> 2"] else [Match (2, 4) (8, 1) "case"]
+        fake = querying $ \_ rule _ -> pure . Right $
+          if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 1) "A -> 1" (0, 0), Match (7, 8) (8, 1) "B -> 2" (0, 0)] else [Match (2, 4) (8, 1) "case" (0, 0)]
     (ws, snap) <- memoryWorkspace [("src/A.elm", "x"), ("list.txt", "# olifant:region variants\n# olifant:end variants\n")]
     let queries = noQueries {queryAst = astQueries fake [caseLang]}
     Right _ <- generate ws noResolve (noTools {toolRegions = [variants], toolQueries = queries}) [Step unit (M.fromList [("name", "b")])] now Apply
@@ -1330,10 +1330,10 @@ regionSpec = describe "generate (owned regions)" $ do
     let Right t = parseTemplate "{= head =}"
         Right lang = parseLanguage "x" "/p" "files = [\"**/*.x\"]\ncomment = \"--\"\ngrammar = \"x\"\n[targets.type]\nphrase = \"type NAME\"\ncontainer = { kind = \"t\" }\nitems = { kind = \"v\" }\nexample = \"end of type T\"\n"
         -- The container is the whole text; items are the lines holding "| ".
-        bars = Syntax $ \_ rule content -> pure . Right $
+        bars = querying $ \_ rule content -> pure . Right $
           if "\"all\"" `isInfixOf` BL.unpack (encode rule)
-            then [Match (i, 2) (i, T.length l) (T.strip l) | (i, l) <- zip [0 ..] (T.lines content), "| " `T.isInfixOf` l]
-            else [Match (0, 0) (length (T.lines content), 0) content]
+            then [Match (i, 2) (i, T.length l) (T.strip l) (0, 0) | (i, l) <- zip [0 ..] (T.lines content), "| " `T.isInfixOf` l]
+            else [Match (0, 0) (length (T.lines content), 0) content (0, 0)]
         variants = RegionDef "variants" "list.txt" (AstQueryQ (AstQuery "a.x" (ItemsOf "type T") [("head", "[|] ([A-Z])")])) (ItemTemplate t) False (Just "#") Nothing Nothing
         addC = generatorFrom . (header <>) . T.unlines $ ["[[edits]]", "insert = \"a.x\"", "at = \"after last line matching [|] \"", "text = \"| C\""]
     (ws, snap) <- memoryWorkspace [("a.x", "type T\n  = A\n  | B\n"), ("list.txt", "# olifant:region variants\n# olifant:end variants\n")]
@@ -1357,9 +1357,9 @@ isChecking = \case
 parseCheckSpec :: Spec
 parseCheckSpec = describe "parse pre-check (spec §4.6)" $ do
   let -- `;;` is a syntax error; the ERROR node is the `;;` itself.
-      errors = Syntax $ \_ rule content -> pure . Right $
+      errors = querying $ \_ rule content -> pure . Right $
         if rule == object ["kind" .= ("ERROR" :: Text)]
-          then [Match (i, c) (i, c + 2) ";;" | (i, l) <- zip [0 ..] (T.lines content), Just c <- [T.length . fst <$> nonEmpty (T.breakOn ";;" l)]]
+          then [Match (i, c) (i, c + 2) ";;" (0, 0) | (i, l) <- zip [0 ..] (T.lines content), Just c <- [T.length . fst <$> nonEmpty (T.breakOn ";;" l)]]
           else []
       nonEmpty (a, b) = if T.null b then Nothing else Just (a, b)
       tools checker = basicTools errors checker [elmLang]
