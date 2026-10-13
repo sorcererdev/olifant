@@ -19,6 +19,7 @@ module Olifant.Server.Block
     -- * for the other moves ("Olifant.Server.BlockMoves")
   , withBlock
   , settle
+  , settleOn
   , testNow
   , fileOf
   , tshow
@@ -206,8 +207,25 @@ blockDraft progress path = withBlock path $ \s root project lang b killed ->
             Right done -> pure (Right done)
             Left why -> do
               -- nothing lands: back to the state it began from, unless the block moved on
-              settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (\back -> pushed s back killed)
+              settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
               pure (Left why)
+
+-- | A failed draft put its block's state back: pushed, or, when the file
+-- is no longer the text that state was established on (the person typed
+-- while the model wrote, and that edit's test was the draft's to settle),
+-- tested again first, as an edit is.
+restored :: ServerState -> FilePath -> Project -> Language -> Int -> Block -> IO ()
+restored s root project lang killed back = do
+  now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile back))
+  if now == blockOn back
+    then pushed s back killed
+    else
+      testNow s root project lang back killed False >>= \case
+        Right tested -> do
+          killed' <- maybe killed snd . M.lookup (blockFile tested) <$> readIORef (ssBlocks s)
+          pushed s tested killed'
+        -- the block moved on meanwhile: whatever moved it pushed it
+        Left _ -> pure ()
 
 -- | Tell the adapter a block changed with no request asking (it pushes it).
 pushed :: ServerState -> Block -> Int -> IO ()
@@ -289,7 +307,7 @@ draftIn progress s root project lang b drafting killed filler = do
         Code -> changed
         TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" planned)))
-  b' <- ExceptT (settle s root killed "draft" (either (const "red") (const "green") outcome) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
+  b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
 
@@ -312,7 +330,7 @@ testNow s root project lang b killed applied = do
         _ -> [blockTestId b]
   runOver s ws lang ids >>= \case
     -- a runner that cannot start is a test that cannot run: never judged
-    Left why -> settle s root killed "test" ("cannot run: " <> why) (CannotRun why) b
+    Left why -> settleOn s root killed "test" ("cannot run: " <> why) (Just now) (CannotRun why) b
     Right run -> do
       let new = newLinesOf (blockBase b) now
           sp = if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
@@ -323,7 +341,7 @@ testNow s root project lang b killed applied = do
             (_, (_, f) : _) -> (landed sp (Left f), "red")
             _ -> (landed sp (Right ()), "green")
           landed = if applied then Applied else Edited
-      settle s root killed "test" result move b >>= \case
+      settleOn s root killed "test" result (Just now) move b >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
@@ -387,11 +405,11 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
                    | Just why <- trBroken base -> pure (Left why)
                    | otherwise -> judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
     case verdicts of
-      Left why -> settle s root killedBefore "judge" ("cannot run: " <> why) (CannotRun why) b
+      Left why -> settleOn s root killedBefore "judge" ("cannot run: " <> why) (Just now) (CannotRun why) b
       Right vs -> do
         let surviving = [m | (m, Survived) <- vs]
             killed = length vs - length surviving
-        settle s root killed "judge" (tshow killed <> "/" <> tshow (length vs) <> " killed") (Judge surviving) b >>= \case
+        settleOn s root killed "judge" (tshow killed <> "/" <> tshow (length vs) <> " killed") (Just now) (Judge surviving) b >>= \case
           -- in Jev's order: what it already said now, the rest as it answers
           Right judged -> Right . fromMaybe judged <$> reorder s decider now testText False (blockFile judged)
           other -> pure other
@@ -547,9 +565,15 @@ withBlock path work s0 =
 -- while the stored block is still B's (its number, and its state's kind),
 -- one atomic step; a block gone or moved on meanwhile refuses it.
 settle :: ServerState -> FilePath -> Int -> Text -> Text -> Move -> Block -> IO (Either Text Block)
-settle s root killed name result move b = case step move b of
+settle s root killed name result = settleOn s root killed name result Nothing
+
+-- | 'settle', the state it lands established on the file's text ON (a
+-- test's, a draft's, a judge's); without one, on the text it was.
+settleOn :: ServerState -> FilePath -> Int -> Text -> Text -> Maybe Text -> Move -> Block -> IO (Either Text Block)
+settleOn s root killed name result on move b = case step move b of
   Left why -> pure (Left why)
-  Right b' -> do
+  Right stepped -> do
+    let b' = maybe stepped (\t -> stepped {blockOn = t}) on
     landed <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup (blockFile b) m of
       Just (now, _)
         | blockId now == blockId b, stateName (blockState now) == stateName (blockState b) ->

@@ -70,7 +70,9 @@ pending). The HUD's state says which are open.
 
 **Editing is a move too.** Type in the span and pause: the test reruns on the buffer's text
 (nothing needs saving), and the block is red or green as your text is; green is judged. A draft
-arriving after you typed is not applied: your text stands. Typing outside the span does nothing.
+arriving after you typed is not applied: your text stands. A draft that fails puts the block back
+as it was, tested again first if you typed while the model wrote. Typing outside the span does
+nothing.
 
 **One block per file.** A second `begin` in a file with a pending block is refused (`a block is
 pending in this file: accept or reject it first`).

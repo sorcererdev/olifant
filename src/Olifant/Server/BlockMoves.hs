@@ -19,7 +19,7 @@ import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, 
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
-import Olifant.Server.Block (appendStep, claim, fileOf, settle, testNow, tshow, withBlock)
+import Olifant.Server.Block (appendStep, claim, fileOf, settle, settleOn, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -66,7 +66,7 @@ blockWaive path line reason0 = withBlock path $ \s root project lang b killed ->
   let waived = foldl (\acc op -> waiverLine lang acc line op reason) now ops
       (range, text) = smallestChange now waived
       version = fst <$> M.lookup (blockFile b) (ssDocs s)
-      waiveAll b0 = foldl (\acc op -> acc >>= \bk -> ExceptT (settle s root killed "waive" (op <> ": " <> reason) (Waive line op reason) bk)) (pure b0) ops
+      waiveAll b0 = foldl (\acc op -> acc >>= \bk -> ExceptT (settleOn s root killed "waive" (op <> ": " <> reason) (Just waived) (Waive line op reason) bk)) (pure b0) ops
   b' <- waiveAll b
   -- the editor applying the comments is not an edit of the block's
   lift (modifyIORef' (ssBlockSeen s) (M.insert (blockFile b) waived))

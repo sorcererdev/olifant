@@ -3,7 +3,7 @@
 module Olifant.ServerSpec (spec) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Monad (forM, void)
 import Data.Aeson (Value (..), (.:))
 import Data.Aeson qualified as J
@@ -600,6 +600,57 @@ blockSpecs = describe "blocks" $ do
     tested `shouldBe` Nothing
     (_, Right (b, _)) <- wait drafting
     blockState b `shouldBe` Green
+  it "(N1) an edit made before a draft that then fails is tested: the failed draft does not put back the verdict on the text before it" $ do
+    (s0, _) <- blocks redOnStub []
+    (filler, entered, release) <- stalledFiller
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    -- the person typed the body, then asked for a draft before the pause ran the test
+    let typed = changeDoc (root </> moduleRel) 2 written s
+    drafting <- async (blockDraft ignore (root </> moduleRel) typed)
+    takeMVar entered
+    -- the pause's test, while the model writes: the draft planned on that text
+    (_, tested) <- blockChanged (root </> moduleRel) typed
+    tested `shouldBe` Nothing
+    putMVar release ()
+    (_, failed) <- wait drafting
+    failed `shouldSatisfy` either (const True) (const False)
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+    map draftBy (blockDrafts b) `shouldBe` ["you"]
+  it "(N1) an edit whose test lands while a draft is in flight is tested again when the draft fails" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    (filler, entered, release) <- stalledFiller
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    let typed = changeDoc (root </> moduleRel) 2 written s
+    -- the pause's test starts on the red block; the draft starts while it runs
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) typed)
+    waitUntil ((>= 1) <$> gEntered gate)
+    drafting <- async (blockDraft ignore (root </> moduleRel) typed)
+    takeMVar entered
+    gOpen gate
+    (_, tested) <- wait testing
+    tested `shouldBe` Nothing
+    putMVar release ()
+    (_, Left _) <- wait drafting
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(N1) a draft that fails, then an edit: the edit is tested" $ do
+    (s0, _) <- blocks redOnStub []
+    (filler, _, release) <- stalledFiller
+    putMVar release ()
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Left _) <- blockDraft ignore (root </> moduleRel) s
+    Just (back, _) <- blockFor (root </> moduleRel) s
+    blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
+    (_, Just tested) <- blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s)
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    blockState b `shouldBe` blockState tested
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -697,6 +748,15 @@ newGate = do
     , gOpen = putMVar opened ()
     , gWait = readIORef armed >>= \a -> if a then atomicModifyIORef' entered (\n -> (n + 1, ())) >> readMVar opened else pure ()
     }
+
+-- | A model that offers nothing: each ask says it ENTERED, waits for
+-- RELEASE, then gives up (no attempt: the draft fails).
+stalledFiller :: IO (ModelFiller IO, MVar (), MVar ())
+stalledFiller = do
+  entered <- newEmptyMVar
+  release <- newEmptyMVar
+  let filler = ModelFiller "stalled" 0 (Filler (\_ -> void (tryPutMVar entered ()) >> readMVar release >> pure (Left "the model gave up")))
+  pure (filler, entered, release)
 
 -- | 'blocks' whose runner first runs HOOK (a gate).
 blocksGated :: Gate -> (Text -> TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)

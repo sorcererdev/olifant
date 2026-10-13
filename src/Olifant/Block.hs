@@ -50,7 +50,11 @@ data Block = Block
     blockSpan :: (Int, Int),
     blockTestId :: TestId,
     blockState :: BlockState,
-    blockDrafts :: [Draft]
+    blockDrafts :: [Draft],
+    -- | the file's text the state was established on (the server records
+    -- it as a test, a draft or a judge lands; the base when it began): a
+    -- draft that fails puts back a state the file may have left
+    blockOn :: Text
   }
   deriving stock (Eq, Show)
 
@@ -76,7 +80,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) []
+  Block i file kind base sp test (Red failure) [] base
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
