@@ -162,7 +162,8 @@ Each move appends one line to `.olifant/state/steps.log`: time, block, move, who
 ```
 
 It answers what commits cannot: which lines a model drafted, which you wrote, what was waived and
-why. (`test person` after a draft is the test of the draft as the editor applied it.)
+why. (`test person` after a draft is the test of the draft as the editor applied it; a result
+that finished after the block moved on is logged `stale: …` and not applied.)
 
 ## Configuring tests: `[test]`
 
@@ -216,8 +217,11 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
   write the test where the message says, then begin on it.
 - **`name the new test first`** — `draft` on a stub whose name is still the stub's: type it (and
   the assertion), then draft.
-- **`the block moved on`** — a draft or a test finished after you rejected or accepted the block,
-  or after another move: nothing lands.
+- **`the block moved on`** — a draft, a test or a judge finished after you rejected or accepted
+  the block, or after another move (a later edit's test): nothing lands, and the step log says
+  `stale:` before what it would have been.
+- **`a draft is in flight; wait for it, then test or press next`** — `test` while the model
+  writes: the draft's own test settles the block.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a block starts
   from what is red. Begin in the function instead to judge it.
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a

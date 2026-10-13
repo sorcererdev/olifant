@@ -314,7 +314,10 @@ draftIn progress s root project lang b drafting killed filler = do
 -- | Run the block's test on the editor's text: red, green (then judged) or
 -- broken; its span is the lines new since the block began.
 blockTest :: FilePath -> ServerState -> IO (ServerState, Either Text Block)
-blockTest path = withBlock path $ \s root project lang b killed -> testNow s root project lang b killed False
+blockTest path = withBlock path $ \s root project lang b killed -> case blockState b of
+  -- its result and the draft's would race: the later would land over the newer
+  Drafting _ -> pure (Left "a draft is in flight; wait for it, then test or press next")
+  _ -> testNow s root project lang b killed False
 
 -- | 'blockTest' on the block's file as it is now. APPLIED: that text is the
 -- latest draft, as the editor applied it: no edit of the person's (no "you"
@@ -560,10 +563,12 @@ withBlock path work s0 =
           Just lang -> (s,) <$> work s root project lang b killed
 
 -- | Take a move on the block B as it was read: the block as it now stands
--- is kept (a finished one dropped), and the move logged. Blocks are
--- written from requests and background jobs at once: the move lands only
--- while the stored block is still B's (its number, and its state's kind),
--- one atomic step; a block gone or moved on meanwhile refuses it.
+-- is kept (a finished one dropped, its version bumped), and the move
+-- logged. Blocks are written from requests and background jobs at once
+-- (a test, a draft, a judge each runs a while): the move lands only while
+-- the stored block is still B (its number, and its version), one atomic
+-- step; a result begun on a block gone or moved on meanwhile is stale,
+-- logged as such and dropped.
 settle :: ServerState -> FilePath -> Int -> Text -> Text -> Move -> Block -> IO (Either Text Block)
 settle s root killed name result = settleOn s root killed name result Nothing
 
@@ -574,14 +579,15 @@ settleOn s root killed name result on move b = case step move b of
   Left why -> pure (Left why)
   Right stepped -> do
     let b' = maybe stepped (\t -> stepped {blockOn = t}) on
+        stored = b' {blockVersion = blockVersion b + 1}
     landed <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup (blockFile b) m of
       Just (now, _)
-        | blockId now == blockId b, stateName (blockState now) == stateName (blockState b) ->
-            ((if pending b' then M.insert (blockFile b') (b', killed) else M.delete (blockFile b')) m, True)
+        | blockId now == blockId b, blockVersion now == blockVersion b ->
+            ((if pending stored then M.insert (blockFile stored) (stored, killed) else M.delete (blockFile stored)) m, True)
       _ -> (m, False)
     if landed
-      then appendStep (ssPorts s) root b' name result >> pure (Right b')
-      else pure (Left "the block moved on")
+      then appendStep (ssPorts s) root stored name result >> pure (Right stored)
+      else appendStep (ssPorts s) root b' name ("stale: " <> result) >> pure (Left "the block moved on")
 
 -- | Store a new block in its file unless a block is pending there or in
 -- one of OTHERS (its test file): one atomic step, so two begins at once

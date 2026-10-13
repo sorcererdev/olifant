@@ -205,7 +205,7 @@ blockSpecs = describe "blocks" $ do
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
     (_, moved) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 2))}
     either id (const "drafted") moved `shouldBe` "the file changed while drafting; your text stands"
-    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+    fmap (unversioned . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (unversioned b)
     (_, Right (b', edits)) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 1))}
     blockState b' `shouldBe` Green
     map draftBy (blockDrafts b') `shouldBe` ["recorded"]
@@ -494,7 +494,7 @@ blockSpecs = describe "blocks" $ do
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
     (_, Left _) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 2))}
-    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+    fmap (unversioned . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (unversioned b)
   it "(I1) an edit's test that finishes after a reject does nothing" $ do
     gate <- newGate
     (s0, _) <- blocksGated gate redOnStub []
@@ -537,7 +537,7 @@ blockSpecs = describe "blocks" $ do
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
     (_, none) <- blockDraft ignore (root </> moduleRel) s
     none `shouldSatisfy` either ("no recorded fill" `T.isInfixOf`) (const False)
-    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+    fmap (unversioned . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (unversioned b)
   it "(I3) the judge runs each mutant with a timeout of its own, from the baseline's wall time" $ do
     (s0, _) <- blocks redOnStub []
     seen <- newIORef []
@@ -651,6 +651,45 @@ blockSpecs = describe "blocks" $ do
     blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
     Just (b, _) <- blockFor (root </> moduleRel) s
     blockState b `shouldBe` blockState tested
+  it "(N2) a judge that finishes after a later edit's test is stale: dropped (logged), the later green stands" $ do
+    (s0, _) <- blocks redOnStub []
+    -- each mutant run waits for its own release, in the order they come
+    calls <- newIORef (0 :: Int)
+    releases@[r1, r2] <- mapM (const newEmptyMVar) [1 .. 2 :: Int]
+    let within _ c = Runner (\l i f -> atomicModifyIORef' calls (\n -> (n + 1, n)) >>= \n -> mapM_ readMVar (take 1 (drop n releases)) >> runTests (pTester (ssPorts s0) c) l i f)
+        s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssPorts = (ssPorts s0) {pTesterWithin = within}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    -- typed green: tested, then judged (its mutant held)
+    let s1 = changeDoc (root </> moduleRel) 2 written s
+    first' <- async (blockTest (root </> moduleRel) s1)
+    waitUntil ((>= 1) <$> readIORef calls)
+    -- typed again in the span: green again, judged again (held too)
+    let s2 = changeDoc (root </> moduleRel) 3 (T.replace "seats > 2)" "seats > 2)  # again" written) s
+    second <- async (blockChanged (root </> moduleRel) s2)
+    waitUntil ((>= 2) <$> readIORef calls)
+    Just (green, _) <- blockFor (root </> moduleRel) s
+    blockState green `shouldBe` Green
+    -- the first judge lands: it judged the text before, so the green stands
+    putMVar r1 ()
+    (_, stale) <- wait first'
+    either id (const "landed") stale `shouldBe` "the block moved on"
+    fmap (blockState . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just Green
+    steps s >>= (`shouldSatisfy` ("\tjudge\tmutation\tstale: 0/1 killed" `T.isInfixOf`))
+    putMVar r2 ()
+    (_, Just judged) <- wait second
+    blockState judged `shouldSatisfy` \case Judged _ -> True; _ -> False
+    fmap (blockState . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (blockState judged)
+  it "(N3) test is refused while a draft is in flight" $ do
+    (s0, _) <- blocks redOnStub []
+    (filler, entered, release) <- stalledFiller
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    drafting <- async (blockDraft ignore (root </> moduleRel) s)
+    takeMVar entered
+    (_, tested) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s)
+    either id (const "tested") tested `shouldBe` "a draft is in flight; wait for it, then test or press next"
+    putMVar release ()
+    void (wait drafting)
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -702,6 +741,10 @@ expandStub at body text = T.intercalate "\n" (take (at - 1) ls ++ [named] ++ dro
   where
     ls = T.splitOn "\n" text
     named = T.replace "${1:name}" "kills_the_boundary" (T.replace "${2:...}" "table.handle(2) == 0" body)
+
+-- | A block as it stands, whatever moves it took to stand there.
+unversioned :: Block -> Block
+unversioned b = b {blockVersion = 0}
 
 -- | Until a condition holds (five seconds at most).
 waitUntil :: IO Bool -> IO ()

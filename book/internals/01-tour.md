@@ -2332,9 +2332,12 @@ machine served by the server:
   target) and begins Red, or judges a green function at once; on a function no test calls,
   `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`testStub`) and
   answers the stub for the editor, and accepting that block begins the function on it. Every
-  move lands through `settle`, a compare-and-swap on the stored block's number and state kind
-  (a block that moved on refuses a late result), and a new block through `claim`, one atomic
-  check-and-insert. `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
+  move lands through `settle`, a compare-and-swap on the stored block's number and version
+  (`blockVersion`, bumped by every move stored: a test, draft or judge begun on an older version
+  is stale, logged and dropped), and a new block through `claim`, one atomic check-and-insert.
+  `test` is refused while a draft is in flight; a draft that fails puts back the state it began
+  from, testing the file again when it is no longer the text that state was established on
+  (`blockOn`). `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
   with `planWith` under `DraftStance` (the test file, or for a test the module, in its context),
   verified by `VerifyIds` (the block's test), `VerifyRedAt` (a new test fails at its assertion)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
