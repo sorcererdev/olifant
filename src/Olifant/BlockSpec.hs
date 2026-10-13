@@ -23,6 +23,7 @@ spec = describe "Olifant.Block" $ do
       genMove =
         Gen.element
           [ StartDraft,
+            DraftFailed,
             Drafted "x" "m" (Right ()),
             Drafted "y" "m" (Left red),
             Edited (2, 2) (Right ()),
@@ -91,6 +92,18 @@ spec = describe "Olifant.Block" $ do
   it "(g) reject from any pending state; nothing after it" $ do
     blockState (step' Reject b0) `shouldBe` Rejected
     step StartDraft (step' Reject b0) `shouldSatisfy` isLeft
+  it "(g2) a draft starting is Drafting (only reject open); a failed one puts the state it began from back" $ do
+    let d = step' StartDraft b0
+    blockState d `shouldBe` Drafting (Red red)
+    open d `shouldBe` ["reject"]
+    hud d `shouldSatisfy` ("drafting…" `T.isSuffixOf`)
+    step' DraftFailed d `shouldBe` b0
+    step Accept d `shouldSatisfy` isLeft
+    step StartDraft d `shouldSatisfy` isLeft
+    step DraftFailed b0 `shouldSatisfy` isLeft
+    -- next on a clean judged block, failed: clean judged again, accept open
+    let j = step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0))
+    open (step' DraftFailed (step' StartDraft j)) `shouldSatisfy` ("accept" `elem`)
   it "(h) the HUD says where we are" $ do
     hud b0 `shouldBe` "▸ test_f · red: AssertionError: assert None == Ok(None)"
     hud (step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 1 survivor"

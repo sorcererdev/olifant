@@ -3,6 +3,7 @@
 module Olifant.ServerSpec (spec) where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar)
 import Control.Monad (forM, void)
 import Data.Aeson (Value (..), (.:))
 import Data.Aeson qualified as J
@@ -13,13 +14,13 @@ import Data.Maybe (listToMaybe)
 import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
-import Olifant.Block (Block (..), BlockState (Accepted, Green, Judged, Red, Rejected), Draft (..), hud, open, survivors)
+import Olifant.Block (Block (..), BlockState (Accepted, Drafting, Green, Judged, Red, Rejected), Draft (..), hud, open, survivors)
 import Olifant.Block qualified as Block
 import Olifant.Mutate (Mutant (..))
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, listDirectory)
 import System.FilePath (makeRelative, (</>))
-import Control.Concurrent.Async (wait)
+import Control.Concurrent.Async (async, wait)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
 import System.IO.Temp (withSystemTempDirectory)
@@ -393,7 +394,8 @@ blockSpecs = describe "blocks" $ do
     M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
     Just (code, killed) <- blockFor (root </> moduleRel) s
     (blockState code, killed) `shouldBe` (Judged [], 1)
-    map (\(b, k) -> (blockId b, k)) <$> readIORef pushed `shouldReturn` [(blockId code, 1)]
+    -- pushed, newest first: the code block judged again; the test block drafting
+    map (\(b, k) -> (blockId b, stateName (blockState b), k)) <$> readIORef pushed `shouldReturn` [(blockId code, "judged", 1), (2, "drafting", 0)]
     log' <- steps s
     log' `shouldSatisfy` ("block 2\taccept\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("block 1\trejudge\tperson" `T.isInfixOf`)
@@ -424,6 +426,58 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockAccept testFile st2
     Just (code, killed) <- blockFor (root </> moduleRel) s
     (blockState code, killed) `shouldBe` (Judged [], 1)
+  it "(I1) a draft in flight is Drafting (pushed, only reject open); one that lands after a reject is refused and the block stays gone" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    pushed <- newIORef []
+    writeIORef (ssOnBlock s0) (\b _ -> atomicModifyIORef' pushed (\bs -> (b : bs, ())))
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    gArm gate
+    drafting <- async (blockDraft ignore (root </> moduleRel) s)
+    waitUntil ((>= 1) <$> gEntered gate)
+    Just (now, _) <- blockFor (root </> moduleRel) s
+    blockState now `shouldSatisfy` \case Drafting _ -> True; _ -> False
+    (open now, "drafting…" `T.isSuffixOf` hud now) `shouldBe` (["reject"], True)
+    map blockState <$> readIORef pushed `shouldReturn` [blockState now]
+    (_, accepted) <- blockAccept (root </> moduleRel) s
+    accepted `shouldSatisfy` either (const True) (const False)
+    (_, Right _) <- blockReject (root </> moduleRel) s
+    gOpen gate
+    (_, landed) <- wait drafting
+    either id (const "landed") landed `shouldBe` "the block moved on"
+    blockFor (root </> moduleRel) s `shouldReturn` Nothing
+  it "(I1) a draft that fails puts the block's state back" $ do
+    (s0, _) <- blocks redOnStub []
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Left _) <- blockDraft ignore (root </> moduleRel) s {ssLiveVersion = Just (\_ -> pure (Just 2))}
+    fmap fst <$> blockFor (root </> moduleRel) s `shouldReturn` Just b
+  it "(I1) an edit's test that finishes after a reject does nothing" $ do
+    gate <- newGate
+    (s0, _) <- blocksGated gate redOnStub []
+    let s = openDoc (root </> moduleRel) 1 stubbed s0
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    gArm gate
+    testing <- async (blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s))
+    waitUntil ((>= 1) <$> gEntered gate)
+    (_, Right _) <- blockReject (root </> moduleRel) s
+    gOpen gate
+    (_, tested) <- wait testing
+    tested `shouldBe` Nothing
+    blockFor (root </> moduleRel) s `shouldReturn` Nothing
+  it "(I1) two begins at once make exactly one block" $ do
+    gate <- newGate
+    (s, _) <- blocksGated gate redOnStub []
+    gArm gate
+    one <- async (blockBegin ignore (root </> testRel) 6 s)
+    two <- async (blockBegin ignore (root </> testRel) 6 s)
+    waitUntil ((>= 2) <$> gEntered gate)
+    gOpen gate
+    results <- mapM (fmap snd . wait) [one, two]
+    length [() | Right _ <- results] `shouldBe` 1
+    [why | Left why <- results] `shouldSatisfy` all ("pending" `T.isInfixOf`)
+    M.size <$> readIORef (ssBlocks s) `shouldReturn` 1
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -505,7 +559,29 @@ blocksOn = blocksOnSyntax blockSyntax
 
 -- | 'blocksOn' over another syntax.
 blocksOnSyntax :: Syntax IO -> (M.Map FilePath Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
-blocksOnSyntax syntax verdict extra = do
+blocksOnSyntax syntax = blocksHooked syntax (pure ())
+
+-- | A gate on the runner: armed, every run waits (counted) until it opens.
+data Gate = Gate {gArm :: IO (), gEntered :: IO Int, gOpen :: IO (), gWait :: IO ()}
+
+newGate :: IO Gate
+newGate = do
+  armed <- newIORef False
+  entered <- newIORef (0 :: Int)
+  opened <- newEmptyMVar
+  pure Gate
+    { gArm = writeIORef armed True
+    , gEntered = readIORef entered
+    , gOpen = putMVar opened ()
+    , gWait = readIORef armed >>= \a -> if a then atomicModifyIORef' entered (\n -> (n + 1, ())) >> readMVar opened else pure ()
+    }
+
+-- | 'blocks' whose runner first runs HOOK (a gate).
+blocksGated :: Gate -> (Text -> TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
+blocksGated gate verdict = blocksHooked blockSyntax (gWait gate) (Right . verdict . M.findWithDefault "" moduleRel)
+
+blocksHooked :: Syntax IO -> IO () -> (M.Map FilePath Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
+blocksHooked syntax hook verdict extra = do
   pack <- readTree =<< canonicalizePath "packs/python-htmx"
   (disk, _) <-
     memoryWorkspace $
@@ -518,6 +594,7 @@ blocksOnSyntax syntax verdict extra = do
   runs <- newIORef (0 :: Int)
   let runner = Runner $ \_ ids files -> do
         modifyIORef' runs (+ 1)
+        hook
         pure (narrow ids <$> verdict files)
       -- as pytest does: tests named by id run alone
       narrow ids run

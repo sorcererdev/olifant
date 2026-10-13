@@ -12,6 +12,7 @@ module Olifant.Server.Block
   , blockAccept
   , blockReject
   , blockJson
+  , stateName
   , appendStep
   , underTest
     -- * for the other moves ("Olifant.Server.BlockMoves")
@@ -20,6 +21,8 @@ module Olifant.Server.Block
   , testNow
   , fileOf
   , tshow
+  , claim
+  , pushed
   ) where
 
 import Control.Applicative ((<|>))
@@ -115,7 +118,8 @@ blockBegin progress path line s0 =
         _
           | onTest -> throwE "every test here passes; write a failing one (its name and assertion) and begin on it"
           | otherwise -> atFunction >>= \sp -> new (fromMaybe (T.pack testRel) chosen) sp Green
-      lift (modifyIORef' (ssBlocks s) (M.insert file (b, 0)))
+      claimed <- lift (claim s [normalisePath (root </> testRel)] b)
+      unless claimed (throwE "a block is pending in this file: accept or reject it first")
       lift (modifyIORef' (ssBlockSeen s) (M.insert file moduleText))
       lift (appendStep (ssPorts s) root b "begin" (hud b))
       -- a hand-written green body goes straight to the judge
@@ -127,13 +131,34 @@ blockBegin progress path line s0 =
 -- A test block's hole is its stub's arrangement: a kill's must pass on the
 -- code and fail on the mutant, a new test's fail at its assertion.
 blockDraft :: (ProgressEvent -> IO ()) -> FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
-blockDraft progress path = withBlock path $ \s root project lang b killed -> runExceptT $ do
+blockDraft progress path = withBlock path $ \s root project lang b killed ->
+  fillerFor True s project >>= \case
+    Left why -> pure (Left why)
+    Right Nothing -> pure (Left "no model is configured ([model] in .olifant/config.toml); write the body yourself, the block still judges it")
+    Right (Just filler) ->
+      -- Drafting is stored and pushed at once: only reject is open while the model writes
+      settle s root killed "drafting" "asked for a draft" StartDraft b >>= \case
+        Left why -> pure (Left why)
+        Right drafting -> do
+          pushed s drafting killed
+          runExceptT (draftIn progress s root project lang b drafting killed filler) >>= \case
+            Right done -> pure (Right done)
+            Left why -> do
+              -- nothing lands: back to the state it began from, unless the block moved on
+              settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (\back -> pushed s back killed)
+              pure (Left why)
+
+-- | Tell the adapter a block changed with no request asking (it pushes it).
+pushed :: ServerState -> Block -> Int -> IO ()
+pushed s b killed = readIORef (ssOnBlock s) >>= \push -> push b killed
+
+-- | The draft itself, the block (as it was, and DRAFTING, as stored) in hand.
+draftIn :: (ProgressEvent -> IO ()) -> ServerState -> FilePath -> Project -> Language -> Block -> Block -> Int -> ModelFiller IO -> ExceptT Text IO (Block, [FileEdit])
+draftIn progress s root project lang b drafting killed filler = do
   let file = blockFile b
       rel = makeRelative root file
       ws = prWorkspace project
       started = fst <$> M.lookup file (ssDocs s)
-  drafting <- except (step StartDraft b)
-  filler <- ExceptT (fillerFor True s project) >>= maybe (throwE "no model is configured ([model] in .olifant/config.toml); write the body yourself, the block still judges it") pure
   text <- lift (readText ws rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
   (template, verify) <- case blockKind b of
     Code -> do
@@ -346,14 +371,17 @@ blockJson b killed =
       Judged ms -> ms
       _ -> []
     flat = T.replace "\n" "⏎"
-    stateName = \case
-      Red _ -> "red" :: Text
-      Drafting -> "drafting"
-      Green -> "green"
-      Judged _ -> "judged"
-      Broken _ -> "broken"
-      Accepted -> "accepted"
-      Rejected -> "rejected"
+
+-- | A state's kind, as the editor names it.
+stateName :: BlockState -> Text
+stateName = \case
+  Red _ -> "red"
+  Drafting _ -> "drafting"
+  Green -> "green"
+  Judged _ -> "judged"
+  Broken _ -> "broken"
+  Accepted -> "accepted"
+  Rejected -> "rejected"
 
 -- | One line of the step log (`.olifant/state/steps.log`, ignored by git):
 -- time, block, move, who made it (the person, the model, mutation), result.
@@ -395,16 +423,30 @@ withBlock path work s0 =
           Nothing -> pure (s, Left ("no language knows " <> T.pack (blockFile b)))
           Just lang -> (s,) <$> work s root project lang b killed
 
--- | Take a move: the block as it now stands is kept (a finished one
--- dropped), and the move logged.
+-- | Take a move on the block B as it was read: the block as it now stands
+-- is kept (a finished one dropped), and the move logged. Blocks are
+-- written from requests and background jobs at once: the move lands only
+-- while the stored block is still B's (its number, and its state's kind),
+-- one atomic step; a block gone or moved on meanwhile refuses it.
 settle :: ServerState -> FilePath -> Int -> Text -> Text -> Move -> Block -> IO (Either Text Block)
 settle s root killed name result move b = case step move b of
   Left why -> pure (Left why)
   Right b' -> do
-    -- blocks are written from requests and background jobs at once
-    atomicModifyIORef' (ssBlocks s) (\m -> ((if pending b' then M.insert (blockFile b') (b', killed) else M.delete (blockFile b')) m, ()))
-    appendStep (ssPorts s) root b' name result
-    pure (Right b')
+    landed <- atomicModifyIORef' (ssBlocks s) $ \m -> case M.lookup (blockFile b) m of
+      Just (now, _)
+        | blockId now == blockId b, stateName (blockState now) == stateName (blockState b) ->
+            ((if pending b' then M.insert (blockFile b') (b', killed) else M.delete (blockFile b')) m, True)
+      _ -> (m, False)
+    if landed
+      then appendStep (ssPorts s) root b' name result >> pure (Right b')
+      else pure (Left "the block moved on")
+
+-- | Store a new block in its file unless a block is pending there or in
+-- one of OTHERS (its test file): one atomic step, so two begins at once
+-- make one block.
+claim :: ServerState -> [FilePath] -> Block -> IO Bool
+claim s others b = atomicModifyIORef' (ssBlocks s) $ \m ->
+  if any (`M.member` m) (blockFile b : others) then (m, False) else (M.insert (blockFile b) (b, 0) m, True)
 
 -- | Tests (ids, or test files) run over the project's files as the editor has them.
 runOver :: ServerState -> Workspace IO -> Language -> [TestId] -> IO (Either Text TestRun)

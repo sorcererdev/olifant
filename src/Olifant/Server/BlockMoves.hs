@@ -5,7 +5,7 @@
 -- inside the span, or an edit elsewhere (nothing to do).
 module Olifant.Server.BlockMoves (blockKill, blockWaive, blockChanged) where
 
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
@@ -19,7 +19,7 @@ import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, 
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
-import Olifant.Server.Block (appendStep, fileOf, settle, testNow, tshow, withBlock)
+import Olifant.Server.Block (appendStep, claim, fileOf, settle, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -36,7 +36,7 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
   let testRel = T.unpack (fileOf (blockTestId b))
       testFile = normalisePath (root </> testRel)
   busy <- lift (M.member testFile <$> readIORef (ssBlocks s))
-  when busy (throwE "a test block is pending in the test file: accept or reject it first")
+  when busy (throwE pendingTest)
   testText <- lift (readText (prWorkspace project) testRel) >>= maybe (throwE ("cannot read " <> T.pack testRel)) pure
   let (at, body) = killStub lang testText m
   b' <- ExceptT (settle s root killed "kill" (muOperator m <> " on line " <> tshow line) (Kill line) b)
@@ -44,11 +44,14 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
   -- the stub's two blank lines, then its def, arrangement and assertion;
   -- its test is the test file's (its name is the person's to type)
   let tb = begin n testFile (TestFor (Just m)) testText (at + 2, at + 4) (T.pack testRel) (Failure Nothing "" "")
+  claimed <- lift (claim s [] tb)
+  unless claimed (throwE pendingTest)
   lift $ do
-    modifyIORef' (ssBlocks s) (M.insert testFile (tb, 0))
     modifyIORef' (ssBlockSeen s) (M.insert testFile testText)
     appendStep (ssPorts s) root tb "begin" (hud tb)
   pure (b', testFile, at, body)
+  where
+    pendingTest = "a test block is pending in the test file: accept or reject it first"
 
 -- | Waive the unwaived survivors on a line, for a reason: one comment per
 -- operator, written on its line (one edit), and each survivor waived.

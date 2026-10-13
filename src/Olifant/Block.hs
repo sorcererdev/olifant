@@ -36,7 +36,9 @@ data Kind = Code | TestFor (Maybe Mutant)
 data Draft = Draft {draftText :: Text, draftBy :: Text, draftOutcome :: Text}
   deriving stock (Eq, Show)
 
-data BlockState = Red Failure | Drafting | Green | Judged [Mutant] | Broken Text | Accepted | Rejected
+-- | 'Drafting' keeps the state the draft began from: a draft that fails
+-- (or is refused) puts it back.
+data BlockState = Red Failure | Drafting BlockState | Green | Judged [Mutant] | Broken Text | Accepted | Rejected
   deriving stock (Eq, Show)
 
 data Block = Block
@@ -54,6 +56,8 @@ data Block = Block
 -- | What can happen to a block.
 data Move
   = StartDraft
+  | -- | the draft gave nothing to land (no attempt, or the block moved on): back to before it
+    DraftFailed
   | Drafted Text Text (Either Failure ())
   | Edited (Int, Int) (Either Failure ())
   | -- | the latest draft, as the editor applied it, tested: no draft of the person's
@@ -78,8 +82,9 @@ step :: Move -> Block -> Either Text Block
 step mv b
   | not (pending b) = Left "this block is finished; begin another"
   | otherwise = case (mv, blockState b) of
-      (StartDraft, s) | s /= Drafting && not (broken s) -> Right b {blockState = Drafting}
-      (Drafted text by outcome, s) | s `elem` [Drafting, Green] || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
+      (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s}
+      (DraftFailed, Drafting before) -> Right b {blockState = before}
+      (Drafted text by outcome, s) | drafting s || s == Green || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
       (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b))
       (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
       (Rejudge, Judged _) -> Right b {blockState = Green}
@@ -102,6 +107,7 @@ step mv b
       _ -> Left ("`" <> moveName mv <> "` is not open here")
   where
     broken = \case Broken _ -> True; _ -> False
+    drafting = \case Drafting _ -> True; _ -> False
     red = \case Red _ -> True; _ -> False
     outcomeText = either (("red: " <>) . fMessage) (const "green")
     landed sp outcome b' = b' {blockSpan = sp, blockState = either Red (const Green) outcome}
@@ -114,6 +120,7 @@ step mv b
 moveName :: Move -> Text
 moveName = \case
   StartDraft -> "draft"
+  DraftFailed -> "draft"
   Drafted {} -> "draft"
   Edited {} -> "edit"
   Applied {} -> "test"
@@ -134,7 +141,7 @@ open b = case blockState b of
     | null (unwaived ms) -> ["accept", "next", "reject"]
     | otherwise -> ["kill", "waive", "next", "reject"]
   Broken _ -> ["test", "reject"]
-  Drafting -> ["reject"]
+  Drafting _ -> ["reject"]
   Accepted -> []
   Rejected -> []
   where
@@ -159,7 +166,7 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "
     statePart = case blockState b of
       Red f -> "red: " <> fMessage f
-      Drafting -> "drafting…"
+      Drafting _ -> "drafting…"
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         0 -> "clean ✓ accept"
