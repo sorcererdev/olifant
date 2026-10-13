@@ -6,7 +6,7 @@ import Data.List (find, sort)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Syntax, parseLanguage)
+import Olifant.Language (Language (..), Syntax, parseLanguage)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Mutate
 import Olifant.Mutate.Python (pythonOperators)
@@ -66,6 +66,13 @@ spec = describe "Olifant.Mutate" $ do
     waiverOn py waived 5 "boundary" `shouldBe` Just "inclusive by design"
     waiverOn py waived 5 "equality" `shouldBe` Nothing
     waiverOn py waived 4 "boundary" `shouldBe` Nothing
+  it "(g2) a reason may contain the comment marker" $ do
+    let waived = waiverLine py body 5 "boundary" "see #12"
+    waiverOn py waived 5 "boundary" `shouldBe` Just "see #12"
+    let slashes = py {langComment = "//"}
+        urled = waiverLine slashes body 5 "boundary" "see https://x.y/z"
+    waiverOn slashes urled 5 "boundary" `shouldBe` Just "see https://x.y/z"
+    waiverOn slashes (waiverLine slashes body 5 "boundary" " ") 5 "boundary" `shouldBe` Nothing
   it "(h) a waived site's mutant carries its reason" $ withSg $ \sg -> do
     Right ms <- mutantsOf sg py pythonOperators (waiverLine py body 5 "boundary" "r") allLines
     [muWaived m | m <- ms, muOperator m == "boundary"] `shouldBe` [Just "r"]

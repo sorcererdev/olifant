@@ -6,7 +6,9 @@ module Olifant.Mutate (Mutant (..), Operator (..), mutantsOf, waiverOn, waiverLi
 
 import Data.Aeson (Value)
 import Data.ByteString qualified as BS
+import Data.Char (isSpace)
 import Data.List (sortOn)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -91,18 +93,22 @@ spliceBytes (from, to) replacement file =
 -- and an operator → `COMMENT olifant: OP ok: REASON` at the line's end.
 waiverOn :: Language -> Text -> Int -> Text -> Maybe Text
 waiverOn lang file line op = case drop (line - 1) (T.lines file) of
-  (text : _) | (_ : _ : _) <- parts text -> do
-    rest <- T.stripPrefix "olifant:" (T.stripStart (last (parts text)))
-    let (name, afterName) = T.break (== ' ') (T.stripStart rest)
-    reason <- T.strip <$> T.stripPrefix "ok:" (T.stripStart afterName)
-    if name == op && T.stripStart afterName /= afterName && not (T.null reason) then Just reason else Nothing
-  _ -> Nothing
+  (text : _) -> listToMaybe (mapMaybe (waiverAfter . T.drop (T.length marker) . snd) (T.breakOnAll marker text))
+  [] -> Nothing
   where
-    parts = T.splitOn (langComment lang)
+    marker = langComment lang
+    -- a reason may hold the marker itself (`see #12`), so every occurrence is tried
+    waiverAfter rest0 = do
+      rest <- T.stripPrefix "olifant:" (T.stripStart rest0)
+      let (name, afterName) = T.break isSpace (T.stripStart rest)
+      reason <- T.strip <$> T.stripPrefix "ok:" (T.stripStart afterName)
+      if name == op && not (T.null afterName) && not (T.null reason) then Just reason else Nothing
 
 -- | The file with `  # olifant: OP ok: REASON` appended to that (1-based) line.
 waiverLine :: Language -> Text -> Int -> Text -> Text -> Text
-waiverLine lang file line op reason =
+waiverLine lang file line op reason
+  | T.null (T.strip reason) = file -- a waiver without a reason is not one
+  | otherwise =
   T.unlines [if i == line then l <> "  " <> langComment lang <> " olifant: " <> op <> " ok: " <> reason else l | (i, l) <- zip [1 ..] (T.lines file)]
 
 -- | The first `n` mutants (they are already in file order).
