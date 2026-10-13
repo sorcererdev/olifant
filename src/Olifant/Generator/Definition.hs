@@ -81,10 +81,11 @@ data GeneratorWith src = Generator
 -- or by the language's test runner over the module's tests (@verify = "tests"@).
 -- Only the engine builds the last three (a draft's checks, never the TOML):
 -- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft);
--- 'VerifyKills' wants it to pass on the files and fail with the mutant's
--- file (path, text) in place; 'VerifyIds' wants those tests (a block's one
+-- 'VerifyKills' runs a test file: the tests that passed before and the new
+-- ones must pass on the files, and a new one fail with the mutant's file
+-- (path, text) in place (a sibling test already red is passed over); 'VerifyIds' wants those tests (a block's one
 -- test) to pass, as 'VerifyTests' wants the module's.
-data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId FilePath Text | VerifyIds [TestId]
+data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId [TestId] [TestId] FilePath Text | VerifyIds [TestId]
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef

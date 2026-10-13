@@ -9,6 +9,7 @@ import Data.Aeson qualified as J
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAlphaNum, isDigit)
+import Data.Maybe (listToMaybe)
 import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
@@ -397,6 +398,32 @@ blockSpecs = describe "blocks" $ do
     log' `shouldSatisfy` ("block 2\taccept\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("block 1\trejudge\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("block 1\tjudge\tmutation\t1/1 killed" `T.isInfixOf`)
+  it "(C1) a judge is by the tests that passed before: with a second test red in the file, the boundary survivor is still reported" $ do
+    (s0, _) <- blocksOn killedBy [(testRel, withNext)]
+    let s = openDoc (root </> moduleRel) 1 stubbed s0
+    (_, Right b0) <- blockBegin ignore (root </> testRel) 6 s
+    blockTestId b0 `shouldBe` testId
+    (_, Right b) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s)
+    map (\m -> (muLine m, muOperator m)) (survivors b) `shouldBe` [(6, "boundary")]
+    steps s >>= (`shouldSatisfy` ("\tjudge\tmutation\t0/1 killed" `T.isInfixOf`))
+  it "(C1) a kill's test stands with a sibling test red: it passes on the original with what passed before, and fails on the mutant" $ do
+    (s0, _) <- blocksOn killedBy [(testRel, withNext)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    let s1 = changeDoc (root </> moduleRel) 2 written s
+    (_, Right _) <- blockTest (root </> moduleRel) s1
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s1
+    let stubbedTest = expandStub at body withNext
+        st = openDoc testFile 1 stubbedTest s1
+    (_, Right (drafted, [edit])) <- blockDraft ignore testFile st
+    blockState drafted `shouldBe` Green
+    -- applied: its own test is green (the sibling stays red), so it is judged
+    let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) stubbedTest) st
+    (_, Just tested) <- blockChanged testFile st2
+    blockState tested `shouldBe` Judged []
+    (_, Right _) <- blockAccept testFile st2
+    Just (code, killed) <- blockFor (root </> moduleRel) s
+    (blockState code, killed) `shouldBe` (Judged [], 1)
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -418,16 +445,28 @@ testText = T.unlines ["from shop.close_table import CloseTable", "", "", "def te
 failing :: Text -> TestRun
 failing why = TestRun [] [(testId, Failure (Just 6) why "")] Nothing
 
--- | The module's test file as 'redOnStub' runs it, but a test calling
--- `handle(2)` fails on the boundary mutant (`seats >= 2`): it kills it;
--- the kill's stub, still to be arranged, fails at its placeholder.
+-- | The module's test file run test by test (by the names it defines):
+-- `test_closes_a_table` red on the stub; `test_kills_the_boundary` red on
+-- the boundary mutant (`seats >= 2`); `test_next` red always (the next test,
+-- still being written); any other red at its assertion. A test whose
+-- arrangement is still the stub's placeholder fails there.
 killedBy :: M.Map FilePath Text -> Either Text TestRun
-killedBy files
-  | "seats >= 2" `T.isInfixOf` m && "handle(2)" `T.isInfixOf` t = Right (failing "assert 1 == 0")
-  | "olifant: arrange" `T.isInfixOf` t = Right (TestRun [] [(T.pack testRel <> "::test_kills_the_boundary", Failure (Just 10) "NotImplementedError" "")] Nothing)
-  | otherwise = Right (redOnStub m)
+killedBy files = Right (TestRun [i | (i, Nothing) <- results] [(i, f) | (i, Just f) <- results] Nothing)
   where
     (m, t) = (M.findWithDefault "" moduleRel files, M.findWithDefault "" testRel files)
+    numbered = zip [1 :: Int ..] (T.splitOn "\n" t)
+    results = [(T.pack testRel <> "::" <> n, verdict n body) | (i, l) <- numbered, Just n <- [T.stripPrefix "def " (T.strip l) >>= named], let body = takeWhile (\(_, x) -> not ("def " `T.isPrefixOf` x)) (drop i numbered)]
+    named rest = let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest in if "test" `T.isPrefixOf` n && "(" `T.isPrefixOf` T.drop (T.length n) rest then Just n else Nothing
+    lineOf p body = listToMaybe [i | (i, x) <- body, p x]
+    verdict n body
+      | Just at <- lineOf ("olifant: arrange" `T.isInfixOf`) body = Just (Failure (Just at) "NotImplementedError" "")
+      | n == "test_closes_a_table" = if "NotImplementedError" `T.isInfixOf` m then Just (Failure (Just 6) "NotImplementedError: later" "") else Nothing
+      | n == "test_kills_the_boundary" = if "NotImplementedError" `T.isInfixOf` m || "seats >= 2" `T.isInfixOf` m then Just (Failure (lineOf ("assert" `T.isInfixOf`) body) "assert 1 == 0" "") else Nothing
+      | otherwise = Just (Failure (lineOf (("assert" `T.isPrefixOf`) . T.strip) body) "AssertionError" "")
+
+-- | 'testText' and the next test, still red.
+withNext :: Text
+withNext = testText <> T.unlines ["", "", "def test_next() -> None:", "    table = CloseTable()", "    assert table.next_one() == 1"]
 
 -- | The test file as the editor leaves it once it expands a kill's stub
 -- (its line AT replaced) and the person names the test and its assertion.
@@ -477,9 +516,13 @@ blocksOnSyntax syntax verdict extra = do
            , (root </> "fills.toml", "[fills]\nbody = \"return int(seats > 2)\"\narrange = \"table = CloseTable()\"\n") ]
         ++ [(root </> p, t) | (p, t) <- extra]
   runs <- newIORef (0 :: Int)
-  let runner = Runner $ \_ _ files -> do
+  let runner = Runner $ \_ ids files -> do
         modifyIORef' runs (+ 1)
-        pure (verdict files)
+        pure (narrow ids <$> verdict files)
+      -- as pytest does: tests named by id run alone
+      narrow ids run
+        | not (null ids), all ("::" `T.isInfixOf`) ids = run {trPassed = filter (`elem` ids) (trPassed run), trFailed = filter ((`elem` ids) . fst) (trFailed run)}
+        | otherwise = run
       ports = Ports disk syntax (const noChecker) (const noVerifier) (const runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef runs)

@@ -147,9 +147,20 @@ blockDraft progress path = withBlock path $ \s root project lang b killed -> run
       let (s1, s2) = blockSpan b
           candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
       (line, template) <- maybe (throwE "the test has no arrangement left to draft: its placeholder is gone") pure (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
+      let new = newTests b text
       verify <- case killing of
         Nothing -> pure (VerifyRedAt (blockTestId b) (line + 1))
-        Just m -> lift (moduleOf project lang rel) >>= maybe (throwE ("no module is tested by " <> T.pack rel)) (\moduleRel -> pure (VerifyKills (blockTestId b) moduleRel (muText m)))
+        Just m -> do
+          when (null new) (throwE "name the new test first: its name is still the stub's")
+          moduleRel <- lift (moduleOf project lang rel) >>= maybe (throwE ("no module is tested by " <> T.pack rel)) pure
+          -- what passed before the stub: it must still pass (a sibling red then is passed over)
+          (_, files) <- lift (projectFiles ws M.empty lang [rel])
+          keep <- lift (runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack rel] (M.insert rel (blockBase b) files)) >>= \case
+            Left why -> throwE ("the tests cannot run: " <> why)
+            Right run
+              | Just why <- trBroken run -> throwE ("the tests cannot run: " <> why)
+              | otherwise -> pure (trPassed run)
+          pure (VerifyKills (T.pack rel) (keep ++ new) new moduleRel (muText m))
       pure (template, ("arrange", verify))
   let gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
@@ -188,7 +199,11 @@ testNow s root project lang b killed applied = do
   let ws = prWorkspace project
   now <- fromMaybe "" <$> readText ws (makeRelative root (blockFile b))
   modifyIORef' (ssBlockSeen s) (M.insert (blockFile b) now)
-  runOver s ws lang [blockTestId b] >>= \case
+  -- a test block's own tests are the ones it added (its siblings may be red)
+  let ids = case (blockKind b, newTests b now) of
+        (TestFor _, new@(_ : _)) -> new
+        _ -> [blockTestId b]
+  runOver s ws lang ids >>= \case
     -- a runner that cannot start is a test that cannot run: never judged
     Left why -> settle s root killed "test" ("cannot run: " <> why) (CannotRun why) b
     Right run -> do
@@ -205,7 +220,8 @@ testNow s root project lang b killed applied = do
 
 -- | Judge a green block: the mutants of its span's new lines (the whole
 -- span when none is new: a body begun on as it was), each run against the
--- test's file.
+-- test's file and judged by the tests that passed on it unmutated (a
+-- sibling test still red, the next one being written, notices nothing).
 blockJudge :: FilePath -> ServerState -> IO (ServerState, Either Text Block)
 blockJudge path = withBlock path $ \s root project lang b killed -> judgeIn s root project lang b killed
 
@@ -230,9 +246,16 @@ judgeIn s root project lang b killedBefore = case (step (Judge []) b, blockKind 
     verdicts <-
       mutantsOf (pSyntax (ssPorts s)) lang operators now scope >>= \case
         Left f -> pure (Left (describeSyntaxFailure f))
+        Right [] -> pure (Right [])
         Right ms -> do
           (_, files) <- projectFiles ws M.empty lang [T.unpack testFile]
-          judge (pTester (ssPorts s) (ssCancel s)) 4 lang rel files testFile (capMutants 20 ms)
+          let tester = pTester (ssPorts s) (ssCancel s)
+          -- the baseline: which tests pass on the files as they are
+          runTestsIn tester lang [testFile] files >>= \case
+            Left why -> pure (Left why)
+            Right base
+              | Just why <- trBroken base -> pure (Left why)
+              | otherwise -> judge tester 4 lang rel files testFile (trPassed base) (capMutants 20 ms)
     case verdicts of
       Left why -> settle s root killedBefore "judge" ("cannot run: " <> why) (CannotRun why) b
       Right vs -> do
@@ -416,6 +439,11 @@ testBody name text = case dropWhile (not . isDef) (T.lines text) of
   where
     isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
     indentOf = T.length . T.takeWhile (== ' ')
+
+-- | A test block's new tests: those its file defines now and did not when
+-- the block began (the person named them in the stub).
+newTests :: Block -> Text -> [TestId]
+newTests b now = [fileOf (blockTestId b) <> "::" <> n | n <- testNames now, n `notElem` testNames (blockBase b)]
 
 -- | The tests a test file defines (`def test…(`).
 testNames :: Text -> [Text]

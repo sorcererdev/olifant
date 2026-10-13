@@ -843,11 +843,20 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       st' `shouldSatisfy` \case [HoleUnfilled why] -> "the test cannot run: import error" `T.isInfixOf` why; _ -> False
     it "(e) VerifyKills: stands only if the tests pass on the files and fail with the mutant in place" $ do
       let runner = Runner (\_ _ files -> pure (Right (if "mutant" `T.isInfixOf` fold files then TestRun [] [("t", red (Just 3))] Nothing else TestRun ["t"] [] Nothing)))
-      outcome (VerifyKills "t" "src/M.elm" "mutant") runner `shouldReturn` [HoleFilled "fake" 1]
-      st <- outcome (VerifyKills "t" "src/M.elm" "same") runner
+      outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "mutant") runner `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "same") runner
       st `shouldSatisfy` \case [HoleUnfilled why] -> "does not notice the mutant" `T.isInfixOf` why; _ -> False
-      st' <- outcome (VerifyKills "t" "src/M.elm" "mutant") (ran (TestRun [] [("t", red (Just 3))] Nothing))
+      st' <- outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "mutant") (ran (TestRun [] [("t", red (Just 3))] Nothing))
       st' `shouldSatisfy` \case [HoleUnfilled why] -> "fails on the current code" `T.isInfixOf` why; _ -> False
+    it "(e2) VerifyKills: a sibling test red before is passed over; one that passed before must still pass, and the new one must fail on the mutant" $ do
+      -- "u" is red on every run; "k" passed before; "t" is the new test
+      let runner broke = Runner (\_ _ files -> pure (Right (if "mutant" `T.isInfixOf` fold files then TestRun ["k"] [("t", red (Just 3)), ("u", red (Just 9))] Nothing else TestRun (["t"] ++ ["k" | not broke]) ([("u", red (Just 9))] ++ [("k", red (Just 5)) | broke]) Nothing)))
+      outcome (VerifyKills "f" ["k", "t"] ["t"] "src/M.elm" "mutant") (runner False) `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyKills "f" ["k", "t"] ["t"] "src/M.elm" "mutant") (runner True)
+      st `shouldSatisfy` \case [HoleUnfilled why] -> "k passed before and fails now" `T.isInfixOf` why; _ -> False
+      -- the mutant fails only the sibling: not noticed
+      st' <- outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "mutant") (Runner (\_ _ files -> pure (Right (TestRun ["t" | True] ([("u", red (Just 9))] ++ [("u2", red (Just 9)) | "mutant" `T.isInfixOf` fold files]) Nothing))))
+      st' `shouldSatisfy` \case [HoleUnfilled why] -> "does not notice the mutant" `T.isInfixOf` why; _ -> False
     it "(f) VerifyIds: runs exactly the tests named (a block's one test), not the module's test file" $ do
       seen <- newIORef []
       let runner = Runner (\_ ids _ -> modifyIORef' seen (++ ids) >> pure (Right (TestRun ids [] Nothing)))

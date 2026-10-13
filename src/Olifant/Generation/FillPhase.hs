@@ -123,7 +123,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               outcome <- case verify of
                 VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
                 VerifyRedAt tid line -> verifyRedAt lang tid line everything
-                VerifyKills tid path mutated -> verifyKills lang tid path mutated everything
+                VerifyKills tid keep new path mutated -> verifyKills lang tid keep new path mutated everything
                 VerifyTests -> case langTest lang of
                   Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
                   Just td -> verifyTests lang [T.pack (testsForFile td (holeFile (site t)))] everything
@@ -171,18 +171,22 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           | [(_, f)] <- trFailed run -> Right (False, "the test fails before its assertion (line " <> maybe "?" (T.pack . show) (fLine f) <> "): " <> fMessage f)
           | otherwise -> Right (False, "the test passes before any code exists: it does not test the new behaviour")
 
-    -- A kill: the test passes on the files and fails with the mutant in place.
-    verifyKills lang tid path mutated everything = do
+    -- A kill: the tests that passed before and the new ones (KEEP) pass on
+    -- the files, and a NEW one fails with the mutant in place; a sibling
+    -- test already red is none of these.
+    verifyKills lang tid keep new path mutated everything = do
       onOriginal <- runTestsIn (toolTester tools) lang [tid] everything
       onMutant <- runTestsIn (toolTester tools) lang [tid] (M.insert path mutated everything)
+      let failing run = map fst (trFailed run)
       pure $ case (onOriginal, onMutant) of
         (Left why, _) -> Left (CheckFailed why)
         (_, Left why) -> Left (CheckFailed why)
         (Right o, Right m)
           | Just why <- trBroken o -> Right (False, "the new test cannot run: " <> why)
-          | not (null (trFailed o)) -> Right (False, "the new test fails on the current code")
+          | any (`elem` new) (failing o) -> Right (False, "the new test fails on the current code")
+          | k : _ <- filter (`elem` keep) (failing o) -> Right (False, k <> " passed before and fails now")
           | Just why <- trBroken m -> Right (False, "the new test cannot run with the mutant in place: " <> why)
-          | null (trFailed m) -> Right (False, "the new test does not notice the mutant (" <> T.pack path <> ")")
+          | not (any (`elem` new) (failing m)) -> Right (False, "the new test does not notice the mutant (" <> T.pack path <> ")")
           | otherwise -> Right (True, "")
 
     name = holeName . site

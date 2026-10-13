@@ -14,7 +14,7 @@ import System.FilePath (makeRelative)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Failure (..), Language (..), Runner (..), Syntax, TestRun (..), parseLanguage, processRunner)
+import Olifant.Language (Failure (..), Language (..), Runner (..), Syntax, TestRun (..), parseLanguage, processRunner, runTestsIn)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Mutate
 import Olifant.Mutate.Python (pythonOperators)
@@ -94,16 +94,22 @@ spec = describe "Olifant.Mutate" $ do
         m2 = Mutant 3 "string" "\"x\"" "\"\"" "MUTANT-2" Nothing False
         files = M.fromList [("src/a.py", "ORIGINAL"), ("src/a__test.py", "t")]
     it "(a) a mutant whose tests fail is killed; one whose tests pass survives" $ do
-      Right vs <- judge (fake (\fs -> Right (if M.lookup "src/a.py" fs == Just "MUTANT-1" then TestRun [] [("t", Failure Nothing "x" "")] Nothing else TestRun ["t"] [] Nothing))) 2 py "src/a.py" files "src/a__test.py" [m1, m2]
+      Right vs <- judge (fake (\fs -> Right (if M.lookup "src/a.py" fs == Just "MUTANT-1" then TestRun [] [("t", Failure Nothing "x" "")] Nothing else TestRun ["t"] [] Nothing))) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1, m2]
       map snd vs `shouldBe` [Killed, Survived]
     it "(b) results keep the mutants' order whatever finishes first" $ do
-      Right vs <- judge (fake (const (Right (TestRun ["t"] [] Nothing)))) 4 py "src/a.py" files "src/a__test.py" [m1, m2]
+      Right vs <- judge (fake (const (Right (TestRun ["t"] [] Nothing)))) 4 py "src/a.py" files "src/a__test.py" ["t"] [m1, m2]
       map fst vs `shouldBe` [m1, m2]
     it "(c) a timed-out or broken run is killed" $ do
-      Right vs <- judge (fake (const (Right (TestRun [] [] (Just "the tests timed out (30 s)"))))) 2 py "src/a.py" files "src/a__test.py" [m1]
+      Right vs <- judge (fake (const (Right (TestRun [] [] (Just "the tests timed out (30 s)"))))) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1]
       map snd vs `shouldBe` [Killed]
     it "(d) the runner failing to start is reported, not a verdict" $
-      judge (fake (const (Left "uv is not installed"))) 2 py "src/a.py" files "src/a__test.py" [m1] `shouldReturn` Left "uv is not installed"
+      judge (fake (const (Left "uv is not installed"))) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1] `shouldReturn` Left "uv is not installed"
+    it "(e) judged by the tests that passed before only: a sibling test red on every run kills nothing" $ do
+      let sibling fs = Right (TestRun ["t" | M.lookup "src/a.py" fs /= Just "MUTANT-1"] ([("u", Failure Nothing "red before" "")] ++ [("t", Failure Nothing "x" "") | M.lookup "src/a.py" fs == Just "MUTANT-1"]) Nothing)
+      Right vs <- judge (fake sibling) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1, m2]
+      map snd vs `shouldBe` [Killed, Survived]
+    it "(f) with no test that passed before, nothing is judged" $
+      judge (fake (const (Right (TestRun [] [] Nothing)))) 2 py "src/a.py" files "src/a__test.py" [] [m1] `shouldReturn` Left "no passing test to judge by"
 
   describe "pack cases" $ sequential $ do
     bless <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_BLESS")
@@ -122,7 +128,9 @@ spec = describe "Olifant.Mutate" $ do
           let Just source = M.lookup (T.unpack file) project
           started <- getCurrentTime
           Right ms <- mutantsOf (astGrepSyntax (tmp </> "olifant-test-cache")) py pythonOperators source (S.fromList [lo .. hi])
-          Right verdicts <- judge (processRunner neverCancel 60) 4 py (T.unpack file) project "src/bistro/booking/commands/create_booking__test.py" (capMutants 20 ms)
+          let testFile = "src/bistro/booking/commands/create_booking__test.py"
+          Right baseline <- runTestsIn (processRunner neverCancel 60) py [testFile] project
+          Right verdicts <- judge (processRunner neverCancel 60) 4 py (T.unpack file) project testFile (trPassed baseline) (capMutants 20 ms)
           finished <- getCurrentTime
           putStrLn ("  mutants judged: " <> show (length verdicts) <> ", wall time " <> show (diffUTCTime finished started))
           let actual = [(muLine m, muOperator m, muTo m) | (m, Survived) <- verdicts]
