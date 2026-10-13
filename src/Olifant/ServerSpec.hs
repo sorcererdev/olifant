@@ -7,6 +7,9 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar,
 import Control.Monad (forM, void)
 import Data.Aeson (Value (..), (.:))
 import Data.Aeson qualified as J
+import Data.Aeson.Key qualified as K
+import Data.Aeson.KeyMap qualified as KM
+import Data.Foldable (toList)
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAlphaNum, isDigit)
@@ -133,6 +136,68 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
     (,) <$> wait a <*> wait b `shouldReturn` (Nothing, Just ())
     readIORef ran `shouldReturn` ["b"]
   blockSpecs
+  testsSpecs
+
+-- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
+testsSpecs :: Spec
+testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
+  let recording verdict = blocksRun blockSyntax (pure ()) (const verdict)
+      passing _ = Right (TestRun [testId] [] Nothing)
+      -- a language of the pack's with no [test] table
+      plain = ("/pack/languages/plain.toml", "files = [\"**/*.txt\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
+  it "on a module, runs its test file, as one id" $ do
+    seen <- newIORef ([] :: [[Text]])
+    (s, _) <- recording passing []
+    let s' = s {ssPorts = (ssPorts s) {pTester = \c -> Runner (\l ids f -> modifyIORef' seen (++ [ids]) >> runTests (pTester (ssPorts s) c) l ids f)}}
+    (_, Right a) <- testsRun (root </> moduleRel) s'
+    taFile a `shouldBe` root </> testRel
+    readIORef seen `shouldReturn` [[T.pack testRel]]
+    trPassed (taRun a) `shouldBe` [testId]
+    taSeconds a `shouldSatisfy` (>= 0)
+  it "on a test file, runs that file" $ do
+    (s, _) <- recording passing []
+    (_, Right a) <- testsRun (root </> testRel) s
+    taFile a `shouldBe` root </> testRel
+  it "runs the editor's text: an open, unsaved test file is what runs" $ do
+    (s, _) <- recording (\files -> if "unsaved" `T.isInfixOf` M.findWithDefault "" testRel files then Right (TestRun [testId] [] Nothing) else Right (failing "saved text ran")) []
+    (_, Right a) <- testsRun (root </> testRel) (openDoc (root </> testRel) 1 (testText <> "# unsaved\n") s)
+    trFailed (taRun a) `shouldBe` []
+  it "refuses a language with no [test] table, in one sentence" $ do
+    (s, _) <- recording passing [plain, ("notes/a.txt", "a\n")]
+    (_, answer) <- testsRun (root </> "notes/a.txt") s
+    answer `shouldSatisfy` either (== "plain has no [test] table: nothing to run") (const False)
+  it "refuses a module with no test file yet, naming the file it would be" $ do
+    (s, _) <- recording passing [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
+    (_, answer) <- testsRun (root </> "src/shop/lonely.py") s
+    answer `shouldSatisfy` either (== "no test file for this module yet: src/shop/lonely__test.py") (const False)
+  it "refuses a file in no project" $ do
+    (s, _) <- recording passing []
+    (_, answer) <- testsRun "/elsewhere/x.py" s
+    answer `shouldSatisfy` either ("is in no Olifant project" `T.isInfixOf`) (const False)
+  it "answers a failure with its line, message and output, as the editor reads it" $ do
+    (s, _) <- recording (\_ -> Right (TestRun [] [(testId, Failure (Just 6) "assert 0 == 1" "E   assert 0 == 1")] Nothing)) []
+    (_, Right a) <- testsRun (root </> moduleRel) s
+    let json = testsJson a
+        failed = case json of
+          Object o | Just (Array xs) <- KM.lookup "failed" o -> toList xs
+          _ -> []
+    lookupIn "file" json `shouldBe` Just (String (T.pack (root </> testRel)))
+    lookupIn "passed" json `shouldBe` Just (Array mempty)
+    lookupIn "broken" json `shouldBe` Just Null
+    failed `shouldBe` [J.object ["id" J..= testId, "line" J..= (6 :: Int), "message" J..= ("assert 0 == 1" :: Text), "output" J..= ("E   assert 0 == 1" :: Text)]]
+    lookupIn "seconds" json `shouldSatisfy` \case Just (Number _) -> True; _ -> False
+  it "answers a run that could not judge the tests as broken, with the reason" $ do
+    (s, _) <- recording (\_ -> Right (TestRun [] [] (Just "ImportError: no module named shop"))) []
+    (_, Right a) <- testsRun (root </> moduleRel) s
+    lookupIn "broken" (testsJson a) `shouldBe` Just (String "ImportError: no module named shop")
+  it "answers a runner that cannot start as broken, with why" $ do
+    (s, _) <- recording (\_ -> Left "uv is not installed") []
+    (_, Right a) <- testsRun (root </> moduleRel) s
+    trBroken (taRun a) `shouldBe` Just "uv is not installed"
+  where
+    lookupIn k = \case
+      Object o -> KM.lookup (K.fromText k) o
+      _ -> Nothing
 
 -- | The loop's blocks over a tiny Python project (the real python-htmx
 -- pack, in memory), a scripted test runner and a syntax that knows the one
@@ -1115,7 +1180,11 @@ blocksGated :: Gate -> (Text -> TestRun) -> [(FilePath, Text)] -> IO (ServerStat
 blocksGated gate verdict = blocksHooked blockSyntax (gWait gate) (Right . verdict . M.findWithDefault "" moduleRel)
 
 blocksHooked :: Syntax IO -> IO () -> (M.Map FilePath Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
-blocksHooked syntax hook verdict extra = do
+blocksHooked syntax hook verdict = blocksRun syntax hook (const verdict)
+
+-- | 'blocksHooked' whose runner answers by the ids it is asked to run too.
+blocksRun :: Syntax IO -> IO () -> ([Text] -> M.Map FilePath Text -> Either Text TestRun) -> [(FilePath, Text)] -> IO (ServerState, IO Int)
+blocksRun syntax hook verdict extra = do
   pack <- readTree =<< canonicalizePath "packs/python-htmx"
   (disk, _) <-
     memoryWorkspace $
@@ -1129,7 +1198,7 @@ blocksHooked syntax hook verdict extra = do
   let runner = Runner $ \_ ids files -> do
         modifyIORef' runs (+ 1)
         hook
-        pure (narrow ids <$> verdict files)
+        pure (narrow ids <$> verdict ids files)
       -- as pytest does: tests named by id run alone
       narrow ids run
         | not (null ids), all ("::" `T.isInfixOf`) ids = run {trPassed = filter (`elem` ids) (trPassed run), trFailed = filter ((`elem` ids) . fst) (trFailed run)}

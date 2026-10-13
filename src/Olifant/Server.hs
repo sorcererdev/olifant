@@ -76,6 +76,9 @@ module Olifant.Server
   , stateName
   , appendStep
   , underTest
+  , TestsAnswer (..)
+  , testsRun
+  , testsJson
   ) where
 
 import Olifant.Server.BlockDecide (orderSurvivors)
@@ -94,3 +97,4 @@ import Olifant.Server.Hints (LineHint (..), fileActionsFor, hintsFor)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
 import Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPlanWith)
 import Olifant.Server.State
+import Olifant.Server.Tests (TestsAnswer (..), testsJson, testsRun)
