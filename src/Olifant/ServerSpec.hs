@@ -217,6 +217,9 @@ blockSpecs = describe "blocks" $ do
     kept `shouldBe` wrapped ["CloseTable", "Reopen"]
     (_, joined, _) <- start (wrapped ["CloseTable"])
     joined `shouldBe` wrapped ["CloseTable", "Reopen"]
+    -- its last name with no comma: the comma comes with the new name
+    (_, commaless, _) <- start (T.replace "    CloseTable,\n" "    CloseTable\n" (wrapped ["CloseTable"]))
+    commaless `shouldBe` wrapped ["CloseTable", "Reopen"]
     -- a file with no import yet: it goes first
     (_, top, _) <- start (T.unlines ["def test_other() -> None:", "    assert 1 == 1"])
     T.lines top `shouldBe` ["from shop.close_table import Reopen", "", "def test_other() -> None:", "    assert 1 == 1"]

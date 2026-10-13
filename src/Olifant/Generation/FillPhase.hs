@@ -370,8 +370,13 @@ addImports lang new t = case langImports lang of
             -- the closing bracket on a line of its own: each name a line above it
             more
               | T.strip (ls !! end) == ")" ->
-                  let indent = if end - 1 > i then T.takeWhile (`elem` (" \t" :: String)) (ls !! (end - 1)) else "    "
-                   in take end ls ++ [indent <> n <> "," | n <- more] ++ drop end ls
+                  let lastName = ls !! (end - 1)
+                      indent = if end - 1 > i then T.takeWhile (`elem` (" \t" :: String)) lastName else "    "
+                      -- the name before them without its comma gets one
+                      above
+                        | end - 1 > i, not ("," `T.isSuffixOf` T.stripEnd lastName) = take (end - 1) ls ++ [T.stripEnd lastName <> ","]
+                        | otherwise = take end ls
+                   in above ++ [indent <> n <> "," | n <- more] ++ drop end ls
               | otherwise -> case render (M.fromList [("module", VText modu), ("names", VText (T.intercalate ", " (have ++ more)))]) (mergeWrite m) of
                   Right merged -> take i ls ++ [merged] ++ drop (end + 1) ls
                   Left _ -> ls
