@@ -712,6 +712,27 @@ blockSpecs = describe "blocks" $ do
     (_, Left _) <- wait drafting
     Just (b, _) <- blockFor (root </> moduleRel) s
     blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(retry) two edits' tests begun on one version, the older landing first: the newer settles once more, on the newest text" $ do
+    -- runs 1 and 2 (the two edits' tests) each wait for their own release
+    calls <- newIORef (0 :: Int)
+    [r1, r2] <- mapM (const newEmptyMVar) [1 .. 2 :: Int]
+    let hook = atomicModifyIORef' calls (\n -> (n + 1, n)) >>= \n -> mapM_ readMVar [r | (i, r) <- zip [1 ..] [r1, r2], i == n]
+    (s0, _) <- blocksHooked blockSyntax hook (Right . redOnStub . M.findWithDefault "" moduleRel) []
+    let s = openDoc (root </> moduleRel) 1 stubbed s0
+        older = written
+        newer = T.replace "seats > 2)" "seats > 2)  # newer" written
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    one <- async (blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 2 older s))
+    waitUntil ((>= 2) <$> readIORef calls)
+    two <- async (blockChanged (root </> moduleRel) (changeDoc (root </> moduleRel) 3 newer s))
+    waitUntil ((>= 3) <$> readIORef calls)
+    putMVar r1 ()
+    void (wait one)
+    putMVar r2 ()
+    void (wait two)
+    Just (b, _) <- blockFor (root </> moduleRel) s
+    blockOn b `shouldBe` newer
+    blockState b `shouldSatisfy` \case Judged _ -> True; _ -> False
   it "(N1) a draft that fails, then an edit: the edit is tested" $ do
     (s0, _) <- blocks redOnStub []
     (filler, _, release) <- stalledFiller

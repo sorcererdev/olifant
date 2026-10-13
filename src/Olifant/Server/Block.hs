@@ -365,9 +365,21 @@ testNow s root project lang b killed applied = do
   let ids = case (blockKind b, newTests b now) of
         (TestFor _, new@(_ : _)) -> new
         _ -> [blockTestId b]
+      -- a test of the newest text (no test or draft begun since) that finds
+      -- the block moved on meanwhile (an older test landed first, Jev
+      -- reordered) settles once more, on the block as it now stands
+      settleTest result move =
+        settleOn s root killed "test" result (Just now) move b >>= \case
+          Left moved -> do
+            current <- M.lookup (blockFile b) <$> readIORef (ssBlocks s)
+            seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
+            case current of
+              Just (c, k) | blockId c == blockId b, not (isDrafting (blockState c)), seen == Just now -> settleOn s root k "test" result (Just now) move c
+              _ -> pure (Left moved)
+          landed -> pure landed
   runOver s ws lang ids >>= \case
     -- a runner that cannot start is a test that cannot run: never judged
-    Left why -> settleOn s root killed "test" ("cannot run: " <> why) (Just now) (CannotRun why) b
+    Left why -> settleTest ("cannot run: " <> why) (CannotRun why)
     Right run -> do
       -- its span runs from its first new line to its last; an import (a
       -- stub's, joined to the file's) or a blank line is no line of the block's
@@ -382,7 +394,7 @@ testNow s root project lang b killed applied = do
             (_, (_, f) : _) -> (landed sp (Left f), "red")
             _ -> (landed sp (Right ()), "green")
           landed = if applied then Applied else Edited
-      settleOn s root killed "test" result (Just now) move b >>= \case
+      settleTest result move >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
@@ -668,6 +680,11 @@ testBody name text = case dropWhile (not . isDef) (T.lines text) of
   where
     isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
     indentOf = T.length . T.takeWhile (== ' ')
+
+isDrafting :: BlockState -> Bool
+isDrafting = \case
+  Drafting _ -> True
+  _ -> False
 
 -- | The name a stub's test has until the person types its own (the stub's
 -- tab stop, `test_${1:name}`, left as it was).
