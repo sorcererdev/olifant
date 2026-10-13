@@ -42,7 +42,7 @@ import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Olifant.App (Ports (..))
-import Olifant.Language (CheckReport (..), Checker (..), Syntax (..), querying, noChecker, noRunner, noSyntax, processCheckerWith, processRunner, processVerifierCancellable)
+import Olifant.Language (CheckReport (..), Checker (..), Runner (..), Syntax (..), querying, noChecker, noRunner, noSyntax, processCheckerWith, processRunner, processVerifierCancellable)
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..))
 import Olifant.Server (PickStep (..), Preview (..), ServerConfig (..), ServerState (..), actionPlanWith, describeProgress, fixPlan, newServerState, previewFor, stepsPlanWith)
 import Olifant.Preview (Field (..), Source (..))
@@ -90,6 +90,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   scaleSpec
   concurrencySpec
   blockSpec
+  testsRunSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -994,6 +995,77 @@ blockSpec = describe "olifant/block" $ do
           TResponseMessage _ _ r <- awaitDraft
           pure (either (Left . (^. L.message)) Right r)
         either id (const "drafted") answer `shouldBe` "the file changed while drafting; your text stands"
+
+-- | `olifant/tests/run`: a file's tests, run whole, with a scripted runner.
+testsRunSpec :: Spec
+testsRunSpec = describe "olifant/tests/run" $ do
+  let testRel = "src/bistro/booking/commands/create_booking__test.py"
+      moduleRel = "src/bistro/booking/commands/create_booking.py"
+      red = T.pack testRel <> "::test_a_party_larger_than_the_table_is_refused"
+      run doc = blockMove (Proxy :: Proxy "olifant/tests/run") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]])
+  it "answers the test file's run: passed, failed with line and message, broken with why" $
+    withSystemTempDirectory "olifant-tests" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        ((passing, failing, broken), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc moduleRel "python"
+          passing <- run doc
+          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText red .= object ["line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text)]])))
+          failing <- run doc
+          liftIO (removeFile script)
+          broken <- run doc
+          pure (passing, failing, broken)
+        let field k = either (const Nothing) (lookupKey k)
+        field "file" passing `shouldBe` Just (String (T.pack (dir </> testRel)))
+        field "passed" passing `shouldBe` Just (toJSON [T.pack testRel])
+        field "failed" passing `shouldBe` Just (toJSON ([] :: [Value]))
+        field "broken" passing `shouldBe` Just Aeson.Null
+        field "seconds" passing `shouldSatisfy` \case Just (Number _) -> True; _ -> False
+        field "failed" failing `shouldBe` Just (toJSON [object ["id" .= red, "line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text), "output" .= ("" :: Text)]])
+        field "passed" failing `shouldBe` Just (toJSON ([] :: [Text]))
+        field "broken" broken `shouldSatisfy` \case Just (String why) -> "the test script does not read" `T.isPrefixOf` why; _ -> False
+  it "runs under $/progress titled testing" $
+    withSystemTempDirectory "olifant-tests" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        (titles, _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc moduleRel "python"
+          rid <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/run")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]])
+          let begun :: FromServerMessage -> Maybe Text
+              begun = \case
+                FromServerMess SMethod_Progress n | Just (String t) <- lookupKey "title" (n ^. L.params . L.value) -> Just t
+                _ -> Nothing
+              await seen = (responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/run")) rid >> pure seen) <|> (satisfyMaybe begun >>= \t -> await (t : seen)) <|> (anyMessage >> await seen)
+          await []
+        titles `shouldBe` ["testing"]
+  it "answers a run the editor cancels as cancelled, its runner stopped" $ do
+    entered <- newEmptyMVar
+    stopped <- newEmptyMVar
+    -- a runner that runs until its token trips (as pytest killed would)
+    let endless token = Runner $ \_ _ _ -> do
+          _ <- tryPutMVar entered ()
+          let wait = cancelled token >>= \case
+                True -> putMVar stopped () >> pure (Left "cancelled")
+                False -> threadDelay 20000 >> wait
+          wait
+    withPython [] $ \ports dir -> do
+      ((answer, seen), _) <- inProcessWithConfig [] ports {pTester = endless} dir $ do
+        doc <- openDoc moduleRel "python"
+        rid <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/run")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]])
+        liftIO (timeout 30000000 (takeMVar entered)) >>= maybe (fail "the run never began") pure
+        sendNotification SMethod_CancelRequest (CancelParams (case rid of IdInt n -> InL n; IdString t -> InR t))
+        seen <- liftIO (timeout 10000000 (takeMVar stopped))
+        let awaitRun = responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/run")) rid <|> (anyMessage >> awaitRun)
+        TResponseMessage _ _ r <- awaitRun
+        pure (either (Just . (^. L.code)) (const Nothing) r, seen)
+      seen `shouldBe` Just ()
+      answer `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
+  it "refuses a module with no test file yet, in one sentence" $
+    withPython [("src/bistro/lonely.py", "def alone() -> int:\n    return 1\n")] $ \ports dir -> do
+      (answer, _) <- inProcessWithConfig [] ports dir (openDoc "src/bistro/lonely.py" "python" >>= run)
+      answer `shouldBe` Left "no test file for this module yet: src/bistro/lonely__test.py"
 
 -- | An `olifant/block/<move>` request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)

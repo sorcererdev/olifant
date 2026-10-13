@@ -134,6 +134,7 @@ library
     Olifant.Server.Regions
     Olifant.Server.State
     Olifant.Server.Suggest
+    Olifant.Server.Tests
     Olifant.Snippet
     Olifant.Suggest
     Olifant.Template
@@ -286,6 +287,7 @@ test-suite spec
     Olifant.Server.Regions
     Olifant.Server.State
     Olifant.Server.Suggest
+    Olifant.Server.Tests
     Olifant.ServerSpec
     Olifant.Snippet
     Olifant.SnippetSpec

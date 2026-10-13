@@ -10,7 +10,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
-import Olifant.Process (Cancel, neverCancel, newCancel)
+import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
 import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
@@ -513,6 +513,19 @@ handlers env =
               _ -> Nothing
         holes <- maybe (pure []) (liftIO . withSnapshot job . holesFor) path
         respond (Right (object ["holes" .= [object ["path" .= hoPath h, "line" .= hoLine h, "name" .= hoName h, "kind" .= hoKind h, "instruction" .= hoInstruction h] | h <- holes]]))
+    , -- a file's tests (the module's test file, or this test file), run
+      -- whole over the editor's text, under progress
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/run")) $ \req respond -> inBackground env req respond $ \job ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/tests/run needs a textDocument" Nothing))
+          Just path -> do
+            ran <- planProgress "testing" (\_ -> withSnapshot job (testsRun path))
+            -- a run the editor cancelled is no result (its runner was stopped)
+            stopped <- liftIO (cancelled (envCancel job))
+            case ran of
+              _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right answer -> respond (Right (testsJson answer))
     , -- the loop's blocks: each move answers the block (null once it is
       -- finished) and pushes it
       blockRequest env (Proxy :: Proxy "olifant/block/begin") $ \job path params -> case positionOf params of

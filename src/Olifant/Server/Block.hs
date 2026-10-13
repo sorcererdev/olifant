@@ -24,6 +24,7 @@ module Olifant.Server.Block
   , spanEdited
   , testNow
   , fileOf
+  , runOver
   , tshow
   , claim
   , pushed
