@@ -591,6 +591,29 @@ blockSpecs = describe "blocks" $ do
     (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n\n\nX = 1\n")]
     (_, begun) <- blockStart ignore (root </> "src/shop/lonely.py") 4 s
     either id (const "begun") begun `shouldSatisfy` (/= "begun")
+  it "(s6) a bare function's stub (no method call), named, asserted and red at its assertion, accepted: the function begins on it, red, pushed" $ do
+    let sumsRel = "src/shop/sums.py"
+        sumsTest = "src/shop/sums__test.py"
+        sums = T.unlines ["def total(a: int, b: int) -> int:", "    raise NotImplementedError(\"later\")"]
+        -- test_total red at its assertion while total is the stub
+        runner files = case M.lookup sumsTest files of
+          Just t | "def test_total(" `T.isInfixOf` t, "NotImplementedError" `T.isInfixOf` M.findWithDefault "" sumsRel files ->
+            Right (TestRun [] [(T.pack sumsTest <> "::test_total", Failure (lookup True [("assert" `T.isPrefixOf` T.strip l, i) | (i, l) <- zip [1 :: Int ..] (T.splitOn "\n" t)]) "AssertionError" "")] Nothing)
+          _ -> Right (TestRun [] [] Nothing)
+    (s, _) <- blocksOn runner [(sumsRel, sums)]
+    seen <- newIORef ([] :: [Block])
+    writeIORef (ssOnBlock s) (\b _ -> modifyIORef' seen (++ [b]))
+    (_, Right (StubOpened _ (testFile, 1, body, []))) <- blockStub (root </> sumsRel) 2 s
+    let arranged = T.unlines [if "olifant: arrange" `T.isInfixOf` l then "    x = 1" else l | l <- T.lines (T.replace "${1:test_total}" "test_total" (T.replace "${2:...}" "total(1, 2) == 3" body))]
+        st = openDoc testFile 1 arranged s
+    (_, Just ready) <- blockChanged testFile st
+    hud ready `shouldSatisfy` ("red ✓ accept · the fix is drafted next" `T.isSuffixOf`)
+    (_, Right (done, [])) <- blockAccept testFile st
+    blockState done `shouldBe` Accepted
+    Just (code, _) <- blockFor (root </> sumsRel) st
+    (blockKind code, blockTestId code, blockSpan code) `shouldBe` (Block.Code, T.pack sumsTest <> "::test_total", (2, 2))
+    blockState code `shouldSatisfy` \case Red _ -> True; _ -> False
+    map blockId <$> readIORef seen `shouldReturn` [blockId code]
   it "(s4) stub in a module whose circle is judged with no survivor left is refused: that circle first" $ do
     (s0, _) <- blocksOn killedBy []
     let s = openDoc (root </> moduleRel) 1 written s0

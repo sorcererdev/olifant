@@ -106,7 +106,12 @@ blockBegin progress path line s0 = fmap (fmap fst) <$> blockStart progress path 
 -- file's (merged into the line importing from its module, else after the
 -- last import).
 blockStart :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text, [FileEdit])))
-blockStart progress path line s0 =
+blockStart = startFor Nothing
+
+-- | 'blockStart', on a test whose function is known (SUBJECT: its name
+-- and its def's line in the module) rather than found by its calls.
+startFor :: Maybe (Text, Int) -> (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text, [FileEdit])))
+startFor subject progress path line s0 =
   siteAt path line s0 >>= \case
     (s, Left why) -> pure (s, Left why)
     (s, Right site) -> fmap (s,) . runExceptT $ do
@@ -141,7 +146,11 @@ blockStart progress path line s0 =
           let tests = [T.pack testRel <> "::" <> n | n <- testNames testText]
               cursorTest = [t | onTest, Just n <- [atCursor], let t = T.pack testRel <> "::" <> n, t `elem` tests]
               calling = [t | not onTest, Just n <- [atCursor], t <- tests, n `elem` callsIn (testName t) testText]
-              spanOf tid = lift (underTest syntax lang testText tid moduleText) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
+              -- the function known (a new test's): its def at its line, else the first of its name
+              known = case subject of
+                Just (fn, d) -> functionSpanAfter syntax lang fn d moduleText >>= maybe (functionSpanAfter syntax lang fn 1 moduleText) (pure . Just)
+                Nothing -> pure Nothing
+              spanOf tid = lift (known >>= maybe (underTest syntax lang testText tid moduleText) (pure . Just)) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
               atFunction = maybe (throwE ("no function at line " <> T.pack (show line))) (\(_, _, sp) -> pure sp) here
               chosen = listToMaybe (cursorTest ++ calling)
               new tid sp st = do
@@ -249,7 +258,7 @@ openTestStub s site n name others refused = do
         Just t -> (T.pack testRel <> "::" <> t, Failure Nothing "" "")
         Nothing -> (T.pack testRel, Failure Nothing "a new test: write its name and assertion" "")
   k <- lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
-  let tb = begin k testFile (TestFor Nothing) base (defAt, defAt + 2) tid failure
+  let tb = (begin k testFile (TestFor Nothing) base (defAt, defAt + 2) tid failure) {blockSubject = (n,) <$> siteDefLine site}
   claimed <- lift (claim s others tb)
   unless claimed (throwE refused)
   lift (modifyIORef' (ssBlockSeen s) (M.insert testFile base))
@@ -640,15 +649,16 @@ touches old new (s1, s2) = hit (p + 1, length os - q) || hit (p + 1, length ns -
       | z < a = a >= s1 && a <= s2 + 1
       | otherwise = a <= s2 && z >= s1
 
--- | A new test accepted: the function it calls begins on it (red), as a
--- begin on that test would, and is pushed.
+-- | A new test accepted: its function (the one its stub was opened for,
+-- else the one it calls) begins on it (red), as a begin on that test
+-- would, and is pushed.
 beginOnNewTest :: ServerState -> FilePath -> Project -> Block -> IO ()
 beginOnNewTest s root project b = do
   now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
   case [i | t : _ <- [newTests b now], (i, l) <- zip [1 ..] (T.splitOn "\n" now), ("def " <> testName t <> "(") `T.isPrefixOf` T.strip l] of
     defLine : _ ->
-      blockBegin (const (pure ())) (blockFile b) defLine s >>= \case
-        (_, Right code) -> pushed s code 0
+      startFor (blockSubject b) (const (pure ())) (blockFile b) defLine s >>= \case
+        (_, Right (code, _)) -> pushed s code 0
         (_, Left _) -> pure ()
     [] -> pure ()
 
