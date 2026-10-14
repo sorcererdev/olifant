@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -84,13 +84,19 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               else do
                 (b, n) <- checkFiles (with imported) [site t | (t, _) <- imported]
                 pure (imported, notAlready b, n)
-          -- A block whose first line came unindented and the rest one level
-          -- in (written as if the first line sat at the marker's column): read
-          -- one level up, when that alone compiles.
+          -- A block whose first line came less indented than the rest (written
+          -- as if the first line sat at the marker's column): read with the
+          -- rest brought up to it, when that leaves its file with fewer
+          -- findings, or rids it of a syntax error (the rest may still not
+          -- type-check: the reason is then the type error, not the indent).
           rescued <- if M.null brokenA then pure candidatesA else forM candidatesA $ \(t, f) -> case reindented f of
-            Just f' | M.member (holeFile (site t)) brokenA -> do
+            Just f' | Just before <- M.lookup (holeFile (site t)) brokenA -> do
               (b, _) <- checkFiles (with [(t, f')]) [site t]
-              pure (if M.null (notAlready b) then (t, f') else (t, f))
+              let after = M.findWithDefault [] (holeFile (site t)) (notAlready b)
+                  better = length after < length before || (any syntaxError before && not (any syntaxError after))
+              if better
+                then toolProgress tools (Reindented (name t) f') >> pure (t, f')
+                else pure (t, f)
             _ -> pure (t, f)
           (candidates, broken, note) <-
             if map snd rescued == map snd candidatesA
@@ -408,16 +414,25 @@ escapes f
       '"' : rest -> rest
       _ : rest -> skipString rest
 
--- | A fill whose first line is unindented while every other non-blank line
--- is indented at least @c > 0@: those lines @c@ less (Nothing otherwise).
+-- | A fill whose first non-blank line is indented less (@a@) than every
+-- other non-blank line (at least @c@), and opens no block (it does not end
+-- with @:@, an open bracket or a backslash): those lines @c - a@ less
+-- (Nothing otherwise).
 reindented :: Text -> Maybe Text
 reindented f = case T.lines (T.dropWhile (== '\n') f) of
   first : rest@(_ : _)
-    | indentOf first == 0
+    | not (T.null (T.strip first))
+    , not (any (`T.isSuffixOf` T.stripEnd first) [":", "(", "[", "{", "\\"])
+    , a <- indentOf first
     , ns@(_ : _) <- [indentOf l | l <- rest, not (T.null (T.strip l))]
     , c <- minimum ns
-    , c > 0 ->
-        Just (T.intercalate "\n" (first : [T.drop c l | l <- rest]))
+    , c > a ->
+        Just (T.intercalate "\n" (first : [T.drop (c - a) l | l <- rest]))
   _ -> Nothing
   where
     indentOf = T.length . T.takeWhile (== ' ')
+
+-- | A check's finding that says the file does not parse (pyright's words
+-- for Python's indentation and syntax errors), not that it does not type.
+syntaxError :: Text -> Bool
+syntaxError m = any (`T.isInfixOf` m) ["IndentationError", "SyntaxError", "Unexpected indentation", "Unindent not expected", "Unindent amount does not match", "Expected indented block"]

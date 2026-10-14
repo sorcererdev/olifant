@@ -15,7 +15,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
-import Olifant.Generation.FillPhase (fillPhase)
+import Olifant.Generation.FillPhase (fillPhase, reindented)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
@@ -896,6 +896,42 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (ws, snap) <- memoryWorkspace []
     Right _ <- generate ws noResolve tools [Step gen M.empty] now Apply
     (M.lookup "src/f.py" <$> snap) `shouldReturn` Just "def f():\n    x = 1\n    if x:\n        y = 2\n"
+  describe "the reindent rescue (a block whose rest came one level too deep)" $ do
+    let blockLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "[check]", "command = [\"true\"]", "format = \"pyright-json\""
+              , "[holes.block]", "placeholder = 'todo(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
+        gen = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/f.py\"", "text = \"def handle(repo):\\n    {= ? body: block | the body =}\\n\"" ]
+        -- pyright's complaints: a line deeper than the one before it that
+        -- opens no block, and an attribute the port does not have
+        checker = Checker $ \_ files -> pure (Right (CheckReport [] (concat [[(p, why) | why <- complaints t] | (p, t) <- M.toList files]) []))
+        complaints t =
+          let ls = filter (not . T.null . T.strip) (T.lines t)
+              indentOf = T.length . T.takeWhile (== ' ')
+           in ["Unexpected indentation" | (a, b) <- zip ls (drop 1 ls), indentOf b > indentOf a, not (":" `T.isSuffixOf` T.stripEnd a)]
+                ++ ["Cannot access attribute \"find_by_id\"" | "find_by_id" `T.isInfixOf` t]
+        rehearsal = "        booking = repo.find_by_id(1)\n                if booking is None:\n                    return 1\n                return 2"
+        rescuedText = "        booking = repo.find_by_id(1)\n        if booking is None:\n            return 1\n        return 2"
+    it "(s) a fill that reads one level up with fewer findings is the one tried, its type error still the reason (the rehearsal's draft)" $ do
+      calls <- newIORef []
+      events <- newIORef []
+      let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> pure (Right (M.fromList [("body", rehearsal)]))
+          tools = (basicTools noSyntax checker [blockLang]) {toolFiller = Just (ModelFiller "fake" 1 filler), toolProgress = \e -> modifyIORef' events (++ [e])}
+      (ws, _) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+      [phStatus h | h <- planHoles plan] `shouldSatisfy` \case [HoleUnfilled why] -> "find_by_id" `T.isInfixOf` why && not ("Unexpected indentation" `T.isInfixOf` why); _ -> False
+      reqs <- readIORef calls
+      [map fst (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [[rescuedText]]
+      readIORef events >>= (`shouldSatisfy` elem (Reindented "body" rescuedText))
+    it "(s) a first line ending with `:` keeps the deeper lines under it; one indented less than the rest has them brought up to it" $ do
+      reindented "if x:\n        y = 2" `shouldBe` Nothing
+      reindented "        x = 1\n                if x:\n                    y = 2" `shouldBe` Just "        x = 1\n        if x:\n            y = 2"
+      reindented "x = 1\n    if x:\n        y = 2" `shouldBe` Just "x = 1\nif x:\n    y = 2"
+      reindented "x = 1\ny = 2" `shouldBe` Nothing
   describe "auto-import (a name another file imports, no model round)" $ do
     let pyLang = l
           where

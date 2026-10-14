@@ -120,4 +120,5 @@ describeProgress = \case
   Filled hole _ -> hole <> " filled"
   Unfilled hole why -> hole <> " left as a placeholder: " <> why
   AutoImported hole imp -> hole <> ": " <> imp
+  Reindented hole _ -> hole <> ": read one level up"
   Verifying hole -> "testing " <> hole <> "…"
