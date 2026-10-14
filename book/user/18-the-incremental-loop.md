@@ -232,6 +232,9 @@ a collection error), each failed test with its line, message and output, and an 
 failed test's line.
 A module with no test file yet is refused, naming the file its tests would be in; a test file
 whose module is gone runs itself.
+To go between a module and its test file, jump: `:DurandalJump` (`<leader>mj`), `olifant/tests/file`
+on the wire, opens the module's test file (a new, unsaved buffer when it does not exist yet) or the
+test file's module.
 
 ## What works today, and its limits
 
