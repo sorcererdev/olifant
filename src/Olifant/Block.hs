@@ -197,11 +197,14 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Accepted -> "accepted"
       Rejected -> "rejected"
     -- red's next step: none once the model's draft failed (it tried; the
-    -- person reads it); a test's stub nobody has typed in is named first
-    -- (draft refuses a stub still called test_name); else draft
+    -- person reads it); a test's stub no model has drafted yet: a new
+    -- test's is named first (draft refuses a stub still called test_name),
+    -- a kill's is named already (the HUD's first field), and reject drops
+    -- either; else draft
     redCue = case (reverse (blockDrafts b), blockKind b) of
       (d : _, _) | draftBy d /= "you" -> ""
-      ([], TestFor _) -> "name it, then draft"
+      (_, TestFor Nothing) -> "name it, then draft · reject drops it"
+      (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
       _ -> "draft"
 
 -- | Not yet Accepted or Rejected.

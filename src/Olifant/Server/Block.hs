@@ -368,6 +368,8 @@ testNow s root project lang b killed applied = do
   -- a test block's own tests are the ones it added (its siblings may be red)
   let ids = case (blockKind b, newTests b now) of
         (TestFor _, new@(_ : _)) -> new
+        -- none new yet: the test file (a kill's stub names its test before it exists)
+        (TestFor _, []) -> [fileOf (blockTestId b)]
         _ -> [blockTestId b]
       -- a test of the newest text (no test or draft begun since) that finds
       -- the block moved on meanwhile (an older test landed first, the decider

@@ -18,6 +18,7 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Aeson qualified as Aeson
+import Data.Scientific (toBoundedInteger)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Proxy (Proxy (..))
@@ -942,6 +943,7 @@ blockSpec = describe "olifant/block" $ do
         "begin" -> blockMove (Proxy :: Proxy "olifant/block/begin")
         "test" -> blockMove (Proxy :: Proxy "olifant/block/test")
         "accept" -> blockMove (Proxy :: Proxy "olifant/block/accept")
+        "kill" -> blockMove (Proxy :: Proxy "olifant/block/kill")
         other -> const (fail ("no move " <> T.unpack other))
       pushed = (customNotification (Proxy :: Proxy "olifant/block") >>= \case NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)) <|> (anyMessage >> pushed)
       onDoc doc extra = object (["textDocument" .= object ["uri" .= (doc ^. L.uri)]] ++ extra)
@@ -970,6 +972,42 @@ blockSpec = describe "olifant/block" $ do
         (lookupKey "state" =<< lookupKey "block" push) `shouldBe` Just (String "red")
         (lookupKey "state" =<< blockOf tested) `shouldBe` Just (String "judged")
         refused `shouldSatisfy` either ("survivor(s): stub a test or waive each, then accept" `T.isInfixOf`) (const False)
+  it "(h3) a stub deleted in the editor closes its circle: olifant/block pushes no block for the test file, and the module stubs again" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          pushedTo u = pushed >>= \v -> if lookupKey "uri" v == Just (toJSON u) then pure v else pushedTo u
+          -- the editor's expansion of a snippet: each tab stop its default, the assertion True
+          expanded body =
+            let (before, stop) = T.breakOn "${1:" (T.replace "${2:...}" "True" body)
+                rest = T.drop 4 stop
+             in before <> T.takeWhile (/= '}') rest <> T.drop 1 (T.dropWhile (/= '}') rest)
+      BSL.writeFile script redScript
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        original <- TIO.readFile (dir </> testRel)
+        ((cleared, again), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc testRel "python"
+          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          liftIO (TIO.writeFile script "{}")
+          Right _ <- move "test" (onDoc doc [])
+          Right killed <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
+          let Just (Number at') = lookupKey "line" =<< lookupKey "snippet" killed
+              Just (String body) = lookupKey "body" =<< lookupKey "snippet" killed
+              Just at'' = toBoundedInteger at' :: Maybe Int
+              ls = T.splitOn "\n" original
+              stubbed = T.intercalate "\n" (take (at'' - 1) ls ++ [expanded body] ++ drop at'' ls)
+          _ <- pushedTo (doc ^. L.uri)
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument stubbed))]
+          _ <- pushedTo (doc ^. L.uri)
+          -- the person deletes the stub whole
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument original))]
+          cleared <- pushedTo (doc ^. L.uri)
+          again <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
+          pure (cleared, again)
+        lookupKey "block" cleared `shouldBe` Just Aeson.Null
+        again `shouldSatisfy` either (const False) (const True)
+        steps <- TIO.readFile (dir </> ".olifant/state/steps.log")
+        steps `shouldSatisfy` ("\treject\tperson\tthe stub was deleted" `T.isInfixOf`)
   it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"

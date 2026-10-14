@@ -118,14 +118,16 @@ spec = describe "Olifant.Block" $ do
     hud (step' (Drafted "y" "qwen" (Left red)) (step' (Edited (2, 2) (Left red)) b0)) `shouldBe` "▸ test_f · draft 2 · red: AssertionError: assert None == Ok(None)"
     -- the person edits after the model's failed draft: their text, so the cue is back
     hud (step' (Edited (2, 2) (Left red)) (step' (Drafted "y" "qwen" (Left red)) b0)) `shouldBe` "▸ test_f · draft 2 · red: AssertionError: assert None == Ok(None) · draft"
-    -- a new test's stub, not named yet (no edit of the person's): name it first
+    -- a new test's stub, not named yet (no edit of the person's): name it first; reject is the way out
     let stub = begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py" (Failure Nothing "a new test: write its name and assertion" "")
-    hud stub `shouldBe` "▸ src/a__test.py · red: a new test: write its name and assertion · name it, then draft"
-    -- a kill's stub has no failure to show: the cue alone
-    let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py" (Failure Nothing "" "")
-    hud killed `shouldBe` "▸ src/a__test.py · name it, then draft"
-    -- named (the person typed in the stub) and red at its assertion: draft
-    hud (step' (Edited (9, 11) (Left red)) killed) `shouldBe` "▸ src/a__test.py · draft 1 · red: AssertionError: assert None == Ok(None) · draft"
+    hud stub `shouldBe` "▸ src/a__test.py · red: a new test: write its name and assertion · name it, then draft · reject drops it"
+    -- a kill's stub is named already (the HUD's first field): its assertion next; no failure to show
+    let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py::test_boundary_line2" (Failure Nothing "" "")
+    hud killed `shouldBe` "▸ test_boundary_line2 · assert, then draft · reject drops it"
+    -- the person typed in the stub, red: still no model's draft, so the stub's cue stands
+    hud (step' (Edited (9, 11) (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None) · assert, then draft · reject drops it"
+    -- a model's draft of it failed: the person reads it, no cue
+    hud (step' (Drafted "x" "qwen" (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None)"
   it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) b0
         first = m {muLine = 5, muOperator = "number", muFrom = "1", muTo = "2"}

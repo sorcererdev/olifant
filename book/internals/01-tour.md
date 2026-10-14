@@ -2359,10 +2359,11 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   through `Mutate.judge`: each mutant's file over the project in the runner's own temp tree,
   four at a time.
 - **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file for the `killTarget`
-  mutant, and the stub the editor expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
+  mutant, its test id the stub's name, and the stub the editor expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
   debounced reaction to an edit of a block's file: the draft the editor applied (`Applied`) or the
   person's edit inside the span (`Edited`) is tested and, green, judged; an edit elsewhere does
-  nothing. `ssBlockSeen` holds the text last tested, so the editor applying the server's own
+  nothing; a test block whose span has no `def` left (its stub deleted) is rejected through
+  `settle` with no restoring edit, and pushed as gone. `ssBlockSeen` holds the text last tested, so the editor applying the server's own
   edit (a waiver) is no edit.
 - **`Server/BlockDecide`** orders a judged block's survivors with two `Decider` questions per mutant
   (`mutant-equivalent`, `mutant-matters`), asked in the background through the server's

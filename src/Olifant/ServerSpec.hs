@@ -464,6 +464,42 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockWaive (root </> moduleRel) 6 "inclusive by design" w
     (_, none) <- blockKill (root </> moduleRel) 3 w
     either id (const "killed") none `shouldBe` "no survivor left: accept"
+  it "(h3) a kill's stub deleted whole closes its circle: rejected (logged), the deletion stands, and the module stubs again" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    -- its HUD names the stub's test and how to leave
+    Just (tb, _) <- M.lookup testFile <$> readIORef (ssBlocks s)
+    hud tb `shouldBe` "▸ test_boundary_int_seats · assert, then draft · reject drops it"
+    -- a second circle in the test file is refused, naming it
+    (_, busy) <- blockKill (root </> moduleRel) 6 s
+    either id (const "stubbed") busy `shouldBe` "a magic circle is open in src/shop/close_table__test.py: accept or reject it there first"
+    -- the editor expands the stub (tested: red on its placeholder); the person types beside it, then deletes the stub
+    let stubbed = expandStub at body testText
+        mine = T.replace "    table = CloseTable()\n" "    table = CloseTable()  # mine\n" testText
+    (_, Just expanded) <- blockChanged testFile (openDoc testFile 1 stubbed s)
+    blockState expanded `shouldSatisfy` \case Red _ -> True; _ -> False
+    hud expanded `shouldSatisfy` ("· assert, then draft · reject drops it" `T.isSuffixOf`)
+    (_, gone) <- blockChanged testFile (changeDoc testFile 2 mine s)
+    fmap blockState gone `shouldBe` Just Rejected
+    M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
+    steps s >>= (`shouldSatisfy` ("block 2\treject\tperson\tthe stub was deleted" `T.isInfixOf`))
+    -- the code's circle is as it was: a survivor, stubbed again without a refusal
+    Just (code, _) <- blockFor (root </> moduleRel) s
+    map muLine (survivors code) `shouldBe` [6]
+    (_, again) <- blockKill (root </> moduleRel) 6 (changeDoc testFile 2 mine s)
+    either id (const "stubbed") again `shouldBe` "stubbed"
+  it "(h3) a kill's stub edited (renamed mid-word, its def kept) stays open" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    let stubbed = expandStub at body testText
+    (_, Just _) <- blockChanged testFile (openDoc testFile 1 stubbed s)
+    (_, renaming) <- blockChanged testFile (changeDoc testFile 2 (T.replace "def test_kills_the_boundary(" "def t(" stubbed) s)
+    fmap blockState renaming `shouldNotBe` Just Rejected
+    M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` True
   it "(i) waive writes the comment on the survivor's line and reopens accept" $ do
     (s0, _) <- blocks redOnStub []
     let s = openDoc (root </> moduleRel) 1 written s0
