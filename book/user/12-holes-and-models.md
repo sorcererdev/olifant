@@ -328,7 +328,7 @@ is. Two things differ.
 
 - **The stance.** A draft's request asks for *the least code that makes this test pass and no
   more: do not generalise beyond what the tests ask*. A constant is a good draft for one test;
-  the next test asks for more. Drafts the person rejected (`next`) go with the request as
+  the next test asks for more. Drafts the person passed over (another `draft`) go with the request as
   *previous drafts (rejected by the person)*.
 - **The verifier is the block's.** A body is verified by its one test (it must pass). A test's
   arrangement is verified the other way: the test must fail *at its assertion line* (an error in

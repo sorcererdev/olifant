@@ -16,8 +16,8 @@ cannot be rubber-stamped.
    arrangement between them, verified: the test runs and fails *at the assertion*. The HUD says
    `red ✓ accept · the fix is drafted next`; `accept` it (`<leader>mca`). (`begin` in a function
    no test calls opens the same stub, its name yours to type.)
-2. The function begins on that red test (as `begin` on a red test does: on a test, it runs, it is
-   red, and the editor jumps to the function it calls). Its body is inside a **magic circle**: the
+2. The function begins on that red test (the one you stubbed it for; as `begin` on a red test
+   does, the editor opens it and its draft starts). Its body is inside a **magic circle**: the
    highlighted span with the HUD line above it; nothing leaves the circle until every survivor is
    killed or waived. The HUD reads `▸ test_closes_a_table · red: NotImplementedError: … · draft`
    (red, and the next step), then `drafting…` while the model writes (only `reject` is open then).
@@ -78,7 +78,7 @@ assertion, `· stub a test or waive`, `✓ accept`.
 | `begin` | `<leader>mcb` | on a test, or in a function | on a red test: a circle around the body of the function it calls, red; the draft starts. On a function whose tests pass: a circle around its body, judged at once. On a function no test calls: the stub of its first test at the end of its test file, a circle of its own in the test file (accepted, the function begins on it) |
 | `draft` | `<leader>mcd` | red, green or judged | asks for the first draft, or another candidate when one exists: the span as a hole a model fills, verified by the circle's test (below); the drafts so far go to the model as *not this, rejected by the person* |
 | `test` | | red, green, can't run | run the circle's test on the buffer's text now |
-| `stub` | `<leader>mcs` | in a function, or judged with a survivor | judged with a survivor: the survivor on the cursor's line, or the top-ranked one when the line has none, a test stub at the end of the test file in its own circle. Otherwise, in a function (with tests or without): a new test's stub for it, named `test_<function>` (`_2`, `_3`, … when taken), as `begin` opens for a function no test calls (on the wire `olifant/block/stub`; `:DurandalCircle kill` still works) |
+| `stub` | `<leader>mcs` | in a function of a module with no circle, or judged with a survivor | judged with a survivor: the survivor on the cursor's line, or the top-ranked one when the line has none, a test stub at the end of the test file in its own circle. With no circle in the module, in a function (with tests or without): a new test's stub for it, named `test_<function>` (`_2`, `_3`, … when taken), as `begin` opens for a function no test calls (on the wire `olifant/block/stub`; `:DurandalCircle kill` still works) |
 | `waive` | `<leader>mcw` | a survivor on the cursor's line | asks why (`vim.ui.input`); writes the reason on the line |
 | `accept` | `<leader>mca` | judged, no unwaived survivor | done: the circle's marks go |
 | `reject` | `<leader>mcr` | any time | the file's text as it was when the circle began |
@@ -247,8 +247,8 @@ whose module is gone runs itself.
 - **One circle per file**, and one in a test file.
 - **The function under test is found by a method call** (`.NAME(` in the test, its assertions
   first). A test of a bare function (`assert add(1, 2) == 3`) is not located yet: begin in the
-  function instead. So is the function a new test calls, once you accept it: a new test of a
-  bare function leaves you to begin in the function.
+  function instead. A new test opened by `stub` (or by `begin` in a function no test calls)
+  knows its function, bare or not: accepted, that function begins on it.
 - **The span can swell.** A draft that adds an import shows the span from the import line down,
   when the import merged into the file's imports.
 - **An edit above the span leaves it stale** until the next test of the circle: its lines are where
@@ -256,10 +256,7 @@ whose module is gone runs itself.
 - **A line with several survivors is waived together**, one reason for each operator's comment.
 - **Waive acts on the cursor's line**, not on one survivor of several there. **Stub takes the
   survivor on the cursor's line**, or the top-ranked one when the line has none; a stub for a
-  function is only from a judged circle with none left (or no circle).
-- **A new test's stub beside a clean circle** (`stub` in a function while the module's circle is
-  judged with no survivor) judges that circle again once accepted; the function does not begin
-  on it until that circle is accepted or rejected.
+  function waits until no circle is open in its module (one circle, then the next case).
 - **Mutants are capped at 20** per circle; a long body is judged in part.
 
 ## Mistakes
@@ -282,10 +279,17 @@ whose module is gone runs itself.
 - **`no survivor left: accept`** — `olifant/block/kill` with every survivor waived (or none):
   `accept`. The editor's `stub` there opens a new test's stub for the function at the cursor
   instead.
-- **`put the cursor in a function to stub a test for it`** — `stub` outside a function (or in a
-  test file) with no survivor to stub a test for.
-- **`the circle is being tested; stub once its verdict lands`** — `stub` in a module whose circle
-  is not judged yet (red, drafting, green or unable to run): stub once it is judged.
+- **`put the cursor in a function to stub a test for it`** — `stub` outside a function, in a module
+  with no circle.
+- **`stub a test from its module`** — `stub` in a test file with no circle: a stub is for a
+  function of the module (or a survivor of its circle).
+- **`accept or reject the circle in src/…/close_table.py first, then stub`** — `stub` in a module
+  whose circle is judged with no survivor left: finish that circle, then stub the next case.
+- **`the circle is red: draft it, or reject it, then stub`** — `stub` in a module whose circle is
+  red.
+- **`the circle cannot run: fix it, then test`** — `stub` in a module whose circle cannot run.
+- **`the circle is being tested; stub once its verdict lands`** — `stub` while the module's circle
+  is drafting, or green and being judged.
 - **`a magic circle is open in src/…/close_table__test.py: accept or reject it there first`** —
   `stub` while a test's circle is open in the module's test file: finish it there, `reject` it,
   or delete its stub.

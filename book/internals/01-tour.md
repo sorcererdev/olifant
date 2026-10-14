@@ -2341,8 +2341,11 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`openTestStub`
   over `testStub`) and answers the stub for the editor, with the function's import as an edit to
   apply first when the test file lacks it (`addImports`, the fill phase's), and accepting that
-  block begins the function on it (or, the module's circle judged, judges it again). `siteAt`
-  finds a cursor's module, test file and def for both a begin and a stub. Every
+  block begins the function on it: the block keeps that function (`blockSubject`: its name and
+  def line), so `beginOnNewTest` begins there (`startFor`) rather than by the test's calls.
+  `siteAt` finds a cursor's module, test file and def for both a begin and a stub, and
+  `functionAt` the def at the cursor while its body reaches it (`functionSpanAfter` over
+  `locateContainers`: the body after that def line, whatever else shares its name). Every
   move lands through `settle`, a compare-and-swap on the stored block's number and version
   (`blockVersion`, bumped by every move stored and by the decision model's reorder: a move begun on an older version
   is stale, logged and dropped; a test of the newest text, none begun since, settles again on the
@@ -2365,9 +2368,10 @@ machine served by the server. The person's "magic circle" is a `Block` internall
 - **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file for the `killTarget`
   mutant, its test id the stub's name until a test of the block finds the person's: `testNow`
   makes a test block's test its first new one, and the stub the editor expands), `blockStub`
-  (the editor's `stub`: `blockKill` in a judged code circle with a survivor left; else, the
-  cursor in a module's function (`functionAt`), a new test's stub named `test_<function>` through
-  `openTestStub`; refused in a code circle not judged yet), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
+  (the editor's `stub`: `blockKill` in a judged code circle with a survivor left; with no circle
+  in the module, the cursor in one of its functions (`functionAt`), a new test's stub named
+  `test_<function>` through `openTestStub`; any other open circle refused with a sentence for its
+  state, and a test file sent to its module), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
   debounced reaction to an edit of a block's file: the draft the editor applied (`Applied`) or the
   person's edit inside the span (`Edited`) is tested and, green, judged; an edit elsewhere does
   nothing; a test block none of whose new lines (`newLinesOf`) is left non-blank from its span
