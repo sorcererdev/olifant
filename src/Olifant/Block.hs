@@ -192,6 +192,8 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Drafting _ -> "drafting…"
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
+        -- a new test red at its assertion is ready: accepted, its function begins on it
+        0 | TestFor Nothing <- blockKind b -> "red ✓ accept · the fix is drafted next"
         0 -> "clean ✓ accept"
         1 -> "1 survivor · stub a test or waive"
         n -> T.pack (show n) <> " survivors · stub a test or waive each"

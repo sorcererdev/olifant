@@ -137,6 +137,15 @@ spec = describe "Olifant.Block" $ do
     hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_name"}) `shouldSatisfy` ("· name it, then draft · reject drops it" `T.isSuffixOf`)
     -- a model's draft of it failed: the person reads it, no cue
     hud (step' (Drafted "x" "qwen" (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None)"
+  it "(h4) a new test's stub drafted red at its assertion says what accept does; a kill's test stays clean" $ do
+    let stub = begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py::test_handle" (Failure Nothing "" "")
+        ready = step' (Judge []) (step' (Drafted "    table = Table()" "qwen" (Right ())) (step' StartDraft stub))
+    hud ready `shouldBe` "▸ test_handle · draft 1 · red ✓ accept · the fix is drafted next"
+    open ready `shouldBe` ["accept", "draft", "reject"]
+    -- its draft failed: today's red, no cue
+    hud (step' (Drafted "    table = Table()" "qwen" (Left red)) (step' StartDraft stub)) `shouldBe` "▸ test_handle · draft 1 · red: AssertionError: assert None == Ok(None)"
+    let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py::test_boundary_line2" (Failure Nothing "" "")
+    hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft killed))) `shouldBe` "▸ test_boundary_line2 · draft 1 · clean ✓ accept"
   it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) b0
         first = m {muLine = 5, muOperator = "number", muFrom = "1", muTo = "2"}
