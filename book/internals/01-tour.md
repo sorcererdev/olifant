@@ -180,7 +180,7 @@ From the bottom up:
 | **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): Myers' O(ND) diff over lines (cost follows the edits, not the file; past 1,000 edits lines pair by text), common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `lcsPairs`, `wholeNew`, `newCount` | none |
 | **Migration** | The strangler's report and its pure parts: the switch registry, `olifant:switch` markers, what a PR extracted and added, big changes, whether a function reads or writes, the tables its SQL names, a switched function's text | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `readsOrWrites`, `tablesTouched`, `functionText` | Newness |
 | **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, the waivers a line carries, and the judge that runs each mutant in its own shadow, N at a time. `Mutate/Python` holds Python's operators | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `waiverOn`, `waiverLine`, `judge`, `Verdict`; `Mutate/Python`'s `pythonOperators`. Internal: `Mutate/Run`, `Mutate/Types` | Language |
-| **Block** | The incremental loop's block as a pure state machine (Red, Drafting (with the state it began from, which `DraftFailed` puts back), Green, Judged, Broken, Accepted, Rejected; `Accepted` only from a `Judged` with every survivor waived), the moves open in each state, the HUD line; and the draft templates (a function body or a test's arrangement as a hole, the instruction, a kill's stub) | `Block.hs`: `Block`, `BlockState`, `Kind`, `Draft`, `Move`, `begin`, `step`, `open`, `hud`, `survivors`, `killTarget`, `pending`, `draftTemplate`, `testDraftTemplate`, `testStub`, `killStub`, `instructionFor`. Internal: `Block/Draft` | Language, Mutate, Template |
+| **Block** | The incremental loop's block as a pure state machine (Red, Drafting (with the state it began from, which `DraftFailed` puts back), Green, Judged, Broken, Accepted, Rejected; `Accepted` only from a `Judged` with every survivor waived), the moves open in each state, the HUD line; and the draft templates (a function body or a test's arrangement as a hole, the instruction, a kill's stub) | `Block.hs`: `Block`, `BlockState`, `Kind`, `Draft`, `Move`, `begin`, `step`, `open`, `hud`, `survivors`, `killTarget`, `pending`, `draftTemplate`, `testDraftTemplate`, `testStub`, `killStub`, `stubNameFor`, `instructionFor`. Internal: `Block/Draft` | Language, Mutate, Template |
 | **Decide** | Typed decisions, progressively (Jev-shaped; today `curlDecider` asks any chat backend named by `[decide] model`, no Jev backend exists): a `Question` of a kind with its options, a `Decider` that answers one or is `Unsure`; validated, so an answer outside the options is `Unsure`. Nothing depends on an answer arriving | `Decide.hs`: `Question`, `Answer`, `Decider`, `noDecider`, `validated`, `decisionPrompt`, `decodeAnswer`, `curlDecider`, `recordedDecider` | Model, Process |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
 | **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses; snippets for a completion menu (spec §4.9) | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `Completion`, `actionsAt`, `actionsInFile`, `completionsAt`, `describeRule`, `matchPathSlots` | Cursor, Generator, Language, Query, Template |
@@ -2321,13 +2321,15 @@ machine served by the server. The person's "magic circle" is a `Block` internall
 
 - **`Block`** is the machine: `step move block` is `Left why` (one sentence for the person) or
   the block after the move; `open` lists the moves a state allows and `hud` writes its line (ending on the person's next
-  step: `· draft`, `· name it, then draft` on an untouched test stub, none after a model's failed
-  draft, `· kill or waive`); `killTarget` is the survivor a kill takes (the cursor
-  line's, or the first unwaived in the stored order).
+  step: `· draft`, `· name it, then draft · reject drops it` on a begin's test stub not yet named
+  and `· assert, then draft · reject drops it` on a named one or a survivor's (until a model
+  drafts), none after a model's failed draft, `· stub a test or waive`); `killTarget` is the survivor a kill takes (the cursor
+  line's, or the first unwaived in the stored order; the person's `stub` is `kill` internally).
   A property spec pins that `Accepted` is reachable only through a `Judged` whose survivors are
   all waived. `Block/Draft` turns a span into a template with one `block` hole (or a test's
   placeholder into a `stmt` hole), with the instruction from the test's name, its assertions and
-  why it fails.
+  why it fails; `stubNameFor` names a kill's stub from its mutant (a string's words, else the
+  operator and the mutated line's names, unique in the test file).
 - **`Server/Block`** keeps each file's open circle (a `Block` internally) (`ssBlocks`, keyed by the module's path, found
   from its test file too), runs the moves and writes each to the step log (`appendStep`,
   `.olifant/state/steps.log`). `blockBegin` runs the test file (`runOver`: the runner over the
@@ -2358,10 +2360,13 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   through `Mutate.judge`: each mutant's file over the project in the runner's own temp tree,
   four at a time.
 - **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file for the `killTarget`
-  mutant, and the stub the editor expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
+  mutant, its test id the stub's name until a test of the block finds the person's: `testNow`
+  makes a test block's test its first new one, and the stub the editor expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
   debounced reaction to an edit of a block's file: the draft the editor applied (`Applied`) or the
   person's edit inside the span (`Edited`) is tested and, green, judged; an edit elsewhere does
-  nothing. `ssBlockSeen` holds the text last tested, so the editor applying the server's own
+  nothing; a test block none of whose new lines (`newLinesOf`) is left non-blank from its span
+  on (its stub deleted whole) is rejected through `settle` (`rejectDeleted`, again on the block
+  as it stands if another move landed first) with no restoring edit, and pushed as gone. `ssBlockSeen` holds the text last tested, so the editor applying the server's own
   edit (a waiver) is no edit.
 - **`Server/BlockDecide`** orders a judged block's survivors with two `Decider` questions per mutant
   (`mutant-equivalent`, `mutant-matters`), asked in the background through the server's

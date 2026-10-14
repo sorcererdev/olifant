@@ -18,6 +18,8 @@ module Olifant.Block
     draftTemplate,
     testDraftTemplate,
     killStub,
+    stubName,
+    stubNameFor,
     testStub,
     instructionFor,
   )
@@ -28,7 +30,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, testDraftTemplate, testStub)
+import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub)
 import Olifant.Language (Failure (..), TestId)
 import Olifant.Mutate (Mutant (..))
 
@@ -110,7 +112,7 @@ step mv b
       (Kill line, Judged _) -> b <$ killTarget line b
       (Accept, Judged ms)
         | all (isJust . muWaived) ms -> Right b {blockState = Accepted}
-        | otherwise -> Left (T.pack (show (length (filter (isNothing . muWaived) ms))) <> " survivor(s): kill or waive each, then accept")
+        | otherwise -> Left (T.pack (show (length (filter (isNothing . muWaived) ms))) <> " survivor(s): stub a test or waive each, then accept")
       (Accept, _) -> Left "accept needs the test green and the circle judged"
       (Reject, _) -> Right b {blockState = Rejected}
       _ -> Left ("`" <> moveName mv <> "` is not open here")
@@ -137,7 +139,8 @@ moveName = \case
   CannotRun _ -> "test"
   Judge _ -> "judge"
   Waive {} -> "waive"
-  Kill _ -> "kill"
+  -- the person stubs a test for a survivor; the test then kills it
+  Kill _ -> "stub"
   Accept -> "accept"
   Reject -> "reject"
 
@@ -148,7 +151,7 @@ open b = case blockState b of
   Green -> drafting
   Judged ms
     | null (unwaived ms) -> ["accept", "next", "reject"]
-    | otherwise -> ["kill", "waive", "next", "reject"]
+    | otherwise -> ["stub", "waive", "next", "reject"]
   Broken _ -> ["test", "reject"]
   Drafting _ -> ["reject"]
   Accepted -> []
@@ -169,7 +172,7 @@ survivors b = case blockState b of
 -- that line, or else the first unwaived in the block's order (the decision
 -- model's ranking, when it has ranked them).
 killTarget :: Int -> Block -> Either Text Mutant
-killTarget line b = maybe (Left "no survivor left to kill") Right (find ((== line) . muLine) left <|> listToMaybe left)
+killTarget line b = maybe (Left "no survivor left: accept") Right (find ((== line) . muLine) left <|> listToMaybe left)
   where
     left = survivors b
 
@@ -189,17 +192,22 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         0 -> "clean ✓ accept"
-        1 -> "1 survivor · kill or waive"
-        n -> T.pack (show n) <> " survivors · kill or waive each"
+        1 -> "1 survivor · stub a test or waive"
+        n -> T.pack (show n) <> " survivors · stub a test or waive each"
       Broken why -> "cannot run: " <> why
       Accepted -> "accepted"
       Rejected -> "rejected"
     -- red's next step: none once the model's draft failed (it tried; the
-    -- person reads it); a test's stub nobody has typed in is named first
-    -- (draft refuses a stub still called test_name); else draft
+    -- person reads it); a test's stub no model has drafted yet: a new
+    -- test's is named first (draft refuses a stub still called test_name),
+    -- a kill's is named already (the HUD's first field), and reject drops
+    -- either; else draft
     redCue = case (reverse (blockDrafts b), blockKind b) of
       (d : _, _) | draftBy d /= "you" -> ""
-      ([], TestFor _) -> "name it, then draft"
+      -- a begin's stub is named once its test has a name of the person's
+      (_, TestFor Nothing) | testName == stubName || not ("::" `T.isInfixOf` blockTestId b) -> "name it, then draft · reject drops it"
+      (_, TestFor Nothing) -> "assert, then draft · reject drops it"
+      (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
       _ -> "draft"
 
 -- | Not yet Accepted or Rejected.

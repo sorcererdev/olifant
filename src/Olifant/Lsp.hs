@@ -625,9 +625,11 @@ blockLater env lspEnv path version = do
     changed <- withSnapshot env {envCancel = token} (blockChanged path)
     current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
     case changed of
+      -- a block gone (its stub deleted) is gone whatever the text is now
+      Just b | not (pending b) -> runLspT lspEnv (pushBlock (blockFile b) Nothing)
       Just b | current == Just version -> do
         killedOf <- killedCounts env
-        runLspT lspEnv (pushBlock (blockFile b) (if pending b then Just (b, killedOf b) else Nothing))
+        runLspT lspEnv (pushBlock (blockFile b) (Just (b, killedOf b)))
       _ -> pure ()
 
 -- | A request's `line` (1-based, as the editor sends it) and `reason`.

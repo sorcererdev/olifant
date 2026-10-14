@@ -7,7 +7,7 @@ import Hedgehog (Gen)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Block
-import Olifant.Language (Failure (..), parseLanguage)
+import Olifant.Language (Failure (..), Language (..), parseLanguage)
 import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
 import Test.Hspec
@@ -52,7 +52,7 @@ spec = describe "Olifant.Block" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0)
     open (step' (Judge []) g) `shouldSatisfy` ("accept" `elem`)
     let j = step' (Judge [m]) g
-    open j `shouldSatisfy` \o -> "accept" `notElem` o && "kill" `elem` o && "waive" `elem` o
+    open j `shouldSatisfy` \o -> "accept" `notElem` o && "stub" `elem` o && "kill" `notElem` o && "waive" `elem` o
     survivors (step' (Waive 2 "boundary" "inclusive by design") j) `shouldBe` []
     open (step' (Waive 2 "boundary" "inclusive by design") j) `shouldSatisfy` ("accept" `elem`)
   it "(c2) a waiver is for one operator: another on the same line stays a survivor" $ do
@@ -71,7 +71,7 @@ spec = describe "Olifant.Block" $ do
   it "(d) accept from anything but a clean Judged is refused, with a reason" $ do
     step Accept b0 `shouldSatisfy` either ("test" `T.isInfixOf`) (const False)
     let j = step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)
-    step Accept j `shouldSatisfy` either ("survivor" `T.isInfixOf`) (const False)
+    step Accept j `shouldBe` Left "1 survivor(s): stub a test or waive each, then accept"
   it "(e) editing by hand makes a 'you' draft; a hand-written green body is judged too" $ do
     let e = step' (Edited (2, 3) (Right ())) b0
     blockState e `shouldBe` Green
@@ -107,9 +107,9 @@ spec = describe "Olifant.Block" $ do
   it "(h) the HUD says where we are, and the next step" $ do
     hud b0 `shouldBe` "▸ test_f · red: AssertionError: assert None == Ok(None) · draft"
     hud (step' (Drafted "y" "qwen" (Left red)) b0) `shouldBe` "▸ test_f · draft 1 · red: AssertionError: assert None == Ok(None)"
-    hud (step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 1 survivor · kill or waive"
-    hud (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 2 survivors · kill or waive each"
-    hud (step' (Waive 2 "number" "r") (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0))) `shouldBe` "▸ test_f · draft 1 · 1 survivor · kill or waive"
+    hud (step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 1 survivor · stub a test or waive"
+    hud (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 2 survivors · stub a test or waive each"
+    hud (step' (Waive 2 "number" "r") (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0))) `shouldBe` "▸ test_f · draft 1 · 1 survivor · stub a test or waive"
     hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · clean ✓ accept"
   it "(h3) a red circle's cue is honest: the person's edit keeps it, a model's failed draft drops it, a test stub is named first" $ do
     -- the person's own red edit is a draft, but no model has tried: draft is still the cue
@@ -118,14 +118,19 @@ spec = describe "Olifant.Block" $ do
     hud (step' (Drafted "y" "qwen" (Left red)) (step' (Edited (2, 2) (Left red)) b0)) `shouldBe` "▸ test_f · draft 2 · red: AssertionError: assert None == Ok(None)"
     -- the person edits after the model's failed draft: their text, so the cue is back
     hud (step' (Edited (2, 2) (Left red)) (step' (Drafted "y" "qwen" (Left red)) b0)) `shouldBe` "▸ test_f · draft 2 · red: AssertionError: assert None == Ok(None) · draft"
-    -- a new test's stub, not named yet (no edit of the person's): name it first
+    -- a new test's stub, not named yet (no edit of the person's): name it first; reject is the way out
     let stub = begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py" (Failure Nothing "a new test: write its name and assertion" "")
-    hud stub `shouldBe` "▸ src/a__test.py · red: a new test: write its name and assertion · name it, then draft"
-    -- a kill's stub has no failure to show: the cue alone
-    let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py" (Failure Nothing "" "")
-    hud killed `shouldBe` "▸ src/a__test.py · name it, then draft"
-    -- named (the person typed in the stub) and red at its assertion: draft
-    hud (step' (Edited (9, 11) (Left red)) killed) `shouldBe` "▸ src/a__test.py · draft 1 · red: AssertionError: assert None == Ok(None) · draft"
+    hud stub `shouldBe` "▸ src/a__test.py · red: a new test: write its name and assertion · name it, then draft · reject drops it"
+    -- a kill's stub is named already (the HUD's first field): its assertion next; no failure to show
+    let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py::test_boundary_line2" (Failure Nothing "" "")
+    hud killed `shouldBe` "▸ test_boundary_line2 · assert, then draft · reject drops it"
+    -- the person typed in the stub, red: still no model's draft, so the stub's cue stands
+    hud (step' (Edited (9, 11) (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None) · assert, then draft · reject drops it"
+    -- a begin's stub once its test is named (tested: the block's test is the new one): its assertion next
+    hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_reopens_again"}) `shouldBe` "▸ test_reopens_again · draft 1 · red: AssertionError: assert None == Ok(None) · assert, then draft · reject drops it"
+    hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_name"}) `shouldSatisfy` ("· name it, then draft · reject drops it" `T.isSuffixOf`)
+    -- a model's draft of it failed: the person reads it, no cue
+    hud (step' (Drafted "x" "qwen" (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None)"
   it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) b0
         first = m {muLine = 5, muOperator = "number", muFrom = "1", muTo = "2"}
@@ -140,9 +145,11 @@ spec = describe "Olifant.Block" $ do
     killTarget 9 w `shouldBe` Right onTwo
     killTarget 5 w `shouldBe` Right onTwo
     let none = step' (Waive 7 "compare" "r") (step' (Waive 2 "boundary" "r") w)
-    killTarget 2 none `shouldBe` Left "no survivor left to kill"
-    step (Kill 2) none `shouldBe` Left "no survivor left to kill"
+    killTarget 2 none `shouldBe` Left "no survivor left: accept"
+    step (Kill 2) none `shouldBe` Left "no survivor left: accept"
     killTarget 2 g `shouldSatisfy` isLeft
+    -- the person's word for the move is stub
+    step (Kill 2) b0 `shouldBe` Left "`stub` is not open here"
   it "(i) property: Accepted is reachable only through a clean Judged" $ hedgehog $ do
     moves <- forAll (Gen.list (Range.linear 0 12) genMove)
     let walk (b, lastJudgedClean) mv = case step mv b of
@@ -164,13 +171,42 @@ spec = describe "Olifant.Block" $ do
       instruction `shouldSatisfy` ("AssertionError" `T.isInfixOf`)
       instruction `shouldSatisfy` ("least code" `T.isInfixOf`)
     it "(b) the kill stub is a new test with the name and assertion as tab stops and the arrangement as a hole" $ do
-      let (at, stub) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
-      at `shouldBe` 4
-      stub `shouldSatisfy` ("def test_${1:" `T.isInfixOf`)
+      let (at, stub, name) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+      (at, name) `shouldBe` (4, "test_boundary_line5")
+      stub `shouldSatisfy` ("def ${1:test_boundary_line5}() -> None:" `T.isInfixOf`)
+      -- a begin's stub is named by the person: its placeholder is test_name
+      snd (testStub py test Nothing) `shouldSatisfy` ("def test_${1:name}() -> None:" `T.isInfixOf`)
+      stubName `shouldBe` "test_name"
       stub `shouldSatisfy` ("assert ${2:" `T.isInfixOf`)
       stub `shouldSatisfy` ("olifant: arrange" `T.isInfixOf`)
     it "(c) the stubbed test's placeholder becomes a stmt hole at its indentation" $ do
-      let (_, stub) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+      let (_, stub, _) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
           stubbed = test <> stub
       testDraftTemplate py stubbed 7 `shouldSatisfy` isRight
       testDraftTemplate py stubbed 1 `shouldSatisfy` isLeft
+    describe "the kill stub's name, from the mutant" $ do
+      let module' = T.unlines ["class Book:", "    def handle(self, input: BookInput) -> BookOutput:", "        table = self.tables.at(input.table_id)", "        if input.party >= table.seats:", "            return TableNotFound(f\"there is no table {input.table_id}\")"]
+          boundary = Mutant 4 "boundary" ">" ">=" module' Nothing False
+      it "(n1) a string: test_ and the literal's first four words" $ do
+        let m = Mutant 5 "string" "f\"there is no table {input.table_id}\"" "\"\"" module' Nothing False
+        stubNameFor m test (langKeywords py) `shouldBe` "test_there_is_no_table"
+        let (_, stub, _) = killStub py test m
+        stub `shouldSatisfy` ("def ${1:test_there_is_no_table}() -> None:" `T.isInfixOf`)
+        -- a name is a Python name: ASCII letters, digits and _ only
+        stubNameFor m {muFrom = "\"½ price is fine\""} test (langKeywords py) `shouldBe` "test_price_is_fine"
+        -- and 60 characters at most, cut between words
+        stubNameFor m {muFrom = "\"supercalifragilistic expialidocious_and_more_words_here antidisestablishmentarianism pneumonoultramicroscopic\""} test (langKeywords py)
+          `shouldBe` "test_supercalifragilistic_expialidocious_and_more_words_here"
+      it "(n2) any other operator: test_, the operator, the mutated line's names (no keywords, self or attribute heads), four at most; a line left with none, what it changed from" $ do
+        stubNameFor boundary test (langKeywords py) `shouldBe` "test_boundary_party_seats"
+        stubNameFor (Mutant 1 "arith" "+" "-" "total = price * count - tax - fee  # f\"no\" names here" Nothing False) test (langKeywords py) `shouldBe` "test_arith_total_price_count_tax"
+        stubNameFor (Mutant 3 "delete-call" "self.tables.at(input.table_id)" "pass" (T.replace "table = self.tables.at(input.table_id)" "pass" module') Nothing False) test (langKeywords py) `shouldBe` "test_delete_call_at_table_id"
+      it "(n3) a name the test file has already gets _2, _3, …" $ do
+        let taken = test <> T.unlines ["", "", "def test_boundary_party_seats() -> None:", "    assert True", "", "", "def test_boundary_party_seats_2() -> None:", "    assert True"]
+        stubNameFor boundary taken (langKeywords py) `shouldBe` "test_boundary_party_seats_3"
+        -- an async test has its name too
+        stubNameFor boundary (test <> "\n\nasync def test_boundary_party_seats() -> None:\n    assert True\n") (langKeywords py) `shouldBe` "test_boundary_party_seats_2"
+      it "(n4) a line of keywords and self only: test_, the operator and the line" $ do
+        let selfOnly = T.unlines ["class A:", "    def ok(self) -> bool:", "        return not self"]
+        stubNameFor (Mutant 3 "negate" "self" "not self" selfOnly Nothing False) test (langKeywords py) `shouldBe` "test_negate_line3"
+        stubNameFor (Mutant 3 "return-none" "return self" "return None" selfOnly Nothing False) test (langKeywords py) `shouldBe` "test_return_none_line3"
