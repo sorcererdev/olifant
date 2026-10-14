@@ -241,6 +241,10 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
       (s, _) <- recording passing [("src/shop/orphan__test.py", "def test_alone() -> None:\n    assert True\n")]
       (_, answer) <- testsFile (root </> "src/shop/orphan__test.py") s
       answer `shouldSatisfy` either (== "no module's test file is src/shop/orphan__test.py: its module cannot be named") (const False)
+    it "refuses a file that is its own test file (tests_for names the file itself), in one sentence" $ do
+      (s, _) <- recording passing [("/pack/languages/inline.toml", "files = [\"**/*.txt\"]\ncomment = \"#\"\ngrammar = \"python\"\n[test]\npreset = \"pytest\"\ntests_for = \"{= dir =}/{= stem =}.txt\"\n"), ("notes/a.txt", "a\n")]
+      (_, answer) <- testsFile (root </> "notes/a.txt") s
+      answer `shouldSatisfy` either (== "notes/a.txt is its own test file (inline's tests_for): no other file to jump to") (const False)
     it "refuses a file in no project" $ do
       (s, _) <- recording passing []
       (_, answer) <- testsFile "/elsewhere/x.py" s

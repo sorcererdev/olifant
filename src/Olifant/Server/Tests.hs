@@ -83,6 +83,8 @@ testsFile path s0 =
       let rel = plRel p
           absolute = normalisePath . (plRoot p </>)
           mapped = testsForFile (plTest p) rel
+      -- inline tests: the file is its own test file
+      when (mapped == rel) (throwE (T.pack rel <> " is its own test file (" <> langName (plLanguage p) <> "'s tests_for): no other file to jump to"))
       if plIsTest p || testShaped (plTest p) rel
         then case plTested p of
           Just moduleRel -> pure (TestsFile (absolute moduleRel) False True)
