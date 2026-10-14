@@ -97,7 +97,7 @@ blockStub path line s0 =
         (s, Left why) -> pure (s, Left why)
         (s, Right site) -> fmap (s,) . runExceptT $ do
           when (siteOnTest site) (throwE "stub a test from its module")
-          fn <- lift (functionAt s site line) >>= maybe (throwE "put the cursor in a function to stub a test for it") pure
+          (fn, _, _) <- lift (functionAt s site line) >>= maybe (throwE "put the cursor in a function to stub a test for it") pure
           -- refused before a block number is taken ('claim' refuses it too)
           busy <- lift (M.member (siteTestFile site) <$> readIORef (ssBlocks s))
           when busy (throwE (pendingTest (siteTestRel site)))

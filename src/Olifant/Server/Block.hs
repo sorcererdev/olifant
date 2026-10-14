@@ -45,7 +45,7 @@ import Data.Aeson (Value, object, (.=))
 import Data.Char (isAlphaNum)
 import Data.Functor ((<&>))
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
-import Data.List (isSuffixOf, nub, stripPrefix)
+import Data.List (isSuffixOf, nub, sort, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
@@ -54,7 +54,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (defaultTimeLocale, formatTime)
 import GHC.Clock (getMonotonicTime)
-import Olifant.Anchor (locateContainer)
+import Olifant.Anchor (locateContainer, locateContainers)
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, planWith)
 import Olifant.Block
 import Olifant.Decide (Decider)
@@ -128,8 +128,9 @@ blockStart progress path line s0 =
       when busy (throwE pendingHere)
       let number = lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
       -- a function no test calls: its first test's stub opens
-      untested <- case (onTest, atCursor) of
-        (False, Just n) | not (any (calledIn n) (maybe [] (\t -> map (`testBody` t) (testNames t)) testText0)) -> lift (functionSpan syntax lang n moduleText) <&> fmap (const n)
+      here <- lift (functionAt s site line)
+      untested <- case here of
+        Just (n, _, _) | not (any (calledIn n) (maybe [] (\t -> map (`testBody` t) (testNames t)) testText0)) -> pure (Just n)
         _ -> pure Nothing
       case untested of
         Just n -> fmap Just <$> openTestStub s site n Nothing [file] pendingHere
@@ -141,9 +142,7 @@ blockStart progress path line s0 =
               cursorTest = [t | onTest, Just n <- [atCursor], let t = T.pack testRel <> "::" <> n, t `elem` tests]
               calling = [t | not onTest, Just n <- [atCursor], t <- tests, n `elem` callsIn (testName t) testText]
               spanOf tid = lift (underTest syntax lang testText tid moduleText) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
-              atFunction = case atCursor of
-                Nothing -> throwE ("no function at line " <> T.pack (show line))
-                Just n -> lift (functionSpan syntax lang n moduleText) >>= maybe (throwE ("cannot find function " <> n <> " in " <> T.pack moduleRel)) pure
+              atFunction = maybe (throwE ("no function at line " <> T.pack (show line))) (\(_, _, sp) -> pure sp) here
               chosen = listToMaybe (cursorTest ++ calling)
               new tid sp st = do
                 k <- number
@@ -183,6 +182,8 @@ data Site = Site
   , siteModuleText :: Text
   , siteTestText :: Maybe Text
   , siteAtCursor :: Maybe Text
+  , -- | the line (1-based) of that def
+    siteDefLine :: Maybe Int
   }
 
 siteFile, siteTestFile :: Site -> FilePath
@@ -206,15 +207,17 @@ siteAt path line s0 =
           testRel = if onTest then rel else testsForFile td rel
       moduleText <- lift (readText ws moduleRel) >>= maybe (throwE ("cannot read " <> T.pack moduleRel)) pure
       testText0 <- lift (readText ws testRel)
-      pure (Site root project lang moduleRel testRel onTest moduleText testText0 (defAbove line (if onTest then fromMaybe "" testText0 else moduleText)))
+      let above = defLineAbove line (if onTest then fromMaybe "" testText0 else moduleText)
+      pure (Site root project lang moduleRel testRel onTest moduleText testText0 (snd <$> above) (fst <$> above))
 
 -- | The function a cursor (1-based line) is in, in a module: the def at or
--- above it, while its body reaches the cursor.
-functionAt :: ServerState -> Site -> Int -> IO (Maybe Text)
-functionAt s site line = case (siteOnTest site, siteAtCursor site) of
-  (False, Just n) ->
-    functionSpan (pSyntax (ssPorts s)) (siteLang site) n (siteModuleText site) <&> \case
-      Just (_, z) | line <= z -> Just n
+-- above it (its name, its line) while its body reaches the cursor, and that
+-- body. The def is the one at that line, whatever else shares its name.
+functionAt :: ServerState -> Site -> Int -> IO (Maybe (Text, Int, (Int, Int)))
+functionAt s site line = case (siteOnTest site, siteAtCursor site, siteDefLine site) of
+  (False, Just n, Just d) ->
+    functionSpanAfter (pSyntax (ssPorts s)) (siteLang site) n d (siteModuleText site) <&> \case
+      Just sp@(_, z) | line <= z -> Just (n, d, sp)
       _ -> Nothing
   _ -> pure Nothing
 
@@ -234,7 +237,7 @@ openTestStub s site n name others refused = do
       testText0 = siteTestText site
       base = fromMaybe "" testText0
       (at0, stub) = testStub lang base name
-      imp = importOf lang (siteModuleRel site) (siteModuleText site) n
+      imp = importOf lang (siteModuleRel site) (siteModuleText site) n (siteDefLine site)
       -- an existing file: the import joins its imports (unless it has it), the stub after
       imported = maybe base (\i -> if isJust testText0 then addImports lang [i] base else base) imp
       edits = [FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range new | imported /= base, let (range, new) = smallestChange base imported]
@@ -260,15 +263,20 @@ calledIn n = any (\l -> any (\(pre, _) -> T.null pre || not (ident (T.last pre))
 -- | The line importing a function into a new test file (the class it is a
 -- method of, if any): Python's `from pkg.module import Name`, the module's
 -- path less its `src/` folder; none for another language.
-importOf :: Language -> FilePath -> Text -> Text -> Maybe Text
-importOf lang moduleRel moduleText fn
+importOf :: Language -> FilePath -> Text -> Text -> Maybe Int -> Maybe Text
+importOf lang moduleRel moduleText fn defLine
   | langName lang /= "python" = Nothing
   | otherwise = Just ("from " <> dotted <> " import " <> owner)
   where
     dotted = T.intercalate "." (map T.pack (splitDirectories (dropExtension (fromMaybe moduleRel (stripPrefix "src/" moduleRel)))))
     ls = T.lines moduleText
-    owner = case break (\l -> ("def " <> fn <> "(") `T.isPrefixOf` T.strip l) ls of
-      (above, d : _) | T.isPrefixOf " " d || T.isPrefixOf "\t" d -> case [l | l <- reverse above, not (T.null (T.strip l)), not (" " `T.isPrefixOf` l || "\t" `T.isPrefixOf` l)] of
+    -- the def at its line (another class may define the name too), else the first of the name
+    isDef l = ("def " <> fn <> "(") `T.isPrefixOf` T.strip l
+    (above, at) = case defLine of
+      Just d | maybe False isDef (listToMaybe (drop (d - 1) ls)) -> splitAt (d - 1) ls
+      _ -> break isDef ls
+    owner = case at of
+      d : _ | T.isPrefixOf " " d || T.isPrefixOf "\t" d -> case [l | l <- reverse above, not (T.null (T.strip l)), not (" " `T.isPrefixOf` l || "\t" `T.isPrefixOf` l)] of
         l : _ | Just c <- T.stripPrefix "class " l -> T.takeWhile ident c
         _ -> fn
       _ -> fn
@@ -736,6 +744,11 @@ underTest syntax lang testText tid moduleText = firstFound (callsIn (testName ti
     firstFound [] = pure Nothing
     firstFound (n : ns) = functionSpan syntax lang n moduleText >>= maybe (firstFound ns) (pure . Just)
 
+-- | The body (1-based) of the function NAME whose def is on line D: the
+-- first of the name's bodies that starts at or after it.
+functionSpanAfter :: Syntax IO -> Language -> Text -> Int -> Text -> IO (Maybe (Int, Int))
+functionSpanAfter syntax lang name d text = either (const Nothing) (\cs -> listToMaybe (sort [(a + 1, z + 1) | (a, z) <- cs, a + 1 >= d])) <$> locateContainers syntax lang ["function", name] text
+
 -- | A function's body (the language's `function NAME` target), 1-based.
 functionSpan :: Syntax IO -> Language -> Text -> Text -> IO (Maybe (Int, Int))
 functionSpan syntax lang name text = either (const Nothing) (\(a, z) -> Just (a + 1, z + 1)) <$> locateContainer syntax lang ["function", name] text
@@ -835,9 +848,9 @@ newTests b now = [fileOf (blockTestId b) <> "::" <> n | n <- testNames now, n `n
 testNames :: Text -> [Text]
 testNames text = [n | Just n <- map defName (T.lines text), "test" `T.isPrefixOf` n]
 
--- | The name of the def at or above a line (1-based).
-defAbove :: Int -> Text -> Maybe Text
-defAbove line text = listToMaybe [n | Just n <- map defName (reverse (take line (T.lines text)))]
+-- | The def at or above a line (1-based): its line and name.
+defLineAbove :: Int -> Text -> Maybe (Int, Text)
+defLineAbove line text = listToMaybe [(i, n) | (i, Just n) <- reverse (take line (zip [1 ..] (map defName (T.lines text))))]
 
 defName :: Text -> Maybe Text
 defName l = do

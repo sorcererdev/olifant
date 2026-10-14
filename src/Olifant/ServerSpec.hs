@@ -576,6 +576,21 @@ blockSpecs = describe "blocks" $ do
     (_, Right (StubKilled (_, testFile, _, _))) <- blockStub (root </> moduleRel) 6 s
     (_, fromTest) <- blockStub testFile 9 s
     either id (const "stubbed") fromTest `shouldBe` "stub a test from the code's magic circle, in its module"
+  it "(s5) stub in a method whose name another class has too: the def at the cursor, imported by its own class into a new test file" $ do
+    let repo = T.unlines ["class Memory:", "    def save(self, n: int) -> int:", "        return n", "", "", "class Sql:", "    def save(self, n: int) -> int:", "        return n + 1"]
+    (s, _) <- blocks redOnStub [("src/shop/repo.py", repo)]
+    (_, Right (StubOpened tb (file, at, body, edits))) <- blockStub (root </> "src/shop/repo.py") 8 s
+    (file, at, edits) `shouldBe` (root </> "src/shop/repo__test.py", 1, [])
+    take 4 (T.lines body) `shouldBe` ["from shop.repo import Sql", "", "", "def ${1:test_save}() -> None:"]
+    blockSpan tb `shouldBe` (4, 6)
+    -- begin there opens the same function's stub (no test calls it)
+    (b, _) <- blocks redOnStub [("src/shop/repo.py", repo)]
+    (_, Right (_, Just (_, _, begun, _))) <- blockStart ignore (root </> "src/shop/repo.py") 8 b
+    T.lines begun `shouldSatisfy` (("from shop.repo import Sql" `elem`))
+  it "(s5) begin on the blank line after a function is in no function, as stub is" $ do
+    (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n\n\nX = 1\n")]
+    (_, begun) <- blockStart ignore (root </> "src/shop/lonely.py") 4 s
+    either id (const "begun") begun `shouldSatisfy` (/= "begun")
   it "(s4) stub in a module whose circle is judged with no survivor left is refused: that circle first" $ do
     (s0, _) <- blocksOn killedBy []
     let s = openDoc (root </> moduleRel) 1 written s0
@@ -1379,13 +1394,13 @@ blockSyntax = Syntax query rewrite
       | parseMaybe (J.withObject "rule" (.: "pattern")) rule == Just ("$A > $B" :: Text) = pure (Right (boundaries src))
       | otherwise = pure (Right [])
     indentOf = T.length . T.takeWhile (== ' ')
+    -- every def of the name, as ast-grep finds each
     body name src =
       let ls = zip [0 ..] (T.splitOn "\n" src)
-       in case [(i, l) | (i, l) <- ls, ("def " <> name <> "(") `T.isInfixOf` l] of
-            [(i, d)] -> case takeWhile (\(_, l) -> not (T.null (T.strip l)) && indentOf l > indentOf d) (drop (i + 1) ls) of
-              under@((first, _) : _) -> let (end, l) = last under in [Match (first, 8) (end, T.length l) "" (0, 0)]
-              [] -> []
-            _ -> []
+       in [ Match (first, 8) (end, T.length l) "" (0, 0)
+          | (i, d) <- ls, ("def " <> name <> "(") `T.isInfixOf` d
+          , under@((first, _) : _) <- [takeWhile (\(_, l) -> not (T.null (T.strip l)) && indentOf l > indentOf d) (drop (i + 1) ls)]
+          , let (end, l) = last under ]
     boundaries src =
       [ Rewrite (i, col) (i, col + T.length w) w (T.replace " > " " >= " w) (offset + col, offset + col + T.length w)
       | (i, l, offset) <- zip3 [0 ..] (T.splitOn "\n" src) (scanl (\o x -> o + T.length x + 1) 0 (T.splitOn "\n" src))
