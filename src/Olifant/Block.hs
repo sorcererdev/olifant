@@ -24,6 +24,9 @@ module Olifant.Block
     uniqueTestName,
     testStub,
     instructionFor,
+    stubAssertion,
+    assertionInstruction,
+    snippetText,
   )
 where
 
@@ -32,7 +35,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
+import Olifant.Block.Draft (assertionInstruction, draftTemplate, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
 import Olifant.Language (Failure (..), TestId)
 import Olifant.Mutate (Mutant (..))
 
@@ -68,7 +71,11 @@ data Block = Block
     -- | a new test's block opened for a function (by a stub or a begin):
     -- its name and its def's line (1-based) in the module, where the
     -- function begins once the test is accepted
-    blockSubject :: Maybe (Text, Int)
+    blockSubject :: Maybe (Text, Int),
+    -- | a test block's assertion as a model drafted it: its line (1-based)
+    -- in the file as the draft left it, for the editor to put the cursor
+    -- on (the person confirms or edits it)
+    blockAssertion :: Maybe Int
   }
   deriving stock (Eq, Show)
 
@@ -94,7 +101,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing
+  Block i file kind base sp test (Red failure) [] base 0 Nothing Nothing
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
@@ -199,7 +206,7 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         -- a new test red at its assertion is ready: accepted, its function begins on it
-        0 | TestFor Nothing <- blockKind b -> "red ✓ accept · the fix is drafted next"
+        0 | TestFor Nothing <- blockKind b -> "red ✓ accept · go make it pass"
         0 -> "clean ✓ accept"
         1 -> "1 survivor · stub a test or waive"
         n -> T.pack (show n) <> " survivors · stub a test or waive each"
@@ -209,15 +216,15 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
     -- red's next step: none once the model's draft failed (it tried; the
     -- person reads it); a test's stub no model has drafted yet: a new
     -- test's is named first (draft refuses a stub still called test_name),
-    -- a kill's is named already (the HUD's first field), and reject drops
-    -- either; else draft
+    -- a kill's is named already (the HUD's first field); the draft writes
+    -- its arrangement and, left `...`, its assertion; reject drops either;
+    -- else draft
     redCue = case (reverse (blockDrafts b), blockKind b) of
       -- (one that would not parse was never written: draft again)
       (d : _, _) | draftBy d /= "you" -> if ("red: " <> unparsedDraft) `T.isPrefixOf` draftOutcome d then "draft" else ""
       -- a begin's stub is named once its test has a name of the person's
       (_, TestFor Nothing) | testName == stubName || not ("::" `T.isInfixOf` blockTestId b) -> "name it, then draft · reject drops it"
-      (_, TestFor Nothing) -> "assert, then draft · reject drops it"
-      (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
+      (_, TestFor _) -> "draft · reject drops it"
       _ -> "draft"
 
 -- | The reason a model's draft that would not parse begins with (it was

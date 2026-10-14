@@ -49,7 +49,7 @@ import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isSuffixOf, nub, sort, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -62,7 +62,7 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles)
+import Olifant.Generation.FillPhase (addImports, applyFills, assertionSpan, isImportLine, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
@@ -369,9 +369,9 @@ draftIn progress s root project lang b drafting killed filler = do
             _ -> Failure Nothing "the person asked for another draft" ""
       testText <- fromMaybe "" <$> lift (readText ws (T.unpack (fileOf (blockTestId b))))
       (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
-      pure (template, ("body", VerifyIds [blockTestId b]), [(T.unpack (fileOf (blockTestId b)), testText)])
+      pure (template, [("body", VerifyIds [blockTestId b])], [(T.unpack (fileOf (blockTestId b)), testText)])
     TestFor killing -> do
-      ((line, template), newTest, new) <- except (testDraftParts lang b text)
+      ((line, template), newTest, new, drafting') <- except (testDraftParts lang b text)
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
       verify <- case killing of
@@ -387,7 +387,8 @@ draftIn progress s root project lang b drafting killed filler = do
               | Just why <- trBroken run -> throwE ("the tests cannot run: " <> why)
               | otherwise -> pure (trPassed run)
           pure (VerifyKills (T.pack rel) (keep ++ new) new moduleRel (muText m))
-      pure (template, ("arrange", verify), [(m, t) | Just m <- [tested], Just t <- [moduleText]])
+      -- a drafted assertion is verified as the arrangement is (each with the other in place)
+      pure (template, [("arrange", verify)] ++ [("assertion", verify) | drafting'], [(m, t) | Just m <- [tested], Just t <- [moduleText]])
   -- and the project modules either one imports (ports, models), capped
   imported <- lift (importedContext ws lang (rel : map fst beside) (text : map snd beside))
   -- each fill the model offers, the last kept: a draft that fails its test
@@ -398,7 +399,7 @@ draftIn progress s root project lang b drafting killed filler = do
       progress' e = case e of
         Reindented hole f -> modifyIORef' attempts (M.insert hole f) >> progress e
         _ -> progress e
-      gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
+      gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = verify}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
       context = beside ++ imported ++ [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
       options = planOptions {poFiller = Just recording, poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = DraftStance}
@@ -410,20 +411,22 @@ draftIn progress s root project lang b drafting killed filler = do
   -- (an attempt that would not parse is not written: the file keeps its
   -- text, the draft is recorded red with Python's reason)
   (planned, outcome, edits, unwritten) <- case planHoles plan of
-    h : _ | HoleFilled _ _ <- phStatus h -> pure (M.findWithDefault text rel (planWrites plan), Right (), editsOfPlan s root plan, Nothing)
-    h : _
-      | HoleUnfilled why <- phStatus h ->
-          case M.lookup (holeName (phSite h)) tried of
-            Nothing -> throwE ("the model gave no draft: " <> why)
-            Just attempt -> do
-              let langOf = languageFor (catalogLanguages (prCatalog project))
-                  written = M.findWithDefault text rel (applyFills langOf (planWrites plan) [(phSite h, attempt)])
-                  (range, new) = smallestChange text written
-              lift (unparseable s root drafting lang rel text written) <&> \case
-                Just err -> (text, Left (Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
-                Nothing -> (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text], Nothing)
-      | HoleSkipped why <- phStatus h -> throwE why
-    _ -> throwE "the draft made no hole"
+    [] -> throwE "the draft made no hole"
+    hs
+      | all (\h -> case phStatus h of HoleFilled _ _ -> True; _ -> False) hs -> pure (M.findWithDefault text rel (planWrites plan), Right (), editsOfPlan s root plan, Nothing)
+      | why : _ <- [w | h <- hs, HoleSkipped w <- [phStatus h]] -> throwE why
+      | otherwise -> do
+          -- each hole left unfilled is written as its last attempt
+          let unfilled = [(h, w) | h <- hs, HoleUnfilled w <- [phStatus h]]
+              why = maybe "" snd (listToMaybe unfilled)
+              offered = [(phSite h, a) | (h, _) <- unfilled, Just a <- [M.lookup (holeName (phSite h)) tried]]
+          when (null offered) (throwE ("the model gave no draft: " <> why))
+          let langOf = languageFor (catalogLanguages (prCatalog project))
+              written = M.findWithDefault text rel (applyFills langOf (planWrites plan) offered)
+              (range, new) = smallestChange text written
+          lift (unparseable s root drafting lang rel text written) <&> \case
+            Just err -> (text, Left (Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
+            Nothing -> (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text], Nothing)
   let shown = fromMaybe planned unwritten
       changed = changedSpan text shown (blockSpan b)
       grown = length (T.splitOn "\n" shown) - length (T.splitOn "\n" text)
@@ -434,7 +437,11 @@ draftIn progress s root project lang b drafting killed filler = do
       -- an unwritten draft leaves the span where it was
       sp = maybe (l1, l2) (const (blockSpan b)) unwritten
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" shown)))
-  b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
+      -- a drafted assertion: its line, for the editor's cursor
+      assertionAt = case blockKind b of
+        TestFor _ | isNothing unwritten, Right (_, newTest, _, True) <- testDraftParts lang b text -> fst <$> assertionSpan (testName newTest) planned
+        _ -> Nothing
+  b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp, blockAssertion = assertionAt <|> blockAssertion drafting})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
 
@@ -539,18 +546,29 @@ parseSentinel :: Text
 parseSentinel = "OLIFANT_PARSE_ERROR:"
 
 -- | A test block's stub as a draft needs it: its arrangement's line and
--- hole, its new test and all its new tests; or why it cannot be drafted yet.
-testDraftParts :: Language -> Block -> Text -> Either Text ((Int, Template), TestId, [TestId])
+-- the template (its arrangement a hole, and its assertion too while it is
+-- still the stub's `assert ...`), its new test and all its new tests, and
+-- whether the assertion is drafted; or why it cannot be drafted yet.
+testDraftParts :: Language -> Block -> Text -> Either Text ((Int, Template), TestId, [TestId], Bool)
 testDraftParts lang b text = do
   let (s1, s2) = blockSpan b
-      candidates = [s1 .. s2] ++ [1 .. length (T.splitOn "\n" text)]
+      ls = T.splitOn "\n" text
+      candidates = [s1 .. s2] ++ [1 .. length ls]
       new = newTests b text
-  hole <- maybe (Left "the test has no arrangement left to draft: its placeholder is gone") Right (listToMaybe [(l, t) | l <- candidates, Right t <- [testDraftTemplate lang text l]])
+  line <- maybe (Left "the test has no arrangement left to draft: its placeholder is gone") Right (listToMaybe [l | l <- candidates, Right _ <- [testDraftTemplate lang text l Nothing]])
   -- the stub names its test `test_name` until the person types over it
   newTest <- case new of
     t : _ | all ((/= stubName) . testName) new -> Right t
     _ -> Left "name the new test first: its name is still the stub's"
-  pure (hole, newTest, new)
+  -- the stub's assertion below its arrangement, in the test, left as it was
+  let indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+      below = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l >= indentOf (ls !! (line - 1))) (drop line (zip [1 ..] ls))
+      killing = case blockKind b of
+        TestFor m -> m
+        Code -> Nothing
+      assertion = listToMaybe [(i, assertionInstruction (testName newTest) killing) | (i, l) <- below, T.strip l == stubAssertion]
+  template <- testDraftTemplate lang text line assertion
+  pure ((line, template), newTest, new, isJust assertion)
 
 -- | Run the block's test on the editor's text: red, green (then judged) or
 -- broken; its span is the lines new since the block began.
@@ -626,20 +644,17 @@ testNow s root project lang b killed applied = do
         other -> pure other
 
 -- | A new test's run as its test block takes it: Right when it fails at
--- its assertion (it tests what is not written yet), else why not.
+-- its assertion (its first assert line to its end: an assertion over
+-- several lines fails within it; it tests what is not written yet), else
+-- why not.
 redAtAssertion :: Block -> Text -> TestRun -> Either Failure ()
 redAtAssertion b now run = case newTests b now of
   [] -> Left (Failure Nothing "name the new test and write its assertion" "")
   t : _ -> case lookup t (trFailed run) of
     Nothing -> Left (Failure Nothing "the test passes before any code exists: it does not test the new behaviour" "")
     Just f
-      | fLine f == assertion t -> Right ()
+      | Just l <- fLine f, Just (a, z) <- assertionSpan (testName t) now, l >= a, l <= z -> Right ()
       | otherwise -> Left f {fMessage = "the test fails before its assertion: " <> fMessage f}
-  where
-    numbered = zip [1 :: Int ..] (T.splitOn "\n" now)
-    assertion t = case dropWhile (\(_, l) -> not (("def " <> testName t <> "(") `T.isPrefixOf` T.strip l)) numbered of
-      _ : rest -> listToMaybe [i | (i, l) <- rest, "assert" `T.isPrefixOf` T.strip l]
-      [] -> Nothing
 
 -- | Judge a green block: the mutants of its span's new lines (the whole
 -- span when none is new: a body begun on as it was), each run against the
@@ -816,7 +831,7 @@ blockReject path = withBlock path $ \s root project _ b killed -> do
 -- | A block as the editor shows it, with its killed count.
 blockJson :: Block -> Int -> Value
 blockJson b killed =
-  object
+  object $
     [ "id" .= blockId b
     , "file" .= blockFile b
     , "span" .= object ["first" .= fst (blockSpan b), "last" .= snd (blockSpan b)]
@@ -827,6 +842,7 @@ blockJson b killed =
     , "open" .= open b
     , "killed" .= killed
     ]
+      ++ ["assertion_line" .= l | Just l <- [blockAssertion b]]
   where
     judged = case blockState b of
       Judged ms -> ms

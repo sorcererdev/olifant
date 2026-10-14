@@ -11,6 +11,9 @@ module Olifant.Block.Draft
     uniqueTestName,
     testStub,
     instructionFor,
+    stubAssertion,
+    assertionInstruction,
+    snippetText,
   )
 where
 
@@ -39,20 +42,56 @@ draftTemplate _lang file (l1, l2) tid failure testText
   where
     ls = T.splitOn "\n" file
 
--- | A test file with the line holding a kill stub's placeholder (1-based)
--- made a stmt hole called @arrange@, at the line's indentation.
-testDraftTemplate :: Language -> Text -> Int -> Either Text Template
-testDraftTemplate lang testText line
+-- | A test file with the line holding a stub's placeholder (1-based)
+-- made a stmt hole called @arrange@, at the line's indentation; with
+-- ASSERTION (its line, still the stub's 'stubAssertion', and the
+-- instruction), that line made a stmt hole called @assertion@ too.
+testDraftTemplate :: Language -> Text -> Int -> Maybe (Int, Text) -> Either Text Template
+testDraftTemplate lang testText line assertion
   | line < 1 || line > length ls = Left ("no line " <> T.pack (show line))
-  | placeholder lang `T.isInfixOf` T.strip current = parseWith
-  | otherwise = Left ("line " <> T.pack (show line) <> " does not hold the stub's placeholder")
+  | not (placeholder lang `T.isInfixOf` T.strip current) = Left ("line " <> T.pack (show line) <> " does not hold the stub's placeholder")
+  | Just (a, _) <- assertion, a < 1 || a > length ls || T.strip (ls !! (a - 1)) /= stubAssertion = Left ("line " <> T.pack (show a) <> " is not the stub's assertion")
+  | otherwise =
+      either (Left . describeTemplateError) Right . parseTemplate $
+        T.intercalate "\n" (zipWith marked [1 ..] ls)
   where
     ls = T.splitOn "\n" testText
     current = ls !! (line - 1)
-    indent = T.takeWhile (`elem` [' ', '\t']) current
-    parseWith =
-      either (Left . describeTemplateError) Right . parseTemplate $
-        T.intercalate "\n" (take (line - 1) ls ++ [indent <> "{= ? arrange: stmt | " <> arrangeInstruction <> " =}"] ++ drop line ls)
+    indentOf = T.takeWhile (`elem` [' ', '\t'])
+    arrange = maybe arrangeInstruction (const (arrangeInstruction <> ", ending with `result = ` the call the test is about")) assertion
+    marked i l
+      | i == line = indentOf l <> "{= ? arrange: stmt | " <> arrange <> " =}"
+      | Just (a, instruction) <- assertion, i == a = indentOf l <> "{= ? assertion: stmt | " <> oneLine instruction <> " =}"
+      | otherwise = l
+
+-- | A stub's assertion as the editor expands it (its tab stop's text):
+-- left so, the draft writes it.
+stubAssertion :: Text
+stubAssertion = "assert ..."
+
+-- | What the model is asked for a stub's assertion: what the test's name
+-- means, one assert on `result`; a kill's must pass on the code and fail
+-- on its mutant.
+assertionInstruction :: Text -> Maybe Mutant -> Text
+assertionInstruction name killing =
+  oneLine $
+    "assert what '" <> words' <> "' means; one assert, the subject is `result`"
+      <> maybe "" (\m -> "; it passes on the code as it is and fails when line " <> T.pack (show (muLine m)) <> "'s `" <> muFrom m <> "` becomes `" <> muTo m <> "`") killing
+  where
+    words' = T.replace "_" " " (fromMaybe name (T.stripPrefix "test_" name))
+
+-- | A snippet's text as the editor leaves it expanded: each tab stop
+-- (`${1:text}`) its text.
+snippetText :: Text -> Text
+snippetText t = case T.breakOn "${" t of
+  (before, "") -> before
+  (before, rest) ->
+    let inner = T.drop 2 rest
+        (n, afterN) = T.span isDigit inner
+        (text, after) = T.breakOn "}" (T.drop 1 afterN)
+     in if not (T.null n) && ":" `T.isPrefixOf` afterN && not (T.null after)
+          then before <> text <> snippetText (T.drop 1 after)
+          else before <> "${" <> snippetText inner
 
 -- | A kill's stub: 'testStub', for a survivor to be killed by, its test
 -- named from the mutant ('stubNameFor'): where it goes, the stub, the name.
@@ -138,7 +177,8 @@ isIdent c = isIdentStart c || isDigit c
 
 -- | Where a new test goes (the line after the file's last non-blank line)
 -- and the stub: two blank lines, then a test whose name and assertion are
--- tab stops and whose arrangement is a stmt hole. Its name's tab stop
+-- tab stops and whose arrangement is a stmt hole (an assertion left as
+-- its tab stop's `...` is drafted too). Its name's tab stop
 -- holds NAME, or with none 'stubName' (`test_${1:name}`).
 testStub :: Language -> Text -> Maybe Text -> (Int, Text)
 testStub lang testText name = (lastNonBlank + 1, stub)

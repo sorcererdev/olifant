@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, assertionSpan) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -170,15 +170,22 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           | null (trFailed run) -> Right (True, "")
           | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
 
-    -- A test draft: the test must fail, and at exactly its assertion line.
+    -- A test draft: the test must fail, and at its assertion: at or after
+    -- its first assert line, before its end, as the fills left the file
+    -- (an arrangement or assertion over several lines moves it); a test
+    -- not found there, at LINE exactly.
     verifyRedAt lang tid line everything =
       runTestsIn (toolTester tools) lang [tid] everything <&> \case
         Left why -> Left (CheckFailed why)
         Right run
           | Just why <- trBroken run -> Right (False, "the test cannot run: " <> why)
-          | [(_, f)] <- trFailed run, fLine f == Just line -> Right (True, "")
+          | [(_, f)] <- trFailed run, Just l <- fLine f, inside l -> Right (True, "")
           | [(_, f)] <- trFailed run -> Right (False, "the test fails before its assertion (line " <> maybe "?" (T.pack . show) (fLine f) <> "): " <> fMessage f)
           | otherwise -> Right (False, "the test passes before any code exists: it does not test the new behaviour")
+      where
+        (file, name) = (T.unpack (fst (T.breakOn "::" tid)), snd (T.breakOnEnd "::" tid))
+        (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan name)
+        inside l = l >= from && l <= to
 
     -- A kill: the tests that passed before and the new ones (KEEP) pass on
     -- the files, and a NEW one fails with the mutant in place; a sibling
@@ -441,3 +448,21 @@ reindented comment f = case T.lines (T.dropWhile (== '\n') f) of
 -- for Python's indentation and syntax errors), not that it does not type.
 syntaxError :: Text -> Bool
 syntaxError m = any (`T.isInfixOf` m) ["IndentationError", "SyntaxError", "Unexpected indentation", "Unindent not expected", "Unindent amount does not match", "Expected indented block"]
+
+-- | The lines (1-based) where a test's assertion may fail in a test file:
+-- its first assert line to its last line (its def's body, the lines below
+-- it deeper than the def or blank); none without a def of NAME or an
+-- assert in it.
+assertionSpan :: Text -> Text -> Maybe (Int, Int)
+assertionSpan name text = case dropWhile (not . isDef . snd) numbered of
+  (_, d) : rest ->
+    let body = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l > indentOf d) rest
+        filled = [i | (i, l) <- body, not (T.null (T.strip l))]
+     in case [i | (i, l) <- body, "assert" `T.isPrefixOf` T.strip l] of
+          a : _ -> Just (a, maximum (a : filled))
+          [] -> Nothing
+  [] -> Nothing
+  where
+    numbered = zip [1 :: Int ..] (T.splitOn "\n" text)
+    indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+    isDef l = let st = T.strip l in any (\p -> (p <> name <> "(") `T.isPrefixOf` st) ["def ", "async def "]
