@@ -1125,6 +1125,15 @@ testsRunSpec = describe "olifant/tests/run" $ do
     withPython [("src/bistro/lonely.py", "def alone() -> int:\n    return 1\n")] $ \ports dir -> do
       (answer, _) <- inProcessWithConfig [] ports dir (openDoc "src/bistro/lonely.py" "python" >>= run)
       answer `shouldBe` Left "no test file for this module yet: src/bistro/lonely__test.py"
+  it "olifant/tests/file answers a module's test file, and a test file's module, as JSON" $
+    withPython [] $ \ports dir -> do
+      ((toTest, toModule), _) <- inProcessWithConfig [] ports dir $ do
+        let jump doc = blockMove (Proxy :: Proxy "olifant/tests/file") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]])
+        toTest <- openDoc moduleRel "python" >>= jump
+        toModule <- openDoc testRel "python" >>= jump
+        pure (toTest, toModule)
+      toTest `shouldBe` Right (object ["file" .= (dir </> testRel), "kind" .= ("test" :: Text), "exists" .= True])
+      toModule `shouldBe` Right (object ["file" .= (dir </> moduleRel), "kind" .= ("module" :: Text), "exists" .= True])
 
 -- | An `olifant/block/<move>` request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)

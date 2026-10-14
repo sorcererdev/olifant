@@ -526,6 +526,15 @@ handlers env =
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right answer -> respond (Right (testsJson answer))
+    , -- a file's other side: a module's test file (which may not exist
+      -- yet), or a test file's module; it reads only config and the file list
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/file")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/tests/file needs a textDocument" Nothing))
+          Just path ->
+            liftIO (withSnapshot env (testsFile path)) >>= \case
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right answer -> respond (Right (testsFileJson answer))
     , -- the loop's blocks: each move answers the block (null once it is
       -- finished) and pushes it
       blockRequest env (Proxy :: Proxy "olifant/block/begin") $ \job path params -> case positionOf params of
