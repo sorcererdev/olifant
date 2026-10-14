@@ -542,14 +542,13 @@ handlers env =
     , blockRequest env (Proxy :: Proxy "olifant/block/reject") $ \job path _ -> liftIO (finished (withSnapshot job (blockReject path)))
     , blockRequest env (Proxy :: Proxy "olifant/block/kill") $ \job path params -> case lineOf params of
         Nothing -> pure (Left "olifant/block/kill needs a line")
-        Just line -> liftIO (moved (withSnapshot job (blockKill path line)) (killAnswer job))
+        Just line -> stubbed job (withSnapshot job (blockKill path line)) Left
     , -- the editor's stub: a survivor's kill, or a function's new test
       blockRequest env (Proxy :: Proxy "olifant/block/stub") $ \job path params -> case lineOf params of
         Nothing -> pure (Left "olifant/block/stub needs a line")
-        Just line -> liftIO . moved (withSnapshot job (blockStub path line)) $ \case
-          StubKilled k -> killAnswer job k
-          -- the test block answers, its stub expanded after the edits (its import)
-          StubOpened tb (f, at, body, edits) -> pure (("snippet" .= object ["file" .= f, "line" .= at, "body" .= body]) : editsField edits, [tb])
+        Just line -> stubbed job (withSnapshot job (blockStub path line)) $ \case
+          StubKilled k -> Left k
+          StubOpened tb stub -> Right (tb, stub)
     , blockRequest env (Proxy :: Proxy "olifant/block/waive") $ \job path params -> case (lineOf params, reasonOf params) of
         (Just line, Just reason) -> liftIO (moved (withSnapshot job (blockWaive path line reason)) (\(b, edits) -> pure (editsField edits, [b])))
         _ -> pure (Left "olifant/block/waive needs a line and a reason")
@@ -563,8 +562,10 @@ handlers env =
 -- it changed (the first is the answer's); or why it is not open.
 type Moved = Either T.Text (BlockAnswer, [Block])
 
--- | The answer's block (null once finished: its file), and its other fields.
-data BlockAnswer = BlockAnswer (Either FilePath Block) [(Key.Key, Value)]
+-- | The answer's block (null once finished: its file), its other fields,
+-- and work to do once it is answered and its blocks pushed (a survivor's
+-- stub drafted: the editor expands the stub meanwhile).
+data BlockAnswer = BlockAnswer (Either FilePath Block) [(Key.Key, Value)] (LspM () ())
 
 -- | An `olifant/block/<move>` request on its document: answered from a
 -- thread of its own, refused with the move's sentence, and every block it
@@ -576,12 +577,13 @@ blockRequest env method work = requestHandler (SMethod_CustomMethod method) $ \r
     Just path ->
       work job path (req ^. L.params) >>= \case
         Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-        Right (BlockAnswer answer fields, changed) -> do
+        Right (BlockAnswer answer fields after, changed) -> do
           killedOf <- liftIO (killedCounts job)
           let json b = blockJson b (killedOf b)
           respond (Right (object (("block" .= either (const Aeson.Null) json answer) : fields)))
           either (\file -> pushBlock file Nothing) (const (pure ())) answer
           mapM_ (\b -> pushBlock (blockFile b) (Just (b, killedOf b))) changed
+          after
 
 -- | Each pending block's killed count (0 for one no longer pending).
 killedCounts :: Env -> IO (Block -> Int)
@@ -596,29 +598,53 @@ moved run answer =
   run >>= \case
     Left why -> pure (Left why)
     Right a -> answer a <&> \(fields, changed) -> case changed of
-      b : _ -> Right (BlockAnswer (Right b) fields, changed)
+      b : _ -> Right (BlockAnswer (Right b) fields (pure ()), changed)
       [] -> Left "the move changed no magic circle"
 
--- | A kill: the code block answers, with its test block's stub; the test
--- block it opened is pushed too.
-killAnswer :: Env -> (Block, FilePath, Int, T.Text) -> IO ([(Key.Key, Value)], [Block])
-killAnswer job (b, testFile, at, body) = do
-  test <- withSnapshot job (\s -> (s,) <$> blockFor testFile s)
-  pure (["snippet" .= object ["file" .= testFile, "line" .= at, "body" .= body]], b : [tb | Just (tb, _) <- [test]])
+-- | A stub: a kill's (the code block answers, with its test block's stub;
+-- the test block it opened is pushed too; drafted at once with a model:
+-- once answered, the draft runs and its edits come through applyEdit,
+-- the block pushed), or a function's new test's (the test block answers,
+-- its stub expanded after the edits: its import).
+stubbed :: Env -> IO (Either T.Text a) -> (a -> Either Killed (Block, (FilePath, Int, T.Text, [FileEdit]))) -> LspM () Moved
+stubbed job run which =
+  liftIO $
+    run >>= \case
+      Left why -> pure (Left why)
+      Right a -> case which a of
+        Left (b, testFile, at, body, later) -> do
+          test <- withSnapshot job (\s -> (s,) <$> blockFor testFile s)
+          pure (Right (BlockAnswer (Right b) [snippet testFile at body] (maybe (pure ()) (stubDrafted job) later), b : [tb | Just (tb, _) <- [test]]))
+        Right (tb, (f, at, body, edits)) -> pure (Right (BlockAnswer (Right tb) (snippet f at body : editsField edits) (pure ()), [tb]))
+  where
+    snippet f at body = "snippet" .= object ["file" .= f, "line" .= at, "body" .= body]
+
+-- | A survivor's stub's draft, under progress: its edits applied
+-- (applyEdit: no request asked for them), the block pushed; nothing
+-- landed: why, shown.
+stubDrafted :: Env -> StubDraft -> LspM () ()
+stubDrafted job later =
+  planProgress "drafting" later >>= \case
+    Right (b, edits) -> do
+      unless (null edits) $
+        void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: draft") (workspaceEdit edits)) (\_ -> pure ()))
+      killedOf <- liftIO (killedCounts job)
+      pushBlock (blockFile b) (Just (b, killedOf b))
+    Left why -> sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info ("Olifant: " <> why))
 
 -- | Draft (the editor's move; `next`, its older name, too): under progress (the model writes), with its edits.
 drafted :: Env -> FilePath -> LspM () Moved
 drafted job path =
   planProgress "drafting" (\progress -> withSnapshot job (blockDraft progress path)) <&> \case
     Left why -> Left why
-    Right (b, edits) -> Right (BlockAnswer (Right b) (editsField edits), [b])
+    Right (b, edits) -> Right (BlockAnswer (Right b) (editsField edits) (pure ()), [b])
 
 -- | Accept or reject: the block is finished (its answer null), with edits.
 finished :: IO (Either T.Text (Block, [FileEdit])) -> IO Moved
 finished run =
   run <&> \case
     Left why -> Left why
-    Right (b, edits) -> Right (BlockAnswer (Left (blockFile b)) (editsField edits), [])
+    Right (b, edits) -> Right (BlockAnswer (Left (blockFile b)) (editsField edits) (pure ()), [])
 
 editsField :: [FileEdit] -> [(Key.Key, Value)]
 editsField edits = ["edits" .= workspaceEdit edits | not (null edits)]

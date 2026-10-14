@@ -8,6 +8,8 @@ module Olifant.Server.Block
   , blockBegin
   , blockStart
   , blockDraft
+  , StubDraft
+  , draftStub
   , blockTest
   , blockJudge
   , blockAccept
@@ -38,6 +40,7 @@ module Olifant.Server.Block
   ) where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, unless, void, when)
 import Control.Monad.Trans.Class (lift)
@@ -315,12 +318,39 @@ blockDraft progress path = withBlock path $ \s root project lang b killed ->
             Left why -> pure (Left why)
             Right drafting -> do
               pushed s drafting killed
-              runExceptT (draftIn progress s root project lang b drafting killed filler) >>= \case
-                Right done -> pure (Right done)
-                Left why -> do
-                  -- nothing lands: back to the state it began from, unless the block moved on
-                  settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
-                  pure (Left why)
+              draftOrRestore progress s root project lang b drafting killed filler Nothing
+
+-- | A survivor's stub drafted at once (its test named from the mutant):
+-- the work to run once the stub is answered, its test block Drafting
+-- (logged) meanwhile; none without a model (the stub waits for draft).
+type StubDraft = (ProgressEvent -> IO ()) -> IO (Either Text (Block, [FileEdit]))
+
+-- | 'StubDraft' for the test block TB, its file STUBBED as the editor
+-- leaves it once it expands the stub: the draft plans on that text and
+-- lands on the editor's file once the stub is in it, unless the person
+-- typed in it meanwhile (their text stands).
+draftStub :: ServerState -> FilePath -> Project -> Language -> Block -> Text -> IO (Maybe StubDraft)
+draftStub s root project lang tb stubbed =
+  fillerFor True s project >>= \case
+    Right (Just filler) | Right _ <- testDraftParts lang tb stubbed ->
+      settle s root 0 "drafting" "the survivor's stub is drafted at once" StartDraft tb <&> \case
+        -- planned on the file with the stub in it
+        Right drafting ->
+          let docs = M.insert (blockFile tb) (maybe 0 fst (M.lookup (blockFile tb) (ssDocs s)), stubbed) (ssDocs s)
+              project' = project {prWorkspace = workspaceOf s {ssDocs = docs} root}
+           in Just (\progress -> draftOrRestore progress s root project' lang tb drafting 0 filler (Just stubbed))
+        Left _ -> Nothing
+    _ -> pure Nothing
+
+-- | The draft of B, stored as DRAFTING: landed, or, when nothing lands,
+-- the block back in the state it began from (unless it moved on).
+draftOrRestore :: (ProgressEvent -> IO ()) -> ServerState -> FilePath -> Project -> Language -> Block -> Block -> Int -> ModelFiller IO -> Maybe Text -> IO (Either Text (Block, [FileEdit]))
+draftOrRestore progress s root project lang b drafting killed filler stubbed =
+  runExceptT (draftIn progress s root project lang b drafting killed filler stubbed) >>= \case
+    Right done -> pure (Right done)
+    Left why -> do
+      settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
+      pure (Left why)
 
 -- | A failed draft put its block's state back: pushed, or, when the file
 -- as the editor has it now is no longer the text that state was
@@ -349,14 +379,16 @@ restored s root project lang killed back = do
 pushed :: ServerState -> Block -> Int -> IO ()
 pushed s b killed = readIORef (ssOnBlock s) >>= \push -> push b killed
 
--- | The draft itself, the block (as it was, and DRAFTING, as stored) in hand.
-draftIn :: (ProgressEvent -> IO ()) -> ServerState -> FilePath -> Project -> Language -> Block -> Block -> Int -> ModelFiller IO -> ExceptT Text IO (Block, [FileEdit])
-draftIn progress s root project lang b drafting killed filler = do
+-- | The draft itself, the block (as it was, and DRAFTING, as stored) in
+-- hand; on its file as it is, or STUBBED: as the editor will have it once
+-- it expands a stub ('draftStub').
+draftIn :: (ProgressEvent -> IO ()) -> ServerState -> FilePath -> Project -> Language -> Block -> Block -> Int -> ModelFiller IO -> Maybe Text -> ExceptT Text IO (Block, [FileEdit])
+draftIn progress s root project lang b drafting killed filler stubbed = do
   let file = blockFile b
       rel = makeRelative root file
       ws = prWorkspace project
       started = fst <$> M.lookup file (ssDocs s)
-  text <- lift (readText ws rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
+  text <- maybe (lift (readText ws rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure) pure stubbed
   -- the text the draft plans on is seen: an edit made before it (its test
   -- still to come) does not knock the draft out; one made after it does
   lift (modifyIORef' (ssBlockSeen s) (M.insert file text))
@@ -406,7 +438,7 @@ draftIn progress s root project lang b drafting killed filler = do
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
   latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
-  when (latest /= started) (throwE "the file changed while drafting; your text stands")
+  when (isNothing stubbed && latest /= started) (throwE "the file changed while drafting; your text stands")
   tried <- lift (readIORef attempts)
   -- (an attempt that would not parse is not written: the file keeps its
   -- text, the draft is recorded red with Python's reason)
@@ -441,9 +473,35 @@ draftIn progress s root project lang b drafting killed filler = do
       assertionAt = case blockKind b of
         TestFor _ | isNothing unwritten, Right (_, newTest, _, True) <- testDraftParts lang b text -> fst <$> assertionSpan (testName newTest) planned
         _ -> Nothing
-  b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp, blockAssertion = assertionAt <|> blockAssertion drafting})
+  -- a stub's draft lands on the editor's file once the stub is in it, as
+  -- the draft planned on it (its end aside: the editor's trailing lines)
+  (onText, edits') <- case stubbed of
+    Nothing -> pure (planned, edits)
+    Just _ -> do
+      (version, now) <- lift (stubInEditor s file (blockBase b) text)
+      unless (T.stripEnd now == T.stripEnd text) (throwE "the file changed while drafting; your text stands")
+      let landed = T.stripEnd planned <> T.drop (T.length (T.stripEnd now)) now
+      -- the editor's text is the one seen: the draft applied is an edit, tested
+      lift (modifyIORef' (ssBlockSeen s) (M.insert file now))
+      pure (landed, [FileEdit file version False range new | landed /= now, let (range, new) = smallestChange now landed])
+  b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just onText) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp, blockAssertion = assertionAt <|> blockAssertion drafting})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
-  if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+  if null edits' && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits')
+
+-- | The file as the editor has it once a stub is in it (its text no
+-- longer BEFORE, the file without it), its version; waited for (five
+-- seconds at most: the editor expands the stub as the answer arrives).
+-- No live documents: STUBBED is the file.
+stubInEditor :: ServerState -> FilePath -> Text -> Text -> IO (Maybe Int, Text)
+stubInEditor s file before stubbed = case ssLiveDoc s of
+  Nothing -> pure (fst <$> M.lookup file (ssDocs s), stubbed)
+  Just live -> go live (50 :: Int)
+  where
+    go live n =
+      live file >>= \case
+        Just (v, t) | n == 0 || T.stripEnd t /= T.stripEnd before -> pure (Just v, t)
+        Nothing | n == 0 -> pure (Nothing, before)
+        _ -> threadDelay 100000 >> go live (n - 1)
 
 -- | The project modules a draft sees beside its file and the file beside it
 -- (KNOWN, never repeated): the Python files their TEXTS import, an absolute

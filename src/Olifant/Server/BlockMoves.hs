@@ -4,7 +4,7 @@
 -- new test, and the editor's edits
 -- of a block's file, told apart: a draft it applied, the person's edit
 -- inside the span, or an edit elsewhere (nothing to do).
-module Olifant.Server.BlockMoves (blockKill, blockStub, Stubbed (..), blockWaive, blockChanged, blockEdited, rejectDeleted) where
+module Olifant.Server.BlockMoves (blockKill, Killed, blockStub, Stubbed (..), blockWaive, blockChanged, blockEdited, rejectDeleted) where
 
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
@@ -18,12 +18,12 @@ import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Project (..))
-import Olifant.Block (Block (..), BlockState (..), Draft (..), Kind (..), Move (..), begin, hud, killStub, killTarget, pending, survivors, uniqueTestName)
+import Olifant.Block (Block (..), BlockState (..), Draft (..), Kind (..), Move (..), begin, hud, killStub, killTarget, pending, snippetText, survivors, uniqueTestName)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
 import Olifant.Newness (newLinesOf)
-import Olifant.Server.Block (Site (..), appendStep, awaitingVerdict, blockFor, claim, fileOf, functionAt, openTestStub, settle, settleOn, siteAt, siteFile, siteTestFile, spanEdited, testNow, tshow, withBlock)
+import Olifant.Server.Block (Site (..), StubDraft, appendStep, draftStub, awaitingVerdict, blockFor, claim, fileOf, functionAt, openTestStub, settle, settleOn, siteAt, siteFile, siteTestFile, spanEdited, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -33,8 +33,10 @@ import System.FilePath (makeRelative, (</>))
 -- line has none ('killTarget'): the code block stays as it is;
 -- a test block opens in its test file on the stub the editor expands — the
 -- test file, the line to put it at, and the stub (tab stops for the test's
--- name and assertion, a hole for its arrangement).
-blockKill :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, FilePath, Int, Text))
+-- name and assertion, a hole for its arrangement) — and, with a model,
+-- is drafted at once (its test is named from the mutant): the draft to run
+-- once the stub is answered ('draftStub').
+blockKill :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text Killed)
 blockKill path line = withBlock path $ \s root project lang b killed -> runExceptT $ do
   when (blockKind b /= Code) (throwE stubFromModule)
   m <- either throwE pure (killTarget line b)
@@ -55,7 +57,15 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
   lift $ do
     modifyIORef' (ssBlockSeen s) (M.insert testFile testText)
     appendStep (ssPorts s) root tb "begin" (hud tb)
-  pure (b', testFile, at, body)
+  -- the test file as the editor leaves it once it expands the stub
+  let ls = T.splitOn "\n" testText
+      stubbed = T.intercalate "\n" (take (at - 1) ls ++ [snippetText body] ++ drop at ls)
+  later <- lift (draftStub s root project lang tb stubbed)
+  pure (b', testFile, at, body, later)
+
+-- | A kill: the code block, the test file, the stub's line and text, and
+-- the stub's draft, begun ('draftStub'), when a model drafts it.
+type Killed = (Block, FilePath, Int, Text, Maybe StubDraft)
 
 -- | A stub in a test's own circle: survivors are the code circle's.
 stubFromModule :: Text
@@ -68,7 +78,7 @@ pendingTest rel = "a magic circle is open in " <> T.pack rel <> ": accept or rej
 -- | What a stub opened: a kill's ('blockKill': the code block, and its
 -- test block's stub), or a new test's for a function (its test block, and
 -- the stub with the edits the editor applies first).
-data Stubbed = StubKilled (Block, FilePath, Int, Text) | StubOpened Block (FilePath, Int, Text, [FileEdit])
+data Stubbed = StubKilled Killed | StubOpened Block (FilePath, Int, Text, [FileEdit])
 
 -- | Stub a test at a line (1-based): in a judged code circle with a
 -- survivor left, the kill ('blockKill': the line's survivor, or the
@@ -185,6 +195,9 @@ spanEdit path s0 = do
   own <- M.lookup file <$> readIORef (ssBlocks s0)
   case own of
     Nothing -> pure (s0, Nothing)
+    -- a stub being drafted: its expansion, or the person's typing, is the
+    -- draft's to settle (it lands only on the stub as it planned)
+    Just (b, _) | TestFor _ <- blockKind b, Drafting _ <- blockState b -> pure (s0, Nothing)
     Just (b, killed) ->
       projectFor file s0 >>= \case
         (s, Nothing) -> pure (s, Nothing)
