@@ -244,9 +244,12 @@ whose module is gone runs itself.
 - **A draft that fails its test is written anyway**, its last attempt marked red, for you to
   finish by hand; a model that offered nothing changes nothing. A Python draft that would not
   parse (Python's own parser says why: `red: the draft does not parse: IndentationError: …`)
-  is recorded red and not written: the span keeps its text, and `draft` is next. A draft sees
-  the test file (a test's draft, the module), the project modules either one imports (ports,
-  models; at most 8 files, 120 lines each), and the rejected drafts.
+  is recorded red and not written: the span keeps its text, and `draft` is next. The check
+  needs `python3` on the server's PATH; without it (or when the file did not parse before
+  the draft either) the draft is written as before, and the step log has a `parse` step
+  saying `gate off: …`. A draft sees the test file (a test's draft, the module), the project
+  modules either one imports (ports, models; at most 8 files, 120 lines each), and the
+  rejected drafts.
 - **One circle per file**, and one in a test file.
 - **The function under test is found by a method call** (`.NAME(` in the test, its assertions
   first). A test of a bare function (`assert add(1, 2) == 3`) is not located yet: begin in the

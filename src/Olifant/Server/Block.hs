@@ -65,7 +65,7 @@ import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, proje
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), Verifier (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
+import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), Verifier (..), describeCheckFailure, describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
@@ -418,8 +418,8 @@ draftIn progress s root project lang b drafting killed filler = do
               let langOf = languageFor (catalogLanguages (prCatalog project))
                   written = M.findWithDefault text rel (applyFills langOf (planWrites plan) [(phSite h, attempt)])
                   (range, new) = smallestChange text written
-              lift (unparseable s lang rel written) <&> \case
-                Just err -> (text, Left (Failure Nothing ("the draft does not parse: " <> err) ""), [], Just written)
+              lift (unparseable s root drafting lang rel text written) <&> \case
+                Just err -> (text, Left (Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
                 Nothing -> (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text], Nothing)
       | HoleSkipped why <- phStatus h -> throwE why
     _ -> throwE "the draft made no hole"
@@ -492,24 +492,44 @@ importedFiles = 8
 importedLines = 120
 importedTotal = 600
 
--- | Why a Python file would not parse (its first line, by Python's own
--- parser run through the verify port), or Nothing: it parses, it is not
--- Python, or no Python could run (the draft is then written as before).
-unparseable :: ServerState -> Language -> FilePath -> Text -> IO (Maybe Text)
-unparseable s lang rel t
+-- | Why the draft's file (AFTER) would not parse, by Python's own parser
+-- run through the verify port, when the file without it (BEFORE) does; or
+-- Nothing: it parses, it is not Python, or the gate is off for this draft
+-- (no Python could run, it failed without saying, or the file did not
+-- parse before the draft either), which the step log records.
+unparseable :: ServerState -> FilePath -> Block -> Language -> FilePath -> Text -> Text -> IO (Maybe Text)
+unparseable s root b lang rel before after
   | langName lang /= "python" = pure Nothing
   | otherwise =
-      runVerify (pVerifier (ssPorts s) (ssCancel s)) lang ["python3", "-I", "-c", parseScript, T.pack rel] (M.singleton rel t) <&> \case
-        Right (False, out) | err : _ <- filter (not . T.null) (map T.strip (T.lines out)), not ("the tests timed out" `T.isPrefixOf` err) -> Just err
-        _ -> Nothing
+      parsing after >>= \case
+        Right Nothing -> pure Nothing
+        Right (Just err) ->
+          parsing before >>= \case
+            Right Nothing -> pure (Just err)
+            Right (Just _) -> off "the file does not parse without the draft either"
+            Left why -> off why
+        Left why -> off why
   where
+    off why = appendStep (ssPorts s) root b "parse" ("gate off: " <> why) >> pure Nothing
+    -- Right: the parser's reason, if any; Left: why it could not say
+    parsing t =
+      runVerify (pVerifier (ssPorts s) (ssCancel s)) lang ["python3", "-I", "-c", parseScript, T.pack rel] (M.singleton rel t) <&> \case
+        Left f -> Left (describeCheckFailure f)
+        Right (ok, out)
+          | err : _ <- [T.strip r | l <- T.lines out, Just r <- [T.stripPrefix parseSentinel (T.strip l)]] -> Right (Just err)
+          | ok -> Right Nothing
+          | otherwise -> Left (fromMaybe "python3 failed" (listToMaybe (filter (not . T.null) (map T.strip (T.lines out)))))
+    -- only a syntax error is the sentinel; any other failure is no verdict
     parseScript = T.unlines
       [ "import ast, sys"
       , "try:"
       , "    ast.parse(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1])"
       , "except SyntaxError as e:"
-      , "    print(f'{type(e).__name__}: {e.msg} (line {e.lineno})')"
-      , "    sys.exit(1)" ]
+      , "    print(f'" <> parseSentinel <> " {type(e).__name__}: {e.msg} (line {e.lineno})')" ]
+
+-- | The line the parse script begins a syntax error's reason with.
+parseSentinel :: Text
+parseSentinel = "OLIFANT_PARSE_ERROR:"
 
 -- | A test block's stub as a draft needs it: its arrangement's line and
 -- hole, its new test and all its new tests; or why it cannot be drafted yet.
@@ -827,6 +847,7 @@ appendStep ports root b move result = do
       who = case move of
         "draft" -> maybe "model" draftBy (listToMaybe (reverse (blockDrafts b)))
         "judge" -> "mutation"
+        "parse" -> "olifant"
         _ -> "person"
       entry = T.intercalate "\t" [T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now), "block " <> tshow (blockId b), move, who, T.unwords (T.words result)]
   void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))

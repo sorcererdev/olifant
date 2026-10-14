@@ -2365,8 +2365,11 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
   mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill
   phase read it: a `Reindented` fill as read), unless, in Python, it would not parse
-  (`unparseable`: `ast.parse` through the verify port, `python3 -I`): then the draft is
-  recorded red with Python's reason and nothing is written. Its edits are
+  (`unparseable`: `ast.parse` through the verify port, `python3 -I`, a syntax error printed
+  after `parseSentinel`) while the file without it does: then the draft is recorded red with
+  Python's reason (`unparsedDraft`) and nothing is written. Any other outcome (no python3, a
+  traceback, the file unparseable before) turns the gate off for that draft, logged as a
+  `parse` step. Its edits are
   versioned, so the editor applies them only to the buffer it planned on. `judgeIn` runs the
   test file once unmutated (the baseline: its passing tests are the judges, its wall time sets
   each mutant's timeout, `judgeTimeout`, through `pTesterWithin`), mutates the span's lines new

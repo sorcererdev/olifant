@@ -19,6 +19,7 @@ module Olifant.Block
     testDraftTemplate,
     killStub,
     stubName,
+    unparsedDraft,
     stubNameFor,
     uniqueTestName,
     testStub,
@@ -212,12 +213,17 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
     -- either; else draft
     redCue = case (reverse (blockDrafts b), blockKind b) of
       -- (one that would not parse was never written: draft again)
-      (d : _, _) | draftBy d /= "you" -> if "red: the draft does not parse" `T.isPrefixOf` draftOutcome d then "draft" else ""
+      (d : _, _) | draftBy d /= "you" -> if ("red: " <> unparsedDraft) `T.isPrefixOf` draftOutcome d then "draft" else ""
       -- a begin's stub is named once its test has a name of the person's
       (_, TestFor Nothing) | testName == stubName || not ("::" `T.isInfixOf` blockTestId b) -> "name it, then draft · reject drops it"
       (_, TestFor Nothing) -> "assert, then draft · reject drops it"
       (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
       _ -> "draft"
+
+-- | The reason a model's draft that would not parse begins with (it was
+-- never written: draft is next).
+unparsedDraft :: Text
+unparsedDraft = "the draft does not parse"
 
 -- | Not yet Accepted or Rejected.
 pending :: Block -> Bool
