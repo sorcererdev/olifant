@@ -7,7 +7,7 @@ import Hedgehog (Gen)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Block
-import Olifant.Language (Failure (..), Language (..), parseLanguage)
+import Olifant.Language (Failure (..), Language (..), TestRun (..), parseLanguage)
 import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
 import Test.Hspec
@@ -146,6 +146,20 @@ spec = describe "Olifant.Block" $ do
     hud (step' (Drafted "    table = Table()" "qwen" (Left red)) (step' StartDraft stub)) `shouldBe` "▸ test_handle · draft 1 · red: AssertionError: assert None == Ok(None)"
     let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py::test_boundary_line2" (Failure Nothing "" "")
     hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft killed))) `shouldBe` "▸ test_boundary_line2 · draft 1 · clean ✓ accept"
+  it "(h5) a test of the file that passed when the circle began and fails now is the circle's red, with its own cue" $ do
+    let kept = b0 {blockKeep = ["src/a__test.py::test_g", "src/a__test.py::test_h"]}
+        sibling = Failure (Just 20) "assert 0 == 1" "E   assert 0 == 1"
+        run passed failed = TestRun passed failed Nothing
+    -- the block's own test red: today's red
+    outcomeOf kept (run ["src/a__test.py::test_g"] [("src/a__test.py::test_h", sibling), ("src/a__test.py::test_f", red)]) `shouldBe` Left red
+    -- else the first kept test that failed: its line, named in its message
+    outcomeOf kept (run ["src/a__test.py::test_f"] [("src/a__test.py::test_h", sibling)]) `shouldBe` Left (Failure (Just 20) "test_h no longer passes" "assert 0 == 1\nE   assert 0 == 1")
+    outcomeOf kept (run ["src/a__test.py::test_f", "src/a__test.py::test_g", "src/a__test.py::test_h"] []) `shouldBe` Right ()
+    let regressed = either id (error "green") (outcomeOf kept (run [] [("src/a__test.py::test_h", sibling)]))
+    hud (step' (Edited (2, 2) (Left regressed)) kept) `shouldBe` "▸ test_f · draft 1 · red: test_h no longer passes · fix or reject"
+    hud (step' (Drafted "y" "qwen" (Left regressed)) kept) `shouldBe` "▸ test_f · draft 1 · red: test_h no longer passes · fix or reject"
+    -- a block that keeps nothing reads the message as today's
+    hud (step' (Edited (2, 2) (Left regressed)) b0) `shouldBe` "▸ test_f · draft 1 · red: test_h no longer passes · draft"
   it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) b0
         first = m {muLine = 5, muOperator = "number", muFrom = "1", muTo = "2"}

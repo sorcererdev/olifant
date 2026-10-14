@@ -14,6 +14,8 @@ module Olifant.Block
     survivors,
     killTarget,
     hud,
+    outcomeOf,
+    keptRed,
     pending,
     draftTemplate,
     testDraftTemplate,
@@ -33,7 +35,7 @@ import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
-import Olifant.Language (Failure (..), TestId)
+import Olifant.Language (Failure (..), TestId, TestRun (..))
 import Olifant.Mutate (Mutant (..))
 
 -- | A code block, or a test block (red at its assert; a kill also fails on the mutant).
@@ -68,7 +70,10 @@ data Block = Block
     -- | a new test's block opened for a function (by a stub or a begin):
     -- its name and its def's line (1-based) in the module, where the
     -- function begins once the test is accepted
-    blockSubject :: Maybe (Text, Int)
+    blockSubject :: Maybe (Text, Int),
+    -- | a code block's: the tests of its test file that passed when it
+    -- began (its own test aside); green is its test and all of these passing
+    blockKeep :: [TestId]
   }
   deriving stock (Eq, Show)
 
@@ -94,7 +99,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing
+  Block i file kind base sp test (Red failure) [] base 0 Nothing []
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
@@ -192,6 +197,7 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       | null (blockDrafts b) = ""
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "
     statePart = case blockState b of
+      Red f | keptRed b f -> "red: " <> fMessage f <> " · fix or reject"
       Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, redCue] of
         [] -> "red"
         parts -> T.intercalate " · " parts
@@ -219,6 +225,26 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       (_, TestFor Nothing) -> "assert, then draft · reject drops it"
       (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
       _ -> "draft"
+
+-- | A code block's test run as the circle takes it: its own test red is
+-- its red; else the first test it keeps (one that passed when it began)
+-- that fails, named in its red (the runner's message after), at its line;
+-- else green. (A run that could not judge is the caller's: cannot run.)
+outcomeOf :: Block -> TestRun -> Either Failure ()
+outcomeOf b run = case (lookup (blockTestId b) (trFailed run), [(t, f) | t <- blockKeep b, Just f <- [lookup t (trFailed run)]], trFailed run) of
+  (Just f, _, _) -> Left f
+  (_, (t, f) : _, _) -> Left (Failure (fLine f) (noLongerPasses t) (T.intercalate "\n" (filter (not . T.null) [fMessage f, fOutput f])))
+  -- a failure of no test it knows (a runner that ran more): red as it says
+  (_, _, (_, f) : _) -> Left f
+  _ -> Right ()
+
+-- | Whether a red is a kept test's (see 'outcomeOf'), not the block's own test's.
+keptRed :: Block -> Failure -> Bool
+keptRed b f = any ((== fMessage f) . noLongerPasses) (blockKeep b)
+
+-- | A kept test's red, as the HUD names it.
+noLongerPasses :: TestId -> Text
+noLongerPasses t = snd (T.breakOnEnd "::" t) <> " no longer passes"
 
 -- | The reason a model's draft that would not parse begins with (it was
 -- never written: draft is next).
