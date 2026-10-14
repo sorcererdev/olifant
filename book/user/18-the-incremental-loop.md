@@ -23,7 +23,7 @@ cannot be rubber-stamped.
    (red, and the next step), then `drafting…` while the model writes (only `reject` is open then).
 3. The draft lands: `▸ test_closes_a_table · draft 1 · green · judging…`. You read it. It is the
    *least* code that passes (the fake-it stance, on purpose): if it is too simple, your test was;
-   add a case.
+   add a case. Green means the file's other tests that passed when the circle began still pass.
 4. `· 1 survivor · stub a test or waive`. Line 53's `>` → `>=` survives (the note on the line says so,
    `> → >= survives · stub / waive`): no test notices the boundary. You decide it matters. `stub`
    (`<leader>mcs`) opens a new test stub; you write its assertion; the arrangement is
@@ -76,8 +76,8 @@ assertion, `· stub a test or waive`, `✓ accept`.
 | move | key | when | what it does |
 |---|---|---|---|
 | `begin` | `<leader>mcb` | on a test, or in a function | on a red test: a circle around the body of the function it calls, red; the draft starts. On a function whose tests pass: a circle around its body, judged at once. On a function no test calls: the stub of its first test at the end of its test file, a circle of its own in the test file (accepted, the function begins on it) |
-| `draft` | `<leader>mcd` | red, green or judged | asks for the first draft, or another candidate when one exists: the span as a hole a model fills, verified by the circle's test (below); the drafts so far go to the model as *not this, rejected by the person* |
-| `test` | | red, green, can't run | run the circle's test on the buffer's text now |
+| `draft` | `<leader>mcd` | red, green or judged | asks for the first draft, or another candidate when one exists: the span as a hole a model fills, verified by the circle's test and the file's tests that passed when it began (below); the drafts so far go to the model as *not this, rejected by the person* |
+| `test` | | red, green, can't run | run the circle's test (and the file's tests that passed when it began) on the buffer's text now |
 | `stub` | `<leader>mcs` | in a function of a module with no circle, or judged with a survivor | judged with a survivor: the survivor on the cursor's line, or the top-ranked one when the line has none, a test stub at the end of the test file in its own circle. With no circle in the module, in a function (with tests or without): a new test's stub for it, named `test_<function>` (`_2`, `_3`, … when taken), as `begin` opens for a function no test calls (on the wire `olifant/block/stub`; `:DurandalCircle kill` still works) |
 | `waive` | `<leader>mcw` | a survivor on the cursor's line | asks why (`vim.ui.input`); writes the reason on the line |
 | `accept` | `<leader>mca` | judged, no unwaived survivor | done: the circle's marks go |
@@ -273,6 +273,10 @@ whose module is gone runs itself.
 - **`name the new test first`** — `draft` on a new test's stub (from `begin`) whose name is still
   the stub's (`test_name`): type it (and the assertion), then draft. A stub for a survivor is
   named already.
+- **`red: test_x no longer passes · fix or reject`** — the circle's test passes, but a test of
+  its file that passed when the circle began fails now (a draft, or your edit, broke it): the
+  circle is red and accept is refused. Fix the body so both pass (edit it, or `draft` again), or
+  `reject` it.
 - **`the magic circle moved on`** — a draft, a test or a judge finished after you rejected or
   accepted the circle, or after another move (a later edit's test): nothing lands, and the step log says
   `stale:` before what it would have been.
