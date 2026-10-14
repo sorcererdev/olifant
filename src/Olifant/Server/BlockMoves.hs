@@ -9,6 +9,7 @@ module Olifant.Server.BlockMoves (blockKill, blockStub, Stubbed (..), blockWaive
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
+import Data.Functor ((<&>))
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
 import Data.List (nub)
 import Data.Map.Strict qualified as M
@@ -35,7 +36,7 @@ import System.FilePath (makeRelative, (</>))
 -- name and assertion, a hole for its arrangement).
 blockKill :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, FilePath, Int, Text))
 blockKill path line = withBlock path $ \s root project lang b killed -> runExceptT $ do
-  when (blockKind b /= Code) (throwE "stub a test from the code's magic circle, in its module")
+  when (blockKind b /= Code) (throwE stubFromModule)
   m <- either throwE pure (killTarget line b)
   let testRel = T.unpack (fileOf (blockTestId b))
       testFile = normalisePath (root </> testRel)
@@ -56,6 +57,10 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
     appendStep (ssPorts s) root tb "begin" (hud tb)
   pure (b', testFile, at, body)
 
+-- | A stub in a test's own circle: survivors are the code circle's.
+stubFromModule :: Text
+stubFromModule = "stub a test from the code's magic circle, in its module"
+
 -- | Why a stub waits: a circle is open in its test file.
 pendingTest :: FilePath -> Text
 pendingTest rel = "a magic circle is open in " <> T.pack rel <> ": accept or reject it there first"
@@ -67,29 +72,37 @@ data Stubbed = StubKilled (Block, FilePath, Int, Text) | StubOpened Block (FileP
 
 -- | Stub a test at a line (1-based): in a judged code circle with a
 -- survivor left, the kill ('blockKill': the line's survivor, or the
--- top-ranked); else, in a function of a module, a new test's stub for it
--- at the end of its test file (as a begin opens one for a function no test
--- calls), its test named `test_<function>`, or `_2`, `_3`, … when the file
--- has that name already. A code circle not judged yet waits for its verdict.
+-- top-ranked); else, with no circle in the module and the cursor in one of
+-- its functions, a new test's stub for it at the end of its test file (as
+-- a begin opens one for a function no test calls), its test named
+-- `test_<function>`, or `_2`, `_3`, … when the file has that name already.
+-- A circle open in the module with no survivor to take is finished first
+-- (one circle before the next case begins), each state saying how; a test
+-- file is not where a stub comes from.
 blockStub :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text Stubbed)
 blockStub path line s0 =
   blockFor path s0 >>= \case
     Just (b, _) | blockKind b == Code -> case blockState b of
       Judged _ | not (null (survivors b)) -> fmap (fmap StubKilled) <$> blockKill path line s0
-      -- beside a clean circle: the new test's block is the test file's alone
-      Judged _ -> forFunction (const [])
+      Judged _ ->
+        projectFor (blockFile b) s0 <&> \(s, found) ->
+          (s, Left ("accept or reject the circle in " <> T.pack (maybe (blockFile b) (\(root, _) -> makeRelative root (blockFile b)) found) <> " first, then stub"))
+      Red _ -> pure (s0, Left "the circle is red: draft it, or reject it, then stub")
+      Broken _ -> pure (s0, Left "the circle cannot run: fix it, then test")
       _ -> pure (s0, Left "the circle is being tested; stub once its verdict lands")
-    _ -> forFunction (\site -> [siteFile site])
-  where
-    forFunction others =
+    -- a test's own circle, in its test file: the kill's sentence
+    Just _ -> pure (s0, Left stubFromModule)
+    Nothing ->
       siteAt path line s0 >>= \case
         (s, Left why) -> pure (s, Left why)
         (s, Right site) -> fmap (s,) . runExceptT $ do
+          when (siteOnTest site) (throwE "stub a test from its module")
           fn <- lift (functionAt s site line) >>= maybe (throwE "put the cursor in a function to stub a test for it") pure
+          -- refused before a block number is taken ('claim' refuses it too)
           busy <- lift (M.member (siteTestFile site) <$> readIORef (ssBlocks s))
           when busy (throwE (pendingTest (siteTestRel site)))
           let name = uniqueTestName ("test_" <> fn) (fromMaybe "" (siteTestText site))
-          uncurry StubOpened <$> openTestStub s site fn (Just name) (others site) (pendingTest (siteTestRel site))
+          uncurry StubOpened <$> openTestStub s site fn (Just name) [siteFile site] (pendingTest (siteTestRel site))
 
 -- | Waive the unwaived survivors on a line, for a reason: one comment per
 -- operator, written on its line (one edit), and each survivor waived.

@@ -589,12 +589,12 @@ reorder s decider moduleText testText push file =
     _ -> pure Nothing
 
 -- | Accept a judged block whose survivors are all waived. A test block
--- accepted: its module's judged code block is judged again, and pushed; a
--- new test's, with none there, has its function begin on it.
+-- (a kill's) accepted: its module's code block is judged again, and
+-- pushed; a new test's: its function begins on it.
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockAccept path = withBlock path $ \s root project _ b killed ->
   awaitingVerdict s root project b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
-    Right done | TestFor Nothing <- blockKind b -> rejudgeFor s root project (blockFile b) >> beginOnNewTest s root project b >> pure (Right (done, []))
+    Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
     Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
     other -> pure (fmap (,[]) other)
 
