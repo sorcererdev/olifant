@@ -588,6 +588,9 @@ snippetAtCursor (rel, line) plan = do
 data PlanOptions = PlanOptions
   { poMode :: Mode
   , poAt :: Maybe (FilePath, Int)
+  , -- | a step placed a snippet at 'poAt' ('placeAt'): the plan answers it
+    -- ('planSnippet'); any other plan, however its edits fall, has none
+    poSnippet :: Bool
   , poFiller :: Maybe (ModelFiller IO)
   , poNoFill :: Bool
   , poContext :: [(FilePath, Text)]
@@ -603,7 +606,7 @@ data PlanOptions = PlanOptions
 
 -- | Plan only, no cursor, no model, no progress.
 planOptions :: PlanOptions
-planOptions = PlanOptions PlanOnly Nothing Nothing False [] (const (pure ())) Nothing neverCancel FillStance
+planOptions = PlanOptions PlanOnly Nothing False Nothing False [] (const (pure ())) Nothing neverCancel FillStance
 
 -- | Run plan steps (model, fills, regions): the plan, with the snippet at
 -- the cursor and the catalog's load warnings.
@@ -627,7 +630,7 @@ planWith ports project po steps = do
   where
     finish plan0 =
       (if poNoFill po then noFill plan0 else plan0)
-        { planSnippet = (`snippetAtCursor` plan0) =<< poAt po
+        { planSnippet = if poSnippet po then (`snippetAtCursor` plan0) =<< poAt po else Nothing
         , planWarnings =
             planWarnings plan0
               ++ ["regions are not refreshed from " <> T.pack path <> ": " <> err | (path, err) <- catalogBrokenRegions (prCatalog project)]

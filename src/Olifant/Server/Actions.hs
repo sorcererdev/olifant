@@ -94,7 +94,7 @@ actionPlanWith progress fill path line generator sets s =
                 Right gens -> fillerFor fill s' project >>= \case
                   Left why -> pure (Left why)
                   Right filler ->
-                    planWith ports project planOptions {poAt = Just (rel, line), poFiller = filler, poProgress = progress, poCancel = ssCancel s'} [Step g (M.fromList sets) | g <- gens] >>= \case
+                    planWith ports project planOptions {poAt = Just (rel, line), poSnippet = isSnippet gen0, poFiller = filler, poProgress = progress, poCancel = ssCancel s'} [Step g (M.fromList sets) | g <- gens] >>= \case
                       Left err -> pure (Left (describeGenerationError err))
                       Right plan
                         | not (null (planConflicts plan)) -> pure (Left (T.intercalate "; " (map describeConflict (planConflicts plan))))

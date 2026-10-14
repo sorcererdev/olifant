@@ -13,6 +13,7 @@ import Data.Text qualified as T
 import Olifant.Actions (Action (..))
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), placeAt, planOptions, planWith, showGenerator)
 import Olifant.Catalog (CatalogEntry (..), describeCatalogError, findEntry, loadGenerator, packOfEntry, resolveEntry)
+import Olifant.Cursor (isSnippet)
 import Olifant.Generation (GenerationError, Plan (..), ProgressEvent, Step (..), describeConflict, describeGenerationError)
 import Olifant.Generator (ChoiceView (..), EditWith (..), Generator, GeneratorDef, GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), buildEnv, describeEnvError, generatorIdText)
 import Olifant.Holes (Marker (..), splitMarkers)
@@ -61,7 +62,7 @@ previewFor path (line, col) steps s =
           planned <-
             placeAll (ssPorts s'') project rel line ws >>= \case
               Left why -> pure (Left why)
-              Right gens -> checked <$> planWith (ssPorts s'') project planOptions {poAt = Just (rel, line + 1), poCancel = ssCancel s''} (zipWith (\g w -> Step g (M.fromList (wValues w))) gens ws)
+              Right gens -> checked <$> planWith (ssPorts s'') project planOptions {poAt = Just (rel, line + 1), poSnippet = any (isSnippet . wGenerator) ws, poCancel = ssCancel s''} (zipWith (\g w -> Step g (M.fromList (wValues w))) gens ws)
           -- choices not made yet were planned with a stand-in (their first
           -- option): a failure is theirs to resolve, not a conflict to show
           let standIns = nub [fName f | w <- ws, f <- wFields w, isNothing (fValue f), not (isName (wGenerator w) (fName f)), isJust (fChoices f)]
@@ -111,7 +112,7 @@ stepsPlanWith progress fill path (line, _) steps s =
               Right gens ->
                 fillerFor fill s' project >>= \case
                   Left why -> pure (Left why)
-                  Right filler -> fmap (root,) . checked <$> planWith (ssPorts s') project planOptions {poAt = Just (rel, line + 1), poFiller = filler, poProgress = progress, poCancel = ssCancel s'} (zipWith (\g w -> Step g (M.fromList (wValues w))) gens ws)
+                  Right filler -> fmap (root,) . checked <$> planWith (ssPorts s') project planOptions {poAt = Just (rel, line + 1), poSnippet = any (isSnippet . wGenerator) ws, poFiller = filler, poProgress = progress, poCancel = ssCancel s'} (zipWith (\g w -> Step g (M.fromList (wValues w))) gens ws)
 
 -- | Each step's generator, placed at the cursor where it applies there (a
 -- snippet), as the ⚡ menu places it.

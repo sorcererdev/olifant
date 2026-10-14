@@ -520,14 +520,14 @@ runCommand rt cwd fmt cat = \case
           -- step can choose what an earlier step of the chain creates.
           Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
             Left why -> failWith rt fmt 2 "usage" why Nothing []
-            Right gens -> runSteps rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
+            Right gens -> runStepsWith [] (any isSnippet gens0) rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
   FixCmd rule file (line, _) n given g ->
     fixSteps (portsOf rt) (projectOf rt cat) rule (projectPath rt cwd file) line n given >>= \case
       Left (FixNotFound why) -> failWith rt fmt 3 "finding_not_found" why (Just "run `olifant check --file` to see the findings") []
       Left (FixUsage why) -> failWith rt fmt 2 "usage" why Nothing []
       Left (FixCatalog err) -> catalogFailure rt fmt err
       Left (FixFailed why) -> failWith rt fmt 1 "fix_failed" why Nothing []
-      Right (context, steps, warnings) -> runStepsWith warnings rt cwd fmt cat g context steps
+      Right (context, steps, warnings) -> runStepsWith warnings False rt cwd fmt cat g context steps
 
 -- | Snippets (spec §5.3): a snippet needs `--at`; its line is read from the
 -- overlay's text when there is one.
@@ -543,11 +543,12 @@ placeCursor rt cwd cat g gens = case (genAt g, filter isSnippet gens) of
 -- output): `gen` itself, and `fix` (a replacement, then the fix's generator,
 -- with the fix's context files shown to the model).
 runSteps :: Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
-runSteps = runStepsWith []
+runSteps = runStepsWith [] False
 
--- | 'runSteps', with warnings for the plan (a fix's: a definition's callers).
-runStepsWith :: [Text] -> Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
-runStepsWith warnings rt cwd fmt cat g context steps = do
+-- | 'runSteps', with warnings for the plan (a fix's: a definition's
+-- callers), and whether a step is a snippet placed at `--at`.
+runStepsWith :: [Text] -> Bool -> Runtime -> FilePath -> Format -> Catalog -> GenOptions -> [(FilePath, Text)] -> [Step] -> IO ExitCode
+runStepsWith warnings snippet rt cwd fmt cat g context steps = do
   -- `--overlay FILE` (spec §4.8): plan against the editor's unsaved text.
   overlaid <- case genOverlay g of
     Just _ | not (genPlanOnly g) -> pure (Left "--overlay needs --plan (an unsaved buffer is planned, never written)")
@@ -566,6 +567,7 @@ runStepsWith warnings rt cwd fmt cat g context steps = do
             PlanOptions
               { poMode = if genPlanOnly g then PlanOnly else Apply
               , poAt = (\(f, l, _) -> (projectPath rt cwd f, l)) <$> genAt g
+              , poSnippet = snippet
               , poFiller = filler
               , poNoFill = genNoFill g
               , poContext = context
