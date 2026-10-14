@@ -1136,6 +1136,10 @@ show and expand it:
 | `ghost` | the lines to draw, each hole as `⟨name⟩`, a derived hole as its value, a filled model hole as its fill |
 | `body` | the same lines in LSP snippet syntax: each hole a tab stop `${N:…}`, numbered in reading order and starting as its name, value or fill, then `$0` at the end. `\`, `$` and `}` in the text are escaped |
 
+Only a snippet's plan has one: `add-dependency` at an `__init__` line rewrites that line, but
+it is no snippet, so its plan has no `snippet` and an editor applies its edit. The lines are
+the snippet's as the plan leaves them, below any lines a later step adds above it (an import).
+
 Both keep the indentation the snippet was placed with, so an editor empties the line and
 expands the body at column 0. From `spec-case` in an `olifant-dev` sandbox
 (`scripts/try-pack.sh olifant-dev`), with `  it "` typed as line 8 of the sample spec and
