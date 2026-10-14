@@ -154,9 +154,10 @@ startFor subject progress path line s0 =
               spanOf tid = lift (known >>= maybe (underTest syntax lang testText tid moduleText) (pure . Just)) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
               atFunction = maybe (throwE ("no function at line " <> T.pack (show line))) (\(_, _, sp) -> pure sp) here
               chosen = listToMaybe (cursorTest ++ calling)
+              -- what passed now (its test aside) must still pass for it to be green
               new tid sp st = do
                 k <- number
-                pure ((begin k file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st})
+                pure ((begin k file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st, blockKeep = filter (/= tid) (trPassed run)})
           b <- case (trBroken run, trFailed run) of
             (Just why, _)
               | onTest, Just tid <- listToMaybe (cursorTest ++ tests) -> spanOf tid >>= \sp -> new tid sp (Broken why)
@@ -356,6 +357,7 @@ draftIn progress s root project lang b drafting killed filler = do
       rel = makeRelative root file
       ws = prWorkspace project
       started = fst <$> M.lookup file (ssDocs s)
+      draftRed written why = draftRedOn s ws lang rel b written why
   text <- lift (readText ws rel) >>= maybe (throwE ("cannot read " <> T.pack rel)) pure
   -- the text the draft plans on is seen: an edit made before it (its test
   -- still to come) does not knock the draft out; one made after it does
@@ -369,7 +371,7 @@ draftIn progress s root project lang b drafting killed filler = do
             _ -> Failure Nothing "the person asked for another draft" ""
       testText <- fromMaybe "" <$> lift (readText ws (T.unpack (fileOf (blockTestId b))))
       (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
-      pure (template, ("body", VerifyIds [blockTestId b]), [(T.unpack (fileOf (blockTestId b)), testText)])
+      pure (template, ("body", VerifyIds (blockTestId b : blockKeep b)), [(T.unpack (fileOf (blockTestId b)), testText)])
     TestFor killing -> do
       ((line, template), newTest, new) <- except (testDraftParts lang b text)
       tested <- lift (moduleOf project lang rel)
@@ -419,9 +421,11 @@ draftIn progress s root project lang b drafting killed filler = do
               let langOf = languageFor (catalogLanguages (prCatalog project))
                   written = M.findWithDefault text rel (applyFills langOf (planWrites plan) [(phSite h, attempt)])
                   (range, new) = smallestChange text written
-              lift (unparseable s root drafting lang rel text written) <&> \case
-                Just err -> (text, Left (Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
-                Nothing -> (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text], Nothing)
+              lift (unparseable s root drafting lang rel text written) >>= \case
+                Just err -> pure (text, Left (Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
+                Nothing -> do
+                  failure <- lift (draftRed written why)
+                  pure (written, Left failure, [FileEdit file started False range new | written /= text], Nothing)
       | HoleSkipped why <- phStatus h -> throwE why
     _ -> throwE "the draft made no hole"
   let shown = fromMaybe planned unwritten
@@ -437,6 +441,21 @@ draftIn progress s root project lang b drafting killed filler = do
   b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+
+-- | A code draft's red (WHY, the fill's) on the text it wrote: a test the
+-- block keeps that fails there while its own test passes is named, at its
+-- line, as a test would; else WHY.
+draftRedOn :: ServerState -> Workspace IO -> Language -> FilePath -> Block -> Text -> Text -> IO Failure
+draftRedOn s ws lang rel b written why
+  | blockKind b /= Code || null (blockKeep b) = pure fallback
+  | otherwise = do
+      let ids = blockTestId b : blockKeep b
+      (_, files) <- projectFiles ws (M.empty :: Map FilePath Text) lang (map (T.unpack . fileOf) ids)
+      runTestsIn (pTester (ssPorts s) (ssCancel s)) lang ids (M.insert rel written files) <&> \case
+        Right run | Nothing <- trBroken run, Left f <- outcomeOf b run, keptRed b f -> f
+        _ -> fallback
+  where
+    fallback = Failure Nothing why ""
 
 -- | The project modules a draft sees beside its file and the file beside it
 -- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
@@ -573,7 +592,8 @@ testNow s root project lang b killed applied = do
         (TestFor _, new@(_ : _)) -> new
         -- none new yet: the test file (a kill's stub names its test before it exists)
         (TestFor _, []) -> [fileOf (blockTestId b)]
-        _ -> [blockTestId b]
+        -- a code block's: its test and those it keeps
+        _ -> blockTestId b : blockKeep b
       -- a test of the newest text (no test or draft begun since) that finds
       -- the block moved on meanwhile (an older test landed first, the decider
       -- reordered) settles once more, on the block as it now stands
@@ -618,6 +638,10 @@ testNow s root project lang b killed applied = do
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)
             -- a new test is green for its block when it fails at its assertion
             _ | TestFor Nothing <- blockKind b -> either (\f -> (landed sp (Left f), "red")) (const (landed sp (Right ()), "green")) (redAtAssertion b now run)
+            _ | Code <- blockKind b -> case outcomeOf b run of
+              Left f | keptRed b f -> (landed sp (Left f), "red: " <> fMessage f)
+              Left f -> (landed sp (Left f), "red")
+              Right () -> (landed sp (Right ()), "green")
             (_, (_, f) : _) -> (landed sp (Left f), "red")
             _ -> (landed sp (Right ()), "green")
           landed = if applied then Applied else Edited

@@ -1362,6 +1362,38 @@ blockSpecs = describe "blocks" $ do
     either id (const "drafted") drafted `shouldNotBe` "name the new test first: its name is still the stub's"
     drafted `shouldSatisfy` either (const False) (const True)
     steps s >>= (`shouldSatisfy` ("block 2\tdraft\t" `T.isInfixOf`))
+  it "(K1) a circle keeps the file's passing tests green: a draft that passes its test but breaks a sibling is red at the sibling, and accept is refused" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 2") [(testRel, siblingText)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    blockKeep b `shouldBe` [siblingId]
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    blockState drafted `shouldSatisfy` \case Red f -> (fLine f, fMessage f) == (Just 10, "test_sibling no longer passes"); _ -> False
+    hud drafted `shouldSatisfy` ("red: test_sibling no longer passes · fix or reject" `T.isSuffixOf`)
+    (_, accepted) <- blockAccept (root </> moduleRel) s
+    accepted `shouldSatisfy` either (const True) (const False)
+  it "(K2) a draft that passes its test and the file's other passing tests is green" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 9") [(testRel, siblingText)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    blockState drafted `shouldBe` Green
+  it "(K3) the test move after an edit in the span that breaks a sibling is red at the sibling" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 5") [(testRel, siblingText)]
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s0
+    let s = changeDoc (root </> moduleRel) 2 (T.replace "seats > 2" "seats > 5" written) s0
+    (_, Right b) <- blockTest (root </> moduleRel) s
+    blockState b `shouldSatisfy` \case Red f -> (fLine f, fMessage f) == (Just 10, "test_sibling no longer passes"); _ -> False
+    hud b `shouldSatisfy` ("red: test_sibling no longer passes · fix or reject" `T.isSuffixOf`)
+    steps s >>= (`shouldSatisfy` ("\ttest\tperson\tred: test_sibling no longer passes" `T.isInfixOf`))
+    -- fixed: green again, then judged
+    (_, Right fixed) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 3 written s)
+    blockState fixed `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(K4) a test block keeps no test of its file's: its siblings may be red" $ do
+    (s0, _) <- blocksOn killedBy []
+    let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+    (_, Right (tb, Just _)) <- blockStart ignore (root </> moduleRel) 15 (openDoc (root </> moduleRel) 1 reopen s0)
+    (blockKind tb, blockKeep tb) `shouldBe` (Block.TestFor Nothing, [])
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -1382,6 +1414,23 @@ testText = T.unlines ["from shop.close_table import CloseTable", "", "", "def te
 
 failing :: Text -> TestRun
 failing why = TestRun [] [(testId, Failure (Just 6) why "")] Nothing
+
+-- | The test file with a sibling test after the block's, and its id.
+siblingText :: Text
+siblingText = testText <> T.unlines ["", "", "def test_sibling() -> None:", "    assert CloseTable().handle(1) == 0"]
+
+siblingId :: Text
+siblingId = T.pack testRel <> "::test_sibling"
+
+-- | The module's test file: `test_closes_a_table` red on the stub,
+-- `test_sibling` (its assertion on line 10) red when the module holds
+-- BREAKS, green otherwise.
+keepingSibling :: Text -> [Text] -> M.Map FilePath Text -> Either Text TestRun
+keepingSibling breaks _ files = Right (TestRun ([testId | null own] ++ [siblingId | null sibling]) (own ++ sibling) Nothing)
+  where
+    m = M.findWithDefault "" moduleRel files
+    own = [(testId, Failure (Just 6) "NotImplementedError: later" "") | "NotImplementedError" `T.isInfixOf` m]
+    sibling = [(siblingId, Failure (Just 10) "assert 0 == 1" "") | breaks `T.isInfixOf` m]
 
 -- | The module's test file run test by test (by the names it defines):
 -- `test_closes_a_table` red on the stub; `test_kills_the_boundary` red on
