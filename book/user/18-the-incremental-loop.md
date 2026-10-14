@@ -233,8 +233,9 @@ failed test's line.
 A module with no test file yet is refused, naming the file its tests would be in; a test file
 whose module is gone runs itself.
 To go between a module and its test file, jump: `:DurandalJump` (`<leader>mj`), `olifant/tests/file`
-on the wire, opens the module's test file (a new, unsaved buffer when it does not exist yet) or the
-test file's module.
+on the wire, opens the module's test file or the test file's module; a test file that does not
+exist yet opens as a new, unsaved buffer: `<C-^>` back to the module and stub a test from its
+function with `<leader>mcs`.
 
 ## What works today, and its limits
 
