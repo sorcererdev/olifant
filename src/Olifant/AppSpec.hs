@@ -4,8 +4,9 @@ import Control.Monad (forM, forM_)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as M
 import Olifant.Fill (FillRequest (..), Filler (..), ModelFiller (..), Stance (..))
-import Olifant.Generation (Step (..))
+import Olifant.Generation (Plan (..), Step (..))
 import Olifant.Generator (replaceGenerator)
+import Olifant.Snippet (Snippet (..))
 import Olifant.Template (parseTemplate)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -48,6 +49,14 @@ spec = describe "Olifant.App" $ do
           template = either (error . show) id (parseTemplate "{= ? body: block | anything =}")
       Right _ <- planWith ports project planOptions {poFiller = Just filler, poStance = DraftStance} [Step (replaceGenerator "src/x.py" (1, 1) "x = 1" template) M.empty]
       readIORef seen `shouldReturn` [DraftStance]
+  it "answers a snippet only when a step placed one: a replace that merely starts at the cursor's line is no snippet" $
+    withPythonProject [("src/x.py", "x = 1\ny = 1\n")] $ \ports project -> do
+      let template = either (error . show) id (parseTemplate "y = 2")
+          steps = [Step (replaceGenerator "src/x.py" (2, 2) "y = 1" template) M.empty]
+      Right plain <- planWith ports project planOptions {poAt = Just ("src/x.py", 2)} steps
+      planSnippet plain `shouldBe` Nothing
+      Right placed <- planWith ports project planOptions {poAt = Just ("src/x.py", 2), poSnippet = True} steps
+      fmap snBody (planSnippet placed) `shouldBe` Just "y = 2$0"
   where
     closeTable = "src/bistro/booking/commands/close_table.py"
     closeTableText = T.unlines ["import sqlite3", "", "", "class CloseTableInput:", "    pass", "", "", "class CloseTable:", "    def __init__(self) -> None:", "        \"\"\"Its ports.\"\"\"", "", "    def handle(self, input: CloseTableInput) -> None:", "        raise NotImplementedError(\"later\")"]

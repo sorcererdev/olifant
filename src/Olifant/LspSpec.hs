@@ -32,7 +32,8 @@ import System.Exit (ExitCode (..))
 import System.Process (callProcess, proc, readCreateProcessWithExitCode)
 import Data.Text.IO qualified as TIO
 import Control.Monad.IO.Class (liftIO)
-import Data.List (isInfixOf, sort)
+import Data.List (isInfixOf, sort, sortOn)
+import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
 import Olifant.Server.State qualified as St
@@ -1827,6 +1828,39 @@ generatePickerSpec = describe "the generate picker" $ do
           TResponseMessage _ _ (Left e) -> fail (show e)
       lookupKey "plan" v `shouldSatisfy` (/= Nothing)
       show v `shouldSatisfy` ("table_repository.py" `isInfixOf`)
+  it "(q) olifant/plan at an __init__ for a port: no snippet (it is no snippet), and its edit applies cleanly" $ do
+    given <- readTree "packs/python-htmx/generators/add-dependency/tests/inline/given"
+    let file = "src/bistro/booking/commands/cancel_booking.py"
+        text = given M.! file
+        initLine = length (takeWhile (not . T.isInfixOf "def __init__") (T.lines text))
+    withPython (M.toList given) $ \ports dir -> do
+      (v, _) <- inProcessWith ports dir $ do
+        doc <- openDoc file "python"
+        request (SMethod_CustomMethod (Proxy :: Proxy "olifant/plan")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= initLine, "character" .= (4 :: Int)], "steps" .= [step "python-htmx/add-dependency" [("app", "bistro"), ("service", "booking"), ("kind", "commands"), ("command", "cancel_booking"), ("port", "booking_repository")]]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+      (lookupKey "plan" v >>= lookupKey "snippet") `shouldBe` Just Aeson.Null
+      let edits =
+            [ (pos "start" r, pos "end" r, t)
+            | Just (Array cs) <- [lookupKey "edit" v >>= lookupKey "documentChanges"]
+            , Object c <- toList cs
+            , Just (String u) <- [KM.lookup "textDocument" c >>= lookupKey "uri"]
+            , ("/" <> T.pack file) `T.isSuffixOf` u
+            , Just (Array es) <- [KM.lookup "edits" c]
+            , Object e <- toList es
+            , Just r <- [KM.lookup "range" e]
+            , Just (String t) <- [KM.lookup "newText" e]
+            ]
+          pos k r = case (lookupKey k r >>= lookupKey "line", lookupKey k r >>= lookupKey "character") of
+            (Just (Number l), Just (Number ch)) -> (round l, round ch) :: (Int, Int)
+            _ -> (0, 0)
+          -- LSP edits are disjoint: apply them from the last back
+          offset ls (l, ch) = sum (map ((+ 1) . T.length) (take l ls)) + ch
+          apply t (s, e, new) = let ls = T.splitOn "\n" t in T.take (offset ls s) t <> new <> T.drop (offset ls e) t
+          after = foldl apply text (sortOn (\(s, _, _) -> Down s) edits)
+      edits `shouldSatisfy` (not . null)
+      length (filter (== "class CancelBooking:") (T.lines after)) `shouldBe` 1
+      after `shouldSatisfy` T.isInfixOf "    def __init__(self, booking_repository: BookingRepository)"
 
 recognitionSpec :: Spec
 recognitionSpec = describe "recognition: this looks like a command" $ do
