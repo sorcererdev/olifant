@@ -918,6 +918,40 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
     test : _ <- readIORef seen
     lookup moduleRel test `shouldBe` Just written
+  describe "(I6) a draft sees the project modules its file and the file beside import" $ do
+    let portRel = "src/shop/ports/table_repository.py"
+        portText = T.unlines ["class TableRepository:", "    def table(self, n: int) -> int: ...", "    def save(self, n: int) -> None: ..."]
+        importing = T.unlines ["import os", "from shop.ports.table_repository import TableRepository", "from shop.close_table import CloseTable", ""] <> stubbed
+        contextOf extra moduleText = do
+          (s0, _) <- blocksOn killedBy ((portRel, portText) : extra)
+          seen <- newIORef []
+          let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()")]))))
+              s = (openDoc (root </> moduleRel) 1 moduleText s0) {ssTestFiller = Just recording}
+          (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+          (_, Right (_, [edit])) <- blockDraft ignore (root </> moduleRel) s
+          [code] <- readIORef seen
+          pure (code, s, applyChange (feRange edit) (feText edit) moduleText, seen)
+    it "a code draft sees the port its module imports, under its path; the standard library and the drafted file add nothing" $ do
+      (code, _, _, _) <- contextOf [] importing
+      map fst code `shouldBe` [testRel, portRel]
+      lookup portRel code `shouldBe` Just portText
+    it "an import of more than 120 lines is cut to 120 and says how many more" $ do
+      let big = T.unlines ["x" <> T.pack (show i) <> " = " <> T.pack (show i) | i <- [0 .. 199 :: Int]]
+      (code, _, _, _) <- contextOf [("src/shop/big.py", big)] ("from shop.big import x0\n" <> stubbed)
+      let Just cut = lookup "src/shop/big.py" code
+      length (T.lines cut) `shouldBe` 121
+      take 1 (T.lines cut) `shouldBe` ["x0 = 0"]
+      last (T.lines cut) `shouldBe` "# \8230 (80 more lines)"
+    it "a test draft sees the module and the modules it imports; the test file itself is never repeated" $ do
+      (_, s, drafted, seen) <- contextOf [] importing
+      let s1 = changeDoc (root </> moduleRel) 2 drafted s
+      (_, Just _) <- blockChanged (root </> moduleRel) s1
+      Just (judged, _) <- blockFor (root </> moduleRel) s1
+      [line] <- pure (map muLine (survivors judged))
+      (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) line s1
+      (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
+      test : _ <- readIORef seen
+      map fst test `shouldBe` [moduleRel, portRel]
   it "(M1) a language with no mutation operators cannot be judged: accept stays closed" $ do
     (s0, _) <- blocks (const (TestRun [testId] [] Nothing)) [("src/shop/close_table.snk", written)]
     python <- maybe "" id <$> readText (portsFiles s0) "/pack/languages/python.toml"

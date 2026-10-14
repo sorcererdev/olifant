@@ -2357,7 +2357,9 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   `ssBlockSeen` against `blockOn`, and `spanEdited`); a draft that fails puts back the state it began
   from, testing the file again when it is no longer the text that state was established on
   (`blockOn`). `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
-  with `planWith` under `DraftStance` (the test file, or for a test the module, in its context),
+  with `planWith` under `DraftStance` (the test file, or for a test the module, in its context,
+  then the project modules either file imports: `importedContext`, capped at 8 files of 120
+  lines, 600 in all),
   verified by `VerifyIds` (the block's test), `VerifyRedAt` (a new test fails at its assertion)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
   mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill

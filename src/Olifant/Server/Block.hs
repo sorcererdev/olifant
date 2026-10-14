@@ -38,7 +38,7 @@ module Olifant.Server.Block
 
 import Control.Applicative ((<|>))
 import Control.Exception (SomeException, try)
-import Control.Monad (unless, void, when)
+import Control.Monad (forM, unless, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, withExceptT)
 import Data.Aeson (Value, object, (.=))
@@ -387,6 +387,8 @@ draftIn progress s root project lang b drafting killed filler = do
               | otherwise -> pure (trPassed run)
           pure (VerifyKills (T.pack rel) (keep ++ new) new moduleRel (muText m))
       pure (template, ("arrange", verify), [(m, t) | Just m <- [tested], Just t <- [moduleText]])
+  -- and the project modules either one imports (ports, models), capped
+  imported <- lift (importedContext ws lang (rel : map fst beside) (text : map snd beside))
   -- each fill the model offers, the last kept: a draft that fails its test
   -- is written as its last attempt, never as the placeholder
   -- (a fill the fill phase read one level up is kept as read)
@@ -397,7 +399,7 @@ draftIn progress s root project lang b drafting killed filler = do
         _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
-      context = beside ++ [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
+      context = beside ++ imported ++ [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
       options = planOptions {poFiller = Just recording, poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = DraftStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
@@ -434,6 +436,61 @@ draftIn progress s root project lang b drafting killed filler = do
   b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+
+-- | The project modules a draft sees beside its file and the file beside it
+-- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
+-- import's module (or a name imported from it that is a module) found as
+-- @src/a/b/c.py@ or @src/a/b/c/__init__.py@; in import order, at most
+-- 'importedFiles' of them, each at most 'importedLines' lines (cut with a
+-- line saying how many more) and 'importedTotal' in all. The standard
+-- library and third-party packages are no file of the project: skipped.
+importedContext :: Workspace IO -> Language -> [FilePath] -> [Text] -> IO [(FilePath, Text)]
+importedContext ws lang known texts
+  | langName lang /= "python" = pure []
+  | otherwise = do
+      found <- forM (concatMap importedModules texts) $ \m ->
+        let path = T.unpack (T.intercalate "/" (T.splitOn "." m))
+         in firstFile ["src" </> path <> ".py", "src" </> path </> "__init__.py"]
+      pure (capped importedTotal (take importedFiles (dedupe [(p, t) | Just (p, t) <- found, p `notElem` known, not (T.null (T.strip t))])))
+  where
+    firstFile = \case
+      [] -> pure Nothing
+      p : rest -> readText ws p >>= maybe (firstFile rest) (pure . Just . (p,))
+    dedupe = foldr (\x acc -> x : filter ((/= fst x) . fst) acc) []
+    capped _ [] = []
+    capped budget ((p, t) : rest)
+      | budget <= 0 = []
+      | otherwise =
+          let ls = T.lines t
+              keep = minimum [length ls, importedLines, budget]
+              cut
+                | keep < length ls = T.intercalate "\n" (take keep ls ++ ["# \8230 (" <> T.pack (show (length ls - keep)) <> " more lines)"])
+                | otherwise = t
+           in (p, cut) : capped (budget - keep) rest
+
+-- | The modules a Python file's absolute imports name, in order: @import
+-- a.b, c@ names @a.b@ and @c@; @from a.b import x, y@ names @a.b@, then
+-- @a.b.x@ and @a.b.y@ (a name may be a module). Relative imports are not
+-- followed.
+importedModules :: Text -> [Text]
+importedModules t = concatMap named (map T.strip (T.lines t))
+  where
+    named l
+      | Just rest <- T.stripPrefix "from " l
+      , (m, names) <- T.breakOn " import " rest
+      , not (T.null names)
+      , not ("." `T.isPrefixOf` m) =
+          m : [m <> "." <> n | n <- map nameOf (T.splitOn "," (T.drop (T.length " import ") names)), not (T.null n)]
+      | Just rest <- T.stripPrefix "import " l = filter (not . T.null) (map nameOf (T.splitOn "," rest))
+      | otherwise = []
+    -- a name less its alias, brackets and comment
+    nameOf = T.takeWhile (\c -> ident c || c == '.') . T.dropWhile (`elem` (" (" :: String)) . T.takeWhile (/= '#')
+
+-- | A draft's imported modules: how many files, lines each, lines in all.
+importedFiles, importedLines, importedTotal :: Int
+importedFiles = 8
+importedLines = 120
+importedTotal = 600
 
 -- | Why a Python file would not parse (its first line, by Python's own
 -- parser run through the verify port), or Nothing: it parses, it is not
