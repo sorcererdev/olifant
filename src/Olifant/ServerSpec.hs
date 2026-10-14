@@ -521,6 +521,116 @@ blockSpecs = describe "blocks" $ do
     gone <- rejectDeleted s root 0 testText stale
     fmap blockState gone `shouldBe` Just Rejected
     M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
+  it "(s1) stub in a function with no circle: a new test's stub at the end of its test file, named test_<fn>, its name the tab stop" $ do
+    (s, _) <- blocks redOnStub []
+    (_, Right (StubOpened tb (testFile, at, body, edits))) <- blockStub (root </> moduleRel) 6 s
+    (testFile, at, edits) `shouldBe` (root </> testRel, 7, [])
+    body `shouldBe` "\n\ndef ${1:test_handle}() -> None:\n    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n    assert ${2:...}\n"
+    (blockFile tb, blockKind tb, blockSpan tb, blockTestId tb) `shouldBe` (testFile, Block.TestFor Nothing, (9, 11), T.pack testRel <> "::test_handle")
+    blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    hud tb `shouldBe` "▸ test_handle · assert, then draft · reject drops it"
+    fmap fst <$> blockFor testFile s `shouldReturn` Just tb
+    -- the test file is busy now: the stub's circle first
+    (_, busy) <- blockStub (root </> moduleRel) 10 s
+    either id (const "stubbed") busy `shouldBe` "a magic circle is open in src/shop/close_table__test.py: accept or reject it there first"
+  it "(s1) stub in a function whose test_<fn> exists: test_<fn>_2" $ do
+    (s, _) <- blocks redOnStub [(testRel, testText <> T.unlines ["", "", "def test_handle() -> None:", "    assert CloseTable().handle(4) == 1"])]
+    (_, Right (StubOpened tb (_, _, body, _))) <- blockStub (root </> moduleRel) 6 s
+    body `shouldSatisfy` ("def ${1:test_handle_2}() -> None:" `T.isInfixOf`)
+    blockTestId tb `shouldBe` T.pack testRel <> "::test_handle_2"
+  it "(s2) stub in a judged circle with a survivor is the kill: on the survivor's line, or off it the top-ranked one" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    let [boundary] = survivors judged
+    (_, Right (StubKilled (code, testFile, at, body))) <- blockStub (root </> moduleRel) 6 s
+    (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
+    body `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
+    Just (tb, 0) <- blockFor testFile s
+    blockKind tb `shouldBe` Block.TestFor (Just boundary)
+    steps s >>= (`shouldSatisfy` ("block 1\tkill\tperson\tboundary on line 6" `T.isInfixOf`))
+    (o0, _) <- blocksOn killedBy []
+    let o = openDoc (root </> moduleRel) 1 written o0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 o
+    (_, Right (StubKilled (_, _, _, offBody))) <- blockStub (root </> moduleRel) 10 o
+    offBody `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
+  it "(s3) stub refuses: outside a function, in a test file, and in a module whose circle has no survivor to take, saying why" $ do
+    (s, _) <- blocks redOnStub []
+    let refusal st path line = either id (const "stubbed") . snd <$> blockStub path line st
+        notInOne = "put the cursor in a function to stub a test for it"
+    -- the class line; the blank line after __init__'s body
+    refusal s (root </> moduleRel) 1 `shouldReturn` notInOne
+    refusal s (root </> moduleRel) 4 `shouldReturn` notInOne
+    -- a test file with no circle: its tests are not what a stub is for
+    refusal s (root </> testRel) 5 `shouldReturn` "stub a test from its module"
+    -- the module's circle red, then broken
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    refusal s (root </> moduleRel) 6 `shouldReturn` "the circle is red: draft it, or reject it, then stub"
+    (b, _) <- blocks (const (TestRun [] [] (Just "ImportError: no module named shop"))) []
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 b
+    refusal b (root </> moduleRel) 6 `shouldReturn` "the circle cannot run: fix it, then test"
+  it "(s3) stub in a test's circle (its test file) says where a stub comes from" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (StubKilled (_, testFile, _, _))) <- blockStub (root </> moduleRel) 6 s
+    (_, fromTest) <- blockStub testFile 9 s
+    either id (const "stubbed") fromTest `shouldBe` "stub a test from the code's magic circle, in its module"
+  it "(s5) stub in a method whose name another class has too: the def at the cursor, imported by its own class into a new test file" $ do
+    let repo = T.unlines ["class Memory:", "    def save(self, n: int) -> int:", "        return n", "", "", "class Sql:", "    def save(self, n: int) -> int:", "        return n + 1"]
+    (s, _) <- blocks redOnStub [("src/shop/repo.py", repo)]
+    (_, Right (StubOpened tb (file, at, body, edits))) <- blockStub (root </> "src/shop/repo.py") 8 s
+    (file, at, edits) `shouldBe` (root </> "src/shop/repo__test.py", 1, [])
+    take 4 (T.lines body) `shouldBe` ["from shop.repo import Sql", "", "", "def ${1:test_save}() -> None:"]
+    blockSpan tb `shouldBe` (4, 6)
+    -- begin there opens the same function's stub (no test calls it)
+    (b, _) <- blocks redOnStub [("src/shop/repo.py", repo)]
+    (_, Right (_, Just (_, _, begun, _))) <- blockStart ignore (root </> "src/shop/repo.py") 8 b
+    T.lines begun `shouldSatisfy` (("from shop.repo import Sql" `elem`))
+  it "(s5) begin on the blank line after a function is in no function, as stub is" $ do
+    (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n\n\nX = 1\n")]
+    (_, begun) <- blockStart ignore (root </> "src/shop/lonely.py") 4 s
+    either id (const "begun") begun `shouldSatisfy` (/= "begun")
+  it "(s5) stub in a function its test file does not import: the import joins the file's (one edit), the stub after it" $ do
+    (s0, _) <- blocks redOnStub []
+    let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        s = openDoc (root </> moduleRel) 1 module' s0
+    (_, Right (StubOpened tb (testFile, at, body, imports))) <- blockStub (root </> moduleRel) 15 s
+    (testFile, at, length imports) `shouldBe` (root </> testRel, 7, 1)
+    applyEdits imports testText `shouldBe` T.replace "import CloseTable\n" "import CloseTable, Reopen\n" testText
+    body `shouldSatisfy` ("def ${1:test_again}() -> None:" `T.isInfixOf`)
+    blockSpan tb `shouldBe` (9, 11)
+  it "(s6) a bare function's stub (no method call), named, asserted and red at its assertion, accepted: the function begins on it, red, pushed" $ do
+    let sumsRel = "src/shop/sums.py"
+        sumsTest = "src/shop/sums__test.py"
+        sums = T.unlines ["def total(a: int, b: int) -> int:", "    raise NotImplementedError(\"later\")"]
+        -- test_total red at its assertion while total is the stub
+        runner files = case M.lookup sumsTest files of
+          Just t | "def test_total(" `T.isInfixOf` t, "NotImplementedError" `T.isInfixOf` M.findWithDefault "" sumsRel files ->
+            Right (TestRun [] [(T.pack sumsTest <> "::test_total", Failure (lookup True [("assert" `T.isPrefixOf` T.strip l, i) | (i, l) <- zip [1 :: Int ..] (T.splitOn "\n" t)]) "AssertionError" "")] Nothing)
+          _ -> Right (TestRun [] [] Nothing)
+    (s, _) <- blocksOn runner [(sumsRel, sums)]
+    seen <- newIORef ([] :: [Block])
+    writeIORef (ssOnBlock s) (\b _ -> modifyIORef' seen (++ [b]))
+    (_, Right (StubOpened _ (testFile, 1, body, []))) <- blockStub (root </> sumsRel) 2 s
+    let arranged = T.unlines [if "olifant: arrange" `T.isInfixOf` l then "    x = 1" else l | l <- T.lines (T.replace "${1:test_total}" "test_total" (T.replace "${2:...}" "total(1, 2) == 3" body))]
+        st = openDoc testFile 1 arranged s
+    (_, Just ready) <- blockChanged testFile st
+    hud ready `shouldSatisfy` ("red ✓ accept · the fix is drafted next" `T.isSuffixOf`)
+    (_, Right (done, [])) <- blockAccept testFile st
+    blockState done `shouldBe` Accepted
+    Just (code, _) <- blockFor (root </> sumsRel) st
+    (blockKind code, blockTestId code, blockSpan code) `shouldBe` (Block.Code, T.pack sumsTest <> "::test_total", (2, 2))
+    blockState code `shouldSatisfy` \case Red _ -> True; _ -> False
+    map blockId <$> readIORef seen `shouldReturn` [blockId code]
+  it "(s4) stub in a module whose circle is judged with no survivor left is refused: that circle first" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right _) <- blockWaive (root </> moduleRel) 6 "inclusive by design" s
+    (_, refused) <- blockStub (root </> moduleRel) 6 s
+    either id (const "stubbed") refused `shouldBe` "accept or reject the circle in src/shop/close_table.py first, then stub"
+    M.member (root </> testRel) <$> readIORef (ssBlocks s) `shouldReturn` False
   it "(i) waive writes the comment on the survivor's line and reopens accept" $ do
     (s0, _) <- blocks redOnStub []
     let s = openDoc (root </> moduleRel) 1 written s0
@@ -1117,7 +1227,7 @@ blockSpecs = describe "blocks" $ do
     drafting <- async (blockDraft ignore (root </> moduleRel) s)
     takeMVar entered
     (_, tested) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s)
-    either id (const "tested") tested `shouldBe` "a draft is in flight; wait for it, then test or press next"
+    either id (const "tested") tested `shouldBe` "a draft is in flight; wait for it, then test or draft again"
     putMVar release ()
     void (wait drafting)
   it "(N4) a new test's stub whose name is still the stub's (test_name) is not drafted (the block untouched, nothing run); named, it is" $ do
@@ -1316,13 +1426,13 @@ blockSyntax = Syntax query rewrite
       | parseMaybe (J.withObject "rule" (.: "pattern")) rule == Just ("$A > $B" :: Text) = pure (Right (boundaries src))
       | otherwise = pure (Right [])
     indentOf = T.length . T.takeWhile (== ' ')
+    -- every def of the name, as ast-grep finds each
     body name src =
       let ls = zip [0 ..] (T.splitOn "\n" src)
-       in case [(i, l) | (i, l) <- ls, ("def " <> name <> "(") `T.isInfixOf` l] of
-            [(i, d)] -> case takeWhile (\(_, l) -> not (T.null (T.strip l)) && indentOf l > indentOf d) (drop (i + 1) ls) of
-              under@((first, _) : _) -> let (end, l) = last under in [Match (first, 8) (end, T.length l) "" (0, 0)]
-              [] -> []
-            _ -> []
+       in [ Match (first, 8) (end, T.length l) "" (0, 0)
+          | (i, d) <- ls, ("def " <> name <> "(") `T.isInfixOf` d
+          , under@((first, _) : _) <- [takeWhile (\(_, l) -> not (T.null (T.strip l)) && indentOf l > indentOf d) (drop (i + 1) ls)]
+          , let (end, l) = last under ]
     boundaries src =
       [ Rewrite (i, col) (i, col + T.length w) w (T.replace " > " " >= " w) (offset + col, offset + col + T.length w)
       | (i, l, offset) <- zip3 [0 ..] (T.splitOn "\n" src) (scanl (\o x -> o + T.length x + 1) 0 (T.splitOn "\n" src))

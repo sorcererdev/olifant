@@ -20,6 +20,7 @@ module Olifant.Block
     killStub,
     stubName,
     stubNameFor,
+    uniqueTestName,
     testStub,
     instructionFor,
   )
@@ -30,7 +31,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub)
+import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
 import Olifant.Language (Failure (..), TestId)
 import Olifant.Mutate (Mutant (..))
 
@@ -62,7 +63,11 @@ data Block = Block
     blockOn :: Text,
     -- | bumped by every move the server stores: a result begun on an
     -- older version is stale (the block moved on while it ran)
-    blockVersion :: Int
+    blockVersion :: Int,
+    -- | a new test's block opened for a function (by a stub or a begin):
+    -- its name and its def's line (1-based) in the module, where the
+    -- function begins once the test is accepted
+    blockSubject :: Maybe (Text, Int)
   }
   deriving stock (Eq, Show)
 
@@ -88,7 +93,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0
+  Block i file kind base sp test (Red failure) [] base 0 Nothing
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
@@ -150,14 +155,15 @@ open b = case blockState b of
   Red _ -> drafting
   Green -> drafting
   Judged ms
-    | null (unwaived ms) -> ["accept", "next", "reject"]
-    | otherwise -> ["stub", "waive", "next", "reject"]
+    | null (unwaived ms) -> ["accept", "draft", "reject"]
+    | otherwise -> ["stub", "waive", "draft", "reject"]
   Broken _ -> ["test", "reject"]
   Drafting _ -> ["reject"]
   Accepted -> []
   Rejected -> []
   where
-    drafting = [if null (blockDrafts b) then "draft" else "next", "reject", "test"]
+    -- the first draft or another candidate: draft either way
+    drafting = ["draft", "reject", "test"]
 
 unwaived :: [Mutant] -> [Mutant]
 unwaived = filter (isNothing . muWaived)
@@ -191,6 +197,8 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Drafting _ -> "drafting…"
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
+        -- a new test red at its assertion is ready: accepted, its function begins on it
+        0 | TestFor Nothing <- blockKind b -> "red ✓ accept · the fix is drafted next"
         0 -> "clean ✓ accept"
         1 -> "1 survivor · stub a test or waive"
         n -> T.pack (show n) <> " survivors · stub a test or waive each"

@@ -944,6 +944,7 @@ blockSpec = describe "olifant/block" $ do
         "test" -> blockMove (Proxy :: Proxy "olifant/block/test")
         "accept" -> blockMove (Proxy :: Proxy "olifant/block/accept")
         "kill" -> blockMove (Proxy :: Proxy "olifant/block/kill")
+        "stub" -> blockMove (Proxy :: Proxy "olifant/block/stub")
         other -> const (fail ("no move " <> T.unpack other))
       pushed = (customNotification (Proxy :: Proxy "olifant/block") >>= \case NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)) <|> (anyMessage >> pushed)
       onDoc doc extra = object (["textDocument" .= object ["uri" .= (doc ^. L.uri)]] ++ extra)
@@ -1010,6 +1011,23 @@ blockSpec = describe "olifant/block" $ do
         again `shouldSatisfy` either (const False) (const True)
         steps <- TIO.readFile (dir </> ".olifant/state/steps.log")
         steps `shouldSatisfy` ("\treject\tperson\tthe stub was deleted" `T.isInfixOf`)
+  it "(s) olifant/block/stub in a function with no circle answers its new test's stub, named test_<fn>, and the test block; outside a function, the sentence" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        ((stubbed, outside), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          code <- openDoc moduleRel "python"
+          outside <- move "stub" (onDoc code ["line" .= (3 :: Int)])
+          -- in `handle`
+          stubbed <- move "stub" (onDoc code ["line" .= (53 :: Int)])
+          pure (stubbed, outside)
+        let snippet k = either (const Nothing) (\v -> lookupKey k =<< lookupKey "snippet" v) stubbed
+            block k = either (const Nothing) (\v -> lookupKey k =<< lookupKey "block" v) stubbed
+        snippet "file" `shouldBe` Just (String (T.pack (dir </> testRel)))
+        snippet "body" `shouldSatisfy` \case Just (String b) -> "def ${1:test_handle}() -> None:" `T.isInfixOf` b; _ -> False
+        (block "file", block "state") `shouldBe` (Just (String (T.pack (dir </> testRel))), Just (String "red"))
+        outside `shouldBe` Left "put the cursor in a function to stub a test for it"
   it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"

@@ -6,6 +6,7 @@ module Olifant.Anchor.Resolve
   , Miss (..)
   , resolveLayers
   , locateContainer
+  , locateContainers
   , itemsOfTarget
   , insertLines
   , grownLine
@@ -257,15 +258,23 @@ itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, J
 -- | The container of a named target, as 0-based (start, end) lines (used by
 -- `complete` edits' `where`, spec §5.6).
 locateContainer :: Monad m => Syntax m -> Language -> [Text] -> Text -> m (Either Miss (Int, Int))
-locateContainer syntax l ws content = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
+locateContainer syntax l ws content =
+  locateContainers syntax l ws content <&> \case
+    Right [c] -> Right c
+    Right _ -> Left (Miss (T.unwords ws) "not found exactly once" False)
+    Left miss -> Left miss
+
+-- | Every container of a named target, as 0-based (start, end) lines, in
+-- the file's order (a name two classes define: both).
+locateContainers :: Monad m => Syntax m -> Language -> [Text] -> Text -> m (Either Miss [(Int, Int)])
+locateContainers syntax l ws content = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
   [] -> pure (Left (Miss (T.unwords ws) "unknown target" False))
   ((t, binds) : _) -> case renderRule (M.fromList [(k, VText v) | (k, v) <- binds]) (targetContainer t) of
     Left err -> pure (Left (Miss (T.unwords ws) (describeTemplateError err) False))
     Right rule ->
-      querySyntax syntax l rule content >>= \case
-        Right [c] -> pure (Right (fst (matchStart c), fst (matchEnd c)))
-        Right _ -> pure (Left (Miss (T.unwords ws) "not found exactly once" False))
-        Left f -> pure (Left (Miss (T.unwords ws) (describeSyntaxFailure f) True))
+      querySyntax syntax l rule content <&> \case
+        Right cs -> Right [(fst (matchStart c), fst (matchEnd c)) | c <- cs]
+        Left f -> Left (Miss (T.unwords ws) (describeSyntaxFailure f) True)
 
 insertLines :: Located -> Text -> Text -> (Int, Text)
 insertLines loc snippet content =

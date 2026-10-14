@@ -180,7 +180,7 @@ From the bottom up:
 | **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): Myers' O(ND) diff over lines (cost follows the edits, not the file; past 1,000 edits lines pair by text), common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `lcsPairs`, `wholeNew`, `newCount` | none |
 | **Migration** | The strangler's report and its pure parts: the switch registry, `olifant:switch` markers, what a PR extracted and added, big changes, whether a function reads or writes, the tables its SQL names, a switched function's text | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `readsOrWrites`, `tablesTouched`, `functionText` | Newness |
 | **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, the waivers a line carries, and the judge that runs each mutant in its own shadow, N at a time. `Mutate/Python` holds Python's operators | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `waiverOn`, `waiverLine`, `judge`, `Verdict`; `Mutate/Python`'s `pythonOperators`. Internal: `Mutate/Run`, `Mutate/Types` | Language |
-| **Block** | The incremental loop's block as a pure state machine (Red, Drafting (with the state it began from, which `DraftFailed` puts back), Green, Judged, Broken, Accepted, Rejected; `Accepted` only from a `Judged` with every survivor waived), the moves open in each state, the HUD line; and the draft templates (a function body or a test's arrangement as a hole, the instruction, a kill's stub) | `Block.hs`: `Block`, `BlockState`, `Kind`, `Draft`, `Move`, `begin`, `step`, `open`, `hud`, `survivors`, `killTarget`, `pending`, `draftTemplate`, `testDraftTemplate`, `testStub`, `killStub`, `stubNameFor`, `instructionFor`. Internal: `Block/Draft` | Language, Mutate, Template |
+| **Block** | The incremental loop's block as a pure state machine (Red, Drafting (with the state it began from, which `DraftFailed` puts back), Green, Judged, Broken, Accepted, Rejected; `Accepted` only from a `Judged` with every survivor waived), the moves open in each state, the HUD line; and the draft templates (a function body or a test's arrangement as a hole, the instruction, a kill's stub) | `Block.hs`: `Block`, `BlockState`, `Kind`, `Draft`, `Move`, `begin`, `step`, `open`, `hud`, `survivors`, `killTarget`, `pending`, `draftTemplate`, `testDraftTemplate`, `testStub`, `killStub`, `stubNameFor`, `uniqueTestName`, `instructionFor`. Internal: `Block/Draft` | Language, Mutate, Template |
 | **Decide** | Typed decisions, progressively (Jev-shaped; today `curlDecider` asks any chat backend named by `[decide] model`, no Jev backend exists): a `Question` of a kind with its options, a `Decider` that answers one or is `Unsure`; validated, so an answer outside the options is `Unsure`. Nothing depends on an answer arriving | `Decide.hs`: `Question`, `Answer`, `Decider`, `noDecider`, `validated`, `decisionPrompt`, `decodeAnswer`, `curlDecider`, `recordedDecider` | Model, Process |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
 | **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses; snippets for a completion menu (spec §4.9) | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `Completion`, `actionsAt`, `actionsInFile`, `completionsAt`, `describeRule`, `matchPathSlots` | Cursor, Generator, Language, Query, Template |
@@ -191,7 +191,7 @@ From the bottom up:
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
 | **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; an optional model for the unsure | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `Recognizer`, `consult`, `curlRecognizer` | Generator, Glob, Model, Naming, Process, Template |
 | **Preview** | The generate picker's form and placeholders: each input's value and where it came from (you, the file's folders, the cursor, a lone choice, a default, a `+ New` step), checked as `olifant gen` checks it; marks a missing name is planned with, and their renderings back to `⟨name⟩` | `Preview.hs` over `Preview/{Fields,Marks}`: `Field`, `Source`, `fieldsFor`, `markValue`, `unmark` | Generator, Naming |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview,Block,BlockMoves,BlockDecide,Tests}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the loop's `blockBegin`, `blockDraft`, `blockTest`, `blockJudge`, `blockKill`, `blockWaive`, `blockChanged`, `blockAccept`, `blockReject`, `blockJson`, `testsRun`, … | Actions, Anchor, App, Block, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview,Block,BlockMoves,BlockDecide,Tests}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the loop's `blockBegin`, `blockDraft`, `blockTest`, `blockJudge`, `blockKill`, `blockStub`, `blockWaive`, `blockChanged`, `blockAccept`, `blockReject`, `blockJson`, `testsRun`, … | Actions, Anchor, App, Block, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
 | **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Block, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
@@ -2323,23 +2323,29 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   the block after the move; `open` lists the moves a state allows and `hud` writes its line (ending on the person's next
   step: `· draft`, `· name it, then draft · reject drops it` on a begin's test stub not yet named
   and `· assert, then draft · reject drops it` on a named one or a survivor's (until a model
-  drafts), none after a model's failed draft, `· stub a test or waive`); `killTarget` is the survivor a kill takes (the cursor
-  line's, or the first unwaived in the stored order; the person's `stub` is `kill` internally).
+  drafts), none after a model's failed draft, `red ✓ accept · the fix is drafted next` on a new
+  test red at its assertion, `· stub a test or waive`; another draft is `draft`, never `next`); `killTarget` is the survivor a kill takes (the cursor
+  line's, or the first unwaived in the stored order; the person's `stub` on a survivor is `kill` internally).
   A property spec pins that `Accepted` is reachable only through a `Judged` whose survivors are
   all waived. `Block/Draft` turns a span into a template with one `block` hole (or a test's
   placeholder into a `stmt` hole), with the instruction from the test's name, its assertions and
   why it fails; `stubNameFor` names a kill's stub from its mutant (a string's words, else the
-  operator and the mutated line's names, unique in the test file).
+  operator and the mutated line's names, unique in the test file: `uniqueTestName`, which names a
+  function's stub `test_<function>` too).
 - **`Server/Block`** keeps each file's open circle (a `Block` internally) (`ssBlocks`, keyed by the module's path, found
   from its test file too), runs the moves and writes each to the step log (`appendStep`,
   `.olifant/state/steps.log`). `blockBegin` runs the test file (`runOver`: the runner over the
   editor's text), finds the function under test (`underTest`: each `.NAME(` call the test makes,
   its assertions first, until the module defines one, located by the language's `function NAME`
   target) and begins Red, or judges a green function at once; on a function no test calls,
-  `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`testStub`) and
-  answers the stub for the editor, with the function's import as an edit to apply first when
-  the test file lacks it (`addImports`, the fill phase's), and accepting that block begins the
-  function on it. Every
+  `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`openTestStub`
+  over `testStub`) and answers the stub for the editor, with the function's import as an edit to
+  apply first when the test file lacks it (`addImports`, the fill phase's), and accepting that
+  block begins the function on it: the block keeps that function (`blockSubject`: its name and
+  def line), so `beginOnNewTest` begins there (`startFor`) rather than by the test's calls.
+  `siteAt` finds a cursor's module, test file and def for both a begin and a stub, and
+  `functionAt` the def at the cursor while its body reaches it (`functionSpanAfter` over
+  `locateContainers`: the body after that def line, whatever else shares its name). Every
   move lands through `settle`, a compare-and-swap on the stored block's number and version
   (`blockVersion`, bumped by every move stored and by the decision model's reorder: a move begun on an older version
   is stale, logged and dropped; a test of the newest text, none begun since, settles again on the
@@ -2361,7 +2367,11 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   four at a time.
 - **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file for the `killTarget`
   mutant, its test id the stub's name until a test of the block finds the person's: `testNow`
-  makes a test block's test its first new one, and the stub the editor expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
+  makes a test block's test its first new one, and the stub the editor expands), `blockStub`
+  (the editor's `stub`: `blockKill` in a judged code circle with a survivor left; with no circle
+  in the module, the cursor in one of its functions (`functionAt`), a new test's stub named
+  `test_<function>` through `openTestStub`; any other open circle refused with a sentence for its
+  state, and a test file sent to its module), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
   debounced reaction to an edit of a block's file: the draft the editor applied (`Applied`) or the
   person's edit inside the span (`Edited`) is tested and, green, judged; an edit elsewhere does
   nothing; a test block none of whose new lines (`newLinesOf`) is left non-blank from its span
