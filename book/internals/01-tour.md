@@ -2360,7 +2360,10 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   with `planWith` under `DraftStance` (the test file, or for a test the module, in its context),
   verified by `VerifyIds` (the block's test), `VerifyRedAt` (a new test fails at its assertion)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
-  mutant); an unfilled hole writes the model's last attempt as a red draft. Its edits are
+  mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill
+  phase read it: a `Reindented` fill as read), unless, in Python, it would not parse
+  (`unparseable`: `ast.parse` through the verify port, `python3 -I`): then the draft is
+  recorded red with Python's reason and nothing is written. Its edits are
   versioned, so the editor applies them only to the buffer it planned on. `judgeIn` runs the
   test file once unmutated (the baseline: its passing tests are the judges, its wall time sets
   each mutant's timeout, `judgeTimeout`, through `pTesterWithin`), mutates the span's lines new

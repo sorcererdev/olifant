@@ -65,7 +65,7 @@ import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, proje
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
+import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), Verifier (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
@@ -404,8 +404,10 @@ draftIn progress s root project lang b drafting killed filler = do
   latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
   when (latest /= started) (throwE "the file changed while drafting; your text stands")
   tried <- lift (readIORef attempts)
-  (planned, outcome, edits) <- case planHoles plan of
-    h : _ | HoleFilled _ _ <- phStatus h -> pure (M.findWithDefault text rel (planWrites plan), Right (), editsOfPlan s root plan)
+  -- (an attempt that would not parse is not written: the file keeps its
+  -- text, the draft is recorded red with Python's reason)
+  (planned, outcome, edits, unwritten) <- case planHoles plan of
+    h : _ | HoleFilled _ _ <- phStatus h -> pure (M.findWithDefault text rel (planWrites plan), Right (), editsOfPlan s root plan, Nothing)
     h : _
       | HoleUnfilled why <- phStatus h ->
           case M.lookup (holeName (phSite h)) tried of
@@ -414,19 +416,43 @@ draftIn progress s root project lang b drafting killed filler = do
               let langOf = languageFor (catalogLanguages (prCatalog project))
                   written = M.findWithDefault text rel (applyFills langOf (planWrites plan) [(phSite h, attempt)])
                   (range, new) = smallestChange text written
-              pure (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text])
+              lift (unparseable s lang rel written) <&> \case
+                Just err -> (text, Left (Failure Nothing ("the draft does not parse: " <> err) ""), [], Just written)
+                Nothing -> (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text], Nothing)
       | HoleSkipped why <- phStatus h -> throwE why
     _ -> throwE "the draft made no hole"
-  let changed = changedSpan text planned (blockSpan b)
-      grown = length (T.splitOn "\n" planned) - length (T.splitOn "\n" text)
+  let shown = fromMaybe planned unwritten
+      changed = changedSpan text shown (blockSpan b)
+      grown = length (T.splitOn "\n" shown) - length (T.splitOn "\n" text)
       -- a test block keeps its whole test (its def to its assertion)
-      sp@(l1, l2) = case blockKind b of
+      (l1, l2) = case blockKind b of
         Code -> changed
         TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
-      drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" planned)))
+      -- an unwritten draft leaves the span where it was
+      sp = maybe (l1, l2) (const (blockSpan b)) unwritten
+      drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" shown)))
   b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+
+-- | Why a Python file would not parse (its first line, by Python's own
+-- parser run through the verify port), or Nothing: it parses, it is not
+-- Python, or no Python could run (the draft is then written as before).
+unparseable :: ServerState -> Language -> FilePath -> Text -> IO (Maybe Text)
+unparseable s lang rel t
+  | langName lang /= "python" = pure Nothing
+  | otherwise =
+      runVerify (pVerifier (ssPorts s) (ssCancel s)) lang ["python3", "-I", "-c", parseScript, T.pack rel] (M.singleton rel t) <&> \case
+        Right (False, out) | err : _ <- filter (not . T.null) (map T.strip (T.lines out)), not ("the tests timed out" `T.isPrefixOf` err) -> Just err
+        _ -> Nothing
+  where
+    parseScript = T.unlines
+      [ "import ast, sys"
+      , "try:"
+      , "    ast.parse(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1])"
+      , "except SyntaxError as e:"
+      , "    print(f'{type(e).__name__}: {e.msg} (line {e.lineno})')"
+      , "    sys.exit(1)" ]
 
 -- | A test block's stub as a draft needs it: its arrangement's line and
 -- hole, its new test and all its new tests; or why it cannot be drafted yet.

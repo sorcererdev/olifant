@@ -286,7 +286,8 @@ line sits less deep than all the rest (written as if the first line were at the 
 and opens no block (it does not end with `:` or an open bracket), is read with the rest
 brought up to it when that leaves fewer findings, or no syntax error where there was one.
 A draft read that way may still fail on a type error: that error is then the reason, and
-the text written is the one read level. Measured on `handle-body`: every
+the text written is the one read level. `--progress` reports the rescue as
+`{"event":"reindent","hole":…,"fill":…}`. Measured on `handle-body`: every
 failed qwen3-coder:30b attempt was one of these two layouts, and the model repeated it on
 retry; with both repaired, every handler was green in one round.
 

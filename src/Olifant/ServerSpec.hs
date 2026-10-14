@@ -39,7 +39,7 @@ import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Language (CheckReport (..), Checker (..), noChecker, noRunner, noSyntax)
-import Olifant.Language.Check (noVerifier)
+import Olifant.Language.Check (Verifier (..), noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
 import Olifant.Server
@@ -872,6 +872,22 @@ blockSpecs = describe "blocks" $ do
     (_, Right (b, [edit])) <- blockDraft ignore (root </> moduleRel) s
     take 4 (drop 5 (T.lines (applyChange (feRange edit) (feText edit) stubbed))) `shouldBe` ["        booking = self.find_by_id(seats)", "        if booking is None:", "            return 0", "        return 1"]
     blockState b `shouldSatisfy` \case Red f -> "find_by_id" `T.isInfixOf` fMessage f && not ("Unexpected indentation" `T.isInfixOf` fMessage f); _ -> False
+  it "(I2) a failed draft that would not parse is not written: the span keeps its text, the draft is red with Python's reason, and draft is next" $ do
+    (s0, _) <- blocks (const (failing "assert 0 == 1")) []
+    asked <- newIORef []
+    let parser = Verifier (\_ argv files -> do
+          modifyIORef' asked (++ [take 3 argv])
+          pure (Right (if any (any ("                return" `T.isPrefixOf`) . T.lines) (M.elems files) then (False, "IndentationError: unexpected indent (line 7)\n") else (True, ""))))
+        filler = ModelFiller "rehearsal" 0 (Filler (\_ -> pure (Right (M.fromList [("body", "        x = seats\n                return x")]))))
+        s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler, ssPorts = (ssPorts s0) {pVerifier = const parser}}
+    (_, Right b0) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (b, edits)) <- blockDraft ignore (root </> moduleRel) s
+    edits `shouldBe` []
+    blockSpan b `shouldBe` blockSpan b0
+    blockState b `shouldBe` Red (Failure Nothing "the draft does not parse: IndentationError: unexpected indent (line 7)" "")
+    map draftOutcome (blockDrafts b) `shouldBe` ["red: the draft does not parse: IndentationError: unexpected indent (line 7)"]
+    hud b `shouldSatisfy` ("red: the draft does not parse: IndentationError: unexpected indent (line 7) · draft" `T.isSuffixOf`)
+    readIORef asked `shouldReturn` [["python3", "-I", "-c"]]
   it "(I2) a draft that never produced an attempt makes no edits and no draft" $ do
     (s0, _) <- blocks redOnStub [("nofill.toml", "[fills]\narrange = \"x = 1\"\n")]
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "nofill.toml")}}

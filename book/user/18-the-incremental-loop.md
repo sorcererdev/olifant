@@ -242,7 +242,9 @@ whose module is gone runs itself.
   assertion uses beyond it you import yourself. A file importing it already (on one line or
   several, in brackets) gains nothing; one importing from its module gains the name there.
 - **A draft that fails its test is written anyway**, its last attempt marked red, for you to
-  finish by hand; a model that offered nothing changes nothing. A draft sees the test file (a
+  finish by hand; a model that offered nothing changes nothing. A Python draft that would not
+  parse (Python's own parser says why: `red: the draft does not parse: IndentationError: …`)
+  is recorded red and not written: the span keeps its text, and `draft` is next. A draft sees the test file (a
   test's draft, the module) beside the rejected drafts.
 - **One circle per file**, and one in a test file.
 - **The function under test is found by a method call** (`.NAME(` in the test, its assertions

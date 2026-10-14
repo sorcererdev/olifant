@@ -211,7 +211,8 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
     -- a kill's is named already (the HUD's first field), and reject drops
     -- either; else draft
     redCue = case (reverse (blockDrafts b), blockKind b) of
-      (d : _, _) | draftBy d /= "you" -> ""
+      -- (one that would not parse was never written: draft again)
+      (d : _, _) | draftBy d /= "you" -> if "red: the draft does not parse" `T.isPrefixOf` draftOutcome d then "draft" else ""
       -- a begin's stub is named once its test has a name of the person's
       (_, TestFor Nothing) | testName == stubName || not ("::" `T.isInfixOf` blockTestId b) -> "name it, then draft · reject drops it"
       (_, TestFor Nothing) -> "assert, then draft · reject drops it"
