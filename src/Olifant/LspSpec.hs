@@ -1002,7 +1002,9 @@ blockSpec = describe "olifant/block" $ do
           -- the person deletes the stub whole
           changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument original))]
           cleared <- pushedTo (doc ^. L.uri)
-          again <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
+          -- stubbed again from the module
+          code <- openDoc moduleRel "python"
+          again <- move "kill" (onDoc code ["line" .= (1 :: Int)])
           pure (cleared, again)
         lookupKey "block" cleared `shouldBe` Just Aeson.Null
         again `shouldSatisfy` either (const False) (const True)

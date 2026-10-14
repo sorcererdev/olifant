@@ -126,6 +126,9 @@ spec = describe "Olifant.Block" $ do
     hud killed `shouldBe` "▸ test_boundary_line2 · assert, then draft · reject drops it"
     -- the person typed in the stub, red: still no model's draft, so the stub's cue stands
     hud (step' (Edited (9, 11) (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None) · assert, then draft · reject drops it"
+    -- a begin's stub once its test is named (tested: the block's test is the new one): its assertion next
+    hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_reopens_again"}) `shouldBe` "▸ test_reopens_again · draft 1 · red: AssertionError: assert None == Ok(None) · assert, then draft · reject drops it"
+    hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_name"}) `shouldSatisfy` ("· name it, then draft · reject drops it" `T.isSuffixOf`)
     -- a model's draft of it failed: the person reads it, no cue
     hud (step' (Drafted "x" "qwen" (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None)"
   it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
@@ -168,13 +171,16 @@ spec = describe "Olifant.Block" $ do
       instruction `shouldSatisfy` ("AssertionError" `T.isInfixOf`)
       instruction `shouldSatisfy` ("least code" `T.isInfixOf`)
     it "(b) the kill stub is a new test with the name and assertion as tab stops and the arrangement as a hole" $ do
-      let (at, stub) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
-      at `shouldBe` 4
+      let (at, stub, name) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+      (at, name) `shouldBe` (4, "test_boundary_line5")
       stub `shouldSatisfy` ("def ${1:test_boundary_line5}() -> None:" `T.isInfixOf`)
+      -- a begin's stub is named by the person: its placeholder is test_name
+      snd (testStub py test Nothing) `shouldSatisfy` ("def test_${1:name}() -> None:" `T.isInfixOf`)
+      stubName `shouldBe` "test_name"
       stub `shouldSatisfy` ("assert ${2:" `T.isInfixOf`)
       stub `shouldSatisfy` ("olifant: arrange" `T.isInfixOf`)
     it "(c) the stubbed test's placeholder becomes a stmt hole at its indentation" $ do
-      let (_, stub) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+      let (_, stub, _) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
           stubbed = test <> stub
       testDraftTemplate py stubbed 7 `shouldSatisfy` isRight
       testDraftTemplate py stubbed 1 `shouldSatisfy` isLeft
@@ -184,7 +190,13 @@ spec = describe "Olifant.Block" $ do
       it "(n1) a string: test_ and the literal's first four words" $ do
         let m = Mutant 5 "string" "f\"there is no table {input.table_id}\"" "\"\"" module' Nothing False
         stubNameFor m test (langKeywords py) `shouldBe` "test_there_is_no_table"
-        snd (killStub py test m) `shouldSatisfy` ("def ${1:test_there_is_no_table}() -> None:" `T.isInfixOf`)
+        let (_, stub, _) = killStub py test m
+        stub `shouldSatisfy` ("def ${1:test_there_is_no_table}() -> None:" `T.isInfixOf`)
+        -- a name is a Python name: ASCII letters, digits and _ only
+        stubNameFor m {muFrom = "\"½ price is fine\""} test (langKeywords py) `shouldBe` "test_price_is_fine"
+        -- and 60 characters at most, cut between words
+        stubNameFor m {muFrom = "\"supercalifragilistic expialidocious_and_more_words_here antidisestablishmentarianism pneumonoultramicroscopic\""} test (langKeywords py)
+          `shouldBe` "test_supercalifragilistic_expialidocious_and_more_words_here"
       it "(n2) any other operator: test_, the operator, the mutated line's names (no keywords, self or attribute heads), four at most; a line left with none, what it changed from" $ do
         stubNameFor boundary test (langKeywords py) `shouldBe` "test_boundary_party_seats"
         stubNameFor (Mutant 1 "arith" "+" "-" "total = price * count - tax - fee  # f\"no\" names here" Nothing False) test (langKeywords py) `shouldBe` "test_arith_total_price_count_tax"
@@ -192,6 +204,8 @@ spec = describe "Olifant.Block" $ do
       it "(n3) a name the test file has already gets _2, _3, …" $ do
         let taken = test <> T.unlines ["", "", "def test_boundary_party_seats() -> None:", "    assert True", "", "", "def test_boundary_party_seats_2() -> None:", "    assert True"]
         stubNameFor boundary taken (langKeywords py) `shouldBe` "test_boundary_party_seats_3"
+        -- an async test has its name too
+        stubNameFor boundary (test <> "\n\nasync def test_boundary_party_seats() -> None:\n    assert True\n") (langKeywords py) `shouldBe` "test_boundary_party_seats_2"
       it "(n4) a line of keywords and self only: test_, the operator and the line" $ do
         let selfOnly = T.unlines ["class A:", "    def ok(self) -> bool:", "        return not self"]
         stubNameFor (Mutant 3 "negate" "self" "not self" selfOnly Nothing False) test (langKeywords py) `shouldBe` "test_negate_line3"

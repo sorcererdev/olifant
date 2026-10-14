@@ -129,7 +129,7 @@ blockStart progress path line s0 =
       case untested of
         Just n -> do
           let base = fromMaybe "" testText0
-              (at0, stub) = testStub lang base
+              (at0, stub) = testStub lang base Nothing
               imp = importOf lang moduleRel moduleText n
               -- an existing file: the import joins its imports (unless it has it), the stub after
               imported = maybe base (\i -> if isJust testText0 then addImports lang [i] base else base) imp
@@ -376,10 +376,14 @@ testNow s root project lang b killed applied = do
       -- reordered) settles once more, on the block as it now stands
       -- (again each time another move lands first, while that still holds:
       -- each round needs a newer version, so it ends)
+      -- a test block's test is its first new one, as the person named it
+      named on = case (blockKind on, newTests on now) of
+        (TestFor _, t : _) -> on {blockTestId = t}
+        _ -> on
       settleTest result move = attempt b killed
         where
           attempt on k =
-            settleOn s root k "test" result (Just now) move on >>= \case
+            settleOn s root k "test" result (Just now) move (named on) >>= \case
               Left moved -> do
                 current <- M.lookup (blockFile b) <$> readIORef (ssBlocks s)
                 seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
@@ -748,11 +752,6 @@ isDrafting :: BlockState -> Bool
 isDrafting = \case
   Drafting _ -> True
   _ -> False
-
--- | The name a stub's test has until the person types its own (the stub's
--- tab stop, `test_${1:name}`, left as it was).
-stubName :: Text
-stubName = "test_name"
 
 -- | A test block's new tests: those its file defines now and did not when
 -- the block began (the person named them in the stub).

@@ -3,7 +3,7 @@
 -- expands) or waive one (a comment on its line) — and the editor's edits
 -- of a block's file, told apart: a draft it applied, the person's edit
 -- inside the span, or an edit elsewhere (nothing to do).
-module Olifant.Server.BlockMoves (blockKill, blockWaive, blockChanged, blockEdited) where
+module Olifant.Server.BlockMoves (blockKill, blockWaive, blockChanged, blockEdited, rejectDeleted) where
 
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
@@ -11,14 +11,16 @@ import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.IORef (atomicModifyIORef', modifyIORef', readIORef)
 import Data.List (nub)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Project (..))
-import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, killStub, killTarget, stubNameFor, survivors)
+import Olifant.Block (Block (..), Draft (..), Kind (..), Move (..), begin, hud, killStub, killTarget, pending, survivors)
 import Olifant.Catalog (catalogLanguages)
-import Olifant.Language (Failure (..), Language (..), languageFor)
+import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
+import Olifant.Newness (newLinesOf)
 import Olifant.Server.Block (appendStep, awaitingVerdict, claim, fileOf, settle, settleOn, spanEdited, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
@@ -39,8 +41,7 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
   busy <- lift (M.member testFile <$> readIORef (ssBlocks s))
   when busy (throwE (pendingTest testRel))
   testText <- lift (readText (prWorkspace project) testRel) >>= maybe (throwE ("cannot read " <> T.pack testRel)) pure
-  let (at, body) = killStub lang testText m
-      named = stubNameFor m testText (langKeywords lang)
+  let (at, body, named) = killStub lang testText m
   b' <- ExceptT (settle s root killed "kill" (muOperator m <> " on line " <> tshow (muLine m)) (Kill (muLine m)) b)
   n <- lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
   -- the stub's two blank lines, then its def, arrangement and assertion;
@@ -88,7 +89,7 @@ blockChanged path s0 =
   spanEdit path s0 >>= \case
     (s, Nothing) -> pure (s, Nothing)
     (s, Just (b, killed, root, _, now))
-      | stubGone b now -> (s,) . either (const Nothing) Just <$> settle s root killed "reject" "the stub was deleted" Reject b
+      | stubGone b now -> (s,) <$> rejectDeleted s root killed now b
     (s, Just (b, killed, root, project, now)) -> do
       let spanText = T.intercalate "\n" (take (snd (blockSpan b) - fst (blockSpan b) + 1) (drop (fst (blockSpan b) - 1) (T.splitOn "\n" now)))
           applied = case listToMaybe (reverse (blockDrafts b)) of
@@ -98,17 +99,29 @@ blockChanged path s0 =
         Nothing -> pure (s, Nothing)
         Just lang -> (s,) . either (const Nothing) Just <$> testNow s root project lang b killed applied
 
--- | A test block's span with no def in it now (`def `, after the
--- indentation): its stub is gone. A test renamed as it is typed keeps
--- its def, so it stays.
+-- | A test block whose stub is deleted whole in NOW: no line new since it
+-- began is left, non-blank, at or after its span's first line. A test
+-- renamed as it is typed, or its def line retyped, keeps lines of its own.
 stubGone :: Block -> Text -> Bool
 stubGone b now = case blockKind b of
   Code -> False
-  TestFor _ -> not (any isDef spanLines)
+  TestFor _ -> not (any kept (S.toList (newLinesOf (blockBase b) now)))
   where
-    (l1, l2) = blockSpan b
-    spanLines = take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" now))
-    isDef l = any (`T.isPrefixOf` T.stripStart l) ["def ", "async def "]
+    ls = T.lines now
+    kept l = l >= fst (blockSpan b) && maybe False (not . T.null . T.strip) (listToMaybe (drop (l - 1) ls))
+
+-- | Reject a test block whose stub was deleted (the file as the person
+-- left it: no edit). The block read may be stale (a test or draft landed
+-- meanwhile): then the block as it stands, while it is the same circle
+-- and its stub is still gone.
+rejectDeleted :: ServerState -> FilePath -> Int -> Text -> Block -> IO (Maybe Block)
+rejectDeleted s root killed now b =
+  settle s root killed "reject" "the stub was deleted" Reject b >>= \case
+    Right gone -> pure (Just gone)
+    Left _ ->
+      M.lookup (blockFile b) <$> readIORef (ssBlocks s) >>= \case
+        Just (current, k) | blockId current == blockId b, blockVersion current /= blockVersion b, pending current, stubGone current now -> rejectDeleted s root k now current
+        _ -> pure Nothing
 
 -- | Whether the file's text now is an edit of its block's span (since the
 -- text last tested): the adapter tests it once typing settles, and only

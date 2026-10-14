@@ -27,6 +27,7 @@ import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
 import Olifant.Server.Block (settle)
+import Olifant.Server.BlockMoves (rejectDeleted)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
 import Olifant.Fill (FillRequest (..), Filler (..), ModelFiller (..))
@@ -480,7 +481,10 @@ blockSpecs = describe "blocks" $ do
         mine = T.replace "    table = CloseTable()\n" "    table = CloseTable()  # mine\n" testText
     (_, Just expanded) <- blockChanged testFile (openDoc testFile 1 stubbed s)
     blockState expanded `shouldSatisfy` \case Red _ -> True; _ -> False
+    -- the person typed over the stub's name: the HUD (and the block's test) follow it
+    hud expanded `shouldSatisfy` ("▸ test_kills_the_boundary · " `T.isPrefixOf`)
     hud expanded `shouldSatisfy` ("· assert, then draft · reject drops it" `T.isSuffixOf`)
+    blockTestId expanded `shouldBe` T.pack testRel <> "::test_kills_the_boundary"
     (_, gone) <- blockChanged testFile (changeDoc testFile 2 mine s)
     fmap blockState gone `shouldBe` Just Rejected
     M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
@@ -490,7 +494,7 @@ blockSpecs = describe "blocks" $ do
     map muLine (survivors code) `shouldBe` [6]
     (_, again) <- blockKill (root </> moduleRel) 6 (changeDoc testFile 2 mine s)
     either id (const "stubbed") again `shouldBe` "stubbed"
-  it "(h3) a kill's stub edited (renamed mid-word, its def kept) stays open" $ do
+  it "(h3) a kill's stub edited (renamed mid-word, or its def line retyped) stays open" $ do
     (s0, _) <- blocksOn killedBy []
     let s = openDoc (root </> moduleRel) 1 written s0
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
@@ -500,6 +504,23 @@ blockSpecs = describe "blocks" $ do
     (_, renaming) <- blockChanged testFile (changeDoc testFile 2 (T.replace "def test_kills_the_boundary(" "def t(" stubbed) s)
     fmap blockState renaming `shouldNotBe` Just Rejected
     M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` True
+    -- `cc` on the def line, then a pause: its body is still there
+    (_, retyped) <- blockChanged testFile (changeDoc testFile 3 (T.replace "def test_kills_the_boundary() -> None:" "" stubbed) s)
+    fmap blockState retyped `shouldNotBe` Just Rejected
+    M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` True
+  it "(h3) a stub deleted while another move lands first is still rejected, on the block as it stands" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    let stubbed = expandStub at body testText
+        st = openDoc testFile 1 stubbed s
+    (_, Just stale) <- blockChanged testFile st
+    -- a test lands meanwhile: the block read before it is stale
+    (_, Right _) <- blockTest testFile st
+    gone <- rejectDeleted s root 0 testText stale
+    fmap blockState gone `shouldBe` Just Rejected
+    M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
   it "(i) waive writes the comment on the survivor's line and reopens accept" $ do
     (s0, _) <- blocks redOnStub []
     let s = openDoc (root </> moduleRel) 1 written s0

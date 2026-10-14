@@ -18,6 +18,7 @@ module Olifant.Block
     draftTemplate,
     testDraftTemplate,
     killStub,
+    stubName,
     stubNameFor,
     testStub,
     instructionFor,
@@ -29,7 +30,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubNameFor, testDraftTemplate, testStub)
+import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub)
 import Olifant.Language (Failure (..), TestId)
 import Olifant.Mutate (Mutant (..))
 
@@ -203,7 +204,9 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
     -- either; else draft
     redCue = case (reverse (blockDrafts b), blockKind b) of
       (d : _, _) | draftBy d /= "you" -> ""
-      (_, TestFor Nothing) -> "name it, then draft · reject drops it"
+      -- a begin's stub is named once its test has a name of the person's
+      (_, TestFor Nothing) | testName == stubName || not ("::" `T.isInfixOf` blockTestId b) -> "name it, then draft · reject drops it"
+      (_, TestFor Nothing) -> "assert, then draft · reject drops it"
       (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
       _ -> "draft"
 
