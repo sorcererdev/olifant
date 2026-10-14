@@ -541,6 +541,14 @@ runCliSpec = describe "runCli" $ do
     (code, out, _, _) <- runWith "top\n  it \"" files False ["gen", "s", "--at", "a.txt:2:7", "--plan", "--json", "--overlay", "a.txt"]
     code `shouldBe` ExitSuccess
     out `shouldSatisfy` T.isInfixOf "\"snippet\":{\"body\":\"  a\\n  b$0\",\"file\":\"a.txt\",\"ghost\":[\"  a\",\"  b\"],\"line\":2}"
+  it "a snippet's lines are its own when a later step inserts above the cursor (an import)" $ do
+    let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
+        imp = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "insert = \"a.txt\"", "at = \"start of file\"", "text = \"use x;\\nuse y;\\n\"" ]
+        files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/.olifant/generators/imp/generator.toml", imp), ("/proj/a.txt", "enum E {\n    A,\n\n}\n")]
+    (code, out, err, _) <- runWith "" files False ["gen", "s", "+", "imp", "--at", "a.txt:3:1", "--plan", "--json"]
+    (code, err) `shouldBe` (ExitSuccess, "")
+    out `shouldSatisfy` T.isInfixOf "\"after\":\"use x;\\nuse y;\\nenum E {\\n    A,\\n    V,\\n}\\n\""
+    out `shouldSatisfy` T.isInfixOf "\"snippet\":{\"body\":\"    V,$0\",\"file\":\"a.txt\",\"ghost\":[\"    V,\"],\"line\":3}"
   it "(review I7, I8) --at outside the file, and --steps - with --overlay, are usage errors" $ do
     let gen = T.unlines [ "description = \"d\"", "language = \"x\"", "[[edits]]", "cursor = true", "text = \"V,\"" ]
         files = [("/proj/.olifant/generators/s/generator.toml", gen), ("/proj/a.txt", "one\ntwo\n")]

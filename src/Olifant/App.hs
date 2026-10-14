@@ -574,14 +574,31 @@ placeAt ports project (rel, line) gens = do
 
 -- | The snippet a cursor plan placed (spec §4.9): the lines that replaced
 -- the cursor's line, holes as tab stops, model fills where there are any.
+-- Edits are in plan order, each at its file's lines as the edits before it
+-- left them: the cursor's line moves with every edit above it, and the
+-- snippet's lines with every edit above them after it was placed (a later
+-- step's import), so the body is read where they are in the plan's text.
 snippetAtCursor :: (FilePath, Int) -> Plan -> Maybe Snippet
 snippetAtCursor (rel, line) plan = do
   text <- maybe (M.lookup rel (planWrites plan)) Just (M.lookup rel (planMarked plan))
-  -- as many lines as the replacement of the cursor's line has
-  k <- listToMaybe [max 1 (length (T.lines new)) | e <- planEdits plan, editPath e == rel, WillReplace l _ new <- [editAction e], l == line]
-  let lines' = take k (drop (line - 1) (T.splitOn "\n" text))
+  (start, k) <- placed line Nothing [editAction e | e <- planEdits plan, editPath e == rel]
+  let lines' = take k (drop (start - 1) (T.splitOn "\n" text))
       fills = [(T.takeWhile (/= '[') (holeName (phSite h)), f) | h <- planHoles plan, holeFile (phSite h) == rel, Just f <- [phFill h]]
   Just (snippetOf rel line (T.intercalate "\n" lines') (`lookup` fills))
+  where
+    -- the cursor's line so far, and the snippet's (first line, line count)
+    -- once its replacement of that line is seen
+    placed at found = \case
+      [] -> found
+      a : rest -> case (found, a) of
+        (Nothing, WillReplace l _ new) | l == at -> placed at (Just (l, max 1 (length (T.lines new)))) rest
+        (Nothing, _) -> placed (shifted at a) Nothing rest
+        (Just (s, k), _) -> placed at (Just (shifted s a, k)) rest
+    -- a line moved by an edit wholly above it
+    shifted at = \case
+      WillInsert l t | l <= at -> at + length (T.splitOn "\n" (fromMaybe t (T.stripSuffix "\n" t)))
+      WillReplace l n new | l + n <= at -> at + (if T.null new then 0 else length (T.lines new)) - n
+      _ -> at
 
 -- | How to plan: apply or only plan, the cursor (project-relative), the
 -- model, the files shown to it, and where progress goes.
