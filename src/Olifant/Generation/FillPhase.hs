@@ -86,15 +86,18 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
                 pure (imported, notAlready b, n)
           -- A block whose first line came less indented than the rest (written
           -- as if the first line sat at the marker's column): read with the
-          -- rest brought up to it, when that leaves its file with fewer
-          -- findings, or rids it of a syntax error (the rest may still not
-          -- type-check: the reason is then the type error, not the indent).
-          rescued <- if M.null brokenA then pure candidatesA else forM candidatesA $ \(t, f) -> case reindented f of
-            Just f' | Just before <- M.lookup (holeFile (site t)) brokenA -> do
-              (b, _) <- checkFiles (with [(t, f')]) [site t]
-              let after = M.findWithDefault [] (holeFile (site t)) (notAlready b)
-                  better = length after < length before || (any syntaxError before && not (any syntaxError after))
-              if better
+          -- rest brought up to it when, with only this fill placed (so another
+          -- hole's errors in the file do not count), that compiles; or, when
+          -- the fill as written has a syntax error, when that leaves fewer
+          -- findings or no syntax error (the rest may still not type-check:
+          -- the reason is then the type error, not the indent).
+          rescued <- if M.null brokenA then pure candidatesA else forM candidatesA $ \(t, f) -> case reindented (langComment <$> langOf (holeFile (site t))) f of
+            Just f' | M.member (holeFile (site t)) brokenA -> do
+              let alone g = M.findWithDefault [] (holeFile (site t)) . notAlready . fst <$> checkFiles (with [(t, g)]) [site t]
+              before <- alone f
+              after <- alone f'
+              let better = null after || (any syntaxError before && (length after < length before || not (any syntaxError after)))
+              if not (null before) && better
                 then toolProgress tools (Reindented (name t) f') >> pure (t, f')
                 else pure (t, f)
             _ -> pure (t, f)
@@ -418,11 +421,12 @@ escapes f
 -- other non-blank line (at least @c@), and opens no block (it does not end
 -- with @:@, an open bracket or a backslash): those lines @c - a@ less
 -- (Nothing otherwise).
-reindented :: Text -> Maybe Text
-reindented f = case T.lines (T.dropWhile (== '\n') f) of
+-- A trailing comment (the language's COMMENT) is not the line's end.
+reindented :: Maybe Text -> Text -> Maybe Text
+reindented comment f = case T.lines (T.dropWhile (== '\n') f) of
   first : rest@(_ : _)
     | not (T.null (T.strip first))
-    , not (any (`T.isSuffixOf` T.stripEnd first) [":", "(", "[", "{", "\\"])
+    , not (any (`T.isSuffixOf` T.stripEnd (uncommented first)) [":", "(", "[", "{", "\\"])
     , a <- indentOf first
     , ns@(_ : _) <- [indentOf l | l <- rest, not (T.null (T.strip l))]
     , c <- minimum ns
@@ -431,6 +435,7 @@ reindented f = case T.lines (T.dropWhile (== '\n') f) of
   _ -> Nothing
   where
     indentOf = T.length . T.takeWhile (== ' ')
+    uncommented l = maybe l (\c -> if T.null c then l else fst (T.breakOn c l)) comment
 
 -- | A check's finding that says the file does not parse (pyright's words
 -- for Python's indentation and syntax errors), not that it does not type.

@@ -1407,8 +1407,9 @@ through `Process.runBytesWithin`, which polls for exit so it can stop a long run
 non-threaded runtime) decides; a failure is a retry reason "the tests failed: …". Before
 any of this, layout is repaired: `applyFills` places `dedented` lines (common indent
 dropped), and a candidate failing to compile whose first line sits less deep than the rest
-(and opens no block) is tried `reindented`, kept when its file then has fewer findings or
-loses a syntax-class one (`syntaxError`), and announced as `Reindented` (a block's draft
+(and opens no block) is tried `reindented`, kept when, with only it placed, its file then
+compiles, or, the original carrying a syntax-class finding (`syntaxError`), has fewer
+findings or loses that one; it is announced as `Reindented` (a block's draft
 writes that text). `Snippet.snippetOf` places a
 model fill the same way (shared `Holes.dedented`, continuation lines at the marker line's
 indent), so the editor's snippet matches the written file. `gen --fills FILE` makes the

@@ -283,8 +283,10 @@ to reject a wrong fill, not to stop a generation because a tool is missing.
 **Layout is repaired, not retried.** A fill's lines lose their common indentation before
 they are placed (a model may write at the hole's absolute column), and a fill whose first
 line sits less deep than all the rest (written as if the first line were at the marker),
-and opens no block (it does not end with `:` or an open bracket), is read with the rest
-brought up to it when that leaves fewer findings, or no syntax error where there was one.
+and opens no block (it does not end with `:` or an open bracket, a trailing comment aside),
+is read with the rest brought up to it when that compiles, or, when the fill as written has
+a syntax error, when that leaves fewer findings or no syntax error (each judged with only
+that fill in place, so another hole's errors in the file do not count).
 A draft read that way may still fail on a type error: that error is then the reason, and
 the text written is the one read level. `--progress` reports the rescue as
 `{"event":"reindent","hole":…,"fill":…}`. Measured on `handle-body`: every

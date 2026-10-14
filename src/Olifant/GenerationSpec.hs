@@ -927,11 +927,24 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       reqs <- readIORef calls
       [map fst (fhPrevious h) | h <- concatMap frHoles (drop 1 reqs)] `shouldBe` [[rescuedText]]
       readIORef events >>= (`shouldSatisfy` elem (Reindented "body" rescuedText))
+    it "(s) another hole's errors in the same file do not make a good fill's reading one level up look better: it stands as written" $ do
+      let two = generatorFrom . T.unlines $
+            [ "description = \"d\"", "language = \"python\""
+            , "[[edits]]", "create = \"src/f.py\"", "text = \"def f(x):\\n    {= ? a: block | a =}\\n\\ndef g():\\n    {= ? b: block | b =}\\n\"" ]
+          -- B's two type errors; A read one level up no longer parses
+          twoChecker = Checker $ \_ files -> pure (Right (CheckReport [] (concat [ [(p, m) | "BROKEN" `T.isInfixOf` t, m <- ["Type mismatch 1", "Type mismatch 2"]] ++ [(p, "Parse error: unexpected ->") | "    y = case x of\n    1 -> a" `T.isInfixOf` t] | (p, t) <- M.toList files]) []))
+          good = "y = case x of\n    1 -> a\n    _ -> b"
+          filler = Filler $ \_ -> pure (Right (M.fromList [("a", good), ("b", "BROKEN")]))
+          tools = (basicTools noSyntax twoChecker [blockLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+      (ws, _) <- memoryWorkspace []
+      Right plan <- generate ws noResolve tools [Step two M.empty] now Apply
+      [(holeName (phSite h), phStatus h, phFill h) | h <- planHoles plan, holeName (phSite h) == "a"] `shouldBe` [("a", HoleFilled "fake" 1, Just good)]
     it "(s) a first line ending with `:` keeps the deeper lines under it; one indented less than the rest has them brought up to it" $ do
-      reindented "if x:\n        y = 2" `shouldBe` Nothing
-      reindented "        x = 1\n                if x:\n                    y = 2" `shouldBe` Just "        x = 1\n        if x:\n            y = 2"
-      reindented "x = 1\n    if x:\n        y = 2" `shouldBe` Just "x = 1\nif x:\n    y = 2"
-      reindented "x = 1\ny = 2" `shouldBe` Nothing
+      reindented (Just "#") "if x:\n        y = 2" `shouldBe` Nothing
+      reindented (Just "#") "if booking is None:  # guard\n        return 1" `shouldBe` Nothing
+      reindented (Just "#") "        x = 1\n                if x:\n                    y = 2" `shouldBe` Just "        x = 1\n        if x:\n            y = 2"
+      reindented (Just "#") "x = 1\n    if x:\n        y = 2" `shouldBe` Just "x = 1\nif x:\n    y = 2"
+      reindented (Just "#") "x = 1\ny = 2" `shouldBe` Nothing
   describe "auto-import (a name another file imports, no model round)" $ do
     let pyLang = l
           where
