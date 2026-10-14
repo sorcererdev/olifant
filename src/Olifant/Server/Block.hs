@@ -34,11 +34,12 @@ module Olifant.Server.Block
   , siteTestFile
   , functionAt
   , openTestStub
+  , importedModules
   ) where
 
 import Control.Applicative ((<|>))
 import Control.Exception (SomeException, try)
-import Control.Monad (unless, void, when)
+import Control.Monad (forM, unless, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, withExceptT)
 import Data.Aeson (Value, object, (.=))
@@ -65,7 +66,7 @@ import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, proje
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
+import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), Verifier (..), describeCheckFailure, describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
@@ -387,21 +388,29 @@ draftIn progress s root project lang b drafting killed filler = do
               | otherwise -> pure (trPassed run)
           pure (VerifyKills (T.pack rel) (keep ++ new) new moduleRel (muText m))
       pure (template, ("arrange", verify), [(m, t) | Just m <- [tested], Just t <- [moduleText]])
+  -- and the project modules either one imports (ports, models), capped
+  imported <- lift (importedContext ws lang (rel : map fst beside) (text : map snd beside))
   -- each fill the model offers, the last kept: a draft that fails its test
   -- is written as its last attempt, never as the placeholder
+  -- (a fill the fill phase read one level up is kept as read)
   attempts <- lift (newIORef M.empty)
   let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) (\fills -> modifyIORef' attempts (M.union fills)) r >> pure r)}
+      progress' e = case e of
+        Reindented hole f -> modifyIORef' attempts (M.insert hole f) >> progress e
+        _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
-      context = beside ++ [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
-      options = planOptions {poFiller = Just recording, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
+      context = beside ++ imported ++ [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
+      options = planOptions {poFiller = Just recording, poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = DraftStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
   latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
   when (latest /= started) (throwE "the file changed while drafting; your text stands")
   tried <- lift (readIORef attempts)
-  (planned, outcome, edits) <- case planHoles plan of
-    h : _ | HoleFilled _ _ <- phStatus h -> pure (M.findWithDefault text rel (planWrites plan), Right (), editsOfPlan s root plan)
+  -- (an attempt that would not parse is not written: the file keeps its
+  -- text, the draft is recorded red with Python's reason)
+  (planned, outcome, edits, unwritten) <- case planHoles plan of
+    h : _ | HoleFilled _ _ <- phStatus h -> pure (M.findWithDefault text rel (planWrites plan), Right (), editsOfPlan s root plan, Nothing)
     h : _
       | HoleUnfilled why <- phStatus h ->
           case M.lookup (holeName (phSite h)) tried of
@@ -410,19 +419,124 @@ draftIn progress s root project lang b drafting killed filler = do
               let langOf = languageFor (catalogLanguages (prCatalog project))
                   written = M.findWithDefault text rel (applyFills langOf (planWrites plan) [(phSite h, attempt)])
                   (range, new) = smallestChange text written
-              pure (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text])
+              lift (unparseable s root drafting lang rel text written) <&> \case
+                Just err -> (text, Left (Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
+                Nothing -> (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text], Nothing)
       | HoleSkipped why <- phStatus h -> throwE why
     _ -> throwE "the draft made no hole"
-  let changed = changedSpan text planned (blockSpan b)
-      grown = length (T.splitOn "\n" planned) - length (T.splitOn "\n" text)
+  let shown = fromMaybe planned unwritten
+      changed = changedSpan text shown (blockSpan b)
+      grown = length (T.splitOn "\n" shown) - length (T.splitOn "\n" text)
       -- a test block keeps its whole test (its def to its assertion)
-      sp@(l1, l2) = case blockKind b of
+      (l1, l2) = case blockKind b of
         Code -> changed
         TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
-      drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" planned)))
+      -- an unwritten draft leaves the span where it was
+      sp = maybe (l1, l2) (const (blockSpan b)) unwritten
+      drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" shown)))
   b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+
+-- | The project modules a draft sees beside its file and the file beside it
+-- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
+-- import's module (or a name imported from it that is a module) found as
+-- @src/a/b/c.py@ or @src/a/b/c/__init__.py@, then what those import (one
+-- level, so the cap cuts these first); in import order, at most
+-- 'importedFiles' of them, each at most 'importedLines' lines (cut with a
+-- line saying how many more) and 'importedTotal' in all. The standard
+-- library and third-party packages are no file of the project: skipped.
+importedContext :: Workspace IO -> Language -> [FilePath] -> [Text] -> IO [(FilePath, Text)]
+importedContext ws lang known texts
+  | langName lang /= "python" = pure []
+  | otherwise = do
+      direct <- resolved known texts
+      -- one level further: what those import (a port's models)
+      further <- resolved (known ++ map fst direct) (map snd direct)
+      pure (capped importedTotal (take importedFiles (direct ++ further)))
+  where
+    resolved seen ts = do
+      found <- forM (concatMap importedModules ts) $ \m ->
+        let path = T.unpack (T.intercalate "/" (T.splitOn "." m))
+         in firstFile ["src" </> path <> ".py", "src" </> path </> "__init__.py"]
+      pure (dedupe [(p, t) | Just (p, t) <- found, p `notElem` seen, not (T.null (T.strip t))])
+    firstFile = \case
+      [] -> pure Nothing
+      p : rest -> readText ws p >>= maybe (firstFile rest) (pure . Just . (p,))
+    dedupe = foldr (\x acc -> x : filter ((/= fst x) . fst) acc) []
+    capped _ [] = []
+    capped budget ((p, t) : rest)
+      | budget <= 0 = []
+      | otherwise =
+          let ls = T.lines t
+              keep = minimum [length ls, importedLines, budget]
+              cut
+                | keep < length ls = T.intercalate "\n" (take keep ls ++ ["# \8230 (" <> T.pack (show (length ls - keep)) <> " more lines)"])
+                | otherwise = t
+           in (p, cut) : capped (budget - keep) rest
+
+-- | The modules a Python file's absolute imports name, in order: @import
+-- a.b, c@ names @a.b@ and @c@; @from a.b import x, y@ names @a.b@, then
+-- @a.b.x@ and @a.b.y@ (a name may be a module). Relative imports are not
+-- followed.
+importedModules :: Text -> [Text]
+importedModules t = concatMap named (map T.strip (T.lines t))
+  where
+    named l
+      | Just rest <- T.stripPrefix "from " l
+      , (m, names) <- T.breakOn " import " rest
+      , not (T.null names)
+      , not ("." `T.isPrefixOf` m) =
+          m : [m <> "." <> n | n <- map nameOf (T.splitOn "," (T.drop (T.length " import ") names)), not (T.null n)]
+      | Just rest <- T.stripPrefix "import " l = filter (not . T.null) (map nameOf (T.splitOn "," rest))
+      | otherwise = []
+    -- a name less its alias, brackets and comment
+    nameOf = T.takeWhile (\c -> ident c || c == '.') . T.dropWhile (`elem` (" (" :: String)) . T.takeWhile (/= '#')
+
+-- | A draft's imported modules: how many files, lines each, lines in all.
+importedFiles, importedLines, importedTotal :: Int
+importedFiles = 8
+importedLines = 120
+importedTotal = 600
+
+-- | Why the draft's file (AFTER) would not parse, by Python's own parser
+-- run through the verify port, when the file without it (BEFORE) does; or
+-- Nothing: it parses, it is not Python, or the gate is off for this draft
+-- (no Python could run, it failed without saying, or the file did not
+-- parse before the draft either), which the step log records.
+unparseable :: ServerState -> FilePath -> Block -> Language -> FilePath -> Text -> Text -> IO (Maybe Text)
+unparseable s root b lang rel before after
+  | langName lang /= "python" = pure Nothing
+  | otherwise =
+      parsing after >>= \case
+        Right Nothing -> pure Nothing
+        Right (Just err) ->
+          parsing before >>= \case
+            Right Nothing -> pure (Just err)
+            Right (Just _) -> off "the file does not parse without the draft either"
+            Left why -> off why
+        Left why -> off why
+  where
+    off why = appendStep (ssPorts s) root b "parse" ("gate off: " <> why) >> pure Nothing
+    -- Right: the parser's reason, if any; Left: why it could not say
+    parsing t =
+      runVerify (pVerifier (ssPorts s) (ssCancel s)) lang ["python3", "-I", "-c", parseScript, T.pack rel] (M.singleton rel t) <&> \case
+        Left f -> Left (describeCheckFailure f)
+        Right (ok, out)
+          | err : _ <- [T.strip r | l <- T.lines out, Just r <- [T.stripPrefix parseSentinel (T.strip l)]] -> Right (Just err)
+          | ok -> Right Nothing
+          | otherwise -> Left (fromMaybe "python3 failed" (listToMaybe (filter (not . T.null) (map T.strip (T.lines out)))))
+    -- only a syntax error is the sentinel; any other failure is no verdict
+    parseScript = T.unlines
+      [ "import ast, sys"
+      , "try:"
+      , "    ast.parse(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1])"
+      , "except SyntaxError as e:"
+      , "    print(f'" <> parseSentinel <> " {type(e).__name__}: {e.msg} (line {e.lineno})')" ]
+
+-- | The line the parse script begins a syntax error's reason with.
+parseSentinel :: Text
+parseSentinel = "OLIFANT_PARSE_ERROR:"
 
 -- | A test block's stub as a draft needs it: its arrangement's line and
 -- hole, its new test and all its new tests; or why it cannot be drafted yet.
@@ -740,6 +854,7 @@ appendStep ports root b move result = do
       who = case move of
         "draft" -> maybe "model" draftBy (listToMaybe (reverse (blockDrafts b)))
         "judge" -> "mutation"
+        "parse" -> "olifant"
         _ -> "person"
       entry = T.intercalate "\t" [T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now), "block " <> tshow (blockId b), move, who, T.unwords (T.words result)]
   void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))

@@ -26,7 +26,7 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
-import Olifant.Server.Block (settle)
+import Olifant.Server.Block (importedModules, settle)
 import Olifant.Server.BlockMoves (rejectDeleted)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
@@ -38,8 +38,8 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (noChecker, noRunner, noSyntax)
-import Olifant.Language.Check (noVerifier)
+import Olifant.Language (CheckFailure (..), CheckReport (..), Checker (..), noChecker, noRunner, noSyntax)
+import Olifant.Language.Check (Verifier (..), noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
 import Olifant.Server
@@ -859,6 +859,53 @@ blockSpecs = describe "blocks" $ do
     written' `shouldSatisfy` (not . ("olifant: body" `T.isInfixOf`))
     blockState b `shouldSatisfy` \case Red _ -> True; _ -> False
     map (\d -> (draftText d, draftBy d, "red" `T.isPrefixOf` draftOutcome d)) (blockDrafts b) `shouldBe` [("        return int(seats > 2)", "recorded", True)]
+  it "(I2) a failed draft read one level up (the reindent rescue) is written as read, its type error the reason" $ do
+    (s0, _) <- blocks (const (failing "assert 0 == 1")) []
+    let deeper a b = indentOf b > indentOf a && not (":" `T.isSuffixOf` T.stripEnd a)
+        indentOf = T.length . T.takeWhile (== ' ')
+        complaints t = let ls = filter (not . T.null . T.strip) (T.lines t) in ["Unexpected indentation" | or (zipWith deeper ls (drop 1 ls))] ++ ["Cannot access attribute \"find_by_id\"" | "find_by_id" `T.isInfixOf` t]
+        checker = Checker (\_ files -> pure (Right (CheckReport [] [(p, why) | (p, t) <- M.toList files, why <- complaints t] [])))
+        rehearsal = "        booking = self.find_by_id(seats)\n                if booking is None:\n                    return 0\n                return 1"
+        filler = ModelFiller "rehearsal" 0 (Filler (\_ -> pure (Right (M.fromList [("body", rehearsal)]))))
+        s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler, ssPorts = (ssPorts s0) {pChecker = const checker}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (b, [edit])) <- blockDraft ignore (root </> moduleRel) s
+    take 4 (drop 5 (T.lines (applyChange (feRange edit) (feText edit) stubbed))) `shouldBe` ["        booking = self.find_by_id(seats)", "        if booking is None:", "            return 0", "        return 1"]
+    blockState b `shouldSatisfy` \case Red f -> "find_by_id" `T.isInfixOf` fMessage f && not ("Unexpected indentation" `T.isInfixOf` fMessage f); _ -> False
+  describe "(I2) the parse gate: a failed Python draft that would not parse is not written" $ do
+    let attempt = "        x = seats\n                return x"
+        bad = any ("                return" `T.isPrefixOf`) . T.lines
+        drafted parser = do
+          (s0, _) <- blocks (const (failing "assert 0 == 1")) []
+          asked <- newIORef []
+          let filler = ModelFiller "rehearsal" 0 (Filler (\_ -> pure (Right (M.fromList [("body", attempt)]))))
+              s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler, ssPorts = (ssPorts s0) {pVerifier = const (Verifier (\_ argv files -> modifyIORef' asked (++ [take 3 argv]) >> parser files))}}
+          (_, Right b0) <- blockBegin ignore (root </> testRel) 6 s
+          (_, Right (b, edits)) <- blockDraft ignore (root </> moduleRel) s
+          log' <- steps s
+          (b0, b, edits, log',) <$> readIORef asked
+        sentinel = "OLIFANT_PARSE_ERROR: IndentationError: unexpected indent (line 7)\n"
+    it "Python's parser says why (its sentinel line): the span keeps its text, the draft is red with that reason, and draft is next" $ do
+      (b0, b, edits, _, asked) <- drafted (\files -> pure (Right (True, if any bad (M.elems files) then sentinel else "")))
+      edits `shouldBe` []
+      blockSpan b `shouldBe` blockSpan b0
+      blockState b `shouldBe` Red (Failure Nothing "the draft does not parse: IndentationError: unexpected indent (line 7)" "")
+      map draftOutcome (blockDrafts b) `shouldBe` ["red: the draft does not parse: IndentationError: unexpected indent (line 7)"]
+      hud b `shouldSatisfy` ("red: the draft does not parse: IndentationError: unexpected indent (line 7) \183 draft" `T.isSuffixOf`)
+      take 1 asked `shouldBe` [["python3", "-I", "-c"]]
+    it "python3 missing, or failing without the sentinel (a pyenv shim, a traceback): the gate is off, the draft written as before, and the step log says so" $ do
+      (_, b, edits, log', _) <- drafted (\_ -> pure (Left (CheckToolMissing "`python3` is not installed (needed to verify)")))
+      length edits `shouldBe` 1
+      blockState b `shouldSatisfy` \case Red f -> "assert 0 == 1" `T.isInfixOf` fMessage f; _ -> False
+      log' `shouldSatisfy` ("\tparse\tolifant\tgate off: `python3` is not installed" `T.isInfixOf`)
+      (_, _, edits', log'', _) <- drafted (\_ -> pure (Right (False, "pyenv: python3: command not found\n")))
+      length edits' `shouldBe` 1
+      log'' `shouldSatisfy` ("\tparse\tolifant\tgate off: pyenv: python3: command not found" `T.isInfixOf`)
+    it "a file that does not parse before the draft either (the person's half-typed code): the gate is off, the draft written" $ do
+      (_, _, edits, log', asked) <- drafted (\_ -> pure (Right (True, sentinel)))
+      length edits `shouldBe` 1
+      length asked `shouldBe` 2
+      log' `shouldSatisfy` ("\tparse\tolifant\tgate off: the file does not parse without the draft either" `T.isInfixOf`)
   it "(I2) a draft that never produced an attempt makes no edits and no draft" $ do
     (s0, _) <- blocks redOnStub [("nofill.toml", "[fills]\narrange = \"x = 1\"\n")]
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "nofill.toml")}}
@@ -889,6 +936,62 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
     test : _ <- readIORef seen
     lookup moduleRel test `shouldBe` Just written
+  describe "(I6) a draft sees the project modules its file and the file beside import" $ do
+    let portRel = "src/shop/ports/table_repository.py"
+        portText = T.unlines ["class TableRepository:", "    def table(self, n: int) -> int: ...", "    def save(self, n: int) -> None: ..."]
+        importing = T.unlines ["import os", "from shop.ports.table_repository import TableRepository", "from shop.close_table import CloseTable", ""] <> stubbed
+        contextOf extra moduleText = contextWith extra moduleText testText
+        contextWith extra moduleText testText' = do
+          (s0, _) <- blocksOn killedBy ((portRel, portText) : extra)
+          seen <- newIORef []
+          let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()")]))))
+              s = (openDoc (root </> testRel) 1 testText' (openDoc (root </> moduleRel) 1 moduleText s0)) {ssTestFiller = Just recording}
+          (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+          (_, Right (_, [edit])) <- blockDraft ignore (root </> moduleRel) s
+          [code] <- readIORef seen
+          pure (code, s, applyChange (feRange edit) (feText edit) moduleText, seen)
+    it "a code draft sees the port its module imports, under its path; the standard library and the drafted file add nothing" $ do
+      (code, _, _, _) <- contextOf [] importing
+      map fst code `shouldBe` [testRel, portRel]
+      lookup portRel code `shouldBe` Just portText
+    it "an import of more than 120 lines is cut to 120 and says how many more" $ do
+      let big = T.unlines ["x" <> T.pack (show i) <> " = " <> T.pack (show i) | i <- [0 .. 199 :: Int]]
+      (code, _, _, _) <- contextOf [("src/shop/big.py", big)] ("from shop.big import x0\n" <> stubbed)
+      let Just cut = lookup "src/shop/big.py" code
+      length (T.lines cut) `shouldBe` 121
+      take 1 (T.lines cut) `shouldBe` ["x0 = 0"]
+      last (T.lines cut) `shouldBe` "# \8230 (80 more lines)"
+    it "the file beside first, then the drafted file's imports, then the beside file's" $ do
+      (code, _, _, _) <- contextWith [("src/shop/ports/clock.py", "class Clock: ...\n")] importing (testText <> "from shop.ports.clock import Clock\n")
+      map fst code `shouldBe` [testRel, portRel, "src/shop/ports/clock.py"]
+    it "what those modules import comes after them (a port's models), one level only" $ do
+      let port' = "from shop.models.table import Table\n\n" <> portText
+          tableText = "from shop.models.seat import Seat\n\nclass Table:\n    id: int\n    seats: int\n"
+      (code, _, _, _) <- contextOf [(portRel, port'), ("src/shop/models/table.py", tableText), ("src/shop/models/seat.py", "class Seat: ...\n")] importing
+      map fst code `shouldBe` [testRel, portRel, "src/shop/models/table.py"]
+      lookup "src/shop/models/table.py" code `shouldBe` Just tableText
+    it "at most 8 imported files, the first 8 in order" $ do
+      let ms = ["m" <> T.pack (show i) | i <- [0 .. 9 :: Int]]
+      (code, _, _, _) <- contextOf [(T.unpack ("src/shop/" <> m <> ".py"), m <> " = 1\n") | m <- ms] (T.unlines ["from shop." <> m <> " import " <> m | m <- ms] <> stubbed)
+      map fst code `shouldBe` testRel : [T.unpack ("src/shop/" <> m <> ".py") | m <- take 8 ms]
+    it "at most 600 imported lines in all: five files of 120, the sixth left out" $ do
+      let ms = ["m" <> T.pack (show i) | i <- [0 .. 5 :: Int]]
+          long m = T.unlines [m <> "_" <> T.pack (show j) <> " = 1" | j <- [0 .. 149 :: Int]]
+      (code, _, _, _) <- contextOf [(T.unpack ("src/shop/" <> m <> ".py"), long m) | m <- ms] (T.unlines ["import shop." <> m | m <- ms] <> stubbed)
+      map fst code `shouldBe` testRel : [T.unpack ("src/shop/" <> m <> ".py") | m <- take 5 ms]
+      sum [length (T.lines t) - 1 | (p, t) <- code, p /= testRel] `shouldBe` 600
+    it "reads Python's absolute imports: aliases, several names, brackets, a star and relative imports" $ do
+      importedModules "import a.b as c, d\nfrom .x import y\nfrom p.q import (\n    r,\n)\nfrom m import n as k, *  # c\n" `shouldBe` ["a.b", "d", "p.q", "m", "m.n"]
+    it "a test draft sees the module and the modules it imports; the test file itself is never repeated" $ do
+      (_, s, drafted, seen) <- contextOf [] importing
+      let s1 = changeDoc (root </> moduleRel) 2 drafted s
+      (_, Just _) <- blockChanged (root </> moduleRel) s1
+      Just (judged, _) <- blockFor (root </> moduleRel) s1
+      [line] <- pure (map muLine (survivors judged))
+      (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) line s1
+      (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
+      test : _ <- readIORef seen
+      map fst test `shouldBe` [moduleRel, portRel]
   it "(M1) a language with no mutation operators cannot be judged: accept stays closed" $ do
     (s0, _) <- blocks (const (TestRun [testId] [] Nothing)) [("src/shop/close_table.snk", written)]
     python <- maybe "" id <$> readText (portsFiles s0) "/pack/languages/python.toml"

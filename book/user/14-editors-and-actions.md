@@ -1476,6 +1476,9 @@ gets the plan as usual. Like `--plan`, it applies to the whole run, wherever it 
 | `fill` | `holes`, `attempt`, `model` | before each request to the model: the holes in it, the round (1 first), and the model's name |
 | `filled` | `hole`, `attempt` | a hole's fill was accepted, on that attempt |
 | `unfilled` | `hole`, `why` | a hole was given up on, after the last attempt |
+| `auto_import` | `hole`, `import` | an import line was added to a fill whose names were not defined |
+| `reindent` | `hole`, `fill` | a fill was read with its rest brought up to its first line (`fill` as it now stands) |
+| `verify` | `hole` | a hole's fill is being run through its `verify` command (its tests) |
 
 With a backend whose `url` nothing listens on, all three attempts fail:
 

@@ -292,7 +292,8 @@ python slice uses it to replay what qwen3-coder:30b wrote, without Ollama.
 
 `--progress` writes what `gen` is doing to stderr, one JSON object per line, while it works:
 a compiler check (`{"event":"check","language":"rust"}`), a request to the model (`fill`,
-with `holes`, `attempt` and `model`), and each hole's outcome (`filled` with its `attempt`,
+with `holes`, `attempt` and `model`), the repairs made on the way (`auto_import`,
+`reindent`), a fill's tests (`verify`), and each hole's outcome (`filled` with its `attempt`,
 or `unfilled` with `why`). Stdout is unchanged. It is for editors that show a spinner during
 model calls and checks; like `--plan`, it applies to the whole run.
 [Chapter 14](14-editors-and-actions.md#progress-gen---progress) has the table and a real run.

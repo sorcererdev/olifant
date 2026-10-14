@@ -1406,8 +1406,11 @@ after the compile check: `projectFiles` gathers what a check sees, and the **Ver
 through `Process.runBytesWithin`, which polls for exit so it can stop a long run under the
 non-threaded runtime) decides; a failure is a retry reason "the tests failed: …". Before
 any of this, layout is repaired: `applyFills` places `dedented` lines (common indent
-dropped), and a candidate failing to compile whose first line is bare and the rest one
-level in is tried `reindented`, kept only if it then compiles. `Snippet.snippetOf` places a
+dropped), and a candidate failing to compile whose first line sits less deep than the rest
+(and opens no block) is tried `reindented`, kept when, with only it placed, its file then
+compiles, or, the original carrying a syntax-class finding (`syntaxError`), has fewer
+findings or loses that one; it is announced as `Reindented` (a block's draft
+writes that text). `Snippet.snippetOf` places a
 model fill the same way (shared `Holes.dedented`, continuation lines at the marker line's
 indent), so the editor's snippet matches the written file. `gen --fills FILE` makes the
 filler `replayFiller` over `parseFills` (both in `Olifant.Fill`, shared with the case
@@ -2355,10 +2358,18 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   `ssBlockSeen` against `blockOn`, and `spanEdited`); a draft that fails puts back the state it began
   from, testing the file again when it is no longer the text that state was established on
   (`blockOn`). `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
-  with `planWith` under `DraftStance` (the test file, or for a test the module, in its context),
+  with `planWith` under `DraftStance` (the test file, or for a test the module, in its context,
+  then the project modules either file imports and, one level further, what those import:
+  `importedContext`, capped at 8 files of 120 lines, 600 in all, direct imports first),
   verified by `VerifyIds` (the block's test), `VerifyRedAt` (a new test fails at its assertion)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
-  mutant); an unfilled hole writes the model's last attempt as a red draft. Its edits are
+  mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill
+  phase read it: a `Reindented` fill as read), unless, in Python, it would not parse
+  (`unparseable`: `ast.parse` through the verify port, `python3 -I`, a syntax error printed
+  after `parseSentinel`) while the file without it does: then the draft is recorded red with
+  Python's reason (`unparsedDraft`) and nothing is written. Any other outcome (no python3, a
+  traceback, the file unparseable before) turns the gate off for that draft, logged as a
+  `parse` step. Its edits are
   versioned, so the editor applies them only to the buffer it planned on. `judgeIn` runs the
   test file once unmutated (the baseline: its passing tests are the judges, its wall time sets
   each mutant's timeout, `judgeTimeout`, through `pTesterWithin`), mutates the span's lines new
