@@ -591,6 +591,15 @@ blockSpecs = describe "blocks" $ do
     (s, _) <- blocks redOnStub [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n\n\nX = 1\n")]
     (_, begun) <- blockStart ignore (root </> "src/shop/lonely.py") 4 s
     either id (const "begun") begun `shouldSatisfy` (/= "begun")
+  it "(s5) stub in a function its test file does not import: the import joins the file's (one edit), the stub after it" $ do
+    (s0, _) <- blocks redOnStub []
+    let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        s = openDoc (root </> moduleRel) 1 module' s0
+    (_, Right (StubOpened tb (testFile, at, body, imports))) <- blockStub (root </> moduleRel) 15 s
+    (testFile, at, length imports) `shouldBe` (root </> testRel, 7, 1)
+    applyEdits imports testText `shouldBe` T.replace "import CloseTable\n" "import CloseTable, Reopen\n" testText
+    body `shouldSatisfy` ("def ${1:test_again}() -> None:" `T.isInfixOf`)
+    blockSpan tb `shouldBe` (9, 11)
   it "(s6) a bare function's stub (no method call), named, asserted and red at its assertion, accepted: the function begins on it, red, pushed" $ do
     let sumsRel = "src/shop/sums.py"
         sumsTest = "src/shop/sums__test.py"
