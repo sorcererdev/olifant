@@ -62,7 +62,8 @@ the body yourself: the circle still tests and judges it.
 (`Circle: MOVE`, first while a magic circle is open). The HUD's state says which are open, and
 its last words are the next step when it is yours: `· draft` while red (gone once a model's draft
 has failed: read it, edit it or ask for `next`), `· name it, then draft · reject drops it` on a
-new test's stub, `▸ test_boundary_party_seats · assert, then draft · reject drops it` on a
+new test's stub (`▸ test_your_name · assert, then draft · reject drops it` once you named it and
+it was tested), `▸ test_boundary_party_seats · assert, then draft · reject drops it` on a
 survivor's stub (its name first), `· stub a test or waive`, `✓ accept`.
 
 | move | key | when | what it does |
@@ -136,13 +137,15 @@ def test_boundary_party_seats() -> None:
     assert ...
 ```
 
-Keep the name or type over it, write the assertion (`Tab` walks them), then `:DurandalCircle draft` in the test file.
+Keep the name or type over it (the HUD follows the name you type once it is tested), write the
+assertion (`Tab` walks them), then `:DurandalCircle draft` in the test file.
 The arrangement is drafted and verified both ways: the new test, and every test that passed
 before, must pass on your code, and the new test must fail with the mutant in place (a sibling
 test that was red before is passed over). `accept` the test, and the code's circle is judged again without that survivor.
 
 Changed your mind? `reject` in the test file drops the stub (the file as it was before it). Or
-delete the stub yourself: once no `def` is left where it was, its circle closes on its own (the
+delete the stub yourself: once none of its lines is left (retyping its name or its def line is
+not deleting it), its circle closes on its own (the
 step log says `reject … the stub was deleted`) and the file stays as you left it. Either way the
 code's circle still has the survivor; stub again from the module. While the stub's circle is
 open, another stub is refused, naming the test file.
@@ -270,8 +273,8 @@ whose module is gone runs itself.
 - **`a magic circle is open in src/…/close_table__test.py: accept or reject it there first`** —
   `stub` while a test's circle is open in the module's test file: finish it there, `reject` it,
   or delete its stub.
-- **`stub a test from the code's magic circle, in its module`** — `stub` in a test file (or in
-  a test's circle): go to the module whose circle has the survivor.
+- **`stub a test from the code's magic circle, in its module`** — `stub` in a test's circle (its
+  stub's test file): go to the module whose circle has the survivor.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a circle starts
   from what is red. Begin in the function instead to judge it.
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a

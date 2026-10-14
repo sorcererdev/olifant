@@ -2321,8 +2321,9 @@ machine served by the server. The person's "magic circle" is a `Block` internall
 
 - **`Block`** is the machine: `step move block` is `Left why` (one sentence for the person) or
   the block after the move; `open` lists the moves a state allows and `hud` writes its line (ending on the person's next
-  step: `· draft`, `· name it, then draft` on an untouched test stub, none after a model's failed
-  draft, `· stub a test or waive`); `killTarget` is the survivor a kill takes (the cursor
+  step: `· draft`, `· name it, then draft · reject drops it` on a begin's test stub not yet named
+  and `· assert, then draft · reject drops it` on a named one or a survivor's (until a model
+  drafts), none after a model's failed draft, `· stub a test or waive`); `killTarget` is the survivor a kill takes (the cursor
   line's, or the first unwaived in the stored order; the person's `stub` is `kill` internally).
   A property spec pins that `Accepted` is reachable only through a `Judged` whose survivors are
   all waived. `Block/Draft` turns a span into a template with one `block` hole (or a test's
@@ -2359,11 +2360,13 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   through `Mutate.judge`: each mutant's file over the project in the runner's own temp tree,
   four at a time.
 - **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file for the `killTarget`
-  mutant, its test id the stub's name, and the stub the editor expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
+  mutant, its test id the stub's name until a test of the block finds the person's: `testNow`
+  makes a test block's test its first new one, and the stub the editor expands), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
   debounced reaction to an edit of a block's file: the draft the editor applied (`Applied`) or the
   person's edit inside the span (`Edited`) is tested and, green, judged; an edit elsewhere does
-  nothing; a test block whose span has no `def` left (its stub deleted) is rejected through
-  `settle` with no restoring edit, and pushed as gone. `ssBlockSeen` holds the text last tested, so the editor applying the server's own
+  nothing; a test block none of whose new lines (`newLinesOf`) is left non-blank from its span
+  on (its stub deleted whole) is rejected through `settle` (`rejectDeleted`, again on the block
+  as it stands if another move landed first) with no restoring edit, and pushed as gone. `ssBlockSeen` holds the text last tested, so the editor applying the server's own
   edit (a waiver) is no edit.
 - **`Server/BlockDecide`** orders a judged block's survivors with two `Decider` questions per mutant
   (`mutant-equivalent`, `mutant-matters`), asked in the background through the server's
