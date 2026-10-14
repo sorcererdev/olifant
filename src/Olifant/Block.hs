@@ -150,14 +150,15 @@ open b = case blockState b of
   Red _ -> drafting
   Green -> drafting
   Judged ms
-    | null (unwaived ms) -> ["accept", "next", "reject"]
-    | otherwise -> ["stub", "waive", "next", "reject"]
+    | null (unwaived ms) -> ["accept", "draft", "reject"]
+    | otherwise -> ["stub", "waive", "draft", "reject"]
   Broken _ -> ["test", "reject"]
   Drafting _ -> ["reject"]
   Accepted -> []
   Rejected -> []
   where
-    drafting = [if null (blockDrafts b) then "draft" else "next", "reject", "test"]
+    -- the first draft or another candidate: draft either way
+    drafting = ["draft", "reject", "test"]
 
 unwaived :: [Mutant] -> [Mutant]
 unwaived = filter (isNothing . muWaived)

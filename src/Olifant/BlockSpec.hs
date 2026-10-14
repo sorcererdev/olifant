@@ -55,6 +55,12 @@ spec = describe "Olifant.Block" $ do
     open j `shouldSatisfy` \o -> "accept" `notElem` o && "stub" `elem` o && "kill" `notElem` o && "waive" `elem` o
     survivors (step' (Waive 2 "boundary" "inclusive by design") j) `shouldBe` []
     open (step' (Waive 2 "boundary" "inclusive by design") j) `shouldSatisfy` ("accept" `elem`)
+  it "(c4) another draft is draft, never next: the open moves say draft before and after the first" $ do
+    let r = step' (Drafted "y" "qwen" (Left red)) (step' StartDraft b0)
+        g = step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0)
+    open r `shouldBe` ["draft", "reject", "test"]
+    open (step' (Judge []) g) `shouldBe` ["accept", "draft", "reject"]
+    open (step' (Judge [m]) g) `shouldBe` ["stub", "waive", "draft", "reject"]
   it "(c2) a waiver is for one operator: another on the same line stays a survivor" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0)
         j = step' (Judge [m, m {muOperator = "number", muFrom = "1", muTo = "2"}]) g

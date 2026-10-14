@@ -354,7 +354,7 @@ testDraftParts lang b text = do
 blockTest :: FilePath -> ServerState -> IO (ServerState, Either Text Block)
 blockTest path = withBlock path $ \s root project lang b killed -> case blockState b of
   -- its result and the draft's would race: the later would land over the newer
-  Drafting _ -> pure (Left "a draft is in flight; wait for it, then test or press next")
+  Drafting _ -> pure (Left "a draft is in flight; wait for it, then test or draft again")
   _ -> testNow s root project lang b killed False
 
 -- | 'blockTest' on the block's file as it is now. APPLIED: that text is the

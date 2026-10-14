@@ -1117,7 +1117,7 @@ blockSpecs = describe "blocks" $ do
     drafting <- async (blockDraft ignore (root </> moduleRel) s)
     takeMVar entered
     (_, tested) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 2 written s)
-    either id (const "tested") tested `shouldBe` "a draft is in flight; wait for it, then test or press next"
+    either id (const "tested") tested `shouldBe` "a draft is in flight; wait for it, then test or draft again"
     putMVar release ()
     void (wait drafting)
   it "(N4) a new test's stub whose name is still the stub's (test_name) is not drafted (the block untouched, nothing run); named, it is" $ do
