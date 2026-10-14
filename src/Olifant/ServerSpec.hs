@@ -521,6 +521,67 @@ blockSpecs = describe "blocks" $ do
     gone <- rejectDeleted s root 0 testText stale
     fmap blockState gone `shouldBe` Just Rejected
     M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
+  it "(s1) stub in a function with no circle: a new test's stub at the end of its test file, named test_<fn>, its name the tab stop" $ do
+    (s, _) <- blocks redOnStub []
+    (_, Right (StubOpened tb (testFile, at, body, edits))) <- blockStub (root </> moduleRel) 6 s
+    (testFile, at, edits) `shouldBe` (root </> testRel, 7, [])
+    body `shouldBe` "\n\ndef ${1:test_handle}() -> None:\n    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n    assert ${2:...}\n"
+    (blockFile tb, blockKind tb, blockSpan tb, blockTestId tb) `shouldBe` (testFile, Block.TestFor Nothing, (9, 11), T.pack testRel <> "::test_handle")
+    blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    hud tb `shouldBe` "▸ test_handle · assert, then draft · reject drops it"
+    fmap fst <$> blockFor testFile s `shouldReturn` Just tb
+    -- the test file is busy now: the stub's circle first
+    (_, busy) <- blockStub (root </> moduleRel) 10 s
+    either id (const "stubbed") busy `shouldBe` "a magic circle is open in src/shop/close_table__test.py: accept or reject it there first"
+  it "(s1) stub in a function whose test_<fn> exists: test_<fn>_2" $ do
+    (s, _) <- blocks redOnStub [(testRel, testText <> T.unlines ["", "", "def test_handle() -> None:", "    assert CloseTable().handle(4) == 1"])]
+    (_, Right (StubOpened tb (_, _, body, _))) <- blockStub (root </> moduleRel) 6 s
+    body `shouldSatisfy` ("def ${1:test_handle_2}() -> None:" `T.isInfixOf`)
+    blockTestId tb `shouldBe` T.pack testRel <> "::test_handle_2"
+  it "(s2) stub in a judged circle with a survivor is the kill: on the survivor's line, or off it the top-ranked one" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
+    let [boundary] = survivors judged
+    (_, Right (StubKilled (code, testFile, at, body))) <- blockStub (root </> moduleRel) 6 s
+    (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
+    body `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
+    Just (tb, 0) <- blockFor testFile s
+    blockKind tb `shouldBe` Block.TestFor (Just boundary)
+    steps s >>= (`shouldSatisfy` ("block 1\tkill\tperson\tboundary on line 6" `T.isInfixOf`))
+    (o0, _) <- blocksOn killedBy []
+    let o = openDoc (root </> moduleRel) 1 written o0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 o
+    (_, Right (StubKilled (_, _, _, offBody))) <- blockStub (root </> moduleRel) 10 o
+    offBody `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
+  it "(s3) stub refuses: outside a function, in a test file, and in a circle not judged yet" $ do
+    (s, _) <- blocks redOnStub []
+    let refusal = fmap (either id (const "stubbed") . snd)
+        notInOne = "put the cursor in a function to stub a test for it"
+    -- the class line; the blank line after __init__'s body
+    refusal (blockStub (root </> moduleRel) 1 s) `shouldReturn` notInOne
+    refusal (blockStub (root </> moduleRel) 4 s) `shouldReturn` notInOne
+    refusal (blockStub (root </> testRel) 5 s) `shouldReturn` notInOne
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    refusal (blockStub (root </> moduleRel) 6 s) `shouldReturn` "the circle is being tested; stub once its verdict lands"
+  it "(s4) stub in a judged circle with no survivor left opens a new test's stub; red at its assertion, accepted: the circle is judged again" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = openDoc (root </> moduleRel) 1 written s0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right _) <- blockWaive (root </> moduleRel) 6 "inclusive by design" s
+    (_, Right (StubOpened tb (testFile, at, body, []))) <- blockStub (root </> moduleRel) 6 s
+    blockTestId tb `shouldBe` T.pack testRel <> "::test_handle"
+    -- the editor expands it; the person arranges and asserts
+    let arranged = T.unlines [if "olifant: arrange" `T.isInfixOf` l then "    table = CloseTable()" else l | l <- T.lines (T.replace "${1:test_handle}" "test_handle" (T.replace "${2:...}" "table.handle(3) == 2" body))]
+        ls = T.splitOn "\n" testText
+        expanded = T.intercalate "\n" (take (at - 1) ls ++ [arranged] ++ drop at ls)
+        st = openDoc testFile 1 expanded s
+    (_, Just ready) <- blockChanged testFile st
+    blockState ready `shouldBe` Judged []
+    hud ready `shouldBe` "▸ test_handle · draft 1 · red ✓ accept · the fix is drafted next"
+    (_, Right (done, [])) <- blockAccept testFile st
+    blockState done `shouldBe` Accepted
+    steps s >>= (`shouldSatisfy` ("block 1\trejudge\tperson\tits test file gained a test" `T.isInfixOf`))
   it "(i) waive writes the comment on the survivor's line and reopens accept" $ do
     (s0, _) <- blocks redOnStub []
     let s = openDoc (root </> moduleRel) 1 written s0

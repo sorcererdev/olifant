@@ -28,6 +28,12 @@ module Olifant.Server.Block
   , tshow
   , claim
   , pushed
+  , Site (..)
+  , siteAt
+  , siteFile
+  , siteTestFile
+  , functionAt
+  , openTestStub
   ) where
 
 import Control.Applicative ((<|>))
@@ -101,49 +107,32 @@ blockBegin progress path line s0 = fmap (fmap fst) <$> blockStart progress path 
 -- last import).
 blockStart :: (ProgressEvent -> IO ()) -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, Maybe (FilePath, Int, Text, [FileEdit])))
 blockStart progress path line s0 =
-  projectFor path s0 >>= \case
-    (s, Nothing) -> pure (s, Left (T.pack path <> " is in no Olifant project"))
-    (s, Just (root, project)) -> fmap (s,) . runExceptT $ do
-      let rel = makeRelative root path
+  siteAt path line s0 >>= \case
+    (s, Left why) -> pure (s, Left why)
+    (s, Right site) -> fmap (s,) . runExceptT $ do
+      let root = siteRoot site
+          project = siteProject site
+          lang = siteLang site
           ws = prWorkspace project
           syntax = pSyntax (ssPorts s)
-      lang <- maybe (throwE ("no language knows " <> T.pack rel)) pure (languageFor (catalogLanguages (prCatalog project)) rel)
-      td <- maybe (throwE (langName lang <> " has no [test] table: a magic circle needs its tests")) pure (langTest lang)
-      paths <- lift (listFiles ws ".")
-      let moduleRel = fromMaybe rel (listToMaybe [m | m <- paths, m /= rel, testsForFile td m == rel])
-          onTest = moduleRel /= rel
-          testRel = if onTest then rel else testsForFile td rel
-          file = normalisePath (root </> moduleRel)
-          testFile = normalisePath (root </> testRel)
+          moduleRel = siteModuleRel site
+          testRel = siteTestRel site
+          onTest = siteOnTest site
+          file = siteFile site
+          testFile = siteTestFile site
+          moduleText = siteModuleText site
+          testText0 = siteTestText site
+          atCursor = siteAtCursor site
           pendingHere = "a magic circle is open in this file: accept or reject it first"
       busy <- lift (isJust <$> blockFor file s)
       when busy (throwE pendingHere)
-      moduleText <- lift (readText ws moduleRel) >>= maybe (throwE ("cannot read " <> T.pack moduleRel)) pure
-      testText0 <- lift (readText ws testRel)
-      let atCursor = defAbove line (if onTest then fromMaybe "" testText0 else moduleText)
-          number = lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
+      let number = lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
       -- a function no test calls: its first test's stub opens
       untested <- case (onTest, atCursor) of
         (False, Just n) | not (any (calledIn n) (maybe [] (\t -> map (`testBody` t) (testNames t)) testText0)) -> lift (functionSpan syntax lang n moduleText) <&> fmap (const n)
         _ -> pure Nothing
       case untested of
-        Just n -> do
-          let base = fromMaybe "" testText0
-              (at0, stub) = testStub lang base Nothing
-              imp = importOf lang moduleRel moduleText n
-              -- an existing file: the import joins its imports (unless it has it), the stub after
-              imported = maybe base (\i -> if isJust testText0 then addImports lang [i] base else base) imp
-              edits = [FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range new | imported /= base, let (range, new) = smallestChange base imported]
-              at = at0 + length (T.splitOn "\n" imported) - length (T.splitOn "\n" base)
-              body = maybe stub (\i -> i <> "\n" <> stub) (if isJust testText0 then Nothing else imp)
-              defAt = at + length (takeWhile (not . ("def " `T.isPrefixOf`)) (T.splitOn "\n" body))
-          k <- number
-          let tb = begin k testFile (TestFor Nothing) base (defAt, defAt + 2) (T.pack testRel) (Failure Nothing "a new test: write its name and assertion" "")
-          claimed <- lift (claim s [file] tb)
-          unless claimed (throwE pendingHere)
-          lift (modifyIORef' (ssBlockSeen s) (M.insert testFile base))
-          lift (appendStep (ssPorts s) root tb "begin" (hud tb))
-          pure (tb, Just (testFile, at, body, edits))
+        Just n -> fmap Just <$> openTestStub s site n Nothing [file] pendingHere
         Nothing -> do
           testText <- maybe (throwE ("no test for this module yet; write one (its name and assertion) in " <> T.pack testRel <> ", then begin on it")) pure testText0
           lift (progress (Verifying (T.pack testRel)))
@@ -180,6 +169,89 @@ blockStart progress path line s0 =
           lift (appendStep (ssPorts s) root b "begin" (hud b))
           -- a hand-written green body goes straight to the judge
           (,Nothing) <$> if blockState b == Green then lift (either (const b) id <$> judgeIn s root project lang b 0) else pure b
+
+-- | Where a begin or a stub at a cursor stands: the module and its test
+-- file (the cursor in either), their texts, and the def at or above the
+-- cursor.
+data Site = Site
+  { siteRoot :: FilePath
+  , siteProject :: Project
+  , siteLang :: Language
+  , siteModuleRel :: FilePath
+  , siteTestRel :: FilePath
+  , siteOnTest :: Bool
+  , siteModuleText :: Text
+  , siteTestText :: Maybe Text
+  , siteAtCursor :: Maybe Text
+  }
+
+siteFile, siteTestFile :: Site -> FilePath
+siteFile site = normalisePath (siteRoot site </> siteModuleRel site)
+siteTestFile site = normalisePath (siteRoot site </> siteTestRel site)
+
+-- | The site of a cursor (1-based line) in a file: its project, its
+-- language's tests, the module and the test file; or why there is none.
+siteAt :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text Site)
+siteAt path line s0 =
+  projectFor path s0 >>= \case
+    (s, Nothing) -> pure (s, Left (T.pack path <> " is in no Olifant project"))
+    (s, Just (root, project)) -> fmap (s,) . runExceptT $ do
+      let rel = makeRelative root path
+          ws = prWorkspace project
+      lang <- maybe (throwE ("no language knows " <> T.pack rel)) pure (languageFor (catalogLanguages (prCatalog project)) rel)
+      td <- maybe (throwE (langName lang <> " has no [test] table: a magic circle needs its tests")) pure (langTest lang)
+      paths <- lift (listFiles ws ".")
+      let moduleRel = fromMaybe rel (listToMaybe [m | m <- paths, m /= rel, testsForFile td m == rel])
+          onTest = moduleRel /= rel
+          testRel = if onTest then rel else testsForFile td rel
+      moduleText <- lift (readText ws moduleRel) >>= maybe (throwE ("cannot read " <> T.pack moduleRel)) pure
+      testText0 <- lift (readText ws testRel)
+      pure (Site root project lang moduleRel testRel onTest moduleText testText0 (defAbove line (if onTest then fromMaybe "" testText0 else moduleText)))
+
+-- | The function a cursor (1-based line) is in, in a module: the def at or
+-- above it, while its body reaches the cursor.
+functionAt :: ServerState -> Site -> Int -> IO (Maybe Text)
+functionAt s site line = case (siteOnTest site, siteAtCursor site) of
+  (False, Just n) ->
+    functionSpan (pSyntax (ssPorts s)) (siteLang site) n (siteModuleText site) <&> \case
+      Just (_, z) | line <= z -> Just n
+      _ -> Nothing
+  _ -> pure Nothing
+
+-- | A new test's stub for the function FN at the end of its test file (the
+-- import of the function, or of its class, in Python: a new file starts
+-- with it; a file that lacks it gains it, as the adapter's imports join a
+-- file's), and its test block begun on it, drafted red at its assertion,
+-- stored unless a block is pending in the test file or in OTHERS (REFUSED
+-- says so). Its test's name is NAME, given, else the person's to type.
+-- The stub: the test file (absolute), the line to put it at, its text, and
+-- the edits the editor applies first (the line counts them).
+openTestStub :: ServerState -> Site -> Text -> Maybe Text -> [FilePath] -> Text -> ExceptT Text IO (Block, (FilePath, Int, Text, [FileEdit]))
+openTestStub s site n name others refused = do
+  let lang = siteLang site
+      testRel = siteTestRel site
+      testFile = siteTestFile site
+      testText0 = siteTestText site
+      base = fromMaybe "" testText0
+      (at0, stub) = testStub lang base name
+      imp = importOf lang (siteModuleRel site) (siteModuleText site) n
+      -- an existing file: the import joins its imports (unless it has it), the stub after
+      imported = maybe base (\i -> if isJust testText0 then addImports lang [i] base else base) imp
+      edits = [FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range new | imported /= base, let (range, new) = smallestChange base imported]
+      at = at0 + length (T.splitOn "\n" imported) - length (T.splitOn "\n" base)
+      body = maybe stub (\i -> i <> "\n" <> stub) (if isJust testText0 then Nothing else imp)
+      defAt = at + length (takeWhile (not . ("def " `T.isPrefixOf`)) (T.splitOn "\n" body))
+      -- named, the block's test is the stub's; else the file's until the person names it
+      (tid, failure) = case name of
+        Just t -> (T.pack testRel <> "::" <> t, Failure Nothing "" "")
+        Nothing -> (T.pack testRel, Failure Nothing "a new test: write its name and assertion" "")
+  k <- lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
+  let tb = begin k testFile (TestFor Nothing) base (defAt, defAt + 2) tid failure
+  claimed <- lift (claim s others tb)
+  unless claimed (throwE refused)
+  lift (modifyIORef' (ssBlockSeen s) (M.insert testFile base))
+  lift (appendStep (ssPorts s) (siteRoot site) tb "begin" (hud tb))
+  pure (tb, (testFile, at, body, edits))
 
 -- | Whether a test's lines call a function by its name (as a method or not).
 calledIn :: Text -> [Text] -> Bool
@@ -517,11 +589,12 @@ reorder s decider moduleText testText push file =
     _ -> pure Nothing
 
 -- | Accept a judged block whose survivors are all waived. A test block
--- (a kill's) accepted: its module's code block is judged again, and pushed.
+-- accepted: its module's judged code block is judged again, and pushed; a
+-- new test's, with none there, has its function begin on it.
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockAccept path = withBlock path $ \s root project _ b killed ->
   awaitingVerdict s root project b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
-    Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
+    Right done | TestFor Nothing <- blockKind b -> rejudgeFor s root project (blockFile b) >> beginOnNewTest s root project b >> pure (Right (done, []))
     Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
     other -> pure (fmap (,[]) other)
 

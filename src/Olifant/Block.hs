@@ -20,6 +20,7 @@ module Olifant.Block
     killStub,
     stubName,
     stubNameFor,
+    uniqueTestName,
     testStub,
     instructionFor,
   )
@@ -30,7 +31,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub)
+import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
 import Olifant.Language (Failure (..), TestId)
 import Olifant.Mutate (Mutant (..))
 

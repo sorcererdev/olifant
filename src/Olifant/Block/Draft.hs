@@ -8,6 +8,7 @@ module Olifant.Block.Draft
     killStub,
     stubName,
     stubNameFor,
+    uniqueTestName,
     testStub,
     instructionFor,
   )
@@ -71,9 +72,9 @@ stubName = "test_name"
 -- (or, with none there, in what it changed from), four at most, leaving
 -- out KEYWORDS, `self` and the heads of attributes (`seats` of
 -- `table.seats`); with no name at all, the line. A name TESTTEXT defines
--- already gets `_2`, `_3`, ….
+-- already gets `_2`, `_3`, … ('uniqueTestName').
 stubNameFor :: Mutant -> Text -> [Text] -> Text
-stubNameFor m testText keywords = fromMaybe base (find (`notElem` defined) (base : [base <> "_" <> T.pack (show i) | i <- [2 :: Int ..]]))
+stubNameFor m testText keywords = uniqueTestName base testText
   where
     operator = snakeOf (muOperator m)
     base = capped ("test_" <> fromMaybe (operator <> "_line" <> T.pack (show (muLine m))) described)
@@ -88,8 +89,14 @@ stubNameFor m testText keywords = fromMaybe base (find (`notElem` defined) (base
       | otherwise = ((operator <> "_") <>) <$> nonEmpty (T.intercalate "_" (take 4 (nub (namesOf mutatedLine <> namesOf (muFrom m)))))
     mutatedLine = fromMaybe "" (listToMaybe (drop (muLine m - 1) (T.splitOn "\n" (muText m))))
     namesOf = filter (`notElem` ("self" : keywords)) . identifiers
-    defined = [n | l <- T.lines testText, let st = T.strip l, Just rest <- [T.stripPrefix "def " (fromMaybe st (T.stripPrefix "async " st))], let n = T.takeWhile isIdent rest, "(" `T.isPrefixOf` T.drop (T.length n) rest]
     nonEmpty t = if T.null t then Nothing else Just t
+
+-- | NAME, or, TESTTEXT defining it already, the first of NAME_2, NAME_3, …
+-- it does not define.
+uniqueTestName :: Text -> Text -> Text
+uniqueTestName base testText = fromMaybe base (find (`notElem` defined) (base : [base <> "_" <> T.pack (show i) | i <- [2 :: Int ..]]))
+  where
+    defined = [n | l <- T.lines testText, let st = T.strip l, Just rest <- [T.stripPrefix "def " (fromMaybe st (T.stripPrefix "async " st))], let n = T.takeWhile isIdent rest, "(" `T.isPrefixOf` T.drop (T.length n) rest]
 
 -- | A literal's text without its prefix (`f`, `rb`, …) and quotes.
 literalBody :: Text -> Text

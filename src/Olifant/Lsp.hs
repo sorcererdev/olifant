@@ -535,16 +535,21 @@ handlers env =
         Just (line, _) -> liftIO . moved (withSnapshot job (blockStart (const (pure ())) path (line + 1))) $ \(b, stub) ->
           pure (concat [("snippet" .= object ["file" .= f, "line" .= at, "body" .= body]) : editsField edits | Just (f, at, body, edits) <- [stub]], [b])
     , blockRequest env (Proxy :: Proxy "olifant/block/draft") $ \job path _ -> drafted job path
-    , blockRequest env (Proxy :: Proxy "olifant/block/next") $ \job path _ -> drafted job path
+    , -- the older name of draft
+      blockRequest env (Proxy :: Proxy "olifant/block/next") $ \job path _ -> drafted job path
     , blockRequest env (Proxy :: Proxy "olifant/block/test") $ \job path _ -> liftIO (moved (withSnapshot job (blockTest path)) (\b -> pure ([], [b])))
     , blockRequest env (Proxy :: Proxy "olifant/block/accept") $ \job path _ -> liftIO (finished (withSnapshot job (blockAccept path)))
     , blockRequest env (Proxy :: Proxy "olifant/block/reject") $ \job path _ -> liftIO (finished (withSnapshot job (blockReject path)))
     , blockRequest env (Proxy :: Proxy "olifant/block/kill") $ \job path params -> case lineOf params of
         Nothing -> pure (Left "olifant/block/kill needs a line")
-        Just line -> liftIO . moved (withSnapshot job (blockKill path line)) $ \(b, testFile, at, body) -> do
-          test <- withSnapshot job (\s -> (s,) <$> blockFor testFile s)
-          -- the code block answers; the test block it opened is pushed too
-          pure (["snippet" .= object ["file" .= testFile, "line" .= at, "body" .= body]], b : [tb | Just (tb, _) <- [test]])
+        Just line -> liftIO (moved (withSnapshot job (blockKill path line)) (killAnswer job))
+    , -- the editor's stub: a survivor's kill, or a function's new test
+      blockRequest env (Proxy :: Proxy "olifant/block/stub") $ \job path params -> case lineOf params of
+        Nothing -> pure (Left "olifant/block/stub needs a line")
+        Just line -> liftIO . moved (withSnapshot job (blockStub path line)) $ \case
+          StubKilled k -> killAnswer job k
+          -- the test block answers, its stub expanded after the edits (its import)
+          StubOpened tb (f, at, body, edits) -> pure (("snippet" .= object ["file" .= f, "line" .= at, "body" .= body]) : editsField edits, [tb])
     , blockRequest env (Proxy :: Proxy "olifant/block/waive") $ \job path params -> case (lineOf params, reasonOf params) of
         (Just line, Just reason) -> liftIO (moved (withSnapshot job (blockWaive path line reason)) (\(b, edits) -> pure (editsField edits, [b])))
         _ -> pure (Left "olifant/block/waive needs a line and a reason")
@@ -594,7 +599,14 @@ moved run answer =
       b : _ -> Right (BlockAnswer (Right b) fields, changed)
       [] -> Left "the move changed no magic circle"
 
--- | Draft or next: under progress (the model writes), with its edits.
+-- | A kill: the code block answers, with its test block's stub; the test
+-- block it opened is pushed too.
+killAnswer :: Env -> (Block, FilePath, Int, T.Text) -> IO ([(Key.Key, Value)], [Block])
+killAnswer job (b, testFile, at, body) = do
+  test <- withSnapshot job (\s -> (s,) <$> blockFor testFile s)
+  pure (["snippet" .= object ["file" .= testFile, "line" .= at, "body" .= body]], b : [tb | Just (tb, _) <- [test]])
+
+-- | Draft (the editor's move; `next`, its older name, too): under progress (the model writes), with its edits.
 drafted :: Env -> FilePath -> LspM () Moved
 drafted job path =
   planProgress "drafting" (\progress -> withSnapshot job (blockDraft progress path)) <&> \case
