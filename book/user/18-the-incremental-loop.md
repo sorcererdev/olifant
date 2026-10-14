@@ -277,8 +277,8 @@ whose module is gone runs itself.
 - **`a draft is in flight; wait for it, then test or draft again`** — `test` while the model
   writes: the draft's own test settles the circle.
 - **`no survivor left: accept`** — `olifant/block/kill` with every survivor waived (or none):
-  `accept`. The editor's `stub` there opens a new test's stub for the function at the cursor
-  instead.
+  `accept`. The editor's `stub` there is refused too (`accept or reject the circle in … first,
+  then stub`): close the circle, then stub the next case from the function.
 - **`put the cursor in a function to stub a test for it`** — `stub` outside a function, in a module
   with no circle.
 - **`stub a test from its module`** — `stub` in a test file with no circle: a stub is for a
