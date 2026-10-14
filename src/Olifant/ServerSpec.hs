@@ -26,7 +26,7 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
-import Olifant.Server.Block (settle)
+import Olifant.Server.Block (importedModules, settle)
 import Olifant.Server.BlockMoves (rejectDeleted)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
@@ -940,11 +940,12 @@ blockSpecs = describe "blocks" $ do
     let portRel = "src/shop/ports/table_repository.py"
         portText = T.unlines ["class TableRepository:", "    def table(self, n: int) -> int: ...", "    def save(self, n: int) -> None: ..."]
         importing = T.unlines ["import os", "from shop.ports.table_repository import TableRepository", "from shop.close_table import CloseTable", ""] <> stubbed
-        contextOf extra moduleText = do
+        contextOf extra moduleText = contextWith extra moduleText testText
+        contextWith extra moduleText testText' = do
           (s0, _) <- blocksOn killedBy ((portRel, portText) : extra)
           seen <- newIORef []
           let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()")]))))
-              s = (openDoc (root </> moduleRel) 1 moduleText s0) {ssTestFiller = Just recording}
+              s = (openDoc (root </> testRel) 1 testText' (openDoc (root </> moduleRel) 1 moduleText s0)) {ssTestFiller = Just recording}
           (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
           (_, Right (_, [edit])) <- blockDraft ignore (root </> moduleRel) s
           [code] <- readIORef seen
@@ -960,6 +961,27 @@ blockSpecs = describe "blocks" $ do
       length (T.lines cut) `shouldBe` 121
       take 1 (T.lines cut) `shouldBe` ["x0 = 0"]
       last (T.lines cut) `shouldBe` "# \8230 (80 more lines)"
+    it "the file beside first, then the drafted file's imports, then the beside file's" $ do
+      (code, _, _, _) <- contextWith [("src/shop/ports/clock.py", "class Clock: ...\n")] importing (testText <> "from shop.ports.clock import Clock\n")
+      map fst code `shouldBe` [testRel, portRel, "src/shop/ports/clock.py"]
+    it "what those modules import comes after them (a port's models), one level only" $ do
+      let port' = "from shop.models.table import Table\n\n" <> portText
+          tableText = "from shop.models.seat import Seat\n\nclass Table:\n    id: int\n    seats: int\n"
+      (code, _, _, _) <- contextOf [(portRel, port'), ("src/shop/models/table.py", tableText), ("src/shop/models/seat.py", "class Seat: ...\n")] importing
+      map fst code `shouldBe` [testRel, portRel, "src/shop/models/table.py"]
+      lookup "src/shop/models/table.py" code `shouldBe` Just tableText
+    it "at most 8 imported files, the first 8 in order" $ do
+      let ms = ["m" <> T.pack (show i) | i <- [0 .. 9 :: Int]]
+      (code, _, _, _) <- contextOf [(T.unpack ("src/shop/" <> m <> ".py"), m <> " = 1\n") | m <- ms] (T.unlines ["from shop." <> m <> " import " <> m | m <- ms] <> stubbed)
+      map fst code `shouldBe` testRel : [T.unpack ("src/shop/" <> m <> ".py") | m <- take 8 ms]
+    it "at most 600 imported lines in all: five files of 120, the sixth left out" $ do
+      let ms = ["m" <> T.pack (show i) | i <- [0 .. 5 :: Int]]
+          long m = T.unlines [m <> "_" <> T.pack (show j) <> " = 1" | j <- [0 .. 149 :: Int]]
+      (code, _, _, _) <- contextOf [(T.unpack ("src/shop/" <> m <> ".py"), long m) | m <- ms] (T.unlines ["import shop." <> m | m <- ms] <> stubbed)
+      map fst code `shouldBe` testRel : [T.unpack ("src/shop/" <> m <> ".py") | m <- take 5 ms]
+      sum [length (T.lines t) - 1 | (p, t) <- code, p /= testRel] `shouldBe` 600
+    it "reads Python's absolute imports: aliases, several names, brackets, a star and relative imports" $ do
+      importedModules "import a.b as c, d\nfrom .x import y\nfrom p.q import (\n    r,\n)\nfrom m import n as k, *  # c\n" `shouldBe` ["a.b", "d", "p.q", "m", "m.n"]
     it "a test draft sees the module and the modules it imports; the test file itself is never repeated" $ do
       (_, s, drafted, seen) <- contextOf [] importing
       let s1 = changeDoc (root </> moduleRel) 2 drafted s

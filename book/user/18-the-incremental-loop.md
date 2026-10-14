@@ -248,8 +248,8 @@ whose module is gone runs itself.
   needs `python3` on the server's PATH; without it (or when the file did not parse before
   the draft either) the draft is written as before, and the step log has a `parse` step
   saying `gate off: …`. A draft sees the test file (a test's draft, the module), the project
-  modules either one imports (ports, models; at most 8 files, 120 lines each), and the
-  rejected drafts.
+  modules either one imports, and what those import (ports, models; at most 8 files, 120
+  lines each), and the rejected drafts.
 - **One circle per file**, and one in a test file.
 - **The function under test is found by a method call** (`.NAME(` in the test, its assertions
   first). A test of a bare function (`assert add(1, 2) == 3`) is not located yet: begin in the

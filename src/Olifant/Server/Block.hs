@@ -34,6 +34,7 @@ module Olifant.Server.Block
   , siteTestFile
   , functionAt
   , openTestStub
+  , importedModules
   ) where
 
 import Control.Applicative ((<|>))
@@ -440,7 +441,8 @@ draftIn progress s root project lang b drafting killed filler = do
 -- | The project modules a draft sees beside its file and the file beside it
 -- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
 -- import's module (or a name imported from it that is a module) found as
--- @src/a/b/c.py@ or @src/a/b/c/__init__.py@; in import order, at most
+-- @src/a/b/c.py@ or @src/a/b/c/__init__.py@, then what those import (one
+-- level, so the cap cuts these first); in import order, at most
 -- 'importedFiles' of them, each at most 'importedLines' lines (cut with a
 -- line saying how many more) and 'importedTotal' in all. The standard
 -- library and third-party packages are no file of the project: skipped.
@@ -448,11 +450,16 @@ importedContext :: Workspace IO -> Language -> [FilePath] -> [Text] -> IO [(File
 importedContext ws lang known texts
   | langName lang /= "python" = pure []
   | otherwise = do
-      found <- forM (concatMap importedModules texts) $ \m ->
+      direct <- resolved known texts
+      -- one level further: what those import (a port's models)
+      further <- resolved (known ++ map fst direct) (map snd direct)
+      pure (capped importedTotal (take importedFiles (direct ++ further)))
+  where
+    resolved seen ts = do
+      found <- forM (concatMap importedModules ts) $ \m ->
         let path = T.unpack (T.intercalate "/" (T.splitOn "." m))
          in firstFile ["src" </> path <> ".py", "src" </> path </> "__init__.py"]
-      pure (capped importedTotal (take importedFiles (dedupe [(p, t) | Just (p, t) <- found, p `notElem` known, not (T.null (T.strip t))])))
-  where
+      pure (dedupe [(p, t) | Just (p, t) <- found, p `notElem` seen, not (T.null (T.strip t))])
     firstFile = \case
       [] -> pure Nothing
       p : rest -> readText ws p >>= maybe (firstFile rest) (pure . Just . (p,))
