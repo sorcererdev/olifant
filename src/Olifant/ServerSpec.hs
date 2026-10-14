@@ -38,7 +38,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (noChecker, noRunner, noSyntax)
+import Olifant.Language (CheckReport (..), Checker (..), noChecker, noRunner, noSyntax)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
@@ -859,6 +859,19 @@ blockSpecs = describe "blocks" $ do
     written' `shouldSatisfy` (not . ("olifant: body" `T.isInfixOf`))
     blockState b `shouldSatisfy` \case Red _ -> True; _ -> False
     map (\d -> (draftText d, draftBy d, "red" `T.isPrefixOf` draftOutcome d)) (blockDrafts b) `shouldBe` [("        return int(seats > 2)", "recorded", True)]
+  it "(I2) a failed draft read one level up (the reindent rescue) is written as read, its type error the reason" $ do
+    (s0, _) <- blocks (const (failing "assert 0 == 1")) []
+    let deeper a b = indentOf b > indentOf a && not (":" `T.isSuffixOf` T.stripEnd a)
+        indentOf = T.length . T.takeWhile (== ' ')
+        complaints t = let ls = filter (not . T.null . T.strip) (T.lines t) in ["Unexpected indentation" | or (zipWith deeper ls (drop 1 ls))] ++ ["Cannot access attribute \"find_by_id\"" | "find_by_id" `T.isInfixOf` t]
+        checker = Checker (\_ files -> pure (Right (CheckReport [] [(p, why) | (p, t) <- M.toList files, why <- complaints t] [])))
+        rehearsal = "        booking = self.find_by_id(seats)\n                if booking is None:\n                    return 0\n                return 1"
+        filler = ModelFiller "rehearsal" 0 (Filler (\_ -> pure (Right (M.fromList [("body", rehearsal)]))))
+        s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just filler, ssPorts = (ssPorts s0) {pChecker = const checker}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (b, [edit])) <- blockDraft ignore (root </> moduleRel) s
+    take 4 (drop 5 (T.lines (applyChange (feRange edit) (feText edit) stubbed))) `shouldBe` ["        booking = self.find_by_id(seats)", "        if booking is None:", "            return 0", "        return 1"]
+    blockState b `shouldSatisfy` \case Red f -> "find_by_id" `T.isInfixOf` fMessage f && not ("Unexpected indentation" `T.isInfixOf` fMessage f); _ -> False
   it "(I2) a draft that never produced an attempt makes no edits and no draft" $ do
     (s0, _) <- blocks redOnStub [("nofill.toml", "[fills]\narrange = \"x = 1\"\n")]
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "nofill.toml")}}

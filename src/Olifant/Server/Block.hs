@@ -389,12 +389,16 @@ draftIn progress s root project lang b drafting killed filler = do
       pure (template, ("arrange", verify), [(m, t) | Just m <- [tested], Just t <- [moduleText]])
   -- each fill the model offers, the last kept: a draft that fails its test
   -- is written as its last attempt, never as the placeholder
+  -- (a fill the fill phase read one level up is kept as read)
   attempts <- lift (newIORef M.empty)
   let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) (\fills -> modifyIORef' attempts (M.union fills)) r >> pure r)}
+      progress' e = case e of
+        Reindented hole f -> modifyIORef' attempts (M.insert hole f) >> progress e
+        _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = [verify]}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
       context = beside ++ [("previous drafts (rejected by the person)", T.intercalate "\n\n---\n\n" previous) | not (null previous)]
-      options = planOptions {poFiller = Just recording, poProgress = progress, poCancel = ssCancel s, poContext = context, poStance = DraftStance}
+      options = planOptions {poFiller = Just recording, poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = DraftStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
   latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
