@@ -969,7 +969,7 @@ blockSpec = describe "olifant/block" $ do
         lookupKey "uri" push `shouldBe` Just (toJSON (filePathToUri (dir </> moduleRel)))
         (lookupKey "state" =<< lookupKey "block" push) `shouldBe` Just (String "red")
         (lookupKey "state" =<< blockOf tested) `shouldBe` Just (String "judged")
-        refused `shouldSatisfy` either ("survivor(s): kill or waive each, then accept" `T.isInfixOf`) (const False)
+        refused `shouldSatisfy` either ("survivor(s): stub a test or waive each, then accept" `T.isInfixOf`) (const False)
   it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"

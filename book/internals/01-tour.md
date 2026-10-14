@@ -2322,8 +2322,8 @@ machine served by the server. The person's "magic circle" is a `Block` internall
 - **`Block`** is the machine: `step move block` is `Left why` (one sentence for the person) or
   the block after the move; `open` lists the moves a state allows and `hud` writes its line (ending on the person's next
   step: `· draft`, `· name it, then draft` on an untouched test stub, none after a model's failed
-  draft, `· kill or waive`); `killTarget` is the survivor a kill takes (the cursor
-  line's, or the first unwaived in the stored order).
+  draft, `· stub a test or waive`); `killTarget` is the survivor a kill takes (the cursor
+  line's, or the first unwaived in the stored order; the person's `stub` is `kill` internally).
   A property spec pins that `Accepted` is reachable only through a `Judged` whose survivors are
   all waived. `Block/Draft` turns a span into a template with one `block` hole (or a test's
   placeholder into a `stmt` hole), with the instruction from the test's name, its assertions and

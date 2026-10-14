@@ -110,7 +110,7 @@ step mv b
       (Kill line, Judged _) -> b <$ killTarget line b
       (Accept, Judged ms)
         | all (isJust . muWaived) ms -> Right b {blockState = Accepted}
-        | otherwise -> Left (T.pack (show (length (filter (isNothing . muWaived) ms))) <> " survivor(s): kill or waive each, then accept")
+        | otherwise -> Left (T.pack (show (length (filter (isNothing . muWaived) ms))) <> " survivor(s): stub a test or waive each, then accept")
       (Accept, _) -> Left "accept needs the test green and the circle judged"
       (Reject, _) -> Right b {blockState = Rejected}
       _ -> Left ("`" <> moveName mv <> "` is not open here")
@@ -137,7 +137,8 @@ moveName = \case
   CannotRun _ -> "test"
   Judge _ -> "judge"
   Waive {} -> "waive"
-  Kill _ -> "kill"
+  -- the person stubs a test for a survivor; the test then kills it
+  Kill _ -> "stub"
   Accept -> "accept"
   Reject -> "reject"
 
@@ -148,7 +149,7 @@ open b = case blockState b of
   Green -> drafting
   Judged ms
     | null (unwaived ms) -> ["accept", "next", "reject"]
-    | otherwise -> ["kill", "waive", "next", "reject"]
+    | otherwise -> ["stub", "waive", "next", "reject"]
   Broken _ -> ["test", "reject"]
   Drafting _ -> ["reject"]
   Accepted -> []
@@ -169,7 +170,7 @@ survivors b = case blockState b of
 -- that line, or else the first unwaived in the block's order (the decision
 -- model's ranking, when it has ranked them).
 killTarget :: Int -> Block -> Either Text Mutant
-killTarget line b = maybe (Left "no survivor left to kill") Right (find ((== line) . muLine) left <|> listToMaybe left)
+killTarget line b = maybe (Left "no survivor left: accept") Right (find ((== line) . muLine) left <|> listToMaybe left)
   where
     left = survivors b
 
@@ -189,8 +190,8 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         0 -> "clean ✓ accept"
-        1 -> "1 survivor · kill or waive"
-        n -> T.pack (show n) <> " survivors · kill or waive each"
+        1 -> "1 survivor · stub a test or waive"
+        n -> T.pack (show n) <> " survivors · stub a test or waive each"
       Broken why -> "cannot run: " <> why
       Accepted -> "accepted"
       Rejected -> "rejected"

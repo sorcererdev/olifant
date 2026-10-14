@@ -52,7 +52,7 @@ spec = describe "Olifant.Block" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) (step' StartDraft b0)
     open (step' (Judge []) g) `shouldSatisfy` ("accept" `elem`)
     let j = step' (Judge [m]) g
-    open j `shouldSatisfy` \o -> "accept" `notElem` o && "kill" `elem` o && "waive" `elem` o
+    open j `shouldSatisfy` \o -> "accept" `notElem` o && "stub" `elem` o && "kill" `notElem` o && "waive" `elem` o
     survivors (step' (Waive 2 "boundary" "inclusive by design") j) `shouldBe` []
     open (step' (Waive 2 "boundary" "inclusive by design") j) `shouldSatisfy` ("accept" `elem`)
   it "(c2) a waiver is for one operator: another on the same line stays a survivor" $ do
@@ -71,7 +71,7 @@ spec = describe "Olifant.Block" $ do
   it "(d) accept from anything but a clean Judged is refused, with a reason" $ do
     step Accept b0 `shouldSatisfy` either ("test" `T.isInfixOf`) (const False)
     let j = step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)
-    step Accept j `shouldSatisfy` either ("survivor" `T.isInfixOf`) (const False)
+    step Accept j `shouldBe` Left "1 survivor(s): stub a test or waive each, then accept"
   it "(e) editing by hand makes a 'you' draft; a hand-written green body is judged too" $ do
     let e = step' (Edited (2, 3) (Right ())) b0
     blockState e `shouldBe` Green
@@ -107,9 +107,9 @@ spec = describe "Olifant.Block" $ do
   it "(h) the HUD says where we are, and the next step" $ do
     hud b0 `shouldBe` "▸ test_f · red: AssertionError: assert None == Ok(None) · draft"
     hud (step' (Drafted "y" "qwen" (Left red)) b0) `shouldBe` "▸ test_f · draft 1 · red: AssertionError: assert None == Ok(None)"
-    hud (step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 1 survivor · kill or waive"
-    hud (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 2 survivors · kill or waive each"
-    hud (step' (Waive 2 "number" "r") (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0))) `shouldBe` "▸ test_f · draft 1 · 1 survivor · kill or waive"
+    hud (step' (Judge [m]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 1 survivor · stub a test or waive"
+    hud (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · 2 survivors · stub a test or waive each"
+    hud (step' (Waive 2 "number" "r") (step' (Judge [m, m {muOperator = "number"}]) (step' (Drafted "x" "qwen" (Right ())) b0))) `shouldBe` "▸ test_f · draft 1 · 1 survivor · stub a test or waive"
     hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) b0)) `shouldBe` "▸ test_f · draft 1 · clean ✓ accept"
   it "(h3) a red circle's cue is honest: the person's edit keeps it, a model's failed draft drops it, a test stub is named first" $ do
     -- the person's own red edit is a draft, but no model has tried: draft is still the cue
@@ -140,9 +140,11 @@ spec = describe "Olifant.Block" $ do
     killTarget 9 w `shouldBe` Right onTwo
     killTarget 5 w `shouldBe` Right onTwo
     let none = step' (Waive 7 "compare" "r") (step' (Waive 2 "boundary" "r") w)
-    killTarget 2 none `shouldBe` Left "no survivor left to kill"
-    step (Kill 2) none `shouldBe` Left "no survivor left to kill"
+    killTarget 2 none `shouldBe` Left "no survivor left: accept"
+    step (Kill 2) none `shouldBe` Left "no survivor left: accept"
     killTarget 2 g `shouldSatisfy` isLeft
+    -- the person's word for the move is stub
+    step (Kill 2) b0 `shouldBe` Left "`stub` is not open here"
   it "(i) property: Accepted is reachable only through a clean Judged" $ hedgehog $ do
     moves <- forAll (Gen.list (Range.linear 0 12) genMove)
     let walk (b, lastJudgedClean) mv = case step mv b of

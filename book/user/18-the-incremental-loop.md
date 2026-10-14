@@ -22,10 +22,11 @@ cannot be rubber-stamped.
 3. The draft lands: `▸ test_closes_a_table · draft 1 · green · judging…`. You read it. It is the
    *least* code that passes (the fake-it stance, on purpose): if it is too simple, your test was;
    add a case.
-4. `· 1 survivor · kill or waive`. Line 53's `>` → `>=` survives (the note on the line says so,
-   `> → >= survives · kill / waive`): no test notices the boundary. You decide it matters. `kill`
-   (`<leader>mk`) opens a new test stub; you write its name and assertion; the arrangement is
-   drafted and verified both ways (it passes on your code and fails on the mutant).
+4. `· 1 survivor · stub a test or waive`. Line 53's `>` → `>=` survives (the note on the line says so,
+   `> → >= survives · stub / waive`): no test notices the boundary. You decide it matters. `stub`
+   (`<leader>ms`) opens a new test stub; you write its assertion; the arrangement is
+   drafted and verified both ways (it passes on your code and fails on the mutant, so the test
+   kills it).
 5. `clean ✓ accept`. `accept`: the highlight goes, and one line lands in the step log. Or you waive
    a survivor with a one-line reason (`<leader>mw`), edit the span by hand (the test reruns on a pause), ask for
    the `next` candidate, or `reject` to put the body back as it was.
@@ -61,7 +62,7 @@ the body yourself: the circle still tests and judges it.
 (`Circle: MOVE`, first while a magic circle is open). The HUD's state says which are open, and
 its last words are the next step when it is yours: `· draft` while red (gone once a model's draft
 has failed: read it, edit it or ask for `next`), `· name it, then draft` on a new test's stub,
-`· kill or waive`, `✓ accept`.
+`· stub a test or waive`, `✓ accept`.
 
 | move | key | when | what it does |
 |---|---|---|---|
@@ -69,7 +70,7 @@ has failed: read it, edit it or ask for `next`), `· name it, then draft` on a n
 | `draft` | | red or green, no draft yet | the span as a hole a model fills, verified by the circle's test (below) |
 | `next` | `<leader>mn` | after a draft | another candidate; the drafts so far go to the model as *not this, rejected by the person* |
 | `test` | | red, green, can't run | run the circle's test on the buffer's text now |
-| `kill` | `<leader>mk` | judged, a survivor stands | the survivor on the cursor's line, or the top-ranked one when the line has none: a test stub at the end of the test file, in its own circle |
+| `stub` | `<leader>ms` | judged, a survivor stands | the survivor on the cursor's line, or the top-ranked one when the line has none: a test stub at the end of the test file, in its own circle (on the wire it is `olifant/block/kill`; `:DurandalCircle kill` still works) |
 | `waive` | `<leader>mw` | a survivor on the cursor's line | asks why (`vim.ui.input`); writes the reason on the line |
 | `accept` | `<leader>my` | judged, no unwaived survivor | done: the circle's marks go |
 | `reject` | `<leader>mx` | any time | the file's text as it was when the circle began |
@@ -94,8 +95,8 @@ The person's part of each circle is the part that cannot be delegated:
   constant (`return Ok(None)`) is a correct draft for one test. Every generalisation needs a test
   that asks for it.
 - **Each survivor.** Accept is refused while one stands
-  (`1 survivor(s): kill or waive each, then accept`): kill it with a test, or waive it with a
-  reason.
+  (`1 survivor(s): stub a test or waive each, then accept`): stub a test that kills it, or
+  waive it with a reason.
 
 ## Mutation and waivers
 
@@ -122,7 +123,7 @@ A survivor is a warning on its line, with the mutation at the end of it:
         if input.party > table.seats:          > → >= survives
 ```
 
-**Kill** it: `<leader>mk` (`:DurandalCircle kill`) on that line opens the stub at the end of the test file, the
+**Stub a test for it**: `<leader>ms` (`:DurandalCircle stub`) on that line opens the stub at the end of the test file, the
 cursor on its name:
 
 ```python
@@ -152,7 +153,7 @@ With a decision model configured (`[decide] model = "<a backend name>"`, [chapte
 each survivor gets two questions in the background: *is it equivalent to the original?*
 (`mutant-equivalent`: an equivalent one is dimmed, a hint rather than a warning, and listed last)
 and *how much does it matter?* (`mutant-matters`: high first). The circle is pushed again as the
-answers land. Without one, survivors stay in file order. `kill` off a survivor's line takes the
+answers land. Without one, survivors stay in file order. `stub` off a survivor's line takes the
 first unwaived survivor in this order.
 
 The questions are typed (a fixed set of options; "unsure" always allowed; an answer outside the
@@ -234,7 +235,7 @@ whose module is gone runs itself.
 - **An edit above the span leaves it stale** until the next test of the circle: its lines are where
   they were.
 - **A line with several survivors is waived together**, one reason for each operator's comment.
-- **Waive acts on the cursor's line**, not on one survivor of several there. **Kill takes the
+- **Waive acts on the cursor's line**, not on one survivor of several there. **Stub takes the
   survivor on the cursor's line**, or the top-ranked one when the line has none.
 - **Mutants are capped at 20** per circle; a long body is judged in part.
 
@@ -254,7 +255,9 @@ whose module is gone runs itself.
   verdict shows.
 - **`a draft is in flight; wait for it, then test or press next`** — `test` while the model
   writes: the draft's own test settles the circle.
-- **`no survivor left to kill`** — `kill` with every survivor waived (or none): `accept`.
+- **`no survivor left: accept`** — `stub` with every survivor waived (or none): `accept`.
+- **`stub a test from the code's magic circle, in its module`** — `stub` in a test file (or in
+  a test's circle): go to the module whose circle has the survivor.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a circle starts
   from what is red. Begin in the function instead to judge it.
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a

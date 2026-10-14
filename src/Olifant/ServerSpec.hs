@@ -427,6 +427,9 @@ blockSpecs = describe "blocks" $ do
     blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
     -- the code block is still the module's
     fmap (blockId . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (blockId judged)
+    -- the test block's own file has no survivor to stub a test for
+    (_, fromTest) <- blockKill testFile 9 s
+    either id (const "stubbed") fromTest `shouldBe` "stub a test from the code's magic circle, in its module"
     -- the editor expands the stub; the model arranges; the mutant fails it: it stands
     let st = openDoc testFile 1 (expandStub at body testText) s
     (_, Right (drafted, edits)) <- blockDraft ignore testFile st
@@ -459,7 +462,7 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 w
     (_, Right _) <- blockWaive (root </> moduleRel) 6 "inclusive by design" w
     (_, none) <- blockKill (root </> moduleRel) 3 w
-    either id (const "killed") none `shouldBe` "no survivor left to kill"
+    either id (const "killed") none `shouldBe` "no survivor left: accept"
   it "(i) waive writes the comment on the survivor's line and reopens accept" $ do
     (s0, _) <- blocks redOnStub []
     let s = openDoc (root </> moduleRel) 1 written s0

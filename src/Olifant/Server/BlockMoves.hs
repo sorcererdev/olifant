@@ -32,7 +32,7 @@ import System.FilePath (makeRelative, (</>))
 -- name and assertion, a hole for its arrangement).
 blockKill :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text (Block, FilePath, Int, Text))
 blockKill path line = withBlock path $ \s root project lang b killed -> runExceptT $ do
-  when (blockKind b /= Code) (throwE "kill a survivor from the code's magic circle, in its module")
+  when (blockKind b /= Code) (throwE "stub a test from the code's magic circle, in its module")
   m <- either throwE pure (killTarget line b)
   let testRel = T.unpack (fileOf (blockTestId b))
       testFile = normalisePath (root </> testRel)
