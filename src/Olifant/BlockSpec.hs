@@ -7,7 +7,7 @@ import Hedgehog (Gen)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Block
-import Olifant.Language (Failure (..), parseLanguage)
+import Olifant.Language (Failure (..), Language (..), parseLanguage)
 import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
 import Test.Hspec
@@ -168,7 +168,7 @@ spec = describe "Olifant.Block" $ do
     it "(b) the kill stub is a new test with the name and assertion as tab stops and the arrangement as a hole" $ do
       let (at, stub) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
       at `shouldBe` 4
-      stub `shouldSatisfy` ("def test_${1:" `T.isInfixOf`)
+      stub `shouldSatisfy` ("def ${1:test_boundary_line5}() -> None:" `T.isInfixOf`)
       stub `shouldSatisfy` ("assert ${2:" `T.isInfixOf`)
       stub `shouldSatisfy` ("olifant: arrange" `T.isInfixOf`)
     it "(c) the stubbed test's placeholder becomes a stmt hole at its indentation" $ do
@@ -176,3 +176,21 @@ spec = describe "Olifant.Block" $ do
           stubbed = test <> stub
       testDraftTemplate py stubbed 7 `shouldSatisfy` isRight
       testDraftTemplate py stubbed 1 `shouldSatisfy` isLeft
+    describe "the kill stub's name, from the mutant" $ do
+      let module' = T.unlines ["class Book:", "    def handle(self, input: BookInput) -> BookOutput:", "        table = self.tables.at(input.table_id)", "        if input.party >= table.seats:", "            return TableNotFound(f\"there is no table {input.table_id}\")"]
+          boundary = Mutant 4 "boundary" ">" ">=" module' Nothing False
+      it "(n1) a string: test_ and the literal's first four words" $ do
+        let m = Mutant 5 "string" "f\"there is no table {input.table_id}\"" "\"\"" module' Nothing False
+        stubNameFor m test (langKeywords py) `shouldBe` "test_there_is_no_table"
+        snd (killStub py test m) `shouldSatisfy` ("def ${1:test_there_is_no_table}() -> None:" `T.isInfixOf`)
+      it "(n2) any other operator: test_, the operator, the mutated line's names (no keywords, self or attribute heads), four at most; a line left with none, what it changed from" $ do
+        stubNameFor boundary test (langKeywords py) `shouldBe` "test_boundary_party_seats"
+        stubNameFor (Mutant 1 "arith" "+" "-" "total = price * count - tax - fee  # f\"no\" names here" Nothing False) test (langKeywords py) `shouldBe` "test_arith_total_price_count_tax"
+        stubNameFor (Mutant 3 "delete-call" "self.tables.at(input.table_id)" "pass" (T.replace "table = self.tables.at(input.table_id)" "pass" module') Nothing False) test (langKeywords py) `shouldBe` "test_delete_call_at_table_id"
+      it "(n3) a name the test file has already gets _2, _3, …" $ do
+        let taken = test <> T.unlines ["", "", "def test_boundary_party_seats() -> None:", "    assert True", "", "", "def test_boundary_party_seats_2() -> None:", "    assert True"]
+        stubNameFor boundary taken (langKeywords py) `shouldBe` "test_boundary_party_seats_3"
+      it "(n4) a line of keywords and self only: test_, the operator and the line" $ do
+        let selfOnly = T.unlines ["class A:", "    def ok(self) -> bool:", "        return not self"]
+        stubNameFor (Mutant 3 "negate" "self" "not self" selfOnly Nothing False) test (langKeywords py) `shouldBe` "test_negate_line3"
+        stubNameFor (Mutant 3 "return-none" "return self" "return None" selfOnly Nothing False) test (langKeywords py) `shouldBe` "test_return_none_line3"

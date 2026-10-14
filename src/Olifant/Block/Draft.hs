@@ -6,17 +6,20 @@ module Olifant.Block.Draft
   ( draftTemplate,
     testDraftTemplate,
     killStub,
+    stubNameFor,
     testStub,
     instructionFor,
   )
 where
 
+import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper, isDigit, toLower)
+import Data.List (find, nub)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (Failure (..), HoleKind (..), Language (..), TestId)
-import Olifant.Mutate (Mutant)
+import Olifant.Mutate (Mutant (..))
 import Olifant.Template (Template, Value (..), describeTemplateError, parseTemplate, render)
 
 -- | The file with the lines of the span (1-based, inclusive) replaced by one
@@ -49,9 +52,68 @@ testDraftTemplate lang testText line
       either (Left . describeTemplateError) Right . parseTemplate $
         T.intercalate "\n" (take (line - 1) ls ++ [indent <> "{= ? arrange: stmt | " <> arrangeInstruction <> " =}"] ++ drop line ls)
 
--- | A kill's stub: 'testStub', for a survivor to be killed by.
+-- | A kill's stub: 'testStub', for a survivor to be killed by, its test
+-- named from the mutant ('stubNameFor') in the name's tab stop.
 killStub :: Language -> Text -> Mutant -> (Int, Text)
-killStub lang testText _mutant = testStub lang testText
+killStub lang testText m = (at, T.replace "def test_${1:name}()" ("def ${1:" <> stubNameFor m testText (langKeywords lang) <> "}()") stub)
+  where
+    (at, stub) = testStub lang testText
+
+-- | The name of a kill's test, from its mutant: a literal's first four
+-- words (`string`), else the operator and the names on the mutated line
+-- (or, with none there, in what it changed from), four at most, leaving
+-- out KEYWORDS, `self` and the heads of attributes (`seats` of
+-- `table.seats`); with no name at all, the line. A name TESTTEXT defines
+-- already gets `_2`, `_3`, ….
+stubNameFor :: Mutant -> Text -> [Text] -> Text
+stubNameFor m testText keywords = fromMaybe base (find (`notElem` defined) (base : [base <> "_" <> T.pack (show i) | i <- [2 :: Int ..]]))
+  where
+    operator = snakeOf (muOperator m)
+    base = "test_" <> fromMaybe (operator <> "_line" <> T.pack (show (muLine m))) described
+    described
+      | muOperator m == "string" = nonEmpty (snakeOf (T.unwords (take 4 (T.words (literalBody (muFrom m))))))
+      | otherwise = ((operator <> "_") <>) <$> nonEmpty (T.intercalate "_" (take 4 (nub (namesOf mutatedLine <> namesOf (muFrom m)))))
+    mutatedLine = fromMaybe "" (listToMaybe (drop (muLine m - 1) (T.splitOn "\n" (muText m))))
+    namesOf = filter (`notElem` ("self" : keywords)) . identifiers
+    defined = [n | l <- T.lines testText, Just rest <- [T.stripPrefix "def " (T.strip l)], let n = T.takeWhile isIdent rest, "(" `T.isPrefixOf` T.drop (T.length n) rest]
+    nonEmpty t = if T.null t then Nothing else Just t
+
+-- | A literal's text without its prefix (`f`, `rb`, …) and quotes.
+literalBody :: Text -> Text
+literalBody lit = T.dropAround (`elem` ['"', '\'']) (if T.any isQuote (T.take 1 rest) then rest else lit)
+  where
+    rest = T.dropWhile (`elem` ("rRbBfFuU" :: String)) lit
+    isQuote c = c == '"' || c == '\''
+
+-- | Lowercase, every run of other characters one `_`, none at the ends.
+snakeOf :: Text -> Text
+snakeOf = T.intercalate "_" . filter (not . T.null) . T.split (== '_') . T.map (\c -> if isAlphaNum c then toLower c else '_')
+
+-- | The names on a line of code, in order: none in a string or a comment,
+-- an attribute's head left out (`seats` of `table.seats`), a string's
+-- prefix (`f"…"`) no name.
+identifiers :: Text -> [Text]
+identifiers t = case T.uncons t of
+  Nothing -> []
+  Just (c, rest)
+    | c == '#' -> []
+    | c == '"' || c == '\'' -> identifiers (afterString c rest)
+    | isIdentStart c ->
+        let (name, after) = T.span isIdent t
+            next = T.take 1 after
+         in if next == "." || next == "\"" || next == "'" then identifiers after else name : identifiers after
+    | isDigit c -> identifiers (T.dropWhile isIdent t)
+    | otherwise -> identifiers rest
+  where
+    afterString q s = case T.uncons s of
+      Nothing -> ""
+      Just ('\\', s') -> afterString q (T.drop 1 s')
+      Just (x, s') | x == q -> s'
+      Just (_, s') -> afterString q s'
+
+isIdentStart, isIdent :: Char -> Bool
+isIdentStart c = isAsciiLower c || isAsciiUpper c || c == '_'
+isIdent c = isIdentStart c || isDigit c
 
 -- | Where a new test goes (the line after the file's last non-blank line)
 -- and the stub: two blank lines, then a test whose name and assertion are

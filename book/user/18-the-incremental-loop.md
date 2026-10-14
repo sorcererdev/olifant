@@ -124,15 +124,18 @@ A survivor is a warning on its line, with the mutation at the end of it:
 ```
 
 **Stub a test for it**: `<leader>ms` (`:DurandalCircle stub`) on that line opens the stub at the end of the test file, the
-cursor on its name:
+cursor on its name. The name comes from the mutant, so you know what the test is for: a string's
+first four words (`f"there is no table {input.table_id}"` → `test_there_is_no_table`), else the
+operator and the names on the mutated line (`if input.party > table.seats:` →
+`test_boundary_party_seats`), with `_2` when the test file has that name already:
 
 ```python
-def test_name() -> None:
+def test_boundary_party_seats() -> None:
     raise NotImplementedError("olifant: arrange: set up what the assertion below needs")
     assert ...
 ```
 
-Type the name and the assertion (`Tab` walks them), then `:DurandalCircle draft` in the test file.
+Keep the name or type over it, write the assertion (`Tab` walks them), then `:DurandalCircle draft` in the test file.
 The arrangement is drafted and verified both ways: the new test, and every test that passed
 before, must pass on your code, and the new test must fail with the mutant in place (a sibling
 test that was red before is passed over). `accept` the test, and the code's circle is judged again without that survivor.
@@ -244,8 +247,9 @@ whose module is gone runs itself.
 - **`no test for this module yet; write one …`** — `begin` was in a module whose test file does not
   exist, the cursor on no function. Put it in the function to have its test's stub opened, or
   write the test where the message says, then begin on it.
-- **`name the new test first`** — `draft` on a stub whose name is still the stub's (`test_name`):
-  type it (and the assertion), then draft.
+- **`name the new test first`** — `draft` on a new test's stub (from `begin`) whose name is still
+  the stub's (`test_name`): type it (and the assertion), then draft. A stub for a survivor is
+  named already.
 - **`the magic circle moved on`** — a draft, a test or a judge finished after you rejected or
   accepted the circle, or after another move (a later edit's test): nothing lands, and the step log says
   `stale:` before what it would have been.
