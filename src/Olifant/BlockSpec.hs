@@ -158,6 +158,16 @@ spec = describe "Olifant.Block" $ do
         passing = step' (Judge []) (step' (Edited (4, 6) (Right ())) stub) {blockPasses = True}
     hud passing `shouldBe` "▸ test_handle · draft 1 · green ✓ accept"
     open passing `shouldBe` ["accept", "draft", "reject"]
+  it "(h6) an existing test's circle (the code is right): drafting says why it is red; red at its assertion, draft again or edit it; judged, green to accept" $ do
+    let atAssert = Failure (Just 11) "assert 0 == 5" ""
+        existing = begin 4 "src/a__test.py" (ExistingTest False) "" (9, 11) "src/a__test.py::test_wrong_party" (Failure (Just 10) "TypeError: boom" "")
+        redrafted = step' (Drafted "x" "qwen" (Left atAssert)) (step' StartDraft existing)
+    hud (step' StartDraft existing) `shouldBe` "▸ test_wrong_party · red: TypeError: boom · drafting…"
+    hud redrafted {blockAtAssertion = True} `shouldBe` "▸ test_wrong_party · draft 1 · red at the assertion · draft again to redraft it, or edit it"
+    open redrafted {blockAtAssertion = True} `shouldSatisfy` elem "draft"
+    -- red before its assertion: the model tried, the person reads it
+    hud redrafted `shouldBe` "▸ test_wrong_party · draft 1 · red: assert 0 == 5"
+    hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft existing))) `shouldBe` "▸ test_wrong_party · draft 1 · green ✓ accept"
   it "(h5) a test of the file that passed when the circle began and fails now is the circle's red, with its own cue" $ do
     let kept = b0 {blockKeep = ["src/a__test.py::test_g", "src/a__test.py::test_h"]}
         sibling = Failure (Just 20) "assert 0 == 1" "E   assert 0 == 1"

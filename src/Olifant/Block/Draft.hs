@@ -5,6 +5,8 @@
 module Olifant.Block.Draft
   ( draftTemplate,
     testDraftTemplate,
+    existingTestTemplate,
+    existingAssertionInstruction,
     killStub,
     stubName,
     stubNameFor,
@@ -61,13 +63,41 @@ testDraftTemplate lang testText line assertion
     current = ls !! (line - 1)
     indentOf = T.takeWhile (`elem` [' ', '\t'])
     arrange = maybe arrangeInstruction (const (arrangeInstruction <> ", ending with `result = ` the call the test is about")) assertion
-    -- a file with the pack's helper: the arranged adapters go through it
-    helped t = maybe t (\h -> t <> "; " <> helperSentenceFor h) helper
-    helper = listToMaybe [h | l <- ls, h <- ["command", "query"], ("def " <> h <> "(") `T.isPrefixOf` l]
+    helped = helpedIn ls
     marked i l
       | i == line = indentOf l <> "{= ? arrange: stmt | " <> helped arrange <> " =}"
       | Just (a, instruction) <- assertion, i == a = indentOf l <> "{= ? assertion: stmt | " <> helped (oneLine instruction) <> " =}"
       | otherwise = l
+
+-- | An existing test's draft (the code is right, the test is red at
+-- MESSAGE): the test file with the test NAME's arrangement, the lines
+-- after its def line D before its first assert line, one stmt hole called
+-- @arrange@ (none: a hole on a new line after D); with ASSERTION, its
+-- assert lines (its first, A, to the test's last, Z) one stmt hole called
+-- @assertion@ too. Each at the indentation of the first assert line.
+existingTestTemplate :: Text -> Text -> Int -> (Int, Int) -> Text -> Bool -> Either Text Template
+existingTestTemplate testText name d (a, z) message assertion
+  | d < 1 || a <= d || z < a || z > length ls = Left ("lines " <> T.pack (show d) <> "-" <> T.pack (show z) <> " are not the test " <> name <> "'s")
+  | otherwise =
+      either (Left . describeTemplateError) Right . parseTemplate . T.intercalate "\n" $
+        take d ls
+          ++ [indent <> "{= ? arrange: stmt | " <> helped arrange <> " =}"]
+          ++ if assertion then (indent <> "{= ? assertion: stmt | " <> helped (existingAssertionInstruction name) <> " =}") : drop z ls else drop (a - 1) ls
+  where
+    ls = T.splitOn "\n" testText
+    indent = T.takeWhile (`elem` [' ', '\t']) (ls !! (a - 1))
+    helped = helpedIn ls
+    arrange = oneLine ("the code is right and this test is red (" <> message <> "): " <> arrangeInstruction <> " against the code as it is" <> if assertion then "" else "; the assertion below stays as it is")
+
+-- | What the model is asked for an existing test's assertion once the
+-- person asked again at a red assertion: the code's behaviour is the spec.
+existingAssertionInstruction :: Text -> Text
+existingAssertionInstruction name = "the code is the spec now: assert what `" <> T.replace "_" " " (fromMaybe name (T.stripPrefix "test_" name)) <> "` means against what the code returns; keep the test's intent"
+
+-- | An instruction in a test file (its lines) with the pack's helper: the
+-- arranged adapters go through it ('helperSentenceFor').
+helpedIn :: [Text] -> Text -> Text
+helpedIn ls t = maybe t (\h -> t <> "; " <> helperSentenceFor h) (listToMaybe [h | l <- ls, h <- ["command", "query"], ("def " <> h <> "(") `T.isPrefixOf` l])
 
 -- | What a test draft is told in a file whose tests build their subject
 -- with a helper (python-htmx's `def command(…)`, its ports keyword

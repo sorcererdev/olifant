@@ -467,6 +467,100 @@ blockSpecs = describe "blocks" $ do
       (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 named s)
       blockState drafted `shouldSatisfy` \case Red f -> "passes against a body that raises" `T.isInfixOf` fMessage f; _ -> False
 
+  describe "(R) draft on a red test with no circle: the code is right, the test is drafted" $ do
+    let testFile = root </> testRel
+        wrongId = T.pack testRel <> "::test_wrong_party"
+        -- after 'testText': lines 9 (its def), 10 (its arrangement), 11 (its assertion)
+        wrongTest arrange assertion = testText <> T.unlines ["", "", "def test_wrong_party() -> None:", "    " <> arrange, "    " <> assertion]
+        -- the test file's run, by its text: `test_wrong_party` red at an
+        -- arrangement building `CloseTable(9)`, else at an assertion
+        -- `== 5`, else green; `test_closes_a_table` red once the file
+        -- patches `CloseTable.handle`, else green
+        wrongRun files = Right (TestRun [i | (i, Nothing) <- results] [(i, f) | (i, Just f) <- results] Nothing)
+          where
+            t = M.findWithDefault "" testRel files
+            lineWith frag = listToMaybe [i | (i, l) <- zip [1 :: Int ..] (T.splitOn "\n" t), frag `T.isInfixOf` l]
+            results = (testId, if "CloseTable.handle =" `T.isInfixOf` t then Just (Failure (Just 6) "assert 2 == 1" "") else Nothing) : [(wrongId, wrong) | "def test_wrong_party(" `T.isInfixOf` t]
+            wrong
+              | Just l <- lineWith "CloseTable(9)" = Just (Failure (Just l) "TypeError: CloseTable() takes no arguments" "")
+              | Just l <- lineWith "== 5" = Just (Failure (Just l) "assert 0 == 5" "")
+              | otherwise = Nothing
+        -- the circle's server over TEXT, its model answering each ask in turn (the last again), and what it was asked
+        circle text answers = do
+          (s0, _) <- blocksOn wrongRun [(testRel, text)]
+          asked <- newIORef []
+          let filler = ModelFiller "drafter" 0 (Filler (\req -> atomicModifyIORef' asked (\a -> (a ++ [[(fhName h, fhInstruction h) | h <- frHoles req]], length a)) >>= \n -> pure (Right (M.fromList (answers !! min n (length answers - 1))))))
+          pure (s0 {ssTestFiller = Just filler}, asked)
+        linesOf = T.splitOn "\n"
+    it "the first ask drafts the arrangement only, the assertion as it was; green on the code, accepted: the circle closes, nothing moves to the module" $ do
+      let before = wrongTest "table = CloseTable(9)" "assert table.handle(1) == 0"
+      (s, asked) <- circle before [[("arrange", "table = CloseTable()")]]
+      pushes <- newIORef []
+      writeIORef (ssOnBlock s) (\b _ -> modifyIORef' pushes (++ [b]))
+      (_, Right (drafted, [edit])) <- blockDraftAt ignore testFile 10 s
+      (blockKind drafted, blockState drafted, blockTestId drafted, blockFile drafted) `shouldBe` (Block.ExistingTest False, Green, wrongId, testFile)
+      -- it opened red on the test's lines, and drafted at once
+      map (\b -> (stateName (blockState b), hud b)) <$> readIORef pushes `shouldReturn` [("drafting", "\9656 test_wrong_party \183 red: TypeError: CloseTable() takes no arguments \183 drafting\8230")]
+      map (map fst) <$> readIORef asked `shouldReturn` [["arrange"]]
+      let applied = applyChange (feRange edit) (feText edit) before
+      drop 8 (linesOf applied) `shouldBe` ["def test_wrong_party() -> None:", "    table = CloseTable()", "    assert table.handle(1) == 0", ""]
+      blockSpan drafted `shouldBe` (9, 11)
+      blockAssertion drafted `shouldBe` Nothing
+      let st = openDoc testFile 2 applied s
+      (_, Just tested) <- blockChanged testFile st
+      blockState tested `shouldBe` Judged []
+      hud tested `shouldBe` "\9656 test_wrong_party \183 draft 1 \183 green \10003 accept"
+      (_, Right (done, [])) <- blockAccept testFile st
+      blockState done `shouldBe` Accepted
+      fmap fst <$> blockFor testFile st `shouldReturn` Nothing
+      fmap fst <$> blockFor (root </> moduleRel) st `shouldReturn` Nothing
+      steps s >>= (`shouldSatisfy` ("\taccept\tperson\tgreen: test drafted" `T.isInfixOf`))
+    it "still red at the assertion: the HUD says so and draft is open; the second ask drafts the arrangement and the assertion, its line carried for the cursor" $ do
+      let before = wrongTest "table = CloseTable(9)" "assert table.handle(1) == 5"
+      (s, asked) <- circle before [[("arrange", "table = CloseTable()")], [("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(1) == 0")]]
+      (_, Right (first, [edit])) <- blockDraftAt ignore testFile 10 s
+      blockState first `shouldSatisfy` \case Red f -> fLine f == Just 11; _ -> False
+      hud first `shouldBe` "\9656 test_wrong_party \183 draft 1 \183 red at the assertion \183 draft again to redraft it, or edit it"
+      open first `shouldSatisfy` elem "draft"
+      let once = applyChange (feRange edit) (feText edit) before
+      drop 9 (linesOf once) `shouldBe` ["    table = CloseTable()", "    assert table.handle(1) == 5", ""]
+      (_, Right (second, [edit2])) <- blockDraftAt ignore testFile 10 (openDoc testFile 2 once s)
+      blockState second `shouldBe` Green
+      asks <- readIORef asked
+      map (map fst) asks `shouldBe` [["arrange"], ["arrange", "assertion"]]
+      lookup "assertion" (asks !! 1) `shouldBe` Just "the code is the spec now: assert what `wrong party` means against what the code returns; keep the test's intent"
+      let twice = applyChange (feRange edit2) (feText edit2) once
+      Just at <- pure (blockAssertion second)
+      linesOf twice !! (at - 1) `shouldBe` "    assert table.handle(1) == 0"
+      field "assertion_line" (blockJson second 0) `shouldBe` Just (Number (fromIntegral at))
+    it "a draft that breaks a test of the file that passed is red at it: no longer passes" $ do
+      let before = wrongTest "table = CloseTable(9)" "assert table.handle(1) == 0"
+      (s, _) <- circle before [[("arrange", "table = CloseTable()\nCloseTable.handle = lambda self, seats: 0")]]
+      (_, Right (drafted, _)) <- blockDraftAt ignore testFile 10 s
+      blockRedAt drafted `shouldBe` Just testId
+      hud drafted `shouldBe` "\9656 test_wrong_party \183 draft 1 \183 red: test_closes_a_table no longer passes \183 fix or reject"
+    it "refused: a green test, the cursor in no test, a circle open in the file" $ do
+      let before = wrongTest "table = CloseTable(9)" "assert table.handle(1) == 0"
+      (s, asked) <- circle before [[("arrange", "table = CloseTable()")]]
+      (_, green) <- blockDraftAt ignore testFile 5 s
+      green `shouldBe` Left "this test passes; begin on a red one, or stub a new case"
+      (_, nowhere) <- blockDraftAt ignore testFile 1 s
+      nowhere `shouldBe` Left "put the cursor in a test to draft it"
+      -- a circle in its module (one per file, its test file's too)
+      modifyIORef' (ssBlocks s) (M.insert (root </> moduleRel) (Block.begin 99 (root </> moduleRel) Block.Code written (6, 6) "src/shop/other__test.py::test_x" (Failure Nothing "" ""), 0))
+      (_, busy) <- blockDraftAt ignore testFile 10 s
+      busy `shouldBe` Left "a magic circle is open in this file: accept or reject it first"
+      readIORef asked `shouldReturn` []
+      fmap fst <$> blockFor testFile s `shouldReturn` Nothing
+    it "reject puts the test's lines back" $ do
+      let before = wrongTest "table = CloseTable(9)" "assert table.handle(1) == 5"
+      (s, _) <- circle before [[("arrange", "table = CloseTable()")]]
+      (_, Right (_, [edit])) <- blockDraftAt ignore testFile 10 s
+      let st = openDoc testFile 2 (applyChange (feRange edit) (feText edit) before) s
+      (_, Right (gone, [restore])) <- blockReject testFile st
+      blockState gone `shouldBe` Rejected
+      applyChange (feRange restore) (feText restore) (applyChange (feRange edit) (feText edit) before) `shouldBe` before
+
   it "(c) draft lands only if the document is still the version it planned against (Review Focus 1)" $ do
     (s0, _) <- blocks redOnStub []
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}

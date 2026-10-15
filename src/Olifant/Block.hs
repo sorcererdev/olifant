@@ -19,6 +19,8 @@ module Olifant.Block
     pending,
     draftTemplate,
     testDraftTemplate,
+    existingTestTemplate,
+    existingAssertionInstruction,
     killStub,
     stubName,
     unparsedDraft,
@@ -38,12 +40,15 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (assertionInstruction, draftTemplate, helperSentence, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
+import Olifant.Block.Draft (assertionInstruction, draftTemplate, existingAssertionInstruction, existingTestTemplate, helperSentence, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
 import Olifant.Language (Failure (..), TestId, TestRun, keptVerdict)
 import Olifant.Mutate (Mutant (..))
 
--- | A code block, or a test block (red at its assert; a kill also fails on the mutant).
-data Kind = Code | TestFor (Maybe Mutant)
+-- | A code block, or a test block (red at its assert; a kill also fails on
+-- the mutant), or an existing test's block: the test is red on code that is
+-- right, so the test is drafted until it passes (its arrangement; True:
+-- its assertion too, asked once the arrangement left it red there).
+data Kind = Code | TestFor (Maybe Mutant) | ExistingTest Bool
   deriving stock (Eq, Show)
 
 -- | A body offered for the block; `draftBy` is a model's name or "you".
@@ -92,7 +97,11 @@ data Block = Block
     -- | a new test's block whose test passes on the code as it is (the
     -- server records it as the test runs): a regression test, green to
     -- accept, nothing to begin on it
-    blockPasses :: Bool
+    blockPasses :: Bool,
+    -- | an existing test's block red at its assertion (the run's failure at
+    -- or after its first assert line; the server records it as a test or
+    -- a draft lands): the next draft drafts the assertion too
+    blockAtAssertion :: Bool
   }
   deriving stock (Eq, Show)
 
@@ -122,7 +131,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing Nothing False
+  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing Nothing False False
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
@@ -234,15 +243,20 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "
     statePart = case blockState b of
       Red _ | Just t <- blockRedAt b -> "red: " <> noLongerPasses t <> " · fix or reject"
+      -- the arrangement drafted, the assertion is what fails: the person's to confirm
+      Red _ | ExistingTest _ <- blockKind b, blockAtAssertion b -> "red at the assertion · draft again to redraft it, or edit it"
       Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, redCue] of
         [] -> "red"
         parts -> T.intercalate " · " parts
+      -- an existing test drafted: why it is red, while the model writes
+      Drafting (Red f) | ExistingTest _ <- blockKind b, not (T.null (fMessage f)) -> "red: " <> fMessage f <> " · drafting…"
       Drafting _ -> "drafting…"
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         -- a new test red at its assertion is ready: accepted, its function begins on it
         -- one that passes already is a regression test: accepted, it stays
         0 | TestFor Nothing <- blockKind b, blockPasses b -> "green ✓ accept"
+        0 | ExistingTest _ <- blockKind b -> "green ✓ accept"
         0 | TestFor Nothing <- blockKind b -> "red ✓ accept · go make it pass"
         0 -> "clean ✓ accept"
         1 -> "1 survivor · stub a test or waive"

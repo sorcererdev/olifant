@@ -162,6 +162,8 @@ blockChanged path s0 =
 stubGone :: Block -> Text -> Bool
 stubGone b now = case blockKind b of
   Code -> False
+  -- an existing test's lines were there before its circle: none is new
+  ExistingTest _ -> False
   TestFor _ -> not (any kept (S.toList (newLinesOf (blockBase b) now)))
   where
     ls = T.lines now
