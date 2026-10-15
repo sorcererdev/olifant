@@ -85,8 +85,9 @@ data Block = Block
     -- in the file as the draft left it, for the editor to put the cursor
     -- on (the person confirms or edits it)
     blockAssertion :: Maybe Int,
-    -- | a code block's test file (absolute), where its red is (a test
-    -- block's is its file)
+    -- | a code block's test file (absolute; the server sets it as the
+    -- block begins), where its red is: a block without it pushes no
+    -- failure
     blockTestFile :: Maybe FilePath
   }
   deriving stock (Eq, Show)

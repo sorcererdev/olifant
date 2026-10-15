@@ -969,15 +969,14 @@ blockJson b killed =
     , "killed" .= killed
     ]
       ++ ["assertion_line" .= l | Just l <- [blockAssertion b]]
-      -- red: where, for the editor to mark the failing line
+      -- a code block red at a run's failure: where, for the editor to mark
+      -- the failing line (a test block's red is its stub's, not a run's)
       ++ [ "failure" .= object ["file" .= testFile, "line" .= fLine f, "message" .= fMessage f, "test" .= fromMaybe (blockTestId b) (blockRedAt b)]
          | Red f <- [blockState b]
+         , Code <- [blockKind b]
+         , Just testFile <- [blockTestFile b]
          ]
   where
-    testFile = case (blockTestFile b, blockKind b) of
-      (Just f, _) -> f
-      (Nothing, TestFor _) -> blockFile b
-      (Nothing, Code) -> T.unpack (fileOf (blockTestId b))
     judged = case blockState b of
       Judged ms -> ms
       _ -> []

@@ -1115,6 +1115,8 @@ blockSpec = describe "olifant/block" $ do
         snippet "file" `shouldBe` Just (String (T.pack (dir </> testRel)))
         snippet "body" `shouldSatisfy` \case Just (String b) -> "def ${1:test_handle}() -> None:" `T.isInfixOf` b; _ -> False
         (block "file", block "state") `shouldBe` (Just (String (T.pack (dir </> testRel))), Just (String "red"))
+        -- a stub's red is its placeholder, not a run's: no failure to mark
+        block "failure" `shouldBe` Nothing
         outside `shouldBe` Left "put the cursor in a function to stub a test for it"
   it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
