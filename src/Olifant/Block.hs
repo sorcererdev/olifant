@@ -118,7 +118,7 @@ step mv b
       (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b))
       (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
       (Rejudge, Judged _) -> Right b {blockState = Green}
-      (CannotRun why, _) -> Right b {blockState = Broken why}
+      (CannotRun why, _) -> Right b {blockState = Broken why, blockRedAt = Nothing}
       (Judge ms, Green) -> Right b {blockState = Judged ms}
       (Waive line op reason, Judged ms)
         | any (\m -> here m && isNothing (muWaived m)) ms ->

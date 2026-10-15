@@ -171,6 +171,8 @@ spec = describe "Olifant.Block" $ do
     hud (step' (Edited (2, 2) (Left red)) edited) `shouldBe` "▸ test_f · draft 1 · red: AssertionError: assert None == Ok(None) · draft"
     -- a draft that gives nothing puts the kept red back as it was
     hud (step' DraftFailed (step' StartDraft edited)) `shouldBe` hud edited
+    -- a run that cannot judge is no kept red either
+    blockRedAt (step' (CannotRun "ImportError") edited) `shouldBe` Nothing
   it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) b0
         first = m {muLine = 5, muOperator = "number", muFrom = "1", muTo = "2"}
