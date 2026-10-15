@@ -372,20 +372,23 @@ blockSpecs = describe "blocks" $ do
     let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
         -- what the model was asked (each hole, its instruction), and what it answers
         drafter runner = do
-          (s0, _) <- blocksOn runner []
+          (s0, runs) <- blocksOn runner []
           asked <- newIORef []
           let filler = ModelFiller "drafter" 0 (Filler (\req -> modifyIORef' asked (++ [(fhName h, fhInstruction h) | h <- frHoles req]) >> pure (Right (M.fromList [("arrange", "reopen = Reopen()\nresult = reopen.again()"), ("assertion", "assert result == 1")]))))
               s = (openDoc (root </> moduleRel) 1 reopen s0) {ssTestFiller = Just filler}
           (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
           -- the person names it; ASSERTION: what they type at its tab stop (`...` left as it is)
           let opened assertion = T.replace "kills_the_boundary" "reopens_again" (expandStub at (T.replace "${2:...}" assertion body) (applyEdits imports testText))
-          pure (s, testFile, opened, asked)
+          pure (s, testFile, opened, (asked, runs))
     it "a stub left `assert ...`: the draft writes arrangement and assertion, red at the assertion (lines below its first), accepted: the function begins" $ do
-      (s, testFile, opened, asked) <- drafter killedBy
+      (s, testFile, opened, (asked, runs)) <- drafter killedBy
       let named = opened "..."
           st = openDoc testFile 1 named s
+      ran <- runs
       (_, Right (drafted, [edit])) <- blockDraft ignore testFile st
       blockState drafted `shouldBe` Green
+      -- the two holes are verified once, together
+      (subtract ran <$> runs) `shouldReturn` 1
       readIORef asked `shouldReturn` [("arrange", "set up what the assertion below needs, ending with `result = ` the call the test is about"), ("assertion", "assert what 'reopens again' means; one assert, the subject is `result`")]
       let applied = applyChange (feRange edit) (feText edit) named
           ls = T.splitOn "\n" applied
@@ -403,7 +406,7 @@ blockSpecs = describe "blocks" $ do
       Just (code, _) <- blockFor (root </> moduleRel) st2
       (blockKind code, blockTestId code) `shouldBe` (Block.Code, T.pack testRel <> "::test_reopens_again")
     it "a stub whose assertion the person typed: only the arrangement is drafted" $ do
-      (s, testFile, opened, asked) <- drafter killedBy
+      (s, testFile, opened, (asked, _)) <- drafter killedBy
       (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 (opened "Reopen().again() == 1") s)
       blockState drafted `shouldBe` Green
       map fst <$> readIORef asked `shouldReturn` ["arrange"]

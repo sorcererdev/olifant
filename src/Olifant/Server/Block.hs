@@ -446,8 +446,10 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
               | Just why <- trBroken run -> throwE ("the tests cannot run: " <> why)
               | otherwise -> pure (trPassed run)
           pure (VerifyKills (T.pack rel) (keep ++ new) new moduleRel (muText m))
-      -- a drafted assertion is verified as the arrangement is (each with the other in place)
-      pure (template, [("arrange", verify)] ++ [("assertion", verify) | drafting'], [(m, t) | Just m <- [tested], Just t <- [moduleText]])
+      -- one verify for the test: a drafted assertion's, run with the
+      -- arrangement in place (the fill phase verifies with every fill that
+      -- stands), else the arrangement's
+      pure (template, [(if drafting' then "assertion" else "arrange", verify)], [(m, t) | Just m <- [tested], Just t <- [moduleText]])
   -- and the project modules either one imports (ports, models), capped
   imported <- lift (importedContext ws lang (rel : map fst beside) (text : map snd beside))
   -- each fill the model offers, the last kept: a draft that fails its test
