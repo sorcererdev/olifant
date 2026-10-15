@@ -286,6 +286,8 @@ blockSpecs = describe "blocks" $ do
     take 4 (T.lines body) `shouldBe` ["from shop.lonely import alone", "", "", "def test_${1:name}() -> None:"]
     (blockFile tb, blockKind tb, blockSpan tb, blockBase tb) `shouldBe` (file, Block.TestFor Nothing, (4, 6), "")
     blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    -- the name is the person's to write: the assertion is drafted from it
+    hud tb `shouldBe` "\9656 src/shop/lonely__test.py \183 red: a new test: write its name \183 name it, then draft \183 reject drops it"
     fmap fst <$> blockFor file s `shouldReturn` Just tb
     -- one block per file: the function cannot begin again meanwhile
     (_, again) <- blockBegin ignore (root </> "src/shop/lonely.py") 2 s

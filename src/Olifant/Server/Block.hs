@@ -261,7 +261,7 @@ openTestStub s site n name others refused = do
       -- named, the block's test is the stub's; else the file's until the person names it
       (tid, failure) = case name of
         Just t -> (T.pack testRel <> "::" <> t, Failure Nothing "" "")
-        Nothing -> (T.pack testRel, Failure Nothing "a new test: write its name and assertion" "")
+        Nothing -> (T.pack testRel, Failure Nothing "a new test: write its name" "")
   k <- lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
   let tb = (begin k testFile (TestFor Nothing) base (defAt, defAt + 2) tid failure) {blockSubject = (n,) <$> siteDefLine site}
   claimed <- lift (claim s others tb)
@@ -492,7 +492,7 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
         Left (Just t, f) -> ("red: " <> noLongerPasses t, AtKept t (Drafted drafted (mfName filler) (Left f)))
         Left (Nothing, f) -> ("red", Drafted drafted (mfName filler) (Left f))
         Right () -> ("green", Drafted drafted (mfName filler) (Right ()))
-  b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockSpan = sp, blockAssertion = assertionAt <|> blockAssertion drafting})
+  b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockSpan = sp, blockAssertion = assertionAt})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits' && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits')
 
@@ -744,7 +744,7 @@ testNow s root project lang b killed applied = do
 -- why not.
 redAtAssertion :: Block -> Text -> TestRun -> Either Failure ()
 redAtAssertion b now run = case newTests b now of
-  [] -> Left (Failure Nothing "name the new test and write its assertion" "")
+  [] -> Left (Failure Nothing "name the new test" "")
   t : _ -> case lookup t (trFailed run) of
     Nothing -> Left (Failure Nothing "the test passes before any code exists: it does not test the new behaviour" "")
     Just f

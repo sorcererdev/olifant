@@ -119,10 +119,11 @@ step mv b
   | not (pending b) = Left "this circle is closed; begin another"
   | otherwise = case (mv, blockState b) of
       (AtKept t inner, _) -> atKept t <$> step inner b
-      (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s}
+      -- a drafted assertion's line is the latest draft's: another draft, or the person's edit, clears it
+      (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s, blockAssertion = Nothing}
       (DraftFailed, Drafting before) -> Right b {blockState = before}
       (Drafted text by outcome, s) | drafting s || s == Green || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
-      (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b))
+      (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b {blockAssertion = Nothing}))
       (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
       (Rejudge, Judged _) -> Right b {blockState = Green}
       (CannotRun why, _) -> Right b {blockState = Broken why, blockRedAt = Nothing}

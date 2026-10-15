@@ -466,7 +466,8 @@ testsFailed :: Text
 testsFailed = "the tests failed:"
 
 -- | The lines (1-based) where a test's assertion may fail in a test file:
--- its first assert line to its last line (its def's body, the lines below
+-- its first assert statement's line (`assert …`, not a name beginning
+-- with it) to its last line (its def's body, the lines below
 -- it deeper than the def or blank); none without a def of NAME or an
 -- assert in it.
 assertionSpan :: Text -> Text -> Maybe (Int, Int)
@@ -474,7 +475,8 @@ assertionSpan name text = case dropWhile (not . isDef . snd) numbered of
   (_, d) : rest ->
     let body = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l > indentOf d) rest
         filled = [i | (i, l) <- body, not (T.null (T.strip l))]
-     in case [i | (i, l) <- body, "assert" `T.isPrefixOf` T.strip l] of
+        isAssert l = let st = T.strip l in st == "assert" || any (`T.isPrefixOf` st) ["assert ", "assert("]
+     in case [i | (i, l) <- body, isAssert l] of
           a : _ -> Just (a, maximum (a : filled))
           [] -> Nothing
   [] -> Nothing
