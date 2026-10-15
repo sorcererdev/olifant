@@ -15,7 +15,7 @@ module Olifant.Block
     killTarget,
     hud,
     outcomeOf,
-    keptRed,
+    noLongerPasses,
     pending,
     draftTemplate,
     testDraftTemplate,
@@ -72,8 +72,11 @@ data Block = Block
     -- function begins once the test is accepted
     blockSubject :: Maybe (Text, Int),
     -- | a code block's: the tests of its test file that passed when it
-    -- began (its own test aside); green is its test and all of these passing
-    blockKeep :: [TestId]
+    -- began (its own test aside), and those a kill's test it accepted
+    -- added; green is its test and all of these passing
+    blockKeep :: [TestId],
+    -- | while red at a kept test (its own test passing): that test
+    blockRedAt :: Maybe TestId
   }
   deriving stock (Eq, Show)
 
@@ -95,17 +98,20 @@ data Move
   | Kill Int
   | Accept
   | Reject
+  | -- | the move inside lands red at a test the block keeps (its own test passing)
+    AtKept TestId Move
   deriving stock (Eq, Show)
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing []
+  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
 step mv b
   | not (pending b) = Left "this circle is closed; begin another"
   | otherwise = case (mv, blockState b) of
+      (AtKept t inner, _) -> atKept t <$> step inner b
       (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s}
       (DraftFailed, Drafting before) -> Right b {blockState = before}
       (Drafted text by outcome, s) | drafting s || s == Green || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
@@ -132,7 +138,13 @@ step mv b
     drafting = \case Drafting _ -> True; _ -> False
     red = \case Red _ -> True; _ -> False
     outcomeText = either (("red: " <>) . fMessage) (const "green")
-    landed sp outcome b' = b' {blockSpan = sp, blockState = either Red (const Green) outcome}
+    landed sp outcome b' = b' {blockSpan = sp, blockState = either Red (const Green) outcome, blockRedAt = Nothing}
+    -- red at a kept test: the HUD and the draft it landed name it
+    atKept t b' = case blockState b' of
+      Red _ -> b' {blockRedAt = Just t, blockDrafts = case reverse (blockDrafts b') of
+        d : rest | "red" `T.isPrefixOf` draftOutcome d -> reverse (d {draftOutcome = "red: " <> noLongerPasses t} : rest)
+        ds -> reverse ds}
+      _ -> b'
     addDraft d b' = b' {blockDrafts = blockDrafts b' ++ [d]}
     -- editing twice is one draft: the second edit only updates its outcome
     editDraft outcome b' = case reverse (blockDrafts b') of
@@ -154,6 +166,7 @@ moveName = \case
   Kill _ -> "stub"
   Accept -> "accept"
   Reject -> "reject"
+  AtKept _ inner -> moveName inner
 
 -- | The moves open now.
 open :: Block -> [Text]
@@ -197,7 +210,7 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       | null (blockDrafts b) = ""
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "
     statePart = case blockState b of
-      Red f | keptRed b f -> "red: " <> fMessage f <> " · fix or reject"
+      Red _ | Just t <- blockRedAt b -> "red: " <> noLongerPasses t <> " · fix or reject"
       Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, redCue] of
         [] -> "red"
         parts -> T.intercalate " · " parts
@@ -227,20 +240,19 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       _ -> "draft"
 
 -- | A code block's test run as the circle takes it: its own test red is
--- its red; else the first test it keeps (one that passed when it began)
--- that fails, named in its red (the runner's message after), at its line;
--- else green. (A run that could not judge is the caller's: cannot run.)
-outcomeOf :: Block -> TestRun -> Either Failure ()
-outcomeOf b run = case (lookup (blockTestId b) (trFailed run), [(t, f) | t <- blockKeep b, Just f <- [lookup t (trFailed run)]], trFailed run) of
-  (Just f, _, _) -> Left f
-  (_, (t, f) : _, _) -> Left (Failure (fLine f) (noLongerPasses t) (T.intercalate "\n" (filter (not . T.null) [fMessage f, fOutput f])))
+-- its red; else the first test it keeps that fails is (that test, and the
+-- runner's failure: its line and message); else green. (A run that could
+-- not judge is the caller's: cannot run.)
+outcomeOf :: Block -> TestRun -> Either (Maybe TestId, Failure) ()
+outcomeOf b run
+  | Just f <- lookup (blockTestId b) failed = Left (Nothing, f)
+  | (t, f) : _ <- keptFailing = Left (Just t, f)
   -- a failure of no test it knows (a runner that ran more): red as it says
-  (_, _, (_, f) : _) -> Left f
-  _ -> Right ()
-
--- | Whether a red is a kept test's (see 'outcomeOf'), not the block's own test's.
-keptRed :: Block -> Failure -> Bool
-keptRed b f = any ((== fMessage f) . noLongerPasses) (blockKeep b)
+  | (_, f) : _ <- failed = Left (Nothing, f)
+  | otherwise = Right ()
+  where
+    failed = trFailed run
+    keptFailing = [(t, f) | t <- blockKeep b, Just f <- [lookup t failed]]
 
 -- | A kept test's red, as the HUD names it.
 noLongerPasses :: TestId -> Text
