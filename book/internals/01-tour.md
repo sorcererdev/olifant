@@ -2362,8 +2362,11 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   then the project modules either file imports and, one level further, what those import:
   `importedContext`, capped at 8 files of 120 lines, 600 in all, direct imports first),
   verified by `VerifyIds` (the block's test and the tests it keeps: `blockKeep`, the test file's
-  tests that passed at begin; a kept test failing is the block's red, `outcomeOf`, named by the
-  HUD as `no longer passes`), `VerifyRedAt` (a new test fails at its assertion)
+  tests that passed at begin and a kill's tests once accepted (`rejudgeFor`), less any the test
+  file no longer defines (`keptIn`, before every run); a kept test failing while its own passes
+  is the block's red, `outcomeOf`, landed through `AtKept` so `blockRedAt` names it and the HUD
+  says `no longer passes`; a failed draft whose fill names a kept test is run once more to find
+  it, `draftRedOn`, and the next draft's instruction names that test), `VerifyRedAt` (a new test fails at its assertion)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
   mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill
   phase read it: a `Reindented` fill as read), unless, in Python, it would not parse

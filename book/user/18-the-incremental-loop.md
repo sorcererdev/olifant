@@ -23,7 +23,8 @@ cannot be rubber-stamped.
    (red, and the next step), then `drafting…` while the model writes (only `reject` is open then).
 3. The draft lands: `▸ test_closes_a_table · draft 1 · green · judging…`. You read it. It is the
    *least* code that passes (the fake-it stance, on purpose): if it is too simple, your test was;
-   add a case. Green means the file's other tests that passed when the circle began still pass.
+   add a case. Green means the file's other tests that passed when the circle began (and each
+   test you stub and accept in it) still pass.
 4. `· 1 survivor · stub a test or waive`. Line 53's `>` → `>=` survives (the note on the line says so,
    `> → >= survives · stub / waive`): no test notices the boundary. You decide it matters. `stub`
    (`<leader>mcs`) opens a new test stub; you write its assertion; the arrangement is
@@ -250,6 +251,10 @@ whose module is gone runs itself.
   saying `gate off: …`. A draft sees the test file (a test's draft, the module), the project
   modules either one imports, and what those import (ports, models; at most 8 files, 120
   lines each), and the rejected drafts.
+- **The tests a circle keeps are those that passed when it began**, and each test stubbed and
+  accepted in it. A circle begun while its test file could not run keeps none: once the file
+  runs again, only its own test decides green (reject and begin again to keep the others). A
+  kept test you delete or rename is kept no more.
 - **One circle per file**, and one in a test file.
 - **The function under test is found by a method call** (`.NAME(` in the test, its assertions
   first). A test of a bare function (`assert add(1, 2) == 3`) is not located yet: begin in the
