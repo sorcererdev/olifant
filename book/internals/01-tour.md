@@ -2397,6 +2397,10 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   that file as one id with `Server/Block.runOver` over the snapshot's documents, timed; a test file
   whose module is gone (`testShaped`: named as `tests_for` names test files) runs itself; a runner
   that cannot start is a broken run, and `Lsp` answers a run the editor cancelled `RequestCancelled`. `testsJson` is the answer the editor reads.
+  `testsFile` (`olifant/tests/file`, answered at once: it reads only config and the file list)
+  answers a file's other side for the editor's jump: a module's test file, which may not exist
+  yet, or the module a test file tests; both read one `placeOf` (language, `[test]` table, the
+  module it is the test file of), so the two never disagree on which file is the test file.
 - **`Lsp`** has one `blockRequest` per move, in the background like the other slow requests; every
   block a move changed is pushed as `olifant/block`, and `didChange` that edits a block's span
   (`blockEdited`, against the text last tested) submits `blockLater` (the debounce; a newer such

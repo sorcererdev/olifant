@@ -214,6 +214,41 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     (s, _) <- recording (\_ -> Left "uv is not installed") []
     (_, Right a) <- testsRun (root </> moduleRel) s
     trBroken (taRun a) `shouldBe` Just "uv is not installed"
+  describe "a file's counterpart (olifant/tests/file)" $ do
+    it "on a module, answers its test file, kind test" $ do
+      (s, _) <- recording passing []
+      (_, answer) <- testsFile (root </> moduleRel) s
+      answer `shouldBe` Right (TestsFile (root </> testRel) True True)
+    it "on a test file, answers the module it tests, kind module" $ do
+      (s, _) <- recording passing []
+      (_, answer) <- testsFile (root </> testRel) s
+      answer `shouldBe` Right (TestsFile (root </> moduleRel) False True)
+    it "on a module with no test file yet, answers the path it would be, which does not exist" $ do
+      (s, _) <- recording passing [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
+      (_, answer) <- testsFile (root </> "src/shop/lonely.py") s
+      answer `shouldBe` Right (TestsFile (root </> "src/shop/lonely__test.py") True False)
+    it "answers as the editor reads it: file, kind, exists" $ do
+      (s, _) <- recording passing []
+      (_, Right a) <- testsFile (root </> moduleRel) s
+      testsFileJson a `shouldBe` J.object ["file" J..= (root </> testRel), "kind" J..= ("test" :: Text), "exists" J..= True]
+      (_, Right m) <- testsFile (root </> testRel) s
+      lookupIn "kind" (testsFileJson m) `shouldBe` Just (String "module")
+    it "refuses a language with no [test] table, in one sentence" $ do
+      (s, _) <- recording passing [plain, ("notes/a.txt", "a\n")]
+      (_, answer) <- testsFile (root </> "notes/a.txt") s
+      answer `shouldSatisfy` either (== "plain has no [test] table: no test file to jump to") (const False)
+    it "refuses a test file whose module cannot be named, in one sentence" $ do
+      (s, _) <- recording passing [("src/shop/orphan__test.py", "def test_alone() -> None:\n    assert True\n")]
+      (_, answer) <- testsFile (root </> "src/shop/orphan__test.py") s
+      answer `shouldSatisfy` either (== "no module's test file is src/shop/orphan__test.py: its module cannot be named") (const False)
+    it "refuses a file that is its own test file (tests_for names the file itself), in one sentence" $ do
+      (s, _) <- recording passing [("/pack/languages/inline.toml", "files = [\"**/*.txt\"]\ncomment = \"#\"\ngrammar = \"python\"\n[test]\npreset = \"pytest\"\ntests_for = \"{= dir =}/{= stem =}.txt\"\n"), ("notes/a.txt", "a\n")]
+      (_, answer) <- testsFile (root </> "notes/a.txt") s
+      answer `shouldSatisfy` either (== "notes/a.txt is its own test file (inline's tests_for): no other file to jump to") (const False)
+    it "refuses a file in no project" $ do
+      (s, _) <- recording passing []
+      (_, answer) <- testsFile "/elsewhere/x.py" s
+      answer `shouldSatisfy` either ("is in no Olifant project" `T.isInfixOf`) (const False)
   where
     lookupIn k = \case
       Object o -> KM.lookup (K.fromText k) o
