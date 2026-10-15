@@ -12,10 +12,13 @@ cannot be rubber-stamped.
    file, named `test_handle` (`test_handle_2` when the file has that name already), with the
    function's import (`from bistro.booking.commands.close_table import CloseTable`: a new file
    starts with it; a file without it gains it among its imports), the cursor on its name. Keep
-   the name or type over it, and write the **assertion**; `draft` (`<leader>mcd`) fills the
-   arrangement between them, verified: the test runs and fails *at the assertion*. The HUD says
-   `red ✓ accept · the fix is drafted next`; `accept` it (`<leader>mca`). (`begin` in a function
-   no test calls opens the same stub, its name yours to type.)
+   the name or type over it: the **name** is the spec. `draft` (`<leader>mcd`) fills the whole
+   test, its arrangement and, while it is still the stub's `assert ...`, its assertion (one
+   assert on `result`, from what the name says), verified: the test runs and fails *at the
+   assertion*. The cursor goes to the drafted assertion: confirm it or edit it (written your
+   own before `draft`, it stands and only the arrangement is drafted). The HUD says
+   `red ✓ accept · go make it pass`; `accept` it (`<leader>mca`). (`begin` in a function no test
+   calls opens the same stub, its name yours to type.)
 2. The function begins on that red test (the one you stubbed it for; as `begin` on a red test
    does, the editor opens it and its draft starts). Its body is inside a **magic circle**: the
    highlighted span with the HUD line above it; nothing leaves the circle until every survivor is
@@ -26,9 +29,9 @@ cannot be rubber-stamped.
    add a case.
 4. `· 1 survivor · stub a test or waive`. Line 53's `>` → `>=` survives (the note on the line says so,
    `> → >= survives · stub / waive`): no test notices the boundary. You decide it matters. `stub`
-   (`<leader>mcs`) opens a new test stub; you write its assertion; the arrangement is
-   drafted and verified both ways (it passes on your code and fails on the mutant, so the test
-   kills it).
+   (`<leader>mcs`) opens a new test stub, named from the mutant, and drafts it at once:
+   arrangement and assertion, verified both ways (it passes on your code and fails on the
+   mutant, so the test kills it).
 5. `clean ✓ accept`. `accept`: the highlight goes, and one line lands in the step log. Or you waive
    a survivor with a one-line reason (`<leader>mcw`), edit the span by hand (the test reruns on a pause), `draft`
    another candidate, or `reject` (`<leader>mcr`) to put the body back as it was.
@@ -67,11 +70,11 @@ circle*): a letter after it for each move, and `<leader>mcc` lists the circle's 
 pick from (`begin` and `stub` with none open). The HUD's state says which are open, and
 its last words are the next step when it is yours: `· draft` while red (gone once a model's draft
 has failed: read it, edit it or `draft` again), `· name it, then draft · reject drops it` on a
-new test's stub from `begin` (`▸ test_your_name · assert, then draft · reject drops it` once you
-named it and it was tested), `▸ test_handle · assert, then draft · reject drops it` on a stub
-from `stub` (named already), `▸ test_boundary_party_seats · assert, then draft · reject drops it`
-on a survivor's stub, `red ✓ accept · the fix is drafted next` on a new test red at its
-assertion, `· stub a test or waive`, `✓ accept`.
+new test's stub from `begin` (`▸ test_your_name · draft · reject drops it` once you
+named it and it was tested), `▸ test_handle · draft · reject drops it` on a stub
+from `stub` (named already), `drafting…` on a survivor's stub (drafted at once; with no model,
+`▸ test_boundary_party_seats · draft · reject drops it`), `red ✓ accept · go make it pass` on a
+new test red at its assertion, `· stub a test or waive`, `✓ accept`.
 
 | move | key | when | what it does |
 |---|---|---|---|
@@ -96,9 +99,12 @@ magic circle is open in this file: accept or reject it first`).
 
 The person's part of each circle is the part that cannot be delegated:
 
-- **A test's name and assertion.** The model drafts only the arrangement between them, and a
-  test draft must fail *at the assertion* before any code exists: one that errors in its setup,
-  or passes already, is a failed draft. A new test's circle is green when its test is red there.
+- **A test's name, and its assertion confirmed.** The name is the spec: the model drafts the
+  arrangement and, left `assert ...`, the assertion from the name, and the cursor lands on that
+  assertion for you to confirm or edit. A test draft must fail *at the assertion* (its first
+  assert line to the test's end) before any code exists: one that errors in its setup, or passes
+  already (`it does not test the new behaviour`), is a failed draft. A new test's circle is green
+  when its test is red there.
 - **Reading a draft.** The drafts stance asks the model for the least code that passes, so a
   constant (`return Ok(None)`) is a correct draft for one test. Every generalisation needs a test
   that asks for it.
@@ -143,9 +149,11 @@ def test_boundary_party_seats() -> None:
     assert ...
 ```
 
-Keep the name or type over it (the HUD follows the name you type once it is tested), write the
-assertion (`Tab` walks them), then `:DurandalCircle draft` in the test file.
-The arrangement is drafted and verified both ways: the new test, and every test that passed
+With a model, the stub is drafted at once while the editor shows it: its arrangement and its
+assertion (from the name and the mutant), landing in place of the stub's body. Typed over
+meanwhile (another name, your own assertion), your text stands and is tested; `draft` again
+for the model's. With no model, keep the name or type over it (the HUD follows the name you
+type once it is tested), write the test, and the circle tests it. Drafted, it is verified both ways: the new test, and every test that passed
 before, must pass on your code, and the new test must fail with the mutant in place (a sibling
 test that was red before is passed over). `accept` the test, and the code's circle is judged again without that survivor.
 
@@ -271,8 +279,8 @@ whose module is gone runs itself.
   exist, the cursor on no function. Put it in the function to have its test's stub opened, or
   write the test where the message says, then begin on it.
 - **`name the new test first`** — `draft` on a new test's stub (from `begin`) whose name is still
-  the stub's (`test_name`): type it (and the assertion), then draft. A stub for a survivor is
-  named already.
+  the stub's (`test_name`): type it, then draft (the assertion is drafted from it). A stub for
+  a survivor is named already.
 - **`the magic circle moved on`** — a draft, a test or a judge finished after you rejected or
   accepted the circle, or after another move (a later edit's test): nothing lands, and the step log says
   `stale:` before what it would have been.

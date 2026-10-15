@@ -2325,13 +2325,14 @@ machine served by the server. The person's "magic circle" is a `Block` internall
 - **`Block`** is the machine: `step move block` is `Left why` (one sentence for the person) or
   the block after the move; `open` lists the moves a state allows and `hud` writes its line (ending on the person's next
   step: `· draft`, `· name it, then draft · reject drops it` on a begin's test stub not yet named
-  and `· assert, then draft · reject drops it` on a named one or a survivor's (until a model
-  drafts), none after a model's failed draft, `red ✓ accept · the fix is drafted next` on a new
+  and `· draft · reject drops it` on a named one or a survivor's (until a model
+  drafts), none after a model's failed draft, `red ✓ accept · go make it pass` on a new
   test red at its assertion, `· stub a test or waive`; another draft is `draft`, never `next`); `killTarget` is the survivor a kill takes (the cursor
   line's, or the first unwaived in the stored order; the person's `stub` on a survivor is `kill` internally).
   A property spec pins that `Accepted` is reachable only through a `Judged` whose survivors are
   all waived. `Block/Draft` turns a span into a template with one `block` hole (or a test's
-  placeholder into a `stmt` hole), with the instruction from the test's name, its assertions and
+  placeholder into a `stmt` hole, and its assertion into another while it is still the stub's
+  `assert ...`, worded from the test's name and a kill's mutant), with the instruction from the test's name, its assertions and
   why it fails; `stubNameFor` names a kill's stub from its mutant (a string's words, else the
   operator and the mutated line's names, unique in the test file: `uniqueTestName`, which names a
   function's stub `test_<function>` too).
