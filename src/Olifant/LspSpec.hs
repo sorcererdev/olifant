@@ -1012,6 +1012,42 @@ blockSpec = describe "olifant/block" $ do
         again `shouldSatisfy` either (const False) (const True)
         steps <- TIO.readFile (dir </> ".olifant/state/steps.log")
         steps `shouldSatisfy` ("\treject\tperson\tthe stub was deleted" `T.isInfixOf`)
+  it "(h) a survivor's stub with a model: the kill answers its snippet and pushes the test block drafting; the editor expands it; the draft comes back through workspace/applyEdit" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          fills = tmp </> "fills.toml"
+          pushedTo u = pushed >>= \v -> if lookupKey "uri" v == Just (toJSON u) then pure v else pushedTo u
+          applyEdit = message SMethod_WorkspaceApplyEdit <|> (anyMessage >> applyEdit)
+          -- as vim.snippet.expand leaves it: each tab stop its text
+          expanded body =
+            let (before, stop) = T.breakOn "${1:" (T.replace "${2:...}" "..." body)
+                rest = T.drop 4 stop
+             in before <> T.takeWhile (/= '}') rest <> T.drop 1 (T.dropWhile (/= '}') rest)
+      BSL.writeFile script redScript
+      TIO.writeFile fills "[fills]\narrange = \"result = 1\"\nassertion = \"assert result == 1\"\n"
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        original <- TIO.readFile (dir </> testRel)
+        ((drafting, texts), _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("fills", String (T.pack fills))] ports dir $ do
+          doc <- openDoc testRel "python"
+          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          liftIO (TIO.writeFile script "{}")
+          Right _ <- move "test" (onDoc doc [])
+          Right killed <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
+          let Just (Number at') = lookupKey "line" =<< lookupKey "snippet" killed
+              Just (String body) = lookupKey "body" =<< lookupKey "snippet" killed
+              Just at'' = toBoundedInteger at' :: Maybe Int
+              ls = T.splitOn "\n" original
+              stubbed = T.intercalate "\n" (take (at'' - 1) ls ++ [expanded body] ++ drop at'' ls) <> "\n"
+          drafting <- pushedTo (doc ^. L.uri)
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument stubbed))]
+          TRequestMessage _ _ _ params <- applyEdit
+          let edit = params ^. L.edit
+              toEither = \case InL x -> Left x; InR y -> Right y
+          pure (drafting, [either (^. L.newText) (^. L.newText) (toEither t) | Just cs <- [edit ^. L.documentChanges], InL te <- cs, t <- te ^. L.edits])
+        (lookupKey "state" =<< lookupKey "block" drafting) `shouldBe` Just (String "drafting")
+        T.concat texts `shouldSatisfy` ("result = 1" `T.isInfixOf`)
+        T.concat texts `shouldSatisfy` ("assert result == 1" `T.isInfixOf`)
   it "(s) olifant/block/stub in a function with no circle answers its new test's stub, named test_<fn>, and the test block; outside a function, the sentence" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"

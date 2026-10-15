@@ -572,6 +572,33 @@ blockSpecs = describe "blocks" $ do
     either id (const "landed") landed `shouldBe` "the stub was not expanded in the editor; draft when it is"
     Just (back, _) <- blockFor testFile s
     blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
+  it "(h) a survivor's stub's draft the editor refuses (applyEdit not applied): red, the person's text stands" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    Right (drafted, [_]) <- later ignore
+    let editor = T.dropEnd 1 (editorStub at body testText)
+    (_, Right refused) <- blockUnapplied testFile (blockId drafted) (openDoc testFile 1 editor s)
+    blockState refused `shouldBe` Red (Failure Nothing "the editor refused the edit" "")
+    map draftOutcome (blockDrafts refused) `shouldBe` ["red: the editor refused the edit"]
+    blockOn refused `shouldBe` editor
+    blockAssertion refused `shouldBe` Nothing
+    -- another circle's number: nothing
+    (_, other) <- blockUnapplied testFile (blockId drafted + 1) s
+    either id (const "moved") other `shouldBe` "the magic circle moved on"
+  it "(h) a survivor's stub's draft cancelled once answered: back at the stub, red, logged" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, _, _, Just _)) <- blockKill (root </> moduleRel) 6 s
+    (_, Right back) <- blockDraftStopped "cancelled" testFile s
+    blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
+    blockDrafts back `shouldBe` []
+    steps s >>= (`shouldSatisfy` ("block 2\tdrafting\tperson\tno draft: cancelled" `T.isInfixOf`))
+    -- a block not drafting is left as it is
+    (_, again) <- blockDraftStopped "cancelled" testFile s
+    either id (const "stopped") again `shouldBe` "no draft is in flight"
   it "(h) a survivor's stub typed over while it drafts: the person's text stands, tested; with no model, the stub waits for draft" $ do
     (s0, _) <- blocksOn killedBy []
     live <- newIORef Nothing

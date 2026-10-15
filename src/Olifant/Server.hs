@@ -70,6 +70,8 @@ module Olifant.Server
   , blockKill
   , Killed
   , StubDraft
+  , blockUnapplied
+  , blockDraftStopped
   , blockStub
   , Stubbed (..)
   , blockWaive
@@ -90,7 +92,7 @@ module Olifant.Server
 
 import Olifant.Server.BlockDecide (orderSurvivors)
 import Olifant.Server.BlockMoves (Killed, Stubbed (..), blockChanged, blockEdited, blockKill, blockStub, blockWaive)
-import Olifant.Server.Block (StubDraft, appendStep, blockAccept, blockBegin, blockDraft, blockStart, blockFor, blockJson, blockJudge, blockReject, blockTest, stateName, underTest)
+import Olifant.Server.Block (StubDraft, appendStep, blockDraftStopped, blockUnapplied, blockAccept, blockBegin, blockDraft, blockStart, blockFor, blockJson, blockJudge, blockReject, blockTest, stateName, underTest)
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress)
 import Olifant.Server.Holes (Hole (..), fillHoleEdits, fillHolePlan, holeAt, holesFor)
 import Olifant.Server.Regions (regionEdits)

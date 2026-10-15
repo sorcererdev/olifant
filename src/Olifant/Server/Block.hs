@@ -10,6 +10,8 @@ module Olifant.Server.Block
   , blockDraft
   , StubDraft
   , draftStub
+  , blockUnapplied
+  , blockDraftStopped
   , blockTest
   , blockJudge
   , blockAccept
@@ -352,6 +354,29 @@ draftOrRestore progress s root project lang b drafting killed filler stubbed =
     Left why -> do
       settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
       pure (Left why)
+
+-- | The editor refused the edit of block NUMBER's latest draft (a
+-- survivor's stub's, sent with no request asking): that draft is red for
+-- it, and the file as the editor has it stands.
+blockUnapplied :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text Block)
+blockUnapplied path number = withBlock path $ \s root project _ b killed ->
+  if blockId b /= number
+    then pure (Left "the magic circle moved on")
+    else do
+      now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
+      modifyIORef' (ssBlockSeen s) (M.insert (blockFile b) now)
+      settleOn s root killed "draft" "red: the editor refused the edit" (Just now) (Unapplied "the editor refused the edit") b
+
+-- | A draft in flight stopped from outside it (WHY: its progress was
+-- cancelled once its stub was answered): the block back in the state it
+-- began from, as a draft that fails puts it.
+blockDraftStopped :: Text -> FilePath -> ServerState -> IO (ServerState, Either Text Block)
+blockDraftStopped why path = withBlock path $ \s root project lang b killed -> case blockState b of
+  Drafting _ ->
+    settle s root killed "drafting" ("no draft: " <> why) DraftFailed b >>= \case
+      Right back -> restored s root project lang killed back >> (maybe (Right back) (Right . fst) . M.lookup (blockFile b) <$> readIORef (ssBlocks s))
+      Left moved -> pure (Left moved)
+  _ -> pure (Left "no draft is in flight")
 
 -- | A failed draft put its block's state back: pushed, or, when the file
 -- as the editor has it now is no longer the text that state was

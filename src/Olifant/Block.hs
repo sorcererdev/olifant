@@ -96,6 +96,8 @@ data Move
   | Edited (Int, Int) (Either Failure ())
   | -- | the latest draft, as the editor applied it, tested: no draft of the person's
     Applied (Int, Int) (Either Failure ())
+  | -- | the editor refused the latest draft's edit (the reason): its draft is red for it
+    Unapplied Text
   | CannotRun Text
   | Judge [Mutant]
   | -- | a judged block judged again (its test file gained a test): green until it is
@@ -125,6 +127,9 @@ step mv b
       (Drafted text by outcome, s) | drafting s || s == Green || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
       (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b {blockAssertion = Nothing}))
       (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
+      (Unapplied why, _)
+        | d : rest <- reverse (blockDrafts b), draftBy d /= "you" ->
+            Right b {blockState = Red (Failure Nothing why ""), blockDrafts = reverse (d {draftOutcome = "red: " <> why} : rest), blockAssertion = Nothing}
       (Rejudge, Judged _) -> Right b {blockState = Green}
       (CannotRun why, _) -> Right b {blockState = Broken why, blockRedAt = Nothing}
       (Judge ms, Green) -> Right b {blockState = Judged ms}
@@ -166,6 +171,7 @@ moveName = \case
   Drafted {} -> "draft"
   Edited {} -> "edit"
   Applied {} -> "test"
+  Unapplied _ -> "draft"
   Rejudge -> "rejudge"
   CannotRun _ -> "test"
   Judge _ -> "judge"

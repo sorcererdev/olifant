@@ -9,7 +9,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
+import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO, try)
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
 import Olifant.Generator (GeneratorId (..))
@@ -551,11 +551,11 @@ handlers env =
     , blockRequest env (Proxy :: Proxy "olifant/block/reject") $ \job path _ -> liftIO (finished (withSnapshot job (blockReject path)))
     , blockRequest env (Proxy :: Proxy "olifant/block/kill") $ \job path params -> case lineOf params of
         Nothing -> pure (Left "olifant/block/kill needs a line")
-        Just line -> stubbed job (withSnapshot job (blockKill path line)) Left
+        Just line -> stubAnswer job (withSnapshot job (blockKill path line)) Left
     , -- the editor's stub: a survivor's kill, or a function's new test
       blockRequest env (Proxy :: Proxy "olifant/block/stub") $ \job path params -> case lineOf params of
         Nothing -> pure (Left "olifant/block/stub needs a line")
-        Just line -> stubbed job (withSnapshot job (blockStub path line)) $ \case
+        Just line -> stubAnswer job (withSnapshot job (blockStub path line)) $ \case
           StubKilled k -> Left k
           StubOpened tb stub -> Right (tb, stub)
     , blockRequest env (Proxy :: Proxy "olifant/block/waive") $ \job path params -> case (lineOf params, reasonOf params) of
@@ -615,15 +615,15 @@ moved run answer =
 -- once answered, the draft runs and its edits come through applyEdit,
 -- the block pushed), or a function's new test's (the test block answers,
 -- its stub expanded after the edits: its import).
-stubbed :: Env -> IO (Either T.Text a) -> (a -> Either Killed (Block, (FilePath, Int, T.Text, [FileEdit]))) -> LspM () Moved
-stubbed job run which =
+stubAnswer :: Env -> IO (Either T.Text a) -> (a -> Either Killed (Block, (FilePath, Int, T.Text, [FileEdit]))) -> LspM () Moved
+stubAnswer job run which =
   liftIO $
     run >>= \case
       Left why -> pure (Left why)
       Right a -> case which a of
         Left (b, testFile, at, body, later) -> do
           test <- withSnapshot job (\s -> (s,) <$> blockFor testFile s)
-          pure (Right (BlockAnswer (Right b) [snippet testFile at body] (maybe (pure ()) (stubDrafted job) later), b : [tb | Just (tb, _) <- [test]]))
+          pure (Right (BlockAnswer (Right b) [snippet testFile at body] (maybe (pure ()) (stubDrafted job testFile) later), b : [tb | Just (tb, _) <- [test]]))
         Right (tb, (f, at, body, edits)) -> pure (Right (BlockAnswer (Right tb) (snippet f at body : editsField edits) (pure ()), [tb]))
   where
     snippet f at body = "snippet" .= object ["file" .= f, "line" .= at, "body" .= body]
@@ -631,15 +631,25 @@ stubbed job run which =
 -- | A survivor's stub's draft, under progress: its edits applied
 -- (applyEdit: no request asked for them), the block pushed; nothing
 -- landed: why, shown.
-stubDrafted :: Env -> StubDraft -> LspM () ()
-stubDrafted job later =
-  planProgress "drafting" later >>= \case
-    Right (b, edits) -> do
+stubDrafted :: Env -> FilePath -> StubDraft -> LspM () ()
+stubDrafted job testFile later = do
+  lspEnv <- getLspEnv
+  -- the request is answered: a cancelled progress stops the draft here
+  -- (no second answer), the block back at its stub
+  ran <- liftIO (try (runLspT lspEnv (planProgress "drafting" later)))
+  killedOf <- liftIO (killedCounts job)
+  let push b = pushBlock (blockFile b) (Just (b, killedOf b))
+  case ran of
+    Left (_ :: Lsp.ProgressCancelledException) ->
+      liftIO (withSnapshot job (blockDraftStopped "cancelled" testFile)) >>= either (const (pure ())) push
+    Right (Right (b, edits)) -> do
       unless (null edits) $
-        void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: draft") (workspaceEdit edits)) (\_ -> pure ()))
-      killedOf <- liftIO (killedCounts job)
-      pushBlock (blockFile b) (Just (b, killedOf b))
-    Left why -> sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info ("Olifant: " <> why))
+        void . sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: draft") (workspaceEdit edits)) $ \case
+          -- refused (the buffer moved on): the person's text stands, the draft red for it
+          Right r | not (r ^. L.applied) -> liftIO (withSnapshot job (blockUnapplied testFile (blockId b))) >>= either (const (pure ())) push
+          _ -> pure ()
+      push b
+    Right (Left why) -> sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info ("Olifant: " <> why))
 
 -- | Draft (the editor's move; `next`, its older name, too): under progress (the model writes), with its edits.
 drafted :: Env -> FilePath -> LspM () Moved
