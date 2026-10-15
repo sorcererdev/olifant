@@ -2391,11 +2391,12 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   four at a time.
 - **`blockDraftAt`** is `draft` at a cursor: the file's circle (`blockDraft`), or, with none, on
   a red test, an `ExistingTest` block (the third `Kind`: the code is right, the test is drafted)
-  on the test's lines (`testAt`: a method's id names its class), keeping the file's other passing
+  on the test's lines (`testAt`: a method's id names its class; afterwards the circle finds its
+  test by its span's first line, its def, else by class and name, `defLineOf`, never by name alone), keeping the file's other passing
   tests and claiming its module too; a test `existingParts` cannot shape (no assert line, a def
   over several lines) is refused before anything opens. It drafts at once: `existingTestTemplate`
   makes the arrangement (from the def, or a leading docstring, to the body's statement holding
-  the first assert, a `with` around it the assertion's) a `stmt` hole, the assertion left as it is, verified by `VerifyKeep`
+  the first assert outside any bracket, a `with` around it, bracketed or not, the assertion's) a `stmt` hole, the assertion left as it is, verified by `VerifyKeep`
   as a code block's draft is, the test as it was in its context; a red `draftRedOn` runs again
   for the runner's line, and red at the assertion (`redAtTheAssertion`) sets
   `blockAtAssertion`, so the next `draft` turns the kind to `ExistingTest True` and drafts the

@@ -350,7 +350,7 @@ blockDraftAt progress path line s0 =
           text <- maybe (throwE noCircle) pure (siteTestText site)
           (name, sp) <- except (testAt line text)
           -- a test the draft cannot shape is refused before a circle opens
-          _ <- except (existingParts (testName name) text)
+          _ <- except (existingParts (fst sp) text)
           filler <- lift (fillerFor True s project) >>= either throwE (maybe (throwE noModel) pure)
           lift (progress (Verifying (T.pack testRel)))
           run <- ExceptT (runOver s (prWorkspace project) lang [T.pack testRel])
@@ -516,7 +516,7 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
           why = case blockState b of
             Red f | not (T.null (fMessage f)) -> fMessage f
             _ -> "the person asked for another draft"
-      (d, kept, (a, z)) <- except (existingParts name text)
+      (d, kept, _, (a, z)) <- except (partsOf b text)
       template <- except (existingTestTemplate text name kept (a, z) why both)
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
@@ -571,14 +571,14 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
         Code -> changed
         TestFor _ -> (min (fst changed) (fst (blockSpan b)), max (snd changed) (snd (blockSpan b) + grown))
         -- an existing test's: its lines as the draft left them
-        ExistingTest _ -> fromMaybe (blockSpan b) (testSpanIn (testName (blockTestId b)) shown)
+        ExistingTest _ -> maybe (blockSpan b) (`testLinesFrom` shown) (defLineOf b shown)
       -- an unwritten draft leaves the span where it was
       sp = maybe (l1, l2) (const (blockSpan b)) unwritten
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" shown)))
       -- a drafted assertion: its line, for the editor's cursor
       assertionAt = case blockKind b of
         TestFor _ | isNothing unwritten, Right (_, newTest, _, True) <- testDraftParts lang b text -> fst <$> assertionSpan (testName newTest) planned
-        ExistingTest True | isNothing unwritten -> fst <$> assertionSpan (testName (blockTestId b)) planned
+        ExistingTest True | isNothing unwritten, Right (_, _, a, _) <- partsOf b planned -> Just a
         _ -> Nothing
       atAssertion = case outcome of
         Left (Nothing, f) -> redAtTheAssertion b shown f
@@ -838,7 +838,7 @@ testNow s root project lang b killed applied = do
           new = S.filter (maybe False ownLine . (`M.lookup` numbered)) (newLinesOf (blockBase b) now)
           sp = case blockKind b of
             -- an existing test's: its lines now
-            ExistingTest _ -> fromMaybe (blockSpan b) (testSpanIn (testName (blockTestId b)) now)
+            ExistingTest _ -> maybe (blockSpan b) (`testLinesFrom` now) (defLineOf b now)
             _ -> if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
           newRun = redAtAssertion b now raises run
           (move, result) = case (trBroken run, trFailed run) of
@@ -1087,8 +1087,7 @@ blockReject :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [
 blockReject path = withBlock path $ \s root project _ b killed -> do
   now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
   let version = fst <$> M.lookup (blockFile b) (ssDocs s)
-      name = testName (blockTestId b)
-      back = case (blockKind b, testSpanIn name (blockBase b), testSpanIn name now) of
+      back = case (blockKind b, (`testLinesFrom` blockBase b) <$> defLineBy (blockTestId b) (blockBase b), (`testLinesFrom` now) <$> defLineOf b now) of
         (ExistingTest _, Just (b1, b2), Just (n1, n2)) ->
           let (bs, ns) = (T.splitOn "\n" (blockBase b), T.splitOn "\n" now)
            in T.intercalate "\n" (take (n1 - 1) ns ++ take (b2 - b1 + 1) (drop (b1 - 1) bs) ++ drop n2 ns)
@@ -1265,53 +1264,105 @@ isDrafting = \case
 newTests :: Block -> Text -> [TestId]
 newTests b now = [fileOf (blockTestId b) <> "::" <> n | n <- testNames now, n `notElem` testNames (blockBase b)]
 
--- | The test a cursor (1-based line) is in, in a test file: its name and
--- its lines (its def to its last line).
+-- | The test a cursor (1-based line) is in, in a test file: its name (a
+-- method's after its class, `TestA::test_x`) and its lines (its def to
+-- its last line).
 testAt :: Int -> Text -> Either Text (Text, (Int, Int))
 testAt line text = case defLineAbove line text of
   Just (d, n)
-    | "test" `T.isPrefixOf` n, not (":" `T.isSuffixOf` T.strip (lineAt d)) -> Left manyLinedDef
-    | "test" `T.isPrefixOf` n, sp@(_, z) <- testLinesFrom d text, line <= z -> Right (maybe n (<> "::" <> n) (classOf d), sp)
+    | "test" `T.isPrefixOf` n, not (defEnds (lineIn text d)) -> Left manyLinedDef
+    | "test" `T.isPrefixOf` n, sp@(_, z) <- testLinesFrom d text, line <= z -> Right (maybe n (<> "::" <> n) (classOf text d), sp)
   _ -> Left "put the cursor in a test to draft it"
+
+-- | A line (1-based) of a text, or empty.
+lineIn :: Text -> Int -> Text
+lineIn text i = fromMaybe "" (listToMaybe (drop (i - 1) (T.splitOn "\n" text)))
+
+-- | A def's class in a text: the line its def (line D) is indented under,
+-- when that is a class.
+classOf :: Text -> Int -> Maybe Text
+classOf text d
+  | indentOf (lineIn text d) == 0 = Nothing
+  | otherwise = case [l | l <- reverse (take (d - 1) (T.splitOn "\n" text)), not (T.null (T.strip l)), indentOf l < indentOf (lineIn text d)] of
+      l : _ | Just c <- T.stripPrefix "class " (T.strip l) -> Just (T.takeWhile ident c)
+      _ -> Nothing
   where
-    ls = T.splitOn "\n" text
-    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
     indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
-    -- a method's class: the line it is indented under
-    classOf d
-      | indentOf (lineAt d) == 0 = Nothing
-      | otherwise = case [l | l <- reverse (take (d - 1) ls), not (T.null (T.strip l)), indentOf l < indentOf (lineAt d)] of
-          l : _ | Just c <- T.stripPrefix "class " (T.strip l) -> Just (T.takeWhile ident c)
-          _ -> Nothing
+
+-- | Whether a def line ends its signature: its last character a `:`, a
+-- trailing comment aside.
+defEnds :: Text -> Bool
+defEnds l = ":" `T.isSuffixOf` T.strip (T.takeWhile (/= '#') l)
 
 -- | Why a test whose def is over several lines is not drafted.
 manyLinedDef :: Text
 manyLinedDef = "this test's def spans several lines: edit it by hand"
 
--- | An existing test's parts as its draft needs them, in a file's TEXT:
--- its def line, the last line kept above its arrangement (the def, or a
--- leading docstring's end: the test's intent), and its assertion: from
--- the statement of its body (at the body's indentation) that holds its
--- first assert (a `with` or `for` around it included) to its last line.
--- Or why it cannot be drafted.
-existingParts :: Text -> Text -> Either Text (Int, Int, (Int, Int))
-existingParts name text = do
-  (d, _) <- maybe (Left noAssertLine) Right (testSpanIn name text)
-  unless (":" `T.isSuffixOf` T.strip (lineAt d)) (Left manyLinedDef)
-  (a, z) <- maybe (Left noAssertLine) Right (assertionSpan name text)
+-- | An existing test's def line in TEXT: its span's first line while that
+-- is still its def (the source of truth: a draft only writes below it),
+-- else the def of its id's class and name ('defLineBy').
+defLineOf :: Block -> Text -> Maybe Int
+defLineOf b text
+  | defName (lineIn text d) == Just n, classOf text d == cls = Just d
+  | otherwise = defLineBy (blockTestId b) text
+  where
+    d = fst (blockSpan b)
+    (cls, n) = idParts (blockTestId b)
+
+-- | The def line of a test in TEXT, by its id's class and name.
+defLineBy :: TestId -> Text -> Maybe Int
+defLineBy tid text = listToMaybe [i | (i, l) <- zip [1 ..] (T.splitOn "\n" text), defName l == Just n, classOf text i == cls]
+  where
+    (cls, n) = idParts tid
+
+-- | A test id's class (`file::Class::name`), if any, and its name.
+idParts :: TestId -> (Maybe Text, Text)
+idParts tid = case reverse (T.splitOn "::" tid) of
+  n : c : _ : _ -> (Just c, n)
+  n : _ -> (Nothing, n)
+  [] -> (Nothing, tid)
+
+-- | An existing test's parts as its draft needs them, the test's def on
+-- line D of a file's TEXT: the last line kept above its arrangement (the
+-- def, or a leading docstring's end: the test's intent), its first assert
+-- line, and its assertion: from the statement of its body (at the body's
+-- indentation, outside any bracket) that holds that assert (a `with` or
+-- `for` around it included) to its last line. Or why it cannot be drafted.
+existingParts :: Int -> Text -> Either Text (Int, Int, (Int, Int))
+existingParts d text = do
+  unless (defEnds (lineAt d)) (Left manyLinedDef)
+  let (_, z) = testLinesFrom d text
+  a <- maybe (Left noAssertLine) Right (listToMaybe [i | i <- [d + 1 .. z], isAssert (lineAt i)])
   let filled = [i | i <- [d + 1 .. a], not (T.null (T.strip (lineAt i)))]
       bodyIndent = maybe 0 (indentOf . lineAt) (listToMaybe filled)
-      start = last (a : [i | i <- filled, indentOf (lineAt i) <= bodyIndent])
+      -- the bracket depth each line of the body begins at
+      depths = M.fromList (zip [d + 1 .. a] (scanl (+) 0 (map (depthOf . lineAt) [d + 1 .. a])))
+      start = last (a : [i | i <- filled, indentOf (lineAt i) <= bodyIndent, M.lookup i depths == Just 0])
       kept = case filled of
         i : _ | i < start, Just q <- docQuote (lineAt i) -> maybe d (\e -> if e < start then e else d) (listToMaybe [j | j <- [i .. start - 1], closes q i j])
         _ -> d
-  pure (d, kept, (start, z))
+  pure (kept, a, (start, z))
   where
-    ls = T.splitOn "\n" text
-    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+    lineAt = lineIn text
     indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+    isAssert l = let st = T.strip l in st == "assert" || any (`T.isPrefixOf` st) ["assert ", "assert("]
     -- the docstring opened on line I closes on line J
     closes q i j = T.count q (lineAt j) >= (if j == i then 2 else 1)
+    -- brackets opened less closed on a line, outside strings and a comment
+    depthOf = go Nothing 0 . T.unpack
+      where
+        go :: Maybe Char -> Int -> String -> Int
+        go _ n [] = n
+        go (Just q) n (c : cs)
+          | c == '\\' = go (Just q) n (drop 1 cs)
+          | c == q = go Nothing n cs
+          | otherwise = go (Just q) n cs
+        go Nothing n (c : cs)
+          | c == '#' = n
+          | c `elem` ['"', '\''] = go (Just c) n cs
+          | c `elem` ['(', '[', '{'] = go Nothing (n + 1) cs
+          | c `elem` [')', ']', '}'] = go Nothing (n - 1) cs
+          | otherwise = go Nothing n cs
 
 -- | A line opening a docstring: its quotes.
 docQuote :: Text -> Maybe Text
@@ -1320,10 +1371,6 @@ docQuote l = listToMaybe [q | q <- ["\"\"\"", "'''"], q `T.isPrefixOf` T.dropWhi
 -- | Why a test with no assert line is not drafted.
 noAssertLine :: Text
 noAssertLine = "this test has no assert line to draft against: edit it by hand"
-
--- | The lines of the test NAME in a test file: its def to its last line.
-testSpanIn :: Text -> Text -> Maybe (Int, Int)
-testSpanIn name text = listToMaybe [testLinesFrom i text | (i, l) <- zip [1 ..] (T.splitOn "\n" text), defName l == Just name]
 
 -- | A def's lines from its line (1-based): to the last line of its body
 -- (the lines below it deeper than it, or blank) that is not blank.
@@ -1336,12 +1383,18 @@ testLinesFrom d text = (d, d + length (reverse (dropWhile blank (reverse body)))
     def' = fromMaybe "" (listToMaybe (drop (d - 1) ls))
     body = takeWhile (\l -> blank l || indentOf l > indentOf def') (drop d ls)
 
+-- | An existing test's parts in TEXT, found by its def line ('defLineOf').
+partsOf :: Block -> Text -> Either Text (Int, Int, Int, (Int, Int))
+partsOf b text = do
+  d <- maybe (Left ("cannot find the test " <> blockTestId b)) Right (defLineOf b text)
+  (kept, a, sp) <- existingParts d text
+  pure (d, kept, a, sp)
+
 -- | Whether a run's red of an existing test's block (its own test's) is at
--- its assertion in the file's TEXT: its line at or after the test's first
--- assert line, before its end.
+-- its assertion in the file's TEXT: its line within it ('existingParts').
 redAtTheAssertion :: Block -> Text -> Failure -> Bool
-redAtTheAssertion b text f = case (blockKind b, fLine f, existingParts (testName (blockTestId b)) text) of
-  (ExistingTest _, Just l, Right (_, _, (a, z))) -> l >= a && l <= z
+redAtTheAssertion b text f = case (blockKind b, fLine f, partsOf b text) of
+  (ExistingTest _, Just l, Right (_, _, _, (a, z))) -> l >= a && l <= z
   _ -> False
 
 -- | The tests a test file defines (`def test…(`).

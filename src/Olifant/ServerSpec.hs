@@ -383,7 +383,7 @@ blockSpecs = describe "blocks" $ do
     let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at body (applyEdits imports testText))
     (_, Just tested) <- blockChanged testFile (openDoc testFile 2 named s)
     blockState tested `shouldBe` Judged []
-  it "(I5) a survivor's stub is still verified by its mutant: a test that passes on the code and not on the mutant stands, one that passes on both does not" $ do
+  it "(I5) a survivor's stub is still verified by its mutant: a test that passes on the code and on the mutant does not stand" $ do
     (n0, _) <- blocksOn (\files -> if "seats >= 2" `T.isInfixOf` M.findWithDefault "" moduleRel files then Right (TestRun [testId] [] Nothing) else killedBy files) []
     let n = (openDoc (root </> moduleRel) 1 written n0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 n
@@ -597,6 +597,35 @@ blockSpecs = describe "blocks" $ do
       blockState drafted `shouldBe` Green
       map (map fst) <$> readIORef asked `shouldReturn` [["arrange"]]
       drop 8 (linesOf (applyChange (feRange edit) (feText edit) given)) `shouldBe` ["def test_wrong_party() -> None:", "    table = CloseTable()", "    with pytest.raises(ValueError):", "        assert table.handle(1) == 0", ""]
+    it "two classes with a test method of one name: the circle on the second drafts, tests and restores the second, never the first" $ do
+      let first = T.unlines ["", "", "class TestA:", "    def test_wrong_party(self) -> None:", "        table = CloseTable()", "        assert table.handle(4) == 1"]
+          given = testText <> first <> T.unlines ["", "", "class TestParty:", "    def test_wrong_party(self) -> None:", "        table = CloseTable(9)", "        assert table.handle(1) == 5"]
+          firstLines = take 6 (drop 6 (linesOf given))
+      (s, _) <- circle given [[("arrange", "table = CloseTable()")], [("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(1) == 0")]]
+      (_, Right (once, [edit])) <- blockDraftAt ignore testFile 17 s
+      (blockTestId once, blockSpan once) `shouldBe` (methodId, (16, 18))
+      hud once `shouldSatisfy` ("red at the assertion" `T.isInfixOf`)
+      let drafted = applyChange (feRange edit) (feText edit) given
+      take 6 (drop 6 (linesOf drafted)) `shouldBe` firstLines
+      drop 15 (linesOf drafted) `shouldBe` ["    def test_wrong_party(self) -> None:", "        table = CloseTable()", "        assert table.handle(1) == 5", ""]
+      let st = openDoc testFile 2 drafted s
+      (_, Right (twice, [edit2])) <- blockDraftAt ignore testFile 17 st
+      let redrafted = applyChange (feRange edit2) (feText edit2) drafted
+      (blockState twice, blockSpan twice, blockAssertion twice) `shouldBe` (Green, (16, 18), Just 18)
+      take 6 (drop 6 (linesOf redrafted)) `shouldBe` firstLines
+      drop 17 (linesOf redrafted) `shouldBe` ["        assert table.handle(1) == 0", ""]
+      (_, Right (_, [restore])) <- blockReject testFile (openDoc testFile 3 redrafted s)
+      applyChange (feRange restore) (feText restore) redrafted `shouldBe` given
+    it "an assert inside a bracketed `with (` over several lines: the whole `with` stays with the assertion" $ do
+      let given = testText <> T.unlines ["", "", "def test_wrong_party() -> None:", "    table = CloseTable(9)", "    with (", "        pytest.raises(ValueError),", "    ):", "        assert table.handle(1) == 0"]
+      (s, _) <- circle given [[("arrange", "table = CloseTable()")]]
+      (_, Right (_, [edit])) <- blockDraftAt ignore testFile 10 s
+      drop 9 (linesOf (applyChange (feRange edit) (feText edit) given)) `shouldBe` ["    table = CloseTable()", "    with (", "        pytest.raises(ValueError),", "    ):", "        assert table.handle(1) == 0", ""]
+    it "a def line ending in a comment is one line" $ do
+      let given = testText <> T.unlines ["", "", "def test_wrong_party() -> None:  # noqa: D103", "    table = CloseTable(9)", "    assert table.handle(1) == 0"]
+      (s, _) <- circle given [[("arrange", "table = CloseTable()")]]
+      (_, drafted) <- blockDraftAt ignore testFile 10 s
+      fmap (blockState . fst) drafted `shouldBe` Right Green
     it "a test's leading docstring is its intent: it stays outside the arrangement" $ do
       let given = testText <> T.unlines ["", "", "def test_wrong_party() -> None:", "    \"\"\"A party of one sits.\"\"\"", "    table = CloseTable(9)", "    assert table.handle(1) == 0"]
       (s, _) <- circle given [[("arrange", "table = CloseTable()")]]
