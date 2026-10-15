@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, assertionSpan) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, testsFailed, assertionSpan) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -12,7 +12,7 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Char (isAlphaNum)
 import Data.Functor ((<&>))
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
@@ -136,11 +136,11 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
                 VerifyTests -> case langTest lang of
                   Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
                   Just td -> verifyTests lang [T.pack (testsForFile td (holeFile (site t)))] everything
-                VerifyIds ids -> verifyTests lang ids everything
+                VerifyKeep own keep -> verifyKeep lang own keep everything
               let failedPrefix = case verify of
                     VerifyRedAt {} -> ""
                     VerifyKills {} -> ""
-                    _ -> "the tests failed:\n"
+                    _ -> testsFailed <> "\n"
               pure $ case outcome of
                 Right (True, _) -> (t, f, Nothing)
                 Right (False, out) -> (t, f, Just (failedPrefix <> T.intercalate "\n" (lastN 40 (T.lines out))))
@@ -169,6 +169,17 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           | Just why <- trBroken run -> Right (False, why)
           | null (trFailed run) -> Right (True, "")
           | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
+
+    -- A code block's draft: its test's file runs whole; its test passes,
+    -- and each test it keeps that the run has (the failure named by its id).
+    verifyKeep lang own keep everything =
+      runTestsIn (toolTester tools) lang [fst (T.breakOn "::" own)] everything <&> \case
+        Left why -> Left (CheckFailed why)
+        Right run
+          | Just why <- trBroken run -> Right (False, why)
+          | otherwise -> case keptVerdict own keep run of
+              Right () -> Right (True, "")
+              Left (at, fl) -> Right (False, fromMaybe own at <> ": " <> fMessage fl <> "\n" <> fOutput fl)
 
     -- A test draft: the test must fail, and at its assertion: at or after
     -- its first assert line, before its end, as the fills left the file
@@ -448,6 +459,11 @@ reindented comment f = case T.lines (T.dropWhile (== '\n') f) of
 -- for Python's indentation and syntax errors), not that it does not type.
 syntaxError :: Text -> Bool
 syntaxError m = any (`T.isInfixOf` m) ["IndentationError", "SyntaxError", "Unexpected indentation", "Unindent not expected", "Unindent amount does not match", "Expected indented block"]
+
+-- | What a fill whose tests failed is unfilled for begins with (each
+-- failing test's id and message follow, the last 40 lines kept).
+testsFailed :: Text
+testsFailed = "the tests failed:"
 
 -- | The lines (1-based) where a test's assertion may fail in a test file:
 -- its first assert line to its last line (its def's body, the lines below

@@ -1077,12 +1077,14 @@ testsRunSpec = describe "olifant/tests/run" $ do
           pure (passing, failing, broken)
         let field k = either (const Nothing) (lookupKey k)
         field "file" passing `shouldBe` Just (String (T.pack (dir </> testRel)))
-        field "passed" passing `shouldBe` Just (toJSON [T.pack testRel])
+        -- each test of the file by its id, as pytest reports them
+        let ids = \case Just (Aeson.Array xs) -> [t | String t <- toList xs]; _ -> []
+        ids (field "passed" passing) `shouldSatisfy` \ps -> length ps == 4 && red `elem` ps && all ((T.pack testRel <> "::") `T.isPrefixOf`) ps
         field "failed" passing `shouldBe` Just (toJSON ([] :: [Value]))
         field "broken" passing `shouldBe` Just Aeson.Null
         field "seconds" passing `shouldSatisfy` \case Just (Number _) -> True; _ -> False
         field "failed" failing `shouldBe` Just (toJSON [object ["id" .= red, "line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text), "output" .= ("" :: Text)]])
-        field "passed" failing `shouldBe` Just (toJSON ([] :: [Text]))
+        ids (field "passed" failing) `shouldBe` filter (/= red) (ids (field "passed" passing))
         field "broken" broken `shouldSatisfy` \case Just (String why) -> "the test script does not read" `T.isPrefixOf` why; _ -> False
   it "runs under $/progress titled testing" $
     withSystemTempDirectory "olifant-tests" $ \tmp -> do
@@ -1125,6 +1127,15 @@ testsRunSpec = describe "olifant/tests/run" $ do
     withPython [("src/bistro/lonely.py", "def alone() -> int:\n    return 1\n")] $ \ports dir -> do
       (answer, _) <- inProcessWithConfig [] ports dir (openDoc "src/bistro/lonely.py" "python" >>= run)
       answer `shouldBe` Left "no test file for this module yet: src/bistro/lonely__test.py"
+  it "olifant/tests/file answers a module's test file, and a test file's module, as JSON" $
+    withPython [] $ \ports dir -> do
+      ((toTest, toModule), _) <- inProcessWithConfig [] ports dir $ do
+        let jump doc = blockMove (Proxy :: Proxy "olifant/tests/file") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]])
+        toTest <- openDoc moduleRel "python" >>= jump
+        toModule <- openDoc testRel "python" >>= jump
+        pure (toTest, toModule)
+      toTest `shouldBe` Right (object ["file" .= (dir </> testRel), "kind" .= ("test" :: Text), "exists" .= True])
+      toModule `shouldBe` Right (object ["file" .= (dir </> moduleRel), "kind" .= ("module" :: Text), "exists" .= True])
 
 -- | An `olifant/block/<move>` request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)

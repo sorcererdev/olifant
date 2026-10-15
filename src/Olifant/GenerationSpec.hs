@@ -857,13 +857,15 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       -- the mutant fails only the sibling: not noticed
       st' <- outcome (VerifyKills "f" ["t"] ["t"] "src/M.elm" "mutant") (Runner (\_ _ files -> pure (Right (TestRun ["t" | True] ([("u", red (Just 9))] ++ [("u2", red (Just 9)) | "mutant" `T.isInfixOf` fold files]) Nothing))))
       st' `shouldSatisfy` \case [HoleUnfilled why] -> "does not notice the mutant" `T.isInfixOf` why; _ -> False
-    it "(f) VerifyIds: runs exactly the tests named (a block's one test), not the module's test file" $ do
+    it "(f) VerifyKeep: runs the block's test's file whole; its test and each kept test the run has must pass, a sibling red otherwise is passed over" $ do
       seen <- newIORef []
-      let runner = Runner (\_ ids _ -> modifyIORef' seen (++ ids) >> pure (Right (TestRun ids [] Nothing)))
-      outcome (VerifyIds ["src/V__test.elm::t"]) runner `shouldReturn` [HoleFilled "fake" 1]
-      readIORef seen `shouldReturn` ["src/V__test.elm::t"]
-      st <- outcome (VerifyIds ["t"]) (ran (TestRun [] [("t", red Nothing)] Nothing))
+      let runner = Runner (\_ ids _ -> modifyIORef' seen (++ ids) >> pure (Right (TestRun ["src/V__test.elm::t", "src/V__test.elm::k"] [("src/V__test.elm::other", red Nothing)] Nothing)))
+      outcome (VerifyKeep "src/V__test.elm::t" ["src/V__test.elm::k", "src/V__test.elm::gone"]) runner `shouldReturn` [HoleFilled "fake" 1]
+      readIORef seen `shouldReturn` ["src/V__test.elm"]
+      st <- outcome (VerifyKeep "f::t" []) (ran (TestRun [] [("f::t", red Nothing)] Nothing))
       st `shouldSatisfy` \case [HoleUnfilled why] -> "the tests failed" `T.isInfixOf` why && "AssertionError" `T.isInfixOf` why; _ -> False
+      kept <- outcome (VerifyKeep "f::t" ["f::k"]) (ran (TestRun ["f::t"] [("f::k", red Nothing)] Nothing))
+      kept `shouldSatisfy` \case [HoleUnfilled why] -> "f::k: AssertionError" `T.isInfixOf` why; _ -> False
   it "(q) a block whose continuation lines came one level too deep is read one level up, when that compiles (pack-opens)" $ do
     let blockLang = l
           where

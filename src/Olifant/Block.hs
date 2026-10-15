@@ -14,6 +14,8 @@ module Olifant.Block
     survivors,
     killTarget,
     hud,
+    outcomeOf,
+    noLongerPasses,
     pending,
     draftTemplate,
     testDraftTemplate,
@@ -36,7 +38,7 @@ import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Block.Draft (assertionInstruction, draftTemplate, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
-import Olifant.Language (Failure (..), TestId)
+import Olifant.Language (Failure (..), TestId, TestRun, keptVerdict)
 import Olifant.Mutate (Mutant (..))
 
 -- | A code block, or a test block (red at its assert; a kill also fails on the mutant).
@@ -72,6 +74,12 @@ data Block = Block
     -- its name and its def's line (1-based) in the module, where the
     -- function begins once the test is accepted
     blockSubject :: Maybe (Text, Int),
+    -- | a code block's: the tests of its test file that passed when it
+    -- began (its own test aside), and those a kill's test it accepted
+    -- added; green is its test and all of these passing
+    blockKeep :: [TestId],
+    -- | while red at a kept test (its own test passing): that test
+    blockRedAt :: Maybe TestId,
     -- | a test block's assertion as a model drafted it: its line (1-based)
     -- in the file as the draft left it, for the editor to put the cursor
     -- on (the person confirms or edits it)
@@ -97,24 +105,27 @@ data Move
   | Kill Int
   | Accept
   | Reject
+  | -- | the move inside lands red at a test the block keeps (its own test passing)
+    AtKept TestId Move
   deriving stock (Eq, Show)
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing Nothing
+  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
 step mv b
   | not (pending b) = Left "this circle is closed; begin another"
   | otherwise = case (mv, blockState b) of
+      (AtKept t inner, _) -> atKept t <$> step inner b
       (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s}
       (DraftFailed, Drafting before) -> Right b {blockState = before}
       (Drafted text by outcome, s) | drafting s || s == Green || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
       (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b))
       (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
       (Rejudge, Judged _) -> Right b {blockState = Green}
-      (CannotRun why, _) -> Right b {blockState = Broken why}
+      (CannotRun why, _) -> Right b {blockState = Broken why, blockRedAt = Nothing}
       (Judge ms, Green) -> Right b {blockState = Judged ms}
       (Waive line op reason, Judged ms)
         | any (\m -> here m && isNothing (muWaived m)) ms ->
@@ -134,7 +145,13 @@ step mv b
     drafting = \case Drafting _ -> True; _ -> False
     red = \case Red _ -> True; _ -> False
     outcomeText = either (("red: " <>) . fMessage) (const "green")
-    landed sp outcome b' = b' {blockSpan = sp, blockState = either Red (const Green) outcome}
+    landed sp outcome b' = b' {blockSpan = sp, blockState = either Red (const Green) outcome, blockRedAt = Nothing}
+    -- red at a kept test: the HUD and the draft it landed name it
+    atKept t b' = case blockState b' of
+      Red _ -> b' {blockRedAt = Just t, blockDrafts = case reverse (blockDrafts b') of
+        d : rest | "red" `T.isPrefixOf` draftOutcome d -> reverse (d {draftOutcome = "red: " <> noLongerPasses t} : rest)
+        ds -> reverse ds}
+      _ -> b'
     addDraft d b' = b' {blockDrafts = blockDrafts b' ++ [d]}
     -- editing twice is one draft: the second edit only updates its outcome
     editDraft outcome b' = case reverse (blockDrafts b') of
@@ -156,6 +173,7 @@ moveName = \case
   Kill _ -> "stub"
   Accept -> "accept"
   Reject -> "reject"
+  AtKept _ inner -> moveName inner
 
 -- | The moves open now.
 open :: Block -> [Text]
@@ -199,6 +217,7 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       | null (blockDrafts b) = ""
       | otherwise = "draft " <> T.pack (show (length (blockDrafts b))) <> " · "
     statePart = case blockState b of
+      Red _ | Just t <- blockRedAt b -> "red: " <> noLongerPasses t <> " · fix or reject"
       Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, redCue] of
         [] -> "red"
         parts -> T.intercalate " · " parts
@@ -226,6 +245,18 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       (_, TestFor Nothing) | testName == stubName || not ("::" `T.isInfixOf` blockTestId b) -> "name it, then draft · reject drops it"
       (_, TestFor _) -> "draft · reject drops it"
       _ -> "draft"
+
+-- | A code block's test file's run as the circle takes it ('keptVerdict'):
+-- its own test red is its red; else the first test it keeps that fails is
+-- (that test, and the runner's failure: its line and message); else green
+-- while its own test passed. A sibling red otherwise is passed over. (A
+-- run that could not judge is the caller's: cannot run.)
+outcomeOf :: Block -> TestRun -> Either (Maybe TestId, Failure) ()
+outcomeOf b = keptVerdict (blockTestId b) (blockKeep b)
+
+-- | A kept test's red, as the HUD names it.
+noLongerPasses :: TestId -> Text
+noLongerPasses t = snd (T.breakOnEnd "::" t) <> " no longer passes"
 
 -- | The reason a model's draft that would not parse begins with (it was
 -- never written: draft is next).
