@@ -5,7 +5,7 @@ module Olifant.LspSpec (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Applicative ((<|>))
-import Control.Monad (forM, forM_, void, when)
+import Control.Monad (forM, forM_, void, when, (<=<))
 import Data.Foldable (toList)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
@@ -985,7 +985,30 @@ blockSpec = describe "olifant/block" $ do
         lookupKey "uri" push `shouldBe` Just (toJSON (filePathToUri (dir </> moduleRel)))
         (lookupKey "state" =<< lookupKey "block" push) `shouldBe` Just (String "red")
         (lookupKey "state" =<< blockOf tested) `shouldBe` Just (String "judged")
+        (lookupKey "failure" =<< blockOf tested) `shouldBe` Nothing
         refused `shouldSatisfy` either ("survivor(s): stub a test or waive each, then accept" `T.isInfixOf`) (const False)
+  it "(f2) a red block carries its failure: the test file, the line, the runner's message and the test — its own, or a kept test that no longer passes" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          kept = T.pack testRel <> "::test_books_a_free_slot"
+      BSL.writeFile script redScript
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        ((begun, push, keptRed), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc testRel "python"
+          begun <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          push <- pushed
+          -- its own test passes now, but a test that passed when it began fails
+          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText kept .= object ["line" .= (34 :: Int), "message" .= ("assert result == Ok(...)" :: Text)]])))
+          keptRed <- move "test" (onDoc doc [])
+          pure (begun, push, keptRed)
+        let failureOf = lookupKey "failure" <=< lookupKey "block"
+            failure test l message = Just (object ["file" .= (dir </> testRel), "line" .= (l :: Int), "message" .= (message :: Text), "test" .= (test :: Text)])
+            answered = either (const Nothing) Just
+        failureOf push `shouldBe` failure red 47 "assert isinstance(result, PartyTooLarge)"
+        (failureOf =<< answered begun) `shouldBe` failure red 47 "assert isinstance(result, PartyTooLarge)"
+        ((lookupKey "hud" <=< lookupKey "block") =<< answered keptRed) `shouldSatisfy` maybe False (\case String h -> "no longer passes" `T.isInfixOf` h; _ -> False)
+        (failureOf =<< answered keptRed) `shouldBe` failure kept 34 "assert result == Ok(...)"
   it "(h3) a stub deleted in the editor closes its circle: olifant/block pushes no block for the test file, and the module stubs again" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"
