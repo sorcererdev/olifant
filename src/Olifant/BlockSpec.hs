@@ -153,6 +153,11 @@ spec = describe "Olifant.Block" $ do
     hud (step' (Drafted "    table = Table()" "qwen" (Left red)) (step' StartDraft stub)) `shouldBe` "▸ test_handle · draft 1 · red: AssertionError: assert None == Ok(None)"
     let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py::test_boundary_line2" (Failure Nothing "" "")
     hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft killed))) `shouldBe` "▸ test_boundary_line2 · draft 1 · clean ✓ accept"
+  it "(h4) a new test that passes on the code as it is (a regression test) is green to accept" $ do
+    let stub = begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py::test_handle" (Failure Nothing "" "")
+        passing = step' (Judge []) (step' (Edited (4, 6) (Right ())) stub) {blockPasses = True}
+    hud passing `shouldBe` "▸ test_handle · draft 1 · green ✓ accept"
+    open passing `shouldBe` ["accept", "draft", "reject"]
   it "(h5) a test of the file that passed when the circle began and fails now is the circle's red, with its own cue" $ do
     let kept = b0 {blockKeep = ["src/a__test.py::test_g", "src/a__test.py::test_h"]}
         sibling = Failure (Just 20) "assert 0 == 1" "E   assert 0 == 1"

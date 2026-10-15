@@ -67,7 +67,7 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (addImports, applyFills, assertionSpan, isImportLine, projectFiles, testsFailed)
+import Olifant.Generation.FillPhase (addImports, applyFills, assertionSpan, isImportLine, passesAgainstRaise, projectFiles, testsFailed)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
@@ -434,8 +434,9 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
       verify <- case killing of
-        -- a new test: it must fail, at its assertion
-        Nothing -> pure (VerifyRedAt newTest (line + 1))
+        -- a new test: it must fail, at its assertion, or pass (a
+        -- regression test) unless its function has no body yet
+        Nothing -> lift (bodyRaises s lang b moduleText) <&> \raises -> VerifyRedAt newTest (line + 1) (not raises)
         Just m -> do
           moduleRel <- maybe (throwE ("no module is tested by " <> T.pack rel)) pure tested
           -- what passed before the stub: it must still pass (a sibling red then is passed over)
@@ -712,14 +713,15 @@ testNow s root project lang b killed applied = do
       -- each round needs a newer version, so it ends)
       -- a test block's test is its first new one, as the person named it
       -- a code block's kept test the run did not have is gone: kept no more
-      named present on = case (blockKind on, newTests on now) of
-        (TestFor _, t : _) -> on {blockTestId = t}
+      -- (a new test's that passes is recorded so: a regression test)
+      named passes present on = case (blockKind on, newTests on now) of
+        (TestFor _, t : _) -> on {blockTestId = t, blockPasses = passes}
         (Code, _) -> on {blockKeep = filter present (blockKeep on)}
         _ -> on
-      settleTest present result move = attempt b killed
+      settleTest passes present result move = attempt b killed
         where
           attempt on k =
-            settleOn s root k "test" result (Just now) move (named present on) >>= \case
+            settleOn s root k "test" result (Just now) move (named passes present on) >>= \case
               Left moved -> do
                 current <- M.lookup (blockFile b) <$> readIORef (ssBlocks s)
                 seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
@@ -728,6 +730,10 @@ testNow s root project lang b killed applied = do
                     | blockId c == blockId b, blockVersion c /= blockVersion on, not (isDrafting (blockState c)), seen == Just now -> attempt c k'
                   _ -> pure (Left moved)
               landed -> pure landed
+  -- a new test's function with no body yet: a pass asserts nothing
+  raises <- case blockKind b of
+    TestFor Nothing -> moduleOf project lang (makeRelative root (blockFile b)) >>= maybe (pure Nothing) (readText ws) >>= bodyRaises s lang b
+    _ -> pure False
   ran <- runOver s ws lang ids
   -- work cancelled (a newer edit's test superseded it) is no result: nothing settles
   stopped <- cancelled (ssCancel s)
@@ -739,7 +745,7 @@ testNow s root project lang b killed applied = do
       pure (Left "the test was cancelled; a newer one runs")
     else case ran of
     -- a runner that cannot start is a test that cannot run: never judged
-    Left why -> settleTest (const True) ("cannot run: " <> why) (CannotRun why)
+    Left why -> settleTest False (const True) ("cannot run: " <> why) (CannotRun why)
     Right run -> do
       -- its span runs from its first new line to its last; an import (a
       -- stub's, joined to the file's) or a blank line is no line of the block's
@@ -747,10 +753,15 @@ testNow s root project lang b killed applied = do
           ownLine l = not (T.null (T.strip l)) && not (isImportLine lang l)
           new = S.filter (maybe False ownLine . (`M.lookup` numbered)) (newLinesOf (blockBase b) now)
           sp = if applied || S.null new then blockSpan b else (S.findMin new, S.findMax new)
+          newRun = redAtAssertion b now raises run
           (move, result) = case (trBroken run, trFailed run) of
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)
-            -- a new test is green for its block when it fails at its assertion
-            _ | TestFor Nothing <- blockKind b -> either (\f -> (landed sp (Left f), "red")) (const (landed sp (Right ()), "green")) (redAtAssertion b now run)
+            -- a new test is green for its block when it fails at its
+            -- assertion, or passes already (a regression test)
+            _ | TestFor Nothing <- blockKind b -> case newRun of
+              Left f -> (landed sp (Left f), "red")
+              Right False -> (landed sp (Right ()), "green")
+              Right True -> (landed sp (Right ()), "green: already passes")
             _ | Code <- blockKind b -> case outcomeOf b {blockKeep = filter present (blockKeep b)} run of
               Left (Just t, f) -> (AtKept t (landed sp (Left f)), "red: " <> noLongerPasses t)
               Left (Nothing, f) -> (landed sp (Left f), "red")
@@ -760,21 +771,24 @@ testNow s root project lang b killed applied = do
           landed = if applied then Applied else Edited
           -- a broken run has nothing: it drops nothing
           present t = isJust (trBroken run) || ranIn run t
-      settleTest present result move >>= \case
+      settleTest (isNothing (trBroken run) && newRun == Right True) present result move >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
--- | A new test's run as its test block takes it: Right when it fails at
--- its assertion (its first assert line to its end: an assertion over
--- several lines fails within it; it tests what is not written yet), else
--- why not.
-redAtAssertion :: Block -> Text -> TestRun -> Either Failure ()
-redAtAssertion b now run = case newTests b now of
+-- | A new test's run as its test block takes it: Right False when it
+-- fails at its assertion (its first assert line to its end: an assertion
+-- over several lines fails within it; it tests what is not written yet),
+-- Right True when it passes (a regression test) unless its function's
+-- body RAISES (a pass asserts nothing then), else why not.
+redAtAssertion :: Block -> Text -> Bool -> TestRun -> Either Failure Bool
+redAtAssertion b now raises run = case newTests b now of
   [] -> Left (Failure Nothing "name the new test" "")
   t : _ -> case lookup t (trFailed run) of
-    Nothing -> Left (Failure Nothing "the test passes before any code exists: it does not test the new behaviour" "")
+    Nothing
+      | raises -> Left (Failure Nothing passesAgainstRaise "")
+      | otherwise -> Right True
     Just f
-      | Just l <- fLine f, Just (a, z) <- assertionSpan (testName t) now, l >= a, l <= z -> Right ()
+      | Just l <- fLine f, Just (a, z) <- assertionSpan (testName t) now, l >= a, l <= z -> Right False
       | otherwise -> Left f {fMessage = "the test fails before its assertion: " <> fMessage f}
 
 -- | Judge a green block: the mutants of its span's new lines (the whole
@@ -861,6 +875,8 @@ reorder s decider moduleText testText push file =
 blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockAccept path = withBlock path $ \s root project _ b killed ->
   awaitingVerdict s root project b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
+    -- a regression test (it passed already) stays: nothing begins on it
+    Right done | TestFor Nothing <- blockKind b, blockPasses b -> pure (Right (done, []))
     Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
     Right done | TestFor _ <- blockKind b -> do
       -- a kill's tests pass on the code (its draft was verified so): the code block keeps them
@@ -902,6 +918,16 @@ touches old new (s1, s2) = hit (p + 1, length os - q) || hit (p + 1, length ns -
     hit (a, z)
       | z < a = a >= s1 && a <= s2 + 1
       | otherwise = a <= s2 && z >= s1
+
+-- | Whether a new test's function (the one its stub was opened for) has
+-- no body yet in the module's text: its body raises `NotImplementedError`.
+bodyRaises :: ServerState -> Language -> Block -> Maybe Text -> IO Bool
+bodyRaises s lang b moduleText = case (blockSubject b, moduleText) of
+  (Just (fn, d), Just m) ->
+    functionSpanAfter (pSyntax (ssPorts s)) lang fn d m <&> \case
+      Just (a, z) -> any ("NotImplementedError" `T.isInfixOf`) (take (z - a + 1) (drop (a - 1) (T.splitOn "\n" m)))
+      Nothing -> False
+  _ -> pure False
 
 -- | A new test accepted: its function (the one its stub was opened for,
 -- else the one it calls) begins on it (red), as a begin on that test

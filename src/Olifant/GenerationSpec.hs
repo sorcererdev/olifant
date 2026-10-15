@@ -836,14 +836,15 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       assertionSpan "test_x" "def test_x() -> None:\n    assertion = 1\n    assert assertion == 1\n\n\ndef test_y() -> None:\n    assert True\n" `shouldBe` Just (3, 3)
       assertionSpan "test_x" "def test_x() -> None:\n    assert(\n        1 == 1\n    )\n" `shouldBe` Just (2, 4)
       assertionSpan "test_z" "def test_x() -> None:\n    assert True\n" `shouldBe` Nothing
-    it "(d) VerifyRedAt: a test that passes before any code exists fails verification" $ do
-      st <- outcome (VerifyRedAt "t" 3) (ran (TestRun ["t"] [] Nothing))
-      st `shouldSatisfy` \case [HoleUnfilled why] -> "does not test the new behaviour" `T.isInfixOf` why; _ -> False
+    it "(d) VerifyRedAt: a test that passes stands (a regression test), unless its function's body raises: then it asserts nothing" $ do
+      outcome (VerifyRedAt "t" 3 True) (ran (TestRun ["t"] [] Nothing)) `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyRedAt "t" 3 False) (ran (TestRun ["t"] [] Nothing))
+      st `shouldSatisfy` \case [HoleUnfilled why] -> why == "this test passes against a body that raises: it asserts nothing about the function"; _ -> False
     it "(d) VerifyRedAt: red at the assert line stands; red elsewhere or broken does not" $ do
-      outcome (VerifyRedAt "t" 3) (ran (TestRun [] [("t", red (Just 3))] Nothing)) `shouldReturn` [HoleFilled "fake" 1]
-      st <- outcome (VerifyRedAt "t" 3) (ran (TestRun [] [("t", red (Just 2))] Nothing))
+      outcome (VerifyRedAt "t" 3 True) (ran (TestRun [] [("t", red (Just 3))] Nothing)) `shouldReturn` [HoleFilled "fake" 1]
+      st <- outcome (VerifyRedAt "t" 3 True) (ran (TestRun [] [("t", red (Just 2))] Nothing))
       st `shouldSatisfy` \case [HoleUnfilled why] -> "fails before its assertion (line 2)" `T.isInfixOf` why; _ -> False
-      st' <- outcome (VerifyRedAt "t" 3) (ran (TestRun [] [] (Just "import error")))
+      st' <- outcome (VerifyRedAt "t" 3 True) (ran (TestRun [] [] (Just "import error")))
       st' `shouldSatisfy` \case [HoleUnfilled why] -> "the test cannot run: import error" `T.isInfixOf` why; _ -> False
     it "(e) VerifyKills: stands only if the tests pass on the files and fail with the mutant in place" $ do
       let runner = Runner (\_ _ files -> pure (Right (if "mutant" `T.isInfixOf` fold files then TestRun [] [("t", red (Just 3))] Nothing else TestRun ["t"] [] Nothing)))

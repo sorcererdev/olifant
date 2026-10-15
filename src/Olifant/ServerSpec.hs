@@ -359,14 +359,30 @@ blockSpecs = describe "blocks" $ do
     let ls = T.splitOn "\n" named
     ls !! (fst (blockSpan tested) - 1) `shouldBe` "def test_reopens_again() -> None:"
     ls !! (snd (blockSpan tested) - 1) `shouldBe` "    assert Reopen().again() == 1"
-  it "(I5) a test block's test that passes before any code exists is red" $ do
+  it "(I5) a new test that passes on the code as it is is green: accepted, it stays as a regression test and nothing begins on it" $ do
     (s0, _) <- blocksOn (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files) []
     let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
         s = openDoc (root </> moduleRel) 1 module' s0
     (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
     let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at body (applyEdits imports testText))
+        st = openDoc testFile 2 named s
+    (_, Just tested) <- blockChanged testFile st
+    blockState tested `shouldBe` Judged []
+    hud tested `shouldSatisfy` ("green \10003 accept" `T.isSuffixOf`)
+    steps s >>= (`shouldSatisfy` ("\ttest\tperson\tgreen: already passes" `T.isInfixOf`))
+    (_, Right (done, [])) <- blockAccept testFile st
+    blockState done `shouldBe` Accepted
+    -- the test file keeps it; nothing moves to the module
+    fmap fst <$> blockFor testFile st `shouldReturn` Nothing
+    fmap fst <$> blockFor (root </> moduleRel) st `shouldReturn` Nothing
+  it "(I5) a function's first test that passes against a body that raises is red: it asserts nothing about the function" $ do
+    (s0, _) <- blocksOn (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files) []
+    let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        raise NotImplementedError(\"later\")"]
+        s = openDoc (root </> moduleRel) 1 module' s0
+    (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+    let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at body (applyEdits imports testText))
     (_, Just tested) <- blockChanged testFile (openDoc testFile 2 named s)
-    blockState tested `shouldSatisfy` \case Red f -> "passes before any code exists" `T.isInfixOf` fMessage f; _ -> False
+    blockState tested `shouldSatisfy` \case Red f -> fMessage f == "this test passes against a body that raises: it asserts nothing about the function"; _ -> False
 
   describe "(A) a stub's assertion drafted from its name" $ do
     let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
@@ -437,10 +453,19 @@ blockSpecs = describe "blocks" $ do
       map fst <$> readIORef asked `shouldReturn` ["arrange"]
       blockAssertion drafted `shouldBe` Nothing
       field "assertion_line" (blockJson drafted 0) `shouldBe` Nothing
-    it "a drafted assertion that passes on the code as it is: red, it does not test the new behaviour" $ do
+    it "a drafted test that passes on the code as it is stands: green, a regression test" $ do
       (s, testFile, opened, _) <- drafter (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files)
       (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 (opened "...") s)
-      blockState drafted `shouldSatisfy` \case Red f -> "does not test the new behaviour" `T.isInfixOf` fMessage f; _ -> False
+      blockState drafted `shouldBe` Green
+    it "a drafted test that passes against a body that raises: red, it asserts nothing about the function" $ do
+      (s0, _) <- blocksOn (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files) []
+      let raising = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        raise NotImplementedError(\"later\")"]
+          filler = ModelFiller "drafter" 0 (Filler (\_ -> pure (Right (M.fromList [("arrange", "result = Reopen().again()"), ("assertion", "assert result == 1")]))))
+          s = (openDoc (root </> moduleRel) 1 raising s0) {ssTestFiller = Just filler}
+      (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+      let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at (T.replace "${2:...}" "..." body) (applyEdits imports testText))
+      (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 named s)
+      blockState drafted `shouldSatisfy` \case Red f -> "passes against a body that raises" `T.isInfixOf` fMessage f; _ -> False
 
   it "(c) draft lands only if the document is still the version it planned against (Review Focus 1)" $ do
     (s0, _) <- blocks redOnStub []

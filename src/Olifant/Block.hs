@@ -88,7 +88,11 @@ data Block = Block
     -- | a code block's test file (absolute; the server sets it as the
     -- block begins), where its red is: a block without it pushes no
     -- failure
-    blockTestFile :: Maybe FilePath
+    blockTestFile :: Maybe FilePath,
+    -- | a new test's block whose test passes on the code as it is (the
+    -- server records it as the test runs): a regression test, green to
+    -- accept, nothing to begin on it
+    blockPasses :: Bool
   }
   deriving stock (Eq, Show)
 
@@ -118,7 +122,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing Nothing
+  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing Nothing False
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
@@ -237,6 +241,8 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         -- a new test red at its assertion is ready: accepted, its function begins on it
+        -- one that passes already is a regression test: accepted, it stays
+        0 | TestFor Nothing <- blockKind b, blockPasses b -> "green ✓ accept"
         0 | TestFor Nothing <- blockKind b -> "red ✓ accept · go make it pass"
         0 -> "clean ✓ accept"
         1 -> "1 survivor · stub a test or waive"

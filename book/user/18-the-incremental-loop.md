@@ -19,7 +19,9 @@ cannot be rubber-stamped.
    `assertion_line`, so an editor may put the cursor there; written your own before `draft`,
    it stands and only the arrangement is drafted). The HUD says
    `red ✓ accept · go make it pass`; `accept` it (`<leader>mca`). (`begin` in a function no test
-   calls opens the same stub, its name yours to type.)
+   calls opens the same stub, its name yours to type.) A new test that passes already (the code
+   does it) is accepted too: the HUD says `green ✓ accept`, the step log `test person green:
+   already passes`, and accepted it stays as a regression test; nothing begins on it.
 2. The function begins on that red test (the one you stubbed it for; as `begin` on a red test
    does, the editor opens it and its draft starts). Its body is inside a **magic circle**: the
    highlighted span with the HUD line above it; nothing leaves the circle until every survivor is
@@ -79,7 +81,7 @@ new test's stub from `begin` (`▸ test_your_name · draft · reject drops it` o
 named it and it was tested), `▸ test_handle · draft · reject drops it` on a stub
 from `stub` (named already), `drafting…` on a survivor's stub (drafted at once; with no model,
 `▸ test_boundary_party_seats · draft · reject drops it`), `red ✓ accept · go make it pass` on a
-new test red at its assertion, `· stub a test or waive`, `✓ accept`.
+new test red at its assertion (`green ✓ accept` on one that passes already), `· stub a test or waive`, `✓ accept`.
 
 | move | key | when | what it does |
 |---|---|---|---|
@@ -107,9 +109,10 @@ The person's part of each circle is the part that cannot be delegated:
 - **A test's name, and its assertion confirmed.** The name is the spec: the model drafts the
   arrangement and, left `assert ...`, the assertion from the name, for you to confirm or
   edit (an editor may put the cursor on it: the block carries its line). A test draft must fail *at the assertion* (its first
-  assert line to the test's end) before any code exists: one that errors in its setup, or passes
-  already (`it does not test the new behaviour`), is a failed draft. A new test's circle is green
-  when its test is red there.
+  assert line to the test's end) before any code exists: one that errors in its setup is a failed
+  draft. A new test's circle is green when its test is red there, or when it passes already: the
+  code does what the test says, so it is a regression test (`green ✓ accept`; accepted, it stays
+  in the test file and nothing moves to the module).
 - **Reading a draft.** The drafts stance asks the model for the least code that passes, so a
   constant (`return Ok(None)`) is a correct draft for one test. Every generalisation needs a test
   that asks for it.
@@ -328,6 +331,11 @@ function with `<leader>mcs`.
   stub's test file): go to the module whose circle has the survivor.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a circle starts
   from what is red. Begin in the function instead to judge it.
+- **`this test passes against a body that raises: it asserts nothing about the function`** — a
+  new test of a function with no body yet (it raises `NotImplementedError`) passes: it never
+  reached the function, or asserts nothing of it. Make it call the function and assert on what it
+  returns. (A new test that passes on a function that has a body is a regression test: `green ✓
+  accept`.)
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a
   missing name). Fix it, then `test`.
 - **`no model is configured`** — `draft` with no `[model]`: write the body; the magic circle still
