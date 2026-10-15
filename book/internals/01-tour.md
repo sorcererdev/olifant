@@ -2361,7 +2361,15 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   with `planWith` under `DraftStance` (the test file, or for a test the module, in its context,
   then the project modules either file imports and, one level further, what those import:
   `importedContext`, capped at 8 files of 120 lines, 600 in all, direct imports first),
-  verified by `VerifyIds` (the block's test), `VerifyRedAt` (a new test fails at its assertion)
+  verified by `VerifyKeep` (the block's test file runs whole, never a kept id: one gone from
+  the file would stop pytest's run; its test must pass and each test it keeps that the run has,
+  `keptVerdict`, a sibling red otherwise passed over; `blockKeep` is the test file's tests that
+  passed at begin and a kill's tests once accepted (`rejudgeFor`), and a kept test a test run
+  does not have is gone, dropped from it, `ranIn`; the `test` move and an edit's test run the
+  file the same way); a kept test failing while its own passes
+  is the block's red, `outcomeOf`, landed through `AtKept` so `blockRedAt` names it and the HUD
+  says `no longer passes`; a failed draft whose fill failed its tests (`testsFailed`) is run once
+  more to find a kept red, `draftRedOn`, and the next draft's instruction names that test), `VerifyRedAt` (a new test fails at its assertion)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
   mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill
   phase read it: a `Reindented` fill as read), unless, in Python, it would not parse
@@ -2407,7 +2415,8 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   edit cancels it, an edit elsewhere in the file leaves the running test or judge to land).
 
 The specs drive it with a scripted runner (`scriptedRunner`, `scriptFileRunner`: verdicts by
-test id, or by the files' text) and a syntax that knows the one container and site they need;
+test id, a file's id answering each test the file defines by its id, as pytest does; or by the
+files' text) and a syntax that knows the one container and site they need;
 `packs/python-htmx/tests/mutate/` judges the real operators against the pack's fixture.
 
 ### Testing the server

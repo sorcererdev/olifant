@@ -7,7 +7,7 @@ import Hedgehog (Gen)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Block
-import Olifant.Language (Failure (..), Language (..), parseLanguage)
+import Olifant.Language (Failure (..), Language (..), TestRun (..), parseLanguage)
 import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
 import Test.Hspec
@@ -29,6 +29,7 @@ spec = describe "Olifant.Block" $ do
             Edited (2, 2) (Right ()),
             Applied (2, 2) (Right ()),
             Applied (2, 2) (Left red),
+            AtKept "src/a__test.py::test_h" (Edited (2, 2) (Left red)),
             Judge [],
             Judge [m],
             Judge [m, m {muOperator = "number"}],
@@ -146,6 +147,38 @@ spec = describe "Olifant.Block" $ do
     hud (step' (Drafted "    table = Table()" "qwen" (Left red)) (step' StartDraft stub)) `shouldBe` "▸ test_handle · draft 1 · red: AssertionError: assert None == Ok(None)"
     let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py::test_boundary_line2" (Failure Nothing "" "")
     hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft killed))) `shouldBe` "▸ test_boundary_line2 · draft 1 · clean ✓ accept"
+  it "(h5) a test of the file that passed when the circle began and fails now is the circle's red, with its own cue" $ do
+    let kept = b0 {blockKeep = ["src/a__test.py::test_g", "src/a__test.py::test_h"]}
+        sibling = Failure (Just 20) "assert 0 == 1" "E   assert 0 == 1"
+        run passed failed = TestRun passed failed Nothing
+    -- the block's own test red: today's red
+    outcomeOf kept (run ["src/a__test.py::test_g"] [("src/a__test.py::test_h", sibling), ("src/a__test.py::test_f", red)]) `shouldBe` Left (Nothing, red)
+    -- else the first kept test that failed, and the runner's failure as it is
+    outcomeOf kept (run ["src/a__test.py::test_f"] [("src/a__test.py::test_h", sibling), ("src/a__test.py::test_g", red)]) `shouldBe` Left (Just "src/a__test.py::test_g", red)
+    outcomeOf kept (run ["src/a__test.py::test_f"] [("src/a__test.py::test_h", sibling)]) `shouldBe` Left (Just "src/a__test.py::test_h", sibling)
+    outcomeOf kept (run ["src/a__test.py::test_f", "src/a__test.py::test_g", "src/a__test.py::test_h"] []) `shouldBe` Right ()
+    -- a sibling red that it does not keep is passed over; a kept test the run lacks is not judged
+    outcomeOf kept (run ["src/a__test.py::test_f"] [("src/a__test.py::test_x", sibling)]) `shouldBe` Right ()
+    -- its own test must have run: a parametrized one by its cases
+    outcomeOf kept (run ["src/a__test.py::test_g"] []) `shouldBe` Left (Nothing, Failure Nothing "test_f did not run: is it still in its test file?" "")
+    outcomeOf kept (run ["src/a__test.py::test_f[1]"] []) `shouldBe` Right ()
+    outcomeOf kept (run [] [("src/a__test.py::test_f[2]", red)]) `shouldBe` Left (Nothing, red)
+    let atH = AtKept "src/a__test.py::test_h"
+        edited = step' (atH (Edited (2, 2) (Left sibling))) kept
+    hud edited `shouldBe` "▸ test_f · draft 1 · red: test_h no longer passes · fix or reject"
+    (blockState edited, blockRedAt edited) `shouldBe` (Red sibling, Just "src/a__test.py::test_h")
+    let drafted = step' (atH (Drafted "y" "qwen" (Left sibling))) kept
+    hud drafted `shouldBe` "▸ test_f · draft 1 · red: test_h no longer passes · fix or reject"
+    map draftOutcome (blockDrafts drafted) `shouldBe` ["red: test_h no longer passes"]
+    -- a runner message that reads like the cue is the runner's: today's red
+    hud (step' (Edited (2, 2) (Left sibling {fMessage = "test_h no longer passes"})) kept) `shouldBe` "▸ test_f · draft 1 · red: test_h no longer passes · draft"
+    -- the next test that lands clears it: green, or red at its own test
+    blockRedAt (step' (Edited (2, 2) (Right ())) edited) `shouldBe` Nothing
+    hud (step' (Edited (2, 2) (Left red)) edited) `shouldBe` "▸ test_f · draft 1 · red: AssertionError: assert None == Ok(None) · draft"
+    -- a draft that gives nothing puts the kept red back as it was
+    hud (step' DraftFailed (step' StartDraft edited)) `shouldBe` hud edited
+    -- a run that cannot judge is no kept red either
+    blockRedAt (step' (CannotRun "ImportError") edited) `shouldBe` Nothing
   it "(h2) kill takes the survivor on the line, or the top-ranked unwaived one when the line has none" $ do
     let g = step' (Drafted "x" "qwen" (Right ())) b0
         first = m {muLine = 5, muOperator = "number", muFrom = "1", muTo = "2"}
@@ -180,11 +213,21 @@ spec = describe "Olifant.Block" $ do
         test = T.unlines ["def test_closes_a_table() -> None:", "    close = CloseTable(repo)", "    assert close.handle(CloseTableInput(id=\"1\")) == Ok(None)"]
         red = Failure (Just 3) "AssertionError: assert None == Ok(None)" ""
     it "(a) the draft template puts one block hole at the span with the test's words, assertion and failure" $ do
-      let Right (_, instruction) = draftTemplate py file (3, 3) "src/x__test.py::test_closes_a_table" red test
+      let Right (_, instruction) = draftTemplate py file (3, 3) "src/x__test.py::test_closes_a_table" red Nothing test
       instruction `shouldSatisfy` ("closes a table" `T.isInfixOf`)
       instruction `shouldSatisfy` ("assert close.handle" `T.isInfixOf`)
       instruction `shouldSatisfy` ("AssertionError" `T.isInfixOf`)
       instruction `shouldSatisfy` ("least code" `T.isInfixOf`)
+    it "(a2) red at a kept test, the instruction says which test no longer passes, its assertion and why, and not that its own test fails" $ do
+      let withSibling = test <> T.unlines ["", "", "def test_reopens() -> None:", "    assert CloseTable(repo).reopen() == 1"]
+          sibling = Failure (Just 7) "assert 0 == 1" "E   assert 0 == 1"
+          Right (_, instruction) = draftTemplate py file (3, 3) "src/x__test.py::test_closes_a_table" sibling (Just "src/x__test.py::test_reopens") withSibling
+      instruction `shouldSatisfy` ("keep the test \"reopens\" passing" `T.isInfixOf`)
+      instruction `shouldSatisfy` ("test_reopens no longer passes" `T.isInfixOf`)
+      instruction `shouldSatisfy` ("assert CloseTable(repo).reopen() == 1" `T.isInfixOf`)
+      instruction `shouldSatisfy` ("assert 0 == 1" `T.isInfixOf`)
+      instruction `shouldNotSatisfy` ("it fails now" `T.isInfixOf`)
+      instruction `shouldSatisfy` (not . T.isInfixOf "\n")
     it "(b) the kill stub is a new test with the name and assertion as tab stops and the arrangement as a hole" $ do
       let (at, stub, name) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
       (at, name) `shouldBe` (4, "test_boundary_line5")

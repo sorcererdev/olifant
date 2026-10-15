@@ -11,12 +11,16 @@ module Olifant.Language.Test
   , scriptFileRunner
   , parsePytest
   , testsForFile
+  , keptVerdict
+  , ranIn
   ) where
 
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value (..), eitherDecodeStrict)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.Char (isAlphaNum)
+import Data.Containers.ListUtils (nubOrd)
 import Data.ByteString qualified as BS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -31,6 +35,27 @@ import System.FilePath (normalise, takeBaseName, takeDirectory)
 
 -- | @path::name@, or a file.
 type TestId = Text
+
+-- | A test file's run, as a circle on its test OWN takes it, keeping KEEP
+-- (tests that passed before; a sibling red otherwise is passed over): own
+-- red (any of its cases, a parametrized one's `own[…]`) is its red; else
+-- the first kept test that failed is (that test, the runner's failure);
+-- else green while own passed. Own a file: every test of it must pass. A
+-- kept test the run does not have is gone: not judged ('ranIn').
+keptVerdict :: TestId -> [TestId] -> TestRun -> Either (Maybe TestId, Failure) ()
+keptVerdict own keep run
+  | not ("::" `T.isInfixOf` own), (_, f) : _ <- failed = Left (Nothing, f)
+  | (_, f) : _ <- [(t, f) | (t, f) <- failed, isOwn t] = Left (Nothing, f)
+  | (t, f) : _ <- [(t, f) | t <- keep, Just f <- [lookup t failed]] = Left (Just t, f)
+  | "::" `T.isInfixOf` own, not (any isOwn (trPassed run)) = Left (Nothing, Failure Nothing (snd (T.breakOnEnd "::" own) <> " did not run: is it still in its test file?") "")
+  | otherwise = Right ()
+  where
+    failed = trFailed run
+    isOwn t = t == own || (own <> "[") `T.isPrefixOf` t
+
+-- | Whether a run has a test (passed or failed).
+ranIn :: TestRun -> TestId -> Bool
+ranIn run t = t `elem` trPassed run || t `elem` map fst (trFailed run)
 
 -- | Why a test is red: the line of the test that failed, what the framework
 -- said (the assertion), and its whole section of the report.
@@ -50,15 +75,28 @@ newtype Runner m = Runner {runTests :: Language -> [TestId] -> Map FilePath Text
 noRunner :: Applicative m => Runner m
 noRunner = Runner (\_ _ _ -> pure (Left "no test runner"))
 
--- | Verdicts by test id, never looking at the files (tests): `"pass"`, or
--- `{"line": N, "message": "…"}` for a failure. A file's id runs every
--- scripted test in it; an id the script does not name passes.
+-- | Verdicts by test id (tests): `"pass"`, or `{"line": N, "message": "…"}`
+-- for a failure; an id the script does not name passes. A file's id runs
+-- every test in it, each by its id as pytest reports it: those the file
+-- defines (a top-level `def test…(`) and those the script names in it (a
+-- file it is not given: the file's id alone).
 scriptedRunner :: Applicative m => Map TestId Value -> Runner m
-scriptedRunner script = Runner $ \_ ids _ ->
-  let failing i = [(k, f) | (k, v) <- M.toList script, k == i || (i <> "::") `T.isPrefixOf` k, Just f <- [failureIn v]]
+scriptedRunner script = Runner $ \_ ids files ->
+  let under i = [k | k <- M.keys script, (i <> "::") `T.isPrefixOf` k]
+      inFile i = case M.lookup (T.unpack i) files of
+        Just text | not ("::" `T.isInfixOf` i) -> nubOrd ([i <> "::" <> n | Just n <- map defined (T.lines text)] ++ under i)
+        _ -> []
+      tests i = case inFile i of
+        [] -> [i]
+        ts -> ts
+      failing i = [(k, f) | (k, v) <- M.toList script, k == i || (i <> "::") `T.isPrefixOf` k, Just f <- [failureIn v]]
       failed = concatMap failing ids
-   in pure (Right (TestRun [i | i <- ids, null (failing i)] failed Nothing))
+   in pure (Right (TestRun [t | i <- ids, t <- tests i, t `notElem` map fst failed, null (failing t) || t /= i] failed Nothing))
   where
+    defined l = do
+      rest <- T.stripPrefix "def " l
+      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
+      if "test" `T.isPrefixOf` n && "(" `T.isPrefixOf` T.drop (T.length n) rest then Just n else Nothing
     failureIn = \case
       Object o -> Just (Failure (KM.lookup "line" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing) (case KM.lookup "message" o of Just (String m) -> m; _ -> "failed") "")
       _ -> Nothing

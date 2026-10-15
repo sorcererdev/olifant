@@ -83,9 +83,11 @@ data GeneratorWith src = Generator
 -- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft);
 -- 'VerifyKills' runs a test file: the tests that passed before and the new
 -- ones must pass on the files, and a new one fail with the mutant's file
--- (path, text) in place (a sibling test already red is passed over); 'VerifyIds' wants those tests (a block's one
--- test) to pass, as 'VerifyTests' wants the module's.
-data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId [TestId] [TestId] FilePath Text | VerifyIds [TestId]
+-- (path, text) in place (a sibling test already red is passed over);
+-- 'VerifyKeep' runs a code block's test's file whole: its test must pass,
+-- and each test it keeps that the run has ('keptVerdict': a sibling red
+-- otherwise is passed over, a kept test gone is not judged).
+data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId [TestId] [TestId] FilePath Text | VerifyKeep TestId [TestId]
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef

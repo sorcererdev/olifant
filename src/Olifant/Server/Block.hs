@@ -62,11 +62,11 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles)
+import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles, testsFailed)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), Verifier (..), describeCheckFailure, describeSyntaxFailure, languageFor, runTestsIn, testsForFile)
+import Olifant.Language (Failure (..), Language (..), Syntax, TestId, TestRun (..), Verifier (..), describeCheckFailure, describeSyntaxFailure, languageFor, ranIn, runTestsIn, testsForFile)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Newness (newLinesOf)
@@ -154,9 +154,10 @@ startFor subject progress path line s0 =
               spanOf tid = lift (known >>= maybe (underTest syntax lang testText tid moduleText) (pure . Just)) >>= maybe (throwE ("cannot find the function " <> testName tid <> " calls in " <> T.pack moduleRel)) pure
               atFunction = maybe (throwE ("no function at line " <> T.pack (show line))) (\(_, _, sp) -> pure sp) here
               chosen = listToMaybe (cursorTest ++ calling)
+              -- what passed now (its test aside) must still pass for it to be green
               new tid sp st = do
                 k <- number
-                pure ((begin k file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st})
+                pure ((begin k file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st, blockKeep = filter (/= tid) (trPassed run)})
           b <- case (trBroken run, trFailed run) of
             (Just why, _)
               | onTest, Just tid <- listToMaybe (cursorTest ++ tests) -> spanOf tid >>= \sp -> new tid sp (Broken why)
@@ -368,8 +369,9 @@ draftIn progress s root project lang b drafting killed filler = do
             Red f -> f
             _ -> Failure Nothing "the person asked for another draft" ""
       testText <- fromMaybe "" <$> lift (readText ws (T.unpack (fileOf (blockTestId b))))
-      (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure testText)
-      pure (template, ("body", VerifyIds [blockTestId b]), [(T.unpack (fileOf (blockTestId b)), testText)])
+      (template, _) <- except (draftTemplate lang text (blockSpan b) (blockTestId b) failure (blockRedAt b) testText)
+      -- its test's file runs whole: its test and those it keeps must pass
+      pure (template, ("body", VerifyKeep (blockTestId b) (blockKeep b)), [(T.unpack (fileOf (blockTestId b)), testText)])
     TestFor killing -> do
       ((line, template), newTest, new) <- except (testDraftParts lang b text)
       tested <- lift (moduleOf project lang rel)
@@ -419,9 +421,11 @@ draftIn progress s root project lang b drafting killed filler = do
               let langOf = languageFor (catalogLanguages (prCatalog project))
                   written = M.findWithDefault text rel (applyFills langOf (planWrites plan) [(phSite h, attempt)])
                   (range, new) = smallestChange text written
-              lift (unparseable s root drafting lang rel text written) <&> \case
-                Just err -> (text, Left (Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
-                Nothing -> (written, Left (Failure Nothing why ""), [FileEdit file started False range new | written /= text], Nothing)
+              lift (unparseable s root drafting lang rel text written) >>= \case
+                Just err -> pure (text, Left (Nothing, Failure Nothing (unparsedDraft <> ": " <> err) ""), [], Just written)
+                Nothing -> do
+                  red <- lift (draftRedOn s ws lang rel b written why)
+                  pure (written, Left red, [FileEdit file started False range new | written /= text], Nothing)
       | HoleSkipped why <- phStatus h -> throwE why
     _ -> throwE "the draft made no hole"
   let shown = fromMaybe planned unwritten
@@ -434,9 +438,31 @@ draftIn progress s root project lang b drafting killed filler = do
       -- an unwritten draft leaves the span where it was
       sp = maybe (l1, l2) (const (blockSpan b)) unwritten
       drafted = T.intercalate "\n" (take (l2 - l1 + 1) (drop (l1 - 1) (T.splitOn "\n" shown)))
-  b' <- ExceptT (settleOn s root killed "draft" (either (const "red") (const "green") outcome) (Just planned) (Drafted drafted (mfName filler) outcome) drafting {blockSpan = sp})
+  let (result, move) = case outcome of
+        Left (Just t, f) -> ("red: " <> noLongerPasses t, AtKept t (Drafted drafted (mfName filler) (Left f)))
+        Left (Nothing, f) -> ("red", Drafted drafted (mfName filler) (Left f))
+        Right () -> ("green", Drafted drafted (mfName filler) (Right ()))
+  b' <- ExceptT (settleOn s root killed "draft" result (Just planned) move drafting {blockSpan = sp})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits)
+
+-- | A code draft's red (WHY, the fill's) on the text it wrote: a test the
+-- block keeps that fails there while its own test passes is that test's
+-- red (the runner's line and message), as a test would find; else WHY.
+-- Run only when the fill failed its tests ('testsFailed' begins WHY; the
+-- reason may be cut before a kept test's id): a compile failure or clash
+-- is WHY as it is.
+draftRedOn :: ServerState -> Workspace IO -> Language -> FilePath -> Block -> Text -> Text -> IO (Maybe TestId, Failure)
+draftRedOn s ws lang rel b written why
+  | blockKind b /= Code || null (blockKeep b) || not (testsFailed `T.isPrefixOf` why) = pure fallback
+  | otherwise = do
+      let testFile = fileOf (blockTestId b)
+      (_, files) <- projectFiles ws (M.empty :: Map FilePath Text) lang [T.unpack testFile]
+      runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [testFile] (M.insert rel written files) <&> \case
+        Right run | Nothing <- trBroken run, Left kept@(Just _, _) <- outcomeOf b run -> kept
+        _ -> fallback
+  where
+    fallback = (Nothing, Failure Nothing why "")
 
 -- | The project modules a draft sees beside its file and the file beside it
 -- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
@@ -573,20 +599,25 @@ testNow s root project lang b killed applied = do
         (TestFor _, new@(_ : _)) -> new
         -- none new yet: the test file (a kill's stub names its test before it exists)
         (TestFor _, []) -> [fileOf (blockTestId b)]
-        _ -> [blockTestId b]
+        -- a code block's: its test's file, whole (its test and those it
+        -- keeps are judged from it; a kept id is never asked for: one gone
+        -- from the file would stop the run)
+        _ -> [fileOf (blockTestId b)]
       -- a test of the newest text (no test or draft begun since) that finds
       -- the block moved on meanwhile (an older test landed first, the decider
       -- reordered) settles once more, on the block as it now stands
       -- (again each time another move lands first, while that still holds:
       -- each round needs a newer version, so it ends)
       -- a test block's test is its first new one, as the person named it
-      named on = case (blockKind on, newTests on now) of
+      -- a code block's kept test the run did not have is gone: kept no more
+      named present on = case (blockKind on, newTests on now) of
         (TestFor _, t : _) -> on {blockTestId = t}
+        (Code, _) -> on {blockKeep = filter present (blockKeep on)}
         _ -> on
-      settleTest result move = attempt b killed
+      settleTest present result move = attempt b killed
         where
           attempt on k =
-            settleOn s root k "test" result (Just now) move (named on) >>= \case
+            settleOn s root k "test" result (Just now) move (named present on) >>= \case
               Left moved -> do
                 current <- M.lookup (blockFile b) <$> readIORef (ssBlocks s)
                 seen <- M.lookup (blockFile b) <$> readIORef (ssBlockSeen s)
@@ -606,7 +637,7 @@ testNow s root project lang b killed applied = do
       pure (Left "the test was cancelled; a newer one runs")
     else case ran of
     -- a runner that cannot start is a test that cannot run: never judged
-    Left why -> settleTest ("cannot run: " <> why) (CannotRun why)
+    Left why -> settleTest (const True) ("cannot run: " <> why) (CannotRun why)
     Right run -> do
       -- its span runs from its first new line to its last; an import (a
       -- stub's, joined to the file's) or a blank line is no line of the block's
@@ -618,10 +649,16 @@ testNow s root project lang b killed applied = do
             (Just why, _) -> (CannotRun why, "cannot run: " <> why)
             -- a new test is green for its block when it fails at its assertion
             _ | TestFor Nothing <- blockKind b -> either (\f -> (landed sp (Left f), "red")) (const (landed sp (Right ()), "green")) (redAtAssertion b now run)
+            _ | Code <- blockKind b -> case outcomeOf b {blockKeep = filter present (blockKeep b)} run of
+              Left (Just t, f) -> (AtKept t (landed sp (Left f)), "red: " <> noLongerPasses t)
+              Left (Nothing, f) -> (landed sp (Left f), "red")
+              Right () -> (landed sp (Right ()), "green")
             (_, (_, f) : _) -> (landed sp (Left f), "red")
             _ -> (landed sp (Right ()), "green")
           landed = if applied then Applied else Edited
-      settleTest result move >>= \case
+          -- a broken run has nothing: it drops nothing
+          present t = isJust (trBroken run) || ranIn run t
+      settleTest present result move >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
@@ -726,7 +763,11 @@ blockAccept :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [
 blockAccept path = withBlock path $ \s root project _ b killed ->
   awaitingVerdict s root project b "accept" >>= maybe (settle s root killed "accept" "accepted" Accept b) (pure . Left) >>= \case
     Right done | TestFor Nothing <- blockKind b -> beginOnNewTest s root project b >> pure (Right (done, []))
-    Right done | TestFor _ <- blockKind b -> rejudgeFor s root project (blockFile b) >> pure (Right (done, []))
+    Right done | TestFor _ <- blockKind b -> do
+      -- a kill's tests pass on the code (its draft was verified so): the code block keeps them
+      now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
+      rejudgeFor s root project (blockFile b) (newTests b now)
+      pure (Right (done, []))
     other -> pure (fmap (,[]) other)
 
 -- | Why a move on the block's verdict (waive, accept) must wait, if it
@@ -776,10 +817,11 @@ beginOnNewTest s root project b = do
         (_, Left _) -> pure ()
     [] -> pure ()
 
--- | A test file gained a test: its module's judged code block is judged
--- again (its test is green: what was judged still stands), and pushed.
-rejudgeFor :: ServerState -> FilePath -> Project -> FilePath -> IO ()
-rejudgeFor s root project testFile = do
+-- | A test file gained tests (NEW): its module's judged code block keeps
+-- them and is judged again (its test is green: what was judged still
+-- stands), and pushed.
+rejudgeFor :: ServerState -> FilePath -> Project -> FilePath -> [TestId] -> IO ()
+rejudgeFor s root project testFile new = do
   let rel = makeRelative root testFile
       langs = catalogLanguages (prCatalog project)
   found <- maybe (pure Nothing) (\tl -> moduleOf project tl rel) (languageFor langs rel)
@@ -789,7 +831,7 @@ rejudgeFor s root project testFile = do
       let file = normalisePath (root </> moduleRel)
       M.lookup file <$> readIORef (ssBlocks s) >>= \case
         Just (cb, killed) | blockKind cb == Code, Judged _ <- blockState cb, Just lang <- languageFor langs moduleRel ->
-          settle s root killed "rejudge" "its test file gained a test" Rejudge cb
+          settle s root killed "rejudge" "its test file gained a test" Rejudge cb {blockKeep = nub (blockKeep cb ++ new)}
             >>= either (pure . Left) (\green -> judgeIn s root project lang green killed)
             >>= \case
               Right cb' -> do

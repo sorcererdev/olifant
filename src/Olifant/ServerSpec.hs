@@ -313,6 +313,8 @@ blockSpecs = describe "blocks" $ do
     -- the function begins on its new red test
     Just (code, _) <- blockFor (root </> moduleRel) st2
     (blockKind code, blockTestId code, blockSpan code) `shouldBe` (Block.Code, T.pack testRel <> "::test_reopens_again", (15, 15))
+    -- the test that passed before it is kept
+    blockKeep code `shouldBe` [testId]
     blockState code `shouldSatisfy` \case Red _ -> True; _ -> False
   it "(N5) begin on a function no test calls, its test file not importing it: the import is added once, then the stub" $ do
     let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
@@ -1397,6 +1399,114 @@ blockSpecs = describe "blocks" $ do
     either id (const "drafted") drafted `shouldNotBe` "name the new test first: its name is still the stub's"
     drafted `shouldSatisfy` either (const False) (const True)
     steps s >>= (`shouldSatisfy` ("block 2\tdraft\t" `T.isInfixOf`))
+  it "(K1) a circle keeps the file's passing tests green: a draft that passes its test but breaks a sibling is red at the sibling, and accept is refused" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 2") [(testRel, siblingText)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    blockKeep b `shouldBe` [siblingId]
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    blockState drafted `shouldSatisfy` \case Red f -> (fLine f, fMessage f) == (Just 10, "assert 0 == 1"); _ -> False
+    (blockRedAt drafted, hud drafted) `shouldSatisfy` \(at, h) -> at == Just siblingId && "red: test_sibling no longer passes · fix or reject" `T.isSuffixOf` h
+    (_, accepted) <- blockAccept (root </> moduleRel) s
+    accepted `shouldSatisfy` either (const True) (const False)
+    steps s >>= (`shouldSatisfy` ("\tdraft\trecorded\tred: test_sibling no longer passes" `T.isInfixOf`))
+  it "(K2) a draft that passes its test and the file's other passing tests is green" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 9") [(testRel, siblingText)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    blockState drafted `shouldBe` Green
+  it "(K3) the test move after an edit in the span that breaks a sibling is red at the sibling" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 5") [(testRel, siblingText)]
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s0
+    let s = changeDoc (root </> moduleRel) 2 (T.replace "seats > 2" "seats > 5" written) s0
+    (_, Right b) <- blockTest (root </> moduleRel) s
+    blockState b `shouldSatisfy` \case Red f -> (fLine f, fMessage f) == (Just 10, "assert 0 == 1"); _ -> False
+    hud b `shouldSatisfy` ("red: test_sibling no longer passes · fix or reject" `T.isSuffixOf`)
+    steps s >>= (`shouldSatisfy` ("\ttest\tperson\tred: test_sibling no longer passes" `T.isInfixOf`))
+    -- fixed: green again, then judged
+    (_, Right fixed) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 3 written s)
+    blockState fixed `shouldSatisfy` \case Judged _ -> True; _ -> False
+  it "(K4) a test block keeps no test of its file's: a sibling gone red meanwhile leaves it green" $ do
+    (s0, _) <- blocksOn killedBy []
+    let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        s = openDoc (root </> moduleRel) 1 reopen s0
+    (_, Right (tb, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+    (blockKind tb, blockKeep tb) `shouldBe` (Block.TestFor Nothing, [])
+    -- arranged by hand (no placeholder left); test_closes_a_table passed at
+    -- its begin, and the module's body goes back to the stub: red
+    let arranged = T.intercalate "\n" . filter (not . T.isInfixOf "olifant: arrange") . T.splitOn "\n"
+        named = arranged $ T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body (applyEdits imports testText)))
+        st = changeDoc (root </> moduleRel) 2 (T.replace "return int(seats > 2)" "raise NotImplementedError(\"later\")" reopen) (openDoc testFile 1 named s)
+    (_, Right tested) <- blockTest testFile st
+    blockState tested `shouldBe` Judged []
+  it "(K5) a kept test gone from its file's run is kept no more, and the circle goes green" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest [("test_sibling", "seats > 2")]) [(testRel, siblingText)]
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0
+    blockKeep b `shouldBe` [siblingId]
+    let s = changeDoc (root </> moduleRel) 2 (T.replace "seats > 2" "seats > 1" written) (openDoc (root </> testRel) 1 testText s0)
+    (_, Right tested) <- blockTest (root </> moduleRel) s
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    blockKeep tested `shouldBe` []
+  it "(K10) a parametrize list edited: the case gone is kept no more, the case left still is (green, then red when it breaks)" $ do
+    let p n = T.pack testRel <> "::test_p[" <> n <> "]"
+        params vs = testText <> T.unlines ["", "", "@pytest.mark.parametrize(\"n\", [" <> vs <> "])", "def test_p(n: int) -> None:", "    assert CloseTable().handle(n) == 0"]
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest [("test_p[2]", "seats > 1")]) [(testRel, params "1, 2")]
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0
+    blockKeep b `shouldBe` [p "1", p "2"]
+    let s = changeDoc (root </> moduleRel) 2 written (openDoc (root </> testRel) 1 (params "2") s0)
+    (_, Right tested) <- blockTest (root </> moduleRel) s
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    blockKeep tested `shouldBe` [p "2"]
+    (_, Right broke) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 3 (T.replace "seats > 2" "seats > 1" written) s)
+    blockRedAt broke `shouldBe` Just (p "2")
+  it "(K11) a kept method deleted from its class is kept no more while another class's of its name still runs" $ do
+    let classes keepA = testText <> T.unlines ((if keepA then ["", "", "class TestA:", "    def test_y(self) -> None:", "        assert CloseTable().handle(1) == 0"] else []) ++ ["", "", "class TestB:", "    def test_y(self) -> None:", "        assert CloseTable().handle(0) == 0"])
+        a = T.pack testRel <> "::TestA::test_y"
+        bId = T.pack testRel <> "::TestB::test_y"
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest []) [(testRel, classes True)]
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0
+    blockKeep b `shouldBe` [a, bId]
+    let s = changeDoc (root </> moduleRel) 2 written (openDoc (root </> testRel) 1 (classes False) s0)
+    (_, Right tested) <- blockTest (root </> moduleRel) s
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    blockKeep tested `shouldBe` [bId]
+  it "(K6) a kill's test, accepted, is kept: a later draft that breaks it is red at it" $ do
+    (s0, _) <- blocksOn killedBy [("breaks.toml", "[fills]\nbody = \"return int(seats >= 2)\"\n")]
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    let st = openDoc testFile 1 (expandStub at body testText) s
+    (_, Right (_, [edit])) <- blockDraft ignore testFile st
+    let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) (expandStub at body testText)) st
+    (_, Just _) <- blockChanged testFile st2
+    (_, Right _) <- blockAccept testFile st2
+    Just (code, _) <- blockFor (root </> moduleRel) st2
+    blockKeep code `shouldBe` [T.pack testRel <> "::test_kills_the_boundary"]
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) st2 {ssConfig = defaultServerConfig {scFills = Just (root </> "breaks.toml")}}
+    blockRedAt drafted `shouldBe` Just (T.pack testRel <> "::test_kills_the_boundary")
+    hud drafted `shouldSatisfy` ("red: test_kills_the_boundary no longer passes · fix or reject" `T.isSuffixOf`)
+  it "(K7) a function begun green keeps the tests that passed, its own aside" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 9") [(testRel, siblingText)]
+    (_, Right b) <- blockBegin ignore (root </> moduleRel) 6 (openDoc (root </> moduleRel) 1 written s0)
+    (blockTestId b, blockKeep b) `shouldBe` (testId, [siblingId])
+  it "(K8) a kept parametrized test (its id `test_p[1]`) stays kept: a draft that breaks it is red at it" $ do
+    let paramId = T.pack testRel <> "::test_p[1]"
+        params = testText <> T.unlines ["", "", "@pytest.mark.parametrize(\"n\", [1])", "def test_p(n: int) -> None:", "    assert CloseTable().handle(n) == 0"]
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest [("test_p[1]", "seats > 2")]) [(testRel, params)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    blockKeep b `shouldBe` [paramId]
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    (blockRedAt drafted, blockKeep drafted) `shouldBe` (Just paramId, [paramId])
+    hud drafted `shouldSatisfy` ("red: test_p[1] no longer passes · fix or reject" `T.isSuffixOf`)
+  it "(K9) a draft red at a kept test whose output is long (the fill's reason cut before its id) is still red at it" $ do
+    let long = T.intercalate "\n" ["E   line " <> T.pack (show i) | i <- [1 .. 60 :: Int]]
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSiblingAs siblingId long "seats > 2") [(testRel, siblingText)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    blockRedAt drafted `shouldBe` Just siblingId
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -1417,6 +1527,55 @@ testText = T.unlines ["from shop.close_table import CloseTable", "", "", "def te
 
 failing :: Text -> TestRun
 failing why = TestRun [] [(testId, Failure (Just 6) why "")] Nothing
+
+-- | The test file with a sibling test after the block's, and its id.
+siblingText :: Text
+siblingText = testText <> T.unlines ["", "", "def test_sibling() -> None:", "    assert CloseTable().handle(1) == 0"]
+
+siblingId :: Text
+siblingId = T.pack testRel <> "::test_sibling"
+
+-- | A runner as pytest is, over the test file it is given: each test it
+-- defines by its pytest id (a parametrized one's cases `test_p[1]`, a
+-- method's `TestA::test_y`); `test_closes_a_table` red on the stub, a
+-- test named in BREAKS red while the module holds its text, the rest
+-- green. An id it does not have is no test: the run errs (exit 4).
+asPytest :: [(Text, Text)] -> [Text] -> M.Map FilePath Text -> Either Text TestRun
+asPytest breaks ids files
+  | any (\i -> "::" `T.isInfixOf` i && i `notElem` defined && not (any ((i <> "[") `T.isPrefixOf`) defined)) ids = Right (TestRun [] [] (Just "ERROR: not found"))
+  | otherwise = Right (TestRun [i | (i, Nothing) <- results] [(i, f) | (i, Just f) <- results] Nothing)
+  where
+    m = M.findWithDefault "" moduleRel files
+    defined = map fst results
+    results = [(T.pack testRel <> "::" <> n, verdict n) | n <- names Nothing [] (T.lines (M.findWithDefault "" testRel files))]
+    names _ _ [] = []
+    names cls params (l : rest)
+      | Just c <- T.stripPrefix "class " l = names (Just (T.takeWhile (\x -> isAlphaNum x || x == '_') c)) [] rest
+      | Just vs <- T.stripPrefix "@pytest.mark.parametrize(" (T.strip l) = names cls (map T.strip (T.splitOn "," (T.takeWhile (/= ']') (T.drop 1 (T.dropWhile (/= '[') vs))))) rest
+      | Just d <- T.stripPrefix "def " (T.strip l), "test" `T.isPrefixOf` d =
+          let n = T.takeWhile (\x -> isAlphaNum x || x == '_') d
+              owned = if " " `T.isPrefixOf` l then maybe n (<> "::" <> n) cls else n
+           in (if null params then [owned] else [owned <> "[" <> v <> "]" | v <- params]) ++ names (if " " `T.isPrefixOf` l then cls else Nothing) [] rest
+      | not (" " `T.isPrefixOf` l), not (T.null (T.strip l)) = names Nothing params rest
+      | otherwise = names cls params rest
+    verdict n
+      | n == "test_closes_a_table" = if "NotImplementedError" `T.isInfixOf` m then Just (Failure (Just 6) "NotImplementedError: later" "") else Nothing
+      | Just frag <- lookup n breaks, frag `T.isInfixOf` m = Just (Failure (Just 10) "assert 0 == 1" "")
+      | otherwise = Nothing
+
+-- | The module's test file: `test_closes_a_table` red on the stub,
+-- `test_sibling` (its assertion on line 10) red when the module holds
+-- BREAKS, green otherwise.
+keepingSibling :: Text -> [Text] -> M.Map FilePath Text -> Either Text TestRun
+keepingSibling = keepingSiblingAs siblingId ""
+
+-- | 'keepingSibling' with the sibling's id and its failure's output given.
+keepingSiblingAs :: Text -> Text -> Text -> [Text] -> M.Map FilePath Text -> Either Text TestRun
+keepingSiblingAs sid out breaks _ files = Right (TestRun ([testId | null own] ++ [sid | null sibling]) (own ++ sibling) Nothing)
+  where
+    m = M.findWithDefault "" moduleRel files
+    own = [(testId, Failure (Just 6) "NotImplementedError: later" "") | "NotImplementedError" `T.isInfixOf` m]
+    sibling = [(sid, Failure (Just 10) "assert 0 == 1" out) | breaks `T.isInfixOf` m]
 
 -- | The module's test file run test by test (by the names it defines):
 -- `test_closes_a_table` red on the stub; `test_kills_the_boundary` red on

@@ -26,12 +26,13 @@ import Olifant.Template (Template, Value (..), describeTemplateError, parseTempl
 
 -- | The file with the lines of the span (1-based, inclusive) replaced by one
 -- block hole at the span's indentation, and the hole's instruction. The
--- test's file text says what its assertion is; the failure says why it is red.
-draftTemplate :: Language -> Text -> (Int, Int) -> TestId -> Failure -> Text -> Either Text (Template, Text)
-draftTemplate _lang file (l1, l2) tid failure testText
+-- test's file text says what its assertion is; the failure says why it is
+-- red (at KEPT, a test the block keeps, when its own test passes).
+draftTemplate :: Language -> Text -> (Int, Int) -> TestId -> Failure -> Maybe TestId -> Text -> Either Text (Template, Text)
+draftTemplate _lang file (l1, l2) tid failure kept testText
   | l1 < 1 || l2 < l1 || l2 > length ls = Left ("lines " <> T.pack (show l1) <> "-" <> T.pack (show l2) <> " are not in the file")
   | otherwise = do
-      let instruction = instructionFor tid testText failure
+      let instruction = instructionFor tid testText failure kept
           indent = T.takeWhile (`elem` [' ', '\t']) (ls !! (l1 - 1))
           marker = indent <> "{= ? body: block | " <> instruction <> " =}"
       template <- either (Left . describeTemplateError) Right (parseTemplate (T.intercalate "\n" (take (l1 - 1) ls ++ [marker] ++ drop l2 ls)))
@@ -149,19 +150,29 @@ testStub lang testText name = (lastNonBlank + 1, stub)
     stub = "\n\ndef " <> stop <> "() -> None:\n" <> ind <> placeholder lang <> "\n" <> ind <> "assert ${2:...}\n"
 
 -- | What the model is asked: the test in words, its assertion, why it fails
--- now, and the stance. Never holds a marker's end or a newline.
-instructionFor :: TestId -> Text -> Failure -> Text
-instructionFor tid testText failure =
-  oneLine . T.intercalate ". " $
-    [ "make the test \"" <> words' <> "\" pass",
-      "its assertion: " <> T.intercalate "; " asserts,
-      "it fails now with: " <> fMessage failure,
-      "write the least code that makes it pass"
-    ]
+-- now, and the stance; red at KEPT (a test that passed when the circle
+-- began, its own test passing), that test, its assertion and why it fails
+-- instead. Never holds a marker's end or a newline.
+instructionFor :: TestId -> Text -> Failure -> Maybe TestId -> Text
+instructionFor tid testText failure kept =
+  oneLine . T.intercalate ". " $ case kept of
+    Nothing ->
+      [ "make the test \"" <> words' tid <> "\" pass",
+        "its assertion: " <> asserts tid,
+        "it fails now with: " <> fMessage failure,
+        "write the least code that makes it pass"
+      ]
+    Just k ->
+      [ "make the test \"" <> words' tid <> "\" pass and keep the test \"" <> words' k <> "\" passing",
+        "its assertion: " <> asserts tid,
+        name k <> " no longer passes; its assertion: " <> asserts k,
+        "the runner says: " <> fMessage failure,
+        "write the least code that makes both pass"
+      ]
   where
-    name = snd (T.breakOnEnd "::" tid)
-    words' = T.replace "_" " " (fromMaybe name (T.stripPrefix "test_" name))
-    asserts = assertionLines name testText
+    name = snd . T.breakOnEnd "::"
+    words' t = T.replace "_" " " (fromMaybe (name t) (T.stripPrefix "test_" (name t)))
+    asserts t = T.intercalate "; " (assertionLines (name t) testText)
 
 -- | The @assert@ lines of the named test (its def to the next line at or
 -- below the def's own indentation).
