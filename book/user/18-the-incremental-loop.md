@@ -92,6 +92,7 @@ being drafted ([When the code is right](#when-the-code-is-right)), `· stub a te
 | `test` | | red, green, can't run | run the circle's test (and the file's tests that passed when it began) on the buffer's text now |
 | `stub` | `<leader>mcs` | in a function of a module with no circle, or judged with a survivor | judged with a survivor: the survivor on the cursor's line, or the top-ranked one when the line has none, a test stub at the end of the test file in its own circle. With no circle in the module, in a function (with tests or without): a new test's stub for it, named `test_<function>` (`_2`, `_3`, … when taken), as `begin` opens for a function no test calls (on the wire `olifant/block/stub`; `:DurandalCircle kill` still works) |
 | `waive` | `<leader>mcw` | a survivor on the cursor's line | asks why (`vim.ui.input`); writes the reason on the line |
+| `survivors` | `<leader>mcv` | judged, survivors standing | editor only: the survivors listed one by one, each to stub (`s`), waive (`w`) or leave; `a` accepts once none stands (`:DurandalCircle survivors`) |
 | `accept` | `<leader>mca` | judged, no unwaived survivor | done: the circle's marks go |
 | `reject` | `<leader>mcr` | any time | the file's text as it was when the circle began |
 
@@ -120,7 +121,10 @@ The person's part of each circle is the part that cannot be delegated:
   that asks for it.
 - **Each survivor.** Accept is refused while one stands
   (`1 survivor(s): stub a test or waive each, then accept`): stub a test that kills it, or
-  waive it with a reason.
+  waive it with a reason. In the editor the survivors can be walked one by one
+  (`<leader>mcv`, or `<leader>mcs` with the cursor off any survivor's line when two or more
+  stand): a list in the server's order, each stubbed, waived or left, the list redrawn as each
+  verdict lands, `accept` offered when it is empty.
 
 ## Mutation and waivers
 
