@@ -12,7 +12,7 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Char (isAlphaNum)
 import Data.Functor ((<&>))
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
@@ -136,7 +136,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
                 VerifyTests -> case langTest lang of
                   Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
                   Just td -> verifyTests lang [T.pack (testsForFile td (holeFile (site t)))] everything
-                VerifyIds ids -> verifyTests lang ids everything
+                VerifyKeep own keep -> verifyKeep lang own keep everything
               let failedPrefix = case verify of
                     VerifyRedAt {} -> ""
                     VerifyKills {} -> ""
@@ -169,6 +169,17 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           | Just why <- trBroken run -> Right (False, why)
           | null (trFailed run) -> Right (True, "")
           | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
+
+    -- A code block's draft: its test's file runs whole; its test passes,
+    -- and each test it keeps that the run has (the failure named by its id).
+    verifyKeep lang own keep everything =
+      runTestsIn (toolTester tools) lang [fst (T.breakOn "::" own)] everything <&> \case
+        Left why -> Left (CheckFailed why)
+        Right run
+          | Just why <- trBroken run -> Right (False, why)
+          | otherwise -> case keptVerdict own keep run of
+              Right () -> Right (True, "")
+              Left (at, fl) -> Right (False, fromMaybe own at <> ": " <> fMessage fl <> "\n" <> fOutput fl)
 
     -- A test draft: the test must fail, and at exactly its assertion line.
     verifyRedAt lang tid line everything =

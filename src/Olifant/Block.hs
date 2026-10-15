@@ -35,7 +35,7 @@ import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
-import Olifant.Language (Failure (..), TestId, TestRun (..))
+import Olifant.Language (Failure (..), TestId, TestRun, keptVerdict)
 import Olifant.Mutate (Mutant (..))
 
 -- | A code block, or a test block (red at its assert; a kill also fails on the mutant).
@@ -239,20 +239,13 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
       _ -> "draft"
 
--- | A code block's test run as the circle takes it: its own test red is
--- its red; else the first test it keeps that fails is (that test, and the
--- runner's failure: its line and message); else green. (A run that could
--- not judge is the caller's: cannot run.)
+-- | A code block's test file's run as the circle takes it ('keptVerdict'):
+-- its own test red is its red; else the first test it keeps that fails is
+-- (that test, and the runner's failure: its line and message); else green
+-- while its own test passed. A sibling red otherwise is passed over. (A
+-- run that could not judge is the caller's: cannot run.)
 outcomeOf :: Block -> TestRun -> Either (Maybe TestId, Failure) ()
-outcomeOf b run
-  | Just f <- lookup (blockTestId b) failed = Left (Nothing, f)
-  | (t, f) : _ <- keptFailing = Left (Just t, f)
-  -- a failure of no test it knows (a runner that ran more): red as it says
-  | (_, f) : _ <- failed = Left (Nothing, f)
-  | otherwise = Right ()
-  where
-    failed = trFailed run
-    keptFailing = [(t, f) | t <- blockKeep b, Just f <- [lookup t failed]]
+outcomeOf b = keptVerdict (blockTestId b) (blockKeep b)
 
 -- | A kept test's red, as the HUD names it.
 noLongerPasses :: TestId -> Text

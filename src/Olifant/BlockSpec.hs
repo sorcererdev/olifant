@@ -157,6 +157,12 @@ spec = describe "Olifant.Block" $ do
     outcomeOf kept (run ["src/a__test.py::test_f"] [("src/a__test.py::test_h", sibling), ("src/a__test.py::test_g", red)]) `shouldBe` Left (Just "src/a__test.py::test_g", red)
     outcomeOf kept (run ["src/a__test.py::test_f"] [("src/a__test.py::test_h", sibling)]) `shouldBe` Left (Just "src/a__test.py::test_h", sibling)
     outcomeOf kept (run ["src/a__test.py::test_f", "src/a__test.py::test_g", "src/a__test.py::test_h"] []) `shouldBe` Right ()
+    -- a sibling red that it does not keep is passed over; a kept test the run lacks is not judged
+    outcomeOf kept (run ["src/a__test.py::test_f"] [("src/a__test.py::test_x", sibling)]) `shouldBe` Right ()
+    -- its own test must have run: a parametrized one by its cases
+    outcomeOf kept (run ["src/a__test.py::test_g"] []) `shouldBe` Left (Nothing, Failure Nothing "test_f did not run: is it still in its test file?" "")
+    outcomeOf kept (run ["src/a__test.py::test_f[1]"] []) `shouldBe` Right ()
+    outcomeOf kept (run [] [("src/a__test.py::test_f[2]", red)]) `shouldBe` Left (Nothing, red)
     let atH = AtKept "src/a__test.py::test_h"
         edited = step' (atH (Edited (2, 2) (Left sibling))) kept
     hud edited `shouldBe` "▸ test_f · draft 1 · red: test_h no longer passes · fix or reject"

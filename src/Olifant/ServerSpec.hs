@@ -1405,14 +1405,37 @@ blockSpecs = describe "blocks" $ do
         st = changeDoc (root </> moduleRel) 2 (T.replace "return int(seats > 2)" "raise NotImplementedError(\"later\")" reopen) (openDoc testFile 1 named s)
     (_, Right tested) <- blockTest testFile st
     blockState tested `shouldBe` Judged []
-  it "(K5) a kept test the person deletes is kept no more: the runner is never asked for it, and the circle goes green" $ do
-    (s0, _) <- blocksRun blockSyntax (pure ()) (definedOnly (keepingSibling "seats > 2")) [(testRel, siblingText)]
+  it "(K5) a kept test gone from its file's run is kept no more, and the circle goes green" $ do
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest [("test_sibling", "seats > 2")]) [(testRel, siblingText)]
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0
     blockKeep b `shouldBe` [siblingId]
     let s = changeDoc (root </> moduleRel) 2 (T.replace "seats > 2" "seats > 1" written) (openDoc (root </> testRel) 1 testText s0)
     (_, Right tested) <- blockTest (root </> moduleRel) s
     blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
     blockKeep tested `shouldBe` []
+  it "(K10) a parametrize list edited: the case gone is kept no more, the case left still is (green, then red when it breaks)" $ do
+    let p n = T.pack testRel <> "::test_p[" <> n <> "]"
+        params vs = testText <> T.unlines ["", "", "@pytest.mark.parametrize(\"n\", [" <> vs <> "])", "def test_p(n: int) -> None:", "    assert CloseTable().handle(n) == 0"]
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest [("test_p[2]", "seats > 1")]) [(testRel, params "1, 2")]
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0
+    blockKeep b `shouldBe` [p "1", p "2"]
+    let s = changeDoc (root </> moduleRel) 2 written (openDoc (root </> testRel) 1 (params "2") s0)
+    (_, Right tested) <- blockTest (root </> moduleRel) s
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    blockKeep tested `shouldBe` [p "2"]
+    (_, Right broke) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 3 (T.replace "seats > 2" "seats > 1" written) s)
+    blockRedAt broke `shouldBe` Just (p "2")
+  it "(K11) a kept method deleted from its class is kept no more while another class's of its name still runs" $ do
+    let classes keepA = testText <> T.unlines ((if keepA then ["", "", "class TestA:", "    def test_y(self) -> None:", "        assert CloseTable().handle(1) == 0"] else []) ++ ["", "", "class TestB:", "    def test_y(self) -> None:", "        assert CloseTable().handle(0) == 0"])
+        a = T.pack testRel <> "::TestA::test_y"
+        bId = T.pack testRel <> "::TestB::test_y"
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest []) [(testRel, classes True)]
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0
+    blockKeep b `shouldBe` [a, bId]
+    let s = changeDoc (root </> moduleRel) 2 written (openDoc (root </> testRel) 1 (classes False) s0)
+    (_, Right tested) <- blockTest (root </> moduleRel) s
+    blockState tested `shouldSatisfy` \case Judged _ -> True; _ -> False
+    blockKeep tested `shouldBe` [bId]
   it "(K6) a kill's test, accepted, is kept: a later draft that breaks it is red at it" $ do
     (s0, _) <- blocksOn killedBy [("breaks.toml", "[fills]\nbody = \"return int(seats >= 2)\"\n")]
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
@@ -1435,7 +1458,7 @@ blockSpecs = describe "blocks" $ do
   it "(K8) a kept parametrized test (its id `test_p[1]`) stays kept: a draft that breaks it is red at it" $ do
     let paramId = T.pack testRel <> "::test_p[1]"
         params = testText <> T.unlines ["", "", "@pytest.mark.parametrize(\"n\", [1])", "def test_p(n: int) -> None:", "    assert CloseTable().handle(n) == 0"]
-    (s0, _) <- blocksRun blockSyntax (pure ()) (definedOnly (keepingSiblingAs paramId "" "seats > 2")) [(testRel, params)]
+    (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest [("test_p[1]", "seats > 2")]) [(testRel, params)]
     let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
     blockKeep b `shouldBe` [paramId]
@@ -1477,15 +1500,33 @@ siblingText = testText <> T.unlines ["", "", "def test_sibling() -> None:", "   
 siblingId :: Text
 siblingId = T.pack testRel <> "::test_sibling"
 
--- | A runner as pytest is: a test id its file does not define is no test
--- (the run errs, nothing runs).
-definedOnly :: ([Text] -> M.Map FilePath Text -> Either Text TestRun) -> [Text] -> M.Map FilePath Text -> Either Text TestRun
-definedOnly verdict ids files
-  | any unknown ids = Right (TestRun [] [] (Just "ERROR: not found"))
-  | otherwise = verdict ids files
+-- | A runner as pytest is, over the test file it is given: each test it
+-- defines by its pytest id (a parametrized one's cases `test_p[1]`, a
+-- method's `TestA::test_y`); `test_closes_a_table` red on the stub, a
+-- test named in BREAKS red while the module holds its text, the rest
+-- green. An id it does not have is no test: the run errs (exit 4).
+asPytest :: [(Text, Text)] -> [Text] -> M.Map FilePath Text -> Either Text TestRun
+asPytest breaks ids files
+  | any (\i -> "::" `T.isInfixOf` i && i `notElem` defined && not (any ((i <> "[") `T.isPrefixOf`) defined)) ids = Right (TestRun [] [] (Just "ERROR: not found"))
+  | otherwise = Right (TestRun [i | (i, Nothing) <- results] [(i, f) | (i, Just f) <- results] Nothing)
   where
-    -- (a parametrized test's id names its parameters after its name: `test_p[1]`)
-    unknown i = "::" `T.isInfixOf` i && not (("def " <> snd (T.breakOnEnd "::" (T.takeWhile (/= '[') i)) <> "(") `T.isInfixOf` M.findWithDefault "" testRel files)
+    m = M.findWithDefault "" moduleRel files
+    defined = map fst results
+    results = [(T.pack testRel <> "::" <> n, verdict n) | n <- names Nothing [] (T.lines (M.findWithDefault "" testRel files))]
+    names _ _ [] = []
+    names cls params (l : rest)
+      | Just c <- T.stripPrefix "class " l = names (Just (T.takeWhile (\x -> isAlphaNum x || x == '_') c)) [] rest
+      | Just vs <- T.stripPrefix "@pytest.mark.parametrize(" (T.strip l) = names cls (map T.strip (T.splitOn "," (T.takeWhile (/= ']') (T.drop 1 (T.dropWhile (/= '[') vs))))) rest
+      | Just d <- T.stripPrefix "def " (T.strip l), "test" `T.isPrefixOf` d =
+          let n = T.takeWhile (\x -> isAlphaNum x || x == '_') d
+              owned = if " " `T.isPrefixOf` l then maybe n (<> "::" <> n) cls else n
+           in (if null params then [owned] else [owned <> "[" <> v <> "]" | v <- params]) ++ names (if " " `T.isPrefixOf` l then cls else Nothing) [] rest
+      | not (" " `T.isPrefixOf` l), not (T.null (T.strip l)) = names Nothing params rest
+      | otherwise = names cls params rest
+    verdict n
+      | n == "test_closes_a_table" = if "NotImplementedError" `T.isInfixOf` m then Just (Failure (Just 6) "NotImplementedError: later" "") else Nothing
+      | Just frag <- lookup n breaks, frag `T.isInfixOf` m = Just (Failure (Just 10) "assert 0 == 1" "")
+      | otherwise = Nothing
 
 -- | The module's test file: `test_closes_a_table` red on the stub,
 -- `test_sibling` (its assertion on line 10) red when the module holds
