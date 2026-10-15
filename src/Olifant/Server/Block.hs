@@ -482,7 +482,7 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
   (onText, edits') <- case stubbed of
     Nothing -> pure (planned, edits)
     Just _ -> do
-      (version, now) <- lift (stubInEditor s file (blockBase b) text)
+      (version, now) <- lift (stubInEditor s file (blockBase b) text) >>= maybe (throwE "the stub was not expanded in the editor; draft when it is") pure
       unless (T.stripEnd now == T.stripEnd text) (throwE "the file changed while drafting; your text stands")
       let landed = T.stripEnd planned <> T.drop (T.length (T.stripEnd now)) now
       -- the editor's text is the one seen: the draft applied is an edit, tested
@@ -497,19 +497,19 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
   if null edits' && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits')
 
 -- | The file as the editor has it once a stub is in it (its text no
--- longer BEFORE, the file without it), its version; waited for (five
--- seconds at most: the editor expands the stub as the answer arrives).
--- No live documents: STUBBED is the file.
-stubInEditor :: ServerState -> FilePath -> Text -> Text -> IO (Maybe Int, Text)
+-- longer BEFORE, the file without it), its version; waited for
+-- ('ssStubWaitMs': the editor expands the stub as the answer arrives),
+-- Nothing when it never came. No live documents: STUBBED is the file.
+stubInEditor :: ServerState -> FilePath -> Text -> Text -> IO (Maybe (Maybe Int, Text))
 stubInEditor s file before stubbed = case ssLiveDoc s of
-  Nothing -> pure (fst <$> M.lookup file (ssDocs s), stubbed)
-  Just live -> go live (50 :: Int)
+  Nothing -> pure (Just (fst <$> M.lookup file (ssDocs s), stubbed))
+  Just live -> go live (max 1 (ssStubWaitMs s `div` 50))
   where
     go live n =
       live file >>= \case
-        Just (v, t) | n == 0 || T.stripEnd t /= T.stripEnd before -> pure (Just v, t)
-        Nothing | n == 0 -> pure (Nothing, before)
-        _ -> threadDelay 100000 >> go live (n - 1)
+        Just (v, t) | T.stripEnd t /= T.stripEnd before -> pure (Just (Just v, t))
+        _ | n <= 0 -> pure Nothing
+        _ -> threadDelay 50000 >> go live (n - 1 :: Int)
 
 -- | A code draft's red (WHY, the fill's) on the text it wrote: a test the
 -- block keeps that fails there while its own test passes is that test's

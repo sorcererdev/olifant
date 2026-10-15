@@ -2,7 +2,7 @@
 
 module Olifant.ServerSpec (spec) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Monad (forM, void)
 import Data.Aeson (Value (..), (.:))
@@ -550,6 +550,28 @@ blockSpecs = describe "blocks" $ do
     (_, Right (_, _, _, _, Just nlater)) <- blockKill (root </> moduleRel) 6 n
     Right (refused, _) <- nlater ignore
     blockState refused `shouldSatisfy` \case Red f -> "does not notice the mutant" `T.isInfixOf` fMessage f; _ -> False
+  it "(h) the editor's text for a survivor's stub, as vim.snippet.expand leaves it (placeholders' text, no markers, a blank line more), arriving while the draft waits: it lands" $ do
+    (s0, _) <- blocksOn killedBy []
+    live <- newIORef (Just (1, testText))
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> if f == root </> testRel then readIORef live else pure Nothing)}
+        expanded = testText <> "\n\ndef test_boundary_int_seats() -> None:\n    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n    assert ...\n\n"
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, _, _, Just later)) <- blockKill (root </> moduleRel) 6 s
+    -- the editor opens the file as it was, then expands the stub while the model writes
+    _ <- forkIO (threadDelay 300000 >> writeIORef live (Just (2, expanded)))
+    Right (drafted, [edit]) <- later ignore
+    (fePath edit, feVersion edit) `shouldBe` (testFile, Just 2)
+    blockState drafted `shouldBe` Green
+    applyChange (feRange edit) (feText edit) expanded `shouldBe` testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n"
+  it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, _, _, Just later)) <- blockKill (root </> moduleRel) 6 s
+    landed <- later ignore
+    either id (const "landed") landed `shouldBe` "the stub was not expanded in the editor; draft when it is"
+    Just (back, _) <- blockFor testFile s
+    blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
   it "(h) a survivor's stub typed over while it drafts: the person's text stands, tested; with no model, the stub waits for draft" $ do
     (s0, _) <- blocksOn killedBy []
     live <- newIORef Nothing
