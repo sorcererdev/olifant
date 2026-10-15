@@ -2374,7 +2374,7 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   is the block's red, `outcomeOf`, landed through `AtKept` so `blockRedAt` names it and the HUD
   says `no longer passes`; a failed draft whose fill failed its tests (`testsFailed`) is run once
   more to find a kept red, `draftRedOn`, and the next draft's instruction names that test), `VerifyRedAt` (a new test fails at its assertion,
-  or passes: a regression test, unless its function's body still raises, `bodyRaises`)
+  or passes: a regression test, unless its function's body is still only a `raise NotImplementedError`, `bodyRaises`)
   or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
   mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill
   phase read it: a `Reindented` fill as read), unless, in Python, it would not parse
@@ -2391,14 +2391,17 @@ machine served by the server. The person's "magic circle" is a `Block` internall
   four at a time.
 - **`blockDraftAt`** is `draft` at a cursor: the file's circle (`blockDraft`), or, with none, on
   a red test, an `ExistingTest` block (the third `Kind`: the code is right, the test is drafted)
-  on the test's lines (`testAt`), keeping the file's other passing tests and claiming its module
-  too. It drafts at once: `existingTestTemplate` makes the arrangement (the lines between the
-  def and the first assert) a `stmt` hole, the assertion left as it is, verified by `VerifyKeep`
+  on the test's lines (`testAt`: a method's id names its class), keeping the file's other passing
+  tests and claiming its module too; a test `existingParts` cannot shape (no assert line, a def
+  over several lines) is refused before anything opens. It drafts at once: `existingTestTemplate`
+  makes the arrangement (from the def, or a leading docstring, to the body's statement holding
+  the first assert, a `with` around it the assertion's) a `stmt` hole, the assertion left as it is, verified by `VerifyKeep`
   as a code block's draft is, the test as it was in its context; a red `draftRedOn` runs again
   for the runner's line, and red at the assertion (`redAtTheAssertion`) sets
   `blockAtAssertion`, so the next `draft` turns the kind to `ExistingTest True` and drafts the
   assertion too (`existingAssertionInstruction`), its line carried as `blockAssertion`.
-  Accepted, it closes (`green: test drafted`); nothing moves to the module.
+  Accepted, it closes (`green: test drafted`); nothing moves to the module. Rejected, only the
+  test's lines go back (`blockReject` splices them into the file as it is).
 - **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file for the `killTarget`
   mutant, its test id the stub's name until a test of the block finds the person's: `testNow`
   makes a test block's test its first new one, and the stub the editor expands), `blockStub`

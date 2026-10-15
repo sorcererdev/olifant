@@ -81,7 +81,9 @@ new test's stub from `begin` (`▸ test_your_name · draft · reject drops it` o
 named it and it was tested), `▸ test_handle · draft · reject drops it` on a stub
 from `stub` (named already), `drafting…` on a survivor's stub (drafted at once; with no model,
 `▸ test_boundary_party_seats · draft · reject drops it`), `red ✓ accept · go make it pass` on a
-new test red at its assertion (`green ✓ accept` on one that passes already), `· stub a test or waive`, `✓ accept`.
+new test red at its assertion (`green ✓ accept` on one that passes already), `red: … ·
+drafting…` and `red at the assertion · draft again to redraft it, or edit it` on a red test
+being drafted ([When the code is right](#when-the-code-is-right)), `· stub a test or waive`, `✓ accept`.
 
 | move | key | when | what it does |
 |---|---|---|---|
@@ -258,14 +260,19 @@ function with `<leader>mcs`.
 A red test has two readings, and each has its key. `begin` (`b`) says the test is right: a
 circle opens around the function it calls and the code is drafted. `draft` (`d`) on a red test
 with no circle open says the code is right: the test is drafted, in a circle of its own around
-the test's lines. It opens red and drafts at once (`▸ test_x · red: … · drafting…`):
+the test's lines (a test method of a class too). It opens red and drafts at once
+(`▸ test_x · red: … · drafting…`). With a circle already open in the test file or its module,
+`draft` drafts that circle instead: finish it first to draft a test.
 
-1. **The first ask is the arrangement only**, the lines between the def and the first `assert`.
-   The assertion is yours: it is left exactly as it is. The draft is verified as a code circle
+1. **The first ask is the arrangement only**: the lines between the def (or a leading docstring,
+   the test's intent, which stays) and the statement holding the first `assert`. A `with
+   pytest.raises(…):` or `for` around that assert belongs to the assertion. The assertion is
+   yours: it is left exactly as it is. The draft is verified as a code circle
    is: the test must pass on the code as it is, and the file's tests that passed when the circle
    began must still pass (a draft that breaks one is `red: test_y no longer passes · fix or
    reject`). Green, the HUD says `green ✓ accept`.
-2. **Still red at the assertion** (the run fails at the test's first `assert` line or after it),
+2. **Still red at the assertion** (the run fails within it: from that statement to the test's
+   end),
    the HUD says `red at the assertion · draft again to redraft it, or edit it`. Edit the
    assertion yourself, or `draft` again: **the second ask drafts both**, the arrangement and the
    assertion, from what the code returns (the code is the spec now) and the test's name, keeping
@@ -276,7 +283,9 @@ the test's lines. It opens red and drafts at once (`▸ test_x · red: … · dr
 Red for another reason (the file does not import, the test fails before its assertion), the HUD
 is the usual red. `accept` closes the circle: the test file keeps the drafted test and nothing
 moves to the module (the step log says `accept person green: test drafted`); `reject` puts the
-test's lines back.
+test's lines back, and only those: an edit of another test in the file stands. A test with no
+`assert` line (only `pytest.raises`, a mock's `assert_called_…`) or whose def spans several lines
+is refused before any circle opens: edit it by hand.
 
 ## What works today, and its limits
 
@@ -358,15 +367,17 @@ test's lines back.
   no circle: there is nothing to draft. Draft on a red test, or stub a new case from the function.
 - **`put the cursor in a test to draft it`** — `draft` in a test file with no circle, the cursor in
   no test (an import, a helper).
-- **`a magic circle is open in this file: accept or reject it first`** — `draft` on a red test
-  while a circle is open in its module: finish that one first.
-- **`red at the assertion · draft again to redraft it, or edit it`** — a drafted arrangement left
-  the test red at its assertion: the assertion is what disagrees with the code. Edit it, or
-  `draft` again for the model's (the arrangement and the assertion together).
+- **`this test has no assert line to draft against: edit it by hand`** — `draft` on a red test
+  with no `assert` statement: there is no assertion to keep while the arrangement is drafted.
+- **`this test's def spans several lines: edit it by hand`** — `draft` on a red test whose
+  signature is wrapped over several lines.
+- **`this circle is a test's; stub from the module's function`** — `stub` in a test's circle
+  opened by `draft` on a red test: it has no survivors. Accept or reject it, then stub from the
+  function.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a circle starts
   from what is red. Begin in the function instead to judge it.
 - **`this test passes against a body that raises: it asserts nothing about the function`** — a
-  new test of a function with no body yet (it raises `NotImplementedError`) passes: it never
+  new test of a function with no body yet (its body is only `raise NotImplementedError`) passes: it never
   reached the function, or asserts nothing of it. Make it call the function and assert on what it
   returns. (A new test that passes on a function that has a body is a regression test: `green ✓
   accept`.)
