@@ -120,6 +120,9 @@ data ServerState = ServerState
     ssOnBlock :: IORef (Block -> Int -> IO ())
   , -- | a filler that answers instead of any model (tests)
     ssTestFiller :: Maybe (ModelFiller IO)
+  , -- | how long a survivor's stub's draft waits for the editor to expand
+    -- the stub (milliseconds)
+    ssStubWaitMs :: Int
   }
 
 newServerState :: Ports -> IO ServerState
@@ -132,7 +135,7 @@ newServerState ports = do
   nextBlock <- newIORef 1
   seen <- newIORef M.empty
   onBlock <- newIORef (\_ _ -> pure ())
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided blocks nextBlock Nothing seen onBlock Nothing)
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided blocks nextBlock Nothing seen onBlock Nothing 5000)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

@@ -126,22 +126,27 @@ spec = describe "Olifant.Block" $ do
     -- the person edits after the model's failed draft: their text, so the cue is back
     hud (step' (Edited (2, 2) (Left red)) (step' (Drafted "y" "qwen" (Left red)) b0)) `shouldBe` "▸ test_f · draft 2 · red: AssertionError: assert None == Ok(None) · draft"
     -- a new test's stub, not named yet (no edit of the person's): name it first; reject is the way out
-    let stub = begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py" (Failure Nothing "a new test: write its name and assertion" "")
-    hud stub `shouldBe` "▸ src/a__test.py · red: a new test: write its name and assertion · name it, then draft · reject drops it"
-    -- a kill's stub is named already (the HUD's first field): its assertion next; no failure to show
+    let stub = begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py" (Failure Nothing "a new test: write its name" "")
+    hud stub `shouldBe` "▸ src/a__test.py · red: a new test: write its name · name it, then draft · reject drops it"
+    -- a kill's stub is named already (the HUD's first field): the draft writes its arrangement and assertion; no failure to show
     let killed = begin 3 "src/a__test.py" (TestFor (Just m)) "" (9, 11) "src/a__test.py::test_boundary_line2" (Failure Nothing "" "")
-    hud killed `shouldBe` "▸ test_boundary_line2 · assert, then draft · reject drops it"
+    hud killed `shouldBe` "▸ test_boundary_line2 · draft · reject drops it"
     -- the person typed in the stub, red: still no model's draft, so the stub's cue stands
-    hud (step' (Edited (9, 11) (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None) · assert, then draft · reject drops it"
-    -- a begin's stub once its test is named (tested: the block's test is the new one): its assertion next
-    hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_reopens_again"}) `shouldBe` "▸ test_reopens_again · draft 1 · red: AssertionError: assert None == Ok(None) · assert, then draft · reject drops it"
+    hud (step' (Edited (9, 11) (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None) · draft · reject drops it"
+    -- a begin's stub once its test is named (tested: the block's test is the new one): the draft next
+    hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_reopens_again"}) `shouldBe` "▸ test_reopens_again · draft 1 · red: AssertionError: assert None == Ok(None) · draft · reject drops it"
     hud (step' (Edited (4, 6) (Left red)) stub {blockTestId = "src/a__test.py::test_name"}) `shouldSatisfy` ("· name it, then draft · reject drops it" `T.isSuffixOf`)
     -- a model's draft of it failed: the person reads it, no cue
     hud (step' (Drafted "x" "qwen" (Left red)) killed) `shouldBe` "▸ test_boundary_line2 · draft 1 · red: AssertionError: assert None == Ok(None)"
+  it "(h5) a drafted assertion's line is the latest draft's: the person's edit or another draft clears it; the draft applied keeps it" $ do
+    let stub = (begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py::test_handle" (Failure Nothing "" "")) {blockAssertion = Just 6}
+    blockAssertion (step' (Edited (4, 6) (Left red)) stub) `shouldBe` Nothing
+    blockAssertion (step' StartDraft stub) `shouldBe` Nothing
+    blockAssertion (step' (Applied (4, 6) (Left red)) (step' (Drafted "x" "qwen" (Left red)) stub)) `shouldBe` Just 6
   it "(h4) a new test's stub drafted red at its assertion says what accept does; a kill's test stays clean" $ do
     let stub = begin 2 "src/a__test.py" (TestFor Nothing) "" (4, 6) "src/a__test.py::test_handle" (Failure Nothing "" "")
         ready = step' (Judge []) (step' (Drafted "    table = Table()" "qwen" (Right ())) (step' StartDraft stub))
-    hud ready `shouldBe` "▸ test_handle · draft 1 · red ✓ accept · the fix is drafted next"
+    hud ready `shouldBe` "▸ test_handle · draft 1 · red ✓ accept · go make it pass"
     open ready `shouldBe` ["accept", "draft", "reject"]
     -- its draft failed: today's red, no cue
     hud (step' (Drafted "    table = Table()" "qwen" (Left red)) (step' StartDraft stub)) `shouldBe` "▸ test_handle · draft 1 · red: AssertionError: assert None == Ok(None)"
@@ -240,8 +245,18 @@ spec = describe "Olifant.Block" $ do
     it "(c) the stubbed test's placeholder becomes a stmt hole at its indentation" $ do
       let (_, stub, _) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
           stubbed = test <> stub
-      testDraftTemplate py stubbed 7 `shouldSatisfy` isRight
-      testDraftTemplate py stubbed 1 `shouldSatisfy` isLeft
+      testDraftTemplate py stubbed 7 Nothing `shouldSatisfy` isRight
+      testDraftTemplate py stubbed 1 Nothing `shouldSatisfy` isLeft
+    it "(c2) a stub's assertion left `...` is a stmt hole too, worded from the test's name (a kill's: and its mutant)" $ do
+      let (_, stub, _) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+          stubbed = test <> T.replace "${2:...}" "..." stub
+      T.lines stubbed !! 7 `shouldBe` "    " <> stubAssertion
+      let instruction = assertionInstruction "test_reopens_again" Nothing
+      instruction `shouldBe` "assert what 'reopens again' means; one assert, the subject is `result`"
+      fmap (const ()) (testDraftTemplate py stubbed 7 (Just (8, instruction))) `shouldBe` Right ()
+      testDraftTemplate py stubbed 7 (Just (7, instruction)) `shouldSatisfy` isLeft
+      assertionInstruction "test_boundary_line5" (Just (Mutant 5 "boundary" ">" ">=" "" Nothing False))
+        `shouldBe` "assert what 'boundary line5' means; one assert, the subject is `result`; it passes on the code as it is and fails when line 5's `>` becomes `>=`"
     describe "the kill stub's name, from the mutant" $ do
       let module' = T.unlines ["class Book:", "    def handle(self, input: BookInput) -> BookOutput:", "        table = self.tables.at(input.table_id)", "        if input.party >= table.seats:", "            return TableNotFound(f\"there is no table {input.table_id}\")"]
           boundary = Mutant 4 "boundary" ">" ">=" module' Nothing False

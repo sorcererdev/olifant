@@ -26,6 +26,9 @@ module Olifant.Block
     uniqueTestName,
     testStub,
     instructionFor,
+    stubAssertion,
+    assertionInstruction,
+    snippetText,
   )
 where
 
@@ -34,7 +37,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (draftTemplate, instructionFor, killStub, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
+import Olifant.Block.Draft (assertionInstruction, draftTemplate, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
 import Olifant.Language (Failure (..), TestId, TestRun, keptVerdict)
 import Olifant.Mutate (Mutant (..))
 
@@ -76,7 +79,11 @@ data Block = Block
     -- added; green is its test and all of these passing
     blockKeep :: [TestId],
     -- | while red at a kept test (its own test passing): that test
-    blockRedAt :: Maybe TestId
+    blockRedAt :: Maybe TestId,
+    -- | a test block's assertion as a model drafted it: its line (1-based)
+    -- in the file as the draft left it, for the editor to put the cursor
+    -- on (the person confirms or edits it)
+    blockAssertion :: Maybe Int
   }
   deriving stock (Eq, Show)
 
@@ -89,6 +96,8 @@ data Move
   | Edited (Int, Int) (Either Failure ())
   | -- | the latest draft, as the editor applied it, tested: no draft of the person's
     Applied (Int, Int) (Either Failure ())
+  | -- | the editor refused the latest draft's edit (the reason): its draft is red for it
+    Unapplied Text
   | CannotRun Text
   | Judge [Mutant]
   | -- | a judged block judged again (its test file gained a test): green until it is
@@ -104,7 +113,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing
+  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
@@ -112,11 +121,15 @@ step mv b
   | not (pending b) = Left "this circle is closed; begin another"
   | otherwise = case (mv, blockState b) of
       (AtKept t inner, _) -> atKept t <$> step inner b
-      (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s}
+      -- a drafted assertion's line is the latest draft's: another draft, or the person's edit, clears it
+      (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s, blockAssertion = Nothing}
       (DraftFailed, Drafting before) -> Right b {blockState = before}
       (Drafted text by outcome, s) | drafting s || s == Green || red s -> Right (landed (blockSpan b) outcome (addDraft (Draft text by (outcomeText outcome)) b))
-      (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b))
+      (Edited sp outcome, _) -> Right (landed sp outcome (editDraft outcome b {blockAssertion = Nothing}))
       (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
+      (Unapplied why, _)
+        | d : rest <- reverse (blockDrafts b), draftBy d /= "you" ->
+            Right b {blockState = Red (Failure Nothing why ""), blockDrafts = reverse (d {draftOutcome = "red: " <> why} : rest), blockAssertion = Nothing}
       (Rejudge, Judged _) -> Right b {blockState = Green}
       (CannotRun why, _) -> Right b {blockState = Broken why, blockRedAt = Nothing}
       (Judge ms, Green) -> Right b {blockState = Judged ms}
@@ -158,6 +171,7 @@ moveName = \case
   Drafted {} -> "draft"
   Edited {} -> "edit"
   Applied {} -> "test"
+  Unapplied _ -> "draft"
   Rejudge -> "rejudge"
   CannotRun _ -> "test"
   Judge _ -> "judge"
@@ -218,7 +232,7 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Green -> "green · judging…"
       Judged ms -> case length (unwaived ms) of
         -- a new test red at its assertion is ready: accepted, its function begins on it
-        0 | TestFor Nothing <- blockKind b -> "red ✓ accept · the fix is drafted next"
+        0 | TestFor Nothing <- blockKind b -> "red ✓ accept · go make it pass"
         0 -> "clean ✓ accept"
         1 -> "1 survivor · stub a test or waive"
         n -> T.pack (show n) <> " survivors · stub a test or waive each"
@@ -228,15 +242,15 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
     -- red's next step: none once the model's draft failed (it tried; the
     -- person reads it); a test's stub no model has drafted yet: a new
     -- test's is named first (draft refuses a stub still called test_name),
-    -- a kill's is named already (the HUD's first field), and reject drops
-    -- either; else draft
+    -- a kill's is named already (the HUD's first field); the draft writes
+    -- its arrangement and, left `...`, its assertion; reject drops either;
+    -- else draft
     redCue = case (reverse (blockDrafts b), blockKind b) of
       -- (one that would not parse was never written: draft again)
       (d : _, _) | draftBy d /= "you" -> if ("red: " <> unparsedDraft) `T.isPrefixOf` draftOutcome d then "draft" else ""
       -- a begin's stub is named once its test has a name of the person's
       (_, TestFor Nothing) | testName == stubName || not ("::" `T.isInfixOf` blockTestId b) -> "name it, then draft · reject drops it"
-      (_, TestFor Nothing) -> "assert, then draft · reject drops it"
-      (_, TestFor (Just _)) -> "assert, then draft · reject drops it"
+      (_, TestFor _) -> "draft · reject drops it"
       _ -> "draft"
 
 -- | A code block's test file's run as the circle takes it ('keptVerdict'):

@@ -15,7 +15,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
-import Olifant.Generation.FillPhase (fillPhase, reindented)
+import Olifant.Generation.FillPhase (assertionSpan, fillPhase, reindented)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
@@ -832,6 +832,10 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
           (_, hs, _) <- fillPhase ws tools (M.singleton "v" verify) [] base [PlannedHole site (HoleUnfilled "") Nothing]
           pure (map phStatus hs)
         ran r = Runner (\_ _ _ -> pure (Right r))
+    it "(d) a test's assertion runs from its first assert statement to its end (a name that begins with `assert` is none)" $ do
+      assertionSpan "test_x" "def test_x() -> None:\n    assertion = 1\n    assert assertion == 1\n\n\ndef test_y() -> None:\n    assert True\n" `shouldBe` Just (3, 3)
+      assertionSpan "test_x" "def test_x() -> None:\n    assert(\n        1 == 1\n    )\n" `shouldBe` Just (2, 4)
+      assertionSpan "test_z" "def test_x() -> None:\n    assert True\n" `shouldBe` Nothing
     it "(d) VerifyRedAt: a test that passes before any code exists fails verification" $ do
       st <- outcome (VerifyRedAt "t" 3) (ran (TestRun ["t"] [] Nothing))
       st `shouldSatisfy` \case [HoleUnfilled why] -> "does not test the new behaviour" `T.isInfixOf` why; _ -> False

@@ -2,7 +2,7 @@
 
 module Olifant.ServerSpec (spec) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Monad (forM, void)
 import Data.Aeson (Value (..), (.:))
@@ -13,7 +13,7 @@ import Data.Foldable (toList)
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAlphaNum, isDigit)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isNothing, listToMaybe)
 import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
@@ -30,9 +30,9 @@ import Olifant.Server.Block (importedModules, settle)
 import Olifant.Server.BlockMoves (rejectDeleted)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
-import Olifant.Fill (FillRequest (..), Filler (..), ModelFiller (..))
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import System.IO.Temp (withSystemTempDirectory)
-import Data.List (isSuffixOf)
+import Data.List (isPrefixOf, isSuffixOf)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
@@ -286,6 +286,8 @@ blockSpecs = describe "blocks" $ do
     take 4 (T.lines body) `shouldBe` ["from shop.lonely import alone", "", "", "def test_${1:name}() -> None:"]
     (blockFile tb, blockKind tb, blockSpan tb, blockBase tb) `shouldBe` (file, Block.TestFor Nothing, (4, 6), "")
     blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    -- the name is the person's to write: the assertion is drafted from it
+    hud tb `shouldBe` "\9656 src/shop/lonely__test.py \183 red: a new test: write its name \183 name it, then draft \183 reject drops it"
     fmap fst <$> blockFor file s `shouldReturn` Just tb
     -- one block per file: the function cannot begin again meanwhile
     (_, again) <- blockBegin ignore (root </> "src/shop/lonely.py") 2 s
@@ -365,6 +367,74 @@ blockSpecs = describe "blocks" $ do
     let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at body (applyEdits imports testText))
     (_, Just tested) <- blockChanged testFile (openDoc testFile 2 named s)
     blockState tested `shouldSatisfy` \case Red f -> "passes before any code exists" `T.isInfixOf` fMessage f; _ -> False
+
+  describe "(A) a stub's assertion drafted from its name" $ do
+    let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+        -- what the model was asked (each hole, its instruction), and what it answers
+        drafter runner = do
+          (s0, runs) <- blocksOn runner []
+          asked <- newIORef []
+          let filler = ModelFiller "drafter" 0 (Filler (\req -> modifyIORef' asked (++ [(fhName h, fhInstruction h) | h <- frHoles req]) >> pure (Right (M.fromList [("arrange", "reopen = Reopen()\nresult = reopen.again()"), ("assertion", "assert result == 1")]))))
+              s = (openDoc (root </> moduleRel) 1 reopen s0) {ssTestFiller = Just filler}
+          (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+          -- the person names it; ASSERTION: what they type at its tab stop (`...` left as it is)
+          let opened assertion = T.replace "kills_the_boundary" "reopens_again" (expandStub at (T.replace "${2:...}" assertion body) (applyEdits imports testText))
+          pure (s, testFile, opened, (asked, runs))
+    it "a stub left `assert ...`: the draft writes arrangement and assertion, red at the assertion (lines below its first), accepted: the function begins" $ do
+      (s, testFile, opened, (asked, runs)) <- drafter killedBy
+      let named = opened "..."
+          st = openDoc testFile 1 named s
+      ran <- runs
+      (_, Right (drafted, [edit])) <- blockDraft ignore testFile st
+      blockState drafted `shouldBe` Green
+      -- the two holes are verified once, together
+      (subtract ran <$> runs) `shouldReturn` 1
+      readIORef asked `shouldReturn` [("arrange", "set up what the assertion below needs, ending with `result = ` the call the test is about"), ("assertion", "assert what 'reopens again' means; one assert, the subject is `result`")]
+      let applied = applyChange (feRange edit) (feText edit) named
+          ls = T.splitOn "\n" applied
+      -- the assertion's line, for the editor's cursor
+      Just at <- pure (blockAssertion drafted)
+      ls !! (at - 1) `shouldBe` "    assert result == 1"
+      take 2 (drop (at - 3) ls) `shouldBe` ["    reopen = Reopen()", "    result = reopen.again()"]
+      field "assertion_line" (blockJson drafted 0) `shouldBe` Just (Number (fromIntegral at))
+      -- applied: red at its assertion, judged; accepted, the function begins on it
+      let st2 = changeDoc testFile 2 applied st
+      (_, Just tested) <- blockChanged testFile st2
+      blockState tested `shouldBe` Judged []
+      hud tested `shouldSatisfy` ("red \10003 accept \183 go make it pass" `T.isSuffixOf`)
+      (_, Right _) <- blockAccept testFile st2
+      Just (code, _) <- blockFor (root </> moduleRel) st2
+      (blockKind code, blockTestId code) `shouldBe` (Block.Code, T.pack testRel <> "::test_reopens_again")
+    it "an arrangement that fails before the assertion: both holes are asked again, together, and the draft lands; one test run per attempt" $ do
+      -- a test whose arrangement raises fails there, before its assertion
+      let raising files = case M.lookup testRel files of
+            Just t | Just at <- lookup True [("raise ValueError" `T.isInfixOf` l, i) | (i, l) <- zip [1 :: Int ..] (T.splitOn "\n" t)] ->
+              Right (TestRun [] [(T.pack testRel <> "::test_reopens_again", Failure (Just at) "ValueError: boom" "")] Nothing)
+            _ -> killedBy files
+      (s0, runs) <- blocksOn raising []
+      asked <- newIORef []
+      let answers = [M.fromList [("arrange", "raise ValueError(\"boom\")"), ("assertion", "assert result == 1")], M.fromList [("arrange", "result = Reopen().again()"), ("assertion", "assert result == 1")]]
+          filler = ModelFiller "drafter" 1 (Filler (\req -> atomicModifyIORef' asked (\a -> (a ++ [map fhName (frHoles req)], length a)) >>= \n -> pure (Right (answers !! min n 1))))
+          s = (openDoc (root </> moduleRel) 1 reopen s0) {ssTestFiller = Just filler}
+      (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+      let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at (T.replace "${2:...}" "..." body) (applyEdits imports testText))
+      ran <- runs
+      (_, Right (drafted, [edit])) <- blockDraft ignore testFile (openDoc testFile 1 named s)
+      readIORef asked `shouldReturn` [["arrange", "assertion"], ["arrange", "assertion"]]
+      blockState drafted `shouldBe` Green
+      feText edit `shouldSatisfy` ("result = Reopen().again()" `T.isInfixOf`)
+      (subtract ran <$> runs) `shouldReturn` 2
+    it "a stub whose assertion the person typed: only the arrangement is drafted" $ do
+      (s, testFile, opened, (asked, _)) <- drafter killedBy
+      (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 (opened "Reopen().again() == 1") s)
+      blockState drafted `shouldBe` Green
+      map fst <$> readIORef asked `shouldReturn` ["arrange"]
+      blockAssertion drafted `shouldBe` Nothing
+      field "assertion_line" (blockJson drafted 0) `shouldBe` Nothing
+    it "a drafted assertion that passes on the code as it is: red, it does not test the new behaviour" $ do
+      (s, testFile, opened, _) <- drafter (\files -> Right (TestRun [T.pack testRel <> "::test_reopens_again"] [] Nothing) <* killedBy files)
+      (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 (opened "...") s)
+      blockState drafted `shouldSatisfy` \case Red f -> "does not test the new behaviour" `T.isInfixOf` fMessage f; _ -> False
 
   it "(c) draft lands only if the document is still the version it planned against (Review Focus 1)" $ do
     (s0, _) <- blocks redOnStub []
@@ -451,46 +521,133 @@ blockSpecs = describe "blocks" $ do
     log' `shouldSatisfy` ("block 1\taccept\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("block 2\treject\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("\tbegin\t" `T.isInfixOf`)
-  it "(h) kill opens a test block in the test file with the stub at the end; drafting it is verified both ways" $ do
+  it "(h) kill opens a test block in the test file with the stub at the end, drafted at once: the snippet answered, the draft lands arrangement and assertion, verified both ways; applied, accept is open" $ do
     (s0, _) <- blocksOn killedBy []
-    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    live <- newIORef Nothing
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> if f == root </> testRel then readIORef live else pure Nothing)}
     (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
     map muLine (survivors judged) `shouldBe` [6]
-    (_, Right (code, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    (_, Right (code, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
     (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
     -- the stub's test is named from the mutant (`seats > 2` → `seats >= 2`), in the name's tab stop
     body `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
     Just (tb, 0) <- blockFor testFile s
     let [boundary] = survivors judged
     (blockFile tb, blockSpan tb, blockKind tb) `shouldBe` (testFile, (9, 11), Block.TestFor (Just boundary))
-    blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
+    -- drafting while the editor expands the stub: only reject is open
+    blockState tb `shouldSatisfy` \case Drafting _ -> True; _ -> False
+    open tb `shouldBe` ["reject"]
     -- the code block is still the module's
     fmap (blockId . fst) <$> blockFor (root </> moduleRel) s `shouldReturn` Just (blockId judged)
     -- the test block's own file has no survivor to stub a test for
     (_, fromTest) <- blockKill testFile 9 s
     either id (const "stubbed") fromTest `shouldBe` "stub a test from the code's magic circle, in its module"
-    -- the editor expands the stub; the model arranges; the mutant fails it: it stands
-    let st = openDoc testFile 1 (expandStub at body testText) s
-    (_, Right (drafted, edits)) <- blockDraft ignore testFile st
+    -- the editor expands the stub (a blank last line more than the stub's
+    -- text, as vim.snippet leaves it): that edit is the draft's, not tested
+    let editor = editorStub at body testText
+        st = openDoc testFile 1 editor s
+    writeIORef live (Just (1, editor))
+    (_, untested) <- blockChanged testFile st
+    untested `shouldBe` Nothing
+    -- the draft lands: arrangement and assertion, the mutant fails it, the code passes it
+    Right (drafted, [edit]) <- later ignore
     blockState drafted `shouldBe` Green
     map draftBy (blockDrafts drafted) `shouldBe` ["recorded"]
-    map fePath edits `shouldBe` [testFile]
-    map feText edits `shouldSatisfy` any ("table = CloseTable()" `T.isInfixOf`)
+    (fePath edit, feVersion edit) `shouldBe` (testFile, Just 1)
+    let applied = applyChange (feRange edit) (feText edit) editor
+        ls = T.splitOn "\n" applied
+    take 3 (drop 8 ls) `shouldBe` ["def test_boundary_int_seats() -> None:", "    table = CloseTable()", "    assert table.handle(2) == 0"]
+    blockAssertion drafted `shouldBe` Just 11
+    -- applied: tested, judged, accept open
+    (_, Just tested) <- blockChanged testFile (changeDoc testFile 2 applied st)
+    blockState tested `shouldBe` Judged []
+    open tested `shouldSatisfy` elem "accept"
+    log' <- steps s
+    log' `shouldSatisfy` ("block 1\tkill\tperson\tboundary on line 6" `T.isInfixOf`)
+    [m | l <- T.lines log', "\tblock 2\t" `T.isInfixOf` ("\t" <> l), m : _ <- [drop 2 (T.splitOn "\t" l)]] `shouldSatisfy` (["begin", "drafting", "draft"] `isPrefixOf`)
     -- a runner the mutant never fails: the draft does not stand
     (n0, _) <- blocksOn (\files -> if "seats >= 2" `T.isInfixOf` M.findWithDefault "" moduleRel files then Right (TestRun [testId] [] Nothing) else killedBy files) []
     let n = (openDoc (root </> moduleRel) 1 written n0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 n
-    (_, Right (_, nf, nat, nbody)) <- blockKill (root </> moduleRel) 6 n
-    (_, Right (refused, _)) <- blockDraft ignore nf (openDoc nf 1 (expandStub nat nbody testText) n)
+    (_, Right (_, _, _, _, Just nlater)) <- blockKill (root </> moduleRel) 6 n
+    Right (refused, _) <- nlater ignore
     blockState refused `shouldSatisfy` \case Red f -> "does not notice the mutant" `T.isInfixOf` fMessage f; _ -> False
-    steps s >>= (`shouldSatisfy` ("block 1\tkill\tperson\tboundary on line 6" `T.isInfixOf`))
-    steps s >>= (`shouldSatisfy` ("block 2\tbegin\tperson" `T.isInfixOf`))
+  it "(h) the editor's text for a survivor's stub, as vim.snippet.expand leaves it (placeholders' text, no markers, a blank line more), arriving while the draft waits: it lands" $ do
+    (s0, _) <- blocksOn killedBy []
+    live <- newIORef (Just (1, testText))
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> if f == root </> testRel then readIORef live else pure Nothing)}
+        expanded = testText <> "\n\ndef test_boundary_int_seats() -> None:\n    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n    assert ...\n\n"
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, _, _, Just later)) <- blockKill (root </> moduleRel) 6 s
+    -- the editor opens the file as it was, then expands the stub while the model writes
+    _ <- forkIO (threadDelay 300000 >> writeIORef live (Just (2, expanded)))
+    Right (drafted, [edit]) <- later ignore
+    (fePath edit, feVersion edit) `shouldBe` (testFile, Just 2)
+    blockState drafted `shouldBe` Green
+    applyChange (feRange edit) (feText edit) expanded `shouldBe` testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n"
+  it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, _, _, Just later)) <- blockKill (root </> moduleRel) 6 s
+    landed <- later ignore
+    either id (const "landed") landed `shouldBe` "the stub was not expanded in the editor; draft when it is"
+    Just (back, _) <- blockFor testFile s
+    blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
+  it "(h) a survivor's stub's draft the editor refuses (applyEdit not applied): red, the person's text stands" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    Right (drafted, [_]) <- later ignore
+    let editor = T.dropEnd 1 (editorStub at body testText)
+    (_, Right refused) <- blockUnapplied testFile (blockId drafted) (openDoc testFile 1 editor s)
+    blockState refused `shouldBe` Red (Failure Nothing "the editor refused the edit" "")
+    map draftOutcome (blockDrafts refused) `shouldBe` ["red: the editor refused the edit"]
+    blockOn refused `shouldBe` editor
+    blockAssertion refused `shouldBe` Nothing
+    -- another circle's number: nothing
+    (_, other) <- blockUnapplied testFile (blockId drafted + 1) s
+    either id (const "moved") other `shouldBe` "the magic circle moved on"
+  it "(h) a survivor's stub's draft cancelled once answered: back at the stub, red, logged" $ do
+    (s0, _) <- blocksOn killedBy []
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, _, _, Just _)) <- blockKill (root </> moduleRel) 6 s
+    (_, Right back) <- blockDraftStopped "cancelled" testFile s
+    blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
+    blockDrafts back `shouldBe` []
+    steps s >>= (`shouldSatisfy` ("block 2\tdrafting\tperson\tno draft: cancelled" `T.isInfixOf`))
+    -- a block not drafting is left as it is
+    (_, again) <- blockDraftStopped "cancelled" testFile s
+    either id (const "stopped") again `shouldBe` "no draft is in flight"
+  it "(h) a survivor's stub typed over while it drafts: the person's text stands, tested; with no model, the stub waits for draft" $ do
+    (s0, _) <- blocksOn killedBy []
+    live <- newIORef Nothing
+    let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> if f == root </> testRel then readIORef live else pure Nothing)}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    let mine = T.replace "test_boundary_int_seats" "test_kills_the_boundary" (editorStub at body testText)
+    writeIORef live (Just (2, mine))
+    landed <- later ignore
+    either id (const "landed") landed `shouldBe` "the file changed while drafting; your text stands"
+    Just (back, _) <- blockFor testFile s
+    blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
+    blockTestId back `shouldBe` T.pack testRel <> "::test_kills_the_boundary"
+    -- no model: the stub waits
+    (w0, _) <- blocksOn killedBy []
+    let w = openDoc (root </> moduleRel) 1 written w0
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 w
+    (_, Right (_, wf, _, _, none)) <- blockKill (root </> moduleRel) 6 w
+    isNothing none `shouldBe` True
+    Just (waiting, _) <- blockFor wf w
+    hud waiting `shouldBe` "\9656 test_boundary_int_seats \183 draft \183 reject drops it"
   it "(h2) kill off a survivor's line takes the top-ranked survivor: the stub and the test block are that mutant's; with none left it is refused" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
     let [boundary] = survivors judged
-    (_, Right (code, testFile, at, body)) <- blockKill (root </> moduleRel) 3 s
+    (_, Right (code, testFile, at, body, _)) <- blockKill (root </> moduleRel) 3 s
     (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
     body `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
     Just (tb, 0) <- blockFor testFile s
@@ -506,10 +663,10 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocksOn killedBy []
     let s = openDoc (root </> moduleRel) 1 written s0
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body, _)) <- blockKill (root </> moduleRel) 6 s
     -- its HUD names the stub's test and how to leave
     Just (tb, _) <- M.lookup testFile <$> readIORef (ssBlocks s)
-    hud tb `shouldBe` "▸ test_boundary_int_seats · assert, then draft · reject drops it"
+    hud tb `shouldBe` "▸ test_boundary_int_seats · draft · reject drops it"
     -- a second circle in the test file is refused, naming it
     (_, busy) <- blockKill (root </> moduleRel) 6 s
     either id (const "stubbed") busy `shouldBe` "a magic circle is open in src/shop/close_table__test.py: accept or reject it there first"
@@ -520,7 +677,7 @@ blockSpecs = describe "blocks" $ do
     blockState expanded `shouldSatisfy` \case Red _ -> True; _ -> False
     -- the person typed over the stub's name: the HUD (and the block's test) follow it
     hud expanded `shouldSatisfy` ("▸ test_kills_the_boundary · " `T.isPrefixOf`)
-    hud expanded `shouldSatisfy` ("· assert, then draft · reject drops it" `T.isSuffixOf`)
+    hud expanded `shouldSatisfy` ("· draft · reject drops it" `T.isSuffixOf`)
     blockTestId expanded `shouldBe` T.pack testRel <> "::test_kills_the_boundary"
     (_, gone) <- blockChanged testFile (changeDoc testFile 2 mine s)
     fmap blockState gone `shouldBe` Just Rejected
@@ -535,7 +692,7 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocksOn killedBy []
     let s = openDoc (root </> moduleRel) 1 written s0
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body, _)) <- blockKill (root </> moduleRel) 6 s
     let stubbed = expandStub at body testText
     (_, Just _) <- blockChanged testFile (openDoc testFile 1 stubbed s)
     (_, renaming) <- blockChanged testFile (changeDoc testFile 2 (T.replace "def test_kills_the_boundary(" "def t(" stubbed) s)
@@ -549,7 +706,7 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocksOn killedBy []
     let s = openDoc (root </> moduleRel) 1 written s0
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
+    (_, Right (_, testFile, at, body, _)) <- blockKill (root </> moduleRel) 6 s
     let stubbed = expandStub at body testText
         st = openDoc testFile 1 stubbed s
     (_, Just stale) <- blockChanged testFile st
@@ -565,7 +722,7 @@ blockSpecs = describe "blocks" $ do
     body `shouldBe` "\n\ndef ${1:test_handle}() -> None:\n    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n    assert ${2:...}\n"
     (blockFile tb, blockKind tb, blockSpan tb, blockTestId tb) `shouldBe` (testFile, Block.TestFor Nothing, (9, 11), T.pack testRel <> "::test_handle")
     blockState tb `shouldSatisfy` \case Red _ -> True; _ -> False
-    hud tb `shouldBe` "▸ test_handle · assert, then draft · reject drops it"
+    hud tb `shouldBe` "▸ test_handle · draft · reject drops it"
     fmap fst <$> blockFor testFile s `shouldReturn` Just tb
     -- the test file is busy now: the stub's circle first
     (_, busy) <- blockStub (root </> moduleRel) 10 s
@@ -580,7 +737,7 @@ blockSpecs = describe "blocks" $ do
     let s = openDoc (root </> moduleRel) 1 written s0
     (_, Right judged) <- blockBegin ignore (root </> moduleRel) 6 s
     let [boundary] = survivors judged
-    (_, Right (StubKilled (code, testFile, at, body))) <- blockStub (root </> moduleRel) 6 s
+    (_, Right (StubKilled (code, testFile, at, body, _))) <- blockStub (root </> moduleRel) 6 s
     (blockId code, testFile, at) `shouldBe` (blockId judged, root </> testRel, 7)
     body `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
     Just (tb, 0) <- blockFor testFile s
@@ -589,7 +746,7 @@ blockSpecs = describe "blocks" $ do
     (o0, _) <- blocksOn killedBy []
     let o = openDoc (root </> moduleRel) 1 written o0
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 o
-    (_, Right (StubKilled (_, _, _, offBody))) <- blockStub (root </> moduleRel) 10 o
+    (_, Right (StubKilled (_, _, _, offBody, _))) <- blockStub (root </> moduleRel) 10 o
     offBody `shouldSatisfy` ("def ${1:test_boundary_int_seats}() -> None:" `T.isInfixOf`)
   it "(s3) stub refuses: outside a function, in a test file, and in a module whose circle has no survivor to take, saying why" $ do
     (s, _) <- blocks redOnStub []
@@ -610,7 +767,7 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocksOn killedBy []
     let s = openDoc (root </> moduleRel) 1 written s0
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
-    (_, Right (StubKilled (_, testFile, _, _))) <- blockStub (root </> moduleRel) 6 s
+    (_, Right (StubKilled (_, testFile, _, _, _))) <- blockStub (root </> moduleRel) 6 s
     (_, fromTest) <- blockStub testFile 9 s
     either id (const "stubbed") fromTest `shouldBe` "stub a test from the code's magic circle, in its module"
   it "(s5) stub in a method whose name another class has too: the def at the cursor, imported by its own class into a new test file" $ do
@@ -653,7 +810,7 @@ blockSpecs = describe "blocks" $ do
     let arranged = T.unlines [if "olifant: arrange" `T.isInfixOf` l then "    x = 1" else l | l <- T.lines (T.replace "${1:test_total}" "test_total" (T.replace "${2:...}" "total(1, 2) == 3" body))]
         st = openDoc testFile 1 arranged s
     (_, Just ready) <- blockChanged testFile st
-    hud ready `shouldSatisfy` ("red ✓ accept · the fix is drafted next" `T.isSuffixOf`)
+    hud ready `shouldSatisfy` ("red ✓ accept · go make it pass" `T.isSuffixOf`)
     (_, Right (done, [])) <- blockAccept testFile st
     blockState done `shouldBe` Accepted
     Just (code, _) <- blockFor (root </> sumsRel) st
@@ -788,10 +945,11 @@ blockSpecs = describe "blocks" $ do
     writeIORef (ssOnBlock s0) (\b k -> modifyIORef' pushed ((b, k) :))
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
-    let stubbedTest = expandStub at body testText
+    (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    -- drafted at once (no live documents here: the stub's text is the file)
+    let stubbedTest = T.dropEnd 1 (editorStub at body testText)
         st = openDoc testFile 1 stubbedTest s
-    (_, Right (_, [edit])) <- blockDraft ignore testFile st
+    Right (_, [edit]) <- later ignore
     let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) stubbedTest) st
     (_, Just tested) <- blockChanged testFile st2
     map draftBy (blockDrafts tested) `shouldBe` ["recorded"]
@@ -801,8 +959,8 @@ blockSpecs = describe "blocks" $ do
     M.member testFile <$> readIORef (ssBlocks s) `shouldReturn` False
     Just (code, killed) <- blockFor (root </> moduleRel) s
     (blockState code, killed) `shouldBe` (Judged [], 1)
-    -- pushed, newest first: the code block judged again; the test block drafting
-    map (\(b, k) -> (blockId b, stateName (blockState b), k)) <$> readIORef pushed `shouldReturn` [(blockId code, "judged", 1), (2, "drafting", 0)]
+    -- pushed, newest first: the code block judged again (the kill's answer pushes its test block)
+    map (\(b, k) -> (blockId b, stateName (blockState b), k)) <$> readIORef pushed `shouldReturn` [(blockId code, "judged", 1)]
     log' <- steps s
     log' `shouldSatisfy` ("block 2\taccept\tperson" `T.isInfixOf`)
     log' `shouldSatisfy` ("block 1\trejudge\tperson" `T.isInfixOf`)
@@ -821,10 +979,10 @@ blockSpecs = describe "blocks" $ do
     (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
     let s1 = changeDoc (root </> moduleRel) 2 written s
     (_, Right _) <- blockTest (root </> moduleRel) s1
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s1
-    let stubbedTest = expandStub at body withNext
+    (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s1
+    let stubbedTest = T.dropEnd 1 (editorStub at body withNext)
         st = openDoc testFile 1 stubbedTest s1
-    (_, Right (drafted, [edit])) <- blockDraft ignore testFile st
+    Right (drafted, [edit]) <- later ignore
     blockState drafted `shouldBe` Green
     -- applied: its own test is green (the sibling stays red), so it is judged
     let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) stubbedTest) st
@@ -960,7 +1118,7 @@ blockSpecs = describe "blocks" $ do
   it "(I4) a code draft sees the test file; a test draft sees the module" $ do
     (s0, _) <- blocksOn killedBy []
     seen <- newIORef []
-    let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()")]))))
+    let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(2) == 0")]))))
         s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just recording}
     (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
     (_, Right (_, [edit])) <- blockDraft ignore (root </> moduleRel) s
@@ -969,8 +1127,8 @@ blockSpecs = describe "blocks" $ do
     -- judged, a survivor killed: its test drafted with the module in view
     let s1 = changeDoc (root </> moduleRel) 2 (applyChange (feRange edit) (feText edit) stubbed) s
     (_, Just _) <- blockChanged (root </> moduleRel) s1
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s1
-    (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
+    (_, Right (_, _, _, _, Just later)) <- blockKill (root </> moduleRel) 6 s1
+    Right _ <- later ignore
     test : _ <- readIORef seen
     lookup moduleRel test `shouldBe` Just written
   describe "(I6) a draft sees the project modules its file and the file beside import" $ do
@@ -981,7 +1139,7 @@ blockSpecs = describe "blocks" $ do
         contextWith extra moduleText testText' = do
           (s0, _) <- blocksOn killedBy ((portRel, portText) : extra)
           seen <- newIORef []
-          let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()")]))))
+          let recording = ModelFiller "recording" 0 (Filler (\req -> atomicModifyIORef' seen (\cs -> (frContext req : cs, ())) >> pure (Right (M.fromList [("body", "return int(seats > 2)"), ("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(2) == 0")]))))
               s = (openDoc (root </> testRel) 1 testText' (openDoc (root </> moduleRel) 1 moduleText s0)) {ssTestFiller = Just recording}
           (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
           (_, Right (_, [edit])) <- blockDraft ignore (root </> moduleRel) s
@@ -1025,8 +1183,8 @@ blockSpecs = describe "blocks" $ do
       (_, Just _) <- blockChanged (root </> moduleRel) s1
       Just (judged, _) <- blockFor (root </> moduleRel) s1
       [line] <- pure (map muLine (survivors judged))
-      (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) line s1
-      (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 (expandStub at body testText) s1)
+      (_, Right (_, _, _, _, Just later)) <- blockKill (root </> moduleRel) line s1
+      Right _ <- later ignore
       test : _ <- readIORef seen
       map fst test `shouldBe` [moduleRel, portRel]
   it "(M1) a language with no mutation operators cannot be judged: accept stays closed" $ do
@@ -1387,17 +1545,14 @@ blockSpecs = describe "blocks" $ do
     runs `shouldReturn` ran
     (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 (T.replace "kills_the_boundary" "reopens_again" (expandStub at (assertion body) (applyEdits imports testText))) s)
     blockState drafted `shouldBe` Green
-  it "(N4) a kill's stub is named from its mutant: left as it is, draft is not refused for its name" $ do
+  it "(N4) a kill's stub is named from its mutant: left as it is, its draft is not refused for its name" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
-    -- the editor expands the stub; the person writes the assertion only
-    let kept = expandStub at (T.replace "${1:test_boundary_int_seats}" "test_boundary_int_seats" body) testText
-    T.lines kept `shouldSatisfy` elem "def test_boundary_int_seats() -> None:"
-    (_, drafted) <- blockDraft ignore testFile (openDoc testFile 1 kept s)
-    either id (const "drafted") drafted `shouldNotBe` "name the new test first: its name is still the stub's"
-    drafted `shouldSatisfy` either (const False) (const True)
+    (_, Right (_, _, _, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    T.lines (Block.snippetText body) `shouldSatisfy` elem "def test_boundary_int_seats() -> None:"
+    drafted <- later ignore
+    either id (const "drafted") drafted `shouldBe` "drafted"
     steps s >>= (`shouldSatisfy` ("block 2\tdraft\t" `T.isInfixOf`))
   it "(K1) a circle keeps the file's passing tests green: a draft that passes its test but breaks a sibling is red at the sibling, and accept is refused" $ do
     (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 2") [(testRel, siblingText)]
@@ -1475,17 +1630,19 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocksOn killedBy [("breaks.toml", "[fills]\nbody = \"return int(seats >= 2)\"\n")]
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
     (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
-    (_, Right (_, testFile, at, body)) <- blockKill (root </> moduleRel) 6 s
-    let st = openDoc testFile 1 (expandStub at body testText) s
-    (_, Right (_, [edit])) <- blockDraft ignore testFile st
-    let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) (expandStub at body testText)) st
+    (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    -- drafted at once (no live documents here: the stub's text is the file)
+    let stubbedTest = T.dropEnd 1 (editorStub at body testText)
+        st = openDoc testFile 1 stubbedTest s
+    Right (_, [edit]) <- later ignore
+    let st2 = changeDoc testFile 2 (applyChange (feRange edit) (feText edit) stubbedTest) st
     (_, Just _) <- blockChanged testFile st2
     (_, Right _) <- blockAccept testFile st2
     Just (code, _) <- blockFor (root </> moduleRel) st2
-    blockKeep code `shouldBe` [T.pack testRel <> "::test_kills_the_boundary"]
+    blockKeep code `shouldBe` [T.pack testRel <> "::test_boundary_int_seats"]
     (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) st2 {ssConfig = defaultServerConfig {scFills = Just (root </> "breaks.toml")}}
-    blockRedAt drafted `shouldBe` Just (T.pack testRel <> "::test_kills_the_boundary")
-    hud drafted `shouldSatisfy` ("red: test_kills_the_boundary no longer passes · fix or reject" `T.isSuffixOf`)
+    blockRedAt drafted `shouldBe` Just (T.pack testRel <> "::test_boundary_int_seats")
+    hud drafted `shouldSatisfy` ("red: test_boundary_int_seats no longer passes · fix or reject" `T.isSuffixOf`)
   it "(K7) a function begun green keeps the tests that passed, its own aside" $ do
     (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 9") [(testRel, siblingText)]
     (_, Right b) <- blockBegin ignore (root </> moduleRel) 6 (openDoc (root </> moduleRel) 1 written s0)
@@ -1578,8 +1735,9 @@ keepingSiblingAs sid out breaks _ files = Right (TestRun ([testId | null own] ++
     sibling = [(sid, Failure (Just 10) "assert 0 == 1" out) | breaks `T.isInfixOf` m]
 
 -- | The module's test file run test by test (by the names it defines):
--- `test_closes_a_table` red on the stub; `test_kills_the_boundary` red on
--- the boundary mutant (`seats >= 2`); `test_next` red always (the next test,
+-- `test_closes_a_table` red on the stub; `test_kills_the_boundary` (or any
+-- test asserting `table.handle(2) == 0`) red on the boundary mutant
+-- (`seats >= 2`); `test_next` red always (the next test,
 -- still being written); any other red at its assertion. A test whose
 -- arrangement is still the stub's placeholder fails there.
 killedBy :: M.Map FilePath Text -> Either Text TestRun
@@ -1593,7 +1751,7 @@ killedBy files = Right (TestRun [i | (i, Nothing) <- results] [(i, f) | (i, Just
     verdict n body
       | Just at <- lineOf ("olifant: arrange" `T.isInfixOf`) body = Just (Failure (Just at) "NotImplementedError" "")
       | n == "test_closes_a_table" = if "NotImplementedError" `T.isInfixOf` m then Just (Failure (Just 6) "NotImplementedError: later" "") else Nothing
-      | n == "test_kills_the_boundary" = if "NotImplementedError" `T.isInfixOf` m || "seats >= 2" `T.isInfixOf` m then Just (Failure (lineOf ("assert" `T.isInfixOf`) body) "assert 1 == 0" "") else Nothing
+      | n == "test_kills_the_boundary" || any (("table.handle(2) == 0" `T.isInfixOf`) . snd) body = if "NotImplementedError" `T.isInfixOf` m || "seats >= 2" `T.isInfixOf` m then Just (Failure (lineOf ("assert" `T.isInfixOf`) body) "assert 1 == 0" "") else Nothing
       | otherwise = Just (Failure (lineOf (("assert" `T.isPrefixOf`) . T.strip) body) "AssertionError" "")
 
 -- | 'testText' and the next test, still red.
@@ -1611,6 +1769,14 @@ expandStub at body text = T.intercalate "\n" (take (at - 1) ls ++ [named] ++ dro
     firstStop t = case T.breakOn "${1:" t of
       (before, stop) | not (T.null stop) -> before <> "test_kills_the_boundary" <> T.drop 1 (T.dropWhile (/= '}') stop)
       _ -> t
+
+-- | The test file as the editor leaves it once it expands a stub (its
+-- line AT replaced) and nothing is typed: each tab stop its text, and a
+-- blank last line more (vim.snippet's).
+editorStub :: Int -> Text -> Text -> Text
+editorStub at body text = T.intercalate "\n" (take (at - 1) ls ++ [Block.snippetText body] ++ drop at ls) <> "\n"
+  where
+    ls = T.splitOn "\n" text
 
 -- | Edits of one text, applied as the editor does (each over the last).
 applyEdits :: [FileEdit] -> Text -> Text
@@ -1696,7 +1862,7 @@ blocksRun syntax hook verdict extra = do
         ++ [ (root </> ".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")
            , (root </> moduleRel, stubbed)
            , (root </> testRel, testText)
-           , (root </> "fills.toml", "[fills]\nbody = \"return int(seats > 2)\"\narrange = \"table = CloseTable()\"\n") ]
+           , (root </> "fills.toml", "[fills]\nbody = \"return int(seats > 2)\"\narrange = \"table = CloseTable()\"\nassertion = \"assert table.handle(2) == 0\"\n") ]
         ++ [(root </> p, t) | (p, t) <- extra]
   runs <- newIORef (0 :: Int)
   let runner = Runner $ \_ ids files -> do

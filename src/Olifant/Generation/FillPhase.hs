@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, testsFailed) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, testsFailed, assertionSpan) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -125,33 +125,47 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               stood = if null clash then good else []
           -- A hole with `verify`: its fill must also pass that command (its
           -- tests), run over the files with every standing fill in place.
-          verified <- forM stood $ \(t, f) -> case (M.lookup (bare (name t)) verifyFor, langOf (holeFile (site t))) of
-            (Just verify, Just lang) -> do
-              toolProgress tools (Verifying (name t))
-              (scope, everything) <- projectFiles ws (with stood) lang [holeFile (site t)]
-              outcome <- case verify of
-                VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
-                VerifyRedAt tid line -> verifyRedAt lang tid line everything
-                VerifyKills tid keep new path mutated -> verifyKills lang tid keep new path mutated everything
-                VerifyTests -> case langTest lang of
-                  Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
-                  Just td -> verifyTests lang [T.pack (testsForFile td (holeFile (site t)))] everything
-                VerifyKeep own keep -> verifyKeep lang own keep everything
-              let failedPrefix = case verify of
-                    VerifyRedAt {} -> ""
-                    VerifyKills {} -> ""
-                    _ -> testsFailed <> "\n"
-              pure $ case outcome of
-                Right (True, _) -> (t, f, Nothing)
-                Right (False, out) -> (t, f, Just (failedPrefix <> T.intercalate "\n" (lastN 40 (T.lines out))))
-                Left why -> (t, f, Just ("the tests could not run: " <> describeCheckFailure why))
-            _ -> pure (t, f, Nothing)
+          -- Holes of one file sharing a verify (a test's arrangement and
+          -- assertion) are one: it runs once for them, and they stand or
+          -- are asked again together (none stands while another is pending).
+          let verifyOf t = (,holeFile (site t)) <$> M.lookup (bare (name t)) verifyFor
+              pendingOf key = [t' | t' <- tried, verifyOf t' == Just key, name t' `notElem` [name u | (u, _) <- stood]]
+          (verified, _) <- foldM (\(done, outcomes) (t, f) -> case (verifyOf t, langOf (holeFile (site t))) of
+            (Just key@(verify, _), Just lang)
+              | o : _ <- pendingOf key -> pure (done ++ [(t, f, Just ("verified with `" <> name o <> "`, which has no fill that stands"))], outcomes)
+              | Just why <- lookup key outcomes -> pure (done ++ [(t, f, why)], outcomes)
+              | otherwise -> do
+                  why <- verifyWith (with stood) t verify lang
+                  pure (done ++ [(t, f, why)], outcomes ++ [(key, why)])
+            _ -> pure (done ++ [(t, f, Nothing)], outcomes)) ([], []) stood
           let good' = [(t, f) | (t, f, Nothing) <- verified]
               verifyFailed = [(t, f, why) | (t, f, Just why) <- verified]
               accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
               failed = noFill ++ [(t {tryPrevious = tryPrevious t ++ [(f, why)]}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash ++ verifyFailed]
           forM_ good' (\(t, _) -> toolProgress tools (Filled (name t) (tryAttempts t)))
           next accepted' (maybe notes (: notes) note) failed
+
+    -- A hole's verify over FILES (every standing fill in place):
+    -- Nothing when it passes, else why not.
+    verifyWith files t verify lang = do
+      toolProgress tools (Verifying (name t))
+      (scope, everything) <- projectFiles ws files lang [holeFile (site t)]
+      outcome <- case verify of
+        VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
+        VerifyRedAt tid line -> verifyRedAt lang tid line everything
+        VerifyKills tid keep new path mutated -> verifyKills lang tid keep new path mutated everything
+        VerifyTests -> case langTest lang of
+          Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
+          Just td -> verifyTests lang [T.pack (testsForFile td (holeFile (site t)))] everything
+        VerifyKeep own keep -> verifyKeep lang own keep everything
+      let failedPrefix = case verify of
+            VerifyRedAt {} -> ""
+            VerifyKills {} -> ""
+            _ -> testsFailed <> "\n"
+      pure $ case outcome of
+        Right (True, _) -> Nothing
+        Right (False, out) -> Just (failedPrefix <> T.intercalate "\n" (lastN 40 (T.lines out)))
+        Left why -> Just ("the tests could not run: " <> describeCheckFailure why)
 
     finish mf accepted notes failed =
       let status h = case (M.lookup (holeName (phSite h)) accepted, [why | (t, why) <- failed, name t == holeName (phSite h)]) of
@@ -181,15 +195,22 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               Right () -> Right (True, "")
               Left (at, fl) -> Right (False, fromMaybe own at <> ": " <> fMessage fl <> "\n" <> fOutput fl)
 
-    -- A test draft: the test must fail, and at exactly its assertion line.
+    -- A test draft: the test must fail, and at its assertion: at or after
+    -- its first assert line, before its end, as the fills left the file
+    -- (an arrangement or assertion over several lines moves it); a test
+    -- not found there, at LINE exactly.
     verifyRedAt lang tid line everything =
       runTestsIn (toolTester tools) lang [tid] everything <&> \case
         Left why -> Left (CheckFailed why)
         Right run
           | Just why <- trBroken run -> Right (False, "the test cannot run: " <> why)
-          | [(_, f)] <- trFailed run, fLine f == Just line -> Right (True, "")
+          | [(_, f)] <- trFailed run, Just l <- fLine f, inside l -> Right (True, "")
           | [(_, f)] <- trFailed run -> Right (False, "the test fails before its assertion (line " <> maybe "?" (T.pack . show) (fLine f) <> "): " <> fMessage f)
           | otherwise -> Right (False, "the test passes before any code exists: it does not test the new behaviour")
+      where
+        (file, test) = (T.unpack (fst (T.breakOn "::" tid)), snd (T.breakOnEnd "::" tid))
+        (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan test)
+        inside l = l >= from && l <= to
 
     -- A kill: the tests that passed before and the new ones (KEEP) pass on
     -- the files, and a NEW one fails with the mutant in place; a sibling
@@ -457,3 +478,23 @@ syntaxError m = any (`T.isInfixOf` m) ["IndentationError", "SyntaxError", "Unexp
 -- failing test's id and message follow, the last 40 lines kept).
 testsFailed :: Text
 testsFailed = "the tests failed:"
+
+-- | The lines (1-based) where a test's assertion may fail in a test file:
+-- its first assert statement's line (`assert …`, not a name beginning
+-- with it) to its last line (its def's body, the lines below
+-- it deeper than the def or blank); none without a def of NAME or an
+-- assert in it.
+assertionSpan :: Text -> Text -> Maybe (Int, Int)
+assertionSpan name text = case dropWhile (not . isDef . snd) numbered of
+  (_, d) : rest ->
+    let body = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l > indentOf d) rest
+        filled = [i | (i, l) <- body, not (T.null (T.strip l))]
+        isAssert l = let st = T.strip l in st == "assert" || any (`T.isPrefixOf` st) ["assert ", "assert("]
+     in case [i | (i, l) <- body, isAssert l] of
+          a : _ -> Just (a, maximum (a : filled))
+          [] -> Nothing
+  [] -> Nothing
+  where
+    numbered = zip [1 :: Int ..] (T.splitOn "\n" text)
+    indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+    isDef l = let st = T.strip l in any (\p -> (p <> name <> "(") `T.isPrefixOf` st) ["def ", "async def "]
