@@ -28,6 +28,7 @@ module Olifant.Block
     instructionFor,
     stubAssertion,
     assertionInstruction,
+    helperSentence,
     snippetText,
   )
 where
@@ -37,7 +38,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (assertionInstruction, draftTemplate, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
+import Olifant.Block.Draft (assertionInstruction, draftTemplate, helperSentence, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
 import Olifant.Language (Failure (..), TestId, TestRun, keptVerdict)
 import Olifant.Mutate (Mutant (..))
 
@@ -83,7 +84,11 @@ data Block = Block
     -- | a test block's assertion as a model drafted it: its line (1-based)
     -- in the file as the draft left it, for the editor to put the cursor
     -- on (the person confirms or edits it)
-    blockAssertion :: Maybe Int
+    blockAssertion :: Maybe Int,
+    -- | a code block's test file (absolute; the server sets it as the
+    -- block begins), where its red is: a block without it pushes no
+    -- failure
+    blockTestFile :: Maybe FilePath
   }
   deriving stock (Eq, Show)
 
@@ -113,7 +118,7 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing
+  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing Nothing
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block

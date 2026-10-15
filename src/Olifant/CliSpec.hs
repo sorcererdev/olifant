@@ -918,6 +918,18 @@ runCliSpec = describe "runCli" $ do
     (code, out, _, _) <- runWith "" fs False ["gen", "outer"]
     code `shouldBe` ExitFailure 1
     jsonAt ["error", "code"] out `shouldBe` Just (String "generator_invalid")
+  it "runs a `menu = false` generator, on its own and as another's [[uses]] step" $ do
+    let fs =
+          project
+            ++ [ ("/proj/.olifant/generators/outer/generator.toml", "description = \"o\"\nlanguage = \"x\"\n[[uses]]\ngenerator = \"inner\"\n")
+               , ("/proj/.olifant/generators/inner/generator.toml", "description = \"i\"\nlanguage = \"x\"\nmenu = false\n[[edits]]\ncreate = \"inner.txt\"\ntext = \"in\\n\"\n")
+               ]
+    (code, _, _, files) <- runWith "" fs False ["gen", "outer"]
+    code `shouldBe` ExitSuccess
+    M.lookup "/proj/inner.txt" files `shouldBe` Just "in\n"
+    (alone, _, _, again) <- runWith "" fs False ["gen", "inner"]
+    alone `shouldBe` ExitSuccess
+    M.lookup "/proj/inner.txt" again `shouldBe` Just "in\n"
   it "keeps applied output compact (no file contents); --plan still shows them" $ do
     (_, applied, _, _) <- runWith "" project False ["gen", "model", "--set", "name=post"]
     (_, planned, _, _) <- runWith "" project False ["gen", "model", "--set", "name=post", "--plan"]

@@ -10,6 +10,7 @@ import Olifant.Block
 import Olifant.Language (Failure (..), Language (..), TestRun (..), parseLanguage)
 import Data.Text.IO qualified as TIO
 import Olifant.Mutate (Mutant (..))
+import Olifant.Template (templateSource)
 import Test.Hspec
 import Test.Hspec.Hedgehog (forAll, hedgehog, success, (===))
 
@@ -257,6 +258,18 @@ spec = describe "Olifant.Block" $ do
       testDraftTemplate py stubbed 7 (Just (7, instruction)) `shouldSatisfy` isLeft
       assertionInstruction "test_boundary_line5" (Just (Mutant 5 "boundary" ">" ">=" "" Nothing False))
         `shouldBe` "assert what 'boundary line5' means; one assert, the subject is `result`; it passes on the code as it is and fails when line 5's `>` becomes `>=`"
+    it "(c3) in a test file with the pack's helper (`def command(`), both holes ask that it be passed the adapters arranged, else neither" $ do
+      let (_, stub, _) = killStub py test (Mutant 5 "boundary" ">" ">=" "" Nothing False)
+          stubbed = test <> T.replace "${2:...}" "..." stub
+          helped = stubbed <> "\n\ndef command() -> int:\n    return 1\n"
+          instruction = assertionInstruction "test_reopens_again" Nothing
+          holes t = either (const []) (filter ("{= ?" `T.isInfixOf`) . T.lines . templateSource) (testDraftTemplate py t 7 (Just (8, instruction)))
+      map (helperSentence `T.isInfixOf`) (holes helped) `shouldBe` [True, True]
+      map (helperSentence `T.isInfixOf`) (holes stubbed) `shouldBe` [False, False]
+      -- a query's test file: its helper is `query(…)`
+      let queried = stubbed <> "\n\ndef query() -> int:\n    return 1\n"
+      map ("build the query with the helper, passing the adapters you arranged (`query(booking_repository=repository)`)" `T.isInfixOf`) (holes queried) `shouldBe` [True, True]
+      helperSentence `shouldBe` "build the command with the helper, passing the adapters you arranged (`command(booking_repository=repository)`); never call the helper bare after arranging a repository"
     describe "the kill stub's name, from the mutant" $ do
       let module' = T.unlines ["class Book:", "    def handle(self, input: BookInput) -> BookOutput:", "        table = self.tables.at(input.table_id)", "        if input.party >= table.seats:", "            return TableNotFound(f\"there is no table {input.table_id}\")"]
           boundary = Mutant 4 "boundary" ">" ">=" module' Nothing False

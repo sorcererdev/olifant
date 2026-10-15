@@ -13,6 +13,7 @@ module Olifant.Block.Draft
     instructionFor,
     stubAssertion,
     assertionInstruction,
+    helperSentence,
     snippetText,
   )
 where
@@ -60,10 +61,24 @@ testDraftTemplate lang testText line assertion
     current = ls !! (line - 1)
     indentOf = T.takeWhile (`elem` [' ', '\t'])
     arrange = maybe arrangeInstruction (const (arrangeInstruction <> ", ending with `result = ` the call the test is about")) assertion
+    -- a file with the pack's helper: the arranged adapters go through it
+    helped t = maybe t (\h -> t <> "; " <> helperSentenceFor h) helper
+    helper = listToMaybe [h | l <- ls, h <- ["command", "query"], ("def " <> h <> "(") `T.isPrefixOf` l]
     marked i l
-      | i == line = indentOf l <> "{= ? arrange: stmt | " <> arrange <> " =}"
-      | Just (a, instruction) <- assertion, i == a = indentOf l <> "{= ? assertion: stmt | " <> oneLine instruction <> " =}"
+      | i == line = indentOf l <> "{= ? arrange: stmt | " <> helped arrange <> " =}"
+      | Just (a, instruction) <- assertion, i == a = indentOf l <> "{= ? assertion: stmt | " <> helped (oneLine instruction) <> " =}"
       | otherwise = l
+
+-- | What a test draft is told in a file whose tests build their subject
+-- with a helper (python-htmx's `def command(…)`, its ports keyword
+-- arguments with fakes for defaults): an adapter arranged and then not
+-- passed is never used.
+helperSentence :: Text
+helperSentence = helperSentenceFor "command"
+
+-- | 'helperSentence' for a helper named for what it builds (`command`, `query`).
+helperSentenceFor :: Text -> Text
+helperSentenceFor h = "build the " <> h <> " with the helper, passing the adapters you arranged (`" <> h <> "(booking_repository=repository)`); never call the helper bare after arranging a repository"
 
 -- | A stub's assertion as the editor expands it (its tab stop's text):
 -- left so, the draft writes it.

@@ -74,6 +74,9 @@ data GeneratorWith src = Generator
     genRecognize :: Bool
   , -- | `summary`: a short line for lists and pickers (see 'Olifant.Output.shortSummary')
     genSummary :: Maybe Text
+  , -- | `menu` (default true): false keeps it out of the ⚡ menu and the
+    -- picker; the CLI, other generators and completion still reach it
+    genMenu :: Bool
   }
   deriving stock (Show, Functor, Foldable, Traversable)
 
@@ -140,7 +143,7 @@ data Unless t = UnlessExists t | UnlessMatches t
 -- fix removes or rewrites the code it found (spec §5.9).
 replaceGenerator :: FilePath -> (Int, Int) -> Text -> Template -> Generator
 replaceGenerator path range old new =
-  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix") [] False [] [] [] False Nothing
+  Generator (GeneratorId "olifant/fix") "Replace the code a rule found" "" 1 [] [] Nothing [Replace (Template (T.pack path) [Lit (T.pack path)]) range old new] [] [] [] Nothing (Just "Fix") [] False [] [] [] False Nothing False
 
 -- | The name people see: `name`, or one made from the id
 -- (`rust-htmx/command-dependency` → "Command Dependency").

@@ -5,7 +5,7 @@ module Olifant.LspSpec (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Applicative ((<|>))
-import Control.Monad (forM, forM_, void, when)
+import Control.Monad (forM, forM_, void, when, (<=<))
 import Data.Foldable (toList)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
@@ -290,6 +290,24 @@ actionsSpec = describe "⚡ actions at the cursor" $ do
       case named "Add a port" actions of
         a : _ -> (a ^. L.data_ >>= lookupKey "choices" >>= lookupKey "port") `shouldSatisfy` maybe False (\case Array xs -> String "table_repository" `elem` xs; _ -> False)
         [] -> expectationFailure "no action"
+  it "(f) leaves out a generator with `menu = false` (the old test-case): not in the ⚡ menu, the picker, the hover's ⚡ list nor olifant/fileActions" $
+    withPython [] $ \ports dir -> do
+      ((actions, listed, hover, fileActions), _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking__test.py" "python"
+        as <- getCodeActions doc (Range (Position 34 0) (Position 34 0))
+        v <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (34 :: Int), "character" .= (0 :: Int)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+        hover <- getHover doc (Position 34 0)
+        fileActions <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/fileActions")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right fa) -> pure fa
+          TResponseMessage _ _ (Left e) -> fail (show e)
+        pure ([a ^. L.title | InR a <- as], [i | Just (Array gs) <- [lookupKey "generators" v], g <- toList gs, Just (String i) <- [lookupKey "id" g]], show hover, Aeson.encode fileActions)
+      actions `shouldNotContain` ["Test case"]
+      hover `shouldNotSatisfy` T.isInfixOf "test-case" . T.pack
+      fileActions `shouldNotSatisfy` BS.isInfixOf "test-case" . BSL.toStrict
+      listed `shouldNotContain` ["python-htmx/test-case"]
+      listed `shouldContain` ["python-htmx/command"]
 
 -- | ⚡ hints and near misses (Task 11).
 hintsSpec :: Spec
@@ -339,6 +357,9 @@ completionSpec :: Spec
 completionSpec = describe "snippets: completion and inline completion (ghosts)" $ do
   let test = "src/bistro/booking/commands/create_booking__test.py"
       afterTest = Position 34 0
+      port = "src/bistro/booking/ports/booking_repository/booking_repository.py"
+      -- a blank line between the Protocol's methods
+      inProtocol = Position 12 0
       inline doc pos = do
         let params = object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= pos, "context" .= object ["triggerKind" .= (1 :: Int)]]
         request (SMethod_CustomMethod (Proxy :: Proxy "textDocument/inlineCompletion")) params >>= \case
@@ -353,28 +374,35 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
   it "(a) completes a snippet that applies here, its body with tab stops" $
     withPython [] $ \ports dir -> do
       (items, _) <- inProcessWith ports dir $ do
-        doc <- openDoc test "python"
-        getCompletions doc afterTest
-      case [i | i <- items, i ^. L.label == "Test case"] of
+        doc <- openDoc port "python"
+        getCompletions doc inProtocol
+      case [i | i <- items, i ^. L.label == "Port method"] of
         item : _ -> do
           item ^. L.insertTextFormat `shouldBe` Just InsertTextFormat_Snippet
           let body = case item ^. L.textEdit of
                 Just (InL e) -> e ^. L.newText
                 Just (InR e) -> e ^. L.newText
                 Nothing -> maybe "" id (item ^. L.insertText)
-          body `shouldSatisfy` T.isInfixOf "${1:behaviour}"
-        [] -> expectationFailure ("no Test case among " <> show (map (^. L.label) items))
+          body `shouldSatisfy` T.isInfixOf "${1:name}"
+        [] -> expectationFailure ("no Port method among " <> show (map (^. L.label) items))
   it "(b) offers the snippet anticipated here as an inline completion: unfilled, a snippet" $
     withPython [] $ \ports dir -> do
-      (v, _) <- inProcessWith ports dir (openDoc test "python" >>= (`inline` afterTest))
+      (v, _) <- inProcessWith ports dir (openDoc port "python" >>= (`inline` inProtocol))
       case firstInsert v of
         Just (Object insert) -> do
           KM.lookup "kind" insert `shouldBe` Just (String "snippet")
-          KM.lookup "value" insert `shouldSatisfy` \case Just (String body) -> "= command()" `T.isInfixOf` body; _ -> False
+          KM.lookup "value" insert `shouldSatisfy` \case Just (String body) -> "(self" `T.isInfixOf` body; _ -> False
           -- the ghost as the engine draws it, and what to resolve for the filled body
-          (firstItem v >>= lookupKey "ghost") `shouldSatisfy` \case Just (Array ls) -> String "def test_\10216behaviour\10217() -> None:" `elem` ls; _ -> False
-          (firstItem v >>= lookupKey "data" >>= lookupKey "generator") `shouldBe` Just (String "python-htmx/test-case")
+          (firstItem v >>= lookupKey "ghost") `shouldSatisfy` \case Just (Array ls) -> any (\case String l -> "def \10216name\10217(self" `T.isInfixOf` l; _ -> False) ls; _ -> False
+          (firstItem v >>= lookupKey "data" >>= lookupKey "generator") `shouldBe` Just (String "python-htmx/port-method")
         other -> expectationFailure ("inline completion: " <> show v <> " / " <> show other)
+  it "(b2) neither completes nor ghosts a generator with `menu = false` (the old test-case, after a test)" $
+    withPython [] $ \ports dir -> do
+      ((items, v), _) <- inProcessWith ports dir $ do
+        doc <- openDoc test "python"
+        (,) <$> getCompletions doc afterTest <*> inline doc afterTest
+      map (^. L.label) items `shouldNotContain` ["Test case"]
+      (firstItem v >>= lookupKey "data" >>= lookupKey "generator") `shouldNotBe` Just (String "python-htmx/test-case")
   it "(c) says it serves inline completion (LSP 3.18), though its library predates it" $
     withPython [] $ \ports dir -> do
       -- the raw response: a typed client drops what its types do not know
@@ -388,11 +416,11 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
   sequential . it "(e) answers an inline completion within 150 ms once warm (median of 20)" $
     withPython [] $ \ports dir -> do
       (times, _) <- inProcessWith ports dir $ do
-        doc <- openDoc test "python"
-        _ <- inline doc afterTest
+        doc <- openDoc port "python"
+        _ <- inline doc inProtocol
         forM [1 .. 20 :: Int] $ \_ -> do
           t0 <- liftIO getCurrentTime
-          _ <- inline doc afterTest
+          _ <- inline doc inProtocol
           t1 <- liftIO getCurrentTime
           pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
       let median = sort times !! 10
@@ -493,6 +521,18 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
       lookupKey "label" v `shouldBe` Just (String "Add Cancelled to every match")
       lookupKey "planId" v `shouldSatisfy` (/= Nothing)
       (lookupKey "plan" v >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> not (null fs); _ -> False)
+  it "(g) never follows up with a generator with `menu = false`" $ do
+    let note menu = ".olifant/generators/note/generator.toml" `withText` ("description = \"d\"\nlanguage = \"python\"\n" <> menu <> "[applies_at]\npath = \"src/**/noted.py\"\nnode = { kind = \"function_definition\" }\nsuggest = true\nlabel = \"Note\"\n[[edits]]\ncreate = \"note.txt\"\ntext = \"x\\n\"\n")
+        withText p t = (p, t)
+        asked menu = withPython [note menu, ("src/bistro/noted.py", "def f() -> None:\n    pass\n")] $ \ports dir -> fst <$> inProcessWith ports dir (do
+          doc <- openDoc "src/bistro/noted.py" "python"
+          request (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "line" .= (1 :: Int)]) >>= \case
+            TResponseMessage _ _ (Right r) -> pure r
+            TResponseMessage _ _ (Left err) -> fail (show err))
+    offered <- asked ""
+    lookupKey "label" offered `shouldBe` Just (String "Note")
+    hidden <- asked "menu = false\n"
+    lookupKey "label" hidden `shouldNotBe` Just (String "Note")
   it "(f) keeps every plan offered for the document as it is (a push and a pull both resolve)" $
     withPythonChecked [] $ \ports dir -> do
       (planned, _) <- inProcessWith ports dir $ do
@@ -838,8 +878,8 @@ scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
         fixes <- getCodeActions bad (Range (Position 0 0) (Position 0 5))
         query <- openDoc "src/bistro/booking/queries/get_day_schedule.py" "python"
         refactors <- getCodeActions query (Range (Position 18 30) (Position 18 30))
-        test <- openDoc "src/bistro/booking/commands/create_booking__test.py" "python"
-        completions <- getCompletions test (Position 34 0)
+        port <- openDoc "src/bistro/booking/ports/booking_repository/booking_repository.py" "python"
+        completions <- getCompletions port (Position 12 0)
         resolved <- case [a | InR a <- refactors, a ^. L.kind == Just CodeActionKind_RefactorRewrite, maybe False (\d -> lookupKey "missing" d == Just (Array mempty)) (a ^. L.data_)] of
           a : _ -> Just <$> resolveCodeAction a
           [] -> pure Nothing
@@ -973,7 +1013,30 @@ blockSpec = describe "olifant/block" $ do
         lookupKey "uri" push `shouldBe` Just (toJSON (filePathToUri (dir </> moduleRel)))
         (lookupKey "state" =<< lookupKey "block" push) `shouldBe` Just (String "red")
         (lookupKey "state" =<< blockOf tested) `shouldBe` Just (String "judged")
+        (lookupKey "failure" =<< blockOf tested) `shouldBe` Nothing
         refused `shouldSatisfy` either ("survivor(s): stub a test or waive each, then accept" `T.isInfixOf`) (const False)
+  it "(f2) a red block carries its failure: the test file, the line, the runner's message and the test — its own, or a kept test that no longer passes" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          kept = T.pack testRel <> "::test_books_a_free_slot"
+      BSL.writeFile script redScript
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        ((begun, push, keptRed), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc testRel "python"
+          begun <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          push <- pushed
+          -- its own test passes now, but a test that passed when it began fails
+          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText kept .= object ["line" .= (34 :: Int), "message" .= ("assert result == Ok(...)" :: Text)]])))
+          keptRed <- move "test" (onDoc doc [])
+          pure (begun, push, keptRed)
+        let failureOf = lookupKey "failure" <=< lookupKey "block"
+            failure test l message = Just (object ["file" .= (dir </> testRel), "line" .= (l :: Int), "message" .= (message :: Text), "test" .= (test :: Text)])
+            answered = either (const Nothing) Just
+        failureOf push `shouldBe` failure red 47 "assert isinstance(result, PartyTooLarge)"
+        (failureOf =<< answered begun) `shouldBe` failure red 47 "assert isinstance(result, PartyTooLarge)"
+        ((lookupKey "hud" <=< lookupKey "block") =<< answered keptRed) `shouldSatisfy` maybe False (\case String h -> "no longer passes" `T.isInfixOf` h; _ -> False)
+        (failureOf =<< answered keptRed) `shouldBe` failure kept 34 "assert result == Ok(...)"
   it "(h3) a stub deleted in the editor closes its circle: olifant/block pushes no block for the test file, and the module stubs again" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"
@@ -1012,6 +1075,46 @@ blockSpec = describe "olifant/block" $ do
         again `shouldSatisfy` either (const False) (const True)
         steps <- TIO.readFile (dir </> ".olifant/state/steps.log")
         steps `shouldSatisfy` ("\treject\tperson\tthe stub was deleted" `T.isInfixOf`)
+  it "(h4) a test block red at a run (its arrangement raises before the assertion) pushes its failure: the test file, line, message and test" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          pushedTo u = pushed >>= \v -> if lookupKey "uri" v == Just (toJSON u) then pure v else pushedTo u
+          failed v = (lookupKey "failure" =<< lookupKey "block" v) /= Nothing
+          expanded body =
+            let (before, stop) = T.breakOn "${1:" (T.replace "${2:...}" "True" body)
+                rest = T.drop 4 stop
+             in before <> T.takeWhile (/= '}') rest <> T.drop 1 (T.dropWhile (/= '}') rest)
+      BSL.writeFile script redScript
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        original <- TIO.readFile (dir </> testRel)
+        ((fresh, red', test, arrangeLine), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc testRel "python"
+          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          liftIO (TIO.writeFile script "{}")
+          Right _ <- move "test" (onDoc doc [])
+          Right killed <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
+          let Just (Number at') = lookupKey "line" =<< lookupKey "snippet" killed
+              Just (String body) = lookupKey "body" =<< lookupKey "snippet" killed
+              Just at'' = toBoundedInteger at' :: Maybe Int
+              ls = T.splitOn "\n" original
+              stubbed = T.intercalate "\n" (take (at'' - 1) ls ++ [expanded body] ++ drop at'' ls)
+              name = T.takeWhile (/= '}') (snd (T.breakOnEnd "${1:" body))
+              test = T.pack testRel <> "::" <> name
+              -- the person writes an arrangement that raises
+              placeholderAt = length (takeWhile (not . T.isInfixOf "olifant: arrange") (T.splitOn "\n" stubbed)) + 1
+              raising = T.intercalate "\n" (zipWith (\i l -> if i == placeholderAt then "    x = undefined_name" else l) [1 :: Int ..] (T.splitOn "\n" stubbed))
+          fresh <- pushedTo (doc ^. L.uri)
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument stubbed))]
+          _ <- pushedTo (doc ^. L.uri)
+          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText test .= object ["line" .= placeholderAt, "message" .= ("NameError: name 'undefined_name' is not defined" :: Text)]])))
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument raising))]
+          let untilFailed = pushedTo (doc ^. L.uri) >>= \v -> if failed v then pure v else untilFailed
+          red' <- untilFailed
+          pure (fresh, red', test, placeholderAt)
+        -- the kill stub's starting red is its placeholder: nothing to mark
+        failed fresh `shouldBe` False
+        (lookupKey "failure" =<< lookupKey "block" red') `shouldBe` Just (object ["file" .= (dir </> testRel), "line" .= arrangeLine, "message" .= ("NameError: name 'undefined_name' is not defined" :: Text), "test" .= test])
   it "(h) a survivor's stub with a model: the kill answers its snippet and pushes the test block drafting; the editor expands it; the draft comes back through workspace/applyEdit" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"
@@ -1064,6 +1167,8 @@ blockSpec = describe "olifant/block" $ do
         snippet "file" `shouldBe` Just (String (T.pack (dir </> testRel)))
         snippet "body" `shouldSatisfy` \case Just (String b) -> "def ${1:test_handle}() -> None:" `T.isInfixOf` b; _ -> False
         (block "file", block "state") `shouldBe` (Just (String (T.pack (dir </> testRel))), Just (String "red"))
+        -- a stub's red is its placeholder, not a run's: no failure to mark
+        block "failure" `shouldBe` Nothing
         outside `shouldBe` Left "put the cursor in a function to stub a test for it"
   it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do

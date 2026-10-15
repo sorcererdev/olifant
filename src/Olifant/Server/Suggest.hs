@@ -10,7 +10,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Actions (Action (..), FileAction (..), Range (..))
-import Olifant.App (actionsIn, generatorsOf)
+import Olifant.App (actionsIn, generatorsOf, menuOnly)
 import Olifant.Cursor (isSnippet)
 import Olifant.Generation (Plan (..))
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..))
@@ -46,7 +46,7 @@ suggestionFor path line = memo "suggest" path (T.pack (show line)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (root, project)) -> do
-      (acts, _) <- actionsIn (ssPorts s') project (makeRelative root path)
+      (acts, _) <- actionsIn (ssPorts s') (menuOnly project) (makeRelative root path)
       let suggested = M.fromList [(k, not (isSnippet g) && maybe False apSuggest (genAppliesAt g)) | (k, g) <- generatorsOf project]
           candidates =
             [ a

@@ -15,6 +15,8 @@ module Olifant.App
   , openProject
   , openProjectWith
   , generatorsOf
+  , inMenu
+  , menuOnly
   , subsOf
   , listGenerators
   , ShowFailure (..)
@@ -154,6 +156,17 @@ openProjectWith :: PackCache -> Ports -> FilePath -> IO (Either CatalogError Pro
 openProjectWith cache ports root =
   openProjectCatalogCached cache (pFiles ports) (CatalogPaths root (pUserConfigDir ports) (pHomeDir ports))
     <&> fmap (\cat -> Project root cat (within root (pFiles ports)))
+
+-- | Whether editors offer a generator (`menu`, default true): false keeps
+-- it off every editor surface (the ⚡ menu, the picker, ghosts,
+-- completion, file actions, hovers); the CLI and other generators'
+-- steps still run it.
+inMenu :: CatalogEntry -> Bool
+inMenu = genMenu . entryDefinition
+
+-- | The project as editors discover generators in it: those 'inMenu'.
+menuOnly :: Project -> Project
+menuOnly project = project {prCatalog = (prCatalog project) {catalogEntries = filter inMenu (catalogEntries (prCatalog project))}}
 
 generatorsOf :: Project -> [(Text, GeneratorDef)]
 generatorsOf project = concat [legacyPaths (generatorIdText (entryId e), entryDefinition e) | e <- catalogEntries (prCatalog project)]

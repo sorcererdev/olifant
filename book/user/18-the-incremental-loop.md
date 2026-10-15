@@ -28,7 +28,10 @@ cannot be rubber-stamped.
 3. The draft lands: `▸ test_closes_a_table · draft 1 · green · judging…`. You read it. It is the
    *least* code that passes (the fake-it stance, on purpose): if it is too simple, your test was;
    add a case. Green means the file's other tests that passed when the circle began (and each
-   test you stub and accept in it) still pass.
+   test you stub and accept in it) still pass; one that fails makes the circle red at it
+   (`red: test_x no longer passes · fix or reject`). Red, the block carries its `failure`
+   (`{file, line, message, test}`: the test, its own or that one, and the line the runner
+   gave), so an editor may mark the failing line in the test file.
 4. `· 1 survivor · stub a test or waive`. Line 53's `>` → `>=` survives (the note on the line says so,
    `> → >= survives · stub / waive`): no test notices the boundary. You decide it matters. `stub`
    (`<leader>mcs`) opens a new test stub, named from the mutant, and drafts it at once:
@@ -331,3 +334,5 @@ function with `<leader>mcs`.
   judges it.
 - **`the buffer changed while drafting; your text stands`** — you typed while the model wrote. Ask
   again with `draft`, or keep typing.
+- **`assert False, "write this test"`** — a test stub with `assert False, "write this test"` is
+  the pack's old test-case generator, not the circle: delete it and `stub` from the function.

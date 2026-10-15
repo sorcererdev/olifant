@@ -162,7 +162,7 @@ startFor subject progress path line s0 =
               -- what passed now (its test aside) must still pass for it to be green
               new tid sp st = do
                 k <- number
-                pure ((begin k file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st, blockKeep = filter (/= tid) (trPassed run)})
+                pure ((begin k file Code moduleText sp tid (Failure Nothing "" "")) {blockState = st, blockKeep = filter (/= tid) (trPassed run), blockTestFile = Just testFile})
           b <- case (trBroken run, trFailed run) of
             (Just why, _)
               | onTest, Just tid <- listToMaybe (cursorTest ++ tests) -> spanOf tid >>= \sp -> new tid sp (Broken why)
@@ -969,7 +969,18 @@ blockJson b killed =
     , "killed" .= killed
     ]
       ++ ["assertion_line" .= l | Just l <- [blockAssertion b]]
+      -- red at a run's failure: where, for the editor to mark the failing
+      -- line; a test block's starting red (its stub's, before any draft
+      -- or edit was tested) is no run's
+      ++ [ "failure" .= object ["file" .= testFile, "line" .= fLine f, "message" .= fMessage f, "test" .= fromMaybe (blockTestId b) (blockRedAt b)]
+         | Red f <- [blockState b]
+         , Just testFile <- [ranFile]
+         ]
   where
+    ranFile = case blockKind b of
+      Code -> blockTestFile b
+      TestFor _ | not (null (blockDrafts b)) -> Just (blockFile b)
+      TestFor _ -> Nothing
     judged = case blockState b of
       Judged ms -> ms
       _ -> []

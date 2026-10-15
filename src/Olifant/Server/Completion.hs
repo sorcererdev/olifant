@@ -6,7 +6,7 @@ module Olifant.Server.Completion (completionsFor, ghostFor) where
 import Control.Monad (forM)
 import Data.Map.Strict qualified as M
 import Olifant.Actions (Action (..), Completion (..))
-import Olifant.App (actionsAt', completeAt, generatorsOf)
+import Olifant.App (actionsAt', completeAt, generatorsOf, menuOnly)
 import Olifant.Cursor (isSnippet)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..))
 import Olifant.Server.Actions (actionEdits)
@@ -23,7 +23,7 @@ completionsFor path pos = memo "completions" path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
     (s', Just (root, project)) -> do
-      items <- completeAt (ssPorts s') project (makeRelative root path) pos
+      items <- completeAt (ssPorts s') (menuOnly project) (makeRelative root path) pos
       placed <- forM items $ \c -> snd <$> actionEdits False path (fst pos) (cpGenerator c) (cpSets c) s'
       pure (s', [(c, sn) | (c, Right (_, Just sn)) <- zip items placed])
 
@@ -36,7 +36,7 @@ ghostFor path pos@(line, _) = memo "ghost" path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (root, project)) -> do
-      acts <- actionsAt' (ssPorts s') project (makeRelative root path) pos
+      acts <- actionsAt' (ssPorts s') (menuOnly project) (makeRelative root path) pos
       let suggested = M.fromList [(k, isSnippet g && maybe False apSuggest (genAppliesAt g)) | (k, g) <- generatorsOf project]
           candidates =
             [ (actGenerator a, actSets a ++ chosen)

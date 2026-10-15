@@ -3,6 +3,9 @@ description = "The next test in a __test.py: its behaviour a tab stop, arranged 
 summary = "The next test in a test file (a snippet)"
 language = "python"
 version = 1
+# Retired from the ⚡ menu and the picker: a red stub outside the circle
+# (the block's survivor drafts the next test). The CLI still runs it.
+menu = false
 examples = [
   "olifant gen python-htmx/test-case --at src/bistro/booking/commands/cancel_booking__test.py:14:1 --set test=src/bistro/booking/commands/cancel_booking__test.py --plan",
 ]

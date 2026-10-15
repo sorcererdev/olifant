@@ -1,14 +1,14 @@
 -- | Internal to Olifant.Server: the ⚡ actions at a cursor, and an action
 -- planned there (a snippet placed at the cursor, as `gen --at` does) with
 -- the choices made — against the documents as they are now.
-module Olifant.Server.Actions (actionsFor, actionEdits, actionPlan, actionPlanWith, fillerFor, describeProgress) where
+module Olifant.Server.Actions (actionsFor, menuActionsFor, actionEdits, actionPlan, actionPlanWith, fillerFor, describeProgress) where
 
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Actions (Action (..))
-import Olifant.App (PlanOptions (..), Ports (..), Project (..), actionsAt', generatorsOf, modelFillerWith, placeAt, planOptions, planWith)
+import Olifant.App (PlanOptions (..), Ports (..), Project (..), actionsAt', generatorsOf, menuOnly, modelFillerWith, placeAt, planOptions, planWith)
 import Olifant.Catalog (describeCatalogError, findEntry, loadGenerator)
 import Olifant.Cursor (isSnippet)
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
@@ -27,11 +27,19 @@ import System.FilePath (makeRelative)
 -- | The actions at a position (1-based line, 1-based byte column) of a
 -- file, each with whether it is a snippet; none in no project.
 actionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
-actionsFor path pos = memo "actions" path (T.pack (show pos)) $ \s ->
+actionsFor = actionsWith "actions" id
+
+-- | The actions the ⚡ menu and the picker offer at a position: those of
+-- generators 'inMenu' ('actionsFor' keeps every one: a picker's steps).
+menuActionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
+menuActionsFor = actionsWith "menuActions" menuOnly
+
+actionsWith :: Text -> (Project -> Project) -> FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
+actionsWith key offered path pos = memo key path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
     (s', Just (root, project)) -> do
-      acts0 <- actionsAt' (ssPorts s') project (makeRelative root path) pos
+      acts0 <- actionsAt' (ssPorts s') (offered project) (makeRelative root path) pos
       acts <- extractOrder s' project path acts0
       let snippets = M.fromList [(k, isSnippet g) | (k, g) <- generatorsOf project]
       pure (s', [(a, M.findWithDefault False (actGenerator a) snippets) | a <- acts])
