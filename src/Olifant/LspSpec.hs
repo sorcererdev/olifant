@@ -521,6 +521,18 @@ followupsSpec = describe "follow-ups: olifant/suggestion and olifant/plan" $ do
       lookupKey "label" v `shouldBe` Just (String "Add Cancelled to every match")
       lookupKey "planId" v `shouldSatisfy` (/= Nothing)
       (lookupKey "plan" v >>= lookupKey "files") `shouldSatisfy` maybe False (\case Array fs -> not (null fs); _ -> False)
+  it "(g) never follows up with a generator with `menu = false`" $ do
+    let note menu = ".olifant/generators/note/generator.toml" `withText` ("description = \"d\"\nlanguage = \"python\"\n" <> menu <> "[applies_at]\npath = \"src/**/noted.py\"\nnode = { kind = \"function_definition\" }\nsuggest = true\nlabel = \"Note\"\n[[edits]]\ncreate = \"note.txt\"\ntext = \"x\\n\"\n")
+        withText p t = (p, t)
+        asked menu = withPython [note menu, ("src/bistro/noted.py", "def f() -> None:\n    pass\n")] $ \ports dir -> fst <$> inProcessWith ports dir (do
+          doc <- openDoc "src/bistro/noted.py" "python"
+          request (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggest")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "line" .= (1 :: Int)]) >>= \case
+            TResponseMessage _ _ (Right r) -> pure r
+            TResponseMessage _ _ (Left err) -> fail (show err))
+    offered <- asked ""
+    lookupKey "label" offered `shouldBe` Just (String "Note")
+    hidden <- asked "menu = false\n"
+    lookupKey "label" hidden `shouldNotBe` Just (String "Note")
   it "(f) keeps every plan offered for the document as it is (a push and a pull both resolve)" $
     withPythonChecked [] $ \ports dir -> do
       (planned, _) <- inProcessWith ports dir $ do
