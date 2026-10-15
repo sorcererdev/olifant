@@ -168,6 +168,8 @@ spec = describe "Olifant.Block" $ do
     -- red before its assertion: the model tried, the person reads it
     hud redrafted `shouldBe` "▸ test_wrong_party · draft 1 · red: assert 0 == 5"
     hud (step' (Judge []) (step' (Drafted "x" "qwen" (Right ())) (step' StartDraft existing))) `shouldBe` "▸ test_wrong_party · draft 1 · green ✓ accept"
+    -- the editor refused the draft's edit: red for that, no longer at the assertion
+    blockAtAssertion (step' (Unapplied "the editor refused the edit") redrafted {blockAtAssertion = True}) `shouldBe` False
   it "(h5) a test of the file that passed when the circle began and fails now is the circle's red, with its own cue" $ do
     let kept = b0 {blockKeep = ["src/a__test.py::test_g", "src/a__test.py::test_h"]}
         sibling = Failure (Just 20) "assert 0 == 1" "E   assert 0 == 1"

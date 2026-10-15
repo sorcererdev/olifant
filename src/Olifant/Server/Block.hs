@@ -135,7 +135,6 @@ startFor subject progress path line s0 =
           moduleText = siteModuleText site
           testText0 = siteTestText site
           atCursor = siteAtCursor site
-          pendingHere = "a magic circle is open in this file: accept or reject it first"
       busy <- lift (isJust <$> blockFor file s)
       when busy (throwE pendingHere)
       let number = lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
@@ -347,10 +346,11 @@ blockDraftAt progress path line s0 =
               lang = siteLang site
               testRel = siteTestRel site
               testFile = siteTestFile site
-              pendingHere = "a magic circle is open in this file: accept or reject it first"
           unless (siteOnTest site) (throwE noCircle)
           text <- maybe (throwE noCircle) pure (siteTestText site)
-          (name, sp) <- maybe (throwE "put the cursor in a test to draft it") pure (testAt line text)
+          (name, sp) <- except (testAt line text)
+          -- a test the draft cannot shape is refused before a circle opens
+          _ <- except (existingParts (testName name) text)
           filler <- lift (fillerFor True s project) >>= either throwE (maybe (throwE noModel) pure)
           lift (progress (Verifying (T.pack testRel)))
           run <- ExceptT (runOver s (prWorkspace project) lang [T.pack testRel])
@@ -372,6 +372,10 @@ blockDraftAt progress path line s0 =
           ExceptT (draftOrRestore progress s root project lang tb drafting 0 filler Nothing)
   where
     noCircle = "no magic circle is open in this file; begin one on a red test"
+
+-- | Why a begin or a draft waits: one circle per file.
+pendingHere :: Text
+pendingHere = "a magic circle is open in this file: accept or reject it first"
 
 -- | Why a draft cannot be asked for with no model.
 noModel :: Text
@@ -512,8 +516,8 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
           why = case blockState b of
             Red f | not (T.null (fMessage f)) -> fMessage f
             _ -> "the person asked for another draft"
-      ((d, _), (a, z)) <- maybe (throwE ("the test " <> name <> " has no assert line to draft against")) pure ((,) <$> testSpanIn name text <*> assertionSpan name text)
-      template <- except (existingTestTemplate text name d (a, z) why both)
+      (d, kept, (a, z)) <- except (existingParts name text)
+      template <- except (existingTestTemplate text name kept (a, z) why both)
       tested <- lift (moduleOf project lang rel)
       moduleText <- maybe (pure Nothing) (lift . readText ws) tested
       let verify = VerifyKeep (blockTestId b) (blockKeep b)
@@ -1016,14 +1020,22 @@ touches old new (s1, s2) = hit (p + 1, length os - q) || hit (p + 1, length ns -
       | otherwise = a <= s2 && z >= s1
 
 -- | Whether a new test's function (the one its stub was opened for) has
--- no body yet in the module's text: its body raises `NotImplementedError`.
+-- no body yet in the module's text: its body (a docstring aside) is one
+-- `raise NotImplementedError` (one raising in a branch has a body).
 bodyRaises :: ServerState -> Language -> Block -> Maybe Text -> IO Bool
 bodyRaises s lang b moduleText = case (blockSubject b, moduleText) of
   (Just (fn, d), Just m) ->
     functionSpanAfter (pSyntax (ssPorts s)) lang fn d m <&> \case
-      Just (a, z) -> any ("NotImplementedError" `T.isInfixOf`) (take (z - a + 1) (drop (a - 1) (T.splitOn "\n" m)))
+      Just (a, z) -> case dropDocstring (filter (not . T.null) (map T.strip (take (z - a + 1) (drop (a - 1) (T.splitOn "\n" m))))) of
+        [only] -> "raise NotImplementedError" `T.isPrefixOf` only
+        _ -> False
       Nothing -> False
   _ -> pure False
+  where
+    -- a leading docstring (one line, or up to its closing quotes)
+    dropDocstring = \case
+      l : rest | Just q <- docQuote l -> if T.count q l >= 2 then rest else drop 1 (dropWhile (not . (q `T.isInfixOf`)) rest)
+      ls -> ls
 
 -- | A new test accepted: its function (the one its stub was opened for,
 -- else the one it calls) begins on it (red), as a begin on that test
@@ -1068,12 +1080,20 @@ moduleOf project lang testRel = case langTest lang of
   Just td -> listToMaybe . filter (\m -> m /= testRel && testsForFile td m == testRel) <$> listFiles (prWorkspace project) "."
 
 
--- | Reject a block: its file goes back to the text it had when it began.
+-- | Reject a block: its file goes back to the text it had when it began;
+-- an existing test's circle puts back its test's lines only (another edit
+-- of the file stands).
 blockReject :: FilePath -> ServerState -> IO (ServerState, Either Text (Block, [FileEdit]))
 blockReject path = withBlock path $ \s root project _ b killed -> do
   now <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative root (blockFile b))
   let version = fst <$> M.lookup (blockFile b) (ssDocs s)
-      restore = [FileEdit (blockFile b) version False range text | now /= blockBase b, let (range, text) = smallestChange now (blockBase b)]
+      name = testName (blockTestId b)
+      back = case (blockKind b, testSpanIn name (blockBase b), testSpanIn name now) of
+        (ExistingTest _, Just (b1, b2), Just (n1, n2)) ->
+          let (bs, ns) = (T.splitOn "\n" (blockBase b), T.splitOn "\n" now)
+           in T.intercalate "\n" (take (n1 - 1) ns ++ take (b2 - b1 + 1) (drop (b1 - 1) bs) ++ drop n2 ns)
+        _ -> blockBase b
+      restore = [FileEdit (blockFile b) version False range text | now /= back, let (range, text) = smallestChange now back]
   fmap (,restore) <$> settle s root killed "reject" "rejected" Reject b
 
 -- | A block as the editor shows it, with its killed count.
@@ -1247,10 +1267,59 @@ newTests b now = [fileOf (blockTestId b) <> "::" <> n | n <- testNames now, n `n
 
 -- | The test a cursor (1-based line) is in, in a test file: its name and
 -- its lines (its def to its last line).
-testAt :: Int -> Text -> Maybe (Text, (Int, Int))
+testAt :: Int -> Text -> Either Text (Text, (Int, Int))
 testAt line text = case defLineAbove line text of
-  Just (d, n) | "test" `T.isPrefixOf` n, sp@(_, z) <- testLinesFrom d text, line <= z -> Just (n, sp)
-  _ -> Nothing
+  Just (d, n)
+    | "test" `T.isPrefixOf` n, not (":" `T.isSuffixOf` T.strip (lineAt d)) -> Left manyLinedDef
+    | "test" `T.isPrefixOf` n, sp@(_, z) <- testLinesFrom d text, line <= z -> Right (maybe n (<> "::" <> n) (classOf d), sp)
+  _ -> Left "put the cursor in a test to draft it"
+  where
+    ls = T.splitOn "\n" text
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+    indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+    -- a method's class: the line it is indented under
+    classOf d
+      | indentOf (lineAt d) == 0 = Nothing
+      | otherwise = case [l | l <- reverse (take (d - 1) ls), not (T.null (T.strip l)), indentOf l < indentOf (lineAt d)] of
+          l : _ | Just c <- T.stripPrefix "class " (T.strip l) -> Just (T.takeWhile ident c)
+          _ -> Nothing
+
+-- | Why a test whose def is over several lines is not drafted.
+manyLinedDef :: Text
+manyLinedDef = "this test's def spans several lines: edit it by hand"
+
+-- | An existing test's parts as its draft needs them, in a file's TEXT:
+-- its def line, the last line kept above its arrangement (the def, or a
+-- leading docstring's end: the test's intent), and its assertion: from
+-- the statement of its body (at the body's indentation) that holds its
+-- first assert (a `with` or `for` around it included) to its last line.
+-- Or why it cannot be drafted.
+existingParts :: Text -> Text -> Either Text (Int, Int, (Int, Int))
+existingParts name text = do
+  (d, _) <- maybe (Left noAssertLine) Right (testSpanIn name text)
+  unless (":" `T.isSuffixOf` T.strip (lineAt d)) (Left manyLinedDef)
+  (a, z) <- maybe (Left noAssertLine) Right (assertionSpan name text)
+  let filled = [i | i <- [d + 1 .. a], not (T.null (T.strip (lineAt i)))]
+      bodyIndent = maybe 0 (indentOf . lineAt) (listToMaybe filled)
+      start = last (a : [i | i <- filled, indentOf (lineAt i) <= bodyIndent])
+      kept = case filled of
+        i : _ | i < start, Just q <- docQuote (lineAt i) -> maybe d (\e -> if e < start then e else d) (listToMaybe [j | j <- [i .. start - 1], closes q i j])
+        _ -> d
+  pure (d, kept, (start, z))
+  where
+    ls = T.splitOn "\n" text
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+    indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+    -- the docstring opened on line I closes on line J
+    closes q i j = T.count q (lineAt j) >= (if j == i then 2 else 1)
+
+-- | A line opening a docstring: its quotes.
+docQuote :: Text -> Maybe Text
+docQuote l = listToMaybe [q | q <- ["\"\"\"", "'''"], q `T.isPrefixOf` T.dropWhile (`elem` ("rRuU" :: String)) (T.strip l)]
+
+-- | Why a test with no assert line is not drafted.
+noAssertLine :: Text
+noAssertLine = "this test has no assert line to draft against: edit it by hand"
 
 -- | The lines of the test NAME in a test file: its def to its last line.
 testSpanIn :: Text -> Text -> Maybe (Int, Int)
@@ -1271,8 +1340,8 @@ testLinesFrom d text = (d, d + length (reverse (dropWhile blank (reverse body)))
 -- its assertion in the file's TEXT: its line at or after the test's first
 -- assert line, before its end.
 redAtTheAssertion :: Block -> Text -> Failure -> Bool
-redAtTheAssertion b text f = case (blockKind b, fLine f, assertionSpan (testName (blockTestId b)) text) of
-  (ExistingTest _, Just l, Just (a, z)) -> l >= a && l <= z
+redAtTheAssertion b text f = case (blockKind b, fLine f, existingParts (testName (blockTestId b)) text) of
+  (ExistingTest _, Just l, Right (_, _, (a, z))) -> l >= a && l <= z
   _ -> False
 
 -- | The tests a test file defines (`def test…(`).

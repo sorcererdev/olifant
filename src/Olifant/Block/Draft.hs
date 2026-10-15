@@ -71,10 +71,11 @@ testDraftTemplate lang testText line assertion
 
 -- | An existing test's draft (the code is right, the test is red at
 -- MESSAGE): the test file with the test NAME's arrangement, the lines
--- after its def line D before its first assert line, one stmt hole called
--- @arrange@ (none: a hole on a new line after D); with ASSERTION, its
--- assert lines (its first, A, to the test's last, Z) one stmt hole called
--- @assertion@ too. Each at the indentation of the first assert line.
+-- after line D (its def, or a leading docstring's end) before line A, one
+-- stmt hole called @arrange@ (none: a hole on a new line after D); with
+-- ASSERTION, its assertion (A, the body's statement holding its first
+-- assert, to Z, the test's last line) one stmt hole called @assertion@
+-- too. Each at the indentation of line A.
 existingTestTemplate :: Text -> Text -> Int -> (Int, Int) -> Text -> Bool -> Either Text Template
 existingTestTemplate testText name d (a, z) message assertion
   | d < 1 || a <= d || z < a || z > length ls = Left ("lines " <> T.pack (show d) <> "-" <> T.pack (show z) <> " are not the test " <> name <> "'s")

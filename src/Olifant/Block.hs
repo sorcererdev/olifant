@@ -147,7 +147,7 @@ step mv b
       (Applied sp outcome, _) | not (null (blockDrafts b)) -> Right (landed sp outcome b)
       (Unapplied why, _)
         | d : rest <- reverse (blockDrafts b), draftBy d /= "you" ->
-            Right b {blockState = Red (Failure Nothing why ""), blockDrafts = reverse (d {draftOutcome = "red: " <> why} : rest), blockAssertion = Nothing}
+            Right b {blockState = Red (Failure Nothing why ""), blockDrafts = reverse (d {draftOutcome = "red: " <> why} : rest), blockAssertion = Nothing, blockAtAssertion = False}
       (Rejudge, Judged _) -> Right b {blockState = Green}
       (CannotRun why, _) -> Right b {blockState = Broken why, blockRedAt = Nothing}
       (Judge ms, Green) -> Right b {blockState = Judged ms}
