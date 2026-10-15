@@ -969,14 +969,18 @@ blockJson b killed =
     , "killed" .= killed
     ]
       ++ ["assertion_line" .= l | Just l <- [blockAssertion b]]
-      -- a code block red at a run's failure: where, for the editor to mark
-      -- the failing line (a test block's red is its stub's, not a run's)
+      -- red at a run's failure: where, for the editor to mark the failing
+      -- line; a test block's starting red (its stub's, before any draft
+      -- or edit was tested) is no run's
       ++ [ "failure" .= object ["file" .= testFile, "line" .= fLine f, "message" .= fMessage f, "test" .= fromMaybe (blockTestId b) (blockRedAt b)]
          | Red f <- [blockState b]
-         , Code <- [blockKind b]
-         , Just testFile <- [blockTestFile b]
+         , Just testFile <- [ranFile]
          ]
   where
+    ranFile = case blockKind b of
+      Code -> blockTestFile b
+      TestFor _ | not (null (blockDrafts b)) -> Just (blockFile b)
+      TestFor _ -> Nothing
     judged = case blockState b of
       Judged ms -> ms
       _ -> []

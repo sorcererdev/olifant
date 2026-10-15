@@ -1075,6 +1075,46 @@ blockSpec = describe "olifant/block" $ do
         again `shouldSatisfy` either (const False) (const True)
         steps <- TIO.readFile (dir </> ".olifant/state/steps.log")
         steps `shouldSatisfy` ("\treject\tperson\tthe stub was deleted" `T.isInfixOf`)
+  it "(h4) a test block red at a run (its arrangement raises before the assertion) pushes its failure: the test file, line, message and test" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          pushedTo u = pushed >>= \v -> if lookupKey "uri" v == Just (toJSON u) then pure v else pushedTo u
+          failed v = (lookupKey "failure" =<< lookupKey "block" v) /= Nothing
+          expanded body =
+            let (before, stop) = T.breakOn "${1:" (T.replace "${2:...}" "True" body)
+                rest = T.drop 4 stop
+             in before <> T.takeWhile (/= '}') rest <> T.drop 1 (T.dropWhile (/= '}') rest)
+      BSL.writeFile script redScript
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        original <- TIO.readFile (dir </> testRel)
+        ((fresh, red', test, arrangeLine), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc testRel "python"
+          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          liftIO (TIO.writeFile script "{}")
+          Right _ <- move "test" (onDoc doc [])
+          Right killed <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
+          let Just (Number at') = lookupKey "line" =<< lookupKey "snippet" killed
+              Just (String body) = lookupKey "body" =<< lookupKey "snippet" killed
+              Just at'' = toBoundedInteger at' :: Maybe Int
+              ls = T.splitOn "\n" original
+              stubbed = T.intercalate "\n" (take (at'' - 1) ls ++ [expanded body] ++ drop at'' ls)
+              name = T.takeWhile (/= '}') (snd (T.breakOnEnd "${1:" body))
+              test = T.pack testRel <> "::" <> name
+              -- the person writes an arrangement that raises
+              placeholderAt = length (takeWhile (not . T.isInfixOf "olifant: arrange") (T.splitOn "\n" stubbed)) + 1
+              raising = T.intercalate "\n" (zipWith (\i l -> if i == placeholderAt then "    x = undefined_name" else l) [1 :: Int ..] (T.splitOn "\n" stubbed))
+          fresh <- pushedTo (doc ^. L.uri)
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument stubbed))]
+          _ <- pushedTo (doc ^. L.uri)
+          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText test .= object ["line" .= placeholderAt, "message" .= ("NameError: name 'undefined_name' is not defined" :: Text)]])))
+          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument raising))]
+          let untilFailed = pushedTo (doc ^. L.uri) >>= \v -> if failed v then pure v else untilFailed
+          red' <- untilFailed
+          pure (fresh, red', test, placeholderAt)
+        -- the kill stub's starting red is its placeholder: nothing to mark
+        failed fresh `shouldBe` False
+        (lookupKey "failure" =<< lookupKey "block" red') `shouldBe` Just (object ["file" .= (dir </> testRel), "line" .= arrangeLine, "message" .= ("NameError: name 'undefined_name' is not defined" :: Text), "test" .= test])
   it "(h) a survivor's stub with a model: the kill answers its snippet and pushes the test block drafting; the editor expands it; the draft comes back through workspace/applyEdit" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"
