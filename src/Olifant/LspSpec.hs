@@ -1170,6 +1170,27 @@ blockSpec = describe "olifant/block" $ do
         -- a stub's red is its placeholder, not a run's: no failure to mark
         block "failure" `shouldBe` Nothing
         outside `shouldBe` Left "put the cursor in a function to stub a test for it"
+  it "(r) olifant/block/draft on a red test with no circle answers the test's own circle, in its test file, and pushes it drafting" $
+    withSystemTempDirectory "olifant-block" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          fills = tmp </> "fills.toml"
+      BSL.writeFile script redScript
+      TIO.writeFile fills "[fills]\narrange = \"result = 1\"\n"
+      withPython [] $ \ports dir -> do
+        line <- at (dir </> testRel)
+        ((answer, drafting), _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("fills", String (T.pack fills))] ports dir $ do
+          doc <- openDoc testRel "python"
+          rid <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
+          -- pushed while the model writes, before the answer
+          drafting <- pushed
+          let awaitDraft = responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) rid <|> (anyMessage >> awaitDraft)
+          TResponseMessage _ _ r <- awaitDraft
+          pure (either (Left . (^. L.message)) Right r, drafting)
+        let blockOf = either (const Nothing) (lookupKey "block")
+        (lookupKey "file" =<< blockOf answer) `shouldBe` Just (String (T.pack (dir </> testRel)))
+        lookupKey "uri" drafting `shouldBe` Just (toJSON (filePathToUri (dir </> testRel)))
+        (lookupKey "state" =<< lookupKey "block" drafting) `shouldBe` Just (String "drafting")
+        (lookupKey "hud" =<< lookupKey "block" drafting) `shouldSatisfy` \case Just (String h) -> "test_a_party_larger_than_the_table_is_refused \183 red: assert isinstance(result, PartyTooLarge) \183 drafting" `T.isInfixOf` h; _ -> False
   it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
     withSystemTempDirectory "olifant-block" $ \tmp -> do
       let script = tmp </> "tests.json"

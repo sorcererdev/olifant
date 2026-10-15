@@ -83,14 +83,16 @@ data GeneratorWith src = Generator
 -- | How a hole's fill is verified: by a command (rendered, or its templates),
 -- or by the language's test runner over the module's tests (@verify = "tests"@).
 -- Only the engine builds the last three (a draft's checks, never the TOML):
--- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft);
+-- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft),
+-- or, the flag set, to pass (a regression test; unset, its function's body
+-- raises, so a pass asserts nothing);
 -- 'VerifyKills' runs a test file: the tests that passed before and the new
 -- ones must pass on the files, and a new one fail with the mutant's file
 -- (path, text) in place (a sibling test already red is passed over);
 -- 'VerifyKeep' runs a code block's test's file whole: its test must pass,
 -- and each test it keeps that the run has ('keptVerdict': a sibling red
 -- otherwise is passed over, a kept test gone is not judged).
-data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int | VerifyKills TestId [TestId] [TestId] FilePath Text | VerifyKeep TestId [TestId]
+data Verify cmd = VerifyCommand cmd | VerifyTests | VerifyRedAt TestId Int Bool | VerifyKills TestId [TestId] [TestId] FilePath Text | VerifyKeep TestId [TestId]
   deriving stock (Eq, Show, Functor, Foldable, Traversable)
 
 type GeneratorDef = GeneratorWith SourceRef

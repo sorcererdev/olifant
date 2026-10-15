@@ -19,7 +19,9 @@ cannot be rubber-stamped.
    `assertion_line`, so an editor may put the cursor there; written your own before `draft`,
    it stands and only the arrangement is drafted). The HUD says
    `red ✓ accept · go make it pass`; `accept` it (`<leader>mca`). (`begin` in a function no test
-   calls opens the same stub, its name yours to type.)
+   calls opens the same stub, its name yours to type.) A new test that passes already (the code
+   does it) is accepted too: the HUD says `green ✓ accept`, the step log `test person green:
+   already passes`, and accepted it stays as a regression test; nothing begins on it.
 2. The function begins on that red test (the one you stubbed it for; as `begin` on a red test
    does, the editor opens it and its draft starts). Its body is inside a **magic circle**: the
    highlighted span with the HUD line above it; nothing leaves the circle until every survivor is
@@ -79,12 +81,14 @@ new test's stub from `begin` (`▸ test_your_name · draft · reject drops it` o
 named it and it was tested), `▸ test_handle · draft · reject drops it` on a stub
 from `stub` (named already), `drafting…` on a survivor's stub (drafted at once; with no model,
 `▸ test_boundary_party_seats · draft · reject drops it`), `red ✓ accept · go make it pass` on a
-new test red at its assertion, `· stub a test or waive`, `✓ accept`.
+new test red at its assertion (`green ✓ accept` on one that passes already), `red: … ·
+drafting…` and `red at the assertion · draft again to redraft it, or edit it` on a red test
+being drafted ([When the code is right](#when-the-code-is-right)), `· stub a test or waive`, `✓ accept`.
 
 | move | key | when | what it does |
 |---|---|---|---|
 | `begin` | `<leader>mcb` | on a test, or in a function | on a red test: a circle around the body of the function it calls, red; the draft starts. On a function whose tests pass: a circle around its body, judged at once. On a function no test calls: the stub of its first test at the end of its test file, a circle of its own in the test file (accepted, the function begins on it) |
-| `draft` | `<leader>mcd` | red, green or judged | asks for the first draft, or another candidate when one exists: the span as a hole a model fills, verified by the circle's test and the file's tests that passed when it began (below); the drafts so far go to the model as *not this, rejected by the person* |
+| `draft` | `<leader>mcd` | red, green or judged; or on a red test with no circle | asks for the first draft, or another candidate when one exists: the span as a hole a model fills, verified by the circle's test and the file's tests that passed when it began (below); the drafts so far go to the model as *not this, rejected by the person*. On a red test with no circle open: the code is right, so the test is drafted in a circle of its own, its arrangement first ([When the code is right](#when-the-code-is-right)) |
 | `test` | | red, green, can't run | run the circle's test (and the file's tests that passed when it began) on the buffer's text now |
 | `stub` | `<leader>mcs` | in a function of a module with no circle, or judged with a survivor | judged with a survivor: the survivor on the cursor's line, or the top-ranked one when the line has none, a test stub at the end of the test file in its own circle. With no circle in the module, in a function (with tests or without): a new test's stub for it, named `test_<function>` (`_2`, `_3`, … when taken), as `begin` opens for a function no test calls (on the wire `olifant/block/stub`; `:DurandalCircle kill` still works) |
 | `waive` | `<leader>mcw` | a survivor on the cursor's line | asks why (`vim.ui.input`); writes the reason on the line |
@@ -107,9 +111,10 @@ The person's part of each circle is the part that cannot be delegated:
 - **A test's name, and its assertion confirmed.** The name is the spec: the model drafts the
   arrangement and, left `assert ...`, the assertion from the name, for you to confirm or
   edit (an editor may put the cursor on it: the block carries its line). A test draft must fail *at the assertion* (its first
-  assert line to the test's end) before any code exists: one that errors in its setup, or passes
-  already (`it does not test the new behaviour`), is a failed draft. A new test's circle is green
-  when its test is red there.
+  assert line to the test's end) before any code exists: one that errors in its setup is a failed
+  draft. A new test's circle is green when its test is red there, or when it passes already: the
+  code does what the test says, so it is a regression test (`green ✓ accept`; accepted, it stays
+  in the test file and nothing moves to the module).
 - **Reading a draft.** The drafts stance asks the model for the least code that passes, so a
   constant (`return Ok(None)`) is a correct draft for one test. Every generalisation needs a test
   that asks for it.
@@ -250,6 +255,38 @@ on the wire, opens the module's test file or the test file's module; a test file
 exist yet opens as a new, unsaved buffer: `<C-^>` back to the module and stub a test from its
 function with `<leader>mcs`.
 
+## When the code is right
+
+A red test has two readings, and each has its key. `begin` (`b`) says the test is right: a
+circle opens around the function it calls and the code is drafted. `draft` (`d`) on a red test
+with no circle open says the code is right: the test is drafted, in a circle of its own around
+the test's lines (a test method of a class too). It opens red and drafts at once
+(`▸ test_x · red: … · drafting…`). With a circle already open in the test file or its module,
+`draft` drafts that circle instead: finish it first to draft a test.
+
+1. **The first ask is the arrangement only**: the lines between the def (or a leading docstring,
+   the test's intent, which stays) and the statement holding the first `assert`. A `with
+   pytest.raises(…):` or `for` around that assert belongs to the assertion. The assertion is
+   yours: it is left exactly as it is. The draft is verified as a code circle
+   is: the test must pass on the code as it is, and the file's tests that passed when the circle
+   began must still pass (a draft that breaks one is `red: test_y no longer passes · fix or
+   reject`). Green, the HUD says `green ✓ accept`.
+2. **Still red at the assertion** (the run fails within it: from that statement to the test's
+   end),
+   the HUD says `red at the assertion · draft again to redraft it, or edit it`. Edit the
+   assertion yourself, or `draft` again: **the second ask drafts both**, the arrangement and the
+   assertion, from what the code returns (the code is the spec now) and the test's name, keeping
+   its intent. The block carries the drafted assertion's line (`assertion_line`) so the editor
+   puts the cursor there: confirm the assertion, then accept. Another `draft` is another
+   candidate of both.
+
+Red for another reason (the file does not import, the test fails before its assertion), the HUD
+is the usual red. `accept` closes the circle: the test file keeps the drafted test and nothing
+moves to the module (the step log says `accept person green: test drafted`); `reject` puts the
+test's lines back, and only those: an edit of another test in the file stands. A test with no
+`assert` line (only `pytest.raises`, a mock's `assert_called_…`) or whose def spans several lines
+is refused before any circle opens: edit it by hand.
+
 ## What works today, and its limits
 
 - **Python only.** The operators are Python's; a language with a `[test]` table but no operators
@@ -326,8 +363,24 @@ function with `<leader>mcs`.
   or delete its stub.
 - **`stub a test from the code's magic circle, in its module`** — `stub` in a test's circle (its
   stub's test file): go to the module whose circle has the survivor.
+- **`this test passes; begin on a red one, or stub a new case`** — `draft` on a green test with
+  no circle: there is nothing to draft. Draft on a red test, or stub a new case from the function.
+- **`put the cursor in a test to draft it`** — `draft` in a test file with no circle, the cursor in
+  no test (an import, a helper).
+- **`this test has no assert line to draft against: edit it by hand`** — `draft` on a red test
+  with no `assert` statement: there is no assertion to keep while the arrangement is drafted.
+- **`this test's def spans several lines: edit it by hand`** — `draft` on a red test whose
+  signature is wrapped over several lines.
+- **`this circle is a test's; stub from the module's function`** — `stub` in a test's circle
+  opened by `draft` on a red test: it has no survivors. Accept or reject it, then stub from the
+  function.
 - **`every test here passes; write a failing one …`** — `begin` on a green test: a circle starts
   from what is red. Begin in the function instead to judge it.
+- **`this test passes against a body that raises: it asserts nothing about the function`** — a
+  new test of a function with no body yet (its body is only `raise NotImplementedError`) passes: it never
+  reached the function, or asserts nothing of it. Make it call the function and assert on what it
+  returns. (A new test that passes on a function that has a body is a regression test: `green ✓
+  accept`.)
 - **`cannot run: …` in the HUD** — the test file does not import or collect (a syntax error, a
   missing name). Fix it, then `test`.
 - **`no model is configured`** — `draft` with no `[model]`: write the body; the magic circle still

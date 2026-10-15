@@ -38,7 +38,10 @@ import System.FilePath (makeRelative, (</>))
 -- once the stub is answered ('draftStub').
 blockKill :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text Killed)
 blockKill path line = withBlock path $ \s root project lang b killed -> runExceptT $ do
-  when (blockKind b /= Code) (throwE stubFromModule)
+  case blockKind b of
+    Code -> pure ()
+    ExistingTest _ -> throwE stubFromTestCircle
+    TestFor _ -> throwE stubFromModule
   m <- either throwE pure (killTarget line b)
   let testRel = T.unpack (fileOf (blockTestId b))
       testFile = normalisePath (root </> testRel)
@@ -71,6 +74,10 @@ type Killed = (Block, FilePath, Int, Text, Maybe StubDraft)
 stubFromModule :: Text
 stubFromModule = "stub a test from the code's magic circle, in its module"
 
+-- | A stub in an existing test's circle: it has no survivors, and no code circle.
+stubFromTestCircle :: Text
+stubFromTestCircle = "this circle is a test's; stub from the module's function"
+
 -- | Why a stub waits: a circle is open in its test file.
 pendingTest :: FilePath -> Text
 pendingTest rel = "a magic circle is open in " <> T.pack rel <> ": accept or reject it there first"
@@ -101,6 +108,7 @@ blockStub path line s0 =
       Broken _ -> pure (s0, Left "the circle cannot run: fix it, then test")
       _ -> pure (s0, Left "the circle is being tested; stub once its verdict lands")
     -- a test's own circle, in its test file: the kill's sentence
+    Just (b, _) | ExistingTest _ <- blockKind b -> pure (s0, Left stubFromTestCircle)
     Just _ -> pure (s0, Left stubFromModule)
     Nothing ->
       siteAt path line s0 >>= \case
@@ -162,6 +170,8 @@ blockChanged path s0 =
 stubGone :: Block -> Text -> Bool
 stubGone b now = case blockKind b of
   Code -> False
+  -- an existing test's lines were there before its circle: none is new
+  ExistingTest _ -> False
   TestFor _ -> not (any kept (S.toList (newLinesOf (blockBase b) now)))
   where
     ls = T.lines now

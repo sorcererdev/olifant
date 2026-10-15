@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, testsFailed, assertionSpan) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, testsFailed, passesAgainstRaise, assertionSpan) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -152,7 +152,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
       (scope, everything) <- projectFiles ws files lang [holeFile (site t)]
       outcome <- case verify of
         VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
-        VerifyRedAt tid line -> verifyRedAt lang tid line everything
+        VerifyRedAt tid line passing -> verifyRedAt lang tid line passing everything
         VerifyKills tid keep new path mutated -> verifyKills lang tid keep new path mutated everything
         VerifyTests -> case langTest lang of
           Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
@@ -198,15 +198,17 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     -- A test draft: the test must fail, and at its assertion: at or after
     -- its first assert line, before its end, as the fills left the file
     -- (an arrangement or assertion over several lines moves it); a test
-    -- not found there, at LINE exactly.
-    verifyRedAt lang tid line everything =
+    -- not found there, at LINE exactly. Or, PASSING, pass: a regression
+    -- test (unless its function's body raises: then a pass asserts nothing).
+    verifyRedAt lang tid line passing everything =
       runTestsIn (toolTester tools) lang [tid] everything <&> \case
         Left why -> Left (CheckFailed why)
         Right run
           | Just why <- trBroken run -> Right (False, "the test cannot run: " <> why)
           | [(_, f)] <- trFailed run, Just l <- fLine f, inside l -> Right (True, "")
           | [(_, f)] <- trFailed run -> Right (False, "the test fails before its assertion (line " <> maybe "?" (T.pack . show) (fLine f) <> "): " <> fMessage f)
-          | otherwise -> Right (False, "the test passes before any code exists: it does not test the new behaviour")
+          | passing -> Right (True, "")
+          | otherwise -> Right (False, passesAgainstRaise)
       where
         (file, test) = (T.unpack (fst (T.breakOn "::" tid)), snd (T.breakOnEnd "::" tid))
         (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan test)
@@ -478,6 +480,11 @@ syntaxError m = any (`T.isInfixOf` m) ["IndentationError", "SyntaxError", "Unexp
 -- failing test's id and message follow, the last 40 lines kept).
 testsFailed :: Text
 testsFailed = "the tests failed:"
+
+-- | Why a new test that passes is refused while its function's body
+-- raises (it has none yet): the pass asserts nothing about the function.
+passesAgainstRaise :: Text
+passesAgainstRaise = "this test passes against a body that raises: it asserts nothing about the function"
 
 -- | The lines (1-based) where a test's assertion may fail in a test file:
 -- its first assert statement's line (`assert …`, not a name beginning

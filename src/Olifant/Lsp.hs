@@ -544,9 +544,10 @@ handlers env =
         -- (and the edits to apply before it: its import, in a file that lacks it)
         Just (line, _) -> liftIO . moved (withSnapshot job (blockStart (const (pure ())) path (line + 1))) $ \(b, stub) ->
           pure (concat [("snippet" .= object ["file" .= f, "line" .= at, "body" .= body]) : editsField edits | Just (f, at, body, edits) <- [stub]], [b])
-    , blockRequest env (Proxy :: Proxy "olifant/block/draft") $ \job path _ -> drafted job path
+    , -- at a position with no circle open: on a red test, the test is drafted
+      blockRequest env (Proxy :: Proxy "olifant/block/draft") $ \job path params -> drafted job path ((+ 1) . fst <$> positionOf params)
     , -- the older name of draft
-      blockRequest env (Proxy :: Proxy "olifant/block/next") $ \job path _ -> drafted job path
+      blockRequest env (Proxy :: Proxy "olifant/block/next") $ \job path params -> drafted job path ((+ 1) . fst <$> positionOf params)
     , blockRequest env (Proxy :: Proxy "olifant/block/test") $ \job path _ -> liftIO (moved (withSnapshot job (blockTest path)) (\b -> pure ([], [b])))
     , blockRequest env (Proxy :: Proxy "olifant/block/accept") $ \job path _ -> liftIO (finished (withSnapshot job (blockAccept path)))
     , blockRequest env (Proxy :: Proxy "olifant/block/reject") $ \job path _ -> liftIO (finished (withSnapshot job (blockReject path)))
@@ -652,10 +653,12 @@ stubDrafted job testFile later = do
       push b
     Right (Left why) -> sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info ("Olifant: " <> why))
 
--- | Draft (the editor's move; `next`, its older name, too): under progress (the model writes), with its edits.
-drafted :: Env -> FilePath -> LspM () Moved
-drafted job path =
-  planProgress "drafting" (\progress -> withSnapshot job (blockDraft progress path)) <&> \case
+-- | Draft (the editor's move; `next`, its older name, too): under progress
+-- (the model writes), with its edits. At a LINE (1-based) with no circle
+-- open, a red test there is drafted ('blockDraftAt').
+drafted :: Env -> FilePath -> Maybe Int -> LspM () Moved
+drafted job path line =
+  planProgress "drafting" (\progress -> withSnapshot job (maybe (blockDraft progress path) (blockDraftAt progress path) line)) <&> \case
     Left why -> Left why
     Right (b, edits) -> Right (BlockAnswer (Right b) (editsField edits) (pure ()), [b])
 
