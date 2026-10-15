@@ -8,7 +8,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Olifant.Actions (Action (..), FileAction (..), Nearby, Range (..))
 import Olifant.Generator (GeneratorDef)
-import Olifant.App (actionsIn, generatorsOf)
+import Olifant.App (actionsIn, generatorsOf, menuOnly)
 import Olifant.Cursor (isSnippet)
 import Olifant.Server.State (ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
@@ -26,7 +26,7 @@ fileActionsFor path = memo "fileActions" path "" $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (root, project)) -> do
-      (acts, near) <- actionsIn (ssPorts s') project (makeRelative root path)
+      (acts, near) <- actionsIn (ssPorts s') (menuOnly project) (makeRelative root path)
       pure (s', Just (generatorsOf project, acts, near))
 
 -- | Every line of a file with actions (whole-file actions are never
@@ -36,7 +36,7 @@ hintsFor path = memo "hints" path "" $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', ([], []))
     (s', Just (root, project)) -> do
-      (acts, near) <- actionsIn (ssPorts s') project (makeRelative root path)
+      (acts, near) <- actionsIn (ssPorts s') (menuOnly project) (makeRelative root path)
       let snippets = M.fromList [(k, isSnippet g) | (k, g) <- generatorsOf project]
           snippet a = M.findWithDefault False (actGenerator a) snippets
           byLine = M.fromListWith (flip (++)) [(fst (rangeStart r), [(a, snippet a)]) | FileAction a (Just r) <- acts]

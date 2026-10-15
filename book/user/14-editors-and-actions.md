@@ -706,9 +706,9 @@ Beside `failure-variant` and `failure-arms`, the pack anticipates the next piece
 its conventions make it predictable. Each is a ghost on a blank line (Tab to take it, Tab
 to walk its stops) and in the ⚡ menu.
 
-- **`test-case`**, on a blank line after a test in a `*__test.py`, a ghost only (`menu =
-  false`: not in the ⚡ menu or the picker; the loop's `stub` and `draft` write the next test,
-  [chapter 18](18-the-incremental-loop.md)):
+- **`test-case`**, on a blank line after a test in a `*__test.py`, retired from editors
+  (`menu = false`: no ghost, completion or ⚡ entry; `olifant gen` still runs it). The loop's
+  `stub` and `draft` write the next test ([chapter 18](18-the-incremental-loop.md)):
 
   ```python
   def test_⟨behaviour⟩() -> None:
@@ -750,9 +750,10 @@ A model's fill may start with import lines, which join the file's imports
 `date` brings `from datetime import date`.
 
 The end-to-end test in durandal.nvim (`tests/e2e_python_spec.lua`) does this from nothing:
-`olifant init`, a command and its red stub, the test-case ghost on the line below the stub
-(arranged as `create_booking = command()`), the new test typed, both red, `handle`
-written, then five green and pyright clean.
+`olifant init`, a command and its red stub, the new test typed, both red, `handle`
+written, then five green and pyright clean. It no longer takes the test-case ghost on the
+line below the stub, which `menu = false` retired: the plugin's branch moves that step to
+the loop's `stub`.
 
 ## `[applies_at]`: where a generator applies
 

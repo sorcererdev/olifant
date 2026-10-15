@@ -8,10 +8,9 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Actions (Action (..))
-import Olifant.App (PlanOptions (..), Ports (..), Project (..), actionsAt', generatorsOf, modelFillerWith, placeAt, planOptions, planWith)
+import Olifant.App (PlanOptions (..), Ports (..), Project (..), actionsAt', generatorsOf, menuOnly, modelFillerWith, placeAt, planOptions, planWith)
 import Olifant.Catalog (describeCatalogError, findEntry, loadGenerator)
 import Olifant.Cursor (isSnippet)
-import Olifant.Generator (GeneratorWith (..))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Generation (Plan (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
 import Olifant.Workspace (Workspace (..))
@@ -28,24 +27,22 @@ import System.FilePath (makeRelative)
 -- | The actions at a position (1-based line, 1-based byte column) of a
 -- file, each with whether it is a snippet; none in no project.
 actionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
-actionsFor path pos = memo "actions" path (T.pack (show pos)) $ \s ->
+actionsFor = actionsWith "actions" id
+
+-- | The actions the ⚡ menu and the picker offer at a position: those of
+-- generators 'inMenu' ('actionsFor' keeps every one: a picker's steps).
+menuActionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
+menuActionsFor = actionsWith "menuActions" menuOnly
+
+actionsWith :: Text -> (Project -> Project) -> FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
+actionsWith key offered path pos = memo key path (T.pack (show pos)) $ \s ->
   projectFor path s >>= \case
     (s', Nothing) -> pure (s', [])
     (s', Just (root, project)) -> do
-      acts0 <- actionsAt' (ssPorts s') project (makeRelative root path) pos
+      acts0 <- actionsAt' (ssPorts s') (offered project) (makeRelative root path) pos
       acts <- extractOrder s' project path acts0
       let snippets = M.fromList [(k, isSnippet g) | (k, g) <- generatorsOf project]
       pure (s', [(a, M.findWithDefault False (actGenerator a) snippets) | a <- acts])
-
--- | The actions the ⚡ menu and the picker offer at a position: those of
--- generators with `menu = false` left out (they stay callable: the CLI,
--- other generators, completion, a picker's steps).
-menuActionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
-menuActionsFor path pos s = do
-  (s', acts) <- actionsFor path pos s
-  (s'', found) <- projectFor path s'
-  let menu = maybe M.empty (\(_, project) -> M.fromList [(k, genMenu g) | (k, g) <- generatorsOf project]) found
-  pure (s'', [x | x@(a, _) <- acts, M.findWithDefault True (actGenerator a) menu])
 
 -- | Extract as a command or a query (decision 2): the one the function's
 -- code reads as first (it writes: command; it only reads: query); unsure,

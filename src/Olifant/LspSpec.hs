@@ -290,16 +290,22 @@ actionsSpec = describe "⚡ actions at the cursor" $ do
       case named "Add a port" actions of
         a : _ -> (a ^. L.data_ >>= lookupKey "choices" >>= lookupKey "port") `shouldSatisfy` maybe False (\case Array xs -> String "table_repository" `elem` xs; _ -> False)
         [] -> expectationFailure "no action"
-  it "(f) leaves out a generator with `menu = false` (the old test-case): not in the ⚡ menu nor the picker" $
+  it "(f) leaves out a generator with `menu = false` (the old test-case): not in the ⚡ menu, the picker, the hover's ⚡ list nor olifant/fileActions" $
     withPython [] $ \ports dir -> do
-      ((actions, listed), _) <- inProcessWith ports dir $ do
+      ((actions, listed, hover, fileActions), _) <- inProcessWith ports dir $ do
         doc <- openDoc "src/bistro/booking/commands/create_booking__test.py" "python"
         as <- getCodeActions doc (Range (Position 34 0) (Position 34 0))
         v <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (34 :: Int), "character" .= (0 :: Int)]]) >>= \case
           TResponseMessage _ _ (Right v) -> pure v
           TResponseMessage _ _ (Left e) -> fail (show e)
-        pure ([a ^. L.title | InR a <- as], [i | Just (Array gs) <- [lookupKey "generators" v], g <- toList gs, Just (String i) <- [lookupKey "id" g]])
+        hover <- getHover doc (Position 34 0)
+        fileActions <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/fileActions")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)]]) >>= \case
+          TResponseMessage _ _ (Right fa) -> pure fa
+          TResponseMessage _ _ (Left e) -> fail (show e)
+        pure ([a ^. L.title | InR a <- as], [i | Just (Array gs) <- [lookupKey "generators" v], g <- toList gs, Just (String i) <- [lookupKey "id" g]], show hover, Aeson.encode fileActions)
       actions `shouldNotContain` ["Test case"]
+      hover `shouldNotSatisfy` T.isInfixOf "test-case" . T.pack
+      fileActions `shouldNotSatisfy` BS.isInfixOf "test-case" . BSL.toStrict
       listed `shouldNotContain` ["python-htmx/test-case"]
       listed `shouldContain` ["python-htmx/command"]
 
@@ -351,6 +357,9 @@ completionSpec :: Spec
 completionSpec = describe "snippets: completion and inline completion (ghosts)" $ do
   let test = "src/bistro/booking/commands/create_booking__test.py"
       afterTest = Position 34 0
+      port = "src/bistro/booking/ports/booking_repository/booking_repository.py"
+      -- a blank line between the Protocol's methods
+      inProtocol = Position 12 0
       inline doc pos = do
         let params = object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= pos, "context" .= object ["triggerKind" .= (1 :: Int)]]
         request (SMethod_CustomMethod (Proxy :: Proxy "textDocument/inlineCompletion")) params >>= \case
@@ -365,28 +374,35 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
   it "(a) completes a snippet that applies here, its body with tab stops" $
     withPython [] $ \ports dir -> do
       (items, _) <- inProcessWith ports dir $ do
-        doc <- openDoc test "python"
-        getCompletions doc afterTest
-      case [i | i <- items, i ^. L.label == "Test case"] of
+        doc <- openDoc port "python"
+        getCompletions doc inProtocol
+      case [i | i <- items, i ^. L.label == "Port method"] of
         item : _ -> do
           item ^. L.insertTextFormat `shouldBe` Just InsertTextFormat_Snippet
           let body = case item ^. L.textEdit of
                 Just (InL e) -> e ^. L.newText
                 Just (InR e) -> e ^. L.newText
                 Nothing -> maybe "" id (item ^. L.insertText)
-          body `shouldSatisfy` T.isInfixOf "${1:behaviour}"
-        [] -> expectationFailure ("no Test case among " <> show (map (^. L.label) items))
+          body `shouldSatisfy` T.isInfixOf "${1:name}"
+        [] -> expectationFailure ("no Port method among " <> show (map (^. L.label) items))
   it "(b) offers the snippet anticipated here as an inline completion: unfilled, a snippet" $
     withPython [] $ \ports dir -> do
-      (v, _) <- inProcessWith ports dir (openDoc test "python" >>= (`inline` afterTest))
+      (v, _) <- inProcessWith ports dir (openDoc port "python" >>= (`inline` inProtocol))
       case firstInsert v of
         Just (Object insert) -> do
           KM.lookup "kind" insert `shouldBe` Just (String "snippet")
-          KM.lookup "value" insert `shouldSatisfy` \case Just (String body) -> "= command()" `T.isInfixOf` body; _ -> False
+          KM.lookup "value" insert `shouldSatisfy` \case Just (String body) -> "(self" `T.isInfixOf` body; _ -> False
           -- the ghost as the engine draws it, and what to resolve for the filled body
-          (firstItem v >>= lookupKey "ghost") `shouldSatisfy` \case Just (Array ls) -> String "def test_\10216behaviour\10217() -> None:" `elem` ls; _ -> False
-          (firstItem v >>= lookupKey "data" >>= lookupKey "generator") `shouldBe` Just (String "python-htmx/test-case")
+          (firstItem v >>= lookupKey "ghost") `shouldSatisfy` \case Just (Array ls) -> any (\case String l -> "def \10216name\10217(self" `T.isInfixOf` l; _ -> False) ls; _ -> False
+          (firstItem v >>= lookupKey "data" >>= lookupKey "generator") `shouldBe` Just (String "python-htmx/port-method")
         other -> expectationFailure ("inline completion: " <> show v <> " / " <> show other)
+  it "(b2) neither completes nor ghosts a generator with `menu = false` (the old test-case, after a test)" $
+    withPython [] $ \ports dir -> do
+      ((items, v), _) <- inProcessWith ports dir $ do
+        doc <- openDoc test "python"
+        (,) <$> getCompletions doc afterTest <*> inline doc afterTest
+      map (^. L.label) items `shouldNotContain` ["Test case"]
+      (firstItem v >>= lookupKey "data" >>= lookupKey "generator") `shouldNotBe` Just (String "python-htmx/test-case")
   it "(c) says it serves inline completion (LSP 3.18), though its library predates it" $
     withPython [] $ \ports dir -> do
       -- the raw response: a typed client drops what its types do not know
@@ -400,11 +416,11 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
   sequential . it "(e) answers an inline completion within 150 ms once warm (median of 20)" $
     withPython [] $ \ports dir -> do
       (times, _) <- inProcessWith ports dir $ do
-        doc <- openDoc test "python"
-        _ <- inline doc afterTest
+        doc <- openDoc port "python"
+        _ <- inline doc inProtocol
         forM [1 .. 20 :: Int] $ \_ -> do
           t0 <- liftIO getCurrentTime
-          _ <- inline doc afterTest
+          _ <- inline doc inProtocol
           t1 <- liftIO getCurrentTime
           pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
       let median = sort times !! 10
@@ -850,8 +866,8 @@ scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
         fixes <- getCodeActions bad (Range (Position 0 0) (Position 0 5))
         query <- openDoc "src/bistro/booking/queries/get_day_schedule.py" "python"
         refactors <- getCodeActions query (Range (Position 18 30) (Position 18 30))
-        test <- openDoc "src/bistro/booking/commands/create_booking__test.py" "python"
-        completions <- getCompletions test (Position 34 0)
+        port <- openDoc "src/bistro/booking/ports/booking_repository/booking_repository.py" "python"
+        completions <- getCompletions port (Position 12 0)
         resolved <- case [a | InR a <- refactors, a ^. L.kind == Just CodeActionKind_RefactorRewrite, maybe False (\d -> lookupKey "missing" d == Just (Array mempty)) (a ^. L.data_)] of
           a : _ -> Just <$> resolveCodeAction a
           [] -> pure Nothing
