@@ -1,7 +1,7 @@
 -- | Internal to Olifant.Server: the ⚡ actions at a cursor, and an action
 -- planned there (a snippet placed at the cursor, as `gen --at` does) with
 -- the choices made — against the documents as they are now.
-module Olifant.Server.Actions (actionsFor, actionEdits, actionPlan, actionPlanWith, fillerFor, describeProgress) where
+module Olifant.Server.Actions (actionsFor, menuActionsFor, actionEdits, actionPlan, actionPlanWith, fillerFor, describeProgress) where
 
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
@@ -11,6 +11,7 @@ import Olifant.Actions (Action (..))
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), actionsAt', generatorsOf, modelFillerWith, placeAt, planOptions, planWith)
 import Olifant.Catalog (describeCatalogError, findEntry, loadGenerator)
 import Olifant.Cursor (isSnippet)
+import Olifant.Generator (GeneratorWith (..))
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Generation (Plan (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
 import Olifant.Workspace (Workspace (..))
@@ -35,6 +36,16 @@ actionsFor path pos = memo "actions" path (T.pack (show pos)) $ \s ->
       acts <- extractOrder s' project path acts0
       let snippets = M.fromList [(k, isSnippet g) | (k, g) <- generatorsOf project]
       pure (s', [(a, M.findWithDefault False (actGenerator a) snippets) | a <- acts])
+
+-- | The actions the ⚡ menu and the picker offer at a position: those of
+-- generators with `menu = false` left out (they stay callable: the CLI,
+-- other generators, completion, a picker's steps).
+menuActionsFor :: FilePath -> (Int, Int) -> ServerState -> IO (ServerState, [(Action, Bool)])
+menuActionsFor path pos s = do
+  (s', acts) <- actionsFor path pos s
+  (s'', found) <- projectFor path s'
+  let menu = maybe M.empty (\(_, project) -> M.fromList [(k, genMenu g) | (k, g) <- generatorsOf project]) found
+  pure (s'', [x | x@(a, _) <- acts, M.findWithDefault True (actGenerator a) menu])
 
 -- | Extract as a command or a query (decision 2): the one the function's
 -- code reads as first (it writes: command; it only reads: query); unsure,

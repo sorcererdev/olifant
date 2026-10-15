@@ -331,3 +331,5 @@ function with `<leader>mcs`.
   judges it.
 - **`the buffer changed while drafting; your text stands`** — you typed while the model wrote. Ask
   again with `draft`, or keep typing.
+- **`assert False, "write this test"`** — a test stub with `assert False, "write this test"` is
+  the pack's old test-case generator, not the circle: delete it and `stub` from the function.

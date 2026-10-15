@@ -706,7 +706,9 @@ Beside `failure-variant` and `failure-arms`, the pack anticipates the next piece
 its conventions make it predictable. Each is a ghost on a blank line (Tab to take it, Tab
 to walk its stops) and in the ⚡ menu.
 
-- **`test-case`**, on a blank line after a test in a `*__test.py`:
+- **`test-case`**, on a blank line after a test in a `*__test.py`, a ghost only (`menu =
+  false`: not in the ⚡ menu or the picker; the loop's `stub` and `draft` write the next test,
+  [chapter 18](18-the-incremental-loop.md)):
 
   ```python
   def test_⟨behaviour⟩() -> None:

@@ -290,6 +290,18 @@ actionsSpec = describe "⚡ actions at the cursor" $ do
       case named "Add a port" actions of
         a : _ -> (a ^. L.data_ >>= lookupKey "choices" >>= lookupKey "port") `shouldSatisfy` maybe False (\case Array xs -> String "table_repository" `elem` xs; _ -> False)
         [] -> expectationFailure "no action"
+  it "(f) leaves out a generator with `menu = false` (the old test-case): not in the ⚡ menu nor the picker" $
+    withPython [] $ \ports dir -> do
+      ((actions, listed), _) <- inProcessWith ports dir $ do
+        doc <- openDoc "src/bistro/booking/commands/create_booking__test.py" "python"
+        as <- getCodeActions doc (Range (Position 34 0) (Position 34 0))
+        v <- request (SMethod_CustomMethod (Proxy :: Proxy "olifant/generators")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (34 :: Int), "character" .= (0 :: Int)]]) >>= \case
+          TResponseMessage _ _ (Right v) -> pure v
+          TResponseMessage _ _ (Left e) -> fail (show e)
+        pure ([a ^. L.title | InR a <- as], [i | Just (Array gs) <- [lookupKey "generators" v], g <- toList gs, Just (String i) <- [lookupKey "id" g]])
+      actions `shouldNotContain` ["Test case"]
+      listed `shouldNotContain` ["python-htmx/test-case"]
+      listed `shouldContain` ["python-htmx/command"]
 
 -- | ⚡ hints and near misses (Task 11).
 hintsSpec :: Spec

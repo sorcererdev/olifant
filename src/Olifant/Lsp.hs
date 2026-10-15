@@ -12,7 +12,7 @@ import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO, try)
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
-import Olifant.Generator (GeneratorId (..))
+import Olifant.Generator (GeneratorId (..), GeneratorWith (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Monad (unless, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -47,7 +47,7 @@ import Olifant.App (Ports (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, listGenerators, migrationFor, showGenerator, subsOf)
-import Olifant.Catalog (catalogPackRoots, describeCatalogError)
+import Olifant.Catalog (CatalogEntry (..), catalogPackRoots, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
@@ -276,9 +276,10 @@ handlers env =
             (entries, broken, views) <- liftIO (listGenerators (envPorts env) project True)
             -- with a position: which apply at the cursor (the picker ranks them first)
             here <- case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
-              (Just path, Just (line, col)) -> S.fromList . map (actGenerator . fst) <$> liftIO (withSnapshot env (actionsFor path (line + 1, col + 1)))
+              (Just path, Just (line, col)) -> S.fromList . map (actGenerator . fst) <$> liftIO (withSnapshot env (menuActionsFor path (line + 1, col + 1)))
               _ -> pure S.empty
-            respond (Right (withHere here (listJson True (subsOf (prCatalog project)) views entries broken)))
+            -- `menu = false`: callable, but not offered here
+            respond (Right (withHere here (listJson True (subsOf (prCatalog project)) views (filter (genMenu . entryDefinition) entries) broken)))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/choices")) $ \req respond -> do
         let params = req ^. L.params
             field k = case params of Object o -> KM.lookup k o; _ -> Nothing
@@ -1002,7 +1003,7 @@ cursorActions env path (Position l c) = do
   text <- documentText env path
   let lineText = fromMaybe "" (listToMaybe (drop (fromIntegral l) (T.splitOn "\n" text)))
       (line, col) = bytePosition lineText (fromIntegral l, fromIntegral c)
-  acts <- withSnapshot env (actionsFor path (line, col))
+  acts <- withSnapshot env (menuActionsFor path (line, col))
   version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
   pure
     [ CodeAction

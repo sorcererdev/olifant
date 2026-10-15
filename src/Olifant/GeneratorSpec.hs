@@ -250,6 +250,9 @@ parseSpec = describe "parseGenerator" $ do
     it "reads `summary`, a short line for lists" $ do
       fmap genSummary (g ["summary = \"A command of a service\""]) `shouldBe` Right (Just "A command of a service")
       fmap genSummary (g []) `shouldBe` Right Nothing
+    it "reads `menu`: false keeps it out of the ⚡ menu and the picker (true by default)" $ do
+      fmap genMenu (g ["menu = false"]) `shouldBe` Right False
+      fmap genMenu (g []) `shouldBe` Right True
     it "reads an enum input's `new`: the generators that make a new value, and how it reads" $
       fmap (\d -> [(n, templateSource t) | i <- genInputs d, inputName i == "port", (n, t) <- inputNew i]) (g ["[inputs.port]", "type = \"enum\"", "one_of = \"ports\"", "new = { repository = \"{= port =}\" }", "[query.ports]", "glob = \"x/*\"", "value = \"file name\""])
         `shouldBe` Right [("repository", "{= port =}")]
