@@ -28,6 +28,7 @@ module Olifant.Block
     instructionFor,
     stubAssertion,
     assertionInstruction,
+    helperSentence,
     snippetText,
   )
 where
@@ -37,7 +38,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block.Draft (assertionInstruction, draftTemplate, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
+import Olifant.Block.Draft (assertionInstruction, draftTemplate, helperSentence, instructionFor, killStub, snippetText, stubAssertion, stubName, stubNameFor, testDraftTemplate, testStub, uniqueTestName)
 import Olifant.Language (Failure (..), TestId, TestRun, keptVerdict)
 import Olifant.Mutate (Mutant (..))
 

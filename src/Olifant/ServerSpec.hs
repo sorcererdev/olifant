@@ -17,7 +17,7 @@ import Data.Maybe (isNothing, listToMaybe)
 import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
-import Olifant.Block (Block (..), BlockState (Accepted, Drafting, Green, Judged, Red, Rejected), Draft (..), hud, open, survivors)
+import Olifant.Block (Block (..), BlockState (Accepted, Drafting, Green, Judged, Red, Rejected), Draft (..), helperSentence, hud, open, survivors)
 import Olifant.Block qualified as Block
 import Olifant.Mutate (Mutant (..))
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
@@ -405,6 +405,12 @@ blockSpecs = describe "blocks" $ do
       (_, Right _) <- blockAccept testFile st2
       Just (code, _) <- blockFor (root </> moduleRel) st2
       (blockKind code, blockTestId code) `shouldBe` (Block.Code, T.pack testRel <> "::test_reopens_again")
+    it "in a test file with the pack's helper (`def command(`), both holes ask that it be passed the adapters arranged" $ do
+      (s, testFile, opened, (asked, _)) <- drafter killedBy
+      let helped = opened "..." <> "\n\ndef command() -> CloseTable:\n    return CloseTable()\n"
+      (_, Right _) <- blockDraft ignore testFile (openDoc testFile 1 helped s)
+      instructions <- map snd <$> readIORef asked
+      instructions `shouldSatisfy` \is -> length is == 2 && all (helperSentence `T.isInfixOf`) is
     it "an arrangement that fails before the assertion: both holes are asked again, together, and the draft lands; one test run per attempt" $ do
       -- a test whose arrangement raises fails there, before its assertion
       let raising files = case M.lookup testRel files of
