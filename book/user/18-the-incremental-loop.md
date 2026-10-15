@@ -15,8 +15,9 @@ cannot be rubber-stamped.
    the name or type over it: the **name** is the spec. `draft` (`<leader>mcd`) fills the whole
    test, its arrangement and, while it is still the stub's `assert ...`, its assertion (one
    assert on `result`, from what the name says), verified: the test runs and fails *at the
-   assertion*. The cursor goes to the drafted assertion: confirm it or edit it (written your
-   own before `draft`, it stands and only the arrangement is drafted). The HUD says
+   assertion*. Read the drafted assertion: confirm it or edit it (the block carries its line,
+   `assertion_line`, so an editor may put the cursor there; written your own before `draft`,
+   it stands and only the arrangement is drafted). The HUD says
    `red ✓ accept · go make it pass`; `accept` it (`<leader>mca`). (`begin` in a function no test
    calls opens the same stub, its name yours to type.)
 2. The function begins on that red test (the one you stubbed it for; as `begin` on a red test
@@ -101,8 +102,8 @@ magic circle is open in this file: accept or reject it first`).
 The person's part of each circle is the part that cannot be delegated:
 
 - **A test's name, and its assertion confirmed.** The name is the spec: the model drafts the
-  arrangement and, left `assert ...`, the assertion from the name, and the cursor lands on that
-  assertion for you to confirm or edit. A test draft must fail *at the assertion* (its first
+  arrangement and, left `assert ...`, the assertion from the name, for you to confirm or
+  edit (an editor may put the cursor on it: the block carries its line). A test draft must fail *at the assertion* (its first
   assert line to the test's end) before any code exists: one that errors in its setup, or passes
   already (`it does not test the new behaviour`), is a failed draft. A new test's circle is green
   when its test is red there.
