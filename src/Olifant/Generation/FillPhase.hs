@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, testsFailed) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -140,7 +140,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               let failedPrefix = case verify of
                     VerifyRedAt {} -> ""
                     VerifyKills {} -> ""
-                    _ -> "the tests failed:\n"
+                    _ -> testsFailed <> "\n"
               pure $ case outcome of
                 Right (True, _) -> (t, f, Nothing)
                 Right (False, out) -> (t, f, Just (failedPrefix <> T.intercalate "\n" (lastN 40 (T.lines out))))
@@ -441,3 +441,8 @@ reindented comment f = case T.lines (T.dropWhile (== '\n') f) of
 -- for Python's indentation and syntax errors), not that it does not type.
 syntaxError :: Text -> Bool
 syntaxError m = any (`T.isInfixOf` m) ["IndentationError", "SyntaxError", "Unexpected indentation", "Unindent not expected", "Unindent amount does not match", "Expected indented block"]
+
+-- | What a fill whose tests failed is unfilled for begins with (each
+-- failing test's id and message follow, the last 40 lines kept).
+testsFailed :: Text
+testsFailed = "the tests failed:"

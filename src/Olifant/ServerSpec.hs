@@ -1432,6 +1432,23 @@ blockSpecs = describe "blocks" $ do
     (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSibling "seats > 9") [(testRel, siblingText)]
     (_, Right b) <- blockBegin ignore (root </> moduleRel) 6 (openDoc (root </> moduleRel) 1 written s0)
     (blockTestId b, blockKeep b) `shouldBe` (testId, [siblingId])
+  it "(K8) a kept parametrized test (its id `test_p[1]`) stays kept: a draft that breaks it is red at it" $ do
+    let paramId = T.pack testRel <> "::test_p[1]"
+        params = testText <> T.unlines ["", "", "@pytest.mark.parametrize(\"n\", [1])", "def test_p(n: int) -> None:", "    assert CloseTable().handle(n) == 0"]
+    (s0, _) <- blocksRun blockSyntax (pure ()) (definedOnly (keepingSiblingAs paramId "" "seats > 2")) [(testRel, params)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s
+    blockKeep b `shouldBe` [paramId]
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    (blockRedAt drafted, blockKeep drafted) `shouldBe` (Just paramId, [paramId])
+    hud drafted `shouldSatisfy` ("red: test_p[1] no longer passes · fix or reject" `T.isSuffixOf`)
+  it "(K9) a draft red at a kept test whose output is long (the fill's reason cut before its id) is still red at it" $ do
+    let long = T.intercalate "\n" ["E   line " <> T.pack (show i) | i <- [1 .. 60 :: Int]]
+    (s0, _) <- blocksRun blockSyntax (pure ()) (keepingSiblingAs siblingId long "seats > 2") [(testRel, siblingText)]
+    let s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+    (_, Right _) <- blockBegin ignore (root </> testRel) 6 s
+    (_, Right (drafted, _)) <- blockDraft ignore (root </> moduleRel) s
+    blockRedAt drafted `shouldBe` Just siblingId
   where
     ignore = const (pure ())
     steps s = maybe "" id <$> readText (portsFiles s) (root </> ".olifant/state/steps.log")
@@ -1467,17 +1484,22 @@ definedOnly verdict ids files
   | any unknown ids = Right (TestRun [] [] (Just "ERROR: not found"))
   | otherwise = verdict ids files
   where
-    unknown i = "::" `T.isInfixOf` i && not (("def " <> snd (T.breakOnEnd "::" i) <> "(") `T.isInfixOf` M.findWithDefault "" testRel files)
+    -- (a parametrized test's id names its parameters after its name: `test_p[1]`)
+    unknown i = "::" `T.isInfixOf` i && not (("def " <> snd (T.breakOnEnd "::" (T.takeWhile (/= '[') i)) <> "(") `T.isInfixOf` M.findWithDefault "" testRel files)
 
 -- | The module's test file: `test_closes_a_table` red on the stub,
 -- `test_sibling` (its assertion on line 10) red when the module holds
 -- BREAKS, green otherwise.
 keepingSibling :: Text -> [Text] -> M.Map FilePath Text -> Either Text TestRun
-keepingSibling breaks _ files = Right (TestRun ([testId | null own] ++ [siblingId | null sibling]) (own ++ sibling) Nothing)
+keepingSibling = keepingSiblingAs siblingId ""
+
+-- | 'keepingSibling' with the sibling's id and its failure's output given.
+keepingSiblingAs :: Text -> Text -> Text -> [Text] -> M.Map FilePath Text -> Either Text TestRun
+keepingSiblingAs sid out breaks _ files = Right (TestRun ([testId | null own] ++ [sid | null sibling]) (own ++ sibling) Nothing)
   where
     m = M.findWithDefault "" moduleRel files
     own = [(testId, Failure (Just 6) "NotImplementedError: later" "") | "NotImplementedError" `T.isInfixOf` m]
-    sibling = [(siblingId, Failure (Just 10) "assert 0 == 1" "") | breaks `T.isInfixOf` m]
+    sibling = [(sid, Failure (Just 10) "assert 0 == 1" out) | breaks `T.isInfixOf` m]
 
 -- | The module's test file run test by test (by the names it defines):
 -- `test_closes_a_table` red on the stub; `test_kills_the_boundary` red on

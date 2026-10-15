@@ -62,7 +62,7 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles)
+import Olifant.Generation.FillPhase (addImports, applyFills, isImportLine, projectFiles, testsFailed)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
@@ -451,11 +451,12 @@ draftIn progress s root project lang b drafting killed filler = do
 -- | A code draft's red (WHY, the fill's) on the text it wrote: a test the
 -- block keeps that fails there while its own test passes is that test's
 -- red (the runner's line and message), as a test would find; else WHY.
--- Run only when WHY names a kept test (the fill's verify lists each
--- failing test's id): a compile failure or clash is WHY as it is.
+-- Run only when the fill failed its tests ('testsFailed' begins WHY; the
+-- reason may be cut before a kept test's id): a compile failure or clash
+-- is WHY as it is.
 draftRedOn :: ServerState -> Workspace IO -> Language -> FilePath -> Block -> Text -> Text -> IO (Maybe TestId, Failure)
 draftRedOn s ws lang rel b written why
-  | blockKind b /= Code || not (any (`T.isInfixOf` why) (blockKeep b)) = pure fallback
+  | blockKind b /= Code || null (blockKeep b) || not (testsFailed `T.isPrefixOf` why) = pure fallback
   | otherwise = do
       let ids = blockTestId b : blockKeep b
       (_, files) <- projectFiles ws (M.empty :: Map FilePath Text) lang (map (T.unpack . fileOf) ids)
@@ -467,9 +468,10 @@ draftRedOn s ws lang rel b written why
 
 -- | The tests a block keeps that its test file (TESTTEXT, as it is now)
 -- still defines: one the person deleted or renamed is kept no more (a
--- runner asked for it would run nothing).
+-- runner asked for it would run nothing). A test's name is its id's last
+-- part less its parameters (`file::test_p[1]`, `file::TestX::test_y`).
 keptIn :: Text -> Block -> [TestId]
-keptIn testText b = [t | t <- blockKeep b, testName t `elem` testNames testText]
+keptIn testText b = [t | t <- blockKeep b, testName (T.takeWhile (/= '[') t) `elem` testNames testText]
 
 -- | The project modules a draft sees beside its file and the file beside it
 -- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
