@@ -266,6 +266,9 @@ spec = describe "Olifant.Block" $ do
           holes t = either (const []) (filter ("{= ?" `T.isInfixOf`) . T.lines . templateSource) (testDraftTemplate py t 7 (Just (8, instruction)))
       map (helperSentence `T.isInfixOf`) (holes helped) `shouldBe` [True, True]
       map (helperSentence `T.isInfixOf`) (holes stubbed) `shouldBe` [False, False]
+      -- a query's test file: its helper is `query(…)`
+      let queried = stubbed <> "\n\ndef query() -> int:\n    return 1\n"
+      map ("build the query with the helper, passing the adapters you arranged (`query(booking_repository=repository)`)" `T.isInfixOf`) (holes queried) `shouldBe` [True, True]
       helperSentence `shouldBe` "build the command with the helper, passing the adapters you arranged (`command(booking_repository=repository)`); never call the helper bare after arranging a repository"
     describe "the kill stub's name, from the mutant" $ do
       let module' = T.unlines ["class Book:", "    def handle(self, input: BookInput) -> BookOutput:", "        table = self.tables.at(input.table_id)", "        if input.party >= table.seats:", "            return TableNotFound(f\"there is no table {input.table_id}\")"]
