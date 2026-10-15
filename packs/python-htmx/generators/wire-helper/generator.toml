@@ -59,6 +59,9 @@ insert = "{= test =}"
 at     = "end of parameters in {= helper =}"
 text   = "{= param =}: {= Port =} | None = None,"
 
+# `or`, not `is not None`: the pack's in-memory adapters define no
+# `__len__` or `__bool__`, so an arranged one is never falsy. A port whose
+# adapter gains one would need `x if x is not None else …` here.
 [[edits]]
 insert = "{= test =}"
 at     = "end of call {= command|pascal =} in {= helper =}"
