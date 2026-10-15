@@ -1,0 +1,65 @@
+name = "Wire Helper"
+description = "A test's helper that builds a command takes its new port, the port's in-memory adapter its default, so a test passes the adapter it arranged; used by wire"
+summary = "A command's test helper takes its new port"
+language = "python"
+version = 1
+examples = [
+  "olifant gen python-htmx/wire-helper --set app=bistro --set service=booking --set test=src/bistro/booking/commands/cancel_booking__test.py --set command=cancel_booking --set helper=command --set param=bookings --set port=BookingRepository",
+]
+
+[inputs.app]
+type   = "ident"
+prompt = "The app"
+
+[inputs.service]
+type   = "ident"
+prompt = "The service"
+
+[inputs.test]
+type   = "text"
+prompt = "The test file whose helper builds the command"
+
+[inputs.command]
+type   = "ident"
+prompt = "The command or query it builds"
+
+[inputs.helper]
+type   = "ident"
+prompt = "The helper (command, query)"
+
+[inputs.param]
+type   = "ident"
+prompt = "The __init__ parameter"
+
+[inputs.port]
+type   = "ident"
+prompt = "Its port"
+
+[derive]
+Port  = "{= port|pascal =}"
+port_ = "{= port|snake =}"
+ports = "{= app =}.{= service|snake =}.ports.{= port|snake =}"
+
+[[edits]]
+insert = "{= test =}"
+at     = "end of imports"
+text   = "from {= ports =}.in_memory_{= port_ =} import InMemory{= Port =}"
+unless = { matches = "^from [A-Za-z0-9_.]+ import .*InMemory{= Port =}([^A-Za-z0-9_]|$)" }
+
+[[edits]]
+insert = "{= test =}"
+at     = "end of imports"
+text   = "from {= ports =}.{= port_ =} import {= Port =}"
+unless = { matches = "^from [A-Za-z0-9_.]+ import .*[^A-Za-z0-9_]{= Port =}([^A-Za-z0-9_]|$)" }
+
+# `def command(bookings: BookingRepository | None = None)`: called bare, a
+# fresh fake; given the adapter a test arranged, that one.
+[[edits]]
+insert = "{= test =}"
+at     = "end of parameters in {= helper =}"
+text   = "{= param =}: {= Port =} | None = None,"
+
+[[edits]]
+insert = "{= test =}"
+at     = "end of call {= command|pascal =} in {= helper =}"
+text   = "{= param =}={= param =} or InMemory{= Port =}(),"

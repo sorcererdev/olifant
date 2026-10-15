@@ -739,9 +739,11 @@ to walk its stops) and in the ⚡ menu.
   the slice, qwen3-coder:30b wrote `create_booking`, `cancel_booking` and
   `get_day_schedule` green in one round each, 3–6 s.
 - **`wire`**, the follow-up on a parameter of a command's or query's `__init__` (type
-  `bookings: BookingRepository` and Tab): the module keeps the port, every test that builds
-  the command passes its fake, and `main.py`, when it builds the command, passes the
-  adapter.
+  `bookings: BookingRepository` and Tab): the module keeps the port, the test's helper takes
+  it as a keyword argument whose default is its fake (`def command(bookings:
+  BookingRepository | None = None)`, so a test passes what it arranged:
+  `command(bookings=bookings)`), every other test that builds the command passes its fake,
+  and `main.py`, when it builds the command, passes the adapter.
 
 A model's fill may start with import lines, which join the file's imports
 ([chapter 12](12-holes-and-models.md#what-is-sent-to-the-model)): a decode that needs

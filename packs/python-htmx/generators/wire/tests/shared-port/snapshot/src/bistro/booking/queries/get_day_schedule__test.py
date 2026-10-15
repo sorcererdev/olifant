@@ -6,14 +6,18 @@ from bistro.booking.models.table import Table
 from bistro.booking.ports.booking_repository.in_memory_booking_repository import InMemoryBookingRepository
 from bistro.booking.queries.get_day_schedule import DaySchedule, GetDaySchedule
 from bistro.booking.ports.id_generator.in_memory_id_generator import InMemoryIdGenerator
+from bistro.booking.ports.id_generator.id_generator import IdGenerator
 
 DAY = date(2026, 10, 9)
 
 
-def query(bookings: InMemoryBookingRepository) -> GetDaySchedule:
+def query(
+    bookings: InMemoryBookingRepository,
+    ids: IdGenerator | None = None,
+) -> GetDaySchedule:
     return GetDaySchedule(
         bookings=bookings,
-        ids=InMemoryIdGenerator(),
+        ids=ids or InMemoryIdGenerator(),
     )
 
 

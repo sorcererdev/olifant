@@ -793,11 +793,11 @@ wired up, ready for the first case. Snippets add the next case.
 | `query` | `queries/NAME.py`: Input, Result, `handle` | a red stub |
 | `add-dependency` (menu) | on `__init__`: one of the service's ports joins its parameters, then `wire` | the existing ones |
 | `handle-body` (menu) | on `handle`'s `raise NotImplementedError`: the model writes the body until the module's tests pass | must make them pass |
-| `wire` (follow-up) | on an `__init__` parameter: the module keeps the port; every test that builds it passes the fake; `main.py`, if it builds it, passes the adapter, added once | the existing ones |
+| `wire` (follow-up) | on an `__init__` parameter: the module keeps the port; the test's helper (`def command(…)`) takes it, its fake the default (`bookings: BookingRepository | None = None`, passing `bookings or InMemoryBookingRepository()`), and every other test that builds it passes the fake; `main.py`, if it builds it, passes the adapter, added once | the existing ones |
 | `web-resource` | `web/RESOURCE/`: the page from a query, a route per command (`web-command`), templates, `failures.py`; `main.py` builds and routes them; the home page links it | a red stub |
 | `failure-arms`, `failure-variant`, `match-arm`, `test-case`, `port-method`, `port-method-adapters` | snippets and follow-ups ([chapter 14](14-editors-and-actions.md#the-python-htmx-snippets)) | a red stub where they add behaviour |
 
-`build-in-main`, `wire-main`, `wire-test`, `web-command`, `port-method-adapter` and
+`build-in-main`, `wire-main`, `wire-test`, `wire-helper`, `web-command`, `port-method-adapter` and
 `add-import` are the pieces the others use; each runs on its own too.
 
 **`main.py` builds what is routed.** A command or query is built in `main.py` when a web
