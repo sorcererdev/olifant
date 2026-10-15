@@ -405,6 +405,25 @@ blockSpecs = describe "blocks" $ do
       (_, Right _) <- blockAccept testFile st2
       Just (code, _) <- blockFor (root </> moduleRel) st2
       (blockKind code, blockTestId code) `shouldBe` (Block.Code, T.pack testRel <> "::test_reopens_again")
+    it "an arrangement that fails before the assertion: both holes are asked again, together, and the draft lands; one test run per attempt" $ do
+      -- a test whose arrangement raises fails there, before its assertion
+      let raising files = case M.lookup testRel files of
+            Just t | Just at <- lookup True [("raise ValueError" `T.isInfixOf` l, i) | (i, l) <- zip [1 :: Int ..] (T.splitOn "\n" t)] ->
+              Right (TestRun [] [(T.pack testRel <> "::test_reopens_again", Failure (Just at) "ValueError: boom" "")] Nothing)
+            _ -> killedBy files
+      (s0, runs) <- blocksOn raising []
+      asked <- newIORef []
+      let answers = [M.fromList [("arrange", "raise ValueError(\"boom\")"), ("assertion", "assert result == 1")], M.fromList [("arrange", "result = Reopen().again()"), ("assertion", "assert result == 1")]]
+          filler = ModelFiller "drafter" 1 (Filler (\req -> atomicModifyIORef' asked (\a -> (a ++ [map fhName (frHoles req)], length a)) >>= \n -> pure (Right (answers !! min n 1))))
+          s = (openDoc (root </> moduleRel) 1 reopen s0) {ssTestFiller = Just filler}
+      (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+      let named = T.replace "kills_the_boundary" "reopens_again" (expandStub at (T.replace "${2:...}" "..." body) (applyEdits imports testText))
+      ran <- runs
+      (_, Right (drafted, [edit])) <- blockDraft ignore testFile (openDoc testFile 1 named s)
+      readIORef asked `shouldReturn` [["arrange", "assertion"], ["arrange", "assertion"]]
+      blockState drafted `shouldBe` Green
+      feText edit `shouldSatisfy` ("result = Reopen().again()" `T.isInfixOf`)
+      (subtract ran <$> runs) `shouldReturn` 2
     it "a stub whose assertion the person typed: only the arrangement is drafted" $ do
       (s, testFile, opened, (asked, _)) <- drafter killedBy
       (_, Right (drafted, _)) <- blockDraft ignore testFile (openDoc testFile 1 (opened "Reopen().again() == 1") s)
