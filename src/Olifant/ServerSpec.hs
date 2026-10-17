@@ -26,7 +26,7 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
-import Olifant.Server.Block (importedModules, settle)
+import Olifant.Server.Block (importedModules, settle, strayLine)
 import Olifant.Server.BlockMoves (rejectDeleted)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
@@ -887,6 +887,40 @@ blockSpecs = describe "blocks" $ do
       fmap blockState back `shouldSatisfy` \case Just (Red _) -> True; _ -> False
       -- the HUD says why nothing landed
       fmap hud back `shouldSatisfy` maybe False ("\183 your text stands \183 draft when ready" `T.isSuffixOf`)
+  describe "(h) a test draft changes only its stub" $ do
+    let placeholder = "raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")"
+        -- a new test's stub, named and asserted, drafted when asked
+        reopening text answers = do
+          (s0, _) <- blocksOn killedBy [(testRel, text)]
+          let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+              filler = ModelFiller "local" 0 (Filler (\_ -> pure (Right (M.fromList answers))))
+              s = (openDoc (root </> moduleRel) 1 module' s0) {ssTestFiller = Just filler}
+          (_, Right (_, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+          let named = T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body (applyEdits imports text)))
+          (_, drafted) <- blockDraft ignore testFile (openDoc testFile 1 named s)
+          back <- blockFor testFile s
+          log' <- steps s
+          pure (named, drafted, fst <$> back, log')
+        leftOver = T.unlines ["from shop.close_table import CloseTable", "", "SEVEN = 7", "", "", "def test_left_over() -> None:", "    " <> placeholder, "    assert ...", "", "", "def test_closes_a_table() -> None:", "    table = CloseTable()", "    assert table.handle(SEVEN) == 1"]
+    it "a draft that changes a line outside its test is refused: red, nothing written, one sentence in the HUD and the step log" $ do
+      -- a stub left undrafted above this one holds the same placeholder: the fill went into it
+      (_, drafted, back, log') <- reopening leftOver [("arrange", "result = Reopen().again()")]
+      let sentence = "the draft changed lines outside its test: " <> placeholder
+      drafted `shouldBe` Left sentence
+      fmap blockState back `shouldSatisfy` \case Just (Red _) -> True; _ -> False
+      fmap hud back `shouldSatisfy` maybe False (sentence `T.isInfixOf`)
+      log' `shouldSatisfy` T.isInfixOf ("\tdrafting\tperson\tno draft: " <> sentence)
+    it "an import the draft adds, a merged one, a blank line moved: no change outside the test" $ do
+      let ours = strayLine (\l -> any (`T.isPrefixOf` l) ["from ", "import "])
+          old = "from a import X\n\nSEVEN = 7\n\n\ndef test_a() -> None:\n    pass\n"
+      ours old (6, 7) "from a import X, Y\nimport os\n\nSEVEN = 7\n\n\ndef test_a() -> None:\n    y = 1\n    pass\n" (7, 9) `shouldBe` Nothing
+      ours old (6, 7) "from a import X\n\nSEVEN = 7\n\ndef test_a() -> None:\n    pass\n" (5, 6) `shouldBe` Nothing
+    it "a line gone, changed or added outside the test is the first stray one" $ do
+      let ours = strayLine (\l -> any (`T.isPrefixOf` l) ["from ", "import "])
+          old = "from a import X\n\nSEVEN = 7\nEIGHT = 8\n\n\ndef test_a() -> None:\n    pass\n"
+      ours old (7, 8) "from a import X\n\nEIGHT = 8\n\n\ndef test_a() -> None:\n    pass\n" (6, 7) `shouldBe` Just "SEVEN = 7"
+      ours old (7, 8) "from a import X\n\nSEVEN = 7\nEIGHT = 9\n\n\ndef test_a() -> None:\n    pass\n" (7, 8) `shouldBe` Just "EIGHT = 8"
+      ours old (7, 8) "from a import X\n\nSEVEN = 7\nEIGHT = 8\nNINE = 9\n\n\ndef test_a() -> None:\n    pass\n" (8, 9) `shouldBe` Just "NINE = 9"
   it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}

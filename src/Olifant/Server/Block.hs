@@ -11,6 +11,7 @@ module Olifant.Server.Block
   , blockDraftAt
   , StubDraft
   , draftStub
+  , strayLine
   , blockUnapplied
   , blockDraftStopped
   , blockTest
@@ -412,7 +413,7 @@ draftOrRestore progress s root project lang b drafting killed filler stubbed =
     Right done -> pure (Right done)
     Left why -> do
       -- a stub's draft drafted at once, which no one asked for: the HUD says why it did not land
-      let noted = if isJust stubbed then drafting {blockNote = Just (if why == stubTyped then textStands else why)} else drafting
+      let noted = if isJust stubbed || strayPrefix `T.isPrefixOf` why then drafting {blockNote = Just (if why == stubTyped then textStands else why)} else drafting
       settle s root killed "drafting" ("no draft: " <> why) DraftFailed noted >>= either (const (pure ())) (restored s root project lang killed)
       pure (Left why)
 
@@ -586,6 +587,15 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
             Nothing -> do
               red <- lift (draftRedOn s ws lang rel b written why)
               pure (written, Left red, [FileEdit file started False range new | written /= text], Nothing)
+  -- a test draft changes only its stub (the imports it needs aside)
+  case (blockKind b, stubbed, unwritten) of
+    (TestFor _, Nothing, Nothing)
+      | Right ((line, _), _, _, _) <- testDraftParts lang b text
+      , Just (d, _) <- defLineAbove line text -> do
+          let was = testLinesFrom d text
+          now' <- maybe (throwE "the draft lost its stub") pure (stubSpanIn (linesIn text was) planned)
+          maybe (pure ()) (throwE . strayDraft) (strayLine (isImportLine lang) text was planned now')
+    _ -> pure ()
   let shown = fromMaybe planned unwritten
       changed = changedSpan text shown (blockSpan b)
       grown = length (T.splitOn "\n" shown) - length (T.splitOn "\n" text)
@@ -627,6 +637,12 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
           landed = addImports lang added onLive
           -- where the span is in the editor's file less where it is in the draft's
           moved = maybe 0 fst (stubSpanIn expected landed) - fst drafted'
+      -- the draft changes only the stub: nothing else of the editor's file but imports
+      case blockKind b of
+        TestFor _ -> do
+          sp' <- maybe (throwE "the draft lost its stub") pure (stubSpanIn expected landed)
+          maybe (pure ()) (throwE . strayDraft) (strayLine (isImportLine lang) now live landed sp')
+        _ -> pure ()
       -- the editor's text is the one seen: the draft applied is an edit, tested
       lift (modifyIORef' (ssBlockSeen s) (M.insert file now))
       pure (landed, [FileEdit file version False range new | landed /= now, let (range, new) = smallestChange now landed], moved)
@@ -640,6 +656,39 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
   b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockNote = note, blockSpan = bimap (+ shift) (+ shift) sp, blockAssertion = (+ shift) <$> assertionAt, blockAtAssertion = atAssertion})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits' && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits')
+
+-- | The first line a test draft changed outside its test: OLD's lines
+-- outside the span OLDSPAN against NEW's outside NEWSPAN (1-based,
+-- inclusive), blank lines and whitespace aside, the imports (ISIMPORT: a
+-- line of one, or a bracketed one from its opening line to its closing)
+-- the draft adds or merges aside; the line as OLD has it (as NEW has it
+-- when the draft only added), stripped.
+strayLine :: (Text -> Bool) -> Text -> (Int, Int) -> Text -> (Int, Int) -> Maybe Text
+strayLine isImport old oldSpan new newSpan = go (outside old oldSpan) (outside new newSpan)
+  where
+    outside text (a, z) =
+      let ls = T.splitOn "\n" text
+       in withoutImports (filter (not . T.null . T.strip) (take (a - 1) ls ++ drop z ls))
+    withoutImports = \case
+      [] -> []
+      l : rest
+        | opensImport l -> withoutImports (drop 1 (dropWhile (not . (")" `T.isInfixOf`)) rest))
+        | isImport l -> withoutImports rest
+        | otherwise -> l : withoutImports rest
+    opensImport l = ("from " `T.isPrefixOf` l || "import " `T.isPrefixOf` l) && "(" `T.isSuffixOf` T.stripEnd l
+    same x y = squeeze x == squeeze y
+    squeeze = T.filter (not . isSpace)
+    go (x : xs) (y : ys) | same x y = go xs ys
+    go (x : _) _ = Just (T.strip x)
+    go [] (y : _) = Just (T.strip y)
+    go [] [] = Nothing
+
+-- | What a refused draft says: the first line it changed outside its test.
+strayDraft :: Text -> Text
+strayDraft l = strayPrefix <> l
+
+strayPrefix :: Text
+strayPrefix = "the draft changed lines outside its test: "
 
 -- | The file as the editor has it once a stub is in it (its lines
 -- EXPECTED found in it, 'stubSpanIn'), its version; waited for
