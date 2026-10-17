@@ -13,6 +13,7 @@ import Olifant.Catalog (describeCatalogError, findEntry, loadGenerator)
 import Olifant.Cursor (isSnippet)
 import Olifant.Fill (ModelFiller (..), parseFills, replayFiller)
 import Olifant.Generation (Plan (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
+import Olifant.Generation.FillPhase (cutSentence, wholeFileReason)
 import Olifant.Workspace (Workspace (..))
 import Olifant.Snippet (Snippet)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
@@ -129,4 +130,6 @@ describeProgress = \case
   Unfilled hole why -> hole <> " left as a placeholder: " <> why
   AutoImported hole imp -> hole <> ": " <> imp
   Reindented hole _ -> hole <> ": read one level up"
+  CutToHole hole n _ -> hole <> ": " <> cutSentence n
+  WholeFile hole -> hole <> ": " <> wholeFileReason
   Verifying hole -> "testing " <> hole <> "…"

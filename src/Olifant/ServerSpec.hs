@@ -420,7 +420,7 @@ blockSpecs = describe "blocks" $ do
       blockState drafted `shouldBe` Green
       -- the two holes are verified once, together
       (subtract ran <$> runs) `shouldReturn` 1
-      readIORef asked `shouldReturn` [("arrange", "set up what the assertion below needs, ending with `result = ` the call the test is about"), ("assertion", "assert what 'reopens again' means; one assert, the subject is `result`")]
+      readIORef asked `shouldReturn` [("arrange", "answer with the lines that replace the marker only; set up what the assertion below needs, ending with `result = ` the call the test is about"), ("assertion", "answer with the lines that replace the marker only; assert what 'reopens again' means; one assert, the subject is `result`")]
       let applied = applyChange (feRange edit) (feText edit) named
           ls = T.splitOn "\n" applied
       -- the assertion's line, for the editor's cursor
@@ -548,7 +548,7 @@ blockSpecs = describe "blocks" $ do
       blockState second `shouldBe` Green
       asks <- readIORef asked
       map (map fst) asks `shouldBe` [["arrange"], ["arrange", "assertion"]]
-      lookup "assertion" (asks !! 1) `shouldBe` Just "the code is the spec now: assert what `wrong party` means against what the code returns; keep the test's intent"
+      lookup "assertion" (asks !! 1) `shouldBe` Just "answer with the lines that replace the marker only; the code is the spec now: assert what `wrong party` means against what the code returns; keep the test's intent"
       let twice = applyChange (feRange edit2) (feText edit2) once
       Just at <- pure (blockAssertion second)
       linesOf twice !! (at - 1) `shouldBe` "    assert table.handle(1) == 0"
@@ -809,6 +809,18 @@ blockSpecs = describe "blocks" $ do
     (fePath edit, feVersion edit) `shouldBe` (testFile, Just 2)
     blockState drafted `shouldBe` Green
     applyChange (feRange edit) (feText edit) expanded `shouldBe` testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n"
+  it "(h) a survivor's stub answered with the whole test file (its imports, its tests, the stub with a body, one more): cut to the stub's arrangement and assertion, logged" $ do
+    (s0, _) <- blocksOn killedBy []
+    let whole = testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n\ndef test_more() -> None:\n    assert CloseTable().handle(9) == 1\n"
+        filler = ModelFiller "local" 0 (Filler (\_ -> pure (Right (M.fromList [("arrange", whole), ("assertion", whole)]))))
+        s = (openDoc (root </> moduleRel) 1 written s0) {ssTestFiller = Just filler}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, _, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    Right (drafted, [edit]) <- later ignore
+    blockState drafted `shouldBe` Green
+    let editor = editorStub at body testText
+    T.splitOn "\n" (applyChange (feRange edit) (feText edit) editor) `shouldBe` T.splitOn "\n" (testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n")
+    steps s >>= (`shouldSatisfy` ("block 2\tfill\tolifant\tcut to the hole (" `T.isInfixOf`))
   it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}

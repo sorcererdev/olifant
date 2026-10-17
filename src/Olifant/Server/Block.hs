@@ -68,7 +68,7 @@ import Olifant.Decide (Decider)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (addImports, applyFills, assertionSpan, isImportLine, passesAgainstRaise, projectFiles, testsFailed)
+import Olifant.Generation.FillPhase (addImports, applyFills, assertionSpan, cutSentence, isImportLine, passesAgainstRaise, projectFiles, testsFailed, wholeFileReason)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Template (Template)
 import Olifant.Holes (HoleSite (..))
@@ -532,6 +532,10 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
   let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) (\fills -> modifyIORef' attempts (M.union fills)) r >> pure r)}
       progress' e = case e of
         Reindented hole f -> modifyIORef' attempts (M.insert hole f) >> progress e
+        -- a fill cut to its hole is the attempt as cut; one that answered
+        -- a whole file is never written
+        CutToHole hole n f -> modifyIORef' attempts (M.insert hole f) >> appendStep (ssPorts s) root drafting "fill" (cutSentence n) >> progress e
+        WholeFile hole -> modifyIORef' attempts (M.delete hole) >> appendStep (ssPorts s) root drafting "fill" wholeFileReason >> progress e
         _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = verify}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
@@ -1150,6 +1154,7 @@ appendStep ports root b move result = do
         "draft" -> maybe "model" draftBy (listToMaybe (reverse (blockDrafts b)))
         "judge" -> "mutation"
         "parse" -> "olifant"
+        "fill" -> "olifant"
         _ -> "person"
       entry = T.intercalate "\t" [T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now), "block " <> tshow (blockId b), move, who, T.unwords (T.words result)]
   void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))

@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, testsFailed, passesAgainstRaise, assertionSpan) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, cutToHole, looksLikeFile, markerOnly, wholeFile, wholeFileReason, cutSentence, testsFailed, passesAgainstRaise, assertionSpan) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -10,9 +10,9 @@ import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
@@ -61,8 +61,16 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
         Left why -> next accepted notes [(t, why) | t <- tried]
         Right fills -> do
           let noFill = [(t, "the model returned no fill for `" <> name t <> "`") | t <- tried, M.notMember (name t) fills]
-              offered = [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]]
-              escaped = [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
+          -- A fill that repeats the file around its hole (a local model
+          -- answers with the whole file) is cut to the hole; one that still
+          -- answers a file is not placed, and asked again saying so.
+          cut <- forM [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]] $ \(t, f) -> case cutFill (site t) f of
+            Just (f', n) -> toolProgress tools (CutToHole (name t) n f') >> pure (t, f')
+            Nothing -> pure (t, f)
+          let wholeFiles = [(t, f, wholeFile) | (t, f) <- cut, answersAFile (site t) f]
+          forM_ wholeFiles (\(t, _, _) -> toolProgress tools (WholeFile (name t)))
+          let offered = [(t, f) | (t, f) <- cut, not (answersAFile (site t) f)]
+              escaped = wholeFiles ++ [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
           parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) (snd (splitImports (importsOf (holeFile (site t))) f))
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
               candidates0 = [(t, f) | (t, f, True) <- parsed]
@@ -278,7 +286,24 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
 
     fillHole t =
       let s = site t
-       in FillHole (holeName s) (holeKind s) (holeInstruction s) (holeFile s) (context s) (tryPrevious t) (isJust (importsOf (holeFile s)))
+          instruction = if linesKind s then markerOnly <> "; " <> holeInstruction s else holeInstruction s
+       in FillHole (holeName s) (holeKind s) instruction (holeFile s) (context s) (tryPrevious t) (isJust (importsOf (holeFile s)))
+
+    -- A hole of lines (a block or statements): what a whole-file answer is cut to.
+    linesKind s = T.takeWhile (/= '@') (holeKind s) `elem` ["block", "stmt"]
+
+    -- The file's other holes' placeholders beside this one's (a draft's
+    -- arrangement and assertion).
+    siblings s = [holePlaceholder (phSite h) | h <- holes, holeFile (phSite h) == holeFile s, holeName (phSite h) /= holeName s]
+
+    cutFill s f
+      | linesKind s = cutToHole (importsOf (holeFile s)) (siblings s) (M.findWithDefault "" (holeFile s) base) (holeLine s) f
+      | otherwise = Nothing
+
+    -- A Python fill of lines that, its leading imports aside, still holds
+    -- an import, a test, or a def or class the file defines, at its own
+    -- top level: a file, not the hole's lines.
+    answersAFile s f = linesKind s && fmap langName (langOf (holeFile s)) == Just "python" && looksLikeFile (M.findWithDefault "" (holeFile s) base) (snd (splitImports (importsOf (holeFile s)) f))
 
     langOf = languageFor (toolLanguages tools)
     importsOf p = langImports =<< langOf p
@@ -475,6 +500,97 @@ reindented comment f = case T.lines (T.dropWhile (== '\n') f) of
 -- for Python's indentation and syntax errors), not that it does not type.
 syntaxError :: Text -> Bool
 syntaxError m = any (`T.isInfixOf` m) ["IndentationError", "SyntaxError", "Unexpected indentation", "Unindent not expected", "Unindent amount does not match", "Expected indented block"]
+
+-- | What every hole of lines is asked first, and a whole-file answer again.
+markerOnly :: Text
+markerOnly = "answer with the lines that replace the marker only"
+
+-- | Why a fill that still answers a file once cut is not placed, and what
+-- its retry is told.
+wholeFile :: Text
+wholeFile = wholeFileReason <> "; " <> markerOnly <> ": no `def` line, no imports, no other tests"
+
+-- | 'wholeFile''s reason, as the step log and progress say it.
+wholeFileReason :: Text
+wholeFileReason = "the model answered with more than the hole: a whole file"
+
+-- | A cut fill, as the step log, progress and the HUD say it.
+cutSentence :: Int -> Text
+cutSentence n = "cut to the hole (" <> T.pack (show n) <> " lines dropped)"
+
+-- | A fill of lines cut to its hole, when it repeats the file around it
+-- (TEXT, the hole on line LINE, 1-based; SIBLINGS, the placeholders of the
+-- file's other holes): the anchors are the nearest lines above and below
+-- the hole that are no other hole's and say something (a letter or
+-- digit). Holding the line above (whitespace aside), the fill loses it and
+-- all before it, and, that line opening a block (`:`), all after the
+-- block's end (the next line as shallow as it); holding the line below,
+-- that line and all after it. Cut so, a hole beside another (a test's
+-- arrangement and assertion, answered alike) keeps its side of the first
+-- `assert`. Import lines before the cut that the file lacks are kept,
+-- first (IMPORTS, the language's). The fill as cut and how many of its
+-- lines were dropped; Nothing when nothing is cut, or nothing would be left.
+cutToHole :: Maybe Text -> [Text] -> Text -> Int -> Text -> Maybe (Text, Int)
+cutToHole imports siblings text line f = do
+  let fl = T.splitOn "\n" f
+      ls = T.splitOn "\n" text
+      above = reverse (take (line - 1) ls)
+      below = drop line ls
+      sibling l = any (`T.isInfixOf` l) siblings
+      anchor = listToMaybe . filter (\l -> T.any isAlphaNum l && not (sibling l)) . filter (not . blank)
+      next = listToMaybe . filter (not . blank)
+      siblingAbove = maybe False sibling (next above)
+      siblingBelow = maybe False sibling (next below)
+      at a = listToMaybe [i | (i, l) <- zip [0 :: Int ..] fl, norm l == norm a]
+      -- the line above, and all before it (its block's end too)
+      (afterAbove, brought, cutAbove) = case anchor above >>= \a -> (a,) <$> at a of
+        Just (a, i) | i < length fl - 1 ->
+          let rest = drop (i + 1) fl
+              d = indentOf (fl !! i)
+              inBlock = if ":" `T.isSuffixOf` T.stripEnd a then takeWhile (\l -> blank l || indentOf l > d) rest else rest
+              have = map T.strip ls
+              imported = [T.strip l | l <- take i fl, not (" " `T.isPrefixOf` l), maybe False (`matches` l) imports, T.strip l `notElem` have]
+           in (inBlock, imported, True)
+        _ -> (fl, [], False)
+      -- the line below, and all after it
+      beforeBelow = case anchor below of
+        Just b | k : _ <- [k | (k, l) <- zip [0 :: Int ..] afterAbove, k > 0, norm l == norm b] -> take k afterAbove
+        _ -> afterAbove
+      -- beside another hole: this side of the first assert
+      asserting l = let st = T.strip l in st == "assert" || any (`T.isPrefixOf` st) ["assert ", "assert("]
+      firstAssert xs = listToMaybe [k | (k, l) <- zip [0 :: Int ..] xs, asserting l]
+      split xs
+        | not cutAbove = xs
+        | siblingBelow, Just k <- firstAssert xs, k > 0 = take k xs
+        | siblingAbove, Just k <- firstAssert xs = drop k xs
+        | otherwise = xs
+      kept = trimmed (split beforeBelow)
+      whole = trimmed fl
+      result = brought ++ ["" | not (null brought)] ++ kept
+  if null kept || length kept == length whole then Nothing else Just (T.intercalate "\n" result, length whole - length kept)
+  where
+    blank = T.null . T.strip
+    norm = T.filter (not . isSpace)
+    indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+    trimmed = reverse . dropWhile blank . reverse . dropWhile blank
+
+-- | Whether code for a hole of lines (in the file TEXT) is a file: at its
+-- own top level (dedented), an import line, a test's def, or a def or class
+-- of a name the file defines.
+looksLikeFile :: Text -> Text -> Bool
+looksLikeFile text code = any topLevel (dedented code)
+  where
+    defined = [n | l <- T.splitOn "\n" text, Just n <- [defined' l]]
+    defined' l = do
+      rest <- listToMaybe (mapMaybe (`T.stripPrefix` T.strip l) ["def ", "async def ", "class "])
+      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
+      if T.null n then Nothing else Just n
+    topLevel l
+      | " " `T.isPrefixOf` l || "\t" `T.isPrefixOf` l = False
+      | "import " `T.isPrefixOf` l = True
+      | "from " `T.isPrefixOf` l, " import " `T.isInfixOf` l = True
+      | Just n <- defined' l = "test" `T.isPrefixOf` n || n `elem` defined
+      | otherwise = False
 
 -- | What a fill whose tests failed is unfilled for begins with (each
 -- failing test's id and message follow, the last 40 lines kept).
