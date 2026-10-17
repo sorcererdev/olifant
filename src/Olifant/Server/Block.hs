@@ -52,7 +52,7 @@ import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (bimap)
 import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
-import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isSuffixOf, nub, sort, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -411,7 +411,9 @@ draftOrRestore progress s root project lang b drafting killed filler stubbed =
   runExceptT (draftIn progress s root project lang b drafting killed filler stubbed) >>= \case
     Right done -> pure (Right done)
     Left why -> do
-      settle s root killed "drafting" ("no draft: " <> why) DraftFailed drafting >>= either (const (pure ())) (restored s root project lang killed)
+      -- a stub's draft drafted at once, which no one asked for: the HUD says why it did not land
+      let noted = if isJust stubbed then drafting {blockNote = Just (if why == stubTyped then textStands else why)} else drafting
+      settle s root killed "drafting" ("no draft: " <> why) DraftFailed noted >>= either (const (pure ())) (restored s root project lang killed)
       pure (Left why)
 
 -- | The editor refused the edit of block NUMBER's latest draft (a
@@ -530,12 +532,14 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
   -- is written as its last attempt, never as the placeholder
   -- (a fill the fill phase read one level up is kept as read)
   attempts <- lift (newIORef M.empty)
+  -- a fill cut to its hole: the HUD says so
+  cutNote <- lift (newIORef Nothing)
   let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) (\fills -> modifyIORef' attempts (M.union fills)) r >> pure r)}
       progress' e = case e of
         Reindented hole f -> modifyIORef' attempts (M.insert hole f) >> progress e
         -- a fill cut to its hole is the attempt as cut; one that answered
         -- a whole file is never written
-        CutToHole hole n f -> modifyIORef' attempts (M.insert hole f) >> appendStep (ssPorts s) root drafting "fill" (cutSentence n) >> progress e
+        CutToHole hole n f -> modifyIORef' attempts (M.insert hole f) >> writeIORef cutNote (Just ("fill " <> cutSentence n)) >> appendStep (ssPorts s) root drafting "fill" (cutSentence n) >> progress e
         WholeFile hole -> modifyIORef' attempts (M.delete hole) >> appendStep (ssPorts s) root drafting "fill" wholeFileReason >> progress e
         _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = verify}
@@ -612,11 +616,12 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
       -- the editor's text is the one seen: the draft applied is an edit, tested
       lift (modifyIORef' (ssBlockSeen s) (M.insert file now))
       pure (landed, [FileEdit file version False range new | landed /= now, let (range, new) = smallestChange now landed], moved)
+  note <- lift (readIORef cutNote)
   let (result, move) = case outcome of
         Left (Just t, f) -> ("red: " <> noLongerPasses t, AtKept t (Drafted drafted (mfName filler) (Left f)))
         Left (Nothing, f) -> ("red", Drafted drafted (mfName filler) (Left f))
         Right () -> ("green", Drafted drafted (mfName filler) (Right ()))
-  b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockSpan = bimap (+ shift) (+ shift) sp, blockAssertion = (+ shift) <$> assertionAt, blockAtAssertion = atAssertion})
+  b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockNote = note, blockSpan = bimap (+ shift) (+ shift) sp, blockAssertion = (+ shift) <$> assertionAt, blockAtAssertion = atAssertion})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits' && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits')
 

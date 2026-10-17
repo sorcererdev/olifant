@@ -821,6 +821,8 @@ blockSpecs = describe "blocks" $ do
     let editor = editorStub at body testText
     T.splitOn "\n" (applyChange (feRange edit) (feText edit) editor) `shouldBe` T.splitOn "\n" (testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n")
     steps s >>= (`shouldSatisfy` ("block 2\tfill\tolifant\tcut to the hole (" `T.isInfixOf`))
+    -- the push's HUD says it
+    hud drafted `shouldSatisfy` ("fill cut to the hole (" `T.isInfixOf`)
   describe "(h) a survivor's stub's draft lands on the stub's span" $ do
     let landing edit0 = do
           (s0, _) <- blocksOn killedBy []
@@ -850,6 +852,8 @@ blockSpecs = describe "blocks" $ do
       (_, landed, back) <- landing typed
       either id (const "landed") landed `shouldBe` "you typed in the stub while it drafted; your text stands \183 draft when ready"
       fmap blockState back `shouldSatisfy` \case Just (Red _) -> True; _ -> False
+      -- the HUD says why nothing landed
+      fmap hud back `shouldSatisfy` maybe False ("\183 your text stands \183 draft when ready" `T.isSuffixOf`)
   it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}
