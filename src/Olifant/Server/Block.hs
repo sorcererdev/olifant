@@ -532,15 +532,29 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
   -- is written as its last attempt, never as the placeholder
   -- (a fill the fill phase read one level up is kept as read)
   attempts <- lift (newIORef M.empty)
-  -- a fill cut to its hole: the HUD says so
-  cutNote <- lift (newIORef Nothing)
-  let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) (\fills -> modifyIORef' attempts (M.union fills)) r >> pure r)}
+  -- each hole's attempt cut to its hole (the lines dropped): the HUD says so
+  cuts <- lift (newIORef M.empty)
+  -- the attempts and cuts before the latest reply: a whole file refused
+  -- leaves its hole's earlier attempt standing
+  prior <- lift (newIORef (M.empty, M.empty))
+  let recording = filler {mfFiller = Filler (\req -> runFill (mfFiller filler) req >>= \r -> either (const (pure ())) answered r >> pure r)}
+      answered fills = do
+        before <- (,) <$> readIORef attempts <*> readIORef cuts
+        writeIORef prior before
+        modifyIORef' attempts (M.union fills)
+        -- a hole answered again is not cut until the fill phase says so
+        modifyIORef' cuts (`M.withoutKeys` M.keysSet fills)
       progress' e = case e of
         Reindented hole f -> modifyIORef' attempts (M.insert hole f) >> progress e
         -- a fill cut to its hole is the attempt as cut; one that answered
-        -- a whole file is never written
-        CutToHole hole n f -> modifyIORef' attempts (M.insert hole f) >> writeIORef cutNote (Just ("fill " <> cutSentence n)) >> appendStep (ssPorts s) root drafting "fill" (cutSentence n) >> progress e
-        WholeFile hole -> modifyIORef' attempts (M.delete hole) >> appendStep (ssPorts s) root drafting "fill" wholeFileReason >> progress e
+        -- a whole file is never written (the hole's earlier attempt is)
+        CutToHole hole n f -> modifyIORef' attempts (M.insert hole f) >> modifyIORef' cuts (M.insert hole n) >> appendStep (ssPorts s) root drafting "fill" (cutSentence n) >> progress e
+        WholeFile hole -> do
+          (was, wasCut) <- readIORef prior
+          modifyIORef' attempts (M.alter (const (M.lookup hole was)) hole)
+          modifyIORef' cuts (M.alter (const (M.lookup hole wasCut)) hole)
+          appendStep (ssPorts s) root drafting "fill" wholeFileReason
+          progress e
         _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = verify}
       previous = [draftText d | d <- blockDrafts b, draftBy d /= "you"]
@@ -601,7 +615,7 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
     Nothing -> pure (planned, edits, 0)
     Just _ -> do
       expected <- maybe (throwE "the draft lost its stub") (pure . linesIn text) (stubSpan b text)
-      (version, now) <- lift (stubInEditor s file (blockBase b) text expected) >>= maybe (throwE "the stub was not expanded in the editor; draft when it is") pure
+      (version, now) <- lift (stubInEditor s file text expected) >>= maybe (throwE "the stub was not expanded in the editor; draft when it is") pure
       live <- maybe (throwE stubTyped) pure (stubSpanIn expected now)
       unless (sameLines (linesIn now live) expected) (throwE stubTyped)
       drafted' <- maybe (throwE "the draft lost its stub") pure (stubSpanIn expected shown)
@@ -616,10 +630,12 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
       -- the editor's text is the one seen: the draft applied is an edit, tested
       lift (modifyIORef' (ssBlockSeen s) (M.insert file now))
       pure (landed, [FileEdit file version False range new | landed /= now, let (range, new) = smallestChange now landed], moved)
-  note <- lift (readIORef cutNote)
-  let (result, move) = case outcome of
-        Left (Just t, f) -> ("red: " <> noLongerPasses t, AtKept t (Drafted drafted (mfName filler) (Left f)))
-        Left (Nothing, f) -> ("red", Drafted drafted (mfName filler) (Left f))
+  note <- lift (readIORef cuts) <&> \cut -> if M.null cut then Nothing else Just ("fill " <> cutSentence (sum (M.elems cut)))
+  -- the failure's line, where the editor's file has it
+  let moved f = f {fLine = (+ shift) <$> fLine f}
+      (result, move) = case outcome of
+        Left (Just t, f) -> ("red: " <> noLongerPasses t, AtKept t (Drafted drafted (mfName filler) (Left (moved f))))
+        Left (Nothing, f) -> ("red", Drafted drafted (mfName filler) (Left (moved f)))
         Right () -> ("green", Drafted drafted (mfName filler) (Right ()))
   b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockNote = note, blockSpan = bimap (+ shift) (+ shift) sp, blockAssertion = (+ shift) <$> assertionAt, blockAtAssertion = atAssertion})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
@@ -627,19 +643,17 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
 
 -- | The file as the editor has it once a stub is in it (its lines
 -- EXPECTED found in it, 'stubSpanIn'), its version; waited for
--- ('ssStubWaitMs': the editor expands the stub as the answer arrives).
--- Once the wait is over, the file as it is when it is no longer BEFORE
--- (the file without the stub: the person typed in it); Nothing when
--- nothing came. No live documents: STUBBED is the file.
-stubInEditor :: ServerState -> FilePath -> Text -> Text -> [Text] -> IO (Maybe (Maybe Int, Text))
-stubInEditor s file before stubbed expected = case ssLiveDoc s of
+-- ('ssStubWaitMs': the editor expands the stub as the answer arrives);
+-- Nothing when it never came (an edit elsewhere is no stub). No live
+-- documents: STUBBED is the file.
+stubInEditor :: ServerState -> FilePath -> Text -> [Text] -> IO (Maybe (Maybe Int, Text))
+stubInEditor s file stubbed expected = case ssLiveDoc s of
   Nothing -> pure (Just (fst <$> M.lookup file (ssDocs s), stubbed))
   Just live -> go live (max 1 (ssStubWaitMs s `div` 50))
   where
     go live n =
       live file >>= \case
         Just (v, t) | isJust (stubSpanIn expected t) -> pure (Just (Just v, t))
-        Just (v, t) | n <= 0, T.stripEnd t /= T.stripEnd before -> pure (Just (Just v, t))
         _ | n <= 0 -> pure Nothing
         _ -> threadDelay 50000 >> go live (n - 1 :: Int)
 

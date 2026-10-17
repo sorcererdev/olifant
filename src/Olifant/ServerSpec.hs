@@ -823,6 +823,29 @@ blockSpecs = describe "blocks" $ do
     steps s >>= (`shouldSatisfy` ("block 2\tfill\tolifant\tcut to the hole (" `T.isInfixOf`))
     -- the push's HUD says it
     hud drafted `shouldSatisfy` ("fill cut to the hole (" `T.isInfixOf`)
+  describe "(h) a survivor's stub's fills across rounds" $ do
+    let rounds answers = do
+          (s0, _) <- blocksOn killedBy []
+          calls <- newIORef (0 :: Int)
+          let filler = ModelFiller "local" 1 (Filler (\_ -> atomicModifyIORef' calls (\n -> (n + 1, n)) >>= \n -> pure (Right (M.fromList (answers !! min n (length answers - 1))))))
+              s = (openDoc (root </> moduleRel) 1 written s0) {ssTestFiller = Just filler}
+          (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+          (_, Right (_, _, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+          landed <- later ignore
+          log' <- steps s
+          pure (landed, editorStub at body testText, log')
+    it "a cut fill refused as a file, then a plain one placed: the HUD says nothing of a cut" $ do
+      let nested = "def test_boundary_int_seats() -> None:\n    def test_inner() -> None:\n        pass\n    table = CloseTable()\n    assert table.handle(2) == 0"
+      (landed, _, log') <- rounds [[("arrange", nested), ("assertion", "assert table.handle(2) == 0")], [("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(2) == 0")]]
+      Right (drafted, _) <- pure landed
+      blockState drafted `shouldBe` Green
+      hud drafted `shouldNotSatisfy` T.isInfixOf "cut to the hole"
+      log' `shouldSatisfy` T.isInfixOf "\tfill\tolifant\tthe model answered with more than the hole: a whole file"
+    it "a whole file refused on the last round: the hole's earlier attempt is the one written" $ do
+      let file = "import os\n\ndef test_closes_a_table() -> None:\n    pass\n\ntable = CloseTable()"
+      (landed, editor, _) <- rounds [[("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(2) == 1")], [("arrange", file), ("assertion", "assert table.handle(2) == 1")]]
+      Right (_, [edit]) <- pure landed
+      applyChange (feRange edit) (feText edit) editor `shouldSatisfy` T.isInfixOf "() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 1"
   describe "(h) a survivor's stub's draft lands on the stub's span" $ do
     let landing edit0 = do
           (s0, _) <- blocksOn killedBy []
@@ -847,6 +870,9 @@ blockSpecs = describe "blocks" $ do
       let spaced = T.replace "() -> None:\n" "() -> None:   \n" . T.replace "    assert ...\n" "\n\tassert ...\n"
       (editor, Right (_, [edit]), _) <- landing spaced
       T.isInfixOf drafted (applyChange (feRange edit) (feText edit) editor) `shouldBe` True
+    it "the stub never expanded, the file edited elsewhere: not expanded, said so" $ do
+      (_, landed, _) <- landing (const ("import pytest\n" <> testText))
+      either id (const "landed") landed `shouldBe` "the stub was not expanded in the editor; draft when it is"
     it "the stub's body typed in: no draft lands, the person's text stands" $ do
       let typed = T.replace "    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n" "    table = CloseTable()\n"
       (_, landed, back) <- landing typed
