@@ -123,8 +123,10 @@ The person's part of each circle is the part that cannot be delegated:
   (`1 survivor(s): stub a test or waive each, then accept`): stub a test that kills it, or
   waive it with a reason. In the editor the survivors can be walked one by one
   (`<leader>mcv`, or `<leader>mcs` with the cursor off any survivor's line when two or more
-  stand): a list in the server's order, each stubbed, waived or left, the list redrawn as each
-  verdict lands, `accept` offered when it is empty.
+  stand) opens the survivors modal (`:DurandalCircle survivors`): the list on the left, in the
+  server's order, and the mutant in context on the right as a `-`/`+` pair. `s` or `<CR>` stubs
+  a test for the survivor, `w` waives it with a reason, `j`/`k` move and `q` closes; the list is
+  redrawn as each verdict lands, and `a` accepts once it is empty.
 
 ## Mutation and waivers
 

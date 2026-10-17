@@ -1189,7 +1189,7 @@ blockJson b killed =
     , "state" .= stateName (blockState b)
     , "hud" .= hud b
     , "drafts" .= [object ["text" .= draftText d, "by" .= draftBy d, "outcome" .= draftOutcome d] | d <- blockDrafts b]
-    , "survivors" .= [object ["line" .= muLine m, "operator" .= muOperator m, "from" .= flat (muFrom m), "to" .= flat (muTo m), "waived" .= muWaived m, "dim" .= muDim m] | m <- judged]
+    , "survivors" .= [object ["line" .= muLine m, "operator" .= muOperator m, "from" .= flat (muFrom m), "to" .= flat (muTo m), "mutated" .= mutatedLine m, "waived" .= muWaived m, "dim" .= muDim m] | m <- judged]
     , "open" .= open b
     , "killed" .= killed
     ]
@@ -1211,6 +1211,8 @@ blockJson b killed =
       Judged ms -> ms
       _ -> []
     flat = T.replace "\n" "⏎"
+    -- the whole line as the mutant's file has it
+    mutatedLine m = fromMaybe "" (lookup (muLine m) (zip [1 ..] (T.splitOn "\n" (muText m))))
 
 -- | A state's kind, as the editor names it.
 stateName :: BlockState -> Text

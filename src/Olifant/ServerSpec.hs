@@ -720,6 +720,13 @@ blockSpecs = describe "blocks" $ do
     log' <- steps s
     log' `shouldSatisfy` ("\ttest\tperson\tgreen" `T.isInfixOf`)
     log' `shouldSatisfy` ("\tjudge\tmutation\t0/1 killed" `T.isInfixOf`)
+  it "(f) a survivor carries its whole mutated line, so a `from` found twice on its line is marked at the right place" $ do
+    (s0, _) <- blocks redOnStub []
+    (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0
+    let m = Mutant {muLine = 2, muOperator = "boundary", muFrom = ">", muTo = ">=", muText = "def f(a, b):\n    return a > b and b > 0\nx = 1", muWaived = Nothing, muDim = False}
+        survivor = field "survivors" (blockJson b {blockState = Judged [m]} 0)
+    fmap (\v -> case v of Array xs -> [field "mutated" x | x <- foldr (:) [] xs]; _ -> []) survivor
+      `shouldBe` Just [Just (String "    return a > b and b > 0")]
   it "(g) accept after a clean judge; reject restores the base text; both finish the block and log a step" $ do
     -- the mutant fails the test: killed
     let kills t = if "seats >= 2" `T.isInfixOf` t then failing "assert 0 == 1" else redOnStub t
