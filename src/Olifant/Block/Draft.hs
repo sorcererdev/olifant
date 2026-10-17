@@ -64,8 +64,13 @@ testDraftTemplate lang testText line assertion
     indentOf = T.takeWhile (`elem` [' ', '\t'])
     arrange = maybe arrangeInstruction (const (arrangeInstruction <> ", ending with `result = ` the call the test is about")) assertion
     helped = helpedIn ls
+    -- another stub left in the file holding this hole's placeholder would take
+    -- the fill (a fill goes where its placeholder first is): the instruction differs
+    arranged
+      | any (placeholderWith lang (helped arrange) `T.isInfixOf`) [l | (i, l) <- zip [1 :: Int ..] ls, i /= line] = helped arrange <> "; this stub's, not another one's in the file"
+      | otherwise = helped arrange
     marked i l
-      | i == line = indentOf l <> "{= ? arrange: stmt | " <> helped arrange <> " =}"
+      | i == line = indentOf l <> "{= ? arrange: stmt | " <> arranged <> " =}"
       | Just (a, instruction) <- assertion, i == a = indentOf l <> "{= ? assertion: stmt | " <> helped (oneLine instruction) <> " =}"
       | otherwise = l
 
@@ -278,11 +283,15 @@ assertionLines name testText =
 
 -- | The stmt placeholder of the language, rendered for the arrangement hole.
 placeholder :: Language -> Text
-placeholder lang = case lookup "stmt" (langHoles lang) of
+placeholder lang = placeholderWith lang arrangeInstruction
+
+-- | 'placeholder' for an arrangement hole with another instruction.
+placeholderWith :: Language -> Text -> Text
+placeholderWith lang instruction = case lookup "stmt" (langHoles lang) of
   Just k -> either (const arrangeInstruction) id (render env (kindPlaceholder k))
   Nothing -> arrangeInstruction
   where
-    env = M.fromList [("hole", VText "arrange"), ("instruction", VText arrangeInstruction)]
+    env = M.fromList [("hole", VText "arrange"), ("instruction", VText instruction)]
 
 arrangeInstruction :: Text
 arrangeInstruction = "set up what the assertion below needs"

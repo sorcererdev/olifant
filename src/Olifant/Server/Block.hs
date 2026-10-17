@@ -11,6 +11,7 @@ module Olifant.Server.Block
   , blockDraftAt
   , StubDraft
   , draftStub
+  , strayLine
   , blockUnapplied
   , blockDraftStopped
   , blockTest
@@ -30,6 +31,7 @@ module Olifant.Server.Block
   , testNow
   , fileOf
   , runOver
+  , passingIn
   , tshow
   , claim
   , pushed
@@ -266,7 +268,9 @@ openTestStub s site n name others refused = do
         Just t -> (T.pack testRel <> "::" <> t, Failure Nothing "" "")
         Nothing -> (T.pack testRel, Failure Nothing "a new test: write its name" "")
   k <- lift (atomicModifyIORef' (ssNextBlock s) (\i -> (i + 1, i)))
-  let tb = (begin k testFile (TestFor Nothing) base (defAt, defAt + 2) tid failure) {blockSubject = (n,) <$> siteDefLine site}
+  -- the test file's passing tests (before the stub is in it) are kept
+  kept <- if isJust testText0 then lift (passingIn s (prWorkspace (siteProject site)) lang testRel) else pure []
+  let tb = (begin k testFile (TestFor Nothing) base (defAt, defAt + 2) tid failure) {blockSubject = (n,) <$> siteDefLine site, blockKeep = kept}
   claimed <- lift (claim s others tb)
   unless claimed (throwE refused)
   lift (modifyIORef' (ssBlockSeen s) (M.insert testFile base))
@@ -412,7 +416,7 @@ draftOrRestore progress s root project lang b drafting killed filler stubbed =
     Right done -> pure (Right done)
     Left why -> do
       -- a stub's draft drafted at once, which no one asked for: the HUD says why it did not land
-      let noted = if isJust stubbed then drafting {blockNote = Just (if why == stubTyped then textStands else why)} else drafting
+      let noted = if isJust stubbed || strayPrefix `T.isPrefixOf` why then drafting {blockNote = Just (if why == stubTyped then textStands else why)} else drafting
       settle s root killed "drafting" ("no draft: " <> why) DraftFailed noted >>= either (const (pure ())) (restored s root project lang killed)
       pure (Left why)
 
@@ -586,6 +590,15 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
             Nothing -> do
               red <- lift (draftRedOn s ws lang rel b written why)
               pure (written, Left red, [FileEdit file started False range new | written /= text], Nothing)
+  -- a test draft changes only its stub (the imports it needs aside)
+  case (blockKind b, stubbed, unwritten) of
+    (TestFor _, Nothing, Nothing)
+      | Right ((line, _), _, _, _) <- testDraftParts lang b text
+      , Just (d, _) <- defLineAbove line text -> do
+          let was = testLinesFrom d text
+          now' <- maybe (throwE "the draft lost its stub") pure (stubSpanIn (linesIn text was) planned)
+          maybe (pure ()) (throwE . strayDraft) (strayLine (isImportLine lang) text was planned now')
+    _ -> pure ()
   let shown = fromMaybe planned unwritten
       changed = changedSpan text shown (blockSpan b)
       grown = length (T.splitOn "\n" shown) - length (T.splitOn "\n" text)
@@ -627,6 +640,12 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
           landed = addImports lang added onLive
           -- where the span is in the editor's file less where it is in the draft's
           moved = maybe 0 fst (stubSpanIn expected landed) - fst drafted'
+      -- the draft changes only the stub: nothing else of the editor's file but imports
+      case blockKind b of
+        TestFor _ -> do
+          sp' <- maybe (throwE "the draft lost its stub") pure (stubSpanIn expected landed)
+          maybe (pure ()) (throwE . strayDraft) (strayLine (isImportLine lang) now live landed sp')
+        _ -> pure ()
       -- the editor's text is the one seen: the draft applied is an edit, tested
       lift (modifyIORef' (ssBlockSeen s) (M.insert file now))
       pure (landed, [FileEdit file version False range new | landed /= now, let (range, new) = smallestChange now landed], moved)
@@ -640,6 +659,39 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
   b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockNote = note, blockSpan = bimap (+ shift) (+ shift) sp, blockAssertion = (+ shift) <$> assertionAt, blockAtAssertion = atAssertion})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits' && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits')
+
+-- | The first line a test draft changed outside its test: OLD's lines
+-- outside the span OLDSPAN against NEW's outside NEWSPAN (1-based,
+-- inclusive), blank lines and whitespace aside, the imports (ISIMPORT: a
+-- line of one, or a bracketed one from its opening line to its closing)
+-- the draft adds or merges aside; the line as OLD has it (as NEW has it
+-- when the draft only added), stripped.
+strayLine :: (Text -> Bool) -> Text -> (Int, Int) -> Text -> (Int, Int) -> Maybe Text
+strayLine isImport old oldSpan new newSpan = go (outside old oldSpan) (outside new newSpan)
+  where
+    outside text (a, z) =
+      let ls = T.splitOn "\n" text
+       in withoutImports (filter (not . T.null . T.strip) (take (a - 1) ls ++ drop z ls))
+    withoutImports = \case
+      [] -> []
+      l : rest
+        | opensImport l -> withoutImports (drop 1 (dropWhile (not . (")" `T.isInfixOf`)) rest))
+        | isImport l -> withoutImports rest
+        | otherwise -> l : withoutImports rest
+    opensImport l = ("from " `T.isPrefixOf` l || "import " `T.isPrefixOf` l) && "(" `T.isSuffixOf` T.stripEnd l
+    same x y = squeeze x == squeeze y
+    squeeze = T.filter (not . isSpace)
+    go (x : xs) (y : ys) | same x y = go xs ys
+    go (x : _) _ = Just (T.strip x)
+    go [] (y : _) = Just (T.strip y)
+    go [] [] = Nothing
+
+-- | What a refused draft says: the first line it changed outside its test.
+strayDraft :: Text -> Text
+strayDraft l = strayPrefix <> l
+
+strayPrefix :: Text
+strayPrefix = "the draft changed lines outside its test: "
 
 -- | The file as the editor has it once a stub is in it (its lines
 -- EXPECTED found in it, 'stubSpanIn'), its version; waited for
@@ -866,7 +918,8 @@ testNow s root project lang b killed applied = do
   modifyIORef' (ssBlockSeen s) (M.insert (blockFile b) now)
   -- a test block's own tests are the ones it added (its siblings may be red)
   let ids = case (blockKind b, newTests b now) of
-        (TestFor _, new@(_ : _)) -> new
+        -- (the tests it keeps run with them: the test file, whole)
+        (TestFor _, new@(_ : _)) -> if null (blockKeep b) then new else [fileOf (blockTestId b)]
         -- none new yet: the test file (a kill's stub names its test before it exists)
         (TestFor _, []) -> [fileOf (blockTestId b)]
         -- a code block's: its test's file, whole (its test and those it
@@ -937,8 +990,20 @@ testNow s root project lang b killed applied = do
               Left (Just t, f) -> (AtKept t (landed sp (Left f)), "red: " <> noLongerPasses t)
               Left (Nothing, f) -> (landed sp (Left f), "red")
               Right () -> (landed sp (Right ()), "green")
-            (_, (_, f) : _) -> (landed sp (Left f), "red")
+            _ | (_, f) : _ <- ownFailed -> (landed sp (Left f), "red")
             _ -> (landed sp (Right ()), "green")
+          -- a new test's circle: its green keeps the file's other tests green
+          (move', result') = case (move, keptRed) of
+            (Edited _ (Right ()), Just (t, f)) -> (AtKept t (landed sp (Left f)), "red: " <> noLongerPasses t)
+            (Applied _ (Right ()), Just (t, f)) -> (AtKept t (landed sp (Left f)), "red: " <> noLongerPasses t)
+            _ -> (move, result)
+          keptRed = case blockKind b of
+            TestFor _ -> listToMaybe [(t, f) | t <- blockKeep b, ranIn run t, Just f <- [lookup t (trFailed run)]]
+            _ -> Nothing
+          -- the tests a new test's block answers for: its own, among a whole file's
+          ownFailed = case (blockKind b, newTests b now) of
+            (TestFor _, new'@(_ : _)) -> [x | x@(t, _) <- trFailed run, t `elem` new']
+            _ -> trFailed run
           keeps = case blockKind b of
             TestFor _ -> False
             _ -> True
@@ -949,7 +1014,7 @@ testNow s root project lang b killed applied = do
             | otherwise = on {blockPasses = blockKind b == TestFor Nothing && newRun == Right True, blockAtAssertion = keeps && either (\case (Nothing, f) -> redAtTheAssertion b now f; _ -> False) (const False) kept}
           -- a broken run has nothing: it drops nothing
           present t = isJust (trBroken run) || ranIn run t
-      settleTest adjust present result move >>= \case
+      settleTest adjust present result' move' >>= \case
         Right b' | blockState b' == Green -> judgeIn s root project lang b' killed
         other -> pure other
 
@@ -1312,6 +1377,14 @@ runOver :: ServerState -> Workspace IO -> Language -> [TestId] -> IO (Either Tex
 runOver s ws lang ids = do
   (_, files) <- projectFiles ws (M.empty :: Map FilePath Text) lang (map (T.unpack . fileOf) ids)
   runTestsIn (pTester (ssPorts s) (ssCancel s)) lang ids files
+
+-- | The tests of a test file (relative) that pass as the editor has it: a
+-- new test's circle keeps them (none when the run cannot judge).
+passingIn :: ServerState -> Workspace IO -> Language -> FilePath -> IO [TestId]
+passingIn s ws lang testRel =
+  runOver s ws lang [T.pack testRel] <&> \case
+    Right run | Nothing <- trBroken run -> trPassed run
+    _ -> []
 
 -- | The lines (1-based) where NEW differs from OLD; FALLBACK when it does not.
 changedSpan :: Text -> Text -> (Int, Int) -> (Int, Int)
