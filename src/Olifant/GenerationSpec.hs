@@ -15,7 +15,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
-import Olifant.Generation.FillPhase (assertionSpan, fillPhase, reindented)
+import Olifant.Generation.FillPhase (assertionSpan, cutToHole, fillPhase, looksLikeFile, reindented)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
@@ -1003,6 +1003,36 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     it "(c) every block or stmt hole's instruction asks first for the lines that replace the marker only" $ do
       (_, _, calls, _) <- run oneHole (const (M.fromList [("arrange", "result = command()")]))
       map fhInstruction (concatMap frHoles calls) `shouldBe` ["answer with the lines that replace the marker only; set up what the assertion below needs"]
+    it "(c) a correct body holding the line below its hole nested inside it (an early `return result`) lands uncut" $ do
+      let body = genWith "def collect(xs):\n    result = []\n    {= ? body: block | collect =}\n    return result\n"
+          blockLang = pyLang {langHoles = langHoles pyLang ++ [("block", k) | Just k <- [lookup "stmt" (langHoles pyLang)]]}
+          fill = "for x in xs:\n    if x is None:\n        return result\n    result.append(x)"
+          filler = Filler $ \_ -> pure (Right (M.fromList [("body", fill)]))
+          tools = (basicTools noSyntax noChecker [blockLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+      (ws, snap) <- memoryWorkspace []
+      Right _ <- generate ws noResolve tools [Step body M.empty] now Apply
+      (M.lookup "src/t__test.py" <$> snap) `shouldReturn` Just "def collect(xs):\n    result = []\n    for x in xs:\n        if x is None:\n            return result\n        result.append(x)\n    return result\n"
+    it "(c) cut only where the fill repeats the file: the line below at the fill's own level, never nested; an opener held twice is no anchor" $ do
+      let base = "def collect(xs):\n    result = []\n    PH\n    return result\n"
+      -- the def repeated, an early return nested: cut at the base-level one
+      cutToHole Nothing [] base 3 "def collect(xs):\n    for x in xs:\n        if x is None:\n            return result\n    return result\n\ndef other():\n    pass"
+        `shouldBe` Just ("    for x in xs:\n        if x is None:\n            return result", 5)
+      -- no def in it: nothing is cut, whatever it holds
+      cutToHole Nothing [] base 3 "x = 1\nreturn result" `shouldBe` Nothing
+      -- the def twice (two adapters alike): no cut
+      cutToHole Nothing [] base 3 "def collect(xs):\n    a = 1\n\ndef collect(xs):\n    b = 2" `shouldBe` Nothing
+    it "(c) the two-hole split with no assert after the body's first line: the arrangement is `pass`, the assertion all of it" $ do
+      let base = "def test_a() -> None:\n    PH_arr\n    PH_ass\n"
+          whole = "def test_a() -> None:\n    assert pre()\n    x = 1\n    assert x"
+      fmap fst (cutToHole Nothing ["PH_ass"] base 2 whole) `shouldBe` Just "    pass"
+      fmap fst (cutToHole Nothing ["PH_arr"] base 3 whole) `shouldBe` Just "    assert pre()\n    x = 1\n    assert x"
+      fmap fst (cutToHole Nothing ["PH_ass"] base 2 "def test_a() -> None:\n    with pytest.raises(E):\n        go()") `shouldBe` Just "    pass"
+    it "(c) a file is told by its top-level names: a nested helper named like another test's, or a local import, is code" $ do
+      let base = "import os\n\ndef helper():\n    pass\n\ndef test_b() -> None:\n    def fake_clock():\n        return 1\n    assert fake_clock()\n"
+      looksLikeFile base "def fake_clock():\n    return 2\nresult = fake_clock()" `shouldBe` False
+      looksLikeFile base "x = 1\nimport json\nresult = json.dumps(x)" `shouldBe` False
+      looksLikeFile base "def helper():\n    return 1\nresult = helper()" `shouldBe` True
+      looksLikeFile base "x = 1\n\ndef test_c() -> None:\n    assert x" `shouldBe` True
     it "(c) a fill that is only the hole's lines is left as it is (nothing to cut)" $ do
       (_, file, _, events) <- run oneHole (const (M.fromList [("arrange", "assert_ready = 1\nresult = command()")]))
       fmap (T.isInfixOf "    assert_ready = 1\n    result = command()\n    assert isinstance") file `shouldBe` Just True

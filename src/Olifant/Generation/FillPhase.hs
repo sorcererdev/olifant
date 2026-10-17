@@ -301,8 +301,8 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
       | otherwise = Nothing
 
     -- A Python fill of lines that, its leading imports aside, still holds
-    -- an import, a test, or a def or class the file defines, at its own
-    -- top level: a file, not the hole's lines.
+    -- a test, or a def or class the file defines, at its own top level
+    -- ('looksLikeFile'): a file, not the hole's lines.
     answersAFile s f = linesKind s && fmap langName (langOf (holeFile s)) == Just "python" && looksLikeFile (M.findWithDefault "" (holeFile s) base) (snd (splitImports (importsOf (holeFile s)) f))
 
     langOf = languageFor (toolLanguages tools)
@@ -520,77 +520,82 @@ cutSentence n = "cut to the hole (" <> T.pack (show n) <> " lines dropped)"
 
 -- | A fill of lines cut to its hole, when it repeats the file around it
 -- (TEXT, the hole on line LINE, 1-based; SIBLINGS, the placeholders of the
--- file's other holes): the anchors are the nearest lines above and below
--- the hole that are no other hole's and say something (a letter or
--- digit). Holding the line above (whitespace aside), the fill loses it and
--- all before it, and, that line opening a block (`:`), all after the
--- block's end (the next line as shallow as it); holding the line below,
--- that line and all after it. Cut so, a hole beside another (a test's
--- arrangement and assertion, answered alike) keeps its side of the first
--- `assert`. Import lines before the cut that the file lacks are kept,
--- first (IMPORTS, the language's). The fill as cut and how many of its
--- lines were dropped; Nothing when nothing is cut, or nothing would be left.
+-- file's other holes). Its anchor is the line opening the block the hole
+-- is in (the nearest line above it, less indented, ending with `:`: a
+-- test's def): a fill holding it once (whitespace aside) repeats the file,
+-- and loses it, all before it, and all after the block's end (the next line
+-- as shallow as it). Then, holding at its own base level the nearest line
+-- below the hole that is no other hole's and says something (a letter or
+-- digit), it loses that line and all after it; and a hole beside another
+-- (a test's arrangement and assertion, answered alike) keeps its side of
+-- the first `assert` (with none after its first line, the arrangement is
+-- `pass` and the assertion all of it). Import lines before the cut that
+-- the file lacks are kept, first (IMPORTS, the language's). The fill as
+-- cut and how many of its lines were dropped; Nothing when nothing is cut
+-- (no anchor, or one held twice), or nothing would be left.
 cutToHole :: Maybe Text -> [Text] -> Text -> Int -> Text -> Maybe (Text, Int)
 cutToHole imports siblings text line f = do
   let fl = T.splitOn "\n" f
       ls = T.splitOn "\n" text
+      hole = fromMaybe "" (listToMaybe (drop (line - 1) ls))
       above = reverse (take (line - 1) ls)
       below = drop line ls
       sibling l = any (`T.isInfixOf` l) siblings
-      anchor = listToMaybe . filter (\l -> T.any isAlphaNum l && not (sibling l)) . filter (not . blank)
+      saying = listToMaybe . filter (\l -> T.any isAlphaNum l && not (sibling l)) . filter (not . blank)
       next = listToMaybe . filter (not . blank)
       siblingAbove = maybe False sibling (next above)
       siblingBelow = maybe False sibling (next below)
-      at a = listToMaybe [i | (i, l) <- zip [0 :: Int ..] fl, norm l == norm a]
-      -- the line above, and all before it (its block's end too)
-      (afterAbove, brought, cutAbove) = case anchor above >>= \a -> (a,) <$> at a of
-        Just (a, i) | i < length fl - 1 ->
-          let rest = drop (i + 1) fl
-              d = indentOf (fl !! i)
-              inBlock = if ":" `T.isSuffixOf` T.stripEnd a then takeWhile (\l -> blank l || indentOf l > d) rest else rest
-              have = map T.strip ls
-              imported = [T.strip l | l <- take i fl, not (" " `T.isPrefixOf` l), maybe False (`matches` l) imports, T.strip l `notElem` have]
-           in (inBlock, imported, True)
-        _ -> (fl, [], False)
-      -- the line below, and all after it
-      beforeBelow = case anchor below of
-        Just b | k : _ <- [k | (k, l) <- zip [0 :: Int ..] afterAbove, k > 0, norm l == norm b] -> take k afterAbove
-        _ -> afterAbove
+  opener <- listToMaybe [l | l <- above, not (blank l), indentOf l < indentOf hole, ":" `T.isSuffixOf` T.stripEnd (uncommented l)]
+  -- the opener, held once: all before it, and after its block
+  i <- case [i | (i, l) <- zip [0 :: Int ..] fl, norm l == norm opener] of
+    [i] | i < length fl - 1 -> Just i
+    _ -> Nothing
+  let d = indentOf (fl !! i)
+      inBlock = takeWhile (\l -> blank l || indentOf l > d) (drop (i + 1) fl)
+      have = map T.strip ls
+      brought = [T.strip l | l <- take i fl, not (" " `T.isPrefixOf` l), maybe False (`matches` l) imports, T.strip l `notElem` have]
+      base = case [indentOf l | l <- inBlock, not (blank l)] of
+        [] -> 0
+        ns -> minimum ns
+      -- the line below, at the fill's base level, and all after it
+      beforeBelow = case saying below of
+        Just b | k : _ <- [k | (k, l) <- zip [0 :: Int ..] inBlock, k > 0, indentOf l == base, norm l == norm b] -> take k inBlock
+        _ -> inBlock
       -- beside another hole: this side of the first assert
       asserting l = let st = T.strip l in st == "assert" || any (`T.isPrefixOf` st) ["assert ", "assert("]
-      firstAssert xs = listToMaybe [k | (k, l) <- zip [0 :: Int ..] xs, asserting l]
-      split xs
-        | not cutAbove = xs
-        | siblingBelow, Just k <- firstAssert xs, k > 0 = take k xs
-        | siblingAbove, Just k <- firstAssert xs = drop k xs
-        | otherwise = xs
-      kept = trimmed (split beforeBelow)
+      body = trimmed beforeBelow
+      firstAssert = listToMaybe [k | (k, l) <- zip [0 :: Int ..] body, asserting l]
+      split
+        | siblingBelow = case firstAssert of
+            Just k | k > 0 -> take k body
+            _ -> [T.replicate base " " <> "pass"]
+        | siblingAbove = maybe body (`drop` body) firstAssert
+        | otherwise = body
+      kept = trimmed split
       whole = trimmed fl
       result = brought ++ ["" | not (null brought)] ++ kept
-  if null kept || length kept == length whole then Nothing else Just (T.intercalate "\n" result, length whole - length kept)
+  if null kept || kept == whole then Nothing else Just (T.intercalate "\n" result, length whole - length kept - length brought)
   where
     blank = T.null . T.strip
     norm = T.filter (not . isSpace)
     indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
     trimmed = reverse . dropWhile blank . reverse . dropWhile blank
+    uncommented l = fst (T.breakOn "#" l)
 
 -- | Whether code for a hole of lines (in the file TEXT) is a file: at its
--- own top level (dedented), an import line, a test's def, or a def or class
--- of a name the file defines.
+-- own top level (dedented), a test's def, or a def or class of a name the
+-- file defines at its own top level. An import alone is no file (a local
+-- import is code; leading ones join the file's).
 looksLikeFile :: Text -> Text -> Bool
-looksLikeFile text code = any topLevel (dedented code)
+looksLikeFile text code = any defines tops
   where
-    defined = [n | l <- T.splitOn "\n" text, Just n <- [defined' l]]
+    tops = [l | l <- dedented code, not (" " `T.isPrefixOf` l), not ("\t" `T.isPrefixOf` l)]
+    defined = [n | l <- T.splitOn "\n" text, not (" " `T.isPrefixOf` l), not ("\t" `T.isPrefixOf` l), Just n <- [defined' l]]
     defined' l = do
       rest <- listToMaybe (mapMaybe (`T.stripPrefix` T.strip l) ["def ", "async def ", "class "])
       let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
       if T.null n then Nothing else Just n
-    topLevel l
-      | " " `T.isPrefixOf` l || "\t" `T.isPrefixOf` l = False
-      | "import " `T.isPrefixOf` l = True
-      | "from " `T.isPrefixOf` l, " import " `T.isInfixOf` l = True
-      | Just n <- defined' l = "test" `T.isPrefixOf` n || n `elem` defined
-      | otherwise = False
+    defines l = maybe False (\n -> "test" `T.isPrefixOf` n || n `elem` defined) (defined' l)
 
 -- | What a fill whose tests failed is unfilled for begins with (each
 -- failing test's id and message follow, the last 40 lines kept).
