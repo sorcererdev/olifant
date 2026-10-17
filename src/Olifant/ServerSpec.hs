@@ -10,6 +10,7 @@ import Data.Aeson qualified as J
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
+import Data.Functor ((<&>))
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAlphaNum, isDigit)
@@ -919,6 +920,54 @@ blockSpecs = describe "blocks" $ do
       ours old (7, 8) "from a import X\n\nEIGHT = 8\n\n\ndef test_a() -> None:\n    pass\n" (6, 7) `shouldBe` Just "SEVEN = 7"
       ours old (7, 8) "from a import X\n\nSEVEN = 7\nEIGHT = 9\n\n\ndef test_a() -> None:\n    pass\n" (7, 8) `shouldBe` Just "EIGHT = 8"
       ours old (7, 8) "from a import X\n\nSEVEN = 7\nEIGHT = 8\nNINE = 9\n\n\ndef test_a() -> None:\n    pass\n" (8, 9) `shouldBe` Just "NINE = 9"
+  describe "(h) a new test's circle keeps the test file's other tests green" $ do
+    let sevenText = T.unlines ["from shop.close_table import CloseTable", "", "SEVEN = 7", "", "", "def test_closes_a_table() -> None:", "    table = CloseTable()", "    assert table.handle(SEVEN) == 1"]
+        -- a runner for pytest's NameError: the module-level SEVEN gone, the test using it fails
+        withSeven files = killedBy files <&> \run ->
+          if "\nSEVEN = " `T.isInfixOf` ("\n" <> M.findWithDefault "" testRel files)
+            then run
+            else run {trPassed = filter (/= testId) (trPassed run), trFailed = trFailed run ++ [(testId, Failure (Just 8) "NameError: name 'SEVEN' is not defined" "") | testId `elem` trPassed run]}
+        withoutSeven = T.replace "SEVEN = 7\n" "# SEVEN\n"
+        -- the draft landed (REMOVE: and the constant gone with it, in the one edit), tested
+        viaKill remove = do
+          (s0, _) <- blocksOn withSeven [(testRel, sevenText)]
+          let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+          (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+          (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+          Just (tb, _) <- blockFor testFile s
+          Right (_, [edit]) <- later ignore
+          let editor = editorStub at body sevenText
+              applied = applyChange (feRange edit) (feText edit) editor
+          (_, Just tested) <- blockChanged testFile (changeDoc testFile 2 (if remove then withoutSeven applied else applied) (openDoc testFile 1 editor s))
+          pure (blockKeep tb, tested)
+        viaFunction remove = do
+          (s0, _) <- blocksOn withSeven [(testRel, sevenText)]
+          let module' = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
+              s = (openDoc (root </> moduleRel) 1 module' s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}}
+          (_, Right (tb, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
+          let named = T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body (applyEdits imports sevenText)))
+              st = openDoc testFile 1 named s
+          (_, Right (_, [edit])) <- blockDraft ignore testFile st
+          let applied = applyChange (feRange edit) (feText edit) named
+          (_, Just tested) <- blockChanged testFile (changeDoc testFile 2 (if remove then withoutSeven applied else applied) st)
+          pure (blockKeep tb, tested)
+        naming = "red: test_closes_a_table no longer passes \183 fix or reject"
+    it "a survivor's stub keeps the file's passing tests: its draft landed green stays green" $ do
+      (kept, tested) <- viaKill False
+      (kept, blockState tested) `shouldBe` ([testId], Judged [])
+    it "a survivor's stub: its draft landed with a test of the file red for it is red, naming that test" $ do
+      (_, tested) <- viaKill True
+      blockState tested `shouldSatisfy` \case Red _ -> True; _ -> False
+      blockRedAt tested `shouldBe` Just testId
+      hud tested `shouldSatisfy` (naming `T.isInfixOf`)
+    it "a function's stub keeps the file's passing tests: its test red at its assertion stays so" $ do
+      (kept, tested) <- viaFunction False
+      (kept, blockState tested) `shouldBe` ([testId], Judged [])
+    it "a function's stub: its test landed with a test of the file red for it is red, naming that test" $ do
+      (_, tested) <- viaFunction True
+      blockState tested `shouldSatisfy` \case Red _ -> True; _ -> False
+      blockRedAt tested `shouldBe` Just testId
+      hud tested `shouldSatisfy` (naming `T.isInfixOf`)
   it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}
@@ -1742,8 +1791,11 @@ blockSpecs = describe "blocks" $ do
     gArm gate
     testing <- async (blockChanged (root </> moduleRel) s1)
     waitUntil ((>= 1) <$> gEntered gate)
-    (_, Right _) <- blockKill (root </> moduleRel) 6 s1
+    -- (the kill's own run of the test file waits at the gate too: the kill is settled before it)
+    killing <- async (blockKill (root </> moduleRel) 6 s1)
+    waitUntil ((>= 2) <$> gEntered gate)
     gOpen gate
+    (_, Right _) <- wait killing
     void (wait testing)
     Just (b, _) <- blockFor (root </> moduleRel) s
     blockOn b `shouldBe` edited
@@ -1916,19 +1968,20 @@ blockSpecs = describe "blocks" $ do
     -- fixed: green again, then judged
     (_, Right fixed) <- blockTest (root </> moduleRel) (changeDoc (root </> moduleRel) 3 written s)
     blockState fixed `shouldSatisfy` \case Judged _ -> True; _ -> False
-  it "(K4) a test block keeps no test of its file's: a sibling gone red meanwhile leaves it green" $ do
+  it "(K4) a test block keeps its file's passing tests: a sibling gone red meanwhile makes it red, naming it" $ do
     (s0, _) <- blocksOn killedBy []
     let reopen = written <> T.unlines ["", "", "class Reopen:", "    def again(self) -> int:", "        return 0"]
         s = openDoc (root </> moduleRel) 1 reopen s0
     (_, Right (tb, Just (testFile, at, body, imports))) <- blockStart ignore (root </> moduleRel) 15 s
-    (blockKind tb, blockKeep tb) `shouldBe` (Block.TestFor Nothing, [])
+    (blockKind tb, blockKeep tb) `shouldBe` (Block.TestFor Nothing, [testId])
     -- arranged by hand (no placeholder left); test_closes_a_table passed at
     -- its begin, and the module's body goes back to the stub: red
     let arranged = T.intercalate "\n" . filter (not . T.isInfixOf "olifant: arrange") . T.splitOn "\n"
         named = arranged $ T.replace "kills_the_boundary" "reopens_again" (T.replace "table.handle(2) == 0" "Reopen().again() == 1" (expandStub at body (applyEdits imports testText)))
         st = changeDoc (root </> moduleRel) 2 (T.replace "return int(seats > 2)" "raise NotImplementedError(\"later\")" reopen) (openDoc testFile 1 named s)
     (_, Right tested) <- blockTest testFile st
-    blockState tested `shouldBe` Judged []
+    blockState tested `shouldSatisfy` \case Red _ -> True; _ -> False
+    blockRedAt tested `shouldBe` Just testId
   it "(K5) a kept test gone from its file's run is kept no more, and the circle goes green" $ do
     (s0, _) <- blocksRun blockSyntax (pure ()) (asPytest [("test_sibling", "seats > 2")]) [(testRel, siblingText)]
     (_, Right b) <- blockBegin ignore (root </> testRel) 6 s0

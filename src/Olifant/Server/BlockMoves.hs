@@ -23,7 +23,7 @@ import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), languageFor)
 import Olifant.Mutate (Mutant (..), waiverLine)
 import Olifant.Newness (newLinesOf)
-import Olifant.Server.Block (Site (..), StubDraft, appendStep, draftStub, awaitingVerdict, blockFor, claim, fileOf, functionAt, openTestStub, settle, settleOn, siteAt, siteFile, siteTestFile, spanEdited, testNow, tshow, withBlock)
+import Olifant.Server.Block (Site (..), StubDraft, appendStep, draftStub, awaitingVerdict, blockFor, claim, fileOf, functionAt, openTestStub, passingIn, settle, settleOn, siteAt, siteFile, siteTestFile, spanEdited, testNow, tshow, withBlock)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -54,7 +54,9 @@ blockKill path line = withBlock path $ \s root project lang b killed -> runExcep
   -- the stub's two blank lines, then its def, arrangement and assertion;
   -- its test is the stub's, named from the mutant (the HUD shows it; the
   -- person may type over it: the block's tests are the file's new ones)
-  let tb = begin n testFile (TestFor (Just m)) testText (at + 2, at + 4) (T.pack testRel <> "::" <> named) (Failure Nothing "" "")
+  -- the test file's passing tests (before the stub is in it) are kept
+  kept <- lift (passingIn s (prWorkspace project) lang testRel)
+  let tb = (begin n testFile (TestFor (Just m)) testText (at + 2, at + 4) (T.pack testRel <> "::" <> named) (Failure Nothing "" "")) {blockKeep = kept}
   claimed <- lift (claim s [] tb)
   unless claimed (throwE (pendingTest testRel))
   lift $ do
