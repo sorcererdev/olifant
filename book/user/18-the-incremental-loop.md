@@ -115,7 +115,11 @@ The person's part of each circle is the part that cannot be delegated:
   assert line to the test's end) before any code exists: one that errors in its setup is a failed
   draft. A new test's circle is green when its test is red there, or when it passes already: the
   code does what the test says, so it is a regression test (`green ✓ accept`; accepted, it stays
-  in the test file and nothing moves to the module).
+  in the test file and nothing moves to the module). Either way it is green only while the tests
+  that passed in its file before the stub still pass (a draft or an edit that breaks one is
+  `red: test_x no longer passes · fix or reject`). A test draft changes only its stub, and the
+  imports it needs: one that changes another line is refused (`the draft changed lines outside its
+  test: …`), red, nothing written.
 - **Reading a draft.** The drafts stance asks the model for the least code that passes, so a
   constant (`return Ok(None)`) is a correct draft for one test. Every generalisation needs a test
   that asks for it.
