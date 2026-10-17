@@ -164,9 +164,11 @@ def test_boundary_party_seats() -> None:
 ```
 
 With a model, the stub is drafted at once while the editor shows it: its arrangement and its
-assertion (from the name and the mutant), landing in place of the stub's body. Typed over
-meanwhile (another name, your own assertion), your text stands and is tested; `draft` again
-for the model's. With no model, keep the name or type over it (the HUD follows the name you
+assertion (from the name and the mutant), landing in place of the stub's body. It lands on the
+stub's lines (its `def` to the test's end) while they are still the stub, whitespace and blank
+lines aside: edits elsewhere in the file (an import, another test) stand beside it. Typed over
+meanwhile (another name, your own assertion), your text stands and is tested, and the HUD says
+`your text stands · draft when ready`; `draft` again for the model's. With no model, keep the name or type over it (the HUD follows the name you
 type once it is tested), write the test, and the circle tests it. Drafted, it is verified both ways: the new test, and every test that passed
 before, must pass on your code, and the new test must fail with the mutant in place (a sibling
 test that was red before is passed over). `accept` the test, and the code's circle is judged again without that survivor.
@@ -390,6 +392,7 @@ is refused before any circle opens: edit it by hand.
 - **`no model is configured`** — `draft` with no `[model]`: write the body; the magic circle still
   judges it.
 - **`the buffer changed while drafting; your text stands`** — you typed while the model wrote. Ask
-  again with `draft`, or keep typing.
+  again with `draft`, or keep typing. A survivor's stub drafted at once minds only its own lines:
+  **`your text stands · draft when ready`** means you typed in the stub.
 - **`assert False, "write this test"`** — a test stub with `assert False, "write this test"` is
   the pack's old test-case generator, not the circle: delete it and `stub` from the function.
