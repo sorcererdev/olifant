@@ -821,6 +821,35 @@ blockSpecs = describe "blocks" $ do
     let editor = editorStub at body testText
     T.splitOn "\n" (applyChange (feRange edit) (feText edit) editor) `shouldBe` T.splitOn "\n" (testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n")
     steps s >>= (`shouldSatisfy` ("block 2\tfill\tolifant\tcut to the hole (" `T.isInfixOf`))
+  describe "(h) a survivor's stub's draft lands on the stub's span" $ do
+    let landing edit0 = do
+          (s0, _) <- blocksOn killedBy []
+          live <- newIORef Nothing
+          let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> if f == root </> testRel then readIORef live else pure Nothing), ssStubWaitMs = 300}
+          (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+          (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+          let editor = edit0 (editorStub at body testText)
+          writeIORef live (Just (3, editor))
+          landed <- later ignore
+          back <- blockFor testFile s
+          pure (editor, landed, fst <$> back)
+        drafted = "def test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n"
+    it "the file gained edits elsewhere (an import, the other test): the draft lands beside them, its span and assertion where the editor has them" $ do
+      let elsewhere = T.replace "    table = CloseTable()\n    assert table.handle(4)" "    table = CloseTable()  # mine\n    assert table.handle(4)" . ("import pytest\n" <>)
+      (editor, Right (b, [edit]), _) <- landing elsewhere
+      fePath edit `shouldBe` root </> testRel
+      feVersion edit `shouldBe` Just 3
+      applyChange (feRange edit) (feText edit) editor `shouldBe` elsewhere (testText <> "\n\n" <> drafted <> "\n")
+      (blockSpan b, blockAssertion b) `shouldBe` ((10, 12), Just 12)
+    it "whitespace in the span (trailing spaces, a blank line more, tabs for spaces) is no edit of the stub: it lands" $ do
+      let spaced = T.replace "() -> None:\n" "() -> None:   \n" . T.replace "    assert ...\n" "\n\tassert ...\n"
+      (editor, Right (_, [edit]), _) <- landing spaced
+      T.isInfixOf drafted (applyChange (feRange edit) (feText edit) editor) `shouldBe` True
+    it "the stub's body typed in: no draft lands, the person's text stands" $ do
+      let typed = T.replace "    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n" "    table = CloseTable()\n"
+      (_, landed, back) <- landing typed
+      either id (const "landed") landed `shouldBe` "you typed in the stub while it drafted; your text stands \183 draft when ready"
+      fmap blockState back `shouldSatisfy` \case Just (Red _) -> True; _ -> False
   it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}
@@ -866,7 +895,7 @@ blockSpecs = describe "blocks" $ do
     let mine = T.replace "test_boundary_int_seats" "test_kills_the_boundary" (editorStub at body testText)
     writeIORef live (Just (2, mine))
     landed <- later ignore
-    either id (const "landed") landed `shouldBe` "the file changed while drafting; your text stands"
+    either id (const "landed") landed `shouldBe` "you typed in the stub while it drafted; your text stands \183 draft when ready"
     Just (back, _) <- blockFor testFile s
     blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
     blockTestId back `shouldBe` T.pack testRel <> "::test_kills_the_boundary"

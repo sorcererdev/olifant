@@ -49,7 +49,8 @@ import Control.Monad (forM, unless, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, withExceptT)
 import Data.Aeson (Value, object, (.=))
-import Data.Char (isAlphaNum)
+import Data.Bifunctor (bimap)
+import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isSuffixOf, nub, sort, stripPrefix)
@@ -587,39 +588,99 @@ draftIn progress s root project lang b drafting killed filler stubbed = do
       atAssertion = case outcome of
         Left (Nothing, f) -> redAtTheAssertion b shown f
         _ -> False
-  -- a stub's draft lands on the editor's file once the stub is in it, as
-  -- the draft planned on it (its end aside: the editor's trailing lines)
-  (onText, edits') <- case stubbed of
-    Nothing -> pure (planned, edits)
+  -- a stub's draft lands on the editor's file once the stub is in it, on
+  -- the stub's span (its test's def to its end) while that is still the
+  -- stub as the draft planned on it, whitespace and blank lines aside: an
+  -- edit elsewhere in the file stands beside the draft; typing in the stub
+  -- is the person's text, which stands
+  (onText, edits', shift) <- case stubbed of
+    Nothing -> pure (planned, edits, 0)
     Just _ -> do
-      (version, now) <- lift (stubInEditor s file (blockBase b) text) >>= maybe (throwE "the stub was not expanded in the editor; draft when it is") pure
-      unless (T.stripEnd now == T.stripEnd text) (throwE "the file changed while drafting; your text stands")
-      let landed = T.stripEnd planned <> T.drop (T.length (T.stripEnd now)) now
+      expected <- maybe (throwE "the draft lost its stub") (pure . linesIn text) (stubSpan b text)
+      (version, now) <- lift (stubInEditor s file (blockBase b) text expected) >>= maybe (throwE "the stub was not expanded in the editor; draft when it is") pure
+      live <- maybe (throwE stubTyped) pure (stubSpanIn expected now)
+      unless (sameLines (linesIn now live) expected) (throwE stubTyped)
+      drafted' <- maybe (throwE "the draft lost its stub") pure (stubSpanIn expected shown)
+      let liveLs = T.splitOn "\n" now
+          onLive = T.intercalate "\n" (take (fst live - 1) liveLs ++ linesIn shown drafted' ++ drop (snd live) liveLs)
+          -- the imports the draft added outside its span join the editor's
+          outside = [l | (i, l) <- zip [1 :: Int ..] (T.splitOn "\n" shown), i < fst drafted' || i > snd drafted']
+          added = [l | l <- outside, isImportLine lang l, l `notElem` T.splitOn "\n" text]
+          landed = addImports lang added onLive
+          -- where the span is in the editor's file less where it is in the draft's
+          moved = maybe 0 fst (stubSpanIn expected landed) - fst drafted'
       -- the editor's text is the one seen: the draft applied is an edit, tested
       lift (modifyIORef' (ssBlockSeen s) (M.insert file now))
-      pure (landed, [FileEdit file version False range new | landed /= now, let (range, new) = smallestChange now landed])
+      pure (landed, [FileEdit file version False range new | landed /= now, let (range, new) = smallestChange now landed], moved)
   let (result, move) = case outcome of
         Left (Just t, f) -> ("red: " <> noLongerPasses t, AtKept t (Drafted drafted (mfName filler) (Left f)))
         Left (Nothing, f) -> ("red", Drafted drafted (mfName filler) (Left f))
         Right () -> ("green", Drafted drafted (mfName filler) (Right ()))
-  b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockSpan = sp, blockAssertion = assertionAt, blockAtAssertion = atAssertion})
+  b' <- ExceptT (settleOn s root killed "draft" result (Just onText) move drafting {blockSpan = bimap (+ shift) (+ shift) sp, blockAssertion = (+ shift) <$> assertionAt, blockAtAssertion = atAssertion})
   -- a green draft that changes nothing brings no edit back to be tested: judged now
   if null edits' && blockState b' == Green then (,[]) <$> ExceptT (judgeIn s root project lang b' killed) else pure (b', edits')
 
--- | The file as the editor has it once a stub is in it (its text no
--- longer BEFORE, the file without it), its version; waited for
--- ('ssStubWaitMs': the editor expands the stub as the answer arrives),
--- Nothing when it never came. No live documents: STUBBED is the file.
-stubInEditor :: ServerState -> FilePath -> Text -> Text -> IO (Maybe (Maybe Int, Text))
-stubInEditor s file before stubbed = case ssLiveDoc s of
+-- | The file as the editor has it once a stub is in it (its lines
+-- EXPECTED found in it, 'stubSpanIn'), its version; waited for
+-- ('ssStubWaitMs': the editor expands the stub as the answer arrives).
+-- Once the wait is over, the file as it is when it is no longer BEFORE
+-- (the file without the stub: the person typed in it); Nothing when
+-- nothing came. No live documents: STUBBED is the file.
+stubInEditor :: ServerState -> FilePath -> Text -> Text -> [Text] -> IO (Maybe (Maybe Int, Text))
+stubInEditor s file before stubbed expected = case ssLiveDoc s of
   Nothing -> pure (Just (fst <$> M.lookup file (ssDocs s), stubbed))
   Just live -> go live (max 1 (ssStubWaitMs s `div` 50))
   where
     go live n =
       live file >>= \case
-        Just (v, t) | T.stripEnd t /= T.stripEnd before -> pure (Just (Just v, t))
+        Just (v, t) | isJust (stubSpanIn expected t) -> pure (Just (Just v, t))
+        Just (v, t) | n <= 0, T.stripEnd t /= T.stripEnd before -> pure (Just (Just v, t))
         _ | n <= 0 -> pure Nothing
         _ -> threadDelay 50000 >> go live (n - 1 :: Int)
+
+-- | Why a stub's draft does not land: the person typed in the stub while
+-- it drafted ('textStands' is what the HUD says).
+stubTyped :: Text
+stubTyped = "you typed in the stub while it drafted; " <> textStands
+
+-- | What the HUD says when a stub's draft does not land on the person's text.
+textStands :: Text
+textStands = "your text stands \183 draft when ready"
+
+-- | A stub's lines (its new test's def to its end, 'testLinesFrom') in
+-- TEXT, the file as its draft plans on it.
+stubSpan :: Block -> Text -> Maybe (Int, Int)
+stubSpan b text = do
+  t <- listToMaybe (newTests b text)
+  d <- defLineBy t text
+  pure (testLinesFrom d text)
+
+-- | Where a stub (its lines EXPECTED, its def first) is in TEXT: its def
+-- found by its name (at its indentation), else the def above the line
+-- holding its placeholder (the person renamed it); to its test's end.
+stubSpanIn :: [Text] -> Text -> Maybe (Int, Int)
+stubSpanIn expected text = (`testLinesFrom` text) <$> (byName <|> byPlaceholder)
+  where
+    ls = T.splitOn "\n" text
+    indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
+    byName = do
+      d <- listToMaybe expected
+      n <- defName d
+      listToMaybe [i | (i, l) <- zip [1 ..] ls, defName l == Just n, indentOf l == indentOf d]
+    byPlaceholder = do
+      p <- listToMaybe [T.strip l | l <- expected, "olifant:" `T.isInfixOf` l]
+      i <- listToMaybe [i | (i, l) <- zip [1 ..] ls, T.strip l == p]
+      fst <$> defLineAbove i text
+
+-- | A span's lines (1-based, inclusive) of a text.
+linesIn :: Text -> (Int, Int) -> [Text]
+linesIn text (a, z) = take (z - a + 1) (drop (a - 1) (T.splitOn "\n" text))
+
+-- | Two spans the same, whitespace and blank lines aside.
+sameLines :: [Text] -> [Text] -> Bool
+sameLines a b = norm a == norm b
+  where
+    norm = map (T.filter (not . isSpace)) . filter (not . T.null . T.strip)
 
 -- | A code draft's red (WHY, the fill's) on the text it wrote: a test the
 -- block keeps that fails there while its own test passes is that test's
