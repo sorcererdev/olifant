@@ -902,14 +902,12 @@ blockSpecs = describe "blocks" $ do
           log' <- steps s
           pure (named, drafted, fst <$> back, log')
         leftOver = T.unlines ["from shop.close_table import CloseTable", "", "SEVEN = 7", "", "", "def test_left_over() -> None:", "    " <> placeholder, "    assert ...", "", "", "def test_closes_a_table() -> None:", "    table = CloseTable()", "    assert table.handle(SEVEN) == 1"]
-    it "a draft that changes a line outside its test is refused: red, nothing written, one sentence in the HUD and the step log" $ do
-      -- a stub left undrafted above this one holds the same placeholder: the fill went into it
-      (_, drafted, back, log') <- reopening leftOver [("arrange", "result = Reopen().again()")]
-      let sentence = "the draft changed lines outside its test: " <> placeholder
-      drafted `shouldBe` Left sentence
-      fmap blockState back `shouldSatisfy` \case Just (Red _) -> True; _ -> False
-      fmap hud back `shouldSatisfy` maybe False (sentence `T.isInfixOf`)
-      log' `shouldSatisfy` T.isInfixOf ("\tdrafting\tperson\tno draft: " <> sentence)
+    it "a stub left undrafted above this one holds the same placeholder: the fill goes into this stub, the other stands" $ do
+      (named, drafted, _, _) <- reopening leftOver [("arrange", "result = Reopen().again()")]
+      Right (_, [edit]) <- pure drafted
+      let ls = T.splitOn "\n" (applyChange (feRange edit) (feText edit) named)
+      take 3 (drop 5 ls) `shouldBe` ["def test_left_over() -> None:", "    " <> placeholder, "    assert ..."]
+      take 3 (drop 15 ls) `shouldBe` ["def test_reopens_again() -> None:", "    result = Reopen().again()", "    assert Reopen().again() == 1"]
     it "an import the draft adds, a merged one, a blank line moved: no change outside the test" $ do
       let ours = strayLine (\l -> any (`T.isPrefixOf` l) ["from ", "import "])
           old = "from a import X\n\nSEVEN = 7\n\n\ndef test_a() -> None:\n    pass\n"
