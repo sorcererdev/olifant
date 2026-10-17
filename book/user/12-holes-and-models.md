@@ -297,18 +297,22 @@ retry; with both repaired, every handler was green in one round.
 file is asked again.** A local model asked for a test's arrangement often answers with the
 whole test file: its imports, its helpers, every test, the stub with a body. Every hole of
 lines (`block`, `stmt`) is asked first to *answer with the lines that replace the marker
-only*, and its fill is then cut by the lines around the hole: holding the line just above
-it (the test's `def` line; whitespace aside), the fill loses that line and everything before
-it, and, that line opening a block, everything after the block's end; holding the line just
-below it (the test's assertion), that line and everything after it. A test's arrangement and
-assertion answered alike are cut once, then split at the first `assert`. An import line before
-the cut that the file lacks is kept, and joins the file's imports. A Python fill that, once cut,
-still holds an import, a test's `def`, or a `def` or `class` the file already defines at its
-own top level is not placed: the attempt fails with "the model answered with more than the
+only*, and its fill is then cut by the lines around the hole. Its anchor is the line opening
+the block the hole is in (the test's `def` line): a fill holding it once (whitespace aside)
+repeats the file, and loses that line, everything before it, and everything after the block's
+end; then, holding the line just below the hole (the test's assertion) at its own base level,
+never nested, it loses that line and everything after it. A fill that does not hold the anchor,
+or holds it twice, is not cut. A test's arrangement and assertion answered alike are cut once,
+then split at the first `assert` (with none after the body's first line, the arrangement is
+`pass` and the assertion all of it). An import line before the cut that the file lacks is
+kept, and joins the file's imports. A Python fill that, once cut, still holds a test's `def`, or
+a `def` or `class` the file already defines, at its own top level, is not placed (a local
+import or a new helper is code): the attempt fails with "the model answered with more than the
 hole: a whole file", and the retry says *answer with the lines that replace the marker only:
 no `def` line, no imports, no other tests*. `--progress` reports
 `{"event":"cut","hole":…,"dropped":…,"fill":…}` and `{"event":"whole_file","hole":…}`; a
-draft's step log has `fill olifant cut to the hole (N lines dropped)`, and the HUD says it.
+draft's step log has `fill olifant cut to the hole (N lines dropped)`, and the HUD the draft
+pushes says it (until the circle is judged).
 
 **Verify: a fill must pass a command.** A model hole may name a command its fill must pass,
 usually its tests:
