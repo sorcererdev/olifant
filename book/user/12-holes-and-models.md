@@ -293,6 +293,27 @@ the text written is the one read level. `--progress` reports the rescue as
 failed qwen3-coder:30b attempt was one of these two layouts, and the model repeated it on
 retry; with both repaired, every handler was green in one round.
 
+**A model that answers with the whole file is cut to the hole; one that still answers a
+file is asked again.** A local model asked for a test's arrangement often answers with the
+whole test file: its imports, its helpers, every test, the stub with a body. Every hole of
+lines (`block`, `stmt`) is asked first to *answer with the lines that replace the marker
+only*, and its fill is then cut by the lines around the hole. Its anchor is the line opening
+the block the hole is in (the test's `def` line): a fill holding it once (whitespace aside)
+repeats the file, and loses that line, everything before it, and everything after the block's
+end; then, holding the line just below the hole (the test's assertion) at its own base level,
+never nested, it loses that line and everything after it. A fill that does not hold the anchor,
+or holds it twice, is not cut. A test's arrangement and assertion answered alike are cut once,
+then split at the first `assert` (with none after the body's first line, the arrangement is
+`pass` and the assertion all of it). An import line before the cut that the file lacks is
+kept, and joins the file's imports. A Python fill that, once cut, still holds a test's `def`, or
+a `def` or `class` the file already defines, at its own top level, is not placed (a local
+import or a new helper is code): the attempt fails with "the model answered with more than the
+hole: a whole file", and the retry says *answer with the lines that replace the marker only:
+no `def` line, no imports, no other tests*. `--progress` reports
+`{"event":"cut","hole":…,"dropped":…,"fill":…}` and `{"event":"whole_file","hole":…}`; a
+draft's step log has `fill olifant cut to the hole (N lines dropped)`, and the HUD the draft
+pushes says it (until the circle is judged).
+
 **Verify: a fill must pass a command.** A model hole may name a command its fill must pass,
 usually its tests:
 

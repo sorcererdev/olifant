@@ -101,7 +101,11 @@ data Block = Block
     -- | an existing test's block red at its assertion (the run's failure at
     -- or after its first assert line; the server records it as a test or
     -- a draft lands): the next draft drafts the assertion too
-    blockAtAssertion :: Bool
+    blockAtAssertion :: Bool,
+    -- | what the HUD adds about the latest draft (a fill cut to its hole,
+    -- a stub's draft that did not land): the next draft, a verdict, or
+    -- the circle's end clears it
+    blockNote :: Maybe Text
   }
   deriving stock (Eq, Show)
 
@@ -131,13 +135,13 @@ data Move
 
 begin :: Int -> FilePath -> Kind -> Text -> (Int, Int) -> TestId -> Failure -> Block
 begin i file kind base sp test failure =
-  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing Nothing False False
+  Block i file kind base sp test (Red failure) [] base 0 Nothing [] Nothing Nothing Nothing False False Nothing
 
 -- | Take a move. Left says why it is not open, in one sentence for the person.
 step :: Move -> Block -> Either Text Block
 step mv b
   | not (pending b) = Left "this circle is closed; begin another"
-  | otherwise = case (mv, blockState b) of
+  | otherwise = (\b' -> if clears mv then b' {blockNote = Nothing} else b') <$> case (mv, blockState b) of
       (AtKept t inner, _) -> atKept t <$> step inner b
       -- a drafted assertion's line is the latest draft's: another draft, or the person's edit, clears it
       (StartDraft, s) | not (drafting s) && not (broken s) -> Right b {blockState = Drafting s, blockAssertion = Nothing}
@@ -181,6 +185,20 @@ step mv b
     editDraft outcome b' = case reverse (blockDrafts b') of
       (d : rest) | draftBy d == "you" -> b' {blockDrafts = reverse (d {draftOutcome = outcomeText outcome} : rest)}
       _ -> addDraft (Draft "" "you" (outcomeText outcome)) b'
+
+-- | Whether a move clears the block's note: a new draft, a verdict, a
+-- survivor's move, the circle's end.
+clears :: Move -> Bool
+clears = \case
+  AtKept _ inner -> clears inner
+  StartDraft -> True
+  Judge _ -> True
+  Rejudge -> True
+  Waive {} -> True
+  Kill _ -> True
+  Accept -> True
+  Reject -> True
+  _ -> False
 
 moveName :: Move -> Text
 moveName = \case
@@ -235,8 +253,10 @@ killTarget line b = maybe (Left "no survivor left: accept") Right (find ((== lin
 
 -- | The one HUD line: where the block is, and the next step when it is the person's.
 hud :: Block -> Text
-hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
+hud b = "▸ " <> testName <> " · " <> draftPart <> statePart <> notePart
   where
+    -- what the latest draft adds (red's next step, when it is red)
+    notePart = maybe "" (" · " <>) (blockNote b)
     testName = snd (T.breakOnEnd "::" (blockTestId b))
     draftPart
       | null (blockDrafts b) = ""
@@ -245,7 +265,7 @@ hud b = "▸ " <> testName <> " · " <> draftPart <> statePart
       Red _ | Just t <- blockRedAt b -> "red: " <> noLongerPasses t <> " · fix or reject"
       -- the arrangement drafted, the assertion is what fails: the person's to confirm
       Red _ | ExistingTest _ <- blockKind b, blockAtAssertion b -> "red at the assertion · draft again to redraft it, or edit it"
-      Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, redCue] of
+      Red f -> case filter (not . T.null) [if T.null (fMessage f) then "" else "red: " <> fMessage f, maybe redCue (const "") (blockNote b)] of
         [] -> "red"
         parts -> T.intercalate " · " parts
       -- an existing test drafted: why it is red, while the model writes

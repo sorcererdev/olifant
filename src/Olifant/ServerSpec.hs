@@ -420,7 +420,7 @@ blockSpecs = describe "blocks" $ do
       blockState drafted `shouldBe` Green
       -- the two holes are verified once, together
       (subtract ran <$> runs) `shouldReturn` 1
-      readIORef asked `shouldReturn` [("arrange", "set up what the assertion below needs, ending with `result = ` the call the test is about"), ("assertion", "assert what 'reopens again' means; one assert, the subject is `result`")]
+      readIORef asked `shouldReturn` [("arrange", "answer with the lines that replace the marker only; set up what the assertion below needs, ending with `result = ` the call the test is about"), ("assertion", "answer with the lines that replace the marker only; assert what 'reopens again' means; one assert, the subject is `result`")]
       let applied = applyChange (feRange edit) (feText edit) named
           ls = T.splitOn "\n" applied
       -- the assertion's line, for the editor's cursor
@@ -548,7 +548,7 @@ blockSpecs = describe "blocks" $ do
       blockState second `shouldBe` Green
       asks <- readIORef asked
       map (map fst) asks `shouldBe` [["arrange"], ["arrange", "assertion"]]
-      lookup "assertion" (asks !! 1) `shouldBe` Just "the code is the spec now: assert what `wrong party` means against what the code returns; keep the test's intent"
+      lookup "assertion" (asks !! 1) `shouldBe` Just "answer with the lines that replace the marker only; the code is the spec now: assert what `wrong party` means against what the code returns; keep the test's intent"
       let twice = applyChange (feRange edit2) (feText edit2) once
       Just at <- pure (blockAssertion second)
       linesOf twice !! (at - 1) `shouldBe` "    assert table.handle(1) == 0"
@@ -809,6 +809,77 @@ blockSpecs = describe "blocks" $ do
     (fePath edit, feVersion edit) `shouldBe` (testFile, Just 2)
     blockState drafted `shouldBe` Green
     applyChange (feRange edit) (feText edit) expanded `shouldBe` testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n"
+  it "(h) a survivor's stub answered with the whole test file (its imports, its tests, the stub with a body, one more): cut to the stub's arrangement and assertion, logged" $ do
+    (s0, _) <- blocksOn killedBy []
+    let whole = testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n\ndef test_more() -> None:\n    assert CloseTable().handle(9) == 1\n"
+        filler = ModelFiller "local" 0 (Filler (\_ -> pure (Right (M.fromList [("arrange", whole), ("assertion", whole)]))))
+        s = (openDoc (root </> moduleRel) 1 written s0) {ssTestFiller = Just filler}
+    (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+    (_, Right (_, _, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+    Right (drafted, [edit]) <- later ignore
+    blockState drafted `shouldBe` Green
+    let editor = editorStub at body testText
+    T.splitOn "\n" (applyChange (feRange edit) (feText edit) editor) `shouldBe` T.splitOn "\n" (testText <> "\n\ndef test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n\n")
+    steps s >>= (`shouldSatisfy` ("block 2\tfill\tolifant\tcut to the hole (" `T.isInfixOf`))
+    -- the push's HUD says it
+    hud drafted `shouldSatisfy` ("fill cut to the hole (" `T.isInfixOf`)
+  describe "(h) a survivor's stub's fills across rounds" $ do
+    let rounds answers = do
+          (s0, _) <- blocksOn killedBy []
+          calls <- newIORef (0 :: Int)
+          let filler = ModelFiller "local" 1 (Filler (\_ -> atomicModifyIORef' calls (\n -> (n + 1, n)) >>= \n -> pure (Right (M.fromList (answers !! min n (length answers - 1))))))
+              s = (openDoc (root </> moduleRel) 1 written s0) {ssTestFiller = Just filler}
+          (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+          (_, Right (_, _, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+          landed <- later ignore
+          log' <- steps s
+          pure (landed, editorStub at body testText, log')
+    it "a cut fill refused as a file, then a plain one placed: the HUD says nothing of a cut" $ do
+      let nested = "def test_boundary_int_seats() -> None:\n    def test_inner() -> None:\n        pass\n    table = CloseTable()\n    assert table.handle(2) == 0"
+      (landed, _, log') <- rounds [[("arrange", nested), ("assertion", "assert table.handle(2) == 0")], [("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(2) == 0")]]
+      Right (drafted, _) <- pure landed
+      blockState drafted `shouldBe` Green
+      hud drafted `shouldNotSatisfy` T.isInfixOf "cut to the hole"
+      log' `shouldSatisfy` T.isInfixOf "\tfill\tolifant\tthe model answered with more than the hole: a whole file"
+    it "a whole file refused on the last round: the hole's earlier attempt is the one written" $ do
+      let file = "import os\n\ndef test_closes_a_table() -> None:\n    pass\n\ntable = CloseTable()"
+      (landed, editor, _) <- rounds [[("arrange", "table = CloseTable()"), ("assertion", "assert table.handle(2) == 1")], [("arrange", file), ("assertion", "assert table.handle(2) == 1")]]
+      Right (_, [edit]) <- pure landed
+      applyChange (feRange edit) (feText edit) editor `shouldSatisfy` T.isInfixOf "() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 1"
+  describe "(h) a survivor's stub's draft lands on the stub's span" $ do
+    let landing edit0 = do
+          (s0, _) <- blocksOn killedBy []
+          live <- newIORef Nothing
+          let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> if f == root </> testRel then readIORef live else pure Nothing), ssStubWaitMs = 300}
+          (_, Right _) <- blockBegin ignore (root </> moduleRel) 6 s
+          (_, Right (_, testFile, at, body, Just later)) <- blockKill (root </> moduleRel) 6 s
+          let editor = edit0 (editorStub at body testText)
+          writeIORef live (Just (3, editor))
+          landed <- later ignore
+          back <- blockFor testFile s
+          pure (editor, landed, fst <$> back)
+        drafted = "def test_boundary_int_seats() -> None:\n    table = CloseTable()\n    assert table.handle(2) == 0\n"
+    it "the file gained edits elsewhere (an import, the other test): the draft lands beside them, its span and assertion where the editor has them" $ do
+      let elsewhere = T.replace "    table = CloseTable()\n    assert table.handle(4)" "    table = CloseTable()  # mine\n    assert table.handle(4)" . ("import pytest\n" <>)
+      (editor, Right (b, [edit]), _) <- landing elsewhere
+      fePath edit `shouldBe` root </> testRel
+      feVersion edit `shouldBe` Just 3
+      applyChange (feRange edit) (feText edit) editor `shouldBe` elsewhere (testText <> "\n\n" <> drafted <> "\n")
+      (blockSpan b, blockAssertion b) `shouldBe` ((10, 12), Just 12)
+    it "whitespace in the span (trailing spaces, a blank line more, tabs for spaces) is no edit of the stub: it lands" $ do
+      let spaced = T.replace "() -> None:\n" "() -> None:   \n" . T.replace "    assert ...\n" "\n\tassert ...\n"
+      (editor, Right (_, [edit]), _) <- landing spaced
+      T.isInfixOf drafted (applyChange (feRange edit) (feText edit) editor) `shouldBe` True
+    it "the stub never expanded, the file edited elsewhere: not expanded, said so" $ do
+      (_, landed, _) <- landing (const ("import pytest\n" <> testText))
+      either id (const "landed") landed `shouldBe` "the stub was not expanded in the editor; draft when it is"
+    it "the stub's body typed in: no draft lands, the person's text stands" $ do
+      let typed = T.replace "    raise NotImplementedError(\"olifant: arrange: set up what the assertion below needs\")\n" "    table = CloseTable()\n"
+      (_, landed, back) <- landing typed
+      either id (const "landed") landed `shouldBe` "you typed in the stub while it drafted; your text stands \183 draft when ready"
+      fmap blockState back `shouldSatisfy` \case Just (Red _) -> True; _ -> False
+      -- the HUD says why nothing landed
+      fmap hud back `shouldSatisfy` maybe False ("\183 your text stands \183 draft when ready" `T.isSuffixOf`)
   it "(h) a survivor's stub the editor never expands: no draft lands, and the sentence says so" $ do
     (s0, _) <- blocksOn killedBy []
     let s = (openDoc (root </> moduleRel) 1 written s0) {ssConfig = defaultServerConfig {scFills = Just (root </> "fills.toml")}, ssLiveDoc = Just (\f -> pure (if f == root </> testRel then Just (1, testText) else Nothing)), ssStubWaitMs = 300}
@@ -854,7 +925,7 @@ blockSpecs = describe "blocks" $ do
     let mine = T.replace "test_boundary_int_seats" "test_kills_the_boundary" (editorStub at body testText)
     writeIORef live (Just (2, mine))
     landed <- later ignore
-    either id (const "landed") landed `shouldBe` "the file changed while drafting; your text stands"
+    either id (const "landed") landed `shouldBe` "you typed in the stub while it drafted; your text stands \183 draft when ready"
     Just (back, _) <- blockFor testFile s
     blockState back `shouldSatisfy` \case Red _ -> True; _ -> False
     blockTestId back `shouldBe` T.pack testRel <> "::test_kills_the_boundary"

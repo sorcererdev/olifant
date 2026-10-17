@@ -786,4 +786,6 @@ progressJson = \case
   Unfilled hole why -> object ["event" .= ("unfilled" :: Text), "hole" .= hole, "why" .= why]
   AutoImported hole line -> object ["event" .= ("auto_import" :: Text), "hole" .= hole, "import" .= line]
   Reindented hole fill -> object ["event" .= ("reindent" :: Text), "hole" .= hole, "fill" .= fill]
+  CutToHole hole n fill -> object ["event" .= ("cut" :: Text), "hole" .= hole, "dropped" .= n, "fill" .= fill]
+  WholeFile hole -> object ["event" .= ("whole_file" :: Text), "hole" .= hole]
   Verifying hole -> object ["event" .= ("verify" :: Text), "hole" .= hole]

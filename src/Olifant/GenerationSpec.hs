@@ -15,7 +15,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
-import Olifant.Generation.FillPhase (assertionSpan, fillPhase, reindented)
+import Olifant.Generation.FillPhase (assertionSpan, cutToHole, fillPhase, looksLikeFile, reindented)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
@@ -952,6 +952,91 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       reindented (Just "#") "        x = 1\n                if x:\n                    y = 2" `shouldBe` Just "        x = 1\n        if x:\n            y = 2"
       reindented (Just "#") "x = 1\n    if x:\n        y = 2" `shouldBe` Just "x = 1\nif x:\n    y = 2"
       reindented (Just "#") "x = 1\ny = 2" `shouldBe` Nothing
+  describe "a fill cut to its hole (a model that answers with the whole file)" $ do
+    let pyLang = l
+          where
+            Right l = parseLanguage "python" "/p" $ T.unlines
+              [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
+              , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$\""
+              , "[holes.stmt]", "placeholder = 'raise NotImplementedError(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
+        tomlString t = "\"" <> T.concatMap (\case '\n' -> "\\n"; '"' -> "\\\""; '\\' -> "\\\\"; c -> T.singleton c) t <> "\""
+        genWith body = generatorFrom . T.unlines $
+          [ "description = \"d\"", "language = \"python\""
+          , "[[edits]]", "create = \"src/t__test.py\"", "text = " <> tomlString body ]
+        prelude = "from bistro.booking import Bookings\n\n\ndef command(bookings=None):\n    return Bookings()\n\n\ndef test_a_booking() -> None:\n    result = command()\n    assert result\n\n\n"
+        oneHole = genWith (prelude <> "def test_there_is_no_table() -> None:\n    {= ? arrange: stmt | set up what the assertion below needs =}\n    assert isinstance(result, TableNotFound)\n")
+        twoHoles = genWith (prelude <> "def test_there_is_no_table() -> None:\n    {= ? arrange: stmt | set up =}\n    {= ? assertion: stmt | assert =}\n")
+        -- the model's answer: the whole test file, the stub with a body, another test after it
+        wholeFile = "from bistro.booking import Bookings\nfrom bistro.tables import TableNotFound\n\n\ndef command(bookings=None):\n    return Bookings()\n\n\ndef test_a_booking() -> None:\n    result = command()\n    assert result\n\n\ndef test_there_is_no_table() -> None:\n    bookings = Bookings()\n    result = command(bookings=bookings)\n    assert isinstance(result, TableNotFound)\n\n\ndef test_other() -> None:\n    assert True\n"
+        run gen answer = do
+          calls <- newIORef []
+          events <- newIORef []
+          let filler = Filler $ \req -> do
+                n <- length <$> readIORef calls
+                modifyIORef' calls (++ [req])
+                pure (Right (answer n))
+              tools = (basicTools noSyntax noChecker [pyLang]) {toolFiller = Just (ModelFiller "fake" 1 filler), toolProgress = \e -> modifyIORef' events (++ [e])}
+          (ws, snap) <- memoryWorkspace []
+          Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
+          file <- M.lookup "src/t__test.py" <$> snap
+          (,,,) plan file <$> readIORef calls <*> readIORef events
+    it "(c) a fill holding the def line and the assertion after its hole is cut to the lines between them; a new import it brought joins the file's" $ do
+      (plan, file, _, events) <- run oneHole (const (M.fromList [("arrange", wholeFile)]))
+      [phStatus h | h <- planHoles plan] `shouldBe` [HoleFilled "fake" 1]
+      file `shouldBe` Just ("from bistro.booking import Bookings\nfrom bistro.tables import TableNotFound\n" <> T.drop (T.length "from bistro.booking import Bookings\n") prelude <> "def test_there_is_no_table() -> None:\n    bookings = Bookings()\n    result = command(bookings=bookings)\n    assert isinstance(result, TableNotFound)\n")
+      events `shouldSatisfy` any (\case CutToHole "arrange" n _ -> n > 0; _ -> False)
+    it "(c) the two-hole draft: one whole-file answer for both is cut once, then split at its first assert" $ do
+      (plan, file, _, _) <- run twoHoles (const (M.fromList [("arrange", wholeFile), ("assertion", wholeFile)]))
+      [phStatus h | h <- planHoles plan] `shouldBe` [HoleFilled "fake" 1, HoleFilled "fake" 1]
+      fmap (T.breakOnEnd "def test_there_is_no_table() -> None:\n") file `shouldSatisfy` \case
+        Just (_, rest) -> rest == "    bookings = Bookings()\n    result = command(bookings=bookings)\n    assert isinstance(result, TableNotFound)\n"
+        Nothing -> False
+    it "(c) a fill that still answers a file once cut is not placed: asked again with the instruction, the next fill stands" $ do
+      let answer n
+            | n == 0 = M.fromList [("arrange", "import os\n\ndef command(bookings=None):\n    return Bookings()\n\nbookings = Bookings()")]
+            | otherwise = M.fromList [("arrange", "bookings = Bookings()\nresult = command(bookings=bookings)")]
+      (plan, file, calls, events) <- run oneHole answer
+      [phStatus h | h <- planHoles plan] `shouldBe` [HoleFilled "fake" 2]
+      fmap (T.isInfixOf "    bookings = Bookings()\n    result = command(bookings=bookings)\n    assert isinstance") file `shouldBe` Just True
+      [map snd (fhPrevious h) | r <- drop 1 calls, h <- frHoles r] `shouldBe` [["the model answered with more than the hole: a whole file; answer with the lines that replace the marker only: no `def` line, no imports, no other tests"]]
+      events `shouldSatisfy` elem (WholeFile "arrange")
+    it "(c) every block or stmt hole's instruction asks first for the lines that replace the marker only" $ do
+      (_, _, calls, _) <- run oneHole (const (M.fromList [("arrange", "result = command()")]))
+      map fhInstruction (concatMap frHoles calls) `shouldBe` ["answer with the lines that replace the marker only; set up what the assertion below needs"]
+    it "(c) a correct body holding the line below its hole nested inside it (an early `return result`) lands uncut" $ do
+      let body = genWith "def collect(xs):\n    result = []\n    {= ? body: block | collect =}\n    return result\n"
+          blockLang = pyLang {langHoles = langHoles pyLang ++ [("block", k) | Just k <- [lookup "stmt" (langHoles pyLang)]]}
+          fill = "for x in xs:\n    if x is None:\n        return result\n    result.append(x)"
+          filler = Filler $ \_ -> pure (Right (M.fromList [("body", fill)]))
+          tools = (basicTools noSyntax noChecker [blockLang]) {toolFiller = Just (ModelFiller "fake" 0 filler)}
+      (ws, snap) <- memoryWorkspace []
+      Right _ <- generate ws noResolve tools [Step body M.empty] now Apply
+      (M.lookup "src/t__test.py" <$> snap) `shouldReturn` Just "def collect(xs):\n    result = []\n    for x in xs:\n        if x is None:\n            return result\n        result.append(x)\n    return result\n"
+    it "(c) cut only where the fill repeats the file: the line below at the fill's own level, never nested; an opener held twice is no anchor" $ do
+      let base = "def collect(xs):\n    result = []\n    PH\n    return result\n"
+      -- the def repeated, an early return nested: cut at the base-level one
+      cutToHole Nothing [] base 3 "def collect(xs):\n    for x in xs:\n        if x is None:\n            return result\n    return result\n\ndef other():\n    pass"
+        `shouldBe` Just ("    for x in xs:\n        if x is None:\n            return result", 5)
+      -- no def in it: nothing is cut, whatever it holds
+      cutToHole Nothing [] base 3 "x = 1\nreturn result" `shouldBe` Nothing
+      -- the def twice (two adapters alike): no cut
+      cutToHole Nothing [] base 3 "def collect(xs):\n    a = 1\n\ndef collect(xs):\n    b = 2" `shouldBe` Nothing
+    it "(c) the two-hole split with no assert after the body's first line: the arrangement is `pass`, the assertion all of it" $ do
+      let base = "def test_a() -> None:\n    PH_arr\n    PH_ass\n"
+          whole = "def test_a() -> None:\n    assert pre()\n    x = 1\n    assert x"
+      fmap fst (cutToHole Nothing ["PH_ass"] base 2 whole) `shouldBe` Just "    pass"
+      fmap fst (cutToHole Nothing ["PH_arr"] base 3 whole) `shouldBe` Just "    assert pre()\n    x = 1\n    assert x"
+      fmap fst (cutToHole Nothing ["PH_ass"] base 2 "def test_a() -> None:\n    with pytest.raises(E):\n        go()") `shouldBe` Just "    pass"
+    it "(c) a file is told by its top-level names: a nested helper named like another test's, or a local import, is code" $ do
+      let base = "import os\n\ndef helper():\n    pass\n\ndef test_b() -> None:\n    def fake_clock():\n        return 1\n    assert fake_clock()\n"
+      looksLikeFile base "def fake_clock():\n    return 2\nresult = fake_clock()" `shouldBe` False
+      looksLikeFile base "x = 1\nimport json\nresult = json.dumps(x)" `shouldBe` False
+      looksLikeFile base "def helper():\n    return 1\nresult = helper()" `shouldBe` True
+      looksLikeFile base "x = 1\n\ndef test_c() -> None:\n    assert x" `shouldBe` True
+    it "(c) a fill that is only the hole's lines is left as it is (nothing to cut)" $ do
+      (_, file, _, events) <- run oneHole (const (M.fromList [("arrange", "assert_ready = 1\nresult = command()")]))
+      fmap (T.isInfixOf "    assert_ready = 1\n    result = command()\n    assert isinstance") file `shouldBe` Just True
+      events `shouldSatisfy` (not . any (\case CutToHole {} -> True; _ -> False))
   describe "auto-import (a name another file imports, no model round)" $ do
     let pyLang = l
           where
