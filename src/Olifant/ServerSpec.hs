@@ -143,6 +143,35 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
 -- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
 testsSpecs :: Spec
 testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
+  describe "the test at a line (testAt)" $ do
+    let file = T.unlines
+          [ "from shop.close_table import CloseTable"   -- 1
+          , ""                                          -- 2
+          , ""                                          -- 3
+          , "def make_table() -> CloseTable:"           -- 4
+          , "    return CloseTable()"                   -- 5
+          , ""                                          -- 6
+          , ""                                          -- 7
+          , "@pytest.mark.parametrize(\"n\", [1, 2])"   -- 8
+          , "def test_closes(n: int) -> None:"          -- 9
+          , "    table = make_table()"                  -- 10
+          , ""                                          -- 11
+          , "    assert table.handle(n) == 1"           -- 12
+          , ""                                          -- 13
+          , ""                                          -- 14
+          , "class TestSeats:"                          -- 15
+          , "    def test_two(self) -> None:"           -- 16
+          , "        assert make_table().handle(2) == 0" -- 17
+          ]
+    it "a line in a test's body is that test" $ testAt file 10 `shouldBe` Just "test_closes"
+    it "a blank line inside the body is still that test" $ testAt file 11 `shouldBe` Just "test_closes"
+    it "the def line is that test" $ testAt file 9 `shouldBe` Just "test_closes"
+    it "a decorator line is its def's test" $ testAt file 8 `shouldBe` Just "test_closes"
+    it "a method of a test class is Class::method" $ testAt file 17 `shouldBe` Just "TestSeats::test_two"
+    it "outside any test, nothing: imports" $ testAt file 1 `shouldBe` Nothing
+    it "outside any test, nothing: a helper that is not a test" $ testAt file 5 `shouldBe` Nothing
+    it "the class line itself is no test" $ testAt file 15 `shouldBe` Nothing
+    it "a line past the file's end is nothing" $ testAt file 99 `shouldBe` Nothing
   let recording verdict = blocksRun blockSyntax (pure ()) (const verdict)
       passing _ = Right (TestRun [testId] [] Nothing)
       -- a language of the pack's with no [test] table

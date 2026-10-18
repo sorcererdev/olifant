@@ -42,6 +42,7 @@ module Olifant.Server.Block
   , functionAt
   , openTestStub
   , importedModules
+  , defName
   ) where
 
 import Control.Applicative ((<|>))
