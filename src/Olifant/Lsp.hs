@@ -520,7 +520,12 @@ handlers env =
         case documentPath (req ^. L.params) of
           Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/tests/run needs a textDocument" Nothing))
           Just path -> do
-            ran <- planProgress "testing" (\_ -> withSnapshot job (testsRun path))
+            let scope = case req ^. L.params of
+                  Object o | Just (String "all") <- KM.lookup "scope" o -> ScopeAll
+                  Object o | Just (String "file") <- KM.lookup "scope" o -> ScopeFile
+                  params | Just (line, _) <- positionOf params -> ScopeAt (line + 1)
+                  _ -> ScopeFile
+            ran <- planProgress "testing" (\_ -> withSnapshot job (testsRun scope path))
             -- a run the editor cancelled is no result (its runner was stopped)
             stopped <- liftIO (cancelled (envCancel job))
             case ran of
