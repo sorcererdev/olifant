@@ -55,7 +55,7 @@ import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
 import System.Environment (lookupEnv)
-import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile)
+import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
@@ -1501,7 +1501,9 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
           ask' = St.decision s' decider (legacy, "bug-or-new:f") "fp1" q (pure ())
       _ <- ask'
       threadDelay 200000
-      TIO.writeFile answers "{\"answers\": {\"bug-or-new\": \"bug fix\"}}"
+      -- by a rename: the decider polls the file, and GHC refuses to write one being read
+      TIO.writeFile (answers <> ".new") "{\"answers\": {\"bug-or-new\": \"bug fix\"}}"
+      renameFile (answers <> ".new") answers
       let poll n = ask' >>= \case
             Just a -> pure (Just a)
             Nothing | n > (0 :: Int) -> threadDelay 50000 >> poll (n - 1)
