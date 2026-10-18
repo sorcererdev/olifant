@@ -93,6 +93,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   concurrencySpec
   blockSpec
   testsRunSpec
+  stubSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -1216,6 +1217,29 @@ blockSpec = describe "olifant/block" $ do
           TResponseMessage _ _ r <- awaitDraft
           pure (either (Left . (^. L.message)) Right r)
         either id (const "drafted") answer `shouldBe` "the file changed while drafting; your text stands"
+
+-- | `olifant/stub`: a new test's stub for the unit at a position.
+stubSpec :: Spec
+stubSpec = describe "olifant/stub" $ do
+  let moduleRel = "src/bistro/booking/commands/create_booking.py"
+      testRel = "src/bistro/booking/commands/create_booking__test.py"
+  it "in a method: the test file's edit, its file, the name and its line; outside any unit, why" $
+    withPython [] $ \ports dir -> do
+      ((answer, outside), _) <- inProcessWithConfig [] ports dir $ do
+        doc <- openDoc moduleRel "python"
+        text <- documentContents doc
+        -- the line after `def handle(`, 0-based
+        let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+            ask line = blockMove (Proxy :: Proxy "olifant/stub") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= line, "character" .= (0 :: Int)]])
+        answer <- ask (handleAt + 1)
+        outside <- ask (0 :: Int)
+        pure (answer, outside)
+      let field k = either (const Nothing) (lookupKey k)
+      field "file" answer `shouldBe` Just (String (T.pack (dir </> testRel)))
+      field "name" answer `shouldBe` Just (String "test_handle")
+      field "line" answer `shouldSatisfy` \case Just (Number _) -> True; _ -> False
+      field "edits" answer `shouldSatisfy` \case Just (Object _) -> True; _ -> False
+      outside `shouldSatisfy` either ("no function or class at line 1" `T.isInfixOf`) (const False)
 
 -- | `olifant/tests/run`: a file's tests, run whole, with a scripted runner.
 testsRunSpec :: Spec

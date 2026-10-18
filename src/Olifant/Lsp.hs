@@ -541,6 +541,15 @@ handlers env =
             liftIO (withSnapshot env (testsFile path)) >>= \case
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right answer -> respond (Right (testsFileJson answer))
+    , -- a new test's stub for the function or class at a position, at the
+      -- end of its test file: the one edit, and where the test's name is
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/stub")) $ \req respond -> inBackground env req respond $ \job ->
+        case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
+          (Just path, Just (line, _)) ->
+            liftIO (withSnapshot job (stubAt path (line + 1))) >>= \case
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right a -> respond (Right (object ["file" .= saFile a, "line" .= saLine a, "name" .= saName a, "edits" .= workspaceEdit [saEdit a]]))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/stub needs a textDocument and a position" Nothing))
     , -- the loop's blocks: each move answers the block (null once it is
       -- finished) and pushes it
       blockRequest env (Proxy :: Proxy "olifant/block/begin") $ \job path params -> case positionOf params of
