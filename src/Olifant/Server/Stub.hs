@@ -18,9 +18,10 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block (uniqueTestName)
+import Olifant.Block (stubNameFor, uniqueTestName)
 import Olifant.Generation.FillPhase (addImports)
 import Olifant.Language (Language (..))
+import Olifant.Mutate (Mutant (..))
 import Olifant.Server.Block (Site (..), appendStepLine, defLineAbove, defName, functionAt, importOf, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..))
@@ -80,9 +81,11 @@ data StubAnswer = StubAnswer
 -- a decorator's is its def's) of a module: `test_<unit>` after the test
 -- file's last line, the unit's import joined to the file's (a new file
 -- starts with it), its body `...` and `assert ...`. Nothing is drafted;
--- no block is read or stored. Left is one sentence on why there is none.
-stubAt :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text StubAnswer)
-stubAt path line0 s0 =
+-- no block is read or stored. With a survivor (its line is LINE), the test
+-- is named from the mutant and the mutant is a comment in its body. Left is
+-- one sentence on why there is none.
+stubAt :: FilePath -> Int -> Maybe Mutant -> ServerState -> IO (ServerState, Either Text StubAnswer)
+stubAt path line0 survivor s0 =
   siteAt path line0 s0 >>= \case
     (s, Left why) -> pure (s, Left why)
     (s, Right site0) -> fmap (s,) . runExceptT $ do
@@ -100,18 +103,22 @@ stubAt path line0 s0 =
       let testFile = siteTestFile site
           testText0 = siteTestText site
           base = fromMaybe "" testText0
-          name = uniqueTestName (testNameOf unit) base
+          name = maybe (uniqueTestName (testNameOf unit) base) (\m -> stubNameFor m base (langKeywords lang)) survivor
+          flat = T.replace "\n" "\9166"
+          note = case survivor of
+            Just m -> ind <> "# kills: " <> flat (muFrom m) <> " \8594 " <> flat (muTo m) <> " on line " <> tshow (muLine m) <> "\n"
+            Nothing -> ""
           ind = langIndent lang
           imported = case importOf lang (siteModuleRel site) moduleText unit (Just defLine) of
             Just i | T.null (T.strip base) -> i
             Just i -> addImports lang [i] base
             Nothing -> base
           kept = T.stripEnd imported
-          stub = "def " <> name <> "() -> None:\n" <> ind <> "...\n" <> ind <> "assert ...\n"
+          stub = "def " <> name <> "() -> None:\n" <> note <> ind <> "...\n" <> ind <> "assert ...\n"
           new = if T.null kept then stub else kept <> "\n\n\n" <> stub
           at = if T.null kept then 1 else length (T.splitOn "\n" kept) + 3
           edit = case testText0 of
             Nothing -> FileEdit testFile Nothing True ((0, 0), (0, 0)) new
             Just _ -> let (range, t) = smallestChange base new in FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range t
-      lift (appendStepLine (ssPorts s) (siteRoot site) ["stub", "person", T.pack (siteModuleRel site) <> "::" <> unit, "stubbed " <> name])
+      lift (appendStepLine (ssPorts s) (siteRoot site) ["stub", "person", T.pack (siteModuleRel site) <> "::" <> unit, "stubbed " <> name <> maybe "" (\m -> " (kills line " <> tshow (muLine m) <> ")") survivor])
       pure (StubAnswer testFile at name edit)

@@ -165,58 +165,76 @@ stubSpecs = describe "a test's stub (olifant/stub)" $ do
   describe "stubAt" $ do
     let quiet = blocks (const (TestRun [] [] Nothing))
         stub = "def test_handle() -> None:\n    ...\n    assert ...\n"
-        sentence st path line = either id (const "stubbed") . snd <$> stubAt path line st
+        sentence st path line = either id (const "stubbed") . snd <$> stubAt path line Nothing st
     it "in a method: test_<method> after the test file's last test, its import already there" $ do
       (s, _) <- quiet []
-      (_, Right a) <- stubAt (root </> moduleRel) 6 s
+      (_, Right a) <- stubAt (root </> moduleRel) 6 Nothing s
       (saFile a, saLine a, saName a) `shouldBe` (root </> testRel, 9, "test_handle")
       feCreate (saEdit a) `shouldBe` False
       applyEdits [saEdit a] testText `shouldBe` T.stripEnd testText <> "\n\n\n" <> stub
     it "in a function the test file does not import: the import joins the file's" $ do
       (s, _) <- quiet []
-      (_, Right a) <- stubAt (root </> moduleRel) 10 s
+      (_, Right a) <- stubAt (root </> moduleRel) 10 Nothing s
       saName a `shouldBe` "test_unrelated"
       let edited = applyEdits [saEdit a] testText
       T.lines edited !! 0 `shouldBe` "from shop.close_table import CloseTable, unrelated"
       T.lines edited !! (saLine a - 1) `shouldBe` "def test_unrelated() -> None:"
     it "on the class line, and on a blank line between its methods: the class" $ do
       (s, _) <- quiet []
-      (_, Right a) <- stubAt (root </> moduleRel) 1 s
-      (_, Right b) <- stubAt (root </> moduleRel) 4 s
+      (_, Right a) <- stubAt (root </> moduleRel) 1 Nothing s
+      (_, Right b) <- stubAt (root </> moduleRel) 4 Nothing s
       (saName a, saName b) `shouldBe` ("test_close_table", "test_close_table")
     it "a name the file has already: test_<unit>_2" $ do
       (s, _) <- quiet [(testRel, testText <> T.unlines ["", "", "def test_handle() -> None:", "    assert True"])]
-      (_, Right a) <- stubAt (root </> moduleRel) 6 s
+      (_, Right a) <- stubAt (root </> moduleRel) 6 Nothing s
       saName a `shouldBe` "test_handle_2"
     it "a new test file: the edit creates it, the import first" $ do
       (s, _) <- quiet [("src/shop/menu.py", T.unlines ["import functools", "", "", "@functools.cache", "def dish() -> int:", "    return 1"])]
-      (_, Right a) <- stubAt (root </> "src/shop/menu.py") 4 s
+      (_, Right a) <- stubAt (root </> "src/shop/menu.py") 4 Nothing s
       (saFile a, saLine a, saName a) `shouldBe` (root </> "src/shop/menu__test.py", 4, "test_dish")
       (feCreate (saEdit a), feRange (saEdit a)) `shouldBe` (True, ((0, 0), (0, 0)))
       feText (saEdit a) `shouldBe` "from shop.menu import dish\n\n\ndef test_dish() -> None:\n    ...\n    assert ...\n"
     it "a method whose name another class has: imported by its own class" $ do
       let repo = T.unlines ["class Memory:", "    def save(self, n: int) -> int:", "        return n", "", "", "class Sql:", "    def save(self, n: int) -> int:", "        return n + 1"]
       (s, _) <- quiet [("src/shop/repo.py", repo)]
-      (_, Right a) <- stubAt (root </> "src/shop/repo.py") 8 s
+      (_, Right a) <- stubAt (root </> "src/shop/repo.py") 8 Nothing s
       T.lines (feText (saEdit a)) !! 0 `shouldBe` "from shop.repo import Sql"
     it "the editor's text of the test file: the edit is built on it and carries its version" $ do
       (s0, _) <- quiet []
       let s = openDoc (root </> testRel) 3 siblingText s0
-      (_, Right a) <- stubAt (root </> moduleRel) 6 s
+      (_, Right a) <- stubAt (root </> moduleRel) 6 Nothing s
       feVersion (saEdit a) `shouldBe` Just 3
       applyEdits [saEdit a] siblingText `shouldBe` T.stripEnd siblingText <> "\n\n\n" <> stub
     it "a circle open there changes nothing: the stub lands" $ do
       (s, _) <- blocks redOnStub []
       (_, Right _) <- blockBegin (const (pure ())) (root </> testRel) 6 s
-      (_, Right a) <- stubAt (root </> moduleRel) 10 s
+      (_, Right a) <- stubAt (root </> moduleRel) 10 Nothing s
       saName a `shouldBe` "test_unrelated"
     it "outside any unit, and on a test file: one sentence each" $ do
       (s, _) <- quiet []
       sentence s (root </> moduleRel) 8 `shouldReturn` "no function or class at line 8: put the cursor in one to stub its test"
       sentence s (root </> testRel) 5 `shouldReturn` "on a test: stub writes a new test for a function or class, from its module"
+    -- a survivor on line 6 of handle, `seats > 2` for `seats >= 2`
+    let survivor = Mutant 6 "boundary" "seats > 2" "seats >= 2" (T.replace "return int(seats > 2)" "return int(seats >= 2)" written) Nothing False
+        survivorStub name = "def " <> name <> "() -> None:\n    # kills: seats > 2 \8594 seats >= 2 on line 6\n    ...\n    assert ...\n"
+    it "a survivor's stub: named from its mutant, the mutant as a comment above the ..." $ do
+      (s, _) <- quiet [(moduleRel, written)]
+      (_, Right a) <- stubAt (root </> moduleRel) 6 (Just survivor) s
+      saName a `shouldBe` "test_boundary_int_seats"
+      applyEdits [saEdit a] testText `shouldBe` T.stripEnd testText <> "\n\n\n" <> survivorStub "test_boundary_int_seats"
+      T.lines (applyEdits [saEdit a] testText) !! (saLine a - 1) `shouldBe` "def test_boundary_int_seats() -> None:"
+    it "a survivor's stub whose name the file has: _2" $ do
+      (s, _) <- quiet [(moduleRel, written), (testRel, testText <> T.unlines ["", "", "def test_boundary_int_seats() -> None:", "    assert True"])]
+      (_, Right a) <- stubAt (root </> moduleRel) 6 (Just survivor) s
+      saName a `shouldBe` "test_boundary_int_seats_2"
+    it "a survivor's stub is logged with the line it kills" $ do
+      (s, _) <- quiet [(moduleRel, written)]
+      (s', Right _) <- stubAt (root </> moduleRel) 6 (Just survivor) s
+      logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
+      logged `shouldSatisfy` T.isInfixOf ("\tstub\tperson\t" <> T.pack moduleRel <> "::handle\tstubbed test_boundary_int_seats (kills line 6)\n")
     it "each stub is one line in the step log: stub, person, the unit, the name" $ do
       (s, _) <- quiet []
-      (s', Right _) <- stubAt (root </> moduleRel) 6 s
+      (s', Right _) <- stubAt (root </> moduleRel) 6 Nothing s
       logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
       logged `shouldSatisfy` T.isInfixOf ("\tstub\tperson\t" <> T.pack moduleRel <> "::handle\tstubbed test_handle\n")
 
@@ -462,8 +480,8 @@ mutateSpecs = describe "a mutate (olifant/mutate)" $ do
       (s0, _) <- serving passing [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n\n[decide]\nmodel = \"jev\"\n")] two
       (s1, Right first') <- mutateAt (root </> moduleRel) 6 s0
       map muLine (maSurvivors first') `shouldBe` [6, 7]
-      let s = s1 {ssConfig = defaultServerConfig {scDecideAnswers = Just answers}}
-          m = head (maSurvivors first')
+      let m : _ = maSurvivors first'
+          s = s1 {ssConfig = defaultServerConfig {scDecideAnswers = Just answers}}
           line' = T.strip (mutatedLine m)
           key = (root </> moduleRel, T.intercalate " " ["mutant-equivalent", muOperator m, T.pack (show (muLine m)), muFrom m, muTo m, line'])
       writeIORef (ssDecisions s) (M.singleton key (line', De.Chosen "equivalent" []), mempty)
