@@ -43,6 +43,7 @@ module Olifant.Server.Block
   , openTestStub
   , importedModules
   , defName
+  , appendStepLine
   ) where
 
 import Control.Applicative ((<|>))
@@ -1292,20 +1293,24 @@ stateName = \case
   Rejected -> "rejected"
 
 -- | One line of the step log (`.olifant/state/steps.log`, ignored by git):
--- time, block, move, who made it (the person, the model, mutation), result.
--- A log that cannot be written never stops a move.
-appendStep :: Ports -> FilePath -> Block -> Text -> Text -> IO ()
-appendStep ports root b move result = do
+-- the time, then FIELDS, tab-separated, each on one line. A log that
+-- cannot be written never stops a move.
+appendStepLine :: Ports -> FilePath -> [Text] -> IO ()
+appendStepLine ports root fields = do
   now <- pNow ports
   let path = root </> ".olifant/state/steps.log"
-      who = case move of
-        "draft" -> maybe "model" draftBy (listToMaybe (reverse (blockDrafts b)))
-        "judge" -> "mutation"
-        "parse" -> "olifant"
-        "fill" -> "olifant"
-        _ -> "person"
-      entry = T.intercalate "\t" [T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now), "block " <> tshow (blockId b), move, who, T.unwords (T.words result)]
+      entry = T.intercalate "\t" (T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now) : map (T.unwords . T.words) fields)
   void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))
+
+appendStep :: Ports -> FilePath -> Block -> Text -> Text -> IO ()
+appendStep ports root b move result = appendStepLine ports root ["block " <> tshow (blockId b), move, who, result]
+  where
+    who = case move of
+      "draft" -> maybe "model" draftBy (listToMaybe (reverse (blockDrafts b)))
+      "judge" -> "mutation"
+      "parse" -> "olifant"
+      "fill" -> "olifant"
+      _ -> "person"
 
 -- | The function a test exercises: the first `.NAME(` call on its assert
 -- lines (then its body's, last first) that the module defines → its body's

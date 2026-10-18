@@ -520,7 +520,7 @@ handlers env =
         case documentPath (req ^. L.params) of
           Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/tests/run needs a textDocument" Nothing))
           Just path -> do
-            ran <- planProgress "testing" (\_ -> withSnapshot job (testsRun path))
+            ran <- planProgress "testing" (\_ -> withSnapshot job (testsRun ScopeFile path))
             -- a run the editor cancelled is no result (its runner was stopped)
             stopped <- liftIO (cancelled (envCancel job))
             case ran of

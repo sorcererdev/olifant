@@ -14,7 +14,7 @@ import Data.Functor ((<&>))
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAlphaNum, isDigit)
-import Data.Maybe (isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Map.Strict qualified as M
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
@@ -180,53 +180,53 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     seen <- newIORef ([] :: [[Text]])
     (s, _) <- recording passing []
     let s' = s {ssPorts = (ssPorts s) {pTester = \c -> Runner (\l ids f -> modifyIORef' seen (++ [ids]) >> runTests (pTester (ssPorts s) c) l ids f)}}
-    (_, Right a) <- testsRun (root </> moduleRel) s'
+    (_, Right a) <- testsRun ScopeFile (root </> moduleRel) s'
     taFile a `shouldBe` root </> testRel
     readIORef seen `shouldReturn` [[T.pack testRel]]
     trPassed (taRun a) `shouldBe` [testId]
     taSeconds a `shouldSatisfy` (>= 0)
   it "answers the run's wall time in seconds" $ do
     (s, _) <- blocksRun blockSyntax (threadDelay 50000) (\_ _ -> Right (TestRun [testId] [] Nothing)) []
-    (_, Right a) <- testsRun (root </> moduleRel) s
+    (_, Right a) <- testsRun ScopeFile (root </> moduleRel) s
     taSeconds a `shouldSatisfy` (>= 0.05)
   it "on a test file, runs that file" $ do
     (s, _) <- recording passing []
-    (_, Right a) <- testsRun (root </> testRel) s
+    (_, Right a) <- testsRun ScopeFile (root </> testRel) s
     taFile a `shouldBe` root </> testRel
   it "runs the editor's text: an open, unsaved test file is what runs" $ do
     (s, _) <- recording (\files -> if "unsaved" `T.isInfixOf` M.findWithDefault "" testRel files then Right (TestRun [testId] [] Nothing) else Right (failing "saved text ran")) []
-    (_, Right a) <- testsRun (root </> testRel) (openDoc (root </> testRel) 1 (testText <> "# unsaved\n") s)
+    (_, Right a) <- testsRun ScopeFile (root </> testRel) (openDoc (root </> testRel) 1 (testText <> "# unsaved\n") s)
     trFailed (taRun a) `shouldBe` []
   it "runs the editor's text: an open, unsaved module is what its tests run over" $ do
     (s, _) <- recording (\files -> if "unsaved" `T.isInfixOf` M.findWithDefault "" moduleRel files then Right (TestRun [testId] [] Nothing) else Right (failing "saved text ran")) []
-    (_, Right a) <- testsRun (root </> moduleRel) (openDoc (root </> moduleRel) 1 (stubbed <> "# unsaved\n") s)
+    (_, Right a) <- testsRun ScopeFile (root </> moduleRel) (openDoc (root </> moduleRel) 1 (stubbed <> "# unsaved\n") s)
     trFailed (taRun a) `shouldBe` []
   it "on a test file whose module is gone, runs that file" $ do
     seen <- newIORef ([] :: [[Text]])
     (s, _) <- blocksRun blockSyntax (pure ()) (\ids _ -> Right (TestRun ids [] Nothing)) [("src/shop/orphan__test.py", "def test_alone() -> None:\n    assert True\n")]
     let s' = s {ssPorts = (ssPorts s) {pTester = \c -> Runner (\l ids f -> modifyIORef' seen (++ [ids]) >> runTests (pTester (ssPorts s) c) l ids f)}}
-    (_, Right a) <- testsRun (root </> "src/shop/orphan__test.py") s'
+    (_, Right a) <- testsRun ScopeFile (root </> "src/shop/orphan__test.py") s'
     taFile a `shouldBe` root </> "src/shop/orphan__test.py"
     readIORef seen `shouldReturn` [["src/shop/orphan__test.py"]]
   it "refuses a language whose tests_for names no file, in one sentence" $ do
     (s, _) <- recording passing [("/pack/languages/blank.toml", "files = [\"**/*.md\"]\ncomment = \"#\"\ngrammar = \"python\"\n[test]\npreset = \"pytest\"\ntests_for = \"\"\n"), ("notes/a.md", "a\n")]
-    (_, answer) <- testsRun (root </> "notes/a.md") s
+    (_, answer) <- testsRun ScopeFile (root </> "notes/a.md") s
     answer `shouldSatisfy` either (== "blank's tests_for names no test file: nothing to run") (const False)
   it "refuses a language with no [test] table, in one sentence" $ do
     (s, _) <- recording passing [plain, ("notes/a.txt", "a\n")]
-    (_, answer) <- testsRun (root </> "notes/a.txt") s
+    (_, answer) <- testsRun ScopeFile (root </> "notes/a.txt") s
     answer `shouldSatisfy` either (== "plain has no [test] table: nothing to run") (const False)
   it "refuses a module with no test file yet, naming the file it would be" $ do
     (s, _) <- recording passing [("src/shop/lonely.py", "def alone() -> int:\n    return 1\n")]
-    (_, answer) <- testsRun (root </> "src/shop/lonely.py") s
+    (_, answer) <- testsRun ScopeFile (root </> "src/shop/lonely.py") s
     answer `shouldSatisfy` either (== "no test file for this module yet: src/shop/lonely__test.py") (const False)
   it "refuses a file in no project" $ do
     (s, _) <- recording passing []
-    (_, answer) <- testsRun "/elsewhere/x.py" s
+    (_, answer) <- testsRun ScopeFile "/elsewhere/x.py" s
     answer `shouldSatisfy` either ("is in no Olifant project" `T.isInfixOf`) (const False)
   it "answers a failure with its line, message and output, as the editor reads it" $ do
     (s, _) <- recording (\_ -> Right (TestRun [] [(testId, Failure (Just 6) "assert 0 == 1" "E   assert 0 == 1")] Nothing)) []
-    (_, Right a) <- testsRun (root </> moduleRel) s
+    (_, Right a) <- testsRun ScopeFile (root </> moduleRel) s
     let json = testsJson a
         failed = case json of
           Object o | Just (Array xs) <- KM.lookup "failed" o -> toList xs
@@ -234,16 +234,62 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     lookupIn "file" json `shouldBe` Just (String (T.pack (root </> testRel)))
     lookupIn "passed" json `shouldBe` Just (Array mempty)
     lookupIn "broken" json `shouldBe` Just Null
-    failed `shouldBe` [J.object ["id" J..= testId, "line" J..= (6 :: Int), "message" J..= ("assert 0 == 1" :: Text), "output" J..= ("E   assert 0 == 1" :: Text)]]
+    failed `shouldBe` [J.object ["id" J..= testId, "file" J..= (root </> testRel), "line" J..= (6 :: Int), "message" J..= ("assert 0 == 1" :: Text), "output" J..= ("E   assert 0 == 1" :: Text)]]
     lookupIn "seconds" json `shouldSatisfy` \case Just (Number _) -> True; _ -> False
   it "answers a run whose tests could not run as broken, with the reason" $ do
     (s, _) <- recording (\_ -> Right (TestRun [] [] (Just "ImportError: no module named shop"))) []
-    (_, Right a) <- testsRun (root </> moduleRel) s
+    (_, Right a) <- testsRun ScopeFile (root </> moduleRel) s
     lookupIn "broken" (testsJson a) `shouldBe` Just (String "ImportError: no module named shop")
   it "answers a runner that cannot start as broken, with why" $ do
     (s, _) <- recording (\_ -> Left "uv is not installed") []
-    (_, Right a) <- testsRun (root </> moduleRel) s
+    (_, Right a) <- testsRun ScopeFile (root </> moduleRel) s
     trBroken (taRun a) `shouldBe` Just "uv is not installed"
+  let recordingIds files = do
+        seen <- newIORef ([] :: [[Text]])
+        (s, _) <- blocksRun blockSyntax (pure ()) (\ids _ -> Right (TestRun ids [] Nothing)) files
+        pure (s {ssPorts = (ssPorts s) {pTester = \c -> Runner (\l ids f -> modifyIORef' seen (++ [ids]) >> runTests (pTester (ssPorts s) c) l ids f)}}, seen)
+  it "a line in a test runs that test alone" $ do
+    (s, seen) <- recordingIds []
+    (_, Right a) <- testsRun (ScopeAt 5) (root </> testRel) s
+    readIORef seen `shouldReturn` [[testId]]
+    taTest a `shouldBe` Just testId
+    lookupIn "scope" (testsJson a) `shouldBe` Just (String "test")
+  it "outside any test, the whole file" $ do
+    (s, seen) <- recordingIds []
+    (_, Right a) <- testsRun (ScopeAt 1) (root </> testRel) s
+    readIORef seen `shouldReturn` [[T.pack testRel]]
+    lookupIn "scope" (testsJson a) `shouldBe` Just (String "file")
+  it "a line in a module runs its test file" $ do
+    (s, seen) <- recordingIds []
+    (_, Right _) <- testsRun (ScopeAt 5) (root </> moduleRel) s
+    readIORef seen `shouldReturn` [[T.pack testRel]]
+  it "all runs every test file of the project, from any file in it" $ do
+    (s, seen) <- recordingIds [("src/shop/menu.py", "def dish() -> int:\n    return 1\n"), ("src/shop/menu__test.py", "def test_dish() -> None:\n    assert True\n"), ("src/shop/orphan__test.py", "def test_alone() -> None:\n    assert True\n")]
+    (_, Right a) <- testsRun ScopeAll (root </> moduleRel) s
+    readIORef seen `shouldReturn` [["src/shop/close_table__test.py", "src/shop/menu__test.py", "src/shop/orphan__test.py"]]
+    taFile a `shouldBe` root
+    lookupIn "scope" (testsJson a) `shouldBe` Just (String "all")
+  it "all with failures in two files: each failure names its own file" $ do
+    let other = "src/shop/menu__test.py::test_dish"
+    (s, _) <- blocksRun blockSyntax (pure ()) (\_ _ -> Right (TestRun [] [(testId, Failure (Just 6) "a" ""), (other, Failure (Just 2) "b" "")] Nothing)) [("src/shop/menu.py", "def dish() -> int:\n    return 1\n"), ("src/shop/menu__test.py", "def test_dish() -> None:\n    assert False\n")]
+    (_, Right a) <- testsRun ScopeAll (root </> moduleRel) s
+    let files = case lookupIn "failed" (testsJson a) of
+          Just (Array xs) -> [f | Object o <- toList xs, Just (String f) <- [KM.lookup "file" o]]
+          _ -> []
+    files `shouldBe` [T.pack (root </> testRel), T.pack (root </> "src/shop/menu__test.py")]
+  it "a test the run does not report is broken, by name" $ do
+    (s, _) <- blocksRun blockSyntax (pure ()) (\_ _ -> Right (TestRun [] [] Nothing)) []
+    (_, Right a) <- testsRun (ScopeAt 5) (root </> testRel) s
+    trBroken (taRun a) `shouldBe` Just "test_closes_a_table did not run: is it still in its test file?"
+  it "a parametrized test's cases count as that test" $ do
+    (s, _) <- blocksRun blockSyntax (pure ()) (\_ _ -> Right (TestRun [testId <> "[1]", testId <> "[2]"] [] Nothing)) []
+    (_, Right a) <- testsRun (ScopeAt 5) (root </> testRel) s
+    trBroken (taRun a) `shouldBe` Nothing
+  it "each run is one line in the step log: test, person, what ran, the outcome" $ do
+    (s, _) <- blocksRun blockSyntax (pure ()) (\_ _ -> Right (TestRun [] [(testId, Failure (Just 6) "assert 0 == 1" "")] Nothing)) []
+    (s', Right _) <- testsRun (ScopeAt 5) (root </> testRel) s
+    logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
+    logged `shouldSatisfy` T.isInfixOf ("\ttest\tperson\t" <> testId <> "\t0 passed, 1 failed: test_closes_a_table\n")
   describe "a file's counterpart (olifant/tests/file)" $ do
     it "on a module, answers its test file, kind test" $ do
       (s, _) <- recording passing []
@@ -2285,10 +2331,11 @@ blocksRun syntax hook verdict extra = do
         modifyIORef' runs (+ 1)
         hook
         pure (narrow ids <$> verdict ids files)
-      -- as pytest does: tests named by id run alone
+      -- as pytest does: tests named by id run alone (a parametrized one's cases too)
       narrow ids run
-        | not (null ids), all ("::" `T.isInfixOf`) ids = run {trPassed = filter (`elem` ids) (trPassed run), trFailed = filter ((`elem` ids) . fst) (trFailed run)}
+        | not (null ids), all ("::" `T.isInfixOf`) ids = run {trPassed = filter named (trPassed run), trFailed = filter (named . fst) (trFailed run)}
         | otherwise = run
+        where named t = any (\i -> t == i || (i <> "[") `T.isPrefixOf` t) ids
       ports = Ports disk syntax (const noChecker) (const noVerifier) (const runner) (\_ _ -> runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   pure (s, readIORef runs)

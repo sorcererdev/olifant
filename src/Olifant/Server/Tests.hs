@@ -5,6 +5,7 @@
 -- module's test file, or a test file's module, for the editor to jump to.
 module Olifant.Server.Tests
   ( TestsAnswer (..)
+  , TestsScope (..)
   , testsRun
   , testAt
   , testsJson
@@ -16,8 +17,10 @@ module Olifant.Server.Tests
 import Control.Monad.Trans.Class (lift)
 import Control.Monad (guard, when)
 import Data.Char (isAlphaNum)
+import Data.Set qualified as S
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Aeson (Value, object, (.=))
+import Data.Functor ((<&>))
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -25,44 +28,88 @@ import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), languageFor, testsForFile)
-import Olifant.Server.Block (defName, runOver)
+import Olifant.Server.Block (appendStepLine, defName, runOver, tshow)
+import Olifant.App (Ports (..))
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, takeExtension, takeFileName, (</>))
 
--- | A run of a file's tests: the test file that ran (absolute), what it
--- said, and its wall time in seconds.
+-- | What a run covers: the test at a line (1-based; the whole file when the
+-- line is in no test, or in a module), a file's tests, or the project's.
+data TestsScope = ScopeAt Int | ScopeFile | ScopeAll
+  deriving (Eq, Show)
+
+-- | A run of tests: the test file that ran (absolute; the project's root
+-- for all), what it said, and its wall time in seconds.
 data TestsAnswer = TestsAnswer
   { taFile :: FilePath
+  , taScope :: TestsScope
+  , taTest :: Maybe Text  -- ^ the one test that ran, when one did
+  , taRoot :: FilePath
   , taRun :: TestRun
   , taSeconds :: Double
   }
   deriving (Eq, Show)
 
--- | Run the tests of PATH (a module: its test file; a test file: itself)
--- over the project's files as the editor has them, as one id: the file. A
--- runner that cannot start answers a broken run, with why; Left is one
--- sentence on why nothing ran.
-testsRun :: FilePath -> ServerState -> IO (ServerState, Either Text TestsAnswer)
-testsRun path s0 =
+-- | Run the tests of PATH over the project's files as the editor has them:
+-- the test at a line, the file's (a module: its test file; a test file:
+-- itself), or all the project's. A runner that cannot start answers a
+-- broken run, with why; Left is one sentence on why nothing ran.
+testsRun :: TestsScope -> FilePath -> ServerState -> IO (ServerState, Either Text TestsAnswer)
+testsRun scope path s0 =
   placeOf ": nothing to run" path s0 >>= \case
     (s, Left why) -> pure (s, Left why)
     (s, Right p) -> fmap (s,) . runExceptT $ do
       let rel = plRel p
           ws = plWorkspace p
           mapped = testsForFile (plTest p) rel
-      moduleTests <- lift (isJust <$> readText ws mapped)
-      testRel <- case () of
-        _
-          | plIsTest p -> pure rel
-          | moduleTests -> pure mapped
-          -- a test file whose module is gone: named as test files are
-          | testShaped (plTest p) rel -> pure rel
-          | otherwise -> throwE ("no test file for this module yet: " <> T.pack mapped)
+      (ids, file, one) <- case scope of
+        ScopeAll -> do
+          paths <- lift (listFiles ws ".")
+          let known = S.fromList paths
+              mapped' = S.fromList [t | m <- paths, let t = testsForFile (plTest p) m, t /= m, t `S.member` known]
+              tests = S.toAscList (mapped' <> S.fromList [m | m <- paths, testShaped (plTest p) m])
+          when (null tests) (throwE "no test files in this project: nothing to run")
+          pure (map T.pack tests, plRoot p, Nothing)
+        _ -> do
+          moduleTests <- lift (isJust <$> readText ws mapped)
+          testRel <- case () of
+            _
+              | plIsTest p -> pure rel
+              | moduleTests -> pure mapped
+              -- a test file whose module is gone: named as test files are
+              | testShaped (plTest p) rel -> pure rel
+              | otherwise -> throwE ("no test file for this module yet: " <> T.pack mapped)
+          here <- case scope of
+            ScopeAt n | testRel == rel -> lift (readText ws rel) <&> \t -> t >>= (`testAt` n)
+            _ -> pure Nothing
+          let one' = (\name -> T.pack testRel <> "::" <> name) <$> here
+          pure (maybe [T.pack testRel] pure one', normalisePath (plRoot p </> testRel), one')
       start <- lift getMonotonicTime
-      run <- lift (either (TestRun [] [] . Just) id <$> runOver s ws (plLanguage p) [T.pack testRel])
+      run0 <- lift (either (TestRun [] [] . Just) id <$> runOver s ws (plLanguage p) ids)
       end <- lift getMonotonicTime
-      pure (TestsAnswer (normalisePath (plRoot p </> testRel)) run (end - start))
+      let isOwn tid t = t == tid || (tid <> "[") `T.isPrefixOf` t
+          run = case one of
+            Just tid
+              | Nothing <- trBroken run0
+              , not (any (isOwn tid) (trPassed run0 ++ map fst (trFailed run0))) ->
+                  run0 {trBroken = Just (snd (T.breakOnEnd "::" tid) <> " did not run: is it still in its test file?")}
+            _ -> run0
+      let ran = case (scope, one) of
+            (ScopeAll, _) -> "all"
+            (_, Just tid) -> tid
+            _ -> T.intercalate " " ids
+      lift (appendStepLine (ssPorts s) (plRoot p) ["test", "person", ran, summary run])
+      pure (TestsAnswer file scope one (plRoot p) run (end - start))
+
+-- | A run in a few words, for the step log: `2 passed, 1 failed: test_x`,
+-- or `broken: <its first line>`.
+summary :: TestRun -> Text
+summary run = case trBroken run of
+  Just why -> "broken: " <> T.strip (T.takeWhile (/= '\n') why)
+  Nothing ->
+    tshow (length (trPassed run)) <> " passed, " <> tshow (length (trFailed run)) <> " failed"
+      <> (if null (trFailed run) then "" else ": " <> T.intercalate ", " [snd (T.breakOnEnd "::" t) | (t, _) <- trFailed run])
 
 -- | The other side of a file: a module's test file (by `tests_for`), or the
 -- module a test file tests (absolute), whether it is the test file, and
@@ -149,7 +196,9 @@ testsJson a =
   object
     [ "file" .= taFile a
     , "passed" .= trPassed (taRun a)
-    , "failed" .= [object ["id" .= tid, "line" .= fLine f, "message" .= fMessage f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
+    , "scope" .= (case (taTest a, taScope a) of (Just _, _) -> "test"; (_, ScopeAll) -> "all"; _ -> "file" :: Text)
+    , "test" .= taTest a
+    , "failed" .= [object ["id" .= tid, "file" .= normalisePath (taRoot a </> T.unpack (T.takeWhile (/= ':') tid)), "line" .= fLine f, "message" .= fMessage f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
     , "broken" .= trBroken (taRun a)
     , "seconds" .= taSeconds a
     ]
