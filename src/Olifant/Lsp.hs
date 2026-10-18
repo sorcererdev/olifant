@@ -535,7 +535,7 @@ handlers env =
     , -- a new test's stub for the function or class at a position, at the
       -- end of its test file: the one edit, and where the test's name is
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/stub")) $ \req respond -> inBackground env req respond $ \job ->
-        case (documentPath (req ^. L.params), positionOf (req ^. L.params), survivorOf (req ^. L.params)) of
+        case (documentPath (req ^. L.params), positionOf (req ^. L.params), survivorOf "olifant/stub" (req ^. L.params)) of
           (_, _, Left bad) -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) bad Nothing))
           (Just path, Just (line, _), Right survivor) ->
             liftIO (withSnapshot job (stubAt path (line + 1) survivor)) >>= \case
@@ -562,10 +562,24 @@ handlers env =
                         , "lines" .= object ["first" .= fst (maLines a), "last" .= snd (maLines a)]
                         , "killed" .= maKilled a
                         , "survived" .= length (maSurvivors a)
+                        , "waived" .= maWaived a
                         , "survivors" .= [object ["line" .= muLine m, "operator" .= muOperator m, "from" .= flat (muFrom m), "to" .= flat (muTo m), "mutated" .= mutatedLine m, "dim" .= muDim m] | m <- maSurvivors a]
                         , "summary" .= maSummary a
                         ]
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/mutate needs a textDocument and a position" Nothing))
+    , -- a survivor set aside for a reason: `olifant/mutate` leaves it out
+      -- from now on (a line of the project's waived.log)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/waive")) $ \req respond ->
+        let reason = case req ^. L.params of
+              Object o | Just (String r) <- KM.lookup "reason" o -> r
+              _ -> ""
+         in case (documentPath (req ^. L.params), survivorOf "olifant/waive" (req ^. L.params)) of
+              (_, Left bad) -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) bad Nothing))
+              (Just path, Right (Just survivor)) ->
+                liftIO (withSnapshot env (waiveAt path reason survivor)) >>= \case
+                  Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+                  Right () -> respond (Right (object ["waived" .= True]))
+              _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/waive needs a textDocument and a survivor" Nothing))
     , -- a draft of the unit at a position (or of the selected lines): its
       -- tests run before and after; the edit and the after-run
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/draft")) $ \req respond -> inBackground env req respond $ \job ->
@@ -1120,8 +1134,8 @@ atPath uri act = maybe (pure ()) act (uriToFilePath uri)
 
 -- | The optional `survivor` of an `olifant/stub` request, as a mutant (its
 -- text only the mutated line, at its place); Left says what is malformed.
-survivorOf :: Value -> Either T.Text (Maybe Mutant)
-survivorOf = \case
+survivorOf :: T.Text -> Value -> Either T.Text (Maybe Mutant)
+survivorOf method = \case
   Object o | Just v <- KM.lookup "survivor" o -> case v of
     Object sv
       | Just (Number l) <- KM.lookup "line" sv
@@ -1132,5 +1146,5 @@ survivorOf = \case
       , Just (String to) <- KM.lookup "to" sv
       , Just (String mutated) <- KM.lookup "mutated" sv ->
           Right (Just (Mutant n op from to (T.intercalate "\n" (replicate (n - 1) "" ++ [mutated])) False))
-    _ -> Left "olifant/stub: the survivor needs line, operator, from, to and mutated"
+    _ -> Left (method <> ": the survivor needs line, operator, from, to and mutated")
   _ -> Right Nothing

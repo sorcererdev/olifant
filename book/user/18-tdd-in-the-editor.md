@@ -152,7 +152,7 @@ end of it:
 
 (`… survives (likely equivalent)` where the decision model thinks it equivalent.) The survivors
 modal opens on them: the list on the left, the mutant in context on the right as a `-`/`+` pair,
-footer `s stub · q close`; `j`/`k` move. `s` (or `<CR>`) on a survivor closes the modal and stubs
+footer `s stub · w waive · q close`; `j`/`k` move. `s` (or `<CR>`) on a survivor closes the modal and stubs
 a test for it, in the unit's test file. The name comes from the mutant, so you know what the test
 is for: a string's first four words (`f"there is no table {input.table_id}"` →
 `test_there_is_no_table`), else the operator and the names on the mutated line
@@ -169,7 +169,33 @@ def test_boundary_party_seats() -> None:
 
 `draft` it, then `mutate` the unit again: a test that fails on the mutant kills it. Marks of the
 same unit are replaced by each mutate, those of other units stay. A survivor you decide does not
-matter you leave: nothing is gated on it.
+matter you leave: nothing is gated on it, or you waive it.
+
+### A kill shows
+
+When a test run is green (`<leader>mt`, `<leader>mT`), the units of that module whose survivors
+are marked are mutated again, silently: no modal, no summary. The marks follow the answers, an
+open survivors modal is redrawn (and closes when no survivor is left), and what was killed is
+said in one message: `killed: > → >= on line 52`. A red run does nothing, and a unit that cannot
+be mutated now (edited into a syntax error, or gone) keeps its marks.
+
+### Waiving a survivor
+
+`w` in the survivors modal waives the survivor under the cursor: it asks for a reason (an empty
+or cancelled input does nothing), and the survivor leaves the list and the buffer's warnings. A
+waiver is for a mutant you judge equivalent, or not worth a test; nothing is gated either way.
+From then on `olifant/mutate` leaves that mutant out of the unit's `survivors` and counts it in
+the summary: `no survivors · 5/6 killed · 1 waived`.
+
+A waiver is a line of `.olifant/state/waived.log` (ignored by git, like the step log: a waiver is yours, not the
+team's), tab separated: the time, the module's project-relative path, the unit's name, what the mutant changed
+from and to, the mutated line (trimmed) and the reason. It is kept by the mutant, not by its line
+number, so it holds when you edit above it; a mutant that no longer occurs just stops matching.
+To un-waive, delete its line (or edit it so it no longer matches) and mutate the unit again.
+
+On the wire, `olifant/waive` takes `{textDocument, survivor: {line, operator, from, to, mutated},
+reason}` (the survivor as `olifant/mutate` answered it; `olifant/mutate` now answers `waived` too)
+and answers `{waived: true}`; an empty reason is refused (`a waiver needs a reason: …`).
 
 On the wire this is `olifant/mutate` with `{textDocument, position}`, answering `{file, unit,
 lines: {first, last}, killed, survived, survivors: [{line, operator, from, to, mutated, dim}],
