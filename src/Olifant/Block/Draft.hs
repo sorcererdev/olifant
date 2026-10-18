@@ -16,6 +16,7 @@ module Olifant.Block.Draft
     stubAssertion,
     assertionInstruction,
     helperSentence,
+    helpedIn,
     snippetText,
   )
 where

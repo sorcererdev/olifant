@@ -94,6 +94,8 @@ module Olifant.Server
   , stubAt
   , Unit (..)
   , unitAt
+  , DraftAnswer (..)
+  , draftAt
   , TestsScope (..)
   , testsJson
   , TestsFile (..)
@@ -119,4 +121,5 @@ import Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPla
 import Olifant.Server.State
 import Olifant.Server.Stub (StubAnswer (..), belowDecorators, classAt, stubAt, testNameOf)
 import Olifant.Server.Unit (Unit (..), unitAt)
+import Olifant.Server.Draft (DraftAnswer (..), draftAt)
 import Olifant.Server.Tests (TestsAnswer (..), TestsFile (..), testsFile, testsFileJson, testsJson, testsRun, testAt, TestsScope (..))

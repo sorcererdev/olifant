@@ -46,6 +46,9 @@ module Olifant.Server.Block
   , appendStepLine
   , importOf
   , defLineAbove
+  , importedContext
+  , testBody
+  , testLinesFrom
   ) where
 
 import Control.Applicative ((<|>))
