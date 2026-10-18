@@ -27,7 +27,7 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
-import Olifant.Server.Block (importedModules, settle, strayLine)
+import Olifant.Server.Block (Site (..), importedModules, settle, siteAt, strayLine)
 import Olifant.Server.BlockMoves (rejectDeleted)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
@@ -39,7 +39,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (CheckFailure (..), CheckReport (..), Checker (..), noChecker, noRunner, noSyntax)
+import Olifant.Language (CheckFailure (..), CheckReport (..), Checker (..), Language, noChecker, noRunner, noSyntax)
 import Olifant.Language.Check (Verifier (..), noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
@@ -140,6 +140,7 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
   blockSpecs
   testsSpecs
   stubSpecs
+  unitSpecs
 
 -- | `olifant/stub`: a new test's stub for the unit at a line.
 stubSpecs :: Spec
@@ -216,6 +217,40 @@ stubSpecs = describe "a test's stub (olifant/stub)" $ do
       (s', Right _) <- stubAt (root </> moduleRel) 6 s
       logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
       logged `shouldSatisfy` T.isInfixOf ("\tstub\tperson\t" <> T.pack moduleRel <> "::handle\tstubbed test_handle\n")
+
+-- | The unit at a line: the innermost definition, by the adapter's kinds.
+unitSpecs :: Spec
+unitSpecs = describe "the unit at a line" $ do
+  let unit line = do
+        (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
+        py <- pythonOf s
+        unitAt unitSyntax py stubbed line
+      withPy k = do
+        (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
+        pythonOf s >>= k
+  -- `stubbed`: 1 class CloseTable, 2 def __init__, 3 its body, 4 blank, 5 def handle, 6 its body, 7-8 blank, 9 def unrelated, 10 its body
+  it "a line in a method's body: the method, its header and body" $
+    unit 6 `shouldReturn` Right (Unit "handle" 5 (5, 6) (Just (6, 6)))
+  it "a method's def line: the method" $ fmap unitName <$> unit 5 `shouldReturn` Right "handle"
+  it "a blank line between two methods: the class, its body all its lines after its header" $
+    unit 4 `shouldReturn` Right (Unit "CloseTable" 1 (1, 6) (Just (2, 6)))
+  it "a top-level function" $ fmap unitName <$> unit 10 `shouldReturn` Right "unrelated"
+  it "a blank line between two top-level definitions: none, one sentence" $
+    unit 8 `shouldReturn` Left "no function or class at line 8"
+  it "a decorator line: the def it decorates" $ withPy $ \py -> do
+    let src = T.unlines ["import functools", "", "", "@functools.cache", "def dish() -> int:", "    return 1"]
+    unitAt unitSyntax py src 4 `shouldReturn` Right (Unit "dish" 5 (4, 6) (Just (6, 6)))
+  it "a header over several lines: the body starts after its colon" $ withPy $ \py -> do
+    let src = T.unlines ["def book(", "    seats: int,", ") -> int:  # the party", "    return seats"]
+    fmap unitBody <$> unitAt unitSyntax py src 4 `shouldReturn` Right (Just (4, 4))
+  it "a one-line def: no body to draft" $ withPy $ \py ->
+    fmap unitBody <$> unitAt unitSyntax py "def one() -> int: return 1\n" 1 `shouldReturn` Right Nothing
+
+-- | The python-htmx pack's Python, as the server sees it.
+pythonOf :: ServerState -> IO Language
+pythonOf s = siteAt (root </> moduleRel) 1 s >>= \case
+  (_, Right site) -> pure (siteLang site)
+  (_, Left why) -> fail (T.unpack why)
 
 -- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
 testsSpecs :: Spec
@@ -2445,6 +2480,36 @@ blockSyntax = Syntax query rewrite
             w = a <> " > " <> T.takeWhile isAlphaNum (T.drop 3 post)
             col = T.length pre - T.length a
       ]
+
+-- | 'blockSyntax', and the [unit] rule (an `any` of kinds) answered as
+-- tree-sitter does for Python: each def or class from its line to its last
+-- line deeper than it; a decorated one also from its first decorator, as
+-- its `decorated_definition`; a header from its line to its colon. Lines
+-- and columns 0-based.
+unitSyntax :: Syntax IO
+unitSyntax = blockSyntax {querySyntax = query}
+  where
+    query lang rule src
+      | "\"function_definition\"" `T.isInfixOf` encoded rule = pure (Right (units src))
+      | otherwise = querySyntax blockSyntax lang rule src
+    encoded = TE.decodeUtf8 . BL.toStrict . J.encode
+    indentOf = T.length . T.takeWhile (== ' ')
+    blank = T.null . T.strip
+    units src =
+      let ls = zip [0 :: Int ..] (T.splitOn "\n" src)
+          lineAt j = maybe "" snd (listToMaybe (drop j ls))
+          -- a header over several lines runs to its colon
+          colonOf i = fromMaybe i (listToMaybe [j | (j, x) <- drop i ls, ":" `T.isSuffixOf` T.stripEnd (fst (T.breakOn " #" x))])
+          endOf i l = last (colonOf i : [j | (j, x) <- takeWhile (\(_, x) -> blank x || indentOf x > indentOf l) (drop (colonOf i + 1) ls), not (blank x)])
+          at i j = Match (i, indentOf (lineAt i)) (j, T.length (lineAt j)) "" (0, 0)
+          isHead l = any (`T.isPrefixOf` T.strip l) ["def ", "async def ", "class "]
+          isDecorator l = "@" `T.isPrefixOf` T.strip l
+          heads = [at i (endOf i l) | (i, l) <- ls, isHead l]
+          decorated =
+            [ at i (endOf d dl)
+            | (i, l) <- ls, isDecorator l, i == 0 || not (isDecorator (lineAt (i - 1)))
+            , (d, dl) <- take 1 [x | x@(_, y) <- drop (i + 1) ls, not (isDecorator y)], isHead dl ]
+       in heads ++ decorated
 
 -- | 'blockSyntax', and every integer is a site of the `number` operator.
 numbersToo :: Syntax IO

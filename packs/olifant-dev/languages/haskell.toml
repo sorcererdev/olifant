@@ -29,3 +29,8 @@ wrap = "olifantHole = {= fill =}"
 [holes.text]
 placeholder = "{= hole =}"
 wrap = "olifantHole = \"{= fill =}\""
+
+# The unit: the innermost of these node kinds at the cursor is what `draft`
+# drafts and `stub` stubs a test for.
+[unit]
+kinds = ["function", "bind", "data_type", "newtype", "class", "instance"]
