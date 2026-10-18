@@ -1,4 +1,4 @@
--- | Internal to Olifant.Server: the decision model orders a judged block's survivors. Each
+-- | Internal to Olifant.Server: the decision model orders a mutate's survivors. Each
 -- is asked about twice, in the background through the decisions the server
 -- keeps: is it equivalent to the original (dimmed, and last), and how much
 -- does it matter (high first). What is not known yet leaves a survivor

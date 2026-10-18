@@ -1,6 +1,6 @@
 -- | Internal to Olifant.Server: a file's tests, run whole over the editor's
 -- text (`olifant/tests/run`). A test file runs itself; a module runs the
--- test file its language's `tests_for` names. No model, no block: the run
+-- test file its language's `tests_for` names. No model: the run
 -- and how long it took. And a file's other side (`olifant/tests/file`): a
 -- module's test file, or a test file's module, for the editor to jump to.
 module Olifant.Server.Tests

@@ -25,7 +25,7 @@ helpedIn ls t = maybe t (\h -> t <> "; " <> helperSentenceFor h) (listToMaybe [h
 helperSentenceFor :: Text -> Text
 helperSentenceFor h = "build the " <> h <> " with the helper, passing the adapters you arranged (`" <> h <> "(booking_repository=repository)`); never call the helper bare after arranging a repository"
 
--- | The name of a kill's test, from its mutant: a literal's first four
+-- | The name of a survivor's test, from its mutant: a literal's first four
 -- words (`string`), else the operator and the names on the mutated line
 -- (or, with none there, in what it changed from), four at most, leaving
 -- out KEYWORDS, `self` and the heads of attributes (`seats` of

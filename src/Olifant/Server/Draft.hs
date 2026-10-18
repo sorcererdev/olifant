@@ -1,8 +1,8 @@
 -- | Internal to Olifant.Server: a draft (`olifant/draft`) of the unit at a
 -- line, or of the selected lines: on a function, method or class, its body
 -- to pass its tests; on a test, its body from its name. The tests run
--- before and after; the draft lands whatever the after-run says. No block
--- is read or stored.
+-- before and after; the draft lands whatever the after-run says. Nothing
+-- is stored.
 module Olifant.Server.Draft
   ( DraftAnswer (..)
   , draftAt

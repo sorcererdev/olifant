@@ -45,7 +45,7 @@ import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, makeRelative, splitDirectories, (</>))
 
--- | Where a begin or a stub at a cursor stands: the module and its test
+-- | Where a command at a cursor stands: the module and its test
 -- file (the cursor in either), their texts, and the def at or above the
 -- cursor.
 data Site = Site

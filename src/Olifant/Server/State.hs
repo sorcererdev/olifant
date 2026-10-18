@@ -239,7 +239,7 @@ filesChanged paths s0 = foldr (\root next -> next >>= catalogChanged root) (pure
     s = s0 {ssFilesStamp = ssFilesStamp s0 + 1, ssGeneration = ssGeneration s0 + 1}
     affected = [root | (root, slot) <- M.toList (ssProjects s), any (touches root slot) paths]
     touches root slot path =
-      -- the loop's step log (`.olifant/state/`) is no configuration
+      -- the commands' step log (`.olifant/state/`) is no configuration
       ((root </> ".olifant") `isAncestorOf` path && not ((root </> ".olifant/state") `isAncestorOf` path)) || any (`isAncestorOf` path) (maybe [] (catalogPackRoots . prCatalog) (usable slot))
     isAncestorOf dir path = (normalisePath dir <> "/") `isPrefixOf` normalisePath path
 
