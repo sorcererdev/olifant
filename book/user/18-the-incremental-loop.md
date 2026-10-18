@@ -273,6 +273,19 @@ on the wire, opens the module's test file or the test file's module; a test file
 exist yet opens as a new, unsaved buffer: `<C-^>` back to the module and stub a test from its
 function with `<leader>mcs`.
 
+## Stubbing a test
+
+`:Durandal stub` (`<leader>ms`) with the cursor in a function, a method or a class (a decorator
+line counts as its def) appends a new test to the end of its test file: `test_<name>`, the unit's
+name in snake case (`CloseTable` is `test_close_table`; `_2`, `_3` when the file already has it),
+with the unit's import (a test file that does not exist yet is created, starting with it), a body
+of `...` and an `assert ...`. The test file opens with the cursor on the name. Nothing is drafted
+and no circle opens, so it works the same with a circle open in the module or the test file. On
+the wire this is `olifant/stub` with `{textDocument, position}`, answering `{file, line, name,
+edits}`. It is refused in one sentence: in a test file (stub writes a test from its module), or
+outside any function or class. Each stub is a line in the step log (`stub person <module>::<unit>
+stubbed <name>`). The circle's own `stub` move (`<leader>mcs`) is unchanged until the circle goes.
+
 ## When the code is right
 
 A red test has two readings, and each has its key. `begin` (`b`) says the test is right: a
