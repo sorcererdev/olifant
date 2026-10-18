@@ -139,6 +139,26 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
     readIORef ran `shouldReturn` ["b"]
   blockSpecs
   testsSpecs
+  stubSpecs
+
+-- | `olifant/stub`: a new test's stub for the unit at a line.
+stubSpecs :: Spec
+stubSpecs = describe "a test's stub (olifant/stub)" $ do
+  describe "the unit's test name and the class at a line" $ do
+    it "a function's name, snake case" $ testNameOf "handle" `shouldBe` "test_handle"
+    it "a class's name, snake case" $ testNameOf "CloseTable" `shouldBe` "test_close_table"
+    it "underscores at its ends dropped" $ testNameOf "__init__" `shouldBe` "test_init"
+    it "a digit before a capital splits too" $ testNameOf "V2Table" `shouldBe` "test_v2_table"
+    -- `stubbed`: 1 class CloseTable, 2 def __init__, 4 blank, 5 def handle, 7-8 blank, 9 def unrelated
+    it "the class line is the class" $ classAt stubbed 1 `shouldBe` Just ("CloseTable", 1)
+    it "a blank line between its methods is the class" $ classAt stubbed 4 `shouldBe` Just ("CloseTable", 1)
+    it "a line in a method is in the class too" $ classAt stubbed 6 `shouldBe` Just ("CloseTable", 1)
+    it "a blank line after the class, before a top-level def, is no class" $ classAt stubbed 8 `shouldBe` Nothing
+    it "a top-level function is in no class" $ classAt stubbed 10 `shouldBe` Nothing
+    it "a line past the end is nothing" $ classAt stubbed 99 `shouldBe` Nothing
+    let decorated = T.unlines ["import functools", "", "", "@functools.cache", "@other", "def dish() -> int:", "    return 1"]
+    it "a decorator line is its def's" $ belowDecorators decorated 4 `shouldBe` 6
+    it "a line that is no decorator stays" $ belowDecorators decorated 7 `shouldBe` 7
 
 -- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
 testsSpecs :: Spec
