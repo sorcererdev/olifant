@@ -95,6 +95,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   testsRunSpec
   stubSpec
   draftSpec
+  mutateSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -1271,6 +1272,59 @@ draftSpec = describe "olifant/draft" $ do
         field "tests" answer `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         field "edits" answer `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         outside `shouldSatisfy` either ("no function or class at line 1" `T.isInfixOf`) (const False)
+
+-- | `olifant/mutate`: the unit at a position mutated against its test
+-- file (a scripted runner that kills nothing); and a survivor's stub.
+mutateSpec :: Spec
+mutateSpec = describe "olifant/mutate" $ do
+  let moduleRel = "src/bistro/booking/commands/create_booking.py"
+      testRel = "src/bistro/booking/commands/create_booking__test.py"
+  it "in a method: its lines and survivors, each line inside them, 1-based; outside any unit, why" $
+    withSystemTempDirectory "olifant-mutate" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        ((answer, outside), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc moduleRel "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              ask line = blockMove (Proxy :: Proxy "olifant/mutate") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= line, "character" .= (0 :: Int)]])
+          answer <- ask (handleAt + 1)
+          outside <- ask (0 :: Int)
+          pure (answer, outside)
+        let field k = either (const Nothing) (lookupKey k)
+            int = \case Just (Number n) -> round n :: Int; _ -> -1
+            span' = case field "lines" answer of
+              Just (Object o) -> (int (KM.lookup "first" o), int (KM.lookup "last" o))
+              _ -> (-1, -1)
+            survivors = case field "survivors" answer of Just (Aeson.Array xs) -> [o | Object o <- toList xs]; _ -> []
+        field "file" answer `shouldBe` Just (String (T.pack (dir </> moduleRel)))
+        field "unit" answer `shouldBe` Just (String "handle")
+        survivors `shouldSatisfy` (not . null)
+        int (field "survived" answer) `shouldBe` length survivors
+        int (field "killed" answer) `shouldBe` 0
+        field "summary" answer `shouldSatisfy` \case Just (String s) -> "killed" `T.isInfixOf` s; _ -> False
+        forM_ survivors $ \o -> do
+          int (KM.lookup "line" o) `shouldSatisfy` \l -> l >= fst span' && l <= snd span'
+          forM_ ["operator", "from", "to", "mutated"] $ \k -> KM.lookup k o `shouldSatisfy` \case Just (String _) -> True; _ -> False
+          KM.lookup "dim" o `shouldBe` Just (Bool False)
+        outside `shouldSatisfy` either ("no function or class at line 1" `T.isInfixOf`) (const False)
+  it "olifant/stub with a survivor: the test named from the mutant" $
+    withPython [] $ \ports dir -> do
+      (answer, _) <- inProcessWithConfig [] ports dir $ do
+        doc <- openDoc moduleRel "python"
+        text <- documentContents doc
+        let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+            survivor = object ["line" .= (handleAt + 2), "operator" .= ("boundary" :: Text), "from" .= ("seats > 2" :: Text), "to" .= ("seats >= 2" :: Text), "mutated" .= ("        return seats >= 2" :: Text)]
+        blockMove (Proxy :: Proxy "olifant/stub") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1), "character" .= (0 :: Int)], "survivor" .= survivor])
+      either (const Nothing) (lookupKey "name") answer `shouldBe` Just (String "test_boundary_seats")
+      either (const Nothing) (lookupKey "file") answer `shouldBe` Just (String (T.pack (dir </> testRel)))
+  it "olifant/stub with a malformed survivor: invalid params" $
+    withPython [] $ \ports dir -> do
+      (answer, _) <- inProcessWithConfig [] ports dir $ do
+        doc <- openDoc moduleRel "python"
+        blockMove (Proxy :: Proxy "olifant/stub") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (0 :: Int), "character" .= (0 :: Int)], "survivor" .= object ["line" .= ("x" :: Text)]])
+      answer `shouldSatisfy` either ("survivor" `T.isInfixOf`) (const False)
 
 -- | `olifant/tests/run`: a file's tests, run whole, with a scripted runner.
 testsRunSpec :: Spec

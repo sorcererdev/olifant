@@ -53,6 +53,7 @@ import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
 import Olifant.Workspace (Workspace (..), normalisePath)
+import Olifant.Mutate (Mutant (..))
 import Olifant.Server
 import Olifant.Migration (MigrationReport, migrationJson)
 import Data.Foldable qualified as F
@@ -544,12 +545,37 @@ handlers env =
     , -- a new test's stub for the function or class at a position, at the
       -- end of its test file: the one edit, and where the test's name is
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/stub")) $ \req respond -> inBackground env req respond $ \job ->
-        case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
-          (Just path, Just (line, _)) ->
-            liftIO (withSnapshot job (stubAt path (line + 1) Nothing)) >>= \case
+        case (documentPath (req ^. L.params), positionOf (req ^. L.params), survivorOf (req ^. L.params)) of
+          (_, _, Left bad) -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) bad Nothing))
+          (Just path, Just (line, _), Right survivor) ->
+            liftIO (withSnapshot job (stubAt path (line + 1) survivor)) >>= \case
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right a -> respond (Right (object ["file" .= saFile a, "line" .= saLine a, "name" .= saName a, "edits" .= workspaceEdit [saEdit a]]))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/stub needs a textDocument and a position" Nothing))
+    , -- the survivors of the unit at a position, mutated against its test
+      -- file: nothing is stored
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/mutate")) $ \req respond -> inBackground env req respond $ \job ->
+        case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
+          (Just path, Just (line, _)) -> do
+            mutated <- planProgress "mutating" (\_ -> withSnapshot job (mutateAt path (line + 1)))
+            stopped <- liftIO (cancelled (envCancel job))
+            case mutated of
+              _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right a ->
+                let flat = T.replace "\n" "\9166"
+                    mutatedLine m = fromMaybe "" (lookup (muLine m) (zip [1 :: Int ..] (T.splitOn "\n" (muText m))))
+                 in respond . Right $
+                      object
+                        [ "file" .= maFile a
+                        , "unit" .= maUnit a
+                        , "lines" .= object ["first" .= fst (maLines a), "last" .= snd (maLines a)]
+                        , "killed" .= maKilled a
+                        , "survived" .= length (maSurvivors a)
+                        , "survivors" .= [object ["line" .= muLine m, "operator" .= muOperator m, "from" .= flat (muFrom m), "to" .= flat (muTo m), "mutated" .= mutatedLine m, "dim" .= muDim m] | m <- maSurvivors a]
+                        , "summary" .= maSummary a
+                        ]
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/mutate needs a textDocument and a position" Nothing))
     , -- a draft of the unit at a position (or of the selected lines): its
       -- tests run before and after; the edit and the after-run
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/draft")) $ \req respond -> inBackground env req respond $ \job ->
@@ -1263,3 +1289,20 @@ update env f = liftIO (modifyMVar_ (envState env) (pure . f))
 atPath :: Applicative m => Uri -> (FilePath -> m ()) -> m ()
 atPath uri act = maybe (pure ()) act (uriToFilePath uri)
 
+
+-- | The optional `survivor` of an `olifant/stub` request, as a mutant (its
+-- text only the mutated line, at its place); Left says what is malformed.
+survivorOf :: Value -> Either T.Text (Maybe Mutant)
+survivorOf = \case
+  Object o | Just v <- KM.lookup "survivor" o -> case v of
+    Object sv
+      | Just (Number l) <- KM.lookup "line" sv
+      , Just n <- toBoundedInteger l
+      , n >= 1
+      , Just (String op) <- KM.lookup "operator" sv
+      , Just (String from) <- KM.lookup "from" sv
+      , Just (String to) <- KM.lookup "to" sv
+      , Just (String mutated) <- KM.lookup "mutated" sv ->
+          Right (Just (Mutant n op from to (T.intercalate "\n" (replicate (n - 1) "" ++ [mutated])) Nothing False))
+    _ -> Left "olifant/stub: the survivor needs line, operator, from, to and mutated"
+  _ -> Right Nothing
