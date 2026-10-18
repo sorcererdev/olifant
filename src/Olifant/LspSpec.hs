@@ -1245,9 +1245,33 @@ testsRunSpec = describe "olifant/tests/run" $ do
         field "failed" passing `shouldBe` Just (toJSON ([] :: [Value]))
         field "broken" passing `shouldBe` Just Aeson.Null
         field "seconds" passing `shouldSatisfy` \case Just (Number _) -> True; _ -> False
-        field "failed" failing `shouldBe` Just (toJSON [object ["id" .= red, "line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text), "output" .= ("" :: Text)]])
+        field "failed" failing `shouldBe` Just (toJSON [object ["id" .= red, "file" .= (dir </> testRel), "line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text), "output" .= ("" :: Text)]])
         ids (field "passed" failing) `shouldBe` filter (/= red) (ids (field "passed" passing))
         field "broken" broken `shouldSatisfy` \case Just (String why) -> "the test script does not read" `T.isPrefixOf` why; _ -> False
+  it "a position in a test runs that test; scope file the whole file; scope all the project's" $
+    withSystemTempDirectory "olifant-tests" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        ((one, whole, every), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc testRel "python"
+          text <- documentContents doc
+          -- the red test's def line, 0-based
+          let defLine = length (takeWhile (not . ("def test_a_party_larger_than_the_table_is_refused" `T.isInfixOf`)) (T.lines text))
+              ask extra = blockMove (Proxy :: Proxy "olifant/tests/run") (object (["textDocument" .= object ["uri" .= (doc ^. L.uri)]] ++ extra))
+          one <- ask ["position" .= object ["line" .= (defLine + 1), "character" .= (0 :: Int)]]
+          whole <- ask ["position" .= object ["line" .= (defLine + 1), "character" .= (0 :: Int)], "scope" .= ("file" :: Text)]
+          every <- ask ["scope" .= ("all" :: Text)]
+          pure (one, whole, every)
+        let field k = either (const Nothing) (lookupKey k)
+            ids = \case Just (Aeson.Array xs) -> [t | String t <- toList xs]; _ -> []
+        ids (field "passed" one) `shouldBe` [red]
+        field "scope" one `shouldBe` Just (String "test")
+        field "test" one `shouldBe` Just (String red)
+        length (ids (field "passed" whole)) `shouldBe` 4
+        field "scope" whole `shouldBe` Just (String "file")
+        field "scope" every `shouldBe` Just (String "all")
+        field "file" every `shouldBe` Just (String (T.pack dir))
   it "runs under $/progress titled testing" $
     withSystemTempDirectory "olifant-tests" $ \tmp -> do
       let script = tmp </> "tests.json"
