@@ -179,8 +179,8 @@ From the bottom up:
 | **Rules** | Rules (spec §5.9): parse `rules.toml` and the project's `[rules]`, check files against them, honour and report the exceptions, fingerprint findings for the baseline | `Rules.hs`: `RuleDef`, `RuleCheck`, `Severity`, `RulesConfig`, `Finding`, `Exception`, `parseRules`, `parseRulesConfig`, `parseSeverity`, `checkFiles`, `fingerprint` | Actions (`matchPathSlots`), Glob, Language, Template, Toml |
 | **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): Myers' O(ND) diff over lines (cost follows the edits, not the file; past 1,000 edits lines pair by text), common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `lcsPairs`, `wholeNew`, `newCount` | none |
 | **Migration** | The strangler's report and its pure parts: the switch registry, `olifant:switch` markers, what a PR extracted and added, big changes, whether a function reads or writes, the tables its SQL names, a switched function's text | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `readsOrWrites`, `tablesTouched`, `functionText` | Newness |
-| **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, the waivers a line carries, and the judge that runs each mutant in its own shadow, N at a time. `Mutate/Python` holds Python's operators | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `waiverOn`, `waiverLine`, `judge`, `Verdict`; `Mutate/Python`'s `pythonOperators`. Internal: `Mutate/Run`, `Mutate/Types` | Language |
-| **Block** | The incremental loop's block as a pure state machine (Red, Drafting (with the state it began from, which `DraftFailed` puts back), Green, Judged, Broken, Accepted, Rejected; `Accepted` only from a `Judged` with every survivor waived), the moves open in each state, the HUD line; and the draft templates (a function body or a test's arrangement as a hole, the instruction, a kill's stub) | `Block.hs`: `Block`, `BlockState`, `Kind`, `Draft`, `Move`, `begin`, `step`, `open`, `hud`, `survivors`, `killTarget`, `pending`, `draftTemplate`, `testDraftTemplate`, `existingTestTemplate`, `testStub`, `killStub`, `stubNameFor`, `uniqueTestName`, `instructionFor`. Internal: `Block/Draft` | Language, Mutate, Template |
+| **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, and the judge that runs each mutant in its own shadow, N at a time. `Mutate/Python` holds Python's operators | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `judge`, `Verdict`; `Mutate/Python`'s `pythonOperators`. Internal: `Mutate/Run`, `Mutate/Types` | Language |
+| **TestName** | The names a new test gets: a survivor's stub named from its mutant (a string's words, else the operator and the mutated line's names), a name unique in its test file; and the sentence an instruction gains in a test file with the pack's helper | `TestName.hs`: `stubNameFor`, `uniqueTestName`, `helpedIn`, `helperSentenceFor` | Mutate |
 | **Decide** | Typed decisions, progressively (Jev-shaped; today `curlDecider` asks any chat backend named by `[decide] model`, no Jev backend exists): a `Question` of a kind with its options, a `Decider` that answers one or is `Unsure`; validated, so an answer outside the options is `Unsure`. Nothing depends on an answer arriving | `Decide.hs`: `Question`, `Answer`, `Decider`, `noDecider`, `validated`, `decisionPrompt`, `decodeAnswer`, `curlDecider`, `recordedDecider` | Model, Process |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
 | **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses; snippets for a completion menu (spec §4.9) | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `Completion`, `actionsAt`, `actionsInFile`, `completionsAt`, `describeRule`, `matchPathSlots` | Cursor, Generator, Language, Query, Template |
@@ -191,8 +191,8 @@ From the bottom up:
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
 | **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; an optional model for the unsure | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `Recognizer`, `consult`, `curlRecognizer` | Generator, Glob, Model, Naming, Process, Template |
 | **Preview** | The generate picker's form and placeholders: each input's value and where it came from (you, the file's folders, the cursor, a lone choice, a default, a `+ New` step), checked as `olifant gen` checks it; marks a missing name is planned with, and their renderings back to `⟨name⟩` | `Preview.hs` over `Preview/{Fields,Marks}`: `Field`, `Source`, `fieldsFor`, `markValue`, `unmark` | Generator, Naming |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview,Block,BlockMoves,BlockDecide,Tests}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the loop's `blockBegin`, `blockDraft`, `blockDraftAt`, `blockTest`, `blockJudge`, `blockKill`, `blockStub`, `blockWaive`, `blockChanged`, `blockAccept`, `blockReject`, `blockJson`, `testsRun`, … | Actions, Anchor, App, Block, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace |
-| **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Block, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview,Site,Unit,Tests,Stub,Draft,Mutate,Order}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the editor's TDD commands `testsRun`, `stubAt`, `draftAt`, `mutateAt` (with `unitAt`, `orderSurvivors`), … | Actions, Anchor, App, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, TestName, Workspace |
+| **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
 
@@ -1409,7 +1409,7 @@ any of this, layout is repaired: `applyFills` places `dedented` lines (common in
 dropped), and a candidate failing to compile whose first line sits less deep than the rest
 (and opens no block) is tried `reindented`, kept when, with only it placed, its file then
 compiles, or, the original carrying a syntax-class finding (`syntaxError`), has fewer
-findings or loses that one; it is announced as `Reindented` (a block's draft
+findings or loses that one; it is announced as `Reindented` (a draft
 writes that text). `Snippet.snippetOf` places a
 model fill the same way (shared `Holes.dedented`, continuation lines at the marker line's
 indent), so the editor's snippet matches the written file. `gen --fills FILE` makes the
@@ -2317,121 +2317,50 @@ engine features plus a pack (`python-strangler`):
 - **Fix data names its generator** (`Lsp`, a fix's `data.generator`), so the editor fills a
   fix's inputs in the generate picker and resolves the fix with them.
 
-### The loop's blocks (`Block`, `Mutate`, `Server/Block`)
+### TDD in the editor (`Server/{Site,Unit,Tests,Stub,Draft,Mutate,Order}`)
 
-The incremental loop ([user book, chapter 18](../user/18-the-incremental-loop.md)) is a pure
-machine served by the server. The person's "magic circle" is a `Block` internally:
+The editor's four TDD commands ([user book, chapter 18](../user/18-tdd-in-the-editor.md)) are
+stateless requests: each reads the editor's text, answers, and appends one line to the step log;
+the server keeps nothing between them.
 
-- **`Block`** is the machine: `step move block` is `Left why` (one sentence for the person) or
-  the block after the move; `open` lists the moves a state allows and `hud` writes its line (ending on the person's next
-  step: `· draft`, `· name it, then draft · reject drops it` on a begin's test stub not yet named
-  and `· draft · reject drops it` on a named one or a survivor's (until a model
-  drafts), none after a model's failed draft, `red ✓ accept · go make it pass` on a new
-  test red at its assertion (`green ✓ accept` on one that passes already, `blockPasses`: a
-  regression test, accepted with nothing begun), `red at the assertion · draft again to redraft
-  it, or edit it` on an `ExistingTest` block whose run fails at its assertion
-  (`blockAtAssertion`), `· stub a test or waive`; another draft is `draft`, never `next`); `killTarget` is the survivor a kill takes (the cursor
-  line's, or the first unwaived in the stored order; the person's `stub` on a survivor is `kill` internally).
-  A property spec pins that `Accepted` is reachable only through a `Judged` whose survivors are
-  all waived. `Block/Draft` turns a span into a template with one `block` hole (or a test's
-  placeholder into a `stmt` hole, and its assertion into another while it is still the stub's
-  `assert ...`, worded from the test's name and a kill's mutant), with the instruction from the test's name, its assertions and
-  why it fails; `stubNameFor` names a kill's stub from its mutant (a string's words, else the
-  operator and the mutated line's names, unique in the test file: `uniqueTestName`, which names a
-  function's stub `test_<function>` too).
-- **`Server/Block`** keeps each file's open circle (a `Block` internally) (`ssBlocks`, keyed by the module's path, found
-  from its test file too), runs the moves and writes each to the step log (`appendStep`,
-  `.olifant/state/steps.log`). `blockBegin` runs the test file (`runOver`: the runner over the
-  editor's text), finds the function under test (`underTest`: each `.NAME(` call the test makes,
-  its assertions first, until the module defines one, located by the language's `function NAME`
-  target) and begins Red, or judges a green function at once; on a function no test calls,
-  `blockStart` begins a `TestFor Nothing` block on the stub of its first test (`openTestStub`
-  over `testStub`) and answers the stub for the editor, with the function's import as an edit to
-  apply first when the test file lacks it (`addImports`, the fill phase's), and accepting that
-  block begins the function on it: the block keeps that function (`blockSubject`: its name and
-  def line), so `beginOnNewTest` begins there (`startFor`) rather than by the test's calls.
-  `siteAt` finds a cursor's module, test file and def for both a begin and a stub, and
-  `functionAt` the def at the cursor while its body reaches it (`functionSpanAfter` over
-  `locateContainers`: the body after that def line, whatever else shares its name). Every
-  move lands through `settle`, a compare-and-swap on the stored block's number and version
-  (`blockVersion`, bumped by every move stored and by the decision model's reorder: a move begun on an older version
-  is stale, logged and dropped; a test of the newest text, none begun since, settles again on the
-  block as it stands, each time another move landed first), and a new block through `claim`, one atomic check-and-insert.
-  `test` is refused while a draft is in flight, and `waive` and `accept` while a test of a text
-  other than the verdict's has begun, or an edit of the span awaits its test (`awaitingVerdict`:
-  `ssBlockSeen` against `blockOn`, and `spanEdited`); a draft that fails puts back the state it began
-  from, testing the file again when it is no longer the text that state was established on
-  (`blockOn`). `blockDraft` stores and pushes `Drafting`, makes the span a hole and plans it
-  with `planWith` under `DraftStance` (the test file, or for a test the module, in its context,
-  then the project modules either file imports and, one level further, what those import:
-  `importedContext`, capped at 8 files of 120 lines, 600 in all, direct imports first),
-  verified by `VerifyKeep` (the block's test file runs whole, never a kept id: one gone from
-  the file would stop pytest's run; its test must pass and each test it keeps that the run has,
-  `keptVerdict`, a sibling red otherwise passed over; `blockKeep` is the test file's tests that
-  passed at begin and a kill's tests once accepted (`rejudgeFor`), and a kept test a test run
-  does not have is gone, dropped from it, `ranIn`; the `test` move and an edit's test run the
-  file the same way); a kept test failing while its own passes
-  is the block's red, `outcomeOf`, landed through `AtKept` so `blockRedAt` names it and the HUD
-  says `no longer passes`; a failed draft whose fill failed its tests (`testsFailed`) is run once
-  more to find a kept red, `draftRedOn`, and the next draft's instruction names that test), `VerifyRedAt` (a new test fails at its assertion,
-  or passes: a regression test, unless its function's body is still only a `raise NotImplementedError`, `bodyRaises`)
-  or `VerifyKills` (what passed before and the new test pass, and the new test fails on the
-  mutant); an unfilled hole writes the model's last attempt as a red draft (as the fill
-  phase read it: a `Reindented` fill as read), unless, in Python, it would not parse
-  (`unparseable`: `ast.parse` through the verify port, `python3 -I`, a syntax error printed
-  after `parseSentinel`) while the file without it does: then the draft is recorded red with
-  Python's reason (`unparsedDraft`) and nothing is written. Any other outcome (no python3, a
-  traceback, the file unparseable before) turns the gate off for that draft, logged as a
-  `parse` step. Its edits are
-  versioned, so the editor applies them only to the buffer it planned on. `judgeIn` runs the
-  test file once unmutated (the baseline: its passing tests are the judges, its wall time sets
-  each mutant's timeout, `judgeTimeout`, through `pTesterWithin`), mutates the span's lines new
-  since `blockBase` (`newLinesOf`) with the language's operators, caps them at 20 and runs them
-  through `Mutate.judge`: each mutant's file over the project in the runner's own temp tree,
-  four at a time.
-- **`blockDraftAt`** is `draft` at a cursor: the file's circle (`blockDraft`), or, with none, on
-  a red test, an `ExistingTest` block (the third `Kind`: the code is right, the test is drafted)
-  on the test's lines (`testAt`: a method's id names its class; afterwards the circle finds its
-  test by its span's first line, its def, else by class and name, `defLineOf`, never by name alone), keeping the file's other passing
-  tests and claiming its module too; a test `existingParts` cannot shape (no assert line, a def
-  over several lines) is refused before anything opens. It drafts at once: `existingTestTemplate`
-  makes the arrangement (from the def, or a leading docstring, to the body's statement holding
-  the first assert outside any bracket, a `with` around it, bracketed or not, the assertion's) a `stmt` hole, the assertion left as it is, verified by `VerifyKeep`
-  as a code block's draft is, the test as it was in its context; a red `draftRedOn` runs again
-  for the runner's line, and red at the assertion (`redAtTheAssertion`) sets
-  `blockAtAssertion`, so the next `draft` turns the kind to `ExistingTest True` and drafts the
-  assertion too (`existingAssertionInstruction`), its line carried as `blockAssertion`.
-  Accepted, it closes (`green: test drafted`); nothing moves to the module. Rejected, only the
-  test's lines go back (`blockReject` splices them into the file as it is).
-- **`Server/BlockMoves`**: `blockKill` (a `TestFor` block in the test file for the `killTarget`
-  mutant, its test id the stub's name until a test of the block finds the person's: `testNow`
-  makes a test block's test its first new one, and the stub the editor expands), `blockStub`
-  (the editor's `stub`: `blockKill` in a judged code circle with a survivor left; with no circle
-  in the module, the cursor in one of its functions (`functionAt`), a new test's stub named
-  `test_<function>` through `openTestStub`; any other open circle refused with a sentence for its
-  state, and a test file sent to its module), `blockWaive` (a comment per operator on the line, as one edit) and `blockChanged`, the
-  debounced reaction to an edit of a block's file: the draft the editor applied (`Applied`) or the
-  person's edit inside the span (`Edited`) is tested and, green, judged; an edit elsewhere does
-  nothing; a test block none of whose new lines (`newLinesOf`) is left non-blank from its span
-  on (its stub deleted whole) is rejected through `settle` (`rejectDeleted`, again on the block
-  as it stands if another move landed first) with no restoring edit, and pushed as gone. `ssBlockSeen` holds the text last tested, so the editor applying the server's own
-  edit (a waiver) is no edit.
-- **`Server/BlockDecide`** orders a judged block's survivors with two `Decider` questions per mutant
+- **`Server/Site`** is what they share: `siteAt` finds a cursor's project, language, module and
+  test file (`tests_for`, inverted for a test file) and the def at or above it (`defLineAbove`,
+  `defName`); `functionAt` the def at the cursor while its body reaches it (`functionSpanAfter`
+  over `locateContainers`); `importOf` the line importing a function (or its class) into a test
+  file, Python's; `runOver` the runner over the editor's text; `importedContext` the project
+  modules a draft sees (the Python files its texts import, then what those import, one level;
+  at most 8 files of 120 lines, 600 in all); `appendStepLine` one line of
+  `.olifant/state/steps.log`.
+- **`Server/Unit`**'s `unitAt` is the innermost definition enclosing a line, by the node kinds
+  the language's `[unit]` lists (a decorator's line counts as its def).
+- **`Server/Stub`**'s `stubAt` appends `test_<unit>` (`uniqueTestName`) to the unit's test file
+  with its import (`addImports`, the fill phase's), as one edit; given a survivor, the test is
+  named from the mutant (`stubNameFor`) and carries it as a `# kills:` comment.
+- **`Server/Draft`**'s `draftAt` runs the test file (the before-run), makes the unit's body (or
+  the selection) a `block` hole and plans it with `planWith` under `DraftStance`: on a function
+  verified by its test file (`VerifyTests`), told the failing tests, the passing ones and the
+  body on screen when it is no stub (rejected by the person); on a test, from its name, verified
+  red at its assertion or passing (`VerifyRedAt`). The draft lands whatever the after-run says,
+  unless the document moved on while the model wrote (`ssLiveDoc`).
+- **`Server/Mutate`**'s `mutateAt` runs the test file once unmutated (its passing tests are the
+  judges, its wall time sets each mutant's timeout, `judgeTimeout`), mutates the unit's lines
+  with the language's operators (`mutantsOf`), caps them at 20 and runs them through
+  `Mutate.judge`: each mutant's file over the project in the runner's own temp tree, four at a
+  time.
+- **`Server/Order`** orders the survivors with two `Decider` questions per mutant
   (`mutant-equivalent`, `mutant-matters`), asked in the background through the server's
-  decisions; each answer that lands reorders and pushes the block (`ssOnBlock`).
-- **`Server/Tests`** runs a file's tests whole, outside any block (`olifant/tests/run`):
+  decisions (`ssDecisions`); the next `mutate` orders by the answers that landed.
+- **`Server/Tests`** runs a file's tests whole (`olifant/tests/run`):
   `testsRun` takes a module to its test file (`testsForFile`) and a test file to itself, and runs
-  that file as one id with `Server/Block.runOver` over the snapshot's documents, timed; a test file
+  that file as one id with `Server/Site.runOver` over the snapshot's documents, timed; a test file
   whose module is gone (`testShaped`: named as `tests_for` names test files) runs itself; a runner
   that cannot start is a broken run, and `Lsp` answers a run the editor cancelled `RequestCancelled`. `testsJson` is the answer the editor reads.
   `testsFile` (`olifant/tests/file`, answered at once: it reads only config and the file list)
   answers a file's other side for the editor's jump: a module's test file, which may not exist
   yet, or the module a test file tests; both read one `placeOf` (language, `[test]` table, the
   module it is the test file of), so the two never disagree on which file is the test file.
-- **`Lsp`** has one `blockRequest` per move, in the background like the other slow requests; every
-  block a move changed is pushed as `olifant/block`, and `didChange` that edits a block's span
-  (`blockEdited`, against the text last tested) submits `blockLater` (the debounce; a newer such
-  edit cancels it, an edit elsewhere in the file leaves the running test or judge to land).
+- **`Lsp`** answers each command in the background, like the other slow requests, under
+  `$/progress`.
 
 The specs drive it with a scripted runner (`scriptedRunner`, `scriptFileRunner`: verdicts by
 test id, a file's id answering each test the file defines by its id, as pytest does; or by the

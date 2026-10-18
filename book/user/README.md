@@ -17,4 +17,4 @@
 15. [Conventions that hold: rules, exceptions, `olifant check` and the baseline](15-conventions-that-hold.md)
 16. [The language server: `olifant lsp`, projects across roots, what it answers, the project model](16-the-language-server.md)
 17. [Strangling a legacy codebase: `init --migrate`, `only = "new"`, extract and switches, retiring, the report, decisions](17-strangling-a-legacy-codebase.md)
-18. [The incremental loop: blocks, drafts, mutation, kill and waive, the step log, `[test]`](18-the-incremental-loop.md)
+18. [TDD in the editor: test, stub, draft, mutate, the step log, `[test]`](18-tdd-in-the-editor.md)
