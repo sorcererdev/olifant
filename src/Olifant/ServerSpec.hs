@@ -142,6 +142,7 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
   stubSpecs
   unitSpecs
   draftSpecs
+  mutateSpecs
 
 -- | `olifant/stub`: a new test's stub for the unit at a line.
 stubSpecs :: Spec
@@ -164,58 +165,76 @@ stubSpecs = describe "a test's stub (olifant/stub)" $ do
   describe "stubAt" $ do
     let quiet = blocks (const (TestRun [] [] Nothing))
         stub = "def test_handle() -> None:\n    ...\n    assert ...\n"
-        sentence st path line = either id (const "stubbed") . snd <$> stubAt path line st
+        sentence st path line = either id (const "stubbed") . snd <$> stubAt path line Nothing st
     it "in a method: test_<method> after the test file's last test, its import already there" $ do
       (s, _) <- quiet []
-      (_, Right a) <- stubAt (root </> moduleRel) 6 s
+      (_, Right a) <- stubAt (root </> moduleRel) 6 Nothing s
       (saFile a, saLine a, saName a) `shouldBe` (root </> testRel, 9, "test_handle")
       feCreate (saEdit a) `shouldBe` False
       applyEdits [saEdit a] testText `shouldBe` T.stripEnd testText <> "\n\n\n" <> stub
     it "in a function the test file does not import: the import joins the file's" $ do
       (s, _) <- quiet []
-      (_, Right a) <- stubAt (root </> moduleRel) 10 s
+      (_, Right a) <- stubAt (root </> moduleRel) 10 Nothing s
       saName a `shouldBe` "test_unrelated"
       let edited = applyEdits [saEdit a] testText
       T.lines edited !! 0 `shouldBe` "from shop.close_table import CloseTable, unrelated"
       T.lines edited !! (saLine a - 1) `shouldBe` "def test_unrelated() -> None:"
     it "on the class line, and on a blank line between its methods: the class" $ do
       (s, _) <- quiet []
-      (_, Right a) <- stubAt (root </> moduleRel) 1 s
-      (_, Right b) <- stubAt (root </> moduleRel) 4 s
+      (_, Right a) <- stubAt (root </> moduleRel) 1 Nothing s
+      (_, Right b) <- stubAt (root </> moduleRel) 4 Nothing s
       (saName a, saName b) `shouldBe` ("test_close_table", "test_close_table")
     it "a name the file has already: test_<unit>_2" $ do
       (s, _) <- quiet [(testRel, testText <> T.unlines ["", "", "def test_handle() -> None:", "    assert True"])]
-      (_, Right a) <- stubAt (root </> moduleRel) 6 s
+      (_, Right a) <- stubAt (root </> moduleRel) 6 Nothing s
       saName a `shouldBe` "test_handle_2"
     it "a new test file: the edit creates it, the import first" $ do
       (s, _) <- quiet [("src/shop/menu.py", T.unlines ["import functools", "", "", "@functools.cache", "def dish() -> int:", "    return 1"])]
-      (_, Right a) <- stubAt (root </> "src/shop/menu.py") 4 s
+      (_, Right a) <- stubAt (root </> "src/shop/menu.py") 4 Nothing s
       (saFile a, saLine a, saName a) `shouldBe` (root </> "src/shop/menu__test.py", 4, "test_dish")
       (feCreate (saEdit a), feRange (saEdit a)) `shouldBe` (True, ((0, 0), (0, 0)))
       feText (saEdit a) `shouldBe` "from shop.menu import dish\n\n\ndef test_dish() -> None:\n    ...\n    assert ...\n"
     it "a method whose name another class has: imported by its own class" $ do
       let repo = T.unlines ["class Memory:", "    def save(self, n: int) -> int:", "        return n", "", "", "class Sql:", "    def save(self, n: int) -> int:", "        return n + 1"]
       (s, _) <- quiet [("src/shop/repo.py", repo)]
-      (_, Right a) <- stubAt (root </> "src/shop/repo.py") 8 s
+      (_, Right a) <- stubAt (root </> "src/shop/repo.py") 8 Nothing s
       T.lines (feText (saEdit a)) !! 0 `shouldBe` "from shop.repo import Sql"
     it "the editor's text of the test file: the edit is built on it and carries its version" $ do
       (s0, _) <- quiet []
       let s = openDoc (root </> testRel) 3 siblingText s0
-      (_, Right a) <- stubAt (root </> moduleRel) 6 s
+      (_, Right a) <- stubAt (root </> moduleRel) 6 Nothing s
       feVersion (saEdit a) `shouldBe` Just 3
       applyEdits [saEdit a] siblingText `shouldBe` T.stripEnd siblingText <> "\n\n\n" <> stub
     it "a circle open there changes nothing: the stub lands" $ do
       (s, _) <- blocks redOnStub []
       (_, Right _) <- blockBegin (const (pure ())) (root </> testRel) 6 s
-      (_, Right a) <- stubAt (root </> moduleRel) 10 s
+      (_, Right a) <- stubAt (root </> moduleRel) 10 Nothing s
       saName a `shouldBe` "test_unrelated"
     it "outside any unit, and on a test file: one sentence each" $ do
       (s, _) <- quiet []
       sentence s (root </> moduleRel) 8 `shouldReturn` "no function or class at line 8: put the cursor in one to stub its test"
       sentence s (root </> testRel) 5 `shouldReturn` "on a test: stub writes a new test for a function or class, from its module"
+    -- a survivor on line 6 of handle, `seats > 2` for `seats >= 2`
+    let survivor = Mutant 6 "boundary" "seats > 2" "seats >= 2" (T.replace "return int(seats > 2)" "return int(seats >= 2)" written) Nothing False
+        survivorStub name = "def " <> name <> "() -> None:\n    # kills: seats > 2 \8594 seats >= 2 on line 6\n    ...\n    assert ...\n"
+    it "a survivor's stub: named from its mutant, the mutant as a comment above the ..." $ do
+      (s, _) <- quiet [(moduleRel, written)]
+      (_, Right a) <- stubAt (root </> moduleRel) 6 (Just survivor) s
+      saName a `shouldBe` "test_boundary_int_seats"
+      applyEdits [saEdit a] testText `shouldBe` T.stripEnd testText <> "\n\n\n" <> survivorStub "test_boundary_int_seats"
+      T.lines (applyEdits [saEdit a] testText) !! (saLine a - 1) `shouldBe` "def test_boundary_int_seats() -> None:"
+    it "a survivor's stub whose name the file has: _2" $ do
+      (s, _) <- quiet [(moduleRel, written), (testRel, testText <> T.unlines ["", "", "def test_boundary_int_seats() -> None:", "    assert True"])]
+      (_, Right a) <- stubAt (root </> moduleRel) 6 (Just survivor) s
+      saName a `shouldBe` "test_boundary_int_seats_2"
+    it "a survivor's stub is logged with the line it kills" $ do
+      (s, _) <- quiet [(moduleRel, written)]
+      (s', Right _) <- stubAt (root </> moduleRel) 6 (Just survivor) s
+      logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
+      logged `shouldSatisfy` T.isInfixOf ("\tstub\tperson\t" <> T.pack moduleRel <> "::handle\tstubbed test_boundary_int_seats (kills line 6)\n")
     it "each stub is one line in the step log: stub, person, the unit, the name" $ do
       (s, _) <- quiet []
-      (s', Right _) <- stubAt (root </> moduleRel) 6 s
+      (s', Right _) <- stubAt (root </> moduleRel) 6 Nothing s
       logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
       logged `shouldSatisfy` T.isInfixOf ("\tstub\tperson\t" <> T.pack moduleRel <> "::handle\tstubbed test_handle\n")
 
@@ -387,6 +406,92 @@ pythonOf :: ServerState -> IO Language
 pythonOf s = siteAt (root </> moduleRel) 1 s >>= \case
   (_, Right site) -> pure (siteLang site)
   (_, Left why) -> fail (T.unpack why)
+
+-- | `olifant/mutate`: the survivors of the unit at the cursor.
+mutateSpecs :: Spec
+mutateSpecs = describe "a mutate (olifant/mutate)" $ do
+  -- two statements in handle, a boundary on each: 6 `n = seats > 2`, 7 `return int(n and seats > 1)`
+  let two = T.replace "raise NotImplementedError(\"later\")" "n = seats > 2\n        return int(n and seats > 1)" stubbed
+      passing _ = Right (TestRun [testId] [] Nothing)
+      -- every mutant of line 6 is caught, those of line 7 survive
+      catching files = Right (if "n = seats >= 2" `T.isInfixOf` M.findWithDefault "" moduleRel files then TestRun [] [(testId, Failure (Just 6) "assert 0 == 1" "")] Nothing else TestRun [testId] [] Nothing)
+      serving verdict extra doc = do
+        (s0, runs) <- blocksOnSyntax unitSyntax verdict extra
+        pure (openDoc (root </> moduleRel) 1 doc s0, runs)
+      mutate s line = snd <$> mutateAt (root </> moduleRel) line s
+      sentence s path line = either id (const "mutated") . snd <$> mutateAt path line s
+      mutatedLine m = fromMaybe "" (lookup (muLine m) (zip [1 :: Int ..] (T.lines (muText m))))
+  it "a method with a survivor: its lines, the survivor's line and mutated line, the count, the summary" $ do
+    (s, _) <- serving catching [] two
+    Right a <- mutate s 6
+    (maFile a, maUnit a, maLines a, maKilled a) `shouldBe` (root </> moduleRel, "handle", (5, 7), 1)
+    map muLine (maSurvivors a) `shouldBe` [7]
+    map mutatedLine (maSurvivors a) `shouldBe` ["        return int(n and seats >= 1)"]
+    maSummary a `shouldBe` "1 survivor \183 1/2 killed"
+  it "a mutable site in another function of the module is not a mutant" $ do
+    (s, _) <- serving passing [] written
+    Right a <- mutate s 6
+    -- `unrelated`'s `n > 0` (line 10) is outside handle
+    map muLine (maSurvivors a) `shouldBe` [6]
+    maSummary a `shouldBe` "1 survivor \183 0/1 killed"
+  it "the test file red before mutation: one sentence, and only the baseline ran" $ do
+    (s, runs) <- serving (const (Right (TestRun [] [(testId, Failure (Just 6) "boom" "")] Nothing))) [] written
+    mutate s 6 `shouldReturn` Left "could not judge: test_closes_a_table fails before mutation"
+    runs `shouldReturn` 1
+  it "a baseline that cannot run: one sentence" $ do
+    (s, _) <- serving (const (Right (TestRun [] [] (Just "no pytest")))) [] written
+    mutate s 6 `shouldReturn` Left "could not run: no pytest"
+  it "on a test file, outside any unit, with no test file: one sentence each" $ do
+    (s, _) <- serving passing [("src/shop/menu.py", "def dish() -> int:\n    return 1\n")] written
+    sentence s (root </> testRel) 5 `shouldReturn` "on a test: mutate a function or class, from its module"
+    sentence s (root </> moduleRel) 8 `shouldReturn` "no function or class at line 8: put the cursor in one to mutate it"
+    sentence s (root </> "src/shop/menu.py") 2 `shouldReturn` "no test file for this module yet: src/shop/menu__test.py; stub one first (:Durandal stub)"
+  it "every mutant killed: no survivors" $ do
+    let killing files = Right (if ">=" `T.isInfixOf` M.findWithDefault "" moduleRel files then TestRun [] [(testId, Failure (Just 6) "x" "")] Nothing else TestRun [testId] [] Nothing)
+    (s, _) <- serving killing [] written
+    Right a <- mutate s 6
+    (maKilled a, maSurvivors a, maSummary a) `shouldBe` (1, [], "no survivors \183 1/1 killed")
+  it "no mutable site in the unit: nothing to mutate" $ do
+    (s, runs) <- serving passing [] stubbed
+    Right a <- mutate s 6
+    (maKilled a, maSurvivors a, maSummary a) `shouldBe` (0, [], "nothing to mutate in handle")
+    runs `shouldReturn` 0
+  it "the editor's unsaved text is the one mutated" $ do
+    -- on disk the module is the stub (nothing to mutate); the editor has written it
+    (s, _) <- serving passing [] written
+    Right a <- mutate s 6
+    map muLine (maSurvivors a) `shouldBe` [6]
+    all (T.isInfixOf "return int(seats >= 2)" . muText) (maSurvivors a) `shouldBe` True
+  it "a circle open in the module changes nothing: the same answer, the block unchanged" $ do
+    (s0, _) <- blocks redOnStub []
+    (s1', begun) <- blockBegin (const (pure ())) (root </> testRel) 6 s0
+    either (expectationFailure . T.unpack) (const (pure ())) begun
+    -- (the circle needed no unit rule; the mutate does)
+    let s1 = s1' {ssPorts = (ssPorts s1') {pSyntax = unitSyntax}}
+    before <- blockFor (root </> moduleRel) s1
+    let s2 = openDoc (root </> moduleRel) 1 written s1
+    (s3, Right a) <- mutateAt (root </> moduleRel) 6 s2
+    map muLine (maSurvivors a) `shouldBe` [6]
+    blockFor (root </> moduleRel) s3 `shouldReturn` before
+  it "the decision model's answers known: the equivalent one dim and last" $
+    withSystemTempDirectory "olifant-mutate" $ \dir -> do
+      let answers = dir </> "answers.json"
+      TIO.writeFile answers "{\"answers\": {}}"
+      (s0, _) <- serving passing [(".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n\n[decide]\nmodel = \"jev\"\n")] two
+      (s1, Right first') <- mutateAt (root </> moduleRel) 6 s0
+      map muLine (maSurvivors first') `shouldBe` [6, 7]
+      let m : _ = maSurvivors first'
+          s = s1 {ssConfig = defaultServerConfig {scDecideAnswers = Just answers}}
+          line' = T.strip (mutatedLine m)
+          key = (root </> moduleRel, T.intercalate " " ["mutant-equivalent", muOperator m, T.pack (show (muLine m)), muFrom m, muTo m, line'])
+      writeIORef (ssDecisions s) (M.singleton key (line', De.Chosen "equivalent" []), mempty)
+      Right a <- mutate s 6
+      map (\x -> (muLine x, muDim x)) (maSurvivors a) `shouldBe` [(7, False), (6, True)]
+  it "each mutate is one line in the step log: mutate, person, the unit, the summary" $ do
+    (s, _) <- serving catching [] two
+    (s', Right _) <- mutateAt (root </> moduleRel) 6 s
+    logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
+    logged `shouldSatisfy` T.isInfixOf ("\tmutate\tperson\t" <> T.pack moduleRel <> "::handle\t1 survivor \183 1/2 killed\n")
 
 -- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
 testsSpecs :: Spec
@@ -1584,12 +1689,12 @@ blockSpecs = describe "blocks" $ do
           ("mutant-equivalent", _) -> De.Chosen "changes-behaviour" []
           ("mutant-matters", Just m) | ">=" `T.isInfixOf` m -> De.Chosen "high" []
           _ -> De.Unsure
-    orderSurvivors s Nothing b stubbed testText (pure ()) ms >>= (`shouldBe` ms)
+    orderSurvivors s Nothing (blockFile b) stubbed testText (pure ()) ms >>= (`shouldBe` ms)
     answered <- newIORef (0 :: Int)
-    first' <- orderSurvivors s (Just jev) b stubbed testText (atomicModifyIORef' answered (\n -> (n + 1, ()))) ms
+    first' <- orderSurvivors s (Just jev) (blockFile b) stubbed testText (atomicModifyIORef' answered (\n -> (n + 1, ()))) ms
     first' `shouldBe` ms -- nothing known yet: as given
     waitUntil ((>= 6) <$> readIORef answered)
-    ordered <- orderSurvivors s (Just jev) b stubbed testText (pure ()) ms
+    ordered <- orderSurvivors s (Just jev) (blockFile b) stubbed testText (pure ()) ms
     map (\m -> (muLine m, muDim m)) ordered `shouldBe` [(10, False), (3, False), (6, True)]
   it "(k) with a recorded decider answering \"equivalent\", the judged block's survivors are dimmed once it answers, and pushed" $
     withSystemTempDirectory "olifant-jev" $ \dir -> do
@@ -1631,7 +1736,7 @@ blockSpecs = describe "blocks" $ do
         ms = [twin "a > b" "a >= b" "    return a >= b and c > d", twin "c > d" "c >= d" "    return a > b and c >= d"]
         counting = De.Decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
         -- as the server does: each answer orders again
-        again = void (orderSurvivors s (Just counting) b stubbed testText again ms)
+        again = void (orderSurvivors s (Just counting) (blockFile b) stubbed testText again ms)
     again
     -- the four questions answered and none in flight: nothing more is asked
     waitUntil (settled s 4)

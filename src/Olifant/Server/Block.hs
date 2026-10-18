@@ -1109,7 +1109,7 @@ reorder :: ServerState -> Maybe (Decider IO) -> Text -> Text -> Bool -> FilePath
 reorder s decider moduleText testText push file =
   M.lookup file <$> readIORef (ssBlocks s) >>= \case
     Just (b, killed) | Judged ms <- blockState b -> do
-      ordered <- orderSurvivors s decider b moduleText testText (void (reorder s decider moduleText testText True file)) ms
+      ordered <- orderSurvivors s decider (blockFile b) moduleText testText (void (reorder s decider moduleText testText True file)) ms
       -- a new version: a move begun on the old order is stale, not its eraser
       let b' = b {blockState = Judged ordered, blockVersion = blockVersion b + 1}
       -- only over the block as it was (a move meanwhile wins)

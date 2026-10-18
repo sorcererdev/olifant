@@ -9,16 +9,15 @@ import Data.List (sortOn)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block (Block (..))
 import Olifant.Decide (Answer (..), Decider, Question (..))
 import Olifant.Mutate (Mutant (..))
 import Olifant.Server.State (ServerState, decision)
 
--- | The survivors of BLOCK in the decision model's order, given the module's text and its
+-- | The survivors of the module FILE in the decision model's order, given the module's text and its
 -- test file's; ON_DONE runs as each answer lands (the caller orders again).
-orderSurvivors :: ServerState -> Maybe (Decider IO) -> Block -> Text -> Text -> IO () -> [Mutant] -> IO [Mutant]
+orderSurvivors :: ServerState -> Maybe (Decider IO) -> FilePath -> Text -> Text -> IO () -> [Mutant] -> IO [Mutant]
 orderSurvivors _ Nothing _ _ _ _ ms = pure ms
-orderSurvivors s (Just decider) b moduleText testText onDone ms = do
+orderSurvivors s (Just decider) file moduleText testText onDone ms = do
   judged <- mapM weigh ms
   pure (map fst (sortOn (\(m, matters) -> (muDim m, Down matters, muLine m)) judged))
   where
@@ -28,7 +27,7 @@ orderSurvivors s (Just decider) b moduleText testText onDone ms = do
       let mutated = lineOf (muLine m) (muText m)
           context = [("original", lineOf (muLine m) moduleText), ("mutant", mutated), ("tests", asserts)]
           -- each mutant its own: two of one operator may share a line
-          key kind = (blockFile b, T.intercalate " " [kind, muOperator m, T.pack (show (muLine m)), muFrom m, muTo m, mutated])
+          key kind = (file, T.intercalate " " [kind, muOperator m, T.pack (show (muLine m)), muFrom m, muTo m, mutated])
           ask kind options = decision s decider (key kind) mutated (Question kind options [] context) onDone
       equivalent <- ask "mutant-equivalent" ["equivalent", "changes-behaviour"]
       matters <- ask "mutant-matters" ["low", "medium", "high"]

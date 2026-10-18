@@ -318,6 +318,38 @@ draft at all, and when the file changed in the editor while the model drafted (y
 stands). Each draft is a line in the step log (`draft person <file>::<unit> drafted by <model> ·
 <summary>`). The circle's own draft move (`<leader>mcd`) is unchanged until the circle goes.
 
+## Mutating
+
+`:Durandal mutate` (`<leader>mm`) mutates the lines of the innermost function, method or class at
+the cursor against its module's test file, and lists the survivors. The test file runs first, as
+the editor has it (unsaved text is what is mutated and run); the unit's lines only are mutated,
+at most 20 mutants, each judged by the tests that passed on the unmutated file. Nothing is
+stored, gated or waived: a circle open in the module or its test file changes nothing, and mutate
+changes nothing in it. Only Python has mutation operators; another language answers `no mutation
+operators for <language>`.
+
+The notification is the summary: `no survivors · 6/6 killed`, `1 survivor · 5/6 killed`,
+`nothing to mutate in handle`. Each survivor is a warning on its line (`n > 1 → n >= 1
+survives`; `… survives (likely equivalent)` where the decision model thinks it equivalent), and
+the survivors modal opens on them: the list on the left, the mutant in context on the right,
+footer `s stub · q close`. There is no `w` and no `a` there; a waiver belongs to the circle. `s`
+(or `<CR>`) on a survivor closes the modal and stubs a test for it: `test_<operator>_<names on
+the mutated line>` in the unit's test file, the mutant as a comment above the `...` in its body
+(`# kills: > → >= on line 52`). The survivors come in the decision model's order as far as it is
+known when the judge ends; it keeps answering in the background, and the next `mutate` of the
+unit orders by the answers that landed. Marks of the same unit are replaced by each mutate, those
+of other units stay.
+
+On the wire this is `olifant/mutate` with `{textDocument, position}`, answering `{file, unit,
+lines: {first, last}, killed, survived, survivors: [{line, operator, from, to, mutated, dim}],
+summary}` (every `line` 1-based), under `$/progress` `mutating`; `olifant/stub` takes an optional
+`survivor: {line, operator, from, to, mutated}`. It is refused in one sentence: `on a test:
+mutate a function or class, from its module`, outside any unit, in a module with no test file yet
+(stub one first), `could not run: <why>`, and `could not judge: test_x fails before mutation`
+(no mutant is run then). Each mutate is a line in the step log (`mutate person <file>::<unit>
+<summary>`), and a survivor's stub one more (`stub person <file>::<unit> stubbed <name> (kills
+line <n>)`).
+
 ## When the code is right
 
 A red test has two readings, and each has its key. `begin` (`b`) says the test is right: a
