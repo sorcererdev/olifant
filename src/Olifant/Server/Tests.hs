@@ -25,7 +25,7 @@ import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
-import Olifant.App (Ports (..), Project (..))
+import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), languageFor, testsForFile)
 import Olifant.Server.Block (appendStepLine, defName, runOver, tshow)
