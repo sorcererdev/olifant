@@ -44,6 +44,8 @@ module Olifant.Server.Block
   , importedModules
   , defName
   , appendStepLine
+  , importOf
+  , defLineAbove
   ) where
 
 import Control.Applicative ((<|>))
@@ -221,7 +223,7 @@ siteAt path line s0 =
       let rel = makeRelative root path
           ws = prWorkspace project
       lang <- maybe (throwE ("no language knows " <> T.pack rel)) pure (languageFor (catalogLanguages (prCatalog project)) rel)
-      td <- maybe (throwE (langName lang <> " has no [test] table: a magic circle needs its tests")) pure (langTest lang)
+      td <- maybe (throwE (langName lang <> " has no [test] table: Olifant cannot find its tests")) pure (langTest lang)
       paths <- lift (listFiles ws ".")
       let moduleRel = fromMaybe rel (listToMaybe [m | m <- paths, m /= rel, testsForFile td m == rel])
           onTest = moduleRel /= rel

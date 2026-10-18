@@ -3,16 +3,27 @@
 -- file. No model, no block: the test file's edit and where the test's
 -- name is.
 module Olifant.Server.Stub
-  ( classAt
+  ( StubAnswer (..)
+  , stubAt
+  , classAt
   , testNameOf
   , belowDecorators
   ) where
 
+import Control.Monad (unless, when)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Char (isAlphaNum, isDigit, isLower, isUpper, toLower)
-import Data.Maybe (isJust, listToMaybe)
+import Data.Map.Strict qualified as M
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Server.Block (defName)
+import Olifant.Block (uniqueTestName)
+import Olifant.Generation.FillPhase (addImports)
+import Olifant.Language (Language (..))
+import Olifant.Server.Block (Site (..), appendStepLine, defLineAbove, defName, functionAt, importOf, siteAt, siteTestFile, tshow)
+import Olifant.Server.Edits (FileEdit (..), smallestChange)
+import Olifant.Server.State (ServerState (..))
 
 -- | The class enclosing LINE (1-based) of a Python module: its name and
 -- its `class` line. A blank line is in it only when the next line that is
@@ -53,3 +64,54 @@ belowDecorators text line = case drop (line - 1) ls of
   _ -> line
   where
     ls = T.lines text
+
+-- | A stub's answer: the test file (absolute), the new test's def line
+-- (1-based, in the edited file), its name, and the test file's one edit
+-- (creating the file when it is new).
+data StubAnswer = StubAnswer
+  { saFile :: FilePath
+  , saLine :: Int
+  , saName :: Text
+  , saEdit :: FileEdit
+  }
+  deriving (Eq, Show)
+
+-- | A new test's stub for the function, method or class at LINE (1-based;
+-- a decorator's is its def's) of a module: `test_<unit>` after the test
+-- file's last line, the unit's import joined to the file's (a new file
+-- starts with it), its body `...` and `assert ...`. Nothing is drafted;
+-- no block is read or stored. Left is one sentence on why there is none.
+stubAt :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text StubAnswer)
+stubAt path line0 s0 =
+  siteAt path line0 s0 >>= \case
+    (s, Left why) -> pure (s, Left why)
+    (s, Right site0) -> fmap (s,) . runExceptT $ do
+      when (siteOnTest site0) (throwE "on a test: stub writes a new test for a function or class, from its module")
+      let lang = siteLang site0
+          moduleText = siteModuleText site0
+          line = belowDecorators moduleText line0
+          above = defLineAbove line moduleText
+          site = site0 {siteAtCursor = snd <$> above, siteDefLine = fst <$> above}
+      unless (langName lang == "python") (throwE ("stub writes Python tests only, not " <> langName lang <> " yet"))
+      (unit, defLine) <-
+        lift (functionAt s site line) >>= \case
+          Just (n, d, _) -> pure (n, d)
+          Nothing -> maybe (throwE ("no function or class at line " <> tshow line0 <> ": put the cursor in one to stub its test")) pure (classAt moduleText line)
+      let testFile = siteTestFile site
+          testText0 = siteTestText site
+          base = fromMaybe "" testText0
+          name = uniqueTestName (testNameOf unit) base
+          ind = langIndent lang
+          imported = case importOf lang (siteModuleRel site) moduleText unit (Just defLine) of
+            Just i | T.null (T.strip base) -> i
+            Just i -> addImports lang [i] base
+            Nothing -> base
+          kept = T.stripEnd imported
+          stub = "def " <> name <> "() -> None:\n" <> ind <> "...\n" <> ind <> "assert ...\n"
+          new = if T.null kept then stub else kept <> "\n\n\n" <> stub
+          at = if T.null kept then 1 else length (T.splitOn "\n" kept) + 3
+          edit = case testText0 of
+            Nothing -> FileEdit testFile Nothing True ((0, 0), (0, 0)) new
+            Just _ -> let (range, t) = smallestChange base new in FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range t
+      lift (appendStepLine (ssPorts s) (siteRoot site) ["stub", "person", T.pack (siteModuleRel site) <> "::" <> unit, "stubbed " <> name])
+      pure (StubAnswer testFile at name edit)

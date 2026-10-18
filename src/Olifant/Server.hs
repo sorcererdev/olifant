@@ -90,6 +90,8 @@ module Olifant.Server
   , belowDecorators
   , classAt
   , testNameOf
+  , StubAnswer (..)
+  , stubAt
   , TestsScope (..)
   , testsJson
   , TestsFile (..)
@@ -113,5 +115,5 @@ import Olifant.Server.Hints (LineHint (..), fileActionsFor, hintsFor)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
 import Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPlanWith)
 import Olifant.Server.State
-import Olifant.Server.Stub (belowDecorators, classAt, testNameOf)
+import Olifant.Server.Stub (StubAnswer (..), belowDecorators, classAt, stubAt, testNameOf)
 import Olifant.Server.Tests (TestsAnswer (..), TestsFile (..), testsFile, testsFileJson, testsJson, testsRun, testAt, TestsScope (..))
