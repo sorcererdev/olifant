@@ -1,8 +1,8 @@
 -- | Internal to Olifant.Server: a draft (`olifant/draft`) of the unit at a
 -- line, or of the selected lines: on a function, method or class, its body
 -- to pass its tests; on a test, its body from its name. The tests run
--- before and after; the draft lands whatever the after-run says. No block
--- is read or stored.
+-- before and after; the draft lands whatever the after-run says. Nothing
+-- is stored.
 module Olifant.Server.Draft
   ( DraftAnswer (..)
   , draftAt
@@ -22,13 +22,13 @@ import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, pla
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Block.Draft (helpedIn)
+import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), TestRun (..), languageFor, runTestsIn)
 import Olifant.Server.Actions (fillerFor)
-import Olifant.Server.Block (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
+import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testAt)
@@ -210,8 +210,7 @@ functionSummary run = case (trBroken run, trFailed run) of
 -- | TEMPLATE planned over REL (TEXT) with VERIFY and CONTEXT: the file as
 -- the fill writes it, or, when no attempt passed its verify, as the last
 -- attempt writes it (a draft always lands). Left when the model gave no
--- attempt at all, or the plan could not be made. (The attempt bookkeeping
--- is the circle's `draftIn`'s, without its block.)
+-- attempt at all, or the plan could not be made.
 fill :: (ProgressEvent -> IO ()) -> ServerState -> Project -> FilePath -> Text -> Template -> [(Text, Verify [Template])] -> [(FilePath, Text)] -> ModelFiller IO -> ExceptT Text IO Text
 fill progress s project rel text template verify context filler = do
   attempts <- lift (newIORef M.empty)

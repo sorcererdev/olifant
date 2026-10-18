@@ -60,30 +60,7 @@ module Olifant.Server
   , Preview (..)
   , previewFor
   , stepsPlanWith
-  , blockFor
-  , blockBegin
-  , blockStart
-  , blockDraft
-  , blockDraftAt
-  , blockTest
-  , blockJudge
-  , blockAccept
-  , blockReject
-  , blockKill
-  , Killed
-  , StubDraft
-  , blockUnapplied
-  , blockDraftStopped
-  , blockStub
-  , Stubbed (..)
-  , blockWaive
-  , blockChanged
-  , blockEdited
   , orderSurvivors
-  , blockJson
-  , stateName
-  , appendStep
-  , underTest
   , TestsAnswer (..)
   , testsRun
   , testAt
@@ -105,9 +82,7 @@ module Olifant.Server
   , testsFileJson
   ) where
 
-import Olifant.Server.BlockDecide (orderSurvivors)
-import Olifant.Server.BlockMoves (Killed, Stubbed (..), blockChanged, blockEdited, blockKill, blockStub, blockWaive)
-import Olifant.Server.Block (StubDraft, appendStep, blockDraftStopped, blockUnapplied, blockAccept, blockBegin, blockDraft, blockDraftAt, blockStart, blockFor, blockJson, blockJudge, blockReject, blockTest, stateName, underTest)
+import Olifant.Server.Order (orderSurvivors)
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress, menuActionsFor)
 import Olifant.Server.Holes (Hole (..), fillHoleEdits, fillHolePlan, holeAt, holesFor)
 import Olifant.Server.Regions (regionEdits)

@@ -1,7 +1,6 @@
 -- | Internal to Olifant.Server: `olifant/mutate`, the survivors of the
 -- unit at a line. The unit's lines are mutated against the module's test
--- file, as the circle's judge does without its block: nothing is read from
--- a block, stored, gated or waived.
+-- file: nothing is stored or gated.
 module Olifant.Server.Mutate
   ( MutateAnswer (..)
   , mutateAt
@@ -21,8 +20,8 @@ import Olifant.Generation.FillPhase (projectFiles)
 import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
 import Olifant.Mutate.Python (pythonOperators)
 import Olifant.Process (cancelled)
-import Olifant.Server.Block (Site (..), appendStepLine, siteAt, tshow)
-import Olifant.Server.BlockDecide (orderSurvivors)
+import Olifant.Server.Site (Site (..), appendStepLine, siteAt, tshow)
+import Olifant.Server.Order (orderSurvivors)
 import Olifant.Server.State (ServerState (..), deciderFor)
 import Olifant.Server.Unit (Unit (..), unitAt)
 import Olifant.Workspace (normalisePath)

@@ -311,8 +311,7 @@ import or a new helper is code): the attempt fails with "the model answered with
 hole: a whole file", and the retry says *answer with the lines that replace the marker only:
 no `def` line, no imports, no other tests*. `--progress` reports
 `{"event":"cut","hole":…,"dropped":…,"fill":…}` and `{"event":"whole_file","hole":…}`; a
-draft's step log has `fill olifant cut to the hole (N lines dropped)`, and the HUD the draft
-pushes says it (until the circle is judged).
+draft's step log has `fill olifant cut to the hole (N lines dropped)`.
 
 **Verify: a fill must pass a command.** A model hole may name a command its fill must pass,
 usually its tests:
@@ -346,23 +345,21 @@ binding the name, or none, leave it to the model's retry. `--progress` reports i
 `{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the
 name from a message (`supportUndefined`; pyright's does, the others don't yet).
 
-### Drafts: the loop's holes
+### Drafts: the editor's holes
 
-The incremental loop ([chapter 18](18-the-incremental-loop.md)) drafts through the same fill
-phase: a draft is a model hole made on demand, of kind `block` over a function's body or
-`stmt` for a test's arrangement, so it is parsed, checked, auto-imported and retried as any hole
-is. Two things differ.
+The editor's `draft` ([chapter 18](18-tdd-in-the-editor.md#drafting)) drafts through the same
+fill phase: a draft is a model hole made on demand, of kind `block` over a unit's body or a
+test's, so it is parsed, checked, auto-imported and retried as any hole is. Two things differ.
 
 - **The stance.** A draft's request asks for *the least code that makes this test pass and no
   more: do not generalise beyond what the tests ask*. A constant is a good draft for one test;
-  the next test asks for more. Drafts the person passed over (another `draft`) go with the request as
-  *previous drafts (rejected by the person)*.
-- **The verifier is the block's.** A body is verified by its one test (it must pass). A test's
-  arrangement is verified the other way: the test must fail *at its assertion line* (an error in
-  the setup, or a pass with no code yet, is a failed draft). A kill's test must pass on the code
-  and fail with the mutant in place. Each failure goes back to the model as the reason, as a
-  `verify` command's output does; when the retries run out, the hole's placeholder is written and the
-  block stays red with the reason, to finish by hand.
+  the next test asks for more. A body on screen that is no stub (another `draft`) goes with the
+  request as *the body on screen, rejected by the person*.
+- **The verifier is the unit's tests.** A body is verified by its test file (every test there
+  must pass). A test's body is verified the other way: the test must fail *at its assertion*, or
+  pass (an error in the setup is a failed attempt). Each failure goes back to the model as the
+  reason, as a `verify` command's output does; when the retries run out, the last attempt lands
+  anyway, and the notification says what its tests said.
 
 ### Retries with the reason
 

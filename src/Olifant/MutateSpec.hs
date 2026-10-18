@@ -14,7 +14,7 @@ import System.FilePath (makeRelative)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Failure (..), Language (..), Runner (..), Syntax, TestRun (..), parseLanguage, processRunner, runTestsIn)
+import Olifant.Language (Failure (..), Runner (..), Syntax, TestRun (..), parseLanguage, processRunner, runTestsIn)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Mutate
 import Olifant.Mutate.Python (pythonOperators)
@@ -68,30 +68,14 @@ spec = describe "Olifant.Mutate" $ do
     Right ms <- mutantsOf sg py pythonOperators body allLines
     map muLine ms `shouldBe` sort (map muLine ms)
     length (capMutants 2 ms) `shouldBe` 2
-  it "(g) a waiver is per line and per operator (Review Focus 4)" $ do
-    let waived = waiverLine py body 5 "boundary" "inclusive by design"
-    T.lines waived !! 4 `shouldBe` "    if input.party > table.seats:  # olifant: boundary ok: inclusive by design"
-    waiverOn py waived 5 "boundary" `shouldBe` Just "inclusive by design"
-    waiverOn py waived 5 "equality" `shouldBe` Nothing
-    waiverOn py waived 4 "boundary" `shouldBe` Nothing
-  it "(g2) a reason may contain the comment marker" $ do
-    let waived = waiverLine py body 5 "boundary" "see #12"
-    waiverOn py waived 5 "boundary" `shouldBe` Just "see #12"
-    let slashes = py {langComment = "//"}
-        urled = waiverLine slashes body 5 "boundary" "see https://x.y/z"
-    waiverOn slashes urled 5 "boundary" `shouldBe` Just "see https://x.y/z"
-    waiverOn slashes (waiverLine slashes body 5 "boundary" " ") 5 "boundary" `shouldBe` Nothing
-  it "(h) a waived site's mutant carries its reason" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators (waiverLine py body 5 "boundary" "r") allLines
-    [muWaived m | m <- ms, muOperator m == "boundary"] `shouldBe` [Just "r"]
   it "(i) the number operator is a transform: 4 becomes 5" $ withSg $ \sg -> do
     Right ms <- mutantsOf sg py pythonOperators (T.unlines ["def f():", "    return x + 4"]) (S.fromList [1, 2])
     [(muOperator m, muTo m) | m <- ms, muLine m == 2] `shouldSatisfy` elem ("number", "5")
 
   describe "judge" $ do
     let fake outcome = Runner (\_ _ fs -> pure (outcome fs))
-        m1 = Mutant 2 "boundary" "<" "<=" "MUTANT-1" Nothing False
-        m2 = Mutant 3 "string" "\"x\"" "\"\"" "MUTANT-2" Nothing False
+        m1 = Mutant 2 "boundary" "<" "<=" "MUTANT-1" False
+        m2 = Mutant 3 "string" "\"x\"" "\"\"" "MUTANT-2" False
         files = M.fromList [("src/a.py", "ORIGINAL"), ("src/a__test.py", "t")]
     it "(a) a mutant whose tests fail is killed; one whose tests pass survives" $ do
       Right vs <- judge (fake (\fs -> Right (if M.lookup "src/a.py" fs == Just "MUTANT-1" then TestRun [] [("t", Failure Nothing "x" "")] Nothing else TestRun ["t"] [] Nothing))) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1, m2]

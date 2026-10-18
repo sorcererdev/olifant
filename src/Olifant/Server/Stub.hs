@@ -1,6 +1,6 @@
 -- | Internal to Olifant.Server: a new test's stub (`olifant/stub`) for the
 -- function, method or class at a line of a module, at the end of its test
--- file. No model, no block: the test file's edit and where the test's
+-- file. No model: the test file's edit and where the test's
 -- name is.
 module Olifant.Server.Stub
   ( StubAnswer (..)
@@ -18,11 +18,11 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block (stubNameFor, uniqueTestName)
+import Olifant.TestName (stubNameFor, uniqueTestName)
 import Olifant.Generation.FillPhase (addImports)
 import Olifant.Language (Language (..))
 import Olifant.Mutate (Mutant (..))
-import Olifant.Server.Block (Site (..), appendStepLine, defLineAbove, defName, functionAt, importOf, siteAt, siteTestFile, tshow)
+import Olifant.Server.Site (Site (..), appendStepLine, defLineAbove, defName, functionAt, importOf, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..))
 
@@ -80,8 +80,8 @@ data StubAnswer = StubAnswer
 -- | A new test's stub for the function, method or class at LINE (1-based;
 -- a decorator's is its def's) of a module: `test_<unit>` after the test
 -- file's last line, the unit's import joined to the file's (a new file
--- starts with it), its body `...` and `assert ...`. Nothing is drafted;
--- no block is read or stored. With a survivor (its line is LINE), the test
+-- starts with it), its body `...` and `assert ...`. Nothing is drafted
+-- or stored. With a survivor (its line is LINE), the test
 -- is named from the mutant and the mutant is a comment in its body. Left is
 -- one sentence on why there is none.
 stubAt :: FilePath -> Int -> Maybe Mutant -> ServerState -> IO (ServerState, Either Text StubAnswer)

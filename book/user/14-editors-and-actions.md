@@ -707,8 +707,8 @@ its conventions make it predictable. Each is a ghost on a blank line (Tab to tak
 to walk its stops) and in the ⚡ menu.
 
 - **`test-case`**, on a blank line after a test in a `*__test.py`, retired from editors
-  (`menu = false`: no ghost, completion or ⚡ entry; `olifant gen` still runs it). The loop's
-  `stub` and `draft` write the next test ([chapter 18](18-the-incremental-loop.md)):
+  (`menu = false`: no ghost, completion or ⚡ entry; `olifant gen` still runs it). The editor's
+  `stub` and `draft` write the next test ([chapter 18](18-tdd-in-the-editor.md)):
 
   ```python
   def test_⟨behaviour⟩() -> None:
@@ -753,7 +753,7 @@ The end-to-end test in durandal.nvim (`tests/e2e_python_spec.lua`) does this fro
 `olifant init`, a command and its red stub, the new test typed, both red, `handle`
 written, then five green and pyright clean. It no longer takes the test-case ghost on the
 line below the stub, which `menu = false` retired: the plugin's branch moves that step to
-the loop's `stub`.
+`:Durandal stub`.
 
 ## `[applies_at]`: where a generator applies
 

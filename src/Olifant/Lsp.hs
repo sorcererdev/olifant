@@ -9,7 +9,7 @@ module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO, try)
+import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
 import Olifant.Generator (GeneratorId (..))
@@ -33,8 +33,6 @@ import Data.List (isInfixOf)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Proxy (Proxy (..))
-import GHC.TypeLits (KnownSymbol)
-import Olifant.Block (Block (..), pending)
 import Olifant.Language (scriptFileRunner)
 import Data.Scientific (toBoundedInteger)
 import Language.LSP.Protocol.Lens qualified as L
@@ -52,7 +50,7 @@ import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
-import Olifant.Workspace (Workspace (..), normalisePath)
+import Olifant.Workspace (Workspace (..))
 import Olifant.Mutate (Mutant (..))
 import Olifant.Server
 import Olifant.Migration (MigrationReport, migrationJson)
@@ -214,8 +212,6 @@ handlers env =
         lspEnv <- getLspEnv
         st <- liftIO (readMVar (envState env))
         liftIO (writeIORef (ssOnDecided st) (runLspT lspEnv (void (sendRequest SMethod_WorkspaceDiagnosticRefresh Nothing (\_ -> pure ())))))
-        -- a block that changed with no request asking (judged again, the decision model's order)
-        liftIO (writeIORef (ssOnBlock st) (\b killed -> runLspT lspEnv (pushBlock (blockFile b) (Just (b, killed)))))
     , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
         let item = msg ^. L.params . L.textDocument
         atPath (item ^. L.uri) $ \path -> do
@@ -233,12 +229,6 @@ handlers env =
           Just vf -> atPath uri $ \path -> do
             let version = fromIntegral (virtualFileVersion vf)
             update env (changeDoc path version (virtualFileText vf))
-            -- an edit of a block's span: tested again once typing settles (it
-            -- supersedes the block's running test or judge; an edit elsewhere
-            -- in the file leaves that to land)
-            edited <- liftIO (withSnapshot env (blockEdited (normalisePath path)))
-            lspEnv0 <- getLspEnv
-            if edited then liftIO (blockLater env lspEnv0 (normalisePath path) version) else pure ()
             -- what follows from this edit, once typing settles
             case lastEditedLine (msg ^. L.params . L.contentChanges) of
               Nothing -> pure ()
@@ -607,173 +597,11 @@ handlers env =
                     , "tests" .= testsJson (daTests a)
                     ]
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/draft needs a textDocument and a position" Nothing))
-    , -- the loop's blocks: each move answers the block (null once it is
-      -- finished) and pushes it
-      blockRequest env (Proxy :: Proxy "olifant/block/begin") $ \job path params -> case positionOf params of
-        Nothing -> pure (Left "olifant/block/begin needs a position")
-        -- a function with no test: the stub of its first test, which the editor expands
-        -- (and the edits to apply before it: its import, in a file that lacks it)
-        Just (line, _) -> liftIO . moved (withSnapshot job (blockStart (const (pure ())) path (line + 1))) $ \(b, stub) ->
-          pure (concat [("snippet" .= object ["file" .= f, "line" .= at, "body" .= body]) : editsField edits | Just (f, at, body, edits) <- [stub]], [b])
-    , -- at a position with no circle open: on a red test, the test is drafted
-      blockRequest env (Proxy :: Proxy "olifant/block/draft") $ \job path params -> drafted job path ((+ 1) . fst <$> positionOf params)
-    , -- the older name of draft
-      blockRequest env (Proxy :: Proxy "olifant/block/next") $ \job path params -> drafted job path ((+ 1) . fst <$> positionOf params)
-    , blockRequest env (Proxy :: Proxy "olifant/block/test") $ \job path _ -> liftIO (moved (withSnapshot job (blockTest path)) (\b -> pure ([], [b])))
-    , blockRequest env (Proxy :: Proxy "olifant/block/accept") $ \job path _ -> liftIO (finished (withSnapshot job (blockAccept path)))
-    , blockRequest env (Proxy :: Proxy "olifant/block/reject") $ \job path _ -> liftIO (finished (withSnapshot job (blockReject path)))
-    , blockRequest env (Proxy :: Proxy "olifant/block/kill") $ \job path params -> case lineOf params of
-        Nothing -> pure (Left "olifant/block/kill needs a line")
-        Just line -> stubAnswer job (withSnapshot job (blockKill path line)) Left
-    , -- the editor's stub: a survivor's kill, or a function's new test
-      blockRequest env (Proxy :: Proxy "olifant/block/stub") $ \job path params -> case lineOf params of
-        Nothing -> pure (Left "olifant/block/stub needs a line")
-        Just line -> stubAnswer job (withSnapshot job (blockStub path line)) $ \case
-          StubKilled k -> Left k
-          StubOpened tb stub -> Right (tb, stub)
-    , blockRequest env (Proxy :: Proxy "olifant/block/waive") $ \job path params -> case (lineOf params, reasonOf params) of
-        (Just line, Just reason) -> liftIO (moved (withSnapshot job (blockWaive path line reason)) (\(b, edits) -> pure (editsField edits, [b])))
-        _ -> pure (Left "olifant/block/waive needs a line and a reason")
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \req respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))
           True -> inBackground env req respond $ \job -> liftIO (debugState job) >>= respond . Right
     ]
-
--- | What a block move answers: the fields beside `block`, and the blocks
--- it changed (the first is the answer's); or why it is not open.
-type Moved = Either T.Text (BlockAnswer, [Block])
-
--- | The answer's block (null once finished: its file), its other fields,
--- and work to do once it is answered and its blocks pushed (a survivor's
--- stub drafted: the editor expands the stub meanwhile).
-data BlockAnswer = BlockAnswer (Either FilePath Block) [(Key.Key, Value)] (LspM () ())
-
--- | An `olifant/block/<move>` request on its document: answered from a
--- thread of its own, refused with the move's sentence, and every block it
--- changed pushed after the answer.
-blockRequest :: KnownSymbol m => Env -> Proxy m -> (Env -> FilePath -> Value -> LspM () Moved) -> Handlers (LspM ())
-blockRequest env method work = requestHandler (SMethod_CustomMethod method) $ \req respond -> inBackground env req respond $ \job ->
-  case documentPath (req ^. L.params) of
-    Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "a magic circle move needs a textDocument" Nothing))
-    Just path ->
-      work job path (req ^. L.params) >>= \case
-        Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-        Right (BlockAnswer answer fields after, changed) -> do
-          killedOf <- liftIO (killedCounts job)
-          let json b = blockJson b (killedOf b)
-          respond (Right (object (("block" .= either (const Aeson.Null) json answer) : fields)))
-          either (\file -> pushBlock file Nothing) (const (pure ())) answer
-          mapM_ (\b -> pushBlock (blockFile b) (Just (b, killedOf b))) changed
-          after
-
--- | Each pending block's killed count (0 for one no longer pending).
-killedCounts :: Env -> IO (Block -> Int)
-killedCounts env = do
-  blocks <- readIORef . ssBlocks =<< readMVar (envState env)
-  pure (\b -> maybe 0 snd (M.lookup (blockFile b) blocks))
-
--- | A move that leaves its block pending: the block, what else to answer
--- and which other blocks it changed.
-moved :: IO (Either T.Text a) -> (a -> IO ([(Key.Key, Value)], [Block])) -> IO Moved
-moved run answer =
-  run >>= \case
-    Left why -> pure (Left why)
-    Right a -> answer a <&> \(fields, changed) -> case changed of
-      b : _ -> Right (BlockAnswer (Right b) fields (pure ()), changed)
-      [] -> Left "the move changed no magic circle"
-
--- | A stub: a kill's (the code block answers, with its test block's stub;
--- the test block it opened is pushed too; drafted at once with a model:
--- once answered, the draft runs and its edits come through applyEdit,
--- the block pushed), or a function's new test's (the test block answers,
--- its stub expanded after the edits: its import).
-stubAnswer :: Env -> IO (Either T.Text a) -> (a -> Either Killed (Block, (FilePath, Int, T.Text, [FileEdit]))) -> LspM () Moved
-stubAnswer job run which =
-  liftIO $
-    run >>= \case
-      Left why -> pure (Left why)
-      Right a -> case which a of
-        Left (b, testFile, at, body, later) -> do
-          test <- withSnapshot job (\s -> (s,) <$> blockFor testFile s)
-          pure (Right (BlockAnswer (Right b) [snippet testFile at body] (maybe (pure ()) (stubDrafted job testFile) later), b : [tb | Just (tb, _) <- [test]]))
-        Right (tb, (f, at, body, edits)) -> pure (Right (BlockAnswer (Right tb) (snippet f at body : editsField edits) (pure ()), [tb]))
-  where
-    snippet f at body = "snippet" .= object ["file" .= f, "line" .= at, "body" .= body]
-
--- | A survivor's stub's draft, under progress: its edits applied
--- (applyEdit: no request asked for them), the block pushed; nothing
--- landed: why, shown.
-stubDrafted :: Env -> FilePath -> StubDraft -> LspM () ()
-stubDrafted job testFile later = do
-  lspEnv <- getLspEnv
-  -- the request is answered: a cancelled progress stops the draft here
-  -- (no second answer), the block back at its stub
-  ran <- liftIO (try (runLspT lspEnv (planProgress "drafting" later)))
-  killedOf <- liftIO (killedCounts job)
-  let push b = pushBlock (blockFile b) (Just (b, killedOf b))
-  case ran of
-    Left (_ :: Lsp.ProgressCancelledException) ->
-      liftIO (withSnapshot job (blockDraftStopped "cancelled" testFile)) >>= either (const (pure ())) push
-    Right (Right (b, edits)) -> do
-      unless (null edits) $
-        void . sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: draft") (workspaceEdit edits)) $ \case
-          -- refused (the buffer moved on): the person's text stands, the draft red for it
-          Right r | not (r ^. L.applied) -> liftIO (withSnapshot job (blockUnapplied testFile (blockId b))) >>= either (const (pure ())) push
-          _ -> pure ()
-      push b
-    Right (Left why) -> sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info ("Olifant: " <> why))
-
--- | Draft (the editor's move; `next`, its older name, too): under progress
--- (the model writes), with its edits. At a LINE (1-based) with no circle
--- open, a red test there is drafted ('blockDraftAt').
-drafted :: Env -> FilePath -> Maybe Int -> LspM () Moved
-drafted job path line =
-  planProgress "drafting" (\progress -> withSnapshot job (maybe (blockDraft progress path) (blockDraftAt progress path) line)) <&> \case
-    Left why -> Left why
-    Right (b, edits) -> Right (BlockAnswer (Right b) (editsField edits) (pure ()), [b])
-
--- | Accept or reject: the block is finished (its answer null), with edits.
-finished :: IO (Either T.Text (Block, [FileEdit])) -> IO Moved
-finished run =
-  run <&> \case
-    Left why -> Left why
-    Right (b, edits) -> Right (BlockAnswer (Left (blockFile b)) (editsField edits) (pure ()), [])
-
-editsField :: [FileEdit] -> [(Key.Key, Value)]
-editsField edits = ["edits" .= workspaceEdit edits | not (null edits)]
-
--- | `olifant/block`: a file's block as it now is, or null.
-pushBlock :: FilePath -> Maybe (Block, Int) -> LspM () ()
-pushBlock file b = sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/block")) (object ["uri" .= filePathToUri file, "block" .= maybe Aeson.Null (uncurry blockJson) b])
-
--- | After the debounce (a newer edit of the file cancels it), the block's
--- file as the editor has it: tested again if the edit was in its span
--- (or was its draft, applied), and pushed unless the document moved on.
-blockLater :: Env -> LanguageContextEnv () -> FilePath -> Int -> IO ()
-blockLater env lspEnv path version = do
-  debounce <- scDebounceMs . ssConfig <$> readMVar (envState env)
-  void . submit (envJobs env) ("block " <> T.pack path) debounce $ \token -> do
-    changed <- withSnapshot env {envCancel = token} (blockChanged path)
-    current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
-    case changed of
-      -- a block gone (its stub deleted) is gone whatever the text is now
-      Just b | not (pending b) -> runLspT lspEnv (pushBlock (blockFile b) Nothing)
-      Just b | current == Just version -> do
-        killedOf <- killedCounts env
-        runLspT lspEnv (pushBlock (blockFile b) (Just (b, killedOf b)))
-      _ -> pure ()
-
--- | A request's `line` (1-based, as the editor sends it) and `reason`.
-lineOf :: Value -> Maybe Int
-lineOf = \case
-  Object o | Just (Number n) <- KM.lookup "line" o -> toBoundedInteger n
-  _ -> Nothing
-
-reasonOf :: Value -> Maybe T.Text
-reasonOf = \case
-  Object o | Just (String r) <- KM.lookup "reason" o -> Just r
-  _ -> Nothing
 
 -- | Each open document, its version and its project (loading it).
 debugState :: Env -> IO Value
@@ -1303,6 +1131,6 @@ survivorOf = \case
       , Just (String from) <- KM.lookup "from" sv
       , Just (String to) <- KM.lookup "to" sv
       , Just (String mutated) <- KM.lookup "mutated" sv ->
-          Right (Just (Mutant n op from to (T.intercalate "\n" (replicate (n - 1) "" ++ [mutated])) Nothing False))
+          Right (Just (Mutant n op from to (T.intercalate "\n" (replicate (n - 1) "" ++ [mutated])) False))
     _ -> Left "olifant/stub: the survivor needs line, operator, from, to and mutated"
   _ -> Right Nothing
