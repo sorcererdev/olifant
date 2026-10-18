@@ -5,7 +5,7 @@ module Olifant.LspSpec (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Applicative ((<|>))
-import Control.Monad (forM, forM_, void, when, (<=<))
+import Control.Monad (forM, forM_, void, when)
 import Data.Foldable (toList)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
@@ -18,7 +18,6 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Aeson qualified as Aeson
-import Data.Scientific (toBoundedInteger)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Proxy (Proxy (..))
@@ -91,7 +90,6 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   conventionsSpec
   scaleSpec
   concurrencySpec
-  blockSpec
   testsRunSpec
   stubSpec
   draftSpec
@@ -974,252 +972,6 @@ withPackCopies act = do
 
 -- | Slow work runs beside the requests that come meanwhile (the server
 -- reads on; progress can begin).
--- | The loop's blocks over the protocol: `olifant/block/<move>` requests
--- and the `olifant/block` push, with a scripted test runner.
-blockSpec :: Spec
-blockSpec = describe "olifant/block" $ do
-  let testRel = "src/bistro/booking/commands/create_booking__test.py"
-      moduleRel = "src/bistro/booking/commands/create_booking.py"
-      red = T.pack testRel <> "::test_a_party_larger_than_the_table_is_refused"
-      redScript = Aeson.encode (object [Key.fromText red .= object ["line" .= (47 :: Int), "message" .= ("assert isinstance(result, PartyTooLarge)" :: Text)]])
-      move :: Text -> Value -> Session (Either Text Value)
-      move = \case
-        "begin" -> blockMove (Proxy :: Proxy "olifant/block/begin")
-        "test" -> blockMove (Proxy :: Proxy "olifant/block/test")
-        "accept" -> blockMove (Proxy :: Proxy "olifant/block/accept")
-        "kill" -> blockMove (Proxy :: Proxy "olifant/block/kill")
-        "stub" -> blockMove (Proxy :: Proxy "olifant/block/stub")
-        other -> const (fail ("no move " <> T.unpack other))
-      pushed = (customNotification (Proxy :: Proxy "olifant/block") >>= \case NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)) <|> (anyMessage >> pushed)
-      onDoc doc extra = object (["textDocument" .= object ["uri" .= (doc ^. L.uri)]] ++ extra)
-      at file = do
-        text <- TIO.readFile file
-        pure (length (takeWhile (not . ("def test_a_party_larger" `T.isInfixOf`)) (T.lines text)) + 1)
-  it "(f) olifant/block/begin on the fixture's red test answers a Red block and pushes olifant/block; accept is refused while a survivor stands" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-      BSL.writeFile script redScript
-      withPython [] $ \ports dir -> do
-        line <- at (dir </> testRel)
-        ((begun, push, tested, refused), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
-          doc <- openDoc testRel "python"
-          begun <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
-          push <- pushed
-          -- the test passes now: green, judged; the runner passes every mutant too
-          liftIO (TIO.writeFile script "{}")
-          tested <- move "test" (onDoc doc [])
-          refused <- move "accept" (onDoc doc [])
-          pure (begun, push, tested, refused)
-        let blockOf = either (const Nothing) (lookupKey "block")
-        (lookupKey "state" =<< blockOf begun) `shouldBe` Just (String "red")
-        (lookupKey "file" =<< blockOf begun) `shouldBe` Just (String (T.pack (dir </> moduleRel)))
-        lookupKey "uri" push `shouldBe` Just (toJSON (filePathToUri (dir </> moduleRel)))
-        (lookupKey "state" =<< lookupKey "block" push) `shouldBe` Just (String "red")
-        (lookupKey "state" =<< blockOf tested) `shouldBe` Just (String "judged")
-        (lookupKey "failure" =<< blockOf tested) `shouldBe` Nothing
-        refused `shouldSatisfy` either ("survivor(s): stub a test or waive each, then accept" `T.isInfixOf`) (const False)
-  it "(f2) a red block carries its failure: the test file, the line, the runner's message and the test — its own, or a kept test that no longer passes" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-          kept = T.pack testRel <> "::test_books_a_free_slot"
-      BSL.writeFile script redScript
-      withPython [] $ \ports dir -> do
-        line <- at (dir </> testRel)
-        ((begun, push, keptRed), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
-          doc <- openDoc testRel "python"
-          begun <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
-          push <- pushed
-          -- its own test passes now, but a test that passed when it began fails
-          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText kept .= object ["line" .= (34 :: Int), "message" .= ("assert result == Ok(...)" :: Text)]])))
-          keptRed <- move "test" (onDoc doc [])
-          pure (begun, push, keptRed)
-        let failureOf = lookupKey "failure" <=< lookupKey "block"
-            failure test l message = Just (object ["file" .= (dir </> testRel), "line" .= (l :: Int), "message" .= (message :: Text), "test" .= (test :: Text)])
-            answered = either (const Nothing) Just
-        failureOf push `shouldBe` failure red 47 "assert isinstance(result, PartyTooLarge)"
-        (failureOf =<< answered begun) `shouldBe` failure red 47 "assert isinstance(result, PartyTooLarge)"
-        ((lookupKey "hud" <=< lookupKey "block") =<< answered keptRed) `shouldSatisfy` maybe False (\case String h -> "no longer passes" `T.isInfixOf` h; _ -> False)
-        (failureOf =<< answered keptRed) `shouldBe` failure kept 34 "assert result == Ok(...)"
-  it "(h3) a stub deleted in the editor closes its circle: olifant/block pushes no block for the test file, and the module stubs again" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-          pushedTo u = pushed >>= \v -> if lookupKey "uri" v == Just (toJSON u) then pure v else pushedTo u
-          -- the editor's expansion of a snippet: each tab stop its default, the assertion True
-          expanded body =
-            let (before, stop) = T.breakOn "${1:" (T.replace "${2:...}" "True" body)
-                rest = T.drop 4 stop
-             in before <> T.takeWhile (/= '}') rest <> T.drop 1 (T.dropWhile (/= '}') rest)
-      BSL.writeFile script redScript
-      withPython [] $ \ports dir -> do
-        line <- at (dir </> testRel)
-        original <- TIO.readFile (dir </> testRel)
-        ((cleared, again), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
-          doc <- openDoc testRel "python"
-          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
-          liftIO (TIO.writeFile script "{}")
-          Right _ <- move "test" (onDoc doc [])
-          Right killed <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
-          let Just (Number at') = lookupKey "line" =<< lookupKey "snippet" killed
-              Just (String body) = lookupKey "body" =<< lookupKey "snippet" killed
-              Just at'' = toBoundedInteger at' :: Maybe Int
-              ls = T.splitOn "\n" original
-              stubbed = T.intercalate "\n" (take (at'' - 1) ls ++ [expanded body] ++ drop at'' ls)
-          _ <- pushedTo (doc ^. L.uri)
-          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument stubbed))]
-          _ <- pushedTo (doc ^. L.uri)
-          -- the person deletes the stub whole
-          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument original))]
-          cleared <- pushedTo (doc ^. L.uri)
-          -- stubbed again from the module
-          code <- openDoc moduleRel "python"
-          again <- move "kill" (onDoc code ["line" .= (1 :: Int)])
-          pure (cleared, again)
-        lookupKey "block" cleared `shouldBe` Just Aeson.Null
-        again `shouldSatisfy` either (const False) (const True)
-        steps <- TIO.readFile (dir </> ".olifant/state/steps.log")
-        steps `shouldSatisfy` ("\treject\tperson\tthe stub was deleted" `T.isInfixOf`)
-  it "(h4) a test block red at a run (its arrangement raises before the assertion) pushes its failure: the test file, line, message and test" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-          pushedTo u = pushed >>= \v -> if lookupKey "uri" v == Just (toJSON u) then pure v else pushedTo u
-          failed v = (lookupKey "failure" =<< lookupKey "block" v) /= Nothing
-          expanded body =
-            let (before, stop) = T.breakOn "${1:" (T.replace "${2:...}" "True" body)
-                rest = T.drop 4 stop
-             in before <> T.takeWhile (/= '}') rest <> T.drop 1 (T.dropWhile (/= '}') rest)
-      BSL.writeFile script redScript
-      withPython [] $ \ports dir -> do
-        line <- at (dir </> testRel)
-        original <- TIO.readFile (dir </> testRel)
-        ((fresh, red', test, arrangeLine), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
-          doc <- openDoc testRel "python"
-          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
-          liftIO (TIO.writeFile script "{}")
-          Right _ <- move "test" (onDoc doc [])
-          Right killed <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
-          let Just (Number at') = lookupKey "line" =<< lookupKey "snippet" killed
-              Just (String body) = lookupKey "body" =<< lookupKey "snippet" killed
-              Just at'' = toBoundedInteger at' :: Maybe Int
-              ls = T.splitOn "\n" original
-              stubbed = T.intercalate "\n" (take (at'' - 1) ls ++ [expanded body] ++ drop at'' ls)
-              name = T.takeWhile (/= '}') (snd (T.breakOnEnd "${1:" body))
-              test = T.pack testRel <> "::" <> name
-              -- the person writes an arrangement that raises
-              placeholderAt = length (takeWhile (not . T.isInfixOf "olifant: arrange") (T.splitOn "\n" stubbed)) + 1
-              raising = T.intercalate "\n" (zipWith (\i l -> if i == placeholderAt then "    x = undefined_name" else l) [1 :: Int ..] (T.splitOn "\n" stubbed))
-          fresh <- pushedTo (doc ^. L.uri)
-          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument stubbed))]
-          _ <- pushedTo (doc ^. L.uri)
-          liftIO (BSL.writeFile script (Aeson.encode (object [Key.fromText test .= object ["line" .= placeholderAt, "message" .= ("NameError: name 'undefined_name' is not defined" :: Text)]])))
-          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument raising))]
-          let untilFailed = pushedTo (doc ^. L.uri) >>= \v -> if failed v then pure v else untilFailed
-          red' <- untilFailed
-          pure (fresh, red', test, placeholderAt)
-        -- the kill stub's starting red is its placeholder: nothing to mark
-        failed fresh `shouldBe` False
-        (lookupKey "failure" =<< lookupKey "block" red') `shouldBe` Just (object ["file" .= (dir </> testRel), "line" .= arrangeLine, "message" .= ("NameError: name 'undefined_name' is not defined" :: Text), "test" .= test])
-  it "(h) a survivor's stub with a model: the kill answers its snippet and pushes the test block drafting; the editor expands it; the draft comes back through workspace/applyEdit" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-          fills = tmp </> "fills.toml"
-          pushedTo u = pushed >>= \v -> if lookupKey "uri" v == Just (toJSON u) then pure v else pushedTo u
-          applyEdit = message SMethod_WorkspaceApplyEdit <|> (anyMessage >> applyEdit)
-          -- as vim.snippet.expand leaves it: each tab stop its text
-          expanded body =
-            let (before, stop) = T.breakOn "${1:" (T.replace "${2:...}" "..." body)
-                rest = T.drop 4 stop
-             in before <> T.takeWhile (/= '}') rest <> T.drop 1 (T.dropWhile (/= '}') rest)
-      BSL.writeFile script redScript
-      TIO.writeFile fills "[fills]\narrange = \"result = 1\"\nassertion = \"assert result == 1\"\n"
-      withPython [] $ \ports dir -> do
-        line <- at (dir </> testRel)
-        original <- TIO.readFile (dir </> testRel)
-        ((drafting, texts), _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("fills", String (T.pack fills))] ports dir $ do
-          doc <- openDoc testRel "python"
-          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
-          liftIO (TIO.writeFile script "{}")
-          Right _ <- move "test" (onDoc doc [])
-          Right killed <- move "kill" (onDoc doc ["line" .= (1 :: Int)])
-          let Just (Number at') = lookupKey "line" =<< lookupKey "snippet" killed
-              Just (String body) = lookupKey "body" =<< lookupKey "snippet" killed
-              Just at'' = toBoundedInteger at' :: Maybe Int
-              ls = T.splitOn "\n" original
-              stubbed = T.intercalate "\n" (take (at'' - 1) ls ++ [expanded body] ++ drop at'' ls) <> "\n"
-          drafting <- pushedTo (doc ^. L.uri)
-          changeDoc doc [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument stubbed))]
-          TRequestMessage _ _ _ params <- applyEdit
-          let edit = params ^. L.edit
-              toEither = \case InL x -> Left x; InR y -> Right y
-          pure (drafting, [either (^. L.newText) (^. L.newText) (toEither t) | Just cs <- [edit ^. L.documentChanges], InL te <- cs, t <- te ^. L.edits])
-        (lookupKey "state" =<< lookupKey "block" drafting) `shouldBe` Just (String "drafting")
-        T.concat texts `shouldSatisfy` ("result = 1" `T.isInfixOf`)
-        T.concat texts `shouldSatisfy` ("assert result == 1" `T.isInfixOf`)
-  it "(s) olifant/block/stub in a function with no circle answers its new test's stub, named test_<fn>, and the test block; outside a function, the sentence" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-      BSL.writeFile script "{}"
-      withPython [] $ \ports dir -> do
-        ((stubbed, outside), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
-          code <- openDoc moduleRel "python"
-          outside <- move "stub" (onDoc code ["line" .= (3 :: Int)])
-          -- in `handle`
-          stubbed <- move "stub" (onDoc code ["line" .= (53 :: Int)])
-          pure (stubbed, outside)
-        let snippet k = either (const Nothing) (\v -> lookupKey k =<< lookupKey "snippet" v) stubbed
-            block k = either (const Nothing) (\v -> lookupKey k =<< lookupKey "block" v) stubbed
-        snippet "file" `shouldBe` Just (String (T.pack (dir </> testRel)))
-        snippet "body" `shouldSatisfy` \case Just (String b) -> "def ${1:test_handle}() -> None:" `T.isInfixOf` b; _ -> False
-        (block "file", block "state") `shouldBe` (Just (String (T.pack (dir </> testRel))), Just (String "red"))
-        -- a stub's red is its placeholder, not a run's: no failure to mark
-        block "failure" `shouldBe` Nothing
-        outside `shouldBe` Left "put the cursor in a function to stub a test for it"
-  it "(r) olifant/block/draft on a red test with no circle answers the test's own circle, in its test file, and pushes it drafting" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-          fills = tmp </> "fills.toml"
-      BSL.writeFile script redScript
-      TIO.writeFile fills "[fills]\narrange = \"result = 1\"\n"
-      withPython [] $ \ports dir -> do
-        line <- at (dir </> testRel)
-        ((answer, drafting), _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("fills", String (T.pack fills))] ports dir $ do
-          doc <- openDoc testRel "python"
-          rid <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
-          -- pushed while the model writes, before the answer
-          drafting <- pushed
-          let awaitDraft = responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) rid <|> (anyMessage >> awaitDraft)
-          TResponseMessage _ _ r <- awaitDraft
-          pure (either (Left . (^. L.message)) Right r, drafting)
-        let blockOf = either (const Nothing) (lookupKey "block")
-        (lookupKey "file" =<< blockOf answer) `shouldBe` Just (String (T.pack (dir </> testRel)))
-        lookupKey "uri" drafting `shouldBe` Just (toJSON (filePathToUri (dir </> testRel)))
-        (lookupKey "state" =<< lookupKey "block" drafting) `shouldBe` Just (String "drafting")
-        (lookupKey "hud" =<< lookupKey "block" drafting) `shouldSatisfy` \case Just (String h) -> "test_a_party_larger_than_the_table_is_refused \183 red: assert isinstance(result, PartyTooLarge) \183 drafting" `T.isInfixOf` h; _ -> False
-  it "(g) a draft whose document moved on while the model wrote is refused: your text stands" $
-    withSystemTempDirectory "olifant-block" $ \tmp -> do
-      let script = tmp </> "tests.json"
-          fills = tmp </> "fills.toml"
-      BSL.writeFile script redScript
-      TIO.writeFile fills "[fills]\nbody = \"return Ok(None)\"\n"
-      entered <- newEmptyMVar
-      gate <- newEmptyMVar
-      -- the draft's check waits until the test has changed the module
-      let gated = Checker $ \lang files -> tryPutMVar entered () >> takeMVar gate >> runCheck noChecker lang files
-      withPython [] $ \ports dir -> do
-        line <- at (dir </> testRel)
-        (answer, _) <- inProcessWithConfig [("test_script", String (T.pack script)), ("fills", String (T.pack fills))] ports {pChecker = const gated} dir $ do
-          doc <- openDoc testRel "python"
-          code <- openDoc moduleRel "python"
-          Right _ <- move "begin" (onDoc doc ["position" .= object ["line" .= line, "character" .= (4 :: Int)]])
-          rid <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) (onDoc code [])
-          liftIO (timeout 30000000 (takeMVar entered)) >>= maybe (fail "the draft never checked") pure
-          changeDoc code [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# typed meanwhile\n"))]
-          liftIO (threadDelay 300000) -- the change is in before the draft goes on
-          liftIO (putMVar gate () >> forkIO (let loop = putMVar gate () >> loop in loop))
-          let awaitDraft = responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/block/draft")) rid <|> (anyMessage >> awaitDraft)
-          TResponseMessage _ _ r <- awaitDraft
-          pure (either (Left . (^. L.message)) Right r)
-        either id (const "drafted") answer `shouldBe` "the file changed while drafting; your text stands"
-
 -- | `olifant/stub`: a new test's stub for the unit at a position.
 stubSpec :: Spec
 stubSpec = describe "olifant/stub" $ do
@@ -1432,7 +1184,7 @@ testsRunSpec = describe "olifant/tests/run" $ do
       toTest `shouldBe` Right (object ["file" .= (dir </> testRel), "kind" .= ("test" :: Text), "exists" .= True])
       toModule `shouldBe` Right (object ["file" .= (dir </> moduleRel), "kind" .= ("module" :: Text), "exists" .= True])
 
--- | An `olifant/block/<move>` request: its answer, or the error's sentence.
+-- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
 blockMove method params = request (SMethod_CustomMethod method) params <&> \(TResponseMessage _ _ r) -> either (Left . (^. L.message)) Right r
 

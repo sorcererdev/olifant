@@ -36,7 +36,7 @@ import System.FilePath (normalise, takeBaseName, takeDirectory)
 -- | @path::name@, or a file.
 type TestId = Text
 
--- | A test file's run, as a circle on its test OWN takes it, keeping KEEP
+-- | A test file's run, as a fill verified by its test OWN takes it, keeping KEEP
 -- (tests that passed before; a sibling red otherwise is passed over): own
 -- red (any of its cases, a parametrized one's `own[…]`) is its red; else
 -- the first kept test that failed is (that test, the runner's failure);

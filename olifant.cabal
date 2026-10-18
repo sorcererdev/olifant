@@ -47,8 +47,6 @@ library
     Olifant.Anchor.Phrase
     Olifant.Anchor.Resolve
     Olifant.App
-    Olifant.Block
-    Olifant.Block.Draft
     Olifant.Catalog
     Olifant.Cli
     Olifant.Cli.Options
@@ -119,8 +117,6 @@ library
     Olifant.Rules
     Olifant.Server
     Olifant.Server.Actions
-    Olifant.Server.Block
-    Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Draft
     Olifant.Server.Edits
@@ -179,9 +175,6 @@ test-suite spec
     Olifant.AnchorSpec
     Olifant.App
     Olifant.AppSpec
-    Olifant.Block
-    Olifant.Block.Draft
-    Olifant.BlockSpec
     Olifant.Catalog
     Olifant.CatalogSpec
     Olifant.Cli
@@ -278,8 +271,6 @@ test-suite spec
     Olifant.RulesSpec
     Olifant.Server
     Olifant.Server.Actions
-    Olifant.Server.Block
-    Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Draft
     Olifant.Server.Edits

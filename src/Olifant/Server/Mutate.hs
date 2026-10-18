@@ -1,7 +1,6 @@
 -- | Internal to Olifant.Server: `olifant/mutate`, the survivors of the
 -- unit at a line. The unit's lines are mutated against the module's test
--- file, as the circle's judge does without its block: nothing is read from
--- a block, stored, gated or waived.
+-- file: nothing is stored or gated.
 module Olifant.Server.Mutate
   ( MutateAnswer (..)
   , mutateAt

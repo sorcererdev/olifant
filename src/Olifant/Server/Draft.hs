@@ -210,8 +210,7 @@ functionSummary run = case (trBroken run, trFailed run) of
 -- | TEMPLATE planned over REL (TEXT) with VERIFY and CONTEXT: the file as
 -- the fill writes it, or, when no attempt passed its verify, as the last
 -- attempt writes it (a draft always lands). Left when the model gave no
--- attempt at all, or the plan could not be made. (The attempt bookkeeping
--- is the circle's `draftIn`'s, without its block.)
+-- attempt at all, or the plan could not be made.
 fill :: (ProgressEvent -> IO ()) -> ServerState -> Project -> FilePath -> Text -> Template -> [(Text, Verify [Template])] -> [(FilePath, Text)] -> ModelFiller IO -> ExceptT Text IO Text
 fill progress s project rel text template verify context filler = do
   attempts <- lift (newIORef M.empty)

@@ -1,14 +1,11 @@
 -- | Mutation testing's makings: operators (an ast-grep pattern and its fix,
 -- or a Haskell transform of the matched text), the sites they fire on within
--- the lines in scope, and the waivers a line can carry. Running the mutants
--- is `Olifant.Block`'s judge, not this module's.
-module Olifant.Mutate (Mutant (..), Verdict (..), judge, judgeTimeout, Operator (..), mutantsOf, waiverOn, waiverLine, capMutants) where
+-- the lines in scope. Running the mutants is `Olifant.Mutate.Run`'s judge.
+module Olifant.Mutate (Mutant (..), Verdict (..), judge, judgeTimeout, Operator (..), mutantsOf, capMutants) where
 
 import Data.Aeson (Value)
 import Data.ByteString qualified as BS
-import Data.Char (isSpace)
 import Data.List (sortOn)
-import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -26,8 +23,7 @@ data Operator
   | Transforming {opName :: Text, opRule :: Value, opTransform :: Text -> Maybe Text}
 
 -- | The file's text and the lines in scope (1-based) → one mutant per (site,
--- operator), in file order. A rewrite that changes nothing is no mutant, and
--- a line's waiver for an operator rides on that operator's mutant there.
+-- operator), in file order. A rewrite that changes nothing is no mutant.
 mutantsOf :: Monad m => Syntax m -> Language -> [Operator] -> Text -> Set Int -> m (Either SyntaxFailure [Mutant])
 mutantsOf syntax lang operators file scope = go operators []
   where
@@ -48,7 +44,7 @@ mutantsOf syntax lang operators file scope = go operators []
           muFrom = fst (difference from to),
           muTo = snd (difference from to),
           muText = spliceBytes bytes to file,
-          muWaived = waiverOn lang file (line + 1) (opName op),
+          muWaived = Nothing,
           muDim = False
         }
     rw (Site _ _ _ to _) = to
@@ -75,28 +71,6 @@ spliceBytes :: (Int, Int) -> Text -> Text -> Text
 spliceBytes (from, to) replacement file =
   let bytes = TE.encodeUtf8 file
    in TE.decodeUtf8With lenientDecode (BS.take from bytes <> TE.encodeUtf8 replacement <> BS.drop to bytes)
-
--- | The reason on a line's waiver for an operator: the file, a 1-based line
--- and an operator → `COMMENT olifant: OP ok: REASON` at the line's end.
-waiverOn :: Language -> Text -> Int -> Text -> Maybe Text
-waiverOn lang file line op = case drop (line - 1) (T.lines file) of
-  (text : _) -> listToMaybe (mapMaybe (waiverAfter . T.drop (T.length marker) . snd) (T.breakOnAll marker text))
-  [] -> Nothing
-  where
-    marker = langComment lang
-    -- a reason may hold the marker itself (`see #12`), so every occurrence is tried
-    waiverAfter rest0 = do
-      rest <- T.stripPrefix "olifant:" (T.stripStart rest0)
-      let (name, afterName) = T.break isSpace (T.stripStart rest)
-      reason <- T.strip <$> T.stripPrefix "ok:" (T.stripStart afterName)
-      if name == op && not (T.null afterName) && not (T.null reason) then Just reason else Nothing
-
--- | The file with `  # olifant: OP ok: REASON` appended to that (1-based) line.
-waiverLine :: Language -> Text -> Int -> Text -> Text -> Text
-waiverLine lang file line op reason
-  | T.null (T.strip reason) = file -- a waiver without a reason is not one
-  | otherwise =
-  T.unlines [if i == line then l <> "  " <> langComment lang <> " olifant: " <> op <> " ok: " <> reason else l | (i, l) <- zip [1 ..] (T.lines file)]
 
 -- | The first `n` mutants (they are already in file order).
 capMutants :: Int -> [Mutant] -> [Mutant]
