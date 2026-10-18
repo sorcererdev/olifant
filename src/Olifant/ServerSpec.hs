@@ -330,6 +330,57 @@ draftSpecs = describe "a draft (olifant/draft)" $ do
       (s', Right _) <- draftAt (const (pure ())) (root </> moduleRel) 6 Nothing s
       logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
       logged `shouldSatisfy` T.isInfixOf ("\tdraft\tperson\t" <> T.pack moduleRel <> "::handle\tdrafted by drafter \183 green\n")
+  describe "on a test" $ do
+    -- the test file with a new test's stub: its def on line 9, its body 10-11
+    let stubbedTest = testText <> T.unlines ["", "", "def test_handles_two_seats() -> None:", "    ...", "    assert ..."]
+        newId = T.pack testRel <> "::test_handles_two_seats"
+        onTestServer verdict fills = do
+          seen <- newIORef []
+          (s0, _) <- blocksOnSyntax unitSyntax verdict [(moduleRel, written), (testRel, stubbedTest)]
+          pure ((openDoc (root </> testRel) 1 stubbedTest s0) {ssTestFiller = Just (answering seen fills)}, seen)
+        draftTest s = snd <$> draftAt (const (pure ())) (root </> testRel) 10 Nothing s
+        drafted = "table = CloseTable()\nassert table.handle(5) == 2"
+        testNamesIn t = [n | l <- T.lines t, Just rest <- [T.stripPrefix "def " (T.strip l)], let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest, "test" `T.isPrefixOf` n]
+    it "its body drafted from its name; red at the assertion" $ do
+      (s, _) <- onTestServer killedBy [("body", drafted)]
+      Right a <- draftTest s
+      (daFile a, daUnit a) `shouldBe` (root </> testRel, "test_handles_two_seats")
+      daSummary a `shouldBe` "red at the assertion \183 AssertionError"
+      applyEdits (maybe [] pure (daEdit a)) stubbedTest `shouldBe` T.replace "    ...\n    assert ...\n" "    table = CloseTable()\n    assert table.handle(5) == 2\n" stubbedTest
+    it "the model is told the test's name and sees the module under test in full" $ do
+      (s, seen) <- onTestServer killedBy [("body", drafted)]
+      Right _ <- draftTest s
+      req : _ <- readIORef seen
+      fmap fhInstruction (bodyHole req) `shouldSatisfy` maybe False ("handles two seats" `T.isInfixOf`)
+      lookup moduleRel (frContext req) `shouldBe` Just written
+    it "a test that passes at once: green, already passes" $ do
+      let allPass files = Right (TestRun [T.pack testRel <> "::" <> n | n <- testNamesIn (M.findWithDefault "" testRel files)] [] Nothing)
+      (s, _) <- onTestServer allPass [("body", "assert CloseTable().handle(4) == 1")]
+      Right a <- draftTest s
+      (daSummary a, daGreen a) `shouldBe` ("green: already passes", True)
+    it "an error before its assertion still lands; red: error before the assertion" $ do
+      let erring files = Right (TestRun [testId] [(newId, Failure (Just 10) "NameError: name 'Table' is not defined" "") | "test_handles_two_seats" `T.isInfixOf` M.findWithDefault "" testRel files] Nothing)
+      (s, _) <- onTestServer erring [("body", "table = Table()\nassert table.handle(5) == 2")]
+      Right a <- draftTest s
+      daSummary a `shouldBe` "red: error before the assertion \183 NameError: name 'Table' is not defined"
+      fmap feText (daEdit a) `shouldSatisfy` maybe False ("Table()" `T.isInfixOf`)
+    it "a sibling that passed before and fails after: named in the summary" $ do
+      let breaking files =
+            let t = M.findWithDefault "" testRel files
+                drafted' = "handle(5)" `T.isInfixOf` t
+             in Right (TestRun ([testId | not drafted'] ++ [newId | drafted']) [(testId, Failure (Just 6) "assert 2 == 1" "") | drafted'] Nothing)
+      (s, _) <- onTestServer breaking [("body", drafted)]
+      Right a <- draftTest s
+      daSummary a `shouldBe` "green: already passes; red: test_closes_a_table no longer passes"
+    it "notes in a stub's body (a survivor's `# kills:`) are context, and no rejected draft" $ do
+      let noted = T.replace "    ...\n" "    # kills: > \8594 >= on line 6\n    ...\n" stubbedTest
+      seen <- newIORef []
+      (s0, _) <- blocksOnSyntax unitSyntax killedBy [(moduleRel, written), (testRel, noted)]
+      let s = (openDoc (root </> testRel) 1 noted s0) {ssTestFiller = Just (answering seen [("body", drafted)])}
+      Right _ <- draftTest s
+      req : _ <- readIORef seen
+      [t | (l, t) <- frContext req, "notes" `T.isInfixOf` T.pack l] `shouldBe` ["# kills: > \8594 >= on line 6"]
+      map fst (frContext req) `shouldSatisfy` (not . any (("rejected" `T.isInfixOf`) . T.pack))
 
 -- | The python-htmx pack's Python, as the server sees it.
 pythonOf :: ServerState -> IO Language

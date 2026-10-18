@@ -14,7 +14,7 @@ import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, wit
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
@@ -22,15 +22,16 @@ import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, pla
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
-import Olifant.Generation.FillPhase (applyFills, projectFiles)
+import Olifant.Block.Draft (helpedIn)
+import Olifant.Generation.FillPhase (applyFills, assertionSpan, projectFiles)
 import Olifant.Generator (GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Failure (..), TestRun (..), languageFor, runTestsIn)
 import Olifant.Server.Actions (fillerFor)
-import Olifant.Server.Block (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody)
+import Olifant.Server.Block (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..))
-import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..))
+import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testAt)
 import Olifant.Server.Unit (Unit (..), unitAt)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (normalisePath)
@@ -71,6 +72,7 @@ draftAt progress path line selected s0 =
         (Nothing, Right u) -> maybe (throwE (unitName u <> " is on one line: select the lines to draft")) (pure . (unitName u,)) (unitBody u)
       when (fst span' < 1 || snd span' < fst span' || snd span' > length (T.splitOn "\n" text)) (throwE "the selection is not in the file")
       when (onTest && isNothing selected && not ("test" `T.isPrefixOf` unit)) (throwE (unit <> " is no test: draft a test here, or a function from its module"))
+      -- a module needs its test file (on a test, the file is the test file)
       testText <- case siteTestText site of
         Just t -> pure t
         Nothing -> throwE ("no test file for this module yet: " <> T.pack (siteTestRel site) <> "; stub one first (:Durandal stub)")
@@ -79,7 +81,10 @@ draftAt progress path line selected s0 =
       before <- lift (either (TestRun [] [] . Just) id <$> runOver s ws lang [T.pack (siteTestRel site)])
       (template, verify, context) <-
         if onTest
-          then throwE "drafting a test comes in the next task"
+          then do
+            -- (a helper in a test file was refused above)
+            name <- maybe (throwE ("no test at line " <> tshow line)) pure (testAt text (fst span'))
+            except (testDraft text span' (T.pack (siteTestRel site) <> "::" <> name) (siteModuleRel site) (siteModuleText site))
           else except (functionDraft text span' unit (siteTestRel site) testText before)
       imported <- lift (importedContext ws lang (rel : map fst context) (text : map snd context))
       written <- fill progress s project rel text template verify (context ++ imported) filler
@@ -90,7 +95,8 @@ draftAt progress path line selected s0 =
       start <- lift getMonotonicTime
       after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack (siteTestRel site)] (M.insert rel written files))
       end <- lift getMonotonicTime
-      let summary = functionSummary after
+      let summary = if onTest then testSummary tid before after written else functionSummary after
+          tid = T.pack (siteTestRel site) <> "::" <> fromMaybe unit (testAt written (fst span'))
           green = isNothing (trBroken after) && null (trFailed after)
           edit = [FileEdit file started False range new | written /= text, let (range, new) = smallestChange text written]
           tests = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) after (end - start)
@@ -125,6 +131,46 @@ functionDraft text (l1, l2) unit testRel testText before = do
           ++ [("the body on screen, rejected by the person (write another)", T.intercalate "\n" (dedent body)) | not (isStub body)]
   template <- holeOver ls (l1, l2) instruction
   pure (template, [("body", VerifyTests)], context)
+
+-- | A test's draft: the test file with the span's lines one `block` hole
+-- called `body`, worded from the test's name; verified red at its
+-- assertion or passing (`VerifyRedAt`, passing allowed: an error before
+-- the assertion is asked again); the context: the module under test in
+-- full, the notes in the stub's body, and the body on screen when it is no
+-- stub (rejected by the person). The siblings are in the file itself.
+-- TID is the test's full id (`path::name`).
+testDraft :: Text -> (Int, Int) -> Text -> FilePath -> Text -> Either Text (Template, [(Text, Verify [Template])], [(FilePath, Text)])
+testDraft text (l1, l2) tid moduleRel moduleText = do
+  let ls = T.splitOn "\n" text
+      body = take (l2 - l1 + 1) (drop (l1 - 1) ls)
+      short = snd (T.breakOnEnd "::" tid)
+      words' = T.replace "_" " " (fromMaybe short (T.stripPrefix "test_" short))
+      notes = [T.strip l | l <- body, "#" `T.isPrefixOf` T.strip l]
+      instruction = helpedIn ls (oneLine ("write the body of the test \"" <> words' <> "\": arrange, act, and assert what its name says, one behaviour, against the module in the context; it should fail at its assertion until the code does it"))
+      context =
+        [(moduleRel, moduleText)]
+          ++ [("notes in the test's body", T.intercalate "\n" notes) | not (null notes)]
+          ++ [("the body on screen, rejected by the person (write another)", T.intercalate "\n" (dedent body)) | not (isStub body)]
+  template <- holeOver ls (l1, l2) instruction
+  pure (template, [("body", VerifyRedAt tid l1 True)], context)
+
+-- | A test's after-run in a few words: its own outcome (at its assertion,
+-- before it, passing, not run), then each sibling that passed before and
+-- fails now.
+testSummary :: Text -> TestRun -> TestRun -> Text -> Text
+testSummary tid before after written = own <> T.concat ["; red: " <> short t <> " no longer passes" | t <- broke]
+  where
+    short = snd . T.breakOnEnd "::"
+    isOwn t = t == tid || (tid <> "[") `T.isPrefixOf` t
+    broke = [t | (t, _) <- trFailed after, not (isOwn t), t `elem` trPassed before]
+    own = case (trBroken after, [f | (t, f) <- trFailed after, isOwn t]) of
+      (Just why, _) -> "red: could not run \183 " <> firstLine why
+      (_, f : _)
+        | Just l <- fLine f, Just (a, z) <- assertionSpan (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> firstLine (fMessage f)
+        | otherwise -> "red: error before the assertion \183 " <> firstLine (fMessage f)
+      _
+        | any isOwn (trPassed after) -> "green: already passes"
+        | otherwise -> "red: " <> short tid <> " did not run"
 
 -- | LS with the lines L1..L2 one `block` hole called `body`, at L1's
 -- indentation, worded INSTRUCTION.
