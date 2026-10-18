@@ -62,6 +62,9 @@ data Language = Language
   -- as they are (names become their case shape)
   , langTest :: Maybe TestDef
   -- ^ `[test]`: how the tests of a file are run (a preset names the plumbing)
+  , langUnitKinds :: [Text]
+  -- ^ `[unit]` kinds: the node kinds of a definition (a function, method or
+  -- class); the innermost at the cursor is the unit
   }
   deriving stock (Show)
 
@@ -115,7 +118,7 @@ data TestDef = TestDef {testCommand :: [Text], testContext :: [Text], testFormat
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -131,7 +134,8 @@ parseLanguage name packRoot src = do
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
   keywords <- fromMaybe [] <$> optional "keywords" (list text) top
   test <- optional "test" (table >=> testFrom) top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test)
+  unitKinds <- maybe (pure []) (\t -> onlyKeys ["kinds"] t >> (fromMaybe [] <$> optional "kinds" (list text) t)) =<< optional "unit" table top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds)
   where
     tmpl = first describeTemplateError . parseTemplate
     grammarFrom = \case

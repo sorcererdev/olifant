@@ -16,6 +16,7 @@ import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
 import Olifant.Language.AstGrep (astGrepSyntax)
+import Olifant.Server (Unit (..), unitAt)
 import System.Directory (doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath (takeExtension, (</>))
@@ -225,6 +226,16 @@ spec = do
   describe "the Python adapter (python-htmx)" $ do
     let at syn lang file p = fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines pythonModule))
+    it "[unit] kinds: the adapter's definition kinds, none when it has no [unit]" $ do
+      py <- either (error . T.unpack) id . parseLanguage "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
+      langUnitKinds py `shouldBe` ["function_definition", "class_definition", "decorated_definition"]
+      fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
+    it "the unit at a line, by the adapter's [unit] kinds (real ast-grep)" $ withPython $ \syn py _ -> do
+      let src = T.unlines ["import functools", "", "", "class Table:", "    @functools.cache", "    def seats(self) -> int:", "        return 4", "", "    def free(self) -> bool:", "        return True"]
+      fmap unitName <$> unitAt syn py src 7 `shouldReturn` Right "seats"
+      fmap unitDef <$> unitAt syn py src 5 `shouldReturn` Right 6
+      fmap unitName <$> unitAt syn py src 8 `shouldReturn` Right "Table"
+      either id (const "") <$> unitAt syn py src 2 `shouldReturn` "no function or class at line 2"
     it "(b) loads: hole kinds, a four-space indent, pyright-json" $ withPython $ \_ lang _ -> do
       map fst (langHoles lang) `shouldMatchList` ["expr", "stmt", "block", "ident", "text"]
       langIndent lang `shouldBe` "    "

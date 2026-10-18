@@ -286,6 +286,38 @@ edits}`. It is refused in one sentence: in a test file (stub writes a test from 
 outside any function or class. Each stub is a line in the step log (`stub person <module>::<unit>
 stubbed <name>`). The circle's own `stub` move (`<leader>mcs`) is unchanged until the circle goes.
 
+## Drafting
+
+`:Durandal draft` (`<leader>md`) drafts the innermost function, method or class at the cursor with
+the model: the unit is found by the language adapter's `[unit] kinds`, and a decorator line counts
+as the def it decorates. In a module, its test file runs first. The model gets the unit's body as a
+hole, the failing tests with their messages and sources ("make these pass"), the passing ones
+("keep these passing"), the test file, the project modules it imports, and the body on screen when
+it is not a stub (`raise NotImplementedError`, `...`, `pass`): that body goes in as "rejected by
+the person". With no red test it is drafted anyway, told the tests pass. In a test file, on a test,
+the model drafts the test's body from its name, seeing the module under test in full, the sibling
+tests in the file, and any notes (comments, such as a survivor's `# kills:`) in the stub's body.
+The fill pipeline is the usual one (stances, `[model]`, the cuts to a hole).
+
+The draft always lands, as one edit and one undo step, whatever its tests say: nothing is refused
+for discipline. The test file runs again with it, and the notification says what the run said:
+`drafted · green` or `drafted · red: test_x · message` for a function; for a test, `red at the
+assertion`, `red: error before the assertion`, `green: already passes`, each followed by `red:
+test_y no longer passes` for a sibling that passed before and fails now. Failures are
+diagnostics on their lines, as `:Durandal test` marks them. Draft again is `draft` again (the body
+on screen goes in as rejected); undo is the editor's. A visual selection (`<leader>md` in visual
+mode, `:'<,'>Durandal draft`) drafts those lines instead of the unit's body.
+
+On the wire this is `olifant/draft` with `{textDocument, position, selection?}` (the selection's
+`start` and `end` lines, 0-based, inclusive), answering `{file, unit, edits, summary, green,
+tests}` (`edits` null when the draft changed nothing; `tests` the after-run as `olifant/tests/run`
+answers it), under `$/progress` `drafting`. It is refused in one sentence outside any function or
+class, in a module with no test file yet (stub one first), on a function in a test file that is
+no test, on a one-line def with no selection, with no model configured, when the model gave no
+draft at all, and when the file changed in the editor while the model drafted (your text
+stands). Each draft is a line in the step log (`draft person <file>::<unit> drafted by <model> ·
+<summary>`). The circle's own draft move (`<leader>mcd`) is unchanged until the circle goes.
+
 ## When the code is right
 
 A red test has two readings, and each has its key. `begin` (`b`) says the test is right: a

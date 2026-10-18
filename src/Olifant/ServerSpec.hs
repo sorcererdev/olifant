@@ -27,7 +27,7 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
-import Olifant.Server.Block (importedModules, settle, strayLine)
+import Olifant.Server.Block (Site (..), importedModules, settle, siteAt, strayLine)
 import Olifant.Server.BlockMoves (rejectDeleted)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
@@ -39,7 +39,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (CheckFailure (..), CheckReport (..), Checker (..), noChecker, noRunner, noSyntax)
+import Olifant.Language (CheckFailure (..), CheckReport (..), Checker (..), Language, noChecker, noRunner, noSyntax)
 import Olifant.Language.Check (Verifier (..), noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
@@ -140,6 +140,8 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
   blockSpecs
   testsSpecs
   stubSpecs
+  unitSpecs
+  draftSpecs
 
 -- | `olifant/stub`: a new test's stub for the unit at a line.
 stubSpecs :: Spec
@@ -216,6 +218,175 @@ stubSpecs = describe "a test's stub (olifant/stub)" $ do
       (s', Right _) <- stubAt (root </> moduleRel) 6 s
       logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
       logged `shouldSatisfy` T.isInfixOf ("\tstub\tperson\t" <> T.pack moduleRel <> "::handle\tstubbed test_handle\n")
+
+-- | The unit at a line: the innermost definition, by the adapter's kinds.
+unitSpecs :: Spec
+unitSpecs = describe "the unit at a line" $ do
+  let unit line = do
+        (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
+        py <- pythonOf s
+        unitAt unitSyntax py stubbed line
+      withPy k = do
+        (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
+        pythonOf s >>= k
+  -- `stubbed`: 1 class CloseTable, 2 def __init__, 3 its body, 4 blank, 5 def handle, 6 its body, 7-8 blank, 9 def unrelated, 10 its body
+  it "a line in a method's body: the method, its header and body" $
+    unit 6 `shouldReturn` Right (Unit "handle" 5 (5, 6) (Just (6, 6)))
+  it "a method's def line: the method" $ fmap unitName <$> unit 5 `shouldReturn` Right "handle"
+  it "a blank line between two methods: the class, its body all its lines after its header" $
+    unit 4 `shouldReturn` Right (Unit "CloseTable" 1 (1, 6) (Just (2, 6)))
+  it "a top-level function" $ fmap unitName <$> unit 10 `shouldReturn` Right "unrelated"
+  it "a blank line between two top-level definitions: none, one sentence" $
+    unit 8 `shouldReturn` Left "no function or class at line 8"
+  it "a decorator line: the def it decorates" $ withPy $ \py -> do
+    let src = T.unlines ["import functools", "", "", "@functools.cache", "def dish() -> int:", "    return 1"]
+    unitAt unitSyntax py src 4 `shouldReturn` Right (Unit "dish" 5 (4, 6) (Just (6, 6)))
+  it "a header over several lines: the body starts after its colon" $ withPy $ \py -> do
+    let src = T.unlines ["def book(", "    seats: int,", ") -> int:  # the party", "    return seats"]
+    fmap unitBody <$> unitAt unitSyntax py src 4 `shouldReturn` Right (Just (4, 4))
+  it "a one-line def: no body to draft" $ withPy $ \py ->
+    fmap unitBody <$> unitAt unitSyntax py "def one() -> int: return 1\n" 1 `shouldReturn` Right Nothing
+
+-- | `olifant/draft`: the unit at the cursor drafted, its tests run before and after.
+draftSpecs :: Spec
+draftSpecs = describe "a draft (olifant/draft)" $ do
+  let answering seen fills = ModelFiller "drafter" 0 (Filler (\req -> modifyIORef' seen (++ [req]) >> pure (Right (M.fromList fills))))
+      serving verdict extra fills = do
+        seen <- newIORef []
+        (s0, runs) <- blocksOnSyntax unitSyntax verdict extra
+        let moduleText = fromMaybe stubbed (lookup moduleRel extra)
+        pure ((openDoc (root </> moduleRel) 1 moduleText s0) {ssTestFiller = Just (answering seen fills)}, seen, runs)
+      onStub = Right . redOnStub . M.findWithDefault "" moduleRel
+      draft s line = snd <$> draftAt (const (pure ())) (root </> moduleRel) line Nothing s
+      sentence s path line = either id (const "drafted") . snd <$> draftAt (const (pure ())) path line Nothing s
+      bodyHole req = listToMaybe [h | h <- frHoles req, fhName h == "body"]
+  describe "on a function, method or class" $ do
+    it "on a red test: the body drafted to pass it, one edit on the editor's version; green" $ do
+      (s, _, _) <- serving onStub [] [("body", "return int(seats > 2)")]
+      Right a <- draft s 6
+      (daFile a, daUnit a, daSummary a, daGreen a) `shouldBe` (root </> moduleRel, "handle", "green", True)
+      fmap feVersion (daEdit a) `shouldBe` Just (Just 1)
+      applyEdits (maybe [] pure (daEdit a)) stubbed `shouldBe` written
+      taFile (daTests a) `shouldBe` root </> testRel
+    it "the model is told the failing tests and sees the test file; the hole is the body's lines" $ do
+      (s, seen, _) <- serving onStub [] [("body", "return int(seats > 2)")]
+      Right _ <- draft s 6
+      req : _ <- readIORef seen
+      fmap fhInstruction (bodyHole req) `shouldSatisfy` maybe False ("test_closes_a_table" `T.isInfixOf`)
+      lookup testRel (frContext req) `shouldBe` Just testText
+      map fst (frContext req) `shouldSatisfy` any (("failing now" `T.isPrefixOf`) . T.pack)
+    it "a stub body on screen is no rejected draft" $ do
+      (s, seen, _) <- serving onStub [] [("body", "return int(seats > 2)")]
+      Right _ <- draft s 6
+      req : _ <- readIORef seen
+      map fst (frContext req) `shouldSatisfy` (not . any (("rejected" `T.isInfixOf`) . T.pack))
+    it "a body on screen that is not a stub goes in as rejected by the person" $ do
+      let mine = T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
+      (s, seen, _) <- serving onStub [(moduleRel, mine)] [("body", "return int(seats > 2)")]
+      Right _ <- draft s 6
+      req : _ <- readIORef seen
+      [t | (l, t) <- frContext req, "rejected" `T.isInfixOf` T.pack l] `shouldBe` ["return 0"]
+    it "no red test: drafted anyway, the model told the tests pass" $ do
+      (s, seen, _) <- serving onStub [(moduleRel, written)] [("body", "return int(seats > 2)")]
+      Right a <- draft s 6
+      daSummary a `shouldBe` "green"
+      req : _ <- readIORef seen
+      fmap fhInstruction (bodyHole req) `shouldSatisfy` maybe False ("the tests pass" `T.isInfixOf`)
+    it "a draft that fails its tests still lands; red: the test · its message" $ do
+      let verdict files = Right (if "seats > 2" `T.isInfixOf` M.findWithDefault "" moduleRel files then TestRun [testId] [] Nothing else TestRun [] [(testId, Failure (Just 6) "assert 0 == 1\nmore" "")] Nothing)
+      (s, _, _) <- serving verdict [] [("body", "return 0")]
+      Right a <- draft s 6
+      (daSummary a, daGreen a) `shouldBe` ("red: test_closes_a_table \183 assert 0 == 1", False)
+      applyEdits (maybe [] pure (daEdit a)) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
+      map fst (trFailed (taRun (daTests a))) `shouldBe` [testId]
+    it "a selection drafts its lines only, in no unit or in one" $ do
+      (s, seen, _) <- serving onStub [] [("body", "self.closed = 1")]
+      Right a <- snd <$> draftAt (const (pure ())) (root </> moduleRel) 3 (Just (3, 3)) s
+      daUnit a `shouldBe` "__init__"
+      applyEdits (maybe [] pure (daEdit a)) stubbed `shouldBe` T.replace "self.closed = 0" "self.closed = 1" stubbed
+      req : _ <- readIORef seen
+      fmap fhKind (bodyHole req) `shouldBe` Just "block"
+      Right b <- snd <$> draftAt (const (pure ())) (root </> moduleRel) 8 (Just (7, 8)) s
+      daUnit b `shouldBe` "selection"
+    it "the file changed while drafting: no edit, the person's text stands" $ do
+      live <- newIORef (1 :: Int, stubbed)
+      seen <- newIORef []
+      (s0, _) <- blocksOnSyntax unitSyntax onStub []
+      let typing = ModelFiller "drafter" 0 (Filler (\req -> modifyIORef' seen (++ [req]) >> writeIORef live (2, stubbed <> "# typed\n") >> pure (Right (M.fromList [("body", "return int(seats > 2)")]))))
+          s = (openDoc (root </> moduleRel) 1 stubbed s0) {ssTestFiller = Just typing, ssLiveDoc = Just (\_ -> Just <$> readIORef live)}
+      sentence s (root </> moduleRel) 6 `shouldReturn` "the file changed while drafting; your text stands"
+    it "outside any unit, a module with no test file, a helper in a test file, a one-line def: one sentence each" $ do
+      (s, _, _) <- serving onStub [("src/shop/menu.py", "def dish() -> int:\n    return 1\n"), (testRel, testText <> "\n\ndef helper() -> int:\n    return 1\n")] [("body", "return 1")]
+      sentence s (root </> moduleRel) 8 `shouldReturn` "no function or class at line 8: put the cursor in one to draft it"
+      sentence s (root </> "src/shop/menu.py") 2 `shouldReturn` "no test file for this module yet: src/shop/menu__test.py; stub one first (:Durandal stub)"
+      sentence s (root </> testRel) 10 `shouldReturn` "helper is no test: draft a test here, or a function from its module"
+      (s', _, _) <- serving onStub [("src/shop/one.py", "def one() -> int: return 1\n"), ("src/shop/one__test.py", "def test_one() -> None:\n    assert True\n")] [("body", "return 1")]
+      sentence s' (root </> "src/shop/one.py") 1 `shouldReturn` "one is on one line: select the lines to draft"
+    it "no model configured: one sentence" $ do
+      (s0, _) <- blocksOnSyntax unitSyntax onStub []
+      sentence (openDoc (root </> moduleRel) 1 stubbed s0) (root </> moduleRel) 6 `shouldReturn` "no model is configured: set [model] in .olifant/config.toml to draft"
+    it "each draft is one line in the step log: draft, person, the unit, the model and the summary" $ do
+      (s, _, _) <- serving onStub [] [("body", "return int(seats > 2)")]
+      (s', Right _) <- draftAt (const (pure ())) (root </> moduleRel) 6 Nothing s
+      logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
+      logged `shouldSatisfy` T.isInfixOf ("\tdraft\tperson\t" <> T.pack moduleRel <> "::handle\tdrafted by drafter \183 green\n")
+  describe "on a test" $ do
+    -- the test file with a new test's stub: its def on line 9, its body 10-11
+    let stubbedTest = testText <> T.unlines ["", "", "def test_handles_two_seats() -> None:", "    ...", "    assert ..."]
+        newId = T.pack testRel <> "::test_handles_two_seats"
+        onTestServer verdict fills = do
+          seen <- newIORef []
+          (s0, _) <- blocksOnSyntax unitSyntax verdict [(moduleRel, written), (testRel, stubbedTest)]
+          pure ((openDoc (root </> testRel) 1 stubbedTest s0) {ssTestFiller = Just (answering seen fills)}, seen)
+        draftTest s = snd <$> draftAt (const (pure ())) (root </> testRel) 10 Nothing s
+        drafted = "table = CloseTable()\nassert table.handle(5) == 2"
+        testNamesIn t = [n | l <- T.lines t, Just rest <- [T.stripPrefix "def " (T.strip l)], let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest, "test" `T.isPrefixOf` n]
+    it "its body drafted from its name; red at the assertion" $ do
+      (s, _) <- onTestServer killedBy [("body", drafted)]
+      Right a <- draftTest s
+      (daFile a, daUnit a) `shouldBe` (root </> testRel, "test_handles_two_seats")
+      daSummary a `shouldBe` "red at the assertion \183 AssertionError"
+      applyEdits (maybe [] pure (daEdit a)) stubbedTest `shouldBe` T.replace "    ...\n    assert ...\n" "    table = CloseTable()\n    assert table.handle(5) == 2\n" stubbedTest
+    it "the model is told the test's name and sees the module under test in full" $ do
+      (s, seen) <- onTestServer killedBy [("body", drafted)]
+      Right _ <- draftTest s
+      req : _ <- readIORef seen
+      fmap fhInstruction (bodyHole req) `shouldSatisfy` maybe False ("handles two seats" `T.isInfixOf`)
+      lookup moduleRel (frContext req) `shouldBe` Just written
+    it "a test that passes at once: green, already passes" $ do
+      let allPass files = Right (TestRun [T.pack testRel <> "::" <> n | n <- testNamesIn (M.findWithDefault "" testRel files)] [] Nothing)
+      (s, _) <- onTestServer allPass [("body", "assert CloseTable().handle(4) == 1")]
+      Right a <- draftTest s
+      (daSummary a, daGreen a) `shouldBe` ("green: already passes", True)
+    it "an error before its assertion still lands; red: error before the assertion" $ do
+      let erring files = Right (TestRun [testId] [(newId, Failure (Just 10) "NameError: name 'Table' is not defined" "") | "test_handles_two_seats" `T.isInfixOf` M.findWithDefault "" testRel files] Nothing)
+      (s, _) <- onTestServer erring [("body", "table = Table()\nassert table.handle(5) == 2")]
+      Right a <- draftTest s
+      daSummary a `shouldBe` "red: error before the assertion \183 NameError: name 'Table' is not defined"
+      fmap feText (daEdit a) `shouldSatisfy` maybe False ("Table()" `T.isInfixOf`)
+    it "a sibling that passed before and fails after: named in the summary" $ do
+      let breaking files =
+            let t = M.findWithDefault "" testRel files
+                drafted' = "handle(5)" `T.isInfixOf` t
+             in Right (TestRun ([testId | not drafted'] ++ [newId | drafted']) [(testId, Failure (Just 6) "assert 2 == 1" "") | drafted'] Nothing)
+      (s, _) <- onTestServer breaking [("body", drafted)]
+      Right a <- draftTest s
+      daSummary a `shouldBe` "green: already passes; red: test_closes_a_table no longer passes"
+    it "notes in a stub's body (a survivor's `# kills:`) are context, and no rejected draft" $ do
+      let noted = T.replace "    ...\n" "    # kills: > \8594 >= on line 6\n    ...\n" stubbedTest
+      seen <- newIORef []
+      (s0, _) <- blocksOnSyntax unitSyntax killedBy [(moduleRel, written), (testRel, noted)]
+      let s = (openDoc (root </> testRel) 1 noted s0) {ssTestFiller = Just (answering seen [("body", drafted)])}
+      Right _ <- draftTest s
+      req : _ <- readIORef seen
+      [t | (l, t) <- frContext req, "notes" `T.isInfixOf` T.pack l] `shouldBe` ["# kills: > \8594 >= on line 6"]
+      map fst (frContext req) `shouldSatisfy` (not . any (("rejected" `T.isInfixOf`) . T.pack))
+
+-- | The python-htmx pack's Python, as the server sees it.
+pythonOf :: ServerState -> IO Language
+pythonOf s = siteAt (root </> moduleRel) 1 s >>= \case
+  (_, Right site) -> pure (siteLang site)
+  (_, Left why) -> fail (T.unpack why)
 
 -- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
 testsSpecs :: Spec
@@ -2445,6 +2616,36 @@ blockSyntax = Syntax query rewrite
             w = a <> " > " <> T.takeWhile isAlphaNum (T.drop 3 post)
             col = T.length pre - T.length a
       ]
+
+-- | 'blockSyntax', and the [unit] rule (an `any` of kinds) answered as
+-- tree-sitter does for Python: each def or class from its line to its last
+-- line deeper than it; a decorated one also from its first decorator, as
+-- its `decorated_definition`; a header from its line to its colon. Lines
+-- and columns 0-based.
+unitSyntax :: Syntax IO
+unitSyntax = blockSyntax {querySyntax = query}
+  where
+    query lang rule src
+      | "\"function_definition\"" `T.isInfixOf` encoded rule = pure (Right (units src))
+      | otherwise = querySyntax blockSyntax lang rule src
+    encoded = TE.decodeUtf8 . BL.toStrict . J.encode
+    indentOf = T.length . T.takeWhile (== ' ')
+    blank = T.null . T.strip
+    units src =
+      let ls = zip [0 :: Int ..] (T.splitOn "\n" src)
+          lineAt j = maybe "" snd (listToMaybe (drop j ls))
+          -- a header over several lines runs to its colon
+          colonOf i = fromMaybe i (listToMaybe [j | (j, x) <- drop i ls, ":" `T.isSuffixOf` T.stripEnd (fst (T.breakOn " #" x))])
+          endOf i l = last (colonOf i : [j | (j, x) <- takeWhile (\(_, x) -> blank x || indentOf x > indentOf l) (drop (colonOf i + 1) ls), not (blank x)])
+          at i j = Match (i, indentOf (lineAt i)) (j, T.length (lineAt j)) "" (0, 0)
+          isHead l = any (`T.isPrefixOf` T.strip l) ["def ", "async def ", "class "]
+          isDecorator l = "@" `T.isPrefixOf` T.strip l
+          heads = [at i (endOf i l) | (i, l) <- ls, isHead l]
+          decorated =
+            [ at i (endOf d dl)
+            | (i, l) <- ls, isDecorator l, i == 0 || not (isDecorator (lineAt (i - 1)))
+            , (d, dl) <- take 1 [x | x@(_, y) <- drop (i + 1) ls, not (isDecorator y)], isHead dl ]
+       in heads ++ decorated
 
 -- | 'blockSyntax', and every integer is a site of the `number` operator.
 numbersToo :: Syntax IO

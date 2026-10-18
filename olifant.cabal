@@ -123,6 +123,7 @@ library
     Olifant.Server.BlockDecide
     Olifant.Server.BlockMoves
     Olifant.Server.Completion
+    Olifant.Server.Draft
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
@@ -136,6 +137,7 @@ library
     Olifant.Server.Stub
     Olifant.Server.Suggest
     Olifant.Server.Tests
+    Olifant.Server.Unit
     Olifant.Snippet
     Olifant.Suggest
     Olifant.Template
@@ -277,6 +279,7 @@ test-suite spec
     Olifant.Server.BlockDecide
     Olifant.Server.BlockMoves
     Olifant.Server.Completion
+    Olifant.Server.Draft
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
@@ -290,6 +293,7 @@ test-suite spec
     Olifant.Server.Stub
     Olifant.Server.Suggest
     Olifant.Server.Tests
+    Olifant.Server.Unit
     Olifant.ServerSpec
     Olifant.Snippet
     Olifant.SnippetSpec
