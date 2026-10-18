@@ -550,6 +550,37 @@ handlers env =
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right a -> respond (Right (object ["file" .= saFile a, "line" .= saLine a, "name" .= saName a, "edits" .= workspaceEdit [saEdit a]]))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/stub needs a textDocument and a position" Nothing))
+    , -- a draft of the unit at a position (or of the selected lines): its
+      -- tests run before and after; the edit and the after-run
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/draft")) $ \req respond -> inBackground env req respond $ \job ->
+        case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
+          (Just path, Just (line, _)) -> do
+            let selection = case req ^. L.params of
+                  Object o
+                    | Just (Object sel) <- KM.lookup "selection" o
+                    , Just (Number a) <- KM.lookup "start" sel
+                    , Just (Number z) <- KM.lookup "end" sel
+                    , Just a' <- toBoundedInteger a
+                    , Just z' <- toBoundedInteger z ->
+                        Just (a' + 1, z' + 1)
+                  _ -> Nothing
+            drafted' <- planProgress "drafting" (\progress -> withSnapshot job (draftAt progress path (line + 1) selection))
+            -- a draft the editor cancelled is no result
+            stopped <- liftIO (cancelled (envCancel job))
+            case drafted' of
+              _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right a ->
+                respond . Right $
+                  object
+                    [ "file" .= daFile a
+                    , "unit" .= daUnit a
+                    , "edits" .= maybe Aeson.Null (\e -> toJSON (workspaceEdit [e])) (daEdit a)
+                    , "summary" .= daSummary a
+                    , "green" .= daGreen a
+                    , "tests" .= testsJson (daTests a)
+                    ]
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/draft needs a textDocument and a position" Nothing))
     , -- the loop's blocks: each move answers the block (null once it is
       -- finished) and pushes it
       blockRequest env (Proxy :: Proxy "olifant/block/begin") $ \job path params -> case positionOf params of
