@@ -44,7 +44,6 @@ mutantsOf syntax lang operators file scope = go operators []
           muFrom = fst (difference from to),
           muTo = snd (difference from to),
           muText = spliceBytes bytes to file,
-          muWaived = Nothing,
           muDim = False
         }
     rw (Site _ _ _ to _) = to

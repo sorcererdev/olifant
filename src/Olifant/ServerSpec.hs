@@ -206,7 +206,7 @@ stubSpecs = describe "a test's stub (olifant/stub)" $ do
       sentence s (root </> moduleRel) 8 `shouldReturn` "no function or class at line 8: put the cursor in one to stub its test"
       sentence s (root </> testRel) 5 `shouldReturn` "on a test: stub writes a new test for a function or class, from its module"
     -- a survivor on line 6 of handle, `seats > 2` for `seats >= 2`
-    let survivor = Mutant 6 "boundary" "seats > 2" "seats >= 2" (T.replace "return int(seats > 2)" "return int(seats >= 2)" written) Nothing False
+    let survivor = Mutant 6 "boundary" "seats > 2" "seats >= 2" (T.replace "return int(seats > 2)" "return int(seats >= 2)" written) False
         survivorStub name = "def " <> name <> "() -> None:\n    # kills: seats > 2 \8594 seats >= 2 on line 6\n    ...\n    assert ...\n"
     it "a survivor's stub: named from its mutant, the mutant as a comment above the ..." $ do
       (s, _) <- quiet [(moduleRel, written)]
@@ -391,6 +391,59 @@ draftSpecs = describe "a draft (olifant/draft)" $ do
       req : _ <- readIORef seen
       [t | (l, t) <- frContext req, "notes" `T.isInfixOf` T.pack l] `shouldBe` ["# kills: > \8594 >= on line 6"]
       map fst (frContext req) `shouldSatisfy` (not . any (("rejected" `T.isInfixOf`) . T.pack))
+  describe "the draft's context: the project modules its file and the file beside import" $ do
+    let portRel = "src/shop/ports/table_repository.py"
+        portText = T.unlines ["class TableRepository:", "    def table(self, n: int) -> int: ...", "    def save(self, n: int) -> None: ..."]
+        importing = T.unlines ["import os", "from shop.ports.table_repository import TableRepository", "from shop.close_table import CloseTable", ""] <> stubbed
+        -- the context's files (a label naming a file, not a sentence), in order
+        filesOf code = [(p, c) | (p, c) <- code, ".py" `isSuffixOf` p]
+        contextOf extra moduleText = contextWith extra moduleText testText
+        contextWith extra moduleText testText' = do
+          (s, seen, _) <- serving onStub ([(portRel, portText), (testRel, testText')] ++ extra ++ [(moduleRel, moduleText)]) [("body", "return int(seats > 2)")]
+          let line = maybe 1 fst (listToMaybe [(i, l) | (i, l) <- zip [1 :: Int ..] (T.lines moduleText), "raise NotImplementedError" `T.isInfixOf` l])
+          Right _ <- draft s line
+          [req] <- readIORef seen
+          pure (filesOf (frContext req))
+    it "a code draft sees the port its module imports, under its path; the standard library and the drafted file add nothing" $ do
+      code <- contextOf [] importing
+      map fst code `shouldBe` [testRel, portRel]
+      lookup portRel code `shouldBe` Just portText
+    it "an import of more than 120 lines is cut to 120 and says how many more" $ do
+      let big = T.unlines ["x" <> T.pack (show i) <> " = " <> T.pack (show i) | i <- [0 .. 199 :: Int]]
+      code <- contextOf [("src/shop/big.py", big)] ("from shop.big import x0\n" <> stubbed)
+      let Just cut = lookup "src/shop/big.py" code
+      length (T.lines cut) `shouldBe` 121
+      take 1 (T.lines cut) `shouldBe` ["x0 = 0"]
+      last (T.lines cut) `shouldBe` "# \8230 (80 more lines)"
+    it "the file beside first, then the drafted file's imports, then the beside file's" $ do
+      code <- contextWith [("src/shop/ports/clock.py", "class Clock: ...\n")] importing (testText <> "from shop.ports.clock import Clock\n")
+      map fst code `shouldBe` [testRel, portRel, "src/shop/ports/clock.py"]
+    it "what those modules import comes after them (a port's models), one level only" $ do
+      let port' = "from shop.models.table import Table\n\n" <> portText
+          tableText = "from shop.models.seat import Seat\n\nclass Table:\n    id: int\n    seats: int\n"
+      code <- contextOf [(portRel, port'), ("src/shop/models/table.py", tableText), ("src/shop/models/seat.py", "class Seat: ...\n")] importing
+      map fst code `shouldBe` [testRel, portRel, "src/shop/models/table.py"]
+      lookup "src/shop/models/table.py" code `shouldBe` Just tableText
+    it "at most 8 imported files, the first 8 in order" $ do
+      let ms = ["m" <> T.pack (show i) | i <- [0 .. 9 :: Int]]
+      code <- contextOf [(T.unpack ("src/shop/" <> m <> ".py"), m <> " = 1\n") | m <- ms] (T.unlines ["from shop." <> m <> " import " <> m | m <- ms] <> stubbed)
+      map fst code `shouldBe` testRel : [T.unpack ("src/shop/" <> m <> ".py") | m <- take 8 ms]
+    it "at most 600 imported lines in all: five files of 120, the sixth left out" $ do
+      let ms = ["m" <> T.pack (show i) | i <- [0 .. 5 :: Int]]
+          long m = T.unlines [m <> "_" <> T.pack (show j) <> " = 1" | j <- [0 .. 149 :: Int]]
+      code <- contextOf [(T.unpack ("src/shop/" <> m <> ".py"), long m) | m <- ms] (T.unlines ["import shop." <> m | m <- ms] <> stubbed)
+      map fst code `shouldBe` testRel : [T.unpack ("src/shop/" <> m <> ".py") | m <- take 5 ms]
+      sum [length (T.lines c) - 1 | (p, c) <- code, p /= testRel] `shouldBe` 600
+    it "a test draft sees the module and the modules it imports; the test file itself is never repeated" $ do
+      -- a new test's stub: its def on line 9, its body 10-11
+      let stubbedTest = testText <> T.unlines ["", "", "def test_handles_two_seats() -> None:", "    ...", "    assert ..."]
+          drafted' = T.replace "raise NotImplementedError(\"later\")" "return int(seats > 2)" importing
+      seen <- newIORef []
+      (s0, _) <- blocksOnSyntax unitSyntax killedBy [(moduleRel, drafted'), (testRel, stubbedTest), (portRel, portText)]
+      let s = (openDoc (root </> testRel) 1 stubbedTest s0) {ssTestFiller = Just (answering seen [("body", "table = CloseTable()\nassert table.handle(5) == 2")])}
+      Right _ <- snd <$> draftAt (const (pure ())) (root </> testRel) 10 Nothing s
+      [req] <- readIORef seen
+      map fst (filesOf (frContext req)) `shouldBe` [moduleRel, portRel]
 
 -- | The python-htmx pack's Python, as the server sees it.
 pythonOf :: ServerState -> IO Language
@@ -669,7 +722,7 @@ orderSpecs = describe "the decision model's order" $ do
   it "(k) Jev: survivors it thinks equivalent are dimmed and last, the rest by how much they matter; with no decider, file order" $ do
     (s, _) <- blocks redOnStub []
     let lineOf n = T.lines stubbed !! (n - 1)
-        mutant n op to = Mutant n op "" "" (T.unlines [if i == n then to else l | (i, l) <- zip [1 ..] (T.lines stubbed)]) Nothing False
+        mutant n op to = Mutant n op "" "" (T.unlines [if i == n then to else l | (i, l) <- zip [1 ..] (T.lines stubbed)]) False
         ms = [mutant 3 "number" "        self.closed = 1", mutant 6 "string" (T.replace "later" "" (lineOf 6)), mutant 10 "boundary" "    return n >= 0"]
         jev = De.Decider $ \q -> pure $ case (De.qKind q, lookup "mutant" (De.qContext q)) of
           ("mutant-equivalent", Just m) | "\"\"" `T.isInfixOf` m -> De.Chosen "equivalent" []
@@ -686,7 +739,7 @@ orderSpecs = describe "the decision model's order" $ do
   it "(k2) Jev asks about two mutants of one operator on one line once each, not without end" $ do
     (s, _) <- blocks redOnStub []
     asked <- newIORef (0 :: Int)
-    let twin from to line = Mutant 10 "boundary" from to (T.unlines [if i == 10 then line else l | (i, l) <- zip [1 :: Int ..] (T.lines stubbed)]) Nothing False
+    let twin from to line = Mutant 10 "boundary" from to (T.unlines [if i == 10 then line else l | (i, l) <- zip [1 :: Int ..] (T.lines stubbed)]) False
         ms = [twin "a > b" "a >= b" "    return a >= b and c > d", twin "c > d" "c >= d" "    return a > b and c >= d"]
         counting = De.Decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
         -- as the server does: each answer orders again

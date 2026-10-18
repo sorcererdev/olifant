@@ -74,8 +74,8 @@ spec = describe "Olifant.Mutate" $ do
 
   describe "judge" $ do
     let fake outcome = Runner (\_ _ fs -> pure (outcome fs))
-        m1 = Mutant 2 "boundary" "<" "<=" "MUTANT-1" Nothing False
-        m2 = Mutant 3 "string" "\"x\"" "\"\"" "MUTANT-2" Nothing False
+        m1 = Mutant 2 "boundary" "<" "<=" "MUTANT-1" False
+        m2 = Mutant 3 "string" "\"x\"" "\"\"" "MUTANT-2" False
         files = M.fromList [("src/a.py", "ORIGINAL"), ("src/a__test.py", "t")]
     it "(a) a mutant whose tests fail is killed; one whose tests pass survives" $ do
       Right vs <- judge (fake (\fs -> Right (if M.lookup "src/a.py" fs == Just "MUTANT-1" then TestRun [] [("t", Failure Nothing "x" "")] Nothing else TestRun ["t"] [] Nothing))) 2 py "src/a.py" files "src/a__test.py" ["t"] [m1, m2]

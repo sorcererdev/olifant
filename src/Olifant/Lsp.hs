@@ -1131,6 +1131,6 @@ survivorOf = \case
       , Just (String from) <- KM.lookup "from" sv
       , Just (String to) <- KM.lookup "to" sv
       , Just (String mutated) <- KM.lookup "mutated" sv ->
-          Right (Just (Mutant n op from to (T.intercalate "\n" (replicate (n - 1) "" ++ [mutated])) Nothing False))
+          Right (Just (Mutant n op from to (T.intercalate "\n" (replicate (n - 1) "" ++ [mutated])) False))
     _ -> Left "olifant/stub: the survivor needs line, operator, from, to and mutated"
   _ -> Right Nothing
