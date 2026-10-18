@@ -120,7 +120,6 @@ library
     Olifant.Server
     Olifant.Server.Actions
     Olifant.Server.Block
-    Olifant.Server.BlockDecide
     Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Draft
@@ -131,9 +130,11 @@ library
     Olifant.Server.Jobs
     Olifant.Server.Model
     Olifant.Server.Mutate
+    Olifant.Server.Order
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
+    Olifant.Server.Site
     Olifant.Server.State
     Olifant.Server.Stub
     Olifant.Server.Suggest
@@ -148,6 +149,7 @@ library
     Olifant.Template.Render
     Olifant.Template.Syntax
     Olifant.Template.Value
+    Olifant.TestName
     Olifant.Toml
     Olifant.Uncovered
     Olifant.Workspace
@@ -277,7 +279,6 @@ test-suite spec
     Olifant.Server
     Olifant.Server.Actions
     Olifant.Server.Block
-    Olifant.Server.BlockDecide
     Olifant.Server.BlockMoves
     Olifant.Server.Completion
     Olifant.Server.Draft
@@ -288,9 +289,11 @@ test-suite spec
     Olifant.Server.Jobs
     Olifant.Server.Model
     Olifant.Server.Mutate
+    Olifant.Server.Order
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
+    Olifant.Server.Site
     Olifant.Server.State
     Olifant.Server.Stub
     Olifant.Server.Suggest
@@ -308,6 +311,7 @@ test-suite spec
     Olifant.Template.Syntax
     Olifant.Template.Value
     Olifant.TemplateSpec
+    Olifant.TestName
     Olifant.Toml
     Olifant.Uncovered
     Olifant.UncoveredSpec

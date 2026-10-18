@@ -27,8 +27,9 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (async, replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
-import Olifant.Server.Block (Site (..), importedModules, settle, siteAt, strayLine)
+import Olifant.Server.Block (settle, strayLine)
 import Olifant.Server.BlockMoves (rejectDeleted)
+import Olifant.Server.Site (Site (..), importedModules, siteAt)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))

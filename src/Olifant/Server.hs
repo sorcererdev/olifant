@@ -105,7 +105,7 @@ module Olifant.Server
   , testsFileJson
   ) where
 
-import Olifant.Server.BlockDecide (orderSurvivors)
+import Olifant.Server.Order (orderSurvivors)
 import Olifant.Server.BlockMoves (Killed, Stubbed (..), blockChanged, blockEdited, blockKill, blockStub, blockWaive)
 import Olifant.Server.Block (StubDraft, appendStep, blockDraftStopped, blockUnapplied, blockAccept, blockBegin, blockDraft, blockDraftAt, blockStart, blockFor, blockJson, blockJudge, blockReject, blockTest, stateName, underTest)
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress, menuActionsFor)

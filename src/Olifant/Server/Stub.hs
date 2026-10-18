@@ -18,11 +18,11 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Block (stubNameFor, uniqueTestName)
+import Olifant.TestName (stubNameFor, uniqueTestName)
 import Olifant.Generation.FillPhase (addImports)
 import Olifant.Language (Language (..))
 import Olifant.Mutate (Mutant (..))
-import Olifant.Server.Block (Site (..), appendStepLine, defLineAbove, defName, functionAt, importOf, siteAt, siteTestFile, tshow)
+import Olifant.Server.Site (Site (..), appendStepLine, defLineAbove, defName, functionAt, importOf, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerState (..))
 

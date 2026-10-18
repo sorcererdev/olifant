@@ -16,7 +16,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (Language (..), Match (..), Syntax (..), describeSyntaxFailure)
-import Olifant.Server.Block (defName, tshow)
+import Olifant.Server.Site (defName, tshow)
 
 -- | A unit (1-based lines): its name, its header line, its node's lines,
 -- and its body's (the lines after the header; Nothing for a one-line def).

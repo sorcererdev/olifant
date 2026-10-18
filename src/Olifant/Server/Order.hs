@@ -3,7 +3,7 @@
 -- keeps: is it equivalent to the original (dimmed, and last), and how much
 -- does it matter (high first). What is not known yet leaves a survivor
 -- undimmed and in the middle; with no decider they stay in file order.
-module Olifant.Server.BlockDecide (orderSurvivors) where
+module Olifant.Server.Order (orderSurvivors) where
 
 import Data.List (sortOn)
 import Data.Ord (Down (..))
