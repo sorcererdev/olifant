@@ -525,6 +525,42 @@ mutateSpecs = describe "a mutate (olifant/mutate)" $ do
     (s', Right _) <- mutateAt (root </> moduleRel) 6 s
     logged <- fromMaybe "" <$> readText (pFiles (ssPorts s')) (root </> ".olifant/state/steps.log")
     logged `shouldSatisfy` T.isInfixOf ("\tmutate\tperson\t" <> T.pack moduleRel <> "::handle\t1 survivor \183 1/2 killed\n")
+  describe "a waiver (olifant/waive)" $ do
+    let waiveFirst s reason = do
+          Right a <- mutate s 6
+          let m : _ = maSurvivors a
+          (s', r) <- waiveAt (root </> moduleRel) reason m s
+          pure (s', r, m)
+    it "a waived survivor is left out of the next mutate, which counts it" $ do
+      (s0, _) <- serving catching [] two
+      (s, r, _) <- waiveFirst s0 "n only gates the return"
+      r `shouldBe` Right ()
+      Right a <- mutate s 6
+      (maSurvivors a, maWaived a, maKilled a) `shouldBe` ([], 1, 1)
+      maSummary a `shouldBe` "no survivors \183 1/2 killed \183 1 waived"
+    it "a waiver is a line of .olifant/state/waived.log: the time, file, unit, mutant, line text and reason" $ do
+      (s0, _) <- serving catching [] two
+      (s, _, _) <- waiveFirst s0 "n only   gates the return"
+      logged <- fromMaybe "" <$> readText (pFiles (ssPorts s)) (root </> ".olifant/state/waived.log")
+      logged `shouldSatisfy` T.isInfixOf ("\t" <> T.pack moduleRel <> "\thandle\t>\t>=\treturn int(n and seats >= 1)\tn only gates the return\n")
+    it "an empty reason is refused, and nothing is written" $ do
+      (s0, _) <- serving catching [] two
+      (s, r, _) <- waiveFirst s0 "  "
+      r `shouldBe` Left "a waiver needs a reason: why is this mutant equivalent, or not worth a test?"
+      readText (pFiles (ssPorts s)) (root </> ".olifant/state/waived.log") `shouldReturn` Nothing
+    it "a waiver is not about the line number: the unit moved down, the mutant is still waived" $ do
+      (s0, _) <- serving catching [] two
+      (s, _, _) <- waiveFirst s0 "equivalent"
+      let moved = openDoc (root </> moduleRel) 2 ("# a note\n" <> two) s
+      Right a <- mutate moved 7
+      (map muLine (maSurvivors a), maWaived a) `shouldBe` ([], 1)
+    it "a waiver of another mutant, unit or file does not match" $ do
+      (s0, _) <- serving catching [] two
+      Right a0 <- mutate s0 6
+      let m : _ = maSurvivors a0
+      (s, Right ()) <- waiveAt (root </> moduleRel) "equivalent" m {muTo = ">= 9"} s0
+      Right a <- mutate s 6
+      (map muLine (maSurvivors a), maWaived a) `shouldBe` ([7], 0)
 
 -- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
 testsSpecs :: Spec

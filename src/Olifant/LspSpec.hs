@@ -1077,6 +1077,38 @@ mutateSpec = describe "olifant/mutate" $ do
         doc <- openDoc moduleRel "python"
         blockMove (Proxy :: Proxy "olifant/stub") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (0 :: Int), "character" .= (0 :: Int)], "survivor" .= object ["line" .= ("x" :: Text)]])
       answer `shouldSatisfy` either ("survivor" `T.isInfixOf`) (const False)
+  it "olifant/waive: the survivor leaves the next mutate, which counts it; an empty reason is refused" $
+    withSystemTempDirectory "olifant-mutate" $ \tmp -> do
+      let script = tmp </> "tests.json"
+      BSL.writeFile script "{}"
+      withPython [] $ \ports dir -> do
+        ((before, refused, waived, after), _) <- inProcessWithConfig [("test_script", String (T.pack script))] ports dir $ do
+          doc <- openDoc moduleRel "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              target = object ["uri" .= (doc ^. L.uri)]
+              mutate = blockMove (Proxy :: Proxy "olifant/mutate") (object ["textDocument" .= target, "position" .= object ["line" .= (handleAt + 1), "character" .= (0 :: Int)]])
+              waive survivor reason = blockMove (Proxy :: Proxy "olifant/waive") (object ["textDocument" .= target, "survivor" .= survivor, "reason" .= (reason :: Text)])
+          before <- mutate
+          let first' = case either (const Nothing) (lookupKey "survivors") before of
+                Just (Array vs) | v : _ <- toList vs -> v
+                _ -> Aeson.Null
+          refused <- waive first' ""
+          waived <- waive first' "n only gates the return"
+          after <- mutate
+          pure (before, refused, waived, after)
+        let count k = either (const (-1)) (\a -> case lookupKey k a of Just (Number n) -> round n :: Int; _ -> -1)
+        count "survived" before `shouldSatisfy` (> 0)
+        refused `shouldSatisfy` either ("needs a reason" `T.isInfixOf`) (const False)
+        waived `shouldSatisfy` either (const False) (const True)
+        (count "survived" after, count "waived" after) `shouldBe` (count "survived" before - 1, 1)
+        either (const "") (\a -> case lookupKey "summary" a of Just (String t) -> t; _ -> "") after `shouldSatisfy` T.isSuffixOf "1 waived"
+  it "olifant/waive with no survivor: invalid params" $
+    withPython [] $ \ports dir -> do
+      (answer, _) <- inProcessWithConfig [] ports dir $ do
+        doc <- openDoc moduleRel "python"
+        blockMove (Proxy :: Proxy "olifant/waive") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "reason" .= ("x" :: Text)])
+      answer `shouldSatisfy` either ("survivor" `T.isInfixOf`) (const False)
 
 -- | `olifant/tests/run`: a file's tests, run whole, with a scripted runner.
 testsRunSpec :: Spec

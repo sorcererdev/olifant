@@ -74,6 +74,7 @@ module Olifant.Server
   , DraftAnswer (..)
   , draftAt
   , MutateAnswer (..)
+  , waiveAt
   , mutateAt
   , TestsScope (..)
   , testsJson
@@ -100,4 +101,5 @@ import Olifant.Server.Stub (StubAnswer (..), belowDecorators, classAt, stubAt, t
 import Olifant.Server.Unit (Unit (..), unitAt)
 import Olifant.Server.Draft (DraftAnswer (..), draftAt)
 import Olifant.Server.Mutate (MutateAnswer (..), mutateAt)
+import Olifant.Server.Waive (waiveAt)
 import Olifant.Server.Tests (TestsAnswer (..), TestsFile (..), testsFile, testsFileJson, testsJson, testsRun, testAt, TestsScope (..))

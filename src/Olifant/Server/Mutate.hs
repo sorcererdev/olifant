@@ -9,6 +9,7 @@ module Olifant.Server.Mutate
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT, throwE)
+import Data.List (partition)
 import Data.Set qualified as S
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -24,6 +25,7 @@ import Olifant.Server.Site (Site (..), appendStepLine, siteAt, tshow)
 import Olifant.Server.Order (orderSurvivors)
 import Olifant.Server.State (ServerState (..), deciderFor)
 import Olifant.Server.Unit (Unit (..), unitAt)
+import Olifant.Server.Waive (identityOf, waivedIn)
 import Olifant.Workspace (normalisePath)
 import System.FilePath ((</>))
 
@@ -35,6 +37,7 @@ data MutateAnswer = MutateAnswer
   , maUnit :: Text
   , maLines :: (Int, Int)
   , maKilled :: Int
+  , maWaived :: Int
   , maSurvivors :: [Mutant]
   , maSummary :: Text
   }
@@ -61,12 +64,12 @@ mutateAt path line s0 =
       let (l1, l2) = unitLines unit
           scope = S.fromList [l1 .. l2]
           stopIfCancelled = lift (cancelled (ssCancel s)) >>= \stopped -> when stopped (throwE "cancelled")
-          done killed survivors summary = do
+          done killed waived survivors summary = do
             lift (appendStepLine (ssPorts s) (siteRoot site) ["mutate", "person", T.pack rel <> "::" <> unitName unit, summary])
-            pure (MutateAnswer file (unitName unit) (l1, l2) killed survivors summary)
+            pure (MutateAnswer file (unitName unit) (l1, l2) killed waived survivors summary)
       mutants <- lift (mutantsOf (pSyntax (ssPorts s)) lang pythonOperators moduleText scope) >>= either (throwE . describeSyntaxFailure) pure
       case mutants of
-        [] -> done 0 [] ("nothing to mutate in " <> unitName unit)
+        [] -> done 0 0 [] ("nothing to mutate in " <> unitName unit)
         ms -> do
           (_, files) <- lift (projectFiles ws M.empty lang [testRel])
           t0 <- lift getMonotonicTime
@@ -81,11 +84,15 @@ mutateAt path line s0 =
           verdicts <- lift (judge (pTesterWithin (ssPorts s) (judgeTimeout (t1 - t0)) (ssCancel s)) 4 lang rel files (T.pack testRel) (trPassed base) (capMutants 20 ms))
           stopIfCancelled
           vs <- either (\why -> throwE ("could not judge: " <> why)) pure verdicts
-          let surviving = [m | (m, Survived) <- vs]
-              killed = length vs - length surviving
+          waivers <- lift (waivedIn (ssPorts s) (siteRoot site) rel (unitName unit))
+          let survived = [m | (m, Survived) <- vs]
+              killed = length vs - length survived
+              (waivedOut, surviving) = partition ((`elem` waivers) . identityOf) survived
+              waived = length waivedOut
               n = length surviving
+              tally = tshow killed <> "/" <> tshow (length vs) <> " killed" <> (if waived == 0 then "" else " \183 " <> tshow waived <> " waived")
               summary
-                | n == 0 = "no survivors \183 " <> tshow killed <> "/" <> tshow (length vs) <> " killed"
-                | otherwise = tshow n <> (if n == 1 then " survivor" else " survivors") <> " \183 " <> tshow killed <> "/" <> tshow (length vs) <> " killed"
+                | n == 0 = "no survivors \183 " <> tally
+                | otherwise = tshow n <> (if n == 1 then " survivor" else " survivors") <> " \183 " <> tally
           ordered <- lift (orderSurvivors s (deciderFor s project) file moduleText testText (pure ()) surviving)
-          done killed ordered summary
+          done killed waived ordered summary
