@@ -192,7 +192,7 @@ deterministic answer stands:
 - **which service?** When the tables name no single service's model, the answer is the
   suggestion.
 
-An answer outside the options, or none, changes nothing.
+An answer outside the options, or none, changes nothing. A `jev` backend ([chapter 12](12-holes-and-models.md)) answers with a confidence, and asks each batch of questions in one call.
 
 ## Mistakes
 

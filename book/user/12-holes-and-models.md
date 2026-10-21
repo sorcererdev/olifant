@@ -452,14 +452,15 @@ model       = "claude-haiku-4-5-20251001"
 api_key_env = "ANTHROPIC_API_KEY"      # the default; the key is read from this variable
 ```
 
-There are two kinds of backend:
+There are three kinds of backend:
 
 | `kind` | keys | calls |
 |---|---|---|
 | `openai-compatible` | `url`, `model` | `POST {url}/chat/completions` with the system and user messages and `"temperature": 0` (no JSON mode, [below](#why-tagged-blocks)) |
 | `anthropic` | `model`, `api_key_env` (default `ANTHROPIC_API_KEY`) | `POST https://api.anthropic.com/v1/messages` with `max_tokens` 4096. The key is read from the environment when `gen` runs. It is never stored in config and never printed. curl gets it from a private temporary header file, not from its command line |
+| `jev` | `model` (default `jev-latest`), `api_key_env` (default `JEV_API_KEY`) | `POST https://api.typesafe.ai/v1/systemone` with typed questions, all of one decision batch in one call. It answers decisions only (`[decide] model`), never holes. The key is handled as for `anthropic`. A 429 or 529 is retried twice (after 0.5 s, then 2 s); each call writes `decide jev N tokens M ms` to the step log |
 
-Both are called with `curl`, which must be on your `PATH` ("curl is not installed"
+All are called with `curl`, which must be on your `PATH` ("curl is not installed"
 otherwise). Each call may take `timeout` seconds (`curl --max-time`). A call that runs out
 of time is a failed attempt. Raise `timeout` for a slow model, or for the first request
 after a local server starts and has to load the model.

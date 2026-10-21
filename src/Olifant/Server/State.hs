@@ -4,6 +4,7 @@
 -- whose configuration breaks keeps its last good catalog.
 module Olifant.Server.State
   ( ServerState (..)
+  , appendStepLine
   , cachedBase
   , deciderFor
   , decision
@@ -30,7 +31,7 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Decide (Answer, Decider (..), Question, curlDecider, recordedDecider)
+import Olifant.Decide (Answer, Decider (..), Question, curlDecider, jevDecider, recordedDecider)
 import Control.Concurrent (forkIO)
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (void, when)
@@ -39,10 +40,12 @@ import Data.Maybe (fromMaybe)
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Time (defaultTimeLocale, formatTime)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Fill (ModelFiller)
 import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
-import Olifant.Model (ModelConfig (..))
+import Olifant.Model (Backend (..), ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
@@ -256,8 +259,9 @@ usable = \case
   Broken _ p -> p
 
 -- | The typed decider a project asks, if it names a model ([decide] model,
--- or [recognize] model): the configured backend under this work's token, or
--- (tests) recorded answers.
+-- or [recognize] model): the configured backend under this work's token (a
+-- Jev backend batches each askAll in one call and notes each call in the
+-- project's step log), or (tests) recorded answers.
 deciderFor :: ServerState -> Project -> Maybe (Decider IO)
 deciderFor s project = do
   name <- catalogDecideModel (prCatalog project)
@@ -268,7 +272,19 @@ deciderFor s project = do
     Nothing -> do
       let models = catalogModel (prCatalog project)
       backend <- lookup name (mcBackends models)
-      Just (curlDecider neverCancel (mcTimeout models) backend)
+      Just $ case backend of
+        Jev {} -> jevDecider neverCancel (mcTimeout models) backend (appendStepLine (ssPorts s) (prRoot project) . T.splitOn "\t")
+        _ -> curlDecider neverCancel (mcTimeout models) backend
+
+-- | One line of the step log (`.olifant/state/steps.log`, ignored by git):
+-- the time, then FIELDS, tab-separated, each on one line. A log that
+-- cannot be written never stops a move.
+appendStepLine :: Ports -> FilePath -> [Text] -> IO ()
+appendStepLine ports root fields = do
+  now <- pNow ports
+  let path = root </> ".olifant/state/steps.log"
+      entry = T.intercalate "\t" (T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now) : map (T.unwords . T.words) fields)
+  void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))
 
 -- | The decisions made, and those being asked (tests).
 decisionsNow :: ServerState -> IO (Map (FilePath, Text) (Text, Answer), Set (FilePath, Text))

@@ -1,4 +1,4 @@
--- | Typed decisions, progressively (Jev-shaped; today any chat model behind `[decide] model`): a question with
+-- | Typed decisions, progressively (Jev-shaped; Jev or any chat model behind `[decide] model`): a question with
 -- known options, an answer validated against them, "unsure" always
 -- allowed. Asked only where the deterministic answer is unsure; everything
 -- works without it (spec: strangler-design.md §3.4).
@@ -20,17 +20,28 @@ module Olifant.Decide
   , decisionPrompt
   , decodeAnswer
   , curlDecider
+  , jevBody
+  , jevAnswers
+  , jevDecider
   , recordedDecider
   ) where
 
 import Control.Concurrent (threadDelay)
-import Data.Aeson (Value (..), eitherDecodeStrict)
+import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString (ByteString)
+import Data.ByteString.Lazy qualified as BL
+import Data.List (maximumBy)
+import Data.Maybe (fromMaybe)
+import Data.Ord (comparing)
+import Data.Scientific (toRealFloat)
+import GHC.Clock (getMonotonicTime)
+import Text.Read (readMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Olifant.Model (Backend, askBackend)
+import Olifant.Model (Backend (..), askBackend, sendJev)
 import Olifant.Naming (parseName)
 import Olifant.Process (Cancel, cancelled)
 
@@ -179,6 +190,86 @@ curlDecider token timeout backend = decider $ \q ->
     Right reply -> pure (decodeAnswer q reply)
   where
     system = "You make one typed decision about a codebase. Answer only with the JSON asked for."
+
+-- | A batch as Jev's body (without the model): one `state` of every
+-- question's context (a name shared by two questions is one field, and must
+-- have one value), and each question under its kind. A choice may always
+-- be answered `unsure`.
+jevBody :: [Question] -> Value
+jevBody qs = object ["state" .= Object (KM.fromList [(Key.fromText k, String v) | (k, v) <- state]), "questions" .= Object (KM.fromList [(Key.fromText (qKind q), question q) | q <- qs])]
+  where
+    state = foldl merge [] (concatMap qContext qs)
+    merge acc (k, v) = case lookup k acc of
+      Nothing -> acc ++ [(k, v)]
+      Just w
+        | w == v -> acc
+        | otherwise -> error ("jevBody: the context `" <> T.unpack k <> "` has two values in one batch (" <> T.unpack (T.intercalate ", " (map qKind qs)) <> ")")
+    question q = case qShape q of
+      Choice os -> object ["type" .= ("choice" :: Text), "instructions" .= qInstructions q, "criteria" .= Object (KM.fromList [(Key.fromText o, String d) | (o, d) <- os ++ [("unsure", "none of these fits")]])]
+      Noul -> object ["type" .= ("noul" :: Text), "instructions" .= qInstructions q]
+      Score ls -> object ["type" .= ("score" :: Text), "instructions" .= qInstructions q, "criteria" .= ls]
+
+-- | Jev's reply, one answer a question in order, each validated. A reply
+-- that is not JSON, lacks a question, or answers one outside its shape
+-- makes the whole batch unsure.
+jevAnswers :: [Question] -> ByteString -> [Answer]
+jevAnswers qs raw = fromMaybe (map (const Unsure) qs) $ do
+  Object o <- either (const Nothing) Just (eitherDecodeStrict raw)
+  Object as <- KM.lookup "answers" o
+  traverse (\q -> KM.lookup (Key.fromText (qKind q)) as >>= answer q) qs
+  where
+    answer q = \case
+      Object a -> do
+        raw' <- case (qShape q, KM.lookup "type" a) of
+          (Choice _, Just "choice") -> case KM.lookup "choice" a of
+            Just (String "unsure") -> Just Unsure
+            Just (String c) -> Just (Chosen c [] (confidenceOf a))
+            _ -> Nothing
+          (Noul, Just "noul") -> do
+            p <- number =<< KM.lookup "noul" a
+            Just (if p >= 0.5 then Yes (Confidence p) else No (Confidence (1 - p)))
+          (Score _, Just "score") -> do
+            Object ps <- KM.lookup "probabilities" a
+            levels <- traverse (\(k, v) -> (,) <$> readMaybe (T.unpack (Key.toText k)) <*> number v) (KM.toList ps)
+            (n, _) <- if null levels then Nothing else Just (maximumBy (comparing snd) levels)
+            Just (Level n (fromMaybe (fromIntegral n) (number =<< KM.lookup "score" a)) (confidenceOf a))
+          _ -> Nothing
+        case (raw', validated q raw') of
+          (Unsure, _) -> Just Unsure
+          (_, Unsure) -> Nothing
+          (_, ok) -> Just ok
+      _ -> Nothing
+    number = \case
+      Number n -> Just (toRealFloat n :: Double)
+      _ -> Nothing
+    confidenceOf a = maybe Unknown Confidence (number =<< KM.lookup "confidence" a)
+
+-- | A Jev backend, under the work's token: a batch is one call; each call's
+-- input tokens and time go to LOG as "decide\tjev\tN tokens\tM ms". No
+-- key, an error, a timeout or a malformed reply is unsure for the batch.
+jevDecider :: Cancel -> Int -> Backend -> (Text -> IO ()) -> Decider IO
+jevDecider token timeout backend logLine = Decider (\q -> head' <$> batch [q]) batch
+  where
+    head' = \case
+      a : _ -> a
+      [] -> Unsure
+    batch [] = pure []
+    batch qs = do
+      let body = case jevBody qs of
+            Object o -> Object (KM.insert "model" (String (beModel backend)) o)
+            v -> v
+      start <- getMonotonicTime
+      sendJev token timeout backend body >>= \case
+        Left _ -> pure (map (const Unsure) qs)
+        Right raw -> do
+          end <- getMonotonicTime
+          logLine (T.intercalate "\t" ["decide", "jev", tshow (tokens raw body) <> " tokens", tshow (round ((end - start) * 1000) :: Int) <> " ms"])
+          pure (jevAnswers qs raw)
+    -- the reply's count when it gives one; else about four bytes a token
+    tokens raw body = case eitherDecodeStrict raw of
+      Right (Object o) | Just (Object u) <- KM.lookup "usage" o, Just (Number n) <- KM.lookup "input_tokens" u -> round n :: Int
+      _ -> fromIntegral (BL.length (encode body) `div` 4)
+    tshow = T.pack . show
 
 -- | Recorded answers (tests): `{"answers": {KIND: CHOICE or {choice, fields}}}`;
 -- "wait" waits until the file holds an answer, or the work is cancelled

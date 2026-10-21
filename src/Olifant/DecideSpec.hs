@@ -2,9 +2,12 @@ module Olifant.DecideSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Data.Aeson (Value (..))
+import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
 import Data.IORef (modifyIORef, newIORef, readIORef)
 import Olifant.Decide
+import Olifant.Model (Backend (..))
+import Olifant.Process (neverCancel)
 import Olifant.Process (newCancel)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -77,5 +80,34 @@ spec = describe "Olifant.Decide" $ do
         ask (recordedDecider file token) equivalence `shouldReturn` Yes Unknown
         writeFile file "{\"answers\": {\"k\": {\"choice\": 1, \"confidence\": 0.7}}}"
         ask (recordedDecider file token) matters `shouldReturn` Level 1 1 (Confidence 0.7)
+  describe "jev" $ do
+    let which = choice "which" "Which is being written" [("command", "changes state"), ("query", "reads state")] [("code", "def f(): ...")]
+        done = noul "done" "Is it finished" [("code", "def f(): ...")]
+        field k = \case
+          Object o -> KM.lookup k o
+          _ -> Nothing
+    it "(b) jevBody shares the context as one state and asks each question by its kind; a choice may be unsure" $ do
+      let body = jevBody [which, done]
+      (field "state" body >>= field "code") `shouldBe` Just (String "def f(): ...")
+      (KM.size <$> (field "questions" body >>= \case Object o -> Just o; _ -> Nothing)) `shouldBe` Just 2
+      (field "questions" body >>= field "which" >>= field "criteria" >>= field "unsure") `shouldBe` Just (String "none of these fits")
+      (field "questions" body >>= field "done" >>= field "type") `shouldBe` Just (String "noul")
+    it "(c) jevAnswers reads a choice with its confidence and a noul's probability" $
+      jevAnswers [which, done] "{\"answers\": {\"which\": {\"type\":\"choice\",\"choice\":\"command\",\"probabilities\":{\"command\":0.84,\"query\":0.1,\"unsure\":0.06},\"confidence\":0.84}, \"done\": {\"type\":\"noul\",\"noul\":0.93}}}"
+        `shouldBe` [Chosen "command" [] (Confidence 0.84), Yes (Confidence 0.93)]
+    it "(d) a choice not among the options makes the whole batch unsure" $
+      jevAnswers [which, done] "{\"answers\": {\"which\": {\"type\":\"choice\",\"choice\":\"event\",\"confidence\":0.9}, \"done\": {\"type\":\"noul\",\"noul\":0.93}}}"
+        `shouldBe` [Unsure, Unsure]
+    it "(e) a reply that is not JSON is unsure for every question" $
+      jevAnswers [which, done] "<html>bad gateway</html>" `shouldBe` [Unsure, Unsure]
+    it "(f) a score is the most probable level" $
+      jevAnswers [matters] "{\"answers\": {\"k\": {\"type\":\"score\",\"score\":1.2,\"probabilities\":{\"0\":0.1,\"1\":0.6,\"2\":0.3},\"confidence\":0.6}}}"
+        `shouldSatisfy` \case [Level 1 _ _] -> True; _ -> False
+    it "(g) jevDecider without its key is unsure for the batch and logs nothing (no request)" $ do
+      logged <- newIORef []
+      let d = jevDecider neverCancel 5 (Jev "jev-latest" "OLIFANT_SPEC_NO_KEY") (\l -> modifyIORef logged (l :))
+      askAll d [which, done] `shouldReturn` [Unsure, Unsure]
+      ask d which `shouldReturn` Unsure
+      readIORef logged `shouldReturn` []
   it "noDecider is always unsure" $
     ask noDecider commandOrQuery `shouldReturn` Unsure

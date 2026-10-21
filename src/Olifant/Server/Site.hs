@@ -23,8 +23,7 @@ module Olifant.Server.Site
   , tshow
   ) where
 
-import Control.Exception (SomeException, try)
-import Control.Monad (forM, void)
+import Control.Monad (forM)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Char (isAlphaNum)
@@ -35,13 +34,12 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time (defaultTimeLocale, formatTime)
 import Olifant.Anchor (locateContainers)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Generation.FillPhase (projectFiles)
 import Olifant.Language (Language (..), Syntax, TestId, TestRun, languageFor, runTestsIn, testsForFile)
-import Olifant.Server.State (ServerState (..), projectFor)
+import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (dropExtension, makeRelative, splitDirectories, (</>))
 
@@ -178,16 +176,6 @@ importedFiles, importedLines, importedTotal :: Int
 importedFiles = 8
 importedLines = 120
 importedTotal = 600
-
--- | One line of the step log (`.olifant/state/steps.log`, ignored by git):
--- the time, then FIELDS, tab-separated, each on one line. A log that
--- cannot be written never stops a move.
-appendStepLine :: Ports -> FilePath -> [Text] -> IO ()
-appendStepLine ports root fields = do
-  now <- pNow ports
-  let path = root </> ".olifant/state/steps.log"
-      entry = T.intercalate "\t" (T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now) : map (T.unwords . T.words) fields)
-  void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))
 
 -- | The body (1-based) of the function NAME whose def is on line D: the
 -- first of the name's bodies that starts at or after it.
