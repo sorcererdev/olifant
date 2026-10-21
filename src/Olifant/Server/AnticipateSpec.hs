@@ -36,10 +36,11 @@ spec = describe "Olifant.Server.Anticipate (the one Jev question at the cursor)"
       length (T.lines unit) `shouldBe` 120
       take 1 (T.lines unit) `shouldBe` ["    x_81 = 81"]
       (cursor, imports) `shouldBe` ("    x_200 = 200", [])
-  it "(c) the question: `anticipate`, the candidates and none, from the path, cursor line, unit and imports" $ do
+  it "(c) the question: `anticipate`, exactly the candidates, from the path, cursor line, unit and imports, each named in the instructions" $ do
     let q = anticipateQuestion Silence "src/bistro/booking/commands/x.py" ("class X:", "class X:", ["import os"]) [("python-htmx/command", "A command of a service, with its test")]
     qKind q `shouldBe` "anticipate"
-    (case qShape q of Choice os -> map fst os; _ -> []) `shouldBe` ["python-htmx/command", "none"]
+    (case qShape q of Choice os -> map fst os; _ -> []) `shouldBe` ["python-htmx/command"]
+    qInstructions q `shouldBe` "The person is writing the code in unit by hand, at cursor_line, in the file at path. Which generator produces what they are writing? Use the directory in path and the names in unit."
     map fst (qContext q) `shouldBe` ["path", "cursor_line", "unit", "imports"]
     lookup "imports" (qContext q) `shouldBe` Just "import os"
   describe "anticipateAt (Silence: nothing applies and recognition is unsure)" $ do

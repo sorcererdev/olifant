@@ -67,15 +67,16 @@ prefixAt text line = (T.intercalate "\n" (drop (start - 1) upTo), cursor, import
     imports = [l | l <- ls, any (`T.isPrefixOf` l) ["import ", "from "]]
 
 -- | The `anticipate` choice: the candidates (generator id, what it makes)
--- and none, from the path, the cursor's line, the unit and the imports.
+-- (the backend adds unsure), from the path, the cursor's line, the unit
+-- and the imports; the instructions say what each is for.
 anticipateQuestion :: Moment -> FilePath -> (Text, Text, [Text]) -> [(Text, Text)] -> Question
 anticipateQuestion moment path (unit, cursor, imports) candidates =
-  choice "anticipate" instructions (candidates <> [("none", "none of these is being written here")]) $
+  choice "anticipate" instructions candidates $
     [("path", T.pack path), ("cursor_line", cursor), ("unit", unit), ("imports", T.intercalate "\n" imports)]
   where
     instructions = case moment of
-      Tie -> "Several generators apply at the cursor. Which one is the person about to write, from the code so far?"
-      Silence -> "Nothing applies at the cursor. Is the person writing by hand what one of these generators makes?"
+      Tie -> "Several generators apply at cursor_line in the file at path. Which one is the person about to write next, from the code in unit so far? Use the names in unit and the shape of the code around cursor_line."
+      Silence -> "The person is writing the code in unit by hand, at cursor_line, in the file at path. Which generator produces what they are writing? Use the directory in path and the names in unit."
 
 -- | What may be asked at a line: a tie (the actions covering it), or a
 -- silence (none does, and recognition offers nothing sure: the suggested
