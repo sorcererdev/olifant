@@ -177,9 +177,10 @@ once per prefix: the same code typed again is answered from what was kept. A sur
 (0.9 at a tie, 0.95 at a silence) replaces what is shown, for the same version of the buffer:
 the chosen snippet at a tie, or the chosen convention recognised at a silence (an offer when
 the file gives every input, a hint otherwise). An answer that lands after you typed on is
-dropped, and a generator you dismissed three times in a row stays quiet. Each sure answer goes
-to the step log (`.olifant/state/steps.log`) as `anticipate`, the generator, the confidence
-and `shown`, `quiet` or `stale`. With no `[decide] model`, nothing is asked and what you see
+dropped, and a generator you dismissed three times in a row stays quiet. Each answer goes to
+the step log (`.olifant/state/steps.log`) as `anticipate`, the generator, the confidence (`-`
+for none given) and what came of it: `shown`, `quiet`, `stale`, `unsure` (under the gate, or
+no choice: generator `-`) or `none` (sure, but no suggestion comes of it). With no `[decide] model`, nothing is asked and what you see
 is the suggestion alone; `:DurandalGhosts off` turns both off.
 
 **`Tab` is Durandal's only while a suggestion is shown**, as a buffer-local mapping in normal

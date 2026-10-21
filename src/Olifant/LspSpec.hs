@@ -2230,6 +2230,14 @@ anticipationSpec = describe "anticipation: asked after the deterministic push, p
       offerFor v sg = (lookupKey "version" sg, lookupKey "kind" sg, lookupKey "generator" sg, lookupKey "band" sg) == (Just (Number v), Just (String "recognition"), Just (String "python-htmx/command"), Just (String "offer"))
       -- the deterministic push: nothing, or a hint
       deterministic = all (\sg -> lookupKey "band" sg == Just (String "hint"))
+      -- an answer under the gate, typed at a silence
+      unsureBy answer = withPython [] $ \ports dir ->
+        withJev ports dir answer $ \answers -> do
+          doc <- openNew command
+          typeIn doc 1 "class RescheduleBooking:"
+          appeared (answers <> ".asked")
+          liftIO (threadDelay 1000000)
+          pushes
   it "(a) a sure answer (0.97) at a silence: pushed after the deterministic one, for the same version" $
     withPython [] $ \ports dir -> do
       (ps, logged) <- withJev ports dir sure $ \_ -> do
@@ -2239,16 +2247,14 @@ anticipationSpec = describe "anticipation: asked after the deterministic push, p
         pushes
       (deterministic (take (length ps - 1) ps), map (offerFor 1) (drop (length ps - 1) ps)) `shouldBe` (True, [True])
       logged `shouldBe` ["anticipate\tpython-htmx/command\t0.97\tshown"]
-  it "(b) an unsure answer (0.6): only the deterministic push" $
-    withPython [] $ \ports dir -> do
-      (ps, logged) <- withJev ports dir "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.6}}}" $ \answers -> do
-        doc <- openNew command
-        typeIn doc 1 "class RescheduleBooking:"
-        appeared (answers <> ".asked")
-        liftIO (threadDelay 1000000)
-        pushes
-      deterministic ps `shouldBe` True
-      logged `shouldBe` []
+  it "(b) an unsure answer (0.6): only the deterministic push; logged unsure" $ do
+    (ps, logged) <- unsureBy "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.6}}}"
+    deterministic ps `shouldBe` True
+    logged `shouldBe` ["anticipate\tpython-htmx/command\t0.6\tunsure"]
+  it "(b2) an answer without a confidence: only the deterministic push; logged unsure, its confidence -" $ do
+    (ps, logged) <- unsureBy "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\"}}}"
+    deterministic ps `shouldBe` True
+    logged `shouldBe` ["anticipate\tpython-htmx/command\t-\tunsure"]
   it "(c) an answer landing after the buffer moved on is never pushed: logged stale (Review Focus 1)" $
     withPython [] $ \ports dir -> do
       (ps, logged) <- withJev ports dir "wait" $ \answers -> do

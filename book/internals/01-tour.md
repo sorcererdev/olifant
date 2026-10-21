@@ -2321,7 +2321,8 @@ engine features plus a pack (`python-strangler`):
   (the chosen action's at a tie, a snippet's as one; the convention's recognition at a
   silence). It is pushed for the version that asked only if the document is still at it and
   the generator has fewer than three dismissals in a row (`quietCounts`); each sure answer
-  is logged `anticipate GENERATOR CONFIDENCE shown|quiet|stale`.
+  is logged `anticipate GENERATOR CONFIDENCE shown|quiet|stale|none`, and one under the gate
+  `unsure` (`-` for a generator or confidence it lacks).
 - **Rules that look elsewhere** (`Rules`: `bind`, `when`): a slot captured from the found code,
   and a condition on another file's lines; retire is offered only once the registry says the
   flag is on.

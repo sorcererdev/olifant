@@ -12,9 +12,10 @@ import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
+import Olifant.Decide qualified as De
 import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
-import Control.Monad (forM_, unless, void)
+import Control.Monad (unless, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -791,7 +792,8 @@ suggestLater env lspEnv path version line = do
 -- asked once per prefix. A sure answer is pushed as an upgrade for this
 -- version, unless the buffer has moved on (stale, Review Focus 1) or its
 -- generator was quieted by three dismissals (quiet, Review Focus 4); each
--- outcome goes in the step log.
+-- outcome goes in the step log: shown, quiet, stale, unsure (under the
+-- gate) or none (sure, but no suggestion comes of it).
 anticipateLater :: Env -> LanguageContextEnv () -> FilePath -> Int -> Int -> Maybe Suggestion -> IO ()
 anticipateLater env lspEnv path version line pushed
   | maybe False offered pushed = pure ()
@@ -808,9 +810,19 @@ anticipateLater env lspEnv path version line pushed
         _ -> pure ()
   where
     offered sg = fmap Recognize.rcBand (sgRecognition sg) == Just Recognize.Offer
-    land at root moment answer = forM_ (sureAnswer moment answer) $ \(g, c) -> do
+    land at root moment answer = case sureAnswer moment answer of
+      Nothing -> logged root (unsure answer) "unsure"
+      Just (g, c) -> sure at root moment answer g c
+    -- what an answer under the gate chose, and how surely ("-" for none)
+    unsure = \case
+      De.Chosen g _ (De.Confidence c) -> (g, T.pack (show c))
+      De.Chosen g _ De.Unknown -> (g, "-")
+      _ -> ("-", "-")
+    logged root (g, c) outcome = do
       ports <- ssPorts <$> readMVar (envState env)
-      let note outcome = appendStepLine ports root ["anticipate", g, T.pack (show c), outcome]
+      appendStepLine ports root ["anticipate", g, c, outcome]
+    sure at root moment answer g c = do
+      let note = logged root (g, T.pack (show c))
       now <- versionOf env path
       counts <- readMVar (envState env) >>= quietCounts root
       if now /= Just version
@@ -820,7 +832,7 @@ anticipateLater env lspEnv path version line pushed
             then note "quiet"
             else
               withSnapshot at (anticipationFrom path line moment answer) >>= \case
-                Nothing -> pure ()
+                Nothing -> note "none"
                 Just an -> do
                   still <- versionOf env path
                   if still == Just version
