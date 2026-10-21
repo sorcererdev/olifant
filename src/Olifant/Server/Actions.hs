@@ -19,7 +19,7 @@ import Olifant.Snippet (Snippet)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
 import Olifant.Migration (functionText, readsOrWrites)
 import Olifant.Rules (fingerprint)
-import Olifant.Decide (Answer (..), Question (..))
+import Olifant.Decide (Answer (..), choice)
 import Data.List (partition)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Olifant.Server.State (decision, deciderFor, ServerConfig (..), ServerState (..), memo, projectFor)
@@ -60,8 +60,8 @@ extractOrder s project path acts = case [a | a <- acts, isExtract a] of
       Nothing -> case deciderFor s project of
         Nothing -> pure Nothing
         Just decider ->
-          decision s decider (path, "command-or-query:" <> function) (fingerprint [text]) (Question "command-or-query" ["command", "query"] [] [("function", text)]) (pure ()) <&> \case
-            Just (Chosen k _) -> Just k
+          decision s decider (path, "command-or-query:" <> function) (fingerprint [text]) (choice "command-or-query" "Is this function a command (changes state) or a query (reads state)" [("command", "changes state"), ("query", "reads state")] [("function", text)]) (pure ()) <&> \case
+            Just (Chosen k _ _) -> Just k
             _ -> Nothing
     let first = case preferred of
           Just "query" -> "/extract-query"

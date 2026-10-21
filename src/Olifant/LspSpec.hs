@@ -1522,7 +1522,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
     withPython [(legacy, base)] $ \ports dir -> do
       migrating dir "\n[decide]\nmodel = \"jev\"\n"
       let answers = dir </> "answers.json"
-          q = De.Question "bug-or-new" ["bug fix", "new behaviour"] [] []
+          q = De.choice "bug-or-new" "" [("bug fix", ""), ("new behaviour", "")] []
       TIO.writeFile answers "wait"
       (token, trip) <- newCancel
       trip
@@ -1540,7 +1540,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
             Just a -> pure (Just a)
             Nothing | n > (0 :: Int) -> threadDelay 50000 >> poll (n - 1)
             Nothing -> pure Nothing
-      poll 40 `shouldReturn` Just (De.Chosen "bug fix" [])
+      poll 40 `shouldReturn` Just (De.Chosen "bug fix" [] De.Unknown)
   it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
     withPython [(legacy, base)] $ \ports dir -> do
       migrating dir "\n[decide]\nmodel = \"jev\"\n"
