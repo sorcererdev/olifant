@@ -10,6 +10,7 @@ module Olifant.Server.Recognize
   , recognitionFeedback
   , recognitionUpgrade
   , recognitionSuggestion
+  , quietCounts
   , indexFor
   ) where
 

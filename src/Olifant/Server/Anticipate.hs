@@ -11,6 +11,8 @@ module Olifant.Server.Anticipate
   , prefixAt
   , anticipateQuestion
   , anticipateCandidates
+  , anticipationAsk
+  , sureAnswer
   , anticipationFrom
   , anticipateAt
   ) where
@@ -29,6 +31,7 @@ import Olifant.Generator (AppliesAt (..), Generator, GeneratorWith (..), InputSp
 import Olifant.App (Project (..))
 import Olifant.Language (languageFor)
 import Olifant.Recognize
+import Olifant.Rules (fingerprint)
 import Olifant.Server.Hints (fileActionsFor)
 import Olifant.Server.Recognize (indexFor, recognitionFor, recognitionSuggestion)
 import Olifant.Server.State (ServerState, projectFor)
@@ -106,11 +109,10 @@ anticipateCandidates path line s =
 -- as one); at a silence, the chosen convention recognised, planned when
 -- the file gives every input it needs, else a hint (Review Focus 3).
 anticipationFrom :: FilePath -> Int -> Moment -> Answer -> ServerState -> IO (ServerState, Maybe Anticipation)
-anticipationFrom path line moment answer s = case answer of
-  Chosen g _ (Confidence c) | confident gate answer -> fmap (fmap (Anticipation g c moment)) <$> suggestion g c
-  _ -> pure (s, Nothing)
+anticipationFrom path line moment answer s = case sureAnswer moment answer of
+  Just (g, c) -> fmap (fmap (Anticipation g c moment)) <$> suggestion g c
+  Nothing -> pure (s, Nothing)
   where
-    gate = if moment == Tie then tieGate else silenceGate
     suggestion g c = case moment of
       Tie ->
         fileActionsFor path s >>= \case
@@ -147,20 +149,37 @@ anticipationFrom path line moment answer s = case answer of
           , rcReasons = ["anticipated at " <> T.pack (show c)]
           }
 
--- | Candidates, the question from the prefix, one ask, its anticipation.
-anticipateAt :: FilePath -> Int -> ServerState -> Decider IO -> IO (ServerState, Maybe Anticipation)
-anticipateAt path line s d =
+-- | The generator an answer chose, and how surely, when at least as surely
+-- as the moment's gate.
+sureAnswer :: Moment -> Answer -> Maybe (Text, Double)
+sureAnswer moment answer = case answer of
+  Chosen g _ (Confidence c) | confident (if moment == Tie then tieGate else silenceGate) answer -> Just (g, c)
+  _ -> Nothing
+
+-- | What to ask at a line, if anything: the moment, a fingerprint of what
+-- the answer depends on (the unit, the cursor's line and the candidates)
+-- and the question.
+anticipationAsk :: FilePath -> Int -> ServerState -> IO (ServerState, Maybe (Moment, Text, Question))
+anticipationAsk path line s =
   anticipateCandidates path line s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (moment, cands)) -> do
-      text <- textOf s'
-      answer <- ask d (anticipateQuestion moment path (prefixAt text line) cands)
-      anticipationFrom path line moment answer s'
+      prefix@(unit, cursor, _) <- prefixAt <$> textOf s' <*> pure line
+      pure (s', Just (moment, fingerprint (unit : cursor : map fst cands), anticipateQuestion moment path prefix cands))
   where
     textOf st =
       projectFor path st >>= \case
         (_, Just (root, project)) -> fromMaybe "" <$> readText (prWorkspace project) (makeRelative root path)
         _ -> pure ""
+
+-- | Candidates, the question from the prefix, one ask, its anticipation.
+anticipateAt :: FilePath -> Int -> ServerState -> Decider IO -> IO (ServerState, Maybe Anticipation)
+anticipateAt path line s d =
+  anticipationAsk path line s >>= \case
+    (s', Nothing) -> pure (s', Nothing)
+    (s', Just (moment, _, q)) -> do
+      answer <- ask d q
+      anticipationFrom path line moment answer s'
 
 -- | A file's project, its language's recognition index and generators, and
 -- its text (as it is, unsaved).

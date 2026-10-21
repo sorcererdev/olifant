@@ -14,7 +14,7 @@ import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
 import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
-import Control.Monad (unless, void)
+import Control.Monad (forM_, unless, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -761,28 +761,82 @@ lastEditedLine changes = case reverse changes of
   _ -> Nothing
 
 -- | After the debounce (a newer edit of the file cancels it), plan what
--- follows from the edit and push it, unless the document has moved on.
+-- follows from the edit and push it, unless the document has moved on;
+-- then, when nothing sure was pushed, the anticipation.
 suggestLater :: Env -> LanguageContextEnv () -> FilePath -> Int -> Int -> IO ()
 suggestLater env lspEnv path version line = do
   debounce <- scDebounceMs . ssConfig <$> readMVar (envState env)
   void . submit (envJobs env) ("suggest " <> T.pack path) debounce $ \token -> do
     -- superseded by the next edit: its checks stop (review I5)
-    found <- withSnapshot env {envCancel = token} (suggestOrRecognize path line)
-    current <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+    let job = env {envCancel = token}
+    found <- withSnapshot job (suggestOrRecognize path line)
+    current <- versionOf env path
     case found of
       Just sg | current == Just version -> do
-        n <- offer env path version sg
-        runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version n sg)
+        pushSuggestion env lspEnv path version sg
         -- unsure: the deterministic answer is out; a configured model may
         -- sharpen it, for this version, if the buffer has not moved on
-        upgraded <- withSnapshot env {envCancel = token} (recognitionUpgrade path sg)
-        now <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+        upgraded <- withSnapshot job (recognitionUpgrade path sg)
+        now <- versionOf env path
         case upgraded of
-          Just better | now == Just version -> do
-            m <- offer env path version better
-            runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version m better)
-          _ -> pure ()
+          Just better | now == Just version -> pushSuggestion env lspEnv path version better
+          Just _ -> pure ()
+          Nothing -> anticipateLater job lspEnv path version line (Just sg)
+      Nothing | current == Just version -> anticipateLater job lspEnv path version line Nothing
       _ -> pure ()
+
+-- | The anticipation, after the deterministic push (PUSHED, or none): when
+-- the project asks Jev and nothing sure was pushed (none, a hint, or two
+-- actions apply at the line), the one question, in the background and
+-- asked once per prefix. A sure answer is pushed as an upgrade for this
+-- version, unless the buffer has moved on (stale, Review Focus 1) or its
+-- generator was quieted by three dismissals (quiet, Review Focus 4); each
+-- outcome goes in the step log.
+anticipateLater :: Env -> LanguageContextEnv () -> FilePath -> Int -> Int -> Maybe Suggestion -> IO ()
+anticipateLater env lspEnv path version line pushed
+  | maybe False offered pushed = pure ()
+  | otherwise =
+      withSnapshotState env (projectFor path) >>= \case
+        (s, Just (root, project)) | Just d <- deciderFor s project ->
+          withSnapshot env (anticipationAsk path line) >>= \case
+            Nothing -> pure ()
+            Just (moment, fp, q) -> do
+              let key = (path, "anticipate " <> fp)
+                  -- the answer is kept: asked again, it is known at once
+                  landed = decision s d key fp q (pure ()) >>= mapM_ (land env root moment)
+              decision s d key fp q (landed `catch` \(_ :: SomeException) -> pure ()) >>= mapM_ (land env root moment)
+        _ -> pure ()
+  where
+    offered sg = fmap Recognize.rcBand (sgRecognition sg) == Just Recognize.Offer
+    land at root moment answer = forM_ (sureAnswer moment answer) $ \(g, c) -> do
+      ports <- ssPorts <$> readMVar (envState env)
+      let note outcome = appendStepLine ports root ["anticipate", g, T.pack (show c), outcome]
+      now <- versionOf env path
+      counts <- readMVar (envState env) >>= quietCounts root
+      if now /= Just version
+        then note "stale"
+        else
+          if M.findWithDefault 0 g counts >= 3
+            then note "quiet"
+            else
+              withSnapshot at (anticipationFrom path line moment answer) >>= \case
+                Nothing -> pure ()
+                Just an -> do
+                  still <- versionOf env path
+                  if still == Just version
+                    then pushSuggestion env lspEnv path version (anSuggestion an) >> note "shown"
+                    else note "stale"
+
+-- | The version of a document as the editor has it now.
+versionOf :: Env -> FilePath -> IO (Maybe Int)
+versionOf env path = fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+
+-- | A suggestion pushed (olifant/suggestion) for a version of a file, kept
+-- for `olifant/plan`.
+pushSuggestion :: Env -> LanguageContextEnv () -> FilePath -> Int -> Suggestion -> IO ()
+pushSuggestion env lspEnv path version sg = do
+  n <- offer env path version sg
+  runLspT lspEnv . sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/suggestion")) $ object (suggestionFields path version n sg)
 
 -- | The offer a model's yes made of a recognition hint, for this file at
 -- this version (pushed by the suggest job), with its id: what a pull at
