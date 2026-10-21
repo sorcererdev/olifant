@@ -13,24 +13,35 @@ module Olifant.Recognize
   , module Olifant.Recognize.Types
   , module Olifant.Recognize.Ask
   , recognizeIn
+  , placedGenerators
   ) where
 
 import Olifant.Recognize.Ask
 import Olifant.Recognize.Types
-import Data.List (sortOn)
+import Data.List (nub, sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Generator (Generator, GeneratorWith (..))
+import Olifant.Generator (Generator, GeneratorId, GeneratorWith (..))
 import Olifant.Recognize.Index
 import Olifant.Recognize.Inputs
 import Olifant.Recognize.Paths
 import Olifant.Recognize.Shape
 import Olifant.Recognize.Weights
 import System.FilePath (takeDirectory, takeFileName)
+
+-- | The generators a file is at the place of: a convention's path inverts
+-- to it, or the folder of its siblings holds it (as 'recognizeIn' places).
+placedGenerators :: Index -> FilePath -> [GeneratorId]
+placedGenerators ix path =
+  nub
+    [ cvGenerator c
+    | c <- ixConventions ix
+    , isJust (invertPath (cvPattern c) path) || takeDirectory path `S.member` M.findWithDefault S.empty (cvGenerator c) (ixSiblingDirs ix)
+    ]
 
 data Scored = Scored {scConvention :: Convention, scShape :: Double, scPlace :: Double, scLike :: Text}
 

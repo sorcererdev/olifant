@@ -9,6 +9,8 @@ module Olifant.Server.Recognize
   , suggestOrRecognize
   , recognitionFeedback
   , recognitionUpgrade
+  , recognitionSuggestion
+  , indexFor
   ) where
 
 import Control.Concurrent (threadDelay)
