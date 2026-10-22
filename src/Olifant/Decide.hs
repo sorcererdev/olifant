@@ -273,7 +273,7 @@ jevDecider token timeout backend logLine = Decider (\q -> head' <$> batch [q]) b
 
 -- | Recorded answers (tests): `{"answers": {KIND: CHOICE or {choice, fields}}}`;
 -- "wait" waits until the file holds an answer, or the work is cancelled
--- (then unsure). Each question asked
+-- (then unsure, noted in FILE.cancelled). Each question asked
 -- is noted in FILE.asked.
 recordedDecider :: FilePath -> Cancel -> Decider IO
 recordedDecider file token = decider $ \q -> do
@@ -283,7 +283,7 @@ recordedDecider file token = decider $ \q -> do
       loop = do
         answer <- current
         stop <- cancelled token
-        if answer /= "wait" then pure (Just answer) else if stop then pure Nothing else threadDelay 20000 >> loop
+        if answer /= "wait" then pure (Just answer) else if stop then Nothing <$ writeFile (file <> ".cancelled") "" else threadDelay 20000 >> loop
   loop >>= \case
     Nothing -> pure Unsure
     Just answer -> pure $ case eitherDecodeStrict (TE.encodeUtf8 answer) of

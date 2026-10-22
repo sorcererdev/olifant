@@ -2074,7 +2074,8 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)
       -- typing (a partial change: what the suggest job reacts to)
       typeIn doc v text = sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier (doc ^. L.uri) v) [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing text))])
-      yes = "{\"answers\": [{\"generator\": \"python-htmx/command\", \"is\": \"yes\", \"inputs\": {\"command\": \"close_table\"}}]}"
+      -- recognize_answers: the alias of decide_answers; the decider's form
+      yes = "{\"answers\": {\"recognize\": {\"choice\": \"python-htmx/command\", \"fields\": {}}}}"
   it "(h) an unsure recognition is pushed at once, then upgraded when the model says yes" $
     withPython [] $ \ports dir -> do
       (first, second) <- withModel ports dir yes $ \_ -> do

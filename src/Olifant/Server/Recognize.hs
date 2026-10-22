@@ -14,10 +14,7 @@ module Olifant.Server.Recognize
   , indexFor
   ) where
 
-import Control.Concurrent (threadDelay)
 import Control.Monad (forM)
-import Olifant.Model (ModelConfig (..))
-import Olifant.Process (Cancel, cancelled)
 import Data.Aeson (Result (..), Value (..), decodeStrict, encode, fromJSON, object, (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
@@ -134,14 +131,15 @@ recognitionSuggestion path line s root _ gens r text = suggestion
         ]
 
 
--- | A pushed recognition sharpened by the project's model, when it is unsure
--- and [recognize] model is set (a recorded answer in tests): the better
+-- | A pushed recognition sharpened by the project's decider, when it is
+-- unsure and [decide] model (or its alias [recognize] model) is set (a
+-- recorded answer in tests), asked under this work's token: the better
 -- suggestion, or nothing.
 recognitionUpgrade :: FilePath -> Suggestion -> ServerState -> IO (ServerState, Maybe Suggestion)
 recognitionUpgrade path sg s = case sgRecognition sg of
   Just r | unsure r ->
     projectFor path s >>= \case
-      (s', Just (root, project)) | Just recognizer <- recognizerFor s' project, Just lang <- languageFor (catalogLanguages (prCatalog project)) (makeRelative root path) -> do
+      (s', Just (root, project)) | Just d <- deciderUnder (ssCancel s') s' project, Just lang <- languageFor (catalogLanguages (prCatalog project)) (makeRelative root path) -> do
         (s'', _, gens) <- indexFor root project lang s'
         let rel = makeRelative root path
         text <- fromMaybe "" <$> readText (prWorkspace project) rel
@@ -151,36 +149,11 @@ recognitionUpgrade path sg s = case sgRecognition sg of
         if quiet (rcGenerator r) && isNothing (rcOr r) && isNothing (rcRival r)
           then pure (s'', Nothing)
           else
-            consult recognizer gens (Change rel text) r >>= \case
+            consult d gens (Change rel text) r >>= \case
               Just r' | rcBand r' == Offer, not (quiet (rcGenerator r')) -> (s'',) <$> recognitionSuggestion path (sgAt sg) s'' root project gens r' text
               _ -> pure (s'', Nothing)
       (s', _) -> pure (s', Nothing)
   _ -> pure (s, Nothing)
-
--- | The model recognition asks, if the project names one: the configured
--- backend under this work's token, or (tests) a recorded answer.
-recognizerFor :: ServerState -> Project -> Maybe (Recognizer IO)
-recognizerFor s project = do
-  name <- catalogDecideModel (prCatalog project)
-  case scRecognizeAnswers (ssConfig s) of
-    Just recorded -> Just (recordedRecognizer recorded (ssCancel s))
-    Nothing -> do
-      let models = catalogModel (prCatalog project)
-      backend <- lookup name (mcBackends models)
-      Just (curlRecognizer (ssCancel s) (mcTimeout models) backend)
-
--- | A recorded answer (tests): notes that it was asked; "wait" waits until
--- the work is cancelled, and notes that too.
-recordedRecognizer :: FilePath -> Cancel -> Recognizer IO
-recordedRecognizer file token = Recognizer $ \_ cands -> do
-  writeFile (file <> ".asked") ""
-  answer <- T.strip . T.pack <$> readFile file
-  if answer == "wait"
-    then do
-      let loop = cancelled token >>= \stop -> if stop then writeFile (file <> ".cancelled") "" else threadDelay 20000 >> loop
-      loop
-      pure (map (const Unsure) cands)
-    else pure (either (const (map (const Unsure) cands)) id (decodeVerdicts (map genId cands) answer))
 
 -- | A convention as people say it: its generator's id, without its pack
 -- (rust-htmx/service-command → "service command").

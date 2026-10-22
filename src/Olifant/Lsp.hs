@@ -159,8 +159,11 @@ configure env = \case
                 { scDebounceMs = maybe (scDebounceMs (ssConfig s)) id (KM.lookup "debounce_ms" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing)
                 , scModel = case KM.lookup "model" o of Just (String m) -> Just m; _ -> scModel (ssConfig s)
                 , scFills = case KM.lookup "fills" o of Just (String f) -> Just (T.unpack f); _ -> scFills (ssConfig s)
-                , scRecognizeAnswers = case KM.lookup "recognize_answers" o of Just (String f) -> Just (T.unpack f); _ -> scRecognizeAnswers (ssConfig s)
-                , scDecideAnswers = case KM.lookup "decide_answers" o of Just (String f) -> Just (T.unpack f); _ -> scDecideAnswers (ssConfig s)
+                , -- recognize_answers: an alias of decide_answers (one answers file)
+                  scDecideAnswers = case (KM.lookup "decide_answers" o, KM.lookup "recognize_answers" o) of
+                    (Just (String f), _) -> Just (T.unpack f)
+                    (_, Just (String f)) -> Just (T.unpack f)
+                    _ -> scDecideAnswers (ssConfig s)
                 , scTestScript = script s
                 }
           , -- (tests) scripted verdicts stand in for the test runner
