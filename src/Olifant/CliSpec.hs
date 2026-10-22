@@ -26,7 +26,11 @@ import Olifant.Language (Syntax, noChecker, noRunner, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
-import System.Directory (findExecutable, getTemporaryDirectory)
+import Control.Monad (forM)
+import Data.Text.IO qualified as TIO
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, findExecutable, getTemporaryDirectory, listDirectory)
+import System.FilePath (makeRelative)
+import System.IO.Temp (withSystemTempDirectory)
 import System.FilePath ((</>))
 import Test.Hspec
 
@@ -264,7 +268,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> anticipateCliSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do
@@ -1074,3 +1078,68 @@ regionProject cabalText =
   , ("/proj/src/Olifant/A.hs", "module Olifant.A where\n")
   ]
     ++ project
+
+-- | The hidden `olifant anticipate` (the prefix corpus's runner calls it):
+-- one JSON line, the candidates always, from recorded answers here.
+anticipateCliSpec :: Spec
+anticipateCliSpec = describe "anticipate (hidden)" $ do
+  let newCommand = "src/bistro/booking/commands/reschedule_booking.py"
+      fixture extra = do
+        pack <- readTree =<< canonicalizePath "packs/python-htmx"
+        app <- readTree =<< canonicalizePath "packs/python-htmx/fixtures/app"
+        pure $
+          [("/pack" </> p, t) | (p, t) <- M.toList pack]
+            ++ [("/proj" </> p, t) | (p, t) <- M.toList app]
+            ++ [("/proj/.olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n\n[model.backends.jev]\nkind = \"jev\"\n\n[decide]\nmodel = \"jev\"\n")]
+            ++ extra
+      anticipating buffer answer = withSystemTempDirectory "olifant-anticipate-cli" $ \dir -> do
+        let answers = dir </> "answers.json"
+        TIO.writeFile answers answer
+        files <- fixture [("/proj/buffer.py", buffer)]
+        (code, out, err, _) <- runWithAstGrep "" files ["anticipate", newCommand, "--line", "1", "--overlay", "buffer.py", "--answers", answers]
+        asked <- doesFileExistOr (answers <> ".asked")
+        pure (code, out, err, asked)
+  it "(a) a sure answer: one JSON line, the moment, every candidate, the choice, its confidence, ms, shown" $ do
+    (code, out, err, asked) <- anticipating "class RescheduleBooking:\n" "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.97}}}"
+    (code, err) `shouldBe` (ExitSuccess, "")
+    length (T.lines out) `shouldBe` 1
+    asked `shouldBe` "anticipate\n"
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+        candidates = [g | Just (Aeson.Array cs) <- [lookupKey "candidates" v], c <- toList cs, Just (Aeson.String g) <- [lookupKey "generator" c]]
+    lookupKey "moment" v `shouldBe` Just (Aeson.String "silence")
+    candidates `shouldSatisfy` elem "python-htmx/command"
+    candidates `shouldSatisfy` ((> 1) . length)
+    lookupKey "generator" v `shouldBe` Just (Aeson.String "python-htmx/command")
+    lookupKey "confidence" v `shouldBe` Just (Aeson.Number 0.97)
+    lookupKey "shown" v `shouldBe` Just (Aeson.Bool True)
+    lookupKey "unit_lines" v `shouldBe` Just (Aeson.Number 1)
+    (case lookupKey "ms" v of Just (Aeson.Number _) -> True; _ -> False) `shouldBe` True
+  it "(b) under the gate: the answer and the candidates still printed, not shown" $ do
+    (code, out, _, _) <- anticipating "class RescheduleBooking:\n" "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.4}}}"
+    code `shouldBe` ExitSuccess
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    (lookupKey "generator" v, lookupKey "shown" v) `shouldBe` (Just (Aeson.String "python-htmx/command"), Just (Aeson.Bool False))
+  it "(c) nothing to ask (an empty unit, under minPrefixLines): a none line, nothing asked" $ do
+    (code, out, _, asked) <- anticipating "\n" "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.97}}}"
+    code `shouldBe` ExitSuccess
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    (case lookupKey "none" v of Just (Aeson.String _) -> True; _ -> False) `shouldBe` True
+    asked `shouldBe` ""
+  it "(d) is hidden from --help" $ do
+    (_, out, _, _) <- runWith "" [] False ["--help"]
+    out `shouldNotSatisfy` T.isInfixOf "anticipate"
+  where
+    doesFileExistOr f = do
+      there <- doesFileExistIO f
+      if there then readFile f else pure ""
+    doesFileExistIO = doesFileExist
+
+readTree :: FilePath -> IO (Map FilePath Text)
+readTree top = M.fromList <$> go top
+  where
+    go d = do
+      names <- listDirectory d
+      fmap concat . forM names $ \n -> do
+        let p = d </> n
+        isDir <- doesDirectoryExist p
+        if isDir then go p else (\t -> [(makeRelative top p, t)]) <$> TIO.readFile p

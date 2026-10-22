@@ -11,7 +11,7 @@ import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
 import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..))
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM_, join, unless, when)
 import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
@@ -44,6 +44,13 @@ import Olifant.Process (Cancel, neverCancel)
 import Olifant.Workspace (PathState (..), Workspace (..), isSafeRelative, overlay, within)
 import System.FilePath (dropTrailingPathSeparator, makeRelative, normalise, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 import System.Exit (ExitCode (..))
+import GHC.Clock (getMonotonicTime)
+import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question (..), Shape (..))
+import Olifant.Recognize qualified as Rec
+import Olifant.Server.Anticipate (Anticipation (..), Moment (..), anticipationAsk, anticipationFrom, minPrefixLines, prefixAt, unitLines)
+import Olifant.Server.Recognize (recognitionFor)
+import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderFor, newServerState, openDoc, projectFor)
+import Olifant.Server.Suggest (Suggestion (..))
 
 data Runtime = Runtime
   { rtRoot :: Workspace IO
@@ -301,6 +308,7 @@ runCommand rt cwd fmt cat = \case
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
   InitMigrateCmd paths pack -> runInitMigrate rt fmt paths pack
   LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
+  AnticipateCmd file line overlayFile answers -> runAnticipate rt (normalise (cwd </> file)) line ((cwd </>) <$> overlayFile) ((cwd </>) <$> answers)
   ListCmd detail -> do
     (entries, broken, views) <- listGenerators (portsOf rt) (projectOf rt cat) detail
     emit rt fmt (listJson detail (subsOf cat) views entries broken) (listHuman detail (subsOf cat) views entries broken)
@@ -789,3 +797,65 @@ progressJson = \case
   CutToHole hole n fill -> object ["event" .= ("cut" :: Text), "hole" .= hole, "dropped" .= n, "fill" .= fill]
   WholeFile hole -> object ["event" .= ("whole_file" :: Text), "hole" .= hole]
   Verifying hole -> object ["event" .= ("verify" :: Text), "hole" .= hole]
+
+-- | `olifant anticipate PATH --line N` (hidden; the prefix corpus calls
+-- it): the one anticipation question at the line, as the language server
+-- asks it, and one JSON line: the moment, every candidate (generator and
+-- what it makes), the answer's choice and confidence, how long the ask
+-- took, the unit's lines of code and whether it would be shown (sure
+-- enough, and a suggestion comes of it); or {"none": why} when nothing is
+-- asked. --overlay FILE is PATH's unsaved text (PATH new to the project);
+-- --answers FILE, recorded answers instead of the model. Nothing else is
+-- written to stdout; the step log is the language server's.
+runAnticipate :: Runtime -> FilePath -> Int -> Maybe FilePath -> Maybe FilePath -> IO ExitCode
+runAnticipate rt path line overlayFile answers = do
+  buffer <- traverse (readText (rtRoot rt)) overlayFile
+  case buffer of
+    Just Nothing -> none 2 ("no overlay file " <> T.pack (fromMaybe "" overlayFile))
+    _ -> do
+      s0 <- newServerState (portsOf rt)
+      let s1 = s0 {ssConfig = (ssConfig s0) {scDecideAnswers = answers}}
+          s2 = maybe s1 (\t -> openDoc path 1 t s1) (join buffer)
+      text <- maybe (fromMaybe "" <$> readText (rtRoot rt) path) pure (join buffer)
+      let (unit, _, _) = prefixAt text line
+      projectFor path s2 >>= \case
+        (_, Nothing) -> none 1 "not in a project"
+        (s3, Just (_, project)) -> case deciderFor s3 project of
+          Nothing -> none 1 "no [decide] model"
+          Just d ->
+            anticipationAsk path line s3 >>= \case
+              (s4, Nothing)
+                | unitLines unit < minPrefixLines -> none 0 ("the unit has " <> tshow (unitLines unit) <> " lines of code, under minPrefixLines (" <> tshow minPrefixLines <> ")")
+                | otherwise ->
+                    recognitionFor path line s4 >>= \case
+                      (_, Just sg) | Just r <- sgRecognition sg, Rec.rcBand r == Rec.Offer -> none 0 ("recognised: " <> generatorIdText (Rec.rcGenerator r))
+                      _ -> none 0 "nothing to ask: one action applies here, or there are no candidates"
+              (s4, Just (moment, _, q)) -> do
+                t0 <- getMonotonicTime
+                answer <- ask d q
+                t1 <- getMonotonicTime
+                (_, shown) <- anticipationFrom path line moment answer s4
+                let candidates = case qShape q of
+                      Choice os -> [object ["generator" .= g, "summary" .= what] | (g, what) <- os]
+                      _ -> []
+                    (chosen, confidence) = case answer of
+                      Chosen g _ (Confidence c) -> (Just g, Just c)
+                      Chosen g _ Unknown -> (Just g, Nothing)
+                      _ -> (Nothing, Nothing)
+                rtOut rt . (<> "\n") . encodeJson $
+                  object
+                    [ "moment" .= (case moment of Tie -> "tie"; Silence -> "silence" :: Text)
+                    , "candidates" .= candidates
+                    , "generator" .= chosen
+                    , "confidence" .= confidence
+                    , "ms" .= (round ((t1 - t0) * 1000) :: Int)
+                    , "unit_lines" .= unitLines unit
+                    , "shown" .= isJust shown
+                    , "kind" .= fmap (sgKind . anSuggestion) shown
+                    ]
+                pure ExitSuccess
+  where
+    none code why = do
+      rtOut rt (encodeJson (object ["none" .= (why :: Text)]) <> "\n")
+      pure (if code == 0 then ExitSuccess else ExitFailure code)
+    tshow = T.pack . show

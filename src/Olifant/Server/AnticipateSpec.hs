@@ -75,6 +75,18 @@ spec = describe "Olifant.Server.Anticipate (the one Jev question at the cursor)"
     it "(g) 0.5 at Silence: nothing (below 0.6)" $ do
       (found, _) <- anticipating "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.5}}}"
       fmap anGenerator found `shouldBe` Nothing
+  describe "minPrefixLines (a silence needs that much of the unit)" $ do
+    it "(i) a unit's lines of code, against a length" $ do
+      let unit = T.intercalate "\n" ["class CloseTable:", "", "    def handle(self, input):"]
+      unitLines unit `shouldBe` 2
+      (longEnough 2 unit, longEnough 3 unit, longEnough minPrefixLines "", longEnough minPrefixLines "   ") `shouldBe` (True, False, False, False)
+    it "(j) a shorter prefix (an empty unit) asks nothing; one line of code asks" $ do
+      let newCommand = "src/bistro/booking/commands/reschedule_booking.py"
+          asked text = withFixture [] $ \s _ -> do
+            (_, q) <- anticipationAsk (root </> newCommand) 1 (openDoc (root </> newCommand) 1 text s)
+            pure (fmap (\(m, _, _) -> m) q)
+      asked "\n" `shouldReturn` Nothing
+      asked "class RescheduleBooking:\n" `shouldReturn` Just Silence
   it "(h) a Tie: a blank line two snippets apply at, port-method chosen at 0.93, as a snippet" $ do
     let port = "src/bistro/booking/ports/booking_repository/booking_repository.py"
     withFixture [] $ \s0 dir -> do

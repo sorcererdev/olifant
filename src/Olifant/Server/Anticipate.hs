@@ -8,6 +8,9 @@ module Olifant.Server.Anticipate
   , Anticipation (..)
   , tieGate
   , silenceGate
+  , minPrefixLines
+  , unitLines
+  , longEnough
   , prefixAt
   , anticipateQuestion
   , anticipateCandidates
@@ -56,6 +59,21 @@ data Anticipation = Anticipation {anGenerator :: Text, anConfidence :: Double, a
 tieGate, silenceGate :: Double
 tieGate = 0.6
 silenceGate = 0.6
+
+-- | How much of the unit a silence needs before it is asked: its lines
+-- holding code. One (any code at all): early and often, as the gates; the
+-- prefix corpus (2026-10-21) reports precision per length, so the value
+-- can be revisited.
+minPrefixLines :: Int
+minPrefixLines = 1
+
+-- | A unit's lines that hold code.
+unitLines :: Text -> Int
+unitLines = length . filter (not . T.null . T.strip) . T.lines
+
+-- | A unit of at least N lines of code.
+longEnough :: Int -> Text -> Bool
+longEnough n unit = unitLines unit >= n
 
 -- | The prefix at a line (1-based): the unit so far (from the nearest
 -- non-blank line at column 0, at most 120 lines up to the cursor's), the
@@ -163,14 +181,18 @@ sureAnswer moment answer = case answer of
 
 -- | What to ask at a line, if anything: the moment, a fingerprint of what
 -- the answer depends on (the unit, the cursor's line and the candidates)
--- and the question.
+-- and the question. A silence is asked only from a unit of at least
+-- 'minPrefixLines' lines of code.
 anticipationAsk :: FilePath -> Int -> ServerState -> IO (ServerState, Maybe (Moment, Text, Question))
 anticipationAsk path line s =
   anticipateCandidates path line s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (moment, cands)) -> do
       prefix@(unit, cursor, _) <- prefixAt <$> textOf s' <*> pure line
-      pure (s', Just (moment, fingerprint (unit : cursor : map fst cands), anticipateQuestion moment path prefix cands))
+      pure $
+        if moment == Silence && not (longEnough minPrefixLines unit)
+          then (s', Nothing)
+          else (s', Just (moment, fingerprint (unit : cursor : map fst cands), anticipateQuestion moment path prefix cands))
   where
     textOf st =
       projectFor path st >>= \case
