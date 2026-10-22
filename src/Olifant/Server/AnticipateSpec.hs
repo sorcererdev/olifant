@@ -72,8 +72,8 @@ spec = describe "Olifant.Server.Anticipate (the one Jev question at the cursor)"
       (found, asked) <- anticipating "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\"}}}"
       asked `shouldBe` "anticipate\n"
       fmap anGenerator found `shouldBe` Nothing
-    it "(g) 0.9 at Silence: nothing (below 0.95)" $ do
-      (found, _) <- anticipating "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.9}}}"
+    it "(g) 0.5 at Silence: nothing (below 0.6)" $ do
+      (found, _) <- anticipating "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.5}}}"
       fmap anGenerator found `shouldBe` Nothing
   it "(h) a Tie: a blank line two snippets apply at, port-method chosen at 0.93, as a snippet" $ do
     let port = "src/bistro/booking/ports/booking_repository/booking_repository.py"

@@ -48,10 +48,14 @@ data Moment = Tie | Silence deriving (Eq, Show)
 data Anticipation = Anticipation {anGenerator :: Text, anConfidence :: Double, anMoment :: Moment, anSuggestion :: Suggestion}
 
 -- | How sure an answer must be: choosing among what applies, or offering
--- what nothing suggested.
+-- what nothing suggested. Anticipate early and often: an offer can be
+-- ignored. Lowered from 0.9 (tie) and 0.95 (silence) on 2026-10-20 after
+-- the demo: Jev's 0.5-0.9 band is "confirm", and an offer is a confirm
+-- surface. Task 5's corpus run reports precision at 0.6, 0.8, 0.9 and
+-- 0.95, so the value can be revisited.
 tieGate, silenceGate :: Double
-tieGate = 0.9
-silenceGate = 0.95
+tieGate = 0.6
+silenceGate = 0.6
 
 -- | The prefix at a line (1-based): the unit so far (from the nearest
 -- non-blank line at column 0, at most 120 lines up to the cursor's), the

@@ -174,7 +174,7 @@ a silence, nothing applying and recognition unsure: `class CloseTable:` typed in
 in `commands/`. The question carries the code from the nearest unindented line to the cursor,
 the cursor's line, the file's imports and the generators that could be meant, and it is asked
 once per prefix: the same code typed again is answered from what was kept. A sure answer
-(0.9 at a tie, 0.95 at a silence) replaces what is shown, for the same version of the buffer:
+(0.6 at a tie or a silence: an offer is easy to ignore) replaces what is shown, for the same version of the buffer:
 the chosen snippet at a tie, or the chosen convention recognised at a silence (an offer when
 the file gives every input, a hint otherwise). An answer that lands after you typed on is
 dropped, and a generator you dismissed three times in a row stays quiet. Each answer goes to

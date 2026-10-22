@@ -2247,10 +2247,10 @@ anticipationSpec = describe "anticipation: asked after the deterministic push, p
         pushes
       (deterministic (take (length ps - 1) ps), map (offerFor 1) (drop (length ps - 1) ps)) `shouldBe` (True, [True])
       logged `shouldBe` ["anticipate\tpython-htmx/command\t0.97\tshown"]
-  it "(b) an unsure answer (0.6): only the deterministic push; logged unsure" $ do
-    (ps, logged) <- unsureBy "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.6}}}"
+  it "(b) an unsure answer (0.4): only the deterministic push; logged unsure" $ do
+    (ps, logged) <- unsureBy "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.4}}}"
     deterministic ps `shouldBe` True
-    logged `shouldBe` ["anticipate\tpython-htmx/command\t0.6\tunsure"]
+    logged `shouldBe` ["anticipate\tpython-htmx/command\t0.4\tunsure"]
   it "(b2) an answer without a confidence: only the deterministic push; logged unsure, its confidence -" $ do
     (ps, logged) <- unsureBy "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\"}}}"
     deterministic ps `shouldBe` True

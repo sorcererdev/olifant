@@ -2317,7 +2317,7 @@ engine features plus a pack (`python-strangler`):
   `prefixAt` (the unit, the cursor's line, the imports) and the candidates, with a fingerprint
   of the unit, the line and the candidates; `Lsp` asks it through `decision`, keyed by that
   fingerprint, so a prefix typed again is answered from `ssDecisions`. `sureAnswer` gates the
-  answer (`tieGate` 0.9, `silenceGate` 0.95) and `anticipationFrom` makes it a `Suggestion`
+  answer (`tieGate` and `silenceGate`, both 0.6) and `anticipationFrom` makes it a `Suggestion`
   (the chosen action's at a tie, a snippet's as one; the convention's recognition at a
   silence). It is pushed for the version that asked only if the document is still at it and
   the generator has fewer than three dismissals in a row (`quietCounts`); each sure answer
