@@ -1026,6 +1026,49 @@ conjureSpec = describe "olifant/conjure" $ do
         field "edits" answer `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         outside `shouldSatisfy` either ("no function or class at line 1" `T.isInfixOf`) (const False)
 
+  it "a steered conjure pauses as a result; resume stop lands it; a token resumes once" $
+    withSystemTempDirectory "olifant-conjure-steered" $ \tmp -> do
+      let script = tmp </> "tests.json"
+          fills = tmp </> "fills.toml"
+          answers = tmp </> "answers.json"
+      BSL.writeFile script "{\"src/bistro/booking/commands/create_booking__test.py::test_books_a_free_slot\": {\"line\": 34, \"message\": \"assert 1 == 2\"}}"
+      TIO.writeFile fills "[fills]\nbody = \"return None\"\n"
+      TIO.writeFile answers "{\"answers\": {}}"
+      withPython [] $ \ports dir -> do
+        old <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 1\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n")
+        let config = [("test_script", String (T.pack script)), ("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+        ((paused, stopped, again, later), _) <- inProcessWithConfig config ports dir $ do
+          doc <- openDoc moduleRel "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              base line = ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (line :: Int), "character" .= (0 :: Int)]]
+              ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base (handleAt + 1) <> extra))
+              resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
+          paused <- ask []
+          stopped <- resume "conjure-1" "stop"
+          again <- resume "conjure-1" "stop"
+          later <- resume "conjure-1" "later"
+          pure (paused, stopped, again, later)
+        let field k = either (const Nothing) (lookupKey k)
+            inner k v = case v of Just (Object o) -> KM.lookup k o; _ -> Nothing
+            pausedObj = field "paused" paused
+        inner "token" pausedObj `shouldBe` Just (String "conjure-1")
+        inner "why" pausedObj `shouldBe` Just (String "budget spent")
+        inner "offers" pausedObj `shouldBe` Just (toJSON ["continue", "stop" :: Text])
+        inner "round" pausedObj `shouldBe` Just (Number 1)
+        inner "rung" pausedObj `shouldBe` Just (String "local")
+        inner "summary" pausedObj `shouldBe` Just (String "red: test_books_a_free_slot \183 assert 1 == 2")
+        let lines' = inner "lines" pausedObj
+        inner "first" lines' `shouldSatisfy` \case Just (Number _) -> True; _ -> False
+        inner "last" lines' `shouldSatisfy` \case Just (Number _) -> True; _ -> False
+        field "summary" stopped `shouldSatisfy` \case Just (String x) -> "red: test_books_a_free_slot" `T.isPrefixOf` x; _ -> False
+        field "edits" stopped `shouldSatisfy` \case Just (Object _) -> True; _ -> False
+        field "rounds" stopped `shouldBe` Just (Number 1)
+        field "rungs" stopped `shouldBe` Just (toJSON ["local" :: Text])
+        again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
+        later `shouldSatisfy` either ("continue, climb or stop" `T.isInfixOf`) (const False)
+
 -- | `olifant/mutate`: the unit at a position mutated against its test
 -- file (a scripted runner that kills nothing); and a survivor's stub.
 mutateSpec :: Spec

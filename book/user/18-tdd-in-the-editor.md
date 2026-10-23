@@ -114,9 +114,20 @@ on screen goes in as rejected); undo is the editor's. A visual selection (`<lead
 mode, `:'<,'>Durandal conjure`) conjures those lines instead of the unit's body.
 
 On the wire this is `olifant/conjure` with `{textDocument, position, selection?}` (the selection's
-`start` and `end` lines, 0-based, inclusive), answering `{file, unit, edits, summary, green,
-tests}` (`edits` null when the conjure changed nothing; `tests` the after-run as `olifant/tests/run`
-answers it), under `$/progress` `conjuring`. It is refused in one sentence outside any function or
+`start` and `end` lines, 0-based, inclusive) and an optional `resume`, answering `{file, unit,
+edits, summary, green, tests, rounds, rungs}` (`edits` null when the conjure changed nothing;
+`tests` the after-run as `olifant/tests/run` answers it; `rounds` the rounds used and `rungs` the
+models tried, in order), under `$/progress` `conjuring`. A steered conjure that pauses answers
+instead `{paused: {token, file, unit, lines: {first, last}, round, rung, summary, offers, why}}`
+(`lines` 1-based; `offers` a list of `"continue"`, `"climb:NAME"` and `"stop"`). To answer it, ask
+again with the same `textDocument` and `position` and `resume: {token, choice, hint?}`, `choice`
+being `"continue"`, `"climb"` or `"stop"` (an empty `hint` counts as none); the answer is a landed
+or a paused result again, and a token works once. A resume without a token and a choice is
+`InvalidParams` (`olifant/conjure resume needs a token and a choice (continue, climb or stop)`).
+A resume is also refused when the pause is gone (`this paused conjure is gone (it expired, was
+resumed, or its file changed): conjure again`), when the file changed since (`the file changed
+since the conjure paused; conjure again`), and on a climb with no stronger rung (`there is no
+stronger model in [model] ladder`). It is refused in one sentence outside any function or
 class, in a module with no test file yet (stub one first), on a function in a test file that is
 no test, on a one-line def with no selection, with no model configured, when the model gave no
 conjure at all, and when the file changed in the editor while the model conjured (your text
