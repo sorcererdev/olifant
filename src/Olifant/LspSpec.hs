@@ -1119,16 +1119,13 @@ conjureSpec = describe "olifant/conjure" $ do
     inner "failing" pausedObj `shouldBe` Just (toJSON [object ["test" .= (T.pack testRel <> "::test_books_a_free_slot"), "message" .= ("assert 1 == 2" :: Text)]])
     steps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure-wire", "wire"] && "param=bookings" `elem` fs)
     let edits = field "edits" stopped
+    edits `shouldSatisfy` wroteIn moduleRel "def __init__(self, ids: IdGenerator, bookings: BookingRepository) -> None:"
     edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
     edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
 
-  -- (the brief asked for the explanation "needs a port the class lacks: …; no wire generator
-  -- applies here", but port is then not an option, so every decider validates the answer
-  -- to unsure: the round goes again and the budget pauses)
-  it "a port answer with no wire generator configured is not taken: no wire, the budget pauses" $ do
+  it "a port answer with no wire generator configured pauses with an explanation" $ do
     (paused, steps) <- wiredConjure Nothing [] $ \ask _ -> ask []
-    inner "explanation" (field "paused" paused) `shouldBe` Just (String "budget spent")
-    steps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure-next", "unsure"])
+    inner "explanation" (field "paused" paused) `shouldBe` Just (String "needs a port the class lacks: bookings: BookingRepository; no wire generator applies here")
     inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ([] :: [Text]))
     steps `shouldSatisfy` all (\fs -> take 1 fs /= ["conjure-wire"])
 

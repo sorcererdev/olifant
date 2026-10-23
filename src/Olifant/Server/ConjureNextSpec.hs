@@ -44,13 +44,13 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
   it "(e) the question offers again, climb and ask, with thirteen context keys" $ do
     let q = conjureNextQuestion (standing EscalateAsk) view
     qKind q `shouldBe` "conjure-next"
-    map fst (qOptions' q) `shouldBe` ["again", "climb", "ask", "test"]
+    map fst (qOptions' q) `shouldBe` ["again", "climb", "ask", "port", "test"]
     map fst (qContext q) `shouldBe` keys
     lookup "hint" (qContext q) `shouldBe` Just "none"
     lookup "repeat" (qContext q) `shouldBe` Just "no"
     lookup "repeat" (qContext (conjureNextQuestion (standing EscalateAsk) (roundView ctx (Just view) state))) `shouldBe` Just "yes"
-    map fst (qOptions' (conjureNextQuestion (standing EscalateNever) view)) `shouldBe` ["again", "ask", "test"]
-    map fst (qOptions' (conjureNextQuestion (Standing 3 50 Nothing Nothing False) view)) `shouldBe` ["again", "ask", "test"]
+    map fst (qOptions' (conjureNextQuestion (standing EscalateNever) view)) `shouldBe` ["again", "ask", "port", "test"]
+    map fst (qOptions' (conjureNextQuestion (Standing 3 50 Nothing Nothing False) view)) `shouldBe` ["again", "ask", "port", "test"]
   it "(f) spent pauses when rounds or seconds run out" $ do
     spent (Standing 0 50 Nothing Nothing False) `shouldBe` Just (NextPause "budget spent" [OfferContinue, OfferStop])
     spent (Standing 3 (-1) (Just (Rung "claude" EscalateNever)) Nothing False)
@@ -86,12 +86,12 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
       `shouldBe` "class C:\n    def __init__(self, a: A) -> None:"
     unitHeader "def f():\n    pass\n" 2 `shouldBe` "def f():"
     unitHeader "x = 1\n" 1 `shouldBe` ""
-  it "(j) the question offers port only when wireable and names its fields" $ do
+  it "(j) the question offers port, wireable or not (an unwireable one is explained), and names its fields" $ do
     let w = (standing EscalateAsk) {stWireable = True}
         q = conjureNextQuestion w view
     map fst (qOptions' q) `shouldBe` ["again", "climb", "ask", "port", "test"]
     qFields q `shouldBe` [("param", "ident"), ("port", "ident"), ("test", "text"), ("why", "text")]
-    map fst (qOptions' (conjureNextQuestion (standing EscalateAsk) view)) `shouldBe` ["again", "climb", "ask", "test"]
+    map fst (qOptions' (conjureNextQuestion (standing EscalateAsk) view)) `shouldBe` ["again", "climb", "ask", "port", "test"]
     map fst (qContext q) `shouldBe` keys
     lookup "wired" (qContext q) `shouldBe` Just "x: X"
   it "(k) nextFrom wires on port, pauses with a reconjure offer on test, explains on ask" $ do

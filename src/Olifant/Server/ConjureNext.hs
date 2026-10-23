@@ -173,7 +173,7 @@ conjureNextQuestion st v = (choice "conjure-next" instructions options context) 
       [("again", "try once more with the same model")]
         ++ [("climb", "try the next, stronger model: " <> n) | Just (Rung n e) <- [stNext st], e /= EscalateNever]
         ++ [("ask", "stop and show the person where this stands")]
-        ++ [("port", "wire a missing port into the class, then go again") | stWireable st]
+        ++ [("port", "wire a missing port into the class, then go again")]
         ++ [("test", "a failing test is wrong: offer to re-conjure it")]
     context =
       [ ("round", num (rvRound v))
