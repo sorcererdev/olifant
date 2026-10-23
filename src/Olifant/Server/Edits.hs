@@ -8,10 +8,12 @@ module Olifant.Server.Edits
   ( FileEdit (..)
   , editsOfPlan
   , smallestChange
+  , unifiedDiff
   , editorPosition
   , bytePosition
   ) where
 
+import Data.Array qualified as A
 import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
@@ -87,3 +89,50 @@ bytePosition lineText (line, col) = (line + 1, 1 + BS.length (TE.encodeUtf8 (tak
 
 utf16Length :: Text -> Int
 utf16Length = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0
+
+-- | OLD and NEW as a unified diff of REL (root-relative): `--- a/REL`,
+-- `+++ b/REL`, then each hunk (`@@ -a,b +c,d @@`) with three lines of
+-- context, from a line-based longest common subsequence; empty when the
+-- lines are the same.
+unifiedDiff :: FilePath -> Text -> Text -> Text
+unifiedDiff rel old new
+  | null changes = ""
+  | otherwise = T.concat (("--- a/" <> T.pack rel <> "\n") : ("+++ b/" <> T.pack rel <> "\n") : map hunk (groups changes))
+  where
+    os = A.listArray (0, n - 1) (T.lines old) :: A.Array Int Text
+    ns = A.listArray (0, m - 1) (T.lines new) :: A.Array Int Text
+    n = length (T.lines old)
+    m = length (T.lines new)
+    -- the longest common subsequence of the suffixes from (i, j)
+    lcs = A.array ((0, 0), (n, m)) [((i, j), at i j) | i <- [0 .. n], j <- [0 .. m]] :: A.Array (Int, Int) Int
+    at i j
+      | i == n || j == m = 0
+      | os A.! i == ns A.! j = 1 + lcs A.! (i + 1, j + 1)
+      | otherwise = max (lcs A.! (i + 1, j)) (lcs A.! (i, j + 1))
+    -- the edit script: (' ' kept, '-' removed, '+' added; the line)
+    script = go 0 0
+      where
+        go i j
+          | i < n, j < m, os A.! i == ns A.! j = (' ', os A.! i) : go (i + 1) (j + 1)
+          | i < n, j == m || lcs A.! (i + 1, j) >= lcs A.! (i, j + 1) = ('-', os A.! i) : go (i + 1) j
+          | j < m = ('+', ns A.! j) : go i (j + 1)
+          | otherwise = []
+    numbered = zip [0 :: Int ..] script
+    changes = [k | (k, (c, _)) <- numbered, c /= ' ']
+    -- changes three lines or fewer apart on either side share a hunk
+    groups = foldr join []
+      where
+        join k ((a, z) : rest) | a - k <= 7 = (k, z) : rest
+        join k gs = (k, k) : gs
+    hunk (a, z) =
+      let from = max 0 (a - 3)
+          to = min (length script - 1) (z + 3)
+          ls = take (to - from + 1) (drop from script)
+          before = take from script
+          olds = length [() | (c, _) <- before, c /= '+']
+          news = length [() | (c, _) <- before, c /= '-']
+          oldCount = length [() | (c, _) <- ls, c /= '+']
+          newCount = length [() | (c, _) <- ls, c /= '-']
+          start s count = if count == 0 then s else s + 1
+       in T.concat (("@@ -" <> num (start olds oldCount) <> "," <> num oldCount <> " +" <> num (start news newCount) <> "," <> num newCount <> " @@\n") : [T.singleton c <> l <> "\n" | (c, l) <- ls])
+    num = T.pack . show

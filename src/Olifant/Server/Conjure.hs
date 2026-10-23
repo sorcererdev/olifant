@@ -8,6 +8,7 @@
 module Olifant.Server.Conjure
   ( ConjureAnswer (..)
   , PausedAnswer (..)
+  , Proposal (..)
   , ConjureOutcome (..)
   , ResumeChoice (..)
   , Resume (..)
@@ -43,11 +44,11 @@ import Olifant.Language (Failure (..), TestRun (..), languageFor, runTestsIn)
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Next (..), Offer, PausedConjure (..), RoundContext (..), RoundView, Standing (..), conjureNextQuestion, nextFrom, offerText, offersFor, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
+import Olifant.Server.ConjureNext (Next (..), Offer (..), PausedAnswer (..), PausedConjure (..), Proposal (..), RoundContext (..), RoundView, Standing (..), conjureNextQuestion, nextFrom, offerText, offersFor, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
-import Olifant.Server.Edits (FileEdit (..), smallestChange)
+import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
-import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testAt)
+import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testAt, testLineOf)
 import Olifant.Server.Unit (Unit (..), unitAt, unitHeader)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
@@ -71,32 +72,10 @@ data ConjureAnswer = ConjureAnswer
   }
   deriving stock (Eq, Show)
 
--- | A steered conjure paused: its token, the file (absolute), the unit, the
--- lines conjured (1-based), the round and rung it paused at, the last
--- round in a few words, what the person may do (`continue`,
--- `climb:NAME`, `stop`), why it paused, the explanation (Jev's words, or
--- the server's, after a failed wire's), the failing tests with their full
--- messages, and what is wired (lands with the conjure).
-data PausedAnswer = PausedAnswer
-  { paToken :: Text
-  , paFile :: FilePath
-  , paUnit :: Text
-  , paLines :: (Int, Int)
-  , paRound :: Int
-  , paRung :: Text
-  , paSummary :: Text
-  , paOffers :: [Text]
-  , paWhy :: Text
-  , paExplanation :: Text
-  , paFailing :: [(Text, Text)]
-  , paWired :: [Text]
-  }
-  deriving stock (Eq, Show)
-
 data ConjureOutcome = Landed ConjureAnswer | Paused PausedAnswer
   deriving stock (Eq, Show)
 
-data ResumeChoice = ResumeContinue | ResumeClimb | ResumeStop
+data ResumeChoice = ResumeContinue | ResumeClimb | ResumeStop | ResumeReconjure | ResumeAccept | ResumeReject
   deriving stock (Eq, Show)
 
 -- | The person's answer to a pause: its token, the choice, and words to add
@@ -135,10 +114,11 @@ data Counters = Counters
   , cHeader :: Text
   }
 
--- | What a fill gave: the file as it lands, with the names its last
--- attempt left undefined (when it landed unfilled); or a pause: the file as
--- the last attempt writes it, and why.
-data Written = Written Text [Text] | Halted Text Text
+-- | What a fill gave: why its last attempt failed its verify (none: it
+-- passed), the file as it lands, with the names that attempt left
+-- undefined (when it landed unfilled); or a pause: the file as the last
+-- attempt writes it, and why.
+data Written = Written (Maybe Text) Text [Text] | Halted Text Text
 
 -- | The conjure's working files made ready to fill: the project over them,
 -- the unit's file as they have it, the lines conjured there, the test
@@ -162,8 +142,11 @@ conjureAt progress path line selected = conjureWith progress path line selected 
 
 -- | A paused conjure of PATH picked up again: stopped (its last attempt
 -- lands), continued with a fresh grant of rounds, or climbed to the next
--- rung; a hint goes into the next prompt. The token resumes once; a file
--- the conjure wrote that changed since ends it.
+-- rung; a wrong test re-conjured into a proposal (the token kept), the
+-- proposal accepted (the function conjure goes on over it) or rejected
+-- (the pause before it again, the token kept); a hint goes into the next
+-- prompt. A token resumes once, but for those it keeps (their lifetime
+-- starts again); a file the conjure wrote that changed since ends it.
 resumeConjure :: (ProgressEvent -> IO ()) -> FilePath -> Resume -> ServerState -> IO (ServerState, Either Text ConjureOutcome)
 resumeConjure progress path re s = do
   now <- getMonotonicTime
@@ -172,18 +155,57 @@ resumeConjure progress path re s = do
     Just pd
       | now - pdAt pd > pausedLifetime -> pure (s, Left gone)
       | pdFile pd /= normalisePath path -> pure (s, Left "this paused conjure is of another file")
+      | Just why <- refused pd -> do
+          touch s (reToken re) now
+          pure (s, Left why)
       | (fst <$> M.lookup (pdFile pd) (ssDocs s)) /= pdVersion pd -> do
           _ <- takeToken s (reToken re)
           pure (s, Left "the file changed since the conjure paused; conjure again")
-      | otherwise ->
-          movedSince s (pdVersions pd) (pdBases pd) [(relOf pd p, p) | p <- M.keys (pdBases pd)] >>= \case
+      | otherwise -> do
+          let pd' = answered pd
+          movedSince s (pdVersions pd') (pdBases pd') [(relOf pd' p, p) | p <- M.keys (pdBases pd')] >>= \case
             Just r -> do
               _ <- takeToken s (reToken re)
               pure (s, Left (changedWhile r))
-            Nothing -> conjureWith progress path (pdLine pd) (pdSelected pd) (Just (re, pd)) s
+            Nothing -> conjureWith progress path (pdLine pd') (pdSelected pd') (Just (re, pd')) s
     Nothing -> pure (s, Left gone)
   where
     relOf pd p = fromMaybe p (listToMaybe [r | r <- M.keys (pdWrites pd), ("/" <> r) `isSuffixOf` p])
+    refused pd = case reChoice re of
+      ResumeReconjure | isNothing (reconjureOf pd) -> Just "this pause offers no re-conjure"
+      c | c `elem` [ResumeAccept, ResumeReject], isNothing (pdProposal pd) -> Just "there is no proposal to accept"
+      _ -> Nothing
+    -- accept: the proposed test file joins the working writes; reject keeps
+    -- the proposal (to answer the pause before it); any other answer drops it
+    answered pd = case (reChoice re, pdProposal pd) of
+      (ResumeAccept, Just p) -> pd {pdWrites = M.insert (prFile p) (prAfter p) (pdWrites pd), pdProposal = Nothing, pdPrevious = Nothing}
+      (ResumeReject, _) -> pd
+      _ -> withoutProposal pd
+
+-- | The test a pause offers to re-conjure, by its id.
+reconjureOf :: PausedConjure -> Maybe Text
+reconjureOf pd = listToMaybe [t | o <- paOffers (pdShown pd), Just t <- [T.stripPrefix "reconjure:" o]]
+
+-- | PD less its proposal, and less the proposed file's recorded version and
+-- text when the conjure has not written that file.
+withoutProposal :: PausedConjure -> PausedConjure
+withoutProposal pd = case pdProposal pd of
+  Just p
+    | M.notMember (prFile p) (pdWrites pd) ->
+        let others :: Map FilePath v -> Map FilePath v
+            others = M.filterWithKey (\k _ -> not (("/" <> prFile p) `isSuffixOf` k))
+         in pd' {pdBases = others (pdBases pd), pdVersions = others (pdVersions pd)}
+  _ -> pd'
+  where
+    pd' = pd {pdProposal = Nothing, pdPrevious = Nothing}
+
+-- | The paused conjure under TOKEN with its lifetime started again at NOW.
+touch :: ServerState -> Text -> Double -> IO ()
+touch s token now = atomicModifyIORef' (ssPaused s) (\(n, m) -> ((n, M.adjust (\pd -> pd {pdAt = now}) token m), ()))
+
+-- | PD kept under TOKEN (again).
+keep :: ServerState -> Text -> PausedConjure -> IO ()
+keep s token pd = atomicModifyIORef' (ssPaused s) (\(n, m) -> ((n, M.insert token pd m), ()))
 
 gone :: Text
 gone = "this paused conjure is gone (it expired, was resumed, or its file changed): conjure again"
@@ -249,10 +271,11 @@ conjureWith progress path line selected resuming s0 = do
         Just t -> pure t
         Nothing -> throwE ("no test file for this module yet: " <> T.pack testRel <> "; stub one first (:Durandal stub)")
       steered <- lift (steeredFor s project) >>= except
-      -- a resume takes its token (a climb with no stronger rung keeps it)
+      -- a resume takes its token (a climb with no stronger rung keeps it; a
+      -- re-conjure or a reject puts it back)
       forM_ resuming $ \(re, pd) -> do
         let ladder = maybe [] sdLadder steered
-        when (reChoice re == ResumeClimb && length ladder <= pdRung pd + 1) (throwE "there is no stronger model in [model] ladder")
+        when (reChoice re == ResumeClimb && length ladder <= pdRung pd + 1) (lift (touch s (reToken re) begun) >> throwE "there is no stronger model in [model] ladder")
         taken <- lift (takeToken s (reToken re))
         unless taken (throwE gone)
         when (reChoice re /= ResumeStop && isNothing steered) (throwE "this project no longer names a [decide] model and a [model] ladder: conjure again")
@@ -297,139 +320,198 @@ conjureWith progress path line selected resuming s0 = do
             imported <- lift (importedContext ws' lang (rel : map fst context) (working : map snd context))
             pure (Working project {prWorkspace = ws'} working at testText before template verify (context ++ imported))
           writes0 = maybe M.empty (pdWrites . snd) resuming
-      first <- prepare writes0
-      counters <- lift . newIORef $
-        let fresh =
-              Counters
-                { cRung = 0
-                , cRungs = [mfName filler]
-                , cRounds = 0
-                , cSecondsBefore = 0
-                , cSeconds = 0
-                , cLast = Nothing
-                , cState = Nothing
-                , cHint = Nothing
-                , cOffers = []
-                , cWire = Nothing
-                , cWired = []
-                , cWrites = writes0
-                , cVersions = M.singleton file started
-                , cBases = M.empty
-                , cExplanation = Nothing
-                , cTestText = wkTestText first
-                , cHeader = unitHeader (wkText first) (fst (wkSpan first))
-                }
-         in case resuming of
-              Nothing -> fresh
-              Just (re, pd) ->
-                let climbing = reChoice re == ResumeClimb
-                    spentAll = maybe True (\sd -> pdRounds pd >= sdRounds sd || pdSeconds pd >= sdBudget sd) steered
-                    (rounds0, seconds0) = if climbing && not spentAll then (pdRounds pd, pdSeconds pd) else (0, 0)
-                 in fresh
-                      { cRung = rung0
-                      , cRungs = pdRungs pd ++ [mfName filler | climbing]
-                      , cRounds = rounds0
-                      , cSecondsBefore = seconds0
-                      , cSeconds = seconds0
-                      , cLast = Just (pdLast pd)
-                      , cHint = reHint re
-                      , cWired = pdWired pd
-                      , cVersions = M.insert file (pdVersion pd) (pdVersions pd)
-                      , cBases = pdBases pd
-                      }
-      rounds <- lift (newIORef (maybe 0 (seedRound . pdSeed . snd) resuming))
-      let seed0 = case resuming of
-            Just (re, pd) -> maybe id withHint (reHint re) (pdSeed pd)
-            Nothing -> noSeed
-          steering seed record = (\sd -> Steering seed (steer s stepLine begun counters sd (isJust wire) record)) <$> steered
-          -- the fill, and, while it pauses for a wire, the wire and the fill again from the round it paused at
-          loop wk f seed = do
-            tried <- lift (runExceptT (fill progress rounds s (wkProject wk) rel (wkText wk) (wkTemplate wk) (wkVerify wk) (wkContext wk) f (steering seed)))
-            c <- lift (readIORef counters)
-            stop <- lift (cancelled (ssCancel s))
-            case (tried, cWire c, wire, steered, cState c) of
-              (Right (Halted _ _), Just (p, q), Just (gid, pathSets), Just sd, Just rs) | not stop -> do
-                let sets = [("param", p), ("port", q)] ++ pathSets
-                    seed' = maybe id withHint (cHint c) (Seed (rsRound rs) (M.fromList [(rhName h, rhPrevious h) | h <- rsHoles rs]))
-                    f' = maybe f snd (listToMaybe (drop (cRung c) (sdLadder sd)))
-                planned <- lift (wirePlan s project (cWrites c) gid sets)
-                ready <- case planned of
-                  Left why -> pure (Left why)
-                  Right new -> fmap (new,) <$> lift (runExceptT (prepare (M.union new (cWrites c))))
-                case ready of
-                  Right (new, wk') -> do
-                    -- each file the wire wrote, as the conjure first read it
-                    read' <- lift (traverse (\r -> (absOf r,) <$> readText ws r) [r | r <- M.keys new, r /= rel, M.notMember (absOf r) (cBases c)])
-                    lift . writeIORef counters $
-                      c
-                        { cWire = Nothing
-                        , cWired = cWired c ++ [p <> ": " <> q]
-                        , cWrites = M.union new (cWrites c)
-                        , cVersions = M.union (cVersions c) (M.fromList [(a, fst <$> M.lookup a (ssDocs s)) | (a, _) <- read'])
-                        , cBases = M.union (cBases c) (M.fromList read')
-                        , cTestText = wkTestText wk'
-                        , cHeader = unitHeader (wkText wk') (fst (wkSpan wk'))
-                        }
-                    lift (stepLine ("conjure-wire" : gid : [k <> "=" <> v | (k, v) <- sets]))
-                    loop wk' f' seed'
-                  Left why -> do
-                    lift (writeIORef counters c {cWire = Nothing, cExplanation = Just ("wire failed: " <> why)})
-                    lift (stepLine ["conjure-wire-failed", gid])
-                    loop wk f' seed'
-              _ -> pure (tried, wk)
-      (tried, wk) <- case resuming of
-        Just (_, pd) | stopping -> pure (Right (Written (pdLanding pd) (pdUndefined pd)), first)
-        _ -> loop first filler seed0
-      -- a cancelled conjure lands nothing and keeps no pause
-      stop <- lift (cancelled (ssCancel s))
-      when stop (throwE "cancelled")
-      outcome <- except tried
-      latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
-      when (latest /= started) (throwE "the file changed while conjuring; your text stands")
-      c <- lift (readIORef counters)
-      let others = [(r, absOf r, new) | (r, new) <- M.toList (cWrites c), r /= rel]
-      case outcome of
-        Halted landing why -> do
-          (view, rs) <- maybe (throwE "the conjure paused before any round") pure ((,) <$> cLast c <*> cState c)
+      case resuming of
+        -- reject: the pause the proposal came from, under the same token
+        Just (re, pd) | reChoice re == ResumeReject, Just prev <- pdPrevious pd -> do
           now <- lift getMonotonicTime
-          let lastWhy = maybe "" rhWhy (listToMaybe (rsHoles rs))
-              seed' = Seed (rsRound rs) (M.fromList [(rhName h, rhPrevious h) | h <- rsHoles rs])
-              explanation = maybe why (<> "; " <> why) (cExplanation c)
-              failing = [(t, fMessage f) | h <- take 1 (rsHoles rs), Just r <- [rhRun h], (t, f) <- trFailed r]
-              pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation
-          token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t pd m), t)))
-          lift (stepLine ["conjure-pause", why])
-          pure (Paused (PausedAnswer token file unit span' (rsRound rs) (rsRung rs) (roundSummary view) (map offerText (cOffers c)) why explanation failing (cWired c)))
-        Written written extra -> do
-          -- every other file the conjure wrote stands as it read it
-          lift (movedSince s (cVersions c) (cBases c) [(r, a) | (r, a, _) <- others]) >>= maybe (pure ()) (throwE . changedWhile)
-          -- the after-run: the test file with the conjure in place, over the working files
-          (_, files) <- lift (projectFiles (prWorkspace (wkProject wk)) (M.empty :: Map FilePath Text) lang [testRel])
-          start <- lift getMonotonicTime
-          after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack testRel] (M.insert rel written files))
-          end <- lift getMonotonicTime
-          n <- lift (readIORef rounds)
-          let summary = wiredNote (if onTest then testSummary extra tid (wkBefore wk) after written else functionSummary extra after)
-              wiredNote t = if null (cWired c) then t else t <> " \183 wired " <> T.intercalate ", " (cWired c)
-              tid = T.pack testRel <> "::" <> fromMaybe unit (testAt written (fst (wkSpan wk)))
-              green = isNothing (trBroken after) && null (trFailed after)
-              edit = [FileEdit file started False range new | written /= text, let (range, new) = smallestChange text written]
-              edits =
-                [ case M.findWithDefault Nothing a (cBases c) of
-                    Nothing -> FileEdit a version True ((0, 0), (0, 0)) new
-                    Just old -> let (range, t) = smallestChange old new in FileEdit a version False range t
-                | (_, a, new) <- others
-                , let version = M.findWithDefault Nothing a (cVersions c)
-                , M.findWithDefault Nothing a (cBases c) /= Just new
-                ]
-              tests = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) after (end - start)
-              isSteered = isJust steered || isJust resuming
-              rungs = if isSteered then cRungs c else [mfName filler]
-              by
-                | isSteered = T.intercalate " \8594 " rungs <> " \183 " <> tshow n <> (if n == 1 then " round" else " rounds")
-                | otherwise = mfName filler
-          lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, "conjured by " <> by <> " \183 " <> summary])
-          pure (Landed (ConjureAnswer file unit (edit ++ edits) summary green tests n rungs))
+          lift (keep s (reToken re) (withoutProposal pd) {pdShown = prev, pdAt = now})
+          pure (Paused prev)
+        -- reconjure: the wrong test conjured again over the working files, proposed
+        Just (re, pd) | reChoice re == ResumeReconjure, Just tid <- reconjureOf pd -> do
+          wk <- prepare writes0
+          let name = snd (T.breakOnEnd "::" tid)
+              working = wkTestText wk
+              moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) writes0
+          attempt <- lift . runExceptT $ do
+            when (T.unpack (fst (T.breakOn "::" tid)) /= testRel) (throwE (tid <> " is not in " <> T.pack testRel))
+            l <- maybe (throwE ("no test " <> name <> " in " <> T.pack testRel)) pure (testLineOf working name)
+            u <- lift (unitAt (pSyntax (ssPorts s)) lang working l) >>= either throwE pure
+            at <- maybe (throwE (name <> " is on one line")) pure (unitBody u)
+            (template, verify, context) <- except (testConjure working at tid (siteModuleRel site) moduleText)
+            let context' =
+                  context
+                    ++ [("the unit under test", unitHeader (wkText wk) (fst (wkSpan wk))), ("why the test is wrong", paWhy (pdShown pd))]
+                    ++ [("the person says", h) | Just h <- [reHint re]]
+                ws' = prWorkspace (wkProject wk)
+            imported <- lift (importedContext ws' lang (testRel : map fst context') (working : map snd context'))
+            rounds' <- lift (newIORef 0)
+            fill progress rounds' s (wkProject wk) testRel working template verify (context' ++ imported) filler (const Nothing)
+          stop <- lift (cancelled (ssCancel s))
+          when stop (throwE "cancelled")
+          now <- lift getMonotonicTime
+          case attempt of
+            Right (Written Nothing after _) | after /= testText0 -> do
+              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after)
+                  shown = (pdShown pd) {paOffers = map offerText [OfferAccept, OfferReject], paProposal = Just proposal}
+                  testAbs = absOf testRel
+                  -- the test file as the conjure first read it (a wire's reading stands)
+                  pd' =
+                    pd
+                      { pdProposal = Just proposal
+                      , pdPrevious = Just (pdShown pd)
+                      , pdShown = shown
+                      , pdAt = now
+                      , pdBases = M.insertWith (\_ old -> old) testAbs (Just testText0) (pdBases pd)
+                      , pdVersions = M.insertWith (\_ old -> old) testAbs (fst <$> M.lookup testAbs (ssDocs s)) (pdVersions pd)
+                      }
+              lift (keep s (reToken re) pd')
+              lift (stepLine ["conjure-proposal", tid])
+              pure (Paused shown)
+            _ -> do
+              let why = case attempt of
+                    Left w -> w
+                    Right (Written (Just w) _ _) -> w
+                    Right (Halted _ w) -> w
+                    Right (Written Nothing _ _) -> "it wrote the test as it is"
+                  shown = (pdShown pd) {paExplanation = "the re-conjure failed: " <> why}
+              lift (keep s (reToken re) pd {pdShown = shown, pdAt = now})
+              lift (stepLine ["conjure-reconjure-failed", tid])
+              pure (Paused shown)
+        _ -> do
+          first <- prepare writes0
+          counters <- lift . newIORef $
+            let fresh =
+                  Counters
+                    { cRung = 0
+                    , cRungs = [mfName filler]
+                    , cRounds = 0
+                    , cSecondsBefore = 0
+                    , cSeconds = 0
+                    , cLast = Nothing
+                    , cState = Nothing
+                    , cHint = Nothing
+                    , cOffers = []
+                    , cWire = Nothing
+                    , cWired = []
+                    , cWrites = writes0
+                    , cVersions = M.singleton file started
+                    , cBases = M.empty
+                    , cExplanation = Nothing
+                    , cTestText = wkTestText first
+                    , cHeader = unitHeader (wkText first) (fst (wkSpan first))
+                    }
+             in case resuming of
+                  Nothing -> fresh
+                  Just (re, pd) ->
+                    let climbing = reChoice re == ResumeClimb
+                        spentAll = maybe True (\sd -> pdRounds pd >= sdRounds sd || pdSeconds pd >= sdBudget sd) steered
+                        (rounds0, seconds0) = if climbing && not spentAll then (pdRounds pd, pdSeconds pd) else (0, 0)
+                     in fresh
+                          { cRung = rung0
+                          , cRungs = pdRungs pd ++ [mfName filler | climbing]
+                          , cRounds = rounds0
+                          , cSecondsBefore = seconds0
+                          , cSeconds = seconds0
+                          , cLast = Just (pdLast pd)
+                          , cHint = reHint re
+                          , cWired = pdWired pd
+                          , cVersions = M.insert file (pdVersion pd) (pdVersions pd)
+                          , cBases = pdBases pd
+                          }
+          rounds <- lift (newIORef (maybe 0 (seedRound . pdSeed . snd) resuming))
+          let seed0 = case resuming of
+                Just (re, pd) -> maybe id withHint (reHint re) (pdSeed pd)
+                Nothing -> noSeed
+              steering seed record = (\sd -> Steering seed (steer s stepLine begun counters sd (isJust wire) record)) <$> steered
+              -- the fill, and, while it pauses for a wire, the wire and the fill again from the round it paused at
+              loop wk f seed = do
+                tried <- lift (runExceptT (fill progress rounds s (wkProject wk) rel (wkText wk) (wkTemplate wk) (wkVerify wk) (wkContext wk) f (steering seed)))
+                c <- lift (readIORef counters)
+                stop <- lift (cancelled (ssCancel s))
+                case (tried, cWire c, wire, steered, cState c) of
+                  (Right (Halted _ _), Just (p, q), Just (gid, pathSets), Just sd, Just rs) | not stop -> do
+                    let sets = [("param", p), ("port", q)] ++ pathSets
+                        seed' = maybe id withHint (cHint c) (Seed (rsRound rs) (M.fromList [(rhName h, rhPrevious h) | h <- rsHoles rs]))
+                        f' = maybe f snd (listToMaybe (drop (cRung c) (sdLadder sd)))
+                    planned <- lift (wirePlan s project (cWrites c) gid sets)
+                    ready <- case planned of
+                      Left why -> pure (Left why)
+                      Right new -> fmap (new,) <$> lift (runExceptT (prepare (M.union new (cWrites c))))
+                    case ready of
+                      Right (new, wk') -> do
+                        -- each file the wire wrote, as the conjure first read it
+                        read' <- lift (traverse (\r -> (absOf r,) <$> readText ws r) [r | r <- M.keys new, r /= rel, M.notMember (absOf r) (cBases c)])
+                        lift . writeIORef counters $
+                          c
+                            { cWire = Nothing
+                            , cWired = cWired c ++ [p <> ": " <> q]
+                            , cWrites = M.union new (cWrites c)
+                            , cVersions = M.union (cVersions c) (M.fromList [(a, fst <$> M.lookup a (ssDocs s)) | (a, _) <- read'])
+                            , cBases = M.union (cBases c) (M.fromList read')
+                            , cTestText = wkTestText wk'
+                            , cHeader = unitHeader (wkText wk') (fst (wkSpan wk'))
+                            }
+                        lift (stepLine ("conjure-wire" : gid : [k <> "=" <> v | (k, v) <- sets]))
+                        loop wk' f' seed'
+                      Left why -> do
+                        lift (writeIORef counters c {cWire = Nothing, cExplanation = Just ("wire failed: " <> why)})
+                        lift (stepLine ["conjure-wire-failed", gid])
+                        loop wk f' seed'
+                  _ -> pure (tried, wk)
+          (tried, wk) <- case resuming of
+            Just (_, pd) | stopping -> pure (Right (Written Nothing (pdLanding pd) (pdUndefined pd)), first)
+            _ -> loop first filler seed0
+          -- a cancelled conjure lands nothing and keeps no pause
+          stop <- lift (cancelled (ssCancel s))
+          when stop (throwE "cancelled")
+          outcome <- except tried
+          latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
+          when (latest /= started) (throwE "the file changed while conjuring; your text stands")
+          c <- lift (readIORef counters)
+          let others = [(r, absOf r, new) | (r, new) <- M.toList (cWrites c), r /= rel]
+          case outcome of
+            Halted landing why -> do
+              (view, rs) <- maybe (throwE "the conjure paused before any round") pure ((,) <$> cLast c <*> cState c)
+              now <- lift getMonotonicTime
+              let lastWhy = maybe "" rhWhy (listToMaybe (rsHoles rs))
+                  seed' = Seed (rsRound rs) (M.fromList [(rhName h, rhPrevious h) | h <- rsHoles rs])
+                  explanation = maybe why (<> "; " <> why) (cExplanation c)
+                  failing = [(t, fMessage f) | h <- take 1 (rsHoles rs), Just r <- [rhRun h], (t, f) <- trFailed r]
+                  shownAs t = PausedAnswer t file unit span' (rsRound rs) (rsRung rs) (roundSummary view) (map offerText (cOffers c)) why explanation failing (cWired c) Nothing
+                  pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation Nothing Nothing
+              token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t)) m), t)))
+              lift (stepLine ["conjure-pause", why])
+              pure (Paused (shownAs token))
+            Written _ written extra -> do
+              -- every other file the conjure wrote stands as it read it
+              lift (movedSince s (cVersions c) (cBases c) [(r, a) | (r, a, _) <- others]) >>= maybe (pure ()) (throwE . changedWhile)
+              -- the after-run: the test file with the conjure in place, over the working files
+              (_, files) <- lift (projectFiles (prWorkspace (wkProject wk)) (M.empty :: Map FilePath Text) lang [testRel])
+              start <- lift getMonotonicTime
+              after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack testRel] (M.insert rel written files))
+              end <- lift getMonotonicTime
+              n <- lift (readIORef rounds)
+              let summary = wiredNote (if onTest then testSummary extra tid (wkBefore wk) after written else functionSummary extra after)
+                  wiredNote t = if null (cWired c) then t else t <> " \183 wired " <> T.intercalate ", " (cWired c)
+                  tid = T.pack testRel <> "::" <> fromMaybe unit (testAt written (fst (wkSpan wk)))
+                  green = isNothing (trBroken after) && null (trFailed after)
+                  edit = [FileEdit file started False range new | written /= text, let (range, new) = smallestChange text written]
+                  edits =
+                    [ case M.findWithDefault Nothing a (cBases c) of
+                        Nothing -> FileEdit a version True ((0, 0), (0, 0)) new
+                        Just old -> let (range, t) = smallestChange old new in FileEdit a version False range t
+                    | (_, a, new) <- others
+                    , let version = M.findWithDefault Nothing a (cVersions c)
+                    , M.findWithDefault Nothing a (cBases c) /= Just new
+                    ]
+                  tests = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) after (end - start)
+                  isSteered = isJust steered || isJust resuming
+                  rungs = if isSteered then cRungs c else [mfName filler]
+                  by
+                    | isSteered = T.intercalate " \8594 " rungs <> " \183 " <> tshow n <> (if n == 1 then " round" else " rounds")
+                    | otherwise = mfName filler
+              lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, "conjured by " <> by <> " \183 " <> summary])
+              pure (Landed (ConjureAnswer file unit (edit ++ edits) summary green tests n rungs))
 
 -- | The `[conjure] wire` generator for the unit at REL (root-relative):
 -- its id and the inputs its `[applies_at] path` binds there; none when
@@ -473,6 +555,9 @@ choiceWord = \case
   ResumeContinue -> "continue"
   ResumeClimb -> "climb"
   ResumeStop -> "stop"
+  ResumeReconjure -> "reconjure"
+  ResumeAccept -> "accept"
+  ResumeReject -> "reject"
 
 -- | The steered path's means, when the project names a decider and a
 -- ladder (the client's model, if any, in place of the first rung); Left
@@ -666,7 +751,7 @@ fill progress rounds s project rel text template verify context filler steering 
   case planHoles plan of
     [] -> throwE "the conjure made no hole"
     hs
-      | all (\h -> case phStatus h of HoleFilled _ _ -> True; _ -> False) hs -> pure (Written (M.findWithDefault text rel (planWrites plan)) [])
+      | all (\h -> case phStatus h of HoleFilled _ _ -> True; _ -> False) hs -> pure (Written Nothing (M.findWithDefault text rel (planWrites plan)) [])
       | why : _ <- [w | h <- hs, HoleSkipped w <- [phStatus h]] -> throwE why
       | otherwise -> do
           let red = [(h, w) | h <- hs, Just w <- [redWhy (phStatus h)]]
@@ -684,4 +769,4 @@ fill progress rounds s project rel text template verify context filler steering 
             w : _ | length pausedWhy == length red -> pure (Halted landing w)
             _ -> do
               when (null offered) (throwE ("the model gave no conjure: " <> why))
-              pure (Written landing (undefinedNames why))
+              pure (Written (Just why) landing (undefinedNames why))

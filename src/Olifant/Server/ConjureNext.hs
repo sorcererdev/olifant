@@ -18,6 +18,8 @@ module Olifant.Server.ConjureNext
   , conjureNextQuestion
   , nextFrom
   , withHint
+  , PausedAnswer (..)
+  , Proposal (..)
   , PausedConjure (..)
   , pausedLifetime
   , pruned
@@ -224,6 +226,37 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
     addTo [] = []
     addTo xs = init xs ++ [(\(f, w) -> (f, w <> "\nThe person says: " <> h)) (last xs)]
 
+-- | A steered conjure paused: its token, the file (absolute), the unit, the
+-- lines conjured (1-based), the round and rung it paused at, the last
+-- round in a few words, what the person may do (`continue`,
+-- `climb:NAME`, `stop`, `reconjure:ID`, `accept`, `reject`), why it
+-- paused, the explanation (Jev's words, or the server's, after a failed
+-- wire's or re-conjure's), the failing tests with their full messages,
+-- what is wired (lands with the conjure), and a re-conjured test's
+-- proposal.
+data PausedAnswer = PausedAnswer
+  { paToken :: Text
+  , paFile :: FilePath
+  , paUnit :: Text
+  , paLines :: (Int, Int)
+  , paRound :: Int
+  , paRung :: Text
+  , paSummary :: Text
+  , paOffers :: [Text]
+  , paWhy :: Text
+  , paExplanation :: Text
+  , paFailing :: [(Text, Text)]
+  , paWired :: [Text]
+  , paProposal :: Maybe Proposal
+  }
+  deriving stock (Eq, Show)
+
+-- | A re-conjured test, proposed: its file (root-relative), its id, the
+-- file's text as the editor (or disk) has it and as the re-conjure writes
+-- it, and the unified diff between the two.
+data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text}
+  deriving stock (Eq, Show)
+
 -- | A conjure paused, as the server keeps it under its token: the file (absolute) and its
 -- version when the conjure began, where it was asked (the line, the selection), where the
 -- loop resumes (the seed), the rung's index, the rungs used, the rounds and seconds used since
@@ -232,7 +265,9 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
 -- (monotonic seconds); the conjure's working writes beside the unit's (root-relative path →
 -- text: a wire's), each written file's editor version (absolute path; none when it was not
 -- open) and its text when the conjure first read it (none: a new file), what is wired, and
--- the pause's explanation.
+-- the pause's explanation; a re-conjured test's proposal, the pause it was
+-- proposed from (what reject answers again), and what the pause answered
+-- the editor (its offers say what a resume may do).
 data PausedConjure = PausedConjure
   { pdFile :: FilePath
   , pdVersion :: Maybe Int
@@ -253,6 +288,9 @@ data PausedConjure = PausedConjure
   , pdBases :: Map FilePath (Maybe Text)
   , pdWired :: [Text]
   , pdExplanation :: Text
+  , pdProposal :: Maybe Proposal
+  , pdPrevious :: Maybe PausedAnswer
+  , pdShown :: PausedAnswer
   }
   deriving stock (Eq, Show)
 

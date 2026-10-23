@@ -1067,7 +1067,7 @@ conjureSpec = describe "olifant/conjure" $ do
         field "rounds" stopped `shouldBe` Just (Number 1)
         field "rungs" stopped `shouldBe` Just (toJSON ["local" :: Text])
         again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
-        later `shouldSatisfy` either ("continue, climb or stop" `T.isInfixOf`) (const False)
+        later `shouldSatisfy` either ("continue, climb, stop, reconjure, accept or reject" `T.isInfixOf`) (const False)
 
   -- a steered conjure of handle, rounds = 2, Jev answering port (bookings:
   -- BookingRepository); WIRE the `[conjure] wire`, CHANGED files; SESSION
@@ -1078,13 +1078,17 @@ conjureSpec = describe "olifant/conjure" $ do
       unwired = T.replace "from bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n" "" . T.replace "self, bookings: BookingRepository, ids: IdGenerator" "self, ids: IdGenerator" . T.replace "        self.bookings = bookings\n" ""
       wiredConjure :: Maybe Text -> [(FilePath, Text)] -> (([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]])
       wiredConjure wire changed session =
+        answeredConjure "{\"answers\": {\"conjure-next\": {\"choice\": \"port\", \"fields\": {\"param\": \"bookings\", \"port\": \"BookingRepository\"}, \"confidence\": 0.9}}}" wire changed (const session)
+      -- the same with Jev's recorded ANSWERS, the SESSION given the test script's path too
+      answeredConjure :: Text -> Maybe Text -> [(FilePath, Text)] -> (FilePath -> ([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]])
+      answeredConjure recorded wire changed session =
         withSystemTempDirectory "olifant-conjure-wire" $ \tmp -> do
           let script = tmp </> "tests.json"
               fills = tmp </> "fills.toml"
               answers = tmp </> "answers.json"
           BSL.writeFile script "{\"src/bistro/booking/commands/create_booking__test.py::test_books_a_free_slot\": {\"line\": 34, \"message\": \"assert 1 == 2\"}}"
           TIO.writeFile fills "[fills]\nbody = \"return None\"\n"
-          TIO.writeFile answers "{\"answers\": {\"conjure-next\": {\"choice\": \"port\", \"fields\": {\"param\": \"bookings\", \"port\": \"BookingRepository\"}, \"confidence\": 0.9}}}"
+          TIO.writeFile answers recorded
           withPython changed $ \ports dir -> do
             old <- TIO.readFile (dir </> ".olifant/config.toml")
             TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 2\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n" <> maybe "" (\w -> "[conjure]\nwire = \"" <> w <> "\"\n") wire)
@@ -1096,7 +1100,7 @@ conjureSpec = describe "olifant/conjure" $ do
                   base = ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]]
                   ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base <> extra))
                   resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
-              session ask resume
+              session script ask resume
             let stepLog = dir </> ".olifant/state/steps.log"
             found <- doesFileExist stepLog
             lines' <- if found then T.lines <$> TIO.readFile stepLog else pure []
@@ -1156,6 +1160,53 @@ conjureSpec = describe "olifant/conjure" $ do
     inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ["bookings: BookingRepository" :: Text])
     changed `shouldSatisfy` either ("your text stands" `T.isInfixOf`) (const False)
     again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
+
+  let freeSlot = T.pack testRel <> "::test_books_a_free_slot"
+      wrongTest = "{\"answers\": {\"conjure-next\": {\"choice\": \"test\", \"fields\": {\"test\": \"" <> freeSlot <> "\", \"why\": \"it asserts two results of one call\"}, \"confidence\": 0.9}}}"
+      threeOffers = toJSON ["continue", "stop", "reconjure:" <> freeSlot]
+
+  it "a test answer pauses with a reconjure offer; reconjure answers a proposal; accept continues, reject returns" $ do
+    ((paused, proposed, rejected, again, accepted), steps) <- answeredConjure wrongTest Nothing [] $ \script ask resume -> do
+      paused <- ask []
+      -- the tests pass from here on: the re-conjured test is green (allowed), the function lands
+      liftIO (BSL.writeFile script "{}")
+      proposed <- resume "conjure-1" "reconjure"
+      rejected <- resume "conjure-1" "reject"
+      again <- resume "conjure-1" "reconjure"
+      accepted <- resume "conjure-1" "accept"
+      pure (paused, proposed, rejected, again, accepted)
+    let pausedObj = field "paused" paused
+        proposal v = inner "proposal" (field "paused" v)
+    inner "token" pausedObj `shouldBe` Just (String "conjure-1")
+    inner "offers" pausedObj `shouldBe` Just threeOffers
+    inner "why" pausedObj `shouldBe` Just (String "it asserts two results of one call")
+    inner "explanation" pausedObj `shouldBe` inner "why" pausedObj
+    inner "token" (field "paused" proposed) `shouldBe` Just (String "conjure-1")
+    inner "offers" (field "paused" proposed) `shouldBe` Just (toJSON ["accept", "reject" :: Text])
+    inner "file" (proposal proposed) `shouldBe` Just (String (T.pack testRel))
+    inner "test" (proposal proposed) `shouldBe` Just (String freeSlot)
+    inner "diff" (proposal proposed) `shouldSatisfy` \case Just (String d) -> "--- a/" `T.isPrefixOf` d; _ -> False
+    inner "after" (proposal proposed) `shouldSatisfy` \case Just (String a) -> "    return None" `T.isInfixOf` a; _ -> False
+    inner "token" (field "paused" rejected) `shouldBe` Just (String "conjure-1")
+    inner "offers" (field "paused" rejected) `shouldBe` Just threeOffers
+    inner "proposal" (field "paused" rejected) `shouldBe` Nothing
+    inner "offers" (field "paused" again) `shouldBe` Just (toJSON ["accept", "reject" :: Text])
+    field "edits" accepted `shouldSatisfy` wroteIn testRel "return None"
+    steps `shouldSatisfy` any (== ["conjure-proposal", freeSlot])
+    steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
+    steps `shouldSatisfy` any (== ["conjure-resume", "accept"])
+
+  it "accept without a proposal and reconjure without the offer are refused and keep the token" $ do
+    -- Jev answers port with no wire generator: a pause offering continue and stop
+    ((accepted, reconjured, continued), _) <- wiredConjure Nothing [] $ \ask resume -> do
+      _ <- ask []
+      accepted <- resume "conjure-1" "accept"
+      reconjured <- resume "conjure-1" "reconjure"
+      continued <- resume "conjure-1" "continue"
+      pure (accepted, reconjured, continued)
+    accepted `shouldBe` Left "there is no proposal to accept"
+    reconjured `shouldBe` Left "this pause offers no re-conjure"
+    continued `shouldSatisfy` either (const False) (const True)
 
 -- | `olifant/mutate`: the unit at a position mutated against its test
 -- file (a scripted runner that kills nothing); and a survivor's stub.
