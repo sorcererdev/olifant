@@ -62,6 +62,7 @@ library
     Olifant.Generation.Planner
     Olifant.Generation.Regions
     Olifant.Generation.Render
+    Olifant.Generation.Steer
     Olifant.Generation.Tools
     Olifant.Generator
     Olifant.Generator.Choices
@@ -120,6 +121,7 @@ library
     Olifant.Server.Anticipate
     Olifant.Server.Completion
     Olifant.Server.Conjure
+    Olifant.Server.ConjureNext
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
@@ -197,6 +199,7 @@ test-suite spec
     Olifant.Generation.Planner
     Olifant.Generation.Regions
     Olifant.Generation.Render
+    Olifant.Generation.Steer
     Olifant.Generation.Tools
     Olifant.GenerationSpec
     Olifant.Generator
@@ -277,6 +280,8 @@ test-suite spec
     Olifant.Server.AnticipateSpec
     Olifant.Server.Completion
     Olifant.Server.Conjure
+    Olifant.Server.ConjureNext
+    Olifant.Server.ConjureNextSpec
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
