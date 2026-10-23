@@ -31,13 +31,13 @@ import Olifant.Catalog (Catalog (..))
 import Olifant.Cursor (isSnippet)
 import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question, choice, confident)
 import Olifant.Generator (AppliesAt (..), Generator, GeneratorWith (..), InputSpec (..), generatorIdText, generatorName)
-import Olifant.App (Project (..))
+import Olifant.App (Project (..), actionsAt', menuOnly)
 import Olifant.Language (languageFor)
 import Olifant.Recognize
 import Olifant.Rules (fingerprint)
 import Olifant.Server.Hints (fileActionsFor)
 import Olifant.Server.Recognize (indexFor, recognitionFor, recognitionSuggestion)
-import Olifant.Server.State (ServerState, projectFor)
+import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Server.Suggest (Suggestion (..), suggestionOf)
 import Olifant.Workspace (Workspace (..))
 import System.FilePath (makeRelative, takeDirectory)
@@ -129,7 +129,7 @@ anticipateCandidates path line s =
 
 -- | An answer as an anticipation: an option chosen at least as surely as
 -- the moment's gate. At a tie, the chosen action's suggestion (a snippet's
--- as one); at a silence, the chosen convention recognised, planned when
+-- built at the cursor, as the ghost is, and shown as a snippet); at a silence, the chosen convention recognised, planned when
 -- the file gives every input it needs, else a hint (Review Focus 3).
 anticipationFrom :: FilePath -> Int -> Moment -> Answer -> ServerState -> IO (ServerState, Maybe Anticipation)
 anticipationFrom path line moment answer s = case sureAnswer moment answer of
@@ -139,9 +139,10 @@ anticipationFrom path line moment answer s = case sureAnswer moment answer of
     suggestion g c = case moment of
       Tie ->
         fileActionsFor path s >>= \case
-          (s', Just (gens, acts, _)) | fa : _ <- [fa | fa <- coveringAt line acts, actGenerator (faAction fa) == g] -> do
-            let snippet = maybe False isSnippet (lookup g gens)
-            fmap (fmap (\sg -> if snippet then sg {sgKind = "snippet"} else sg)) <$> suggestionOf fa path line s'
+          (s', Just (gens, acts, _)) | fa : _ <- [fa | fa <- coveringAt line acts, actGenerator (faAction fa) == g] ->
+            if maybe False isSnippet (lookup g gens)
+              then snippetAt g path line s'
+              else suggestionOf fa path line s'
           (s', _) -> pure (s', Nothing)
       Silence ->
         indexAt path s >>= \case
@@ -171,6 +172,22 @@ anticipationFrom path line moment answer s = case sureAnswer moment answer of
           , rcRival = Nothing
           , rcReasons = ["anticipated at " <> T.pack (show c)]
           }
+
+-- | A snippet winner as the completion builds it: the cursor's actions (the
+-- compiler asked about the match there), the winner's missing inputs each
+-- set to its first choice; nothing when one has no choice (a complete match).
+snippetAt :: Text -> FilePath -> Int -> ServerState -> IO (ServerState, Maybe Suggestion)
+snippetAt g path line s =
+  projectFor path s >>= \case
+    (s', Just (root, project)) -> do
+      acts <- actionsAt' (ssPorts s') (menuOnly project) (makeRelative root path) (line, 1)
+      case [a | a <- acts, actGenerator a == g] of
+        a : _
+          | let firsts = [(k, c) | k <- actMissing a, Just (c : _) <- [lookup k (actChoices a)]]
+          , length firsts == length (actMissing a) ->
+              fmap (fmap (\sg -> sg {sgKind = "snippet"})) <$> suggestionOf (FileAction a {actSets = actSets a ++ firsts, actMissing = []} Nothing) path line s'
+        _ -> pure (s', Nothing)
+    (s', Nothing) -> pure (s', Nothing)
 
 -- | The generator an answer chose, and how surely, when at least as surely
 -- as the moment's gate.
