@@ -11,6 +11,7 @@ module Olifant.Catalog
   , catalogMigrate
   , MigrateConfig (..)
   , catalogDecideModel
+  , catalogConjureWire
   , catalogPacks
   , catalogPackRoots
   , catalogBroken
@@ -114,6 +115,8 @@ data Catalog = Catalog
     catalogMigrate :: Maybe MigrateConfig
   , -- | `[decide] model` (typed decisions; `[recognize] model` is its alias)
     catalogDecideModel :: Maybe Text
+  , -- | `[conjure] wire`: the generator id that wires a missing port
+    catalogConjureWire :: Maybe Text
   }
 
 -- | `[recognize] enabled` (default true) and `model` (a [model.backends]
@@ -225,14 +228,17 @@ openProjectCatalogWith loadP root paths = do
       decide <- readText root projectConfig <&> \case
         Nothing -> Right Nothing
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= decideIn)
+      conjure <- readText root projectConfig <&> \case
+        Nothing -> Right Nothing
+        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= conjureIn)
       migrate <- readText root projectConfig <&> \case
         Nothing -> Right Nothing
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= migrateIn)
-      pure $ case (,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide of
+      pure $ case (,,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide <*> conjure of
         Left err -> Left err
-        Right (userM, projectM, rc, named, rec', mig, dec) ->
+        Right (userM, projectM, rc, named, rec', mig, dec, conj) ->
           let model = fromMaybe defaultModelConfig (maybe userM Just projectM)
-           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec}))) result
+           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj}))) result
   where
     recognizeIn top =
       Toml.optional "recognize" Toml.table top >>= \case
@@ -244,6 +250,10 @@ openProjectCatalogWith loadP root paths = do
       Toml.optional "decide" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "decide" (Toml.onlyKeys ["model"] t >> Toml.optional "model" Toml.text t)
+    conjureIn top =
+      Toml.optional "conjure" Toml.table top >>= \case
+        Nothing -> Right Nothing
+        Just t -> Toml.inKey "conjure" (Toml.onlyKeys ["wire"] t >> Toml.optional "wire" Toml.text t)
     migrateIn top =
       Toml.optional "migrate" Toml.table top >>= \case
         Nothing -> Right Nothing
@@ -298,7 +308,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),
