@@ -6,6 +6,7 @@ module Olifant.Generation.Tools (Tools (..), ProgressEvent (..), Verifier (..), 
 import Data.Text (Text)
 
 import Olifant.Fill (ModelFiller, Stance (..))
+import Olifant.Generation.Steer (Steering)
 import Olifant.Language
 import Olifant.Query (Queries, noQueries)
 import Olifant.Region (RegionDef)
@@ -31,6 +32,9 @@ data Tools m = Tools
     toolCancelled :: m Bool
   , -- | how the model is asked: to fill (the default) or to conjure the least code
     toolStance :: Stance
+  , -- | asked after every red round what to do next (a steered conjure),
+    -- and where the loop starts; Nothing: the filler's retries rule
+    toolSteering :: Maybe (Steering m)
   }
 
 
@@ -49,4 +53,4 @@ noTools = basicTools noSyntax noChecker []
 
 -- | Syntax, checker and languages, with no regions and no commands.
 basicTools :: Applicative m => Syntax m -> Checker m -> [Language] -> Tools m
-basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier noRunner (pure False) FillStance
+basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier noRunner (pure False) FillStance Nothing

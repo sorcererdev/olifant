@@ -583,6 +583,7 @@ runStepsWith warnings snippet rt cwd fmt cat g context steps = do
               , poNow = genNow g
               , poCancel = neverCancel
               , poStance = FillStance
+              , poSteering = Nothing
               }
       planWith (portsOf rt) project po steps >>= \case
         Left err -> generationFailure rt fmt err

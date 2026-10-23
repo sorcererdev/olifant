@@ -67,6 +67,7 @@ import Olifant.ProjectModel (ProjectModel, buildModel)
 import Olifant.Cursor (afterIndent, afterRule, atCursor, atCursorIndented, cursorIndent, isSnippet)
 import Olifant.Fill (ModelFiller (..), Stance (..))
 import Olifant.Generation
+import Olifant.Generation.Steer (Steering)
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax)
@@ -632,11 +633,13 @@ data PlanOptions = PlanOptions
   , -- | how the model is asked: to fill well, or (a block's conjure) to write
     -- the least code that makes its test pass
     poStance :: Stance
+  , -- | a steered conjure's hook and seed ('toolSteering'); Nothing elsewhere
+    poSteering :: Maybe (Steering IO)
   }
 
 -- | Plan only, no cursor, no model, no progress.
 planOptions :: PlanOptions
-planOptions = PlanOptions PlanOnly Nothing False Nothing False [] (const (pure ())) Nothing neverCancel FillStance
+planOptions = PlanOptions PlanOnly Nothing False Nothing False [] (const (pure ())) Nothing neverCancel FillStance Nothing
 
 -- | Run plan steps (model, fills, regions): the plan, with the snippet at
 -- the cursor and the catalog's load warnings.
@@ -655,6 +658,7 @@ planWith ports project po steps = do
           , toolTester = pTester ports (poCancel po)
           , toolCancelled = cancelled (poCancel po)
           , toolStance = poStance po
+          , toolSteering = poSteering po
           }
   generate (prWorkspace project) (resolver (pFiles ports) (pSyntax ports) cat) tools steps now (poMode po) <&> fmap finish
   where

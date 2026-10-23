@@ -12,12 +12,13 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Fill
 import Olifant.Generator.Definition (Verify (..))
 import Olifant.Generation.Plan (HoleStatus (..), PlannedHole (..))
+import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Steer (..), Steering (..))
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..), dedented)
 import Olifant.Language.Header (headerEnd)
@@ -34,33 +35,48 @@ fillPhase :: Monad m => Workspace m -> Tools m -> Map Text (Verify [Text]) -> [(
 fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   Nothing -> pure (base, holes, [])
   Just _ | null holes -> pure (base, holes, [])
-  Just mf -> loop mf 1 M.empty [] [] [Try h 0 [] | h <- holes]
+  Just mf -> case toolSteering tools of
+    Nothing -> loop mf 1 M.empty [] [] [Try h 0 [] | h <- holes]
+    -- a steered loop starts after its seed's rounds, each hole with its
+    -- previous attempts
+    Just st -> let Seed done previous = stSeed st in loop mf (done + 1) M.empty [] [] [Try h 0 (M.findWithDefault [] (holeName (phSite h)) previous) | h <- holes]
   where
-    -- accepted: hole name -> (site, fill, attempts); notes: why a check could not run
+    -- accepted: hole name -> (site, fill, attempts, filler); notes: why a check could not run
     -- @stuck@: holes given up on for a reason no retry can change (their
     -- tests could not run at all: review I3)
     loop mf r accepted notes stuck pending = toolCancelled tools >>= \case
-     True -> pure (finish mf accepted notes (stuck ++ [(t, "cancelled") | t <- pending]))
+     True -> pure (finish accepted notes (unfilled (stuck ++ [(t, "cancelled") | t <- pending])))
      False -> do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
       reply <- runFill (mfFiller mf) (FillRequest [fillHole t | t <- pending] inputs (toolFillContext tools) (toolStance tools))
       let tried = [t {tryAttempts = tryAttempts t + 1} | t <- pending]
+          -- FAILED0: each hole still red, why, and its verify's run if one ran
           next accepted' notes' failed0
-            | null failed || r >= 1 + max 0 (mfRetries mf) = do
-                forM_ (failed ++ newlyStuck) (\(t, why) -> toolProgress tools (Unfilled (name t) why))
-                pure (finish mf accepted' notes' (failed ++ stuck ++ newlyStuck))
+            | null failed || (unsteered && r >= 1 + max 0 (mfRetries mf)) = do
+                forM_ (failed' ++ newlyStuck) (\(t, why) -> toolProgress tools (Unfilled (name t) why))
+                pure (finish accepted' notes' (unfilled (failed' ++ stuck ++ newlyStuck)))
+            | Just st <- toolSteering tools = do
+                -- a red round (never an unrunnable or a green one): the hook
+                -- says again, climb or pause; the filler's retries do not count
+                forM_ newlyStuck (\(t, why) -> toolProgress tools (Unfilled (name t) why))
+                stSteer st (RoundState r (mfName mf) [RoundHole (name t) why (tryPrevious t) run | (t, why, run) <- failed]) >>= \case
+                  Again -> loop mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
+                  Climb mf' -> loop mf' (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
+                  Pause why -> pure (finish accepted' notes' (unfilled (stuck ++ newlyStuck) ++ [(t, HolePaused why) | (t, _) <- failed']))
             | otherwise = do
                 forM_ newlyStuck (\(t, why) -> toolProgress tools (Unfilled (name t) why))
-                loop mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed)
+                loop mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
             where
-              unrunnable (_, why) = "the tests could not run" `T.isPrefixOf` why
-              newlyStuck = filter unrunnable failed0
+              unsteered = isNothing (toolSteering tools)
+              unrunnable (_, why, _) = "the tests could not run" `T.isPrefixOf` why
+              newlyStuck = [(t, why) | (t, why, _) <- filter unrunnable failed0]
               failed = filter (not . unrunnable) failed0
+              failed' = [(t, why) | (t, why, _) <- failed]
       case reply of
         -- An unreadable reply is a failed attempt, retried like any other.
-        Left why -> next accepted notes [(t, why) | t <- tried]
+        Left why -> next accepted notes [(t, why, Nothing) | t <- tried]
         Right fills -> do
-          let noFill = [(t, "the model returned no fill for `" <> name t <> "`") | t <- tried, M.notMember (name t) fills]
+          let noFill = [(t, "the model returned no fill for `" <> name t <> "`", Nothing) | t <- tried, M.notMember (name t) fills]
           -- A fill that repeats the file around its hole (a local model
           -- answers with the whole file) is cut to the hole; one that still
           -- answers a file is not placed, and asked again saying so.
@@ -74,7 +90,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) (snd (splitImports (importsOf (holeFile (site t))) f))
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
               candidates0 = [(t, f) | (t, f, True) <- parsed]
-              known = [(s', f') | (s', f', _) <- M.elems accepted]
+              known = [(s', f') | (s', f', _, _) <- M.elems accepted]
               with cs = applyFills langOf base (known ++ [(site t, f) | (t, f) <- cs])
           (broken0, note0) <- checkFiles (with candidates0) [site t | (t, _) <- candidates0]
           -- errors the files had with their placeholders are not the fills'
@@ -140,28 +156,28 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               pendingOf key = [t' | t' <- tried, verifyOf t' == Just key, name t' `notElem` [name u | (u, _) <- stood]]
           (verified, _) <- foldM (\(done, outcomes) (t, f) -> case (verifyOf t, langOf (holeFile (site t))) of
             (Just key@(verify, _), Just lang)
-              | o : _ <- pendingOf key -> pure (done ++ [(t, f, Just ("verified with `" <> name o <> "`, which has no fill that stands"))], outcomes)
-              | Just why <- lookup key outcomes -> pure (done ++ [(t, f, why)], outcomes)
+              | o : _ <- pendingOf key -> pure (done ++ [(t, f, (Just ("verified with `" <> name o <> "`, which has no fill that stands"), Nothing))], outcomes)
+              | Just out <- lookup key outcomes -> pure (done ++ [(t, f, out)], outcomes)
               | otherwise -> do
-                  why <- verifyWith (with stood) t verify lang
-                  pure (done ++ [(t, f, why)], outcomes ++ [(key, why)])
-            _ -> pure (done ++ [(t, f, Nothing)], outcomes)) ([], []) stood
-          let good' = [(t, f) | (t, f, Nothing) <- verified]
-              verifyFailed = [(t, f, why) | (t, f, Just why) <- verified]
-              accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t)) accepted good'
-              failed = noFill ++ [(t {tryPrevious = tryPrevious t ++ [(f, why)]}, why) | (t, f, why) <- badParse ++ compileFailed ++ clash ++ verifyFailed]
+                  out <- verifyWith (with stood) t verify lang
+                  pure (done ++ [(t, f, out)], outcomes ++ [(key, out)])
+            _ -> pure (done ++ [(t, f, (Nothing, Nothing))], outcomes)) ([], []) stood
+          let good' = [(t, f) | (t, f, (Nothing, _)) <- verified]
+              verifyFailed = [(t, f, why, run) | (t, f, (Just why, run)) <- verified]
+              accepted' = foldr (\(t, f) -> M.insert (name t) (site t, f, tryAttempts t, mfName mf)) accepted good'
+              failed = noFill ++ [(t {tryPrevious = tryPrevious t ++ [(f, why)]}, why, run) | (t, f, why, run) <- [(t, f, why, Nothing) | (t, f, why) <- badParse ++ compileFailed ++ clash] ++ verifyFailed]
           forM_ good' (\(t, _) -> toolProgress tools (Filled (name t) (tryAttempts t)))
           next accepted' (maybe notes (: notes) note) failed
 
     -- A hole's verify over FILES (every standing fill in place):
-    -- Nothing when it passes, else why not.
+    -- Nothing when it passes, else why not; and the tests' run, when one ran.
     verifyWith files t verify lang = do
       toolProgress tools (Verifying (name t))
       (scope, everything) <- projectFiles ws files lang [holeFile (site t)]
       outcome <- case verify of
-        VerifyCommand argv -> runVerifyIn (toolVerifier tools) lang scope argv everything
+        VerifyCommand argv -> fmap noRun <$> runVerifyIn (toolVerifier tools) lang scope argv everything
         VerifyRedAt tid line passing -> verifyRedAt lang tid line passing everything
-        VerifyKills tid keep new path mutated -> verifyKills lang tid keep new path mutated everything
+        VerifyKills tid keep new path mutated -> fmap noRun <$> verifyKills lang tid keep new path mutated everything
         VerifyTests -> case langTest lang of
           Nothing -> pure (Left (CheckFailed "verify = \"tests\" needs a [test] table in the language"))
           Just td -> verifyTests lang [T.pack (testsForFile td (holeFile (site t)))] everything
@@ -171,26 +187,30 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
             VerifyKills {} -> ""
             _ -> testsFailed <> "\n"
       pure $ case outcome of
-        Right (True, _) -> Nothing
-        Right (False, out) -> Just (failedPrefix <> T.intercalate "\n" (lastN 40 (T.lines out)))
-        Left why -> Just ("the tests could not run: " <> describeCheckFailure why)
+        Right (True, _, run) -> (Nothing, run)
+        Right (False, out, run) -> (Just (failedPrefix <> T.intercalate "\n" (lastN 40 (T.lines out))), run)
+        Left why -> (Just ("the tests could not run: " <> describeCheckFailure why), Nothing)
+    noRun (ok, out) = (ok, out, Nothing)
 
-    finish mf accepted notes failed =
-      let status h = case (M.lookup (holeName (phSite h)) accepted, [why | (t, why) <- failed, name t == holeName (phSite h)]) of
-            (Just (_, f, n), _) -> h {phStatus = HoleFilled (mfName mf) n, phFill = Just f}
-            (_, why : _) -> h {phStatus = HoleUnfilled why}
+    unfilled = map (fmap HoleUnfilled)
+
+    -- FAILED: each hole not filled, and its status (unfilled or paused).
+    finish accepted notes failed =
+      let status h = case (M.lookup (holeName (phSite h)) accepted, [st | (t, st) <- failed, name t == holeName (phSite h)]) of
+            (Just (_, f, n, by), _) -> h {phStatus = HoleFilled by n, phFill = Just f}
+            (_, st : _) -> h {phStatus = st}
             _ -> h
           warnings = ["holes were filled but not compile-checked: " <> n | n <- nub notes, not (M.null accepted)]
-       in (applyFills langOf base [(s', f') | (s', f', _) <- M.elems accepted], map status holes, warnings)
+       in (applyFills langOf base [(s', f') | (s', f', _, _) <- M.elems accepted], map status holes, warnings)
 
     -- The tests (a module's file, or a block's one test) must pass.
     verifyTests lang ids everything =
       runTestsIn (toolTester tools) lang ids everything <&> \case
         Left why -> Left (CheckFailed why)
         Right run
-          | Just why <- trBroken run -> Right (False, why)
-          | null (trFailed run) -> Right (True, "")
-          | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
+          | Just why <- trBroken run -> Right (False, why, Just run)
+          | null (trFailed run) -> Right (True, "", Just run)
+          | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run], Just run)
 
     -- A code block's conjure: its test's file runs whole; its test passes,
     -- and each test it keeps that the run has (the failure named by its id).
@@ -198,10 +218,10 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
       runTestsIn (toolTester tools) lang [fst (T.breakOn "::" own)] everything <&> \case
         Left why -> Left (CheckFailed why)
         Right run
-          | Just why <- trBroken run -> Right (False, why)
+          | Just why <- trBroken run -> Right (False, why, Just run)
           | otherwise -> case keptVerdict own keep run of
-              Right () -> Right (True, "")
-              Left (at, fl) -> Right (False, fromMaybe own at <> ": " <> fMessage fl <> "\n" <> fOutput fl)
+              Right () -> Right (True, "", Just run)
+              Left (at, fl) -> Right (False, fromMaybe own at <> ": " <> fMessage fl <> "\n" <> fOutput fl, Just run)
 
     -- A test conjure: the test must fail, and at its assertion: at or after
     -- its first assert line, before its end, as the fills left the file
@@ -212,11 +232,11 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
       runTestsIn (toolTester tools) lang [tid] everything <&> \case
         Left why -> Left (CheckFailed why)
         Right run
-          | Just why <- trBroken run -> Right (False, "the test cannot run: " <> why)
-          | [(_, f)] <- trFailed run, Just l <- fLine f, inside l -> Right (True, "")
-          | [(_, f)] <- trFailed run -> Right (False, "the test fails before its assertion (line " <> maybe "?" (T.pack . show) (fLine f) <> "): " <> fMessage f)
-          | passing -> Right (True, "")
-          | otherwise -> Right (False, passesAgainstRaise)
+          | Just why <- trBroken run -> Right (False, "the test cannot run: " <> why, Just run)
+          | [(_, f)] <- trFailed run, Just l <- fLine f, inside l -> Right (True, "", Just run)
+          | [(_, f)] <- trFailed run -> Right (False, "the test fails before its assertion (line " <> maybe "?" (T.pack . show) (fLine f) <> "): " <> fMessage f, Just run)
+          | passing -> Right (True, "", Just run)
+          | otherwise -> Right (False, passesAgainstRaise, Just run)
       where
         (file, test) = (T.unpack (fst (T.breakOn "::" tid)), snd (T.breakOnEnd "::" tid))
         (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan test)
