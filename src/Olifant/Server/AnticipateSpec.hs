@@ -12,7 +12,7 @@ import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Generation (Plan (..))
 import Olifant.Language (noChecker, noRunner)
 import Olifant.Language.AstGrep (astGrepSyntax)
-import Olifant.Language.Check (noVerifier)
+import Olifant.Language.Check (CheckReport (..), Checker (..), MissingPatterns (..), noVerifier)
 import Olifant.Process (gitStateStamp, neverCancel)
 import Olifant.Recognize (Band (..), Recognition (..))
 import Olifant.Server.Anticipate
@@ -103,6 +103,32 @@ spec = describe "Olifant.Server.Anticipate (the one Jev question at the cursor)"
       (anGenerator an, anConfidence an, anMoment an) `shouldBe` ("python-htmx/port-method", 0.93, Tie)
       sgKind (anSuggestion an) `shouldBe` "snippet"
 
+  describe "a Tie whose winner is a snippet with an input only the cursor can fill" $ do
+    let port = "src/bistro/booking/ports/booking_repository/booking_repository.py"
+        chooseMatchArm = "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/match-arm\", \"confidence\": 0.64}}}"
+        tying checker act = withFixtureChecked checker [] $ \s0 dir -> do
+          original <- TIO.readFile ("packs/python-htmx/fixtures/app" </> port)
+          let text = original <> tieTail
+              n = length (T.lines original)
+              line = length (T.lines text) + 1
+              answers = dir </> "answers.json"
+              s = openDoc (root </> port) 1 (text <> "\n") s0
+          TIO.writeFile answers chooseMatchArm
+          (_, found) <- anticipateAt (root </> port) line s (recordedDecider answers neverCancel)
+          act n found
+    it "(i) match-arm chosen at 0.64 while the compiler reports a missing case: the arm, as a snippet, its pattern set" $ do
+      let missing n = Checker (\_ _ -> pure (Right (CheckReport [MissingPatterns port (n + 2, n + 4) ["Cancelled()"] Nothing] [] [])))
+      original <- TIO.readFile ("packs/python-htmx/fixtures/app" </> port)
+      tying (missing (length (T.lines original))) $ \_ found -> do
+        Just an <- pure found
+        (anGenerator an, anConfidence an, anMoment an) `shouldBe` ("python-htmx/match-arm", 0.64, Tie)
+        let sg = anSuggestion an
+        sgKind sg `shouldBe` "snippet"
+        fmap (T.isInfixOf "Cancelled()") (lookup "pattern" (sgSets sg)) `shouldBe` Just True
+        sgGenerator sg `shouldBe` "python-htmx/match-arm"
+    it "(j) the same Tie with no compiler (no missing case to offer): match-arm chosen at 0.64 yields nothing" $
+      tying noChecker $ \_ found -> fmap anGenerator found `shouldBe` Nothing
+
 -- | A Protocol method with a default body ending in a match: the blank line
 -- after it follows both a method of the Protocol and a match's last case.
 tieTail :: Text
@@ -114,7 +140,11 @@ root = "/r"
 -- | The python-htmx fixture app at /r (the pack at /pack), served with the
 -- real syntax, and a temporary directory for recorded answers.
 withFixture :: [(FilePath, Text)] -> (ServerState -> FilePath -> IO a) -> IO a
-withFixture extra act = do
+withFixture = withFixtureChecked noChecker
+
+-- | 'withFixture' with a compiler: the checker every language is checked by.
+withFixtureChecked :: Checker IO -> [(FilePath, Text)] -> (ServerState -> FilePath -> IO a) -> IO a
+withFixtureChecked checker extra act = do
   tmp <- getTemporaryDirectory
   pack <- readTree =<< canonicalizePath "packs/python-htmx"
   app <- readTree =<< canonicalizePath "packs/python-htmx/fixtures/app"
@@ -124,7 +154,7 @@ withFixture extra act = do
         ++ [(root </> p, t) | (p, t) <- M.toList app]
         ++ [(root </> ".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")]
         ++ [(root </> p, t) | (p, t) <- extra]
-  let ports = Ports disk (astGrepSyntax (tmp </> "olifant-test-cache")) (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 20) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+  let ports = Ports disk (astGrepSyntax (tmp </> "olifant-test-cache")) (const checker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 20) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   withSystemTempDirectory "olifant-anticipate" (act s)
 
