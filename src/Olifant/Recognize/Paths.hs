@@ -6,6 +6,7 @@ module Olifant.Recognize.Paths
   , PathPart (..)
   , pathPattern
   , invertPath
+  , patternText
   ) where
 
 import Data.Char (isAlphaNum)
@@ -23,6 +24,13 @@ data PathPattern = PathPattern {ppGlob :: Text, ppParts :: [PathPart]}
 
 data PathPart = PLit Text | PVar Text (Maybe Case)
   deriving stock (Eq, Show)
+
+-- | A pattern as a path with holes: literals as they are, inputs as {name}.
+patternText :: PathPattern -> Text
+patternText = T.concat . map part . ppParts
+  where
+    part (PLit l) = l
+    part (PVar v _) = "{" <> v <> "}"
 
 -- | A create path with its derived names followed down to inputs; nothing
 -- for a path it cannot invert (a condition, a loop, a filter that is not a
