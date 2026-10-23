@@ -62,8 +62,9 @@ planned :: [Text] -> Int -> FilePath -> EditAction -> PlannedEdit
 planned st n p a = PlannedEdit st n p a Nothing Nothing
 
 -- | 'HoleFilled': by which model, after how many attempts; 'HoleUnfilled':
--- why it keeps its placeholder; 'HoleSkipped': why it was not tried.
-data HoleStatus = HoleFilled Text Int | HoleUnfilled Text | HoleSkipped Text
+-- why it keeps its placeholder; 'HoleSkipped': why it was not tried;
+-- 'HolePaused': why a steered loop paused with it still red.
+data HoleStatus = HoleFilled Text Int | HoleUnfilled Text | HoleSkipped Text | HolePaused Text
   deriving stock (Eq, Show)
 
 data PlannedHole = PlannedHole {phSite :: HoleSite, phStatus :: HoleStatus, phFill :: Maybe Text}

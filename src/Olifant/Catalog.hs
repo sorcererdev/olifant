@@ -53,7 +53,7 @@ import Data.Functor ((<&>))
 import Data.Either (lefts, rights)
 import Data.List (sort, sortOn)
 import Data.Map.Strict qualified as M
-import Olifant.Model (ModelConfig (..), parseModelConfig)
+import Olifant.Model (ModelConfig (..), defaultModelConfig, parseModelConfig)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -231,7 +231,7 @@ openProjectCatalogWith loadP root paths = do
       pure $ case (,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide of
         Left err -> Left err
         Right (userM, projectM, rc, named, rec', mig, dec) ->
-          let model = fromMaybe (ModelConfig Nothing 2 120 []) (maybe userM Just projectM)
+          let model = fromMaybe defaultModelConfig (maybe userM Just projectM)
            in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec}))) result
   where
     recognizeIn top =
@@ -298,7 +298,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] (ModelConfig Nothing 2 120 []) [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),

@@ -22,17 +22,17 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
           [ "[model]", "default = \"local\"", "retries = 3"
           , "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://localhost:11434/v1\"", "model = \"qwen3-coder:30b\""
           , "[model.backends.claude]", "kind = \"anthropic\"", "model = \"claude-haiku-4-5-20251001\"", "api_key_env = \"ANTHROPIC_API_KEY\"" ])
-    parseModelConfig top `shouldBe` Right (ModelConfig (Just "local") 3 120 [("claude", Anthropic "claude-haiku-4-5-20251001" "ANTHROPIC_API_KEY"), ("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")])
+    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcDefault = Just "local", mcRetries = 3, mcBackends = [("claude", Anthropic "claude-haiku-4-5-20251001" "ANTHROPIC_API_KEY"), ("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")], mcLadder = [Rung "local" EscalateAsk]})
   it "refuses an unknown backend kind, naming the kinds" $ do
     let Right top = parseToml "[model.backends.x]\nkind = \"gemini\"\nmodel = \"m\"\n"
     parseModelConfig top `shouldSatisfy` either ("openai-compatible, anthropic" `T.isInfixOf`) (const False)
   it "(a) reads a jev backend: model and key variable default; a stray key is refused" $ do
     let Right top = parseToml "[model.backends.jev]\nkind = \"jev\"\n"
         Right stray = parseToml "[model.backends.jev]\nkind = \"jev\"\nurl = \"http://x\"\n"
-    parseModelConfig top `shouldBe` Right (ModelConfig Nothing 2 120 [("jev", Jev "jev-latest" "JEV_API_KEY")])
+    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcBackends = [("jev", Jev "jev-latest" "JEV_API_KEY")]})
     parseModelConfig stray `shouldSatisfy` either ("url" `T.isInfixOf`) (const False)
   it "defaults to no backend and 2 retries without [model]" $
-    parseModelConfig M.empty `shouldBe` Right (ModelConfig Nothing 2 120 [])
+    parseModelConfig M.empty `shouldBe` Right defaultModelConfig
   it "asks an openai-compatible endpoint for tagged blocks, with the rules and the holes" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") request)))
     mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"m\"", "\"role\":\"system\"", "<fill name=\\\"NAME\\\">", "status", "the HTTP status", "a.rs: BAD is not defined", "failure = too_late"]
@@ -84,3 +84,28 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
   it "says what was wrong with a reply that is not the agreed JSON" $ do
     decodeFills (OpenAICompatible "u" "m") "{\"choices\":[{\"message\":{\"content\":\"Sure! Here is the code.\"}}]}" `shouldSatisfy` either ("not the JSON" `T.isInfixOf`) (const False)
     decodeFills (OpenAICompatible "u" "m") "{\"error\":{\"message\":\"model not found\"}}" `shouldSatisfy` either ("model not found" `T.isInfixOf`) (const False)
+  describe "the ladder (steered conjures)" $ do
+    let backends = ["[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://localhost:11434/v1\"", "model = \"q\""]
+        claude extra = ["[model.backends.claude]", "kind = \"anthropic\"", "model = \"c\""] <> extra
+        parse ls = parseModelConfig (either (error . T.unpack) id (parseToml (T.unlines ls)))
+        failsWith needle ls = parse ls `shouldSatisfy` either (needle `T.isInfixOf`) (const False)
+    it "(a) reads the ladder in its order, with rounds, budget and each rung's escalate" $ do
+      let Right c = parse (["[model]", "default = \"local\"", "ladder = [\"local\", \"claude\"]", "rounds = 4", "budget = 90"] <> backends <> claude ["escalate = \"auto\""])
+      mcLadder c `shouldBe` [Rung "local" EscalateAsk, Rung "claude" EscalateAuto]
+      (mcRounds c, mcBudget c) `shouldBe` (4, 90)
+    it "(b) defaults: the default backend is the ladder, 6 rounds, 180 seconds" $ do
+      let Right c = parse (["[model]", "default = \"local\""] <> backends)
+      (mcLadder c, mcRounds c, mcBudget c) `shouldBe` ([Rung "local" EscalateAsk], 6, 180)
+      fmap mcLadder (parse ["[model]"]) `shouldBe` Right []
+      parseModelConfig M.empty `shouldBe` Right defaultModelConfig
+    it "(c) refuses a ladder name with no backend" $
+      failsWith "no such backend `gpt`" (["[model]", "ladder = [\"local\", \"gpt\"]"] <> backends)
+    it "(d) refuses a jev backend in the ladder" $
+      failsWith "answers decisions, not prompts" (["[model]", "ladder = [\"local\", \"jev\"]", "[model.backends.jev]", "kind = \"jev\""] <> backends)
+    it "(e) refuses a bad escalate value" $
+      failsWith "must be never, ask or auto" (backends <> ["escalate = \"sometimes\""])
+    it "(f) refuses rounds or budget below 1" $ do
+      failsWith "`rounds` must be at least 1" ["[model]", "rounds = 0"]
+      failsWith "`budget` must be at least 1" ["[model]", "budget = 0"]
+    it "(g) escalate is an unknown key on a jev backend" $
+      failsWith "escalate" ["[model.backends.jev]", "kind = \"jev\"", "escalate = \"auto\""]

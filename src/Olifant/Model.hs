@@ -6,7 +6,10 @@
 -- decisions only (`Olifant.Decide`), its key handled the same way.
 module Olifant.Model
   ( Backend (..)
+  , Escalate (..)
+  , Rung (..)
   , ModelConfig (..)
+  , defaultModelConfig
   , parseModelConfig
   , backendKinds
   , backendModel
@@ -42,7 +45,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
 import Olifant.Process (Cancel, Outcome (..), cancelled, neverCancel, runBytes, runBytesCancellable)
-import Olifant.Toml (Table, inKey, int, onlyKeys, optional, required, table, text)
+import Olifant.Toml (Table, inKey, int, list, onlyKeys, optional, required, table, text)
 import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
@@ -55,9 +58,30 @@ data Backend
   | Jev {beModel :: Text, beKeyEnv :: Text}
   deriving stock (Eq, Show)
 
--- | 'mcTimeout': seconds a model call may take (default 120).
-data ModelConfig = ModelConfig {mcDefault :: Maybe Text, mcRetries :: Int, mcTimeout :: Int, mcBackends :: [(Text, Backend)]}
+-- | Whether Jev may climb to a rung: never, only by asking the person, or on its own.
+data Escalate = EscalateNever | EscalateAsk | EscalateAuto
   deriving stock (Eq, Show)
+
+-- | One step of the ladder: a backend's name and its escalate policy.
+data Rung = Rung {rungName :: Text, rungEscalate :: Escalate}
+  deriving stock (Eq, Show)
+
+-- | 'mcTimeout': seconds a model call may take (default 120). 'mcLadder': the
+-- rungs a steered conjure climbs, local first. 'mcRounds': rounds a conjure may
+-- run (default 6). 'mcBudget': seconds a conjure may run (default 180).
+data ModelConfig = ModelConfig
+  { mcDefault :: Maybe Text
+  , mcRetries :: Int
+  , mcTimeout :: Int
+  , mcBackends :: [(Text, Backend)]
+  , mcLadder :: [Rung]
+  , mcRounds :: Int
+  , mcBudget :: Int
+  }
+  deriving stock (Eq, Show)
+
+defaultModelConfig :: ModelConfig
+defaultModelConfig = ModelConfig Nothing 2 120 [] [] 6 180
 
 backendKinds :: [Text]
 backendKinds = ["openai-compatible", "anthropic", "jev"]
@@ -69,20 +93,41 @@ backendModel = beModel
 parseModelConfig :: Table -> Either Text ModelConfig
 parseModelConfig top =
   optional "model" table top >>= \case
-    Nothing -> Right (ModelConfig Nothing 2 120 [])
+    Nothing -> Right defaultModelConfig
     Just m -> inKey "model" $ do
-      onlyKeys ["default", "retries", "timeout", "backends"] m
+      onlyKeys ["default", "retries", "timeout", "backends", "ladder", "rounds", "budget"] m
       def <- optional "default" text m
       retries <- maybe 2 fromInteger <$> optional "retries" int m
       timeout <- maybe 120 fromInteger <$> optional "timeout" int m
-      backends <- maybe (Right []) (traverse (\(k, v) -> inKey ("backends." <> k) ((k,) <$> (table >=> backend) v)) . M.toList) =<< optional "backends" table m
-      pure (ModelConfig def retries timeout backends)
+      rounds <- maybe 6 fromInteger <$> optional "rounds" int m
+      budget <- maybe 180 fromInteger <$> optional "budget" int m
+      if rounds < 1 then Left "`rounds` must be at least 1" else Right ()
+      if budget < 1 then Left "`budget` must be at least 1" else Right ()
+      withEsc <- maybe (Right []) (traverse (\(k, v) -> inKey ("backends." <> k) ((\(b, e) -> (k, b, e)) <$> (table >=> backend) v)) . M.toList) =<< optional "backends" table m
+      let backends = [(k, b) | (k, b, _) <- withEsc]
+          policy k = maybe EscalateAsk id (lookup k [(k', e) | (k', _, e) <- withEsc])
+      names <- optional "ladder" (list text) m
+      ladder <- case names of
+        Nothing -> Right [Rung d (policy d) | Just d <- [def]]
+        Just ns -> inKey "ladder" (traverse (rung backends policy) ns)
+      pure (ModelConfig def retries timeout backends ladder rounds budget)
   where
+    rung backends policy n = case lookup n backends of
+      Nothing -> Left ("no such backend `" <> n <> "` (backends: " <> T.intercalate ", " (map fst backends) <> ")")
+      Just (Jev {}) -> Left ("`" <> n <> "` is a jev backend: it answers decisions, not prompts")
+      Just _ -> Right (Rung n (policy n))
+    escalate t =
+      optional "escalate" text t >>= \case
+        Nothing -> Right EscalateAsk
+        Just "never" -> Right EscalateNever
+        Just "ask" -> Right EscalateAsk
+        Just "auto" -> Right EscalateAuto
+        Just _ -> Left "`escalate`: must be never, ask or auto"
     backend t =
       required "kind" text t >>= \case
-        "openai-compatible" -> onlyKeys ["kind", "url", "model"] t >> OpenAICompatible <$> required "url" text t <*> required "model" text t
-        "anthropic" -> onlyKeys ["kind", "model", "api_key_env"] t >> Anthropic <$> required "model" text t <*> (fromMaybe "ANTHROPIC_API_KEY" <$> optional "api_key_env" text t)
-        "jev" -> onlyKeys ["kind", "model", "api_key_env"] t >> Jev . fromMaybe "jev-latest" <$> optional "model" text t <*> (fromMaybe "JEV_API_KEY" <$> optional "api_key_env" text t)
+        "openai-compatible" -> onlyKeys ["kind", "url", "model", "escalate"] t >> (,) <$> (OpenAICompatible <$> required "url" text t <*> required "model" text t) <*> escalate t
+        "anthropic" -> onlyKeys ["kind", "model", "api_key_env", "escalate"] t >> (,) <$> (Anthropic <$> required "model" text t <*> (fromMaybe "ANTHROPIC_API_KEY" <$> optional "api_key_env" text t)) <*> escalate t
+        "jev" -> onlyKeys ["kind", "model", "api_key_env"] t >> (\b -> (b, EscalateAsk)) <$> (Jev . fromMaybe "jev-latest" <$> optional "model" text t <*> (fromMaybe "JEV_API_KEY" <$> optional "api_key_env" text t))
         other -> Left ("unknown backend kind `" <> other <> "` (kinds: " <> T.intercalate ", " backendKinds <> ")")
 
 systemPrompt :: Text

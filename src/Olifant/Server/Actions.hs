@@ -1,7 +1,7 @@
 -- | Internal to Olifant.Server: the ⚡ actions at a cursor, and an action
 -- planned there (a snippet placed at the cursor, as `gen --at` does) with
 -- the choices made — against the documents as they are now.
-module Olifant.Server.Actions (actionsFor, menuActionsFor, actionEdits, actionPlan, actionPlanWith, fillerFor, describeProgress) where
+module Olifant.Server.Actions (actionsFor, menuActionsFor, actionEdits, actionPlan, actionPlanWith, fillerFor, rungFiller, describeProgress) where
 
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
@@ -115,11 +115,23 @@ fillerFor :: Bool -> ServerState -> Project -> IO (Either Text (Maybe (ModelFill
 fillerFor False _ _ = pure (Right Nothing)
 fillerFor True s _ | Just filler <- ssTestFiller s = pure (Right (Just filler))
 fillerFor True s project = case scFills (ssConfig s) of
-  Just file ->
-    readText (pFiles (ssPorts s)) file <&> \case
-      Nothing -> Left ("recorded fills: cannot read " <> T.pack file)
-      Just src -> (\fills -> Just (ModelFiller "recorded" 0 (replayFiller fills))) <$> parseFills src
+  Just file -> fmap Just <$> recordedFiller s file
   Nothing -> pure (modelFillerWith (ssCancel s) (prCatalog project) (scModel (ssConfig s)))
+
+-- | The filler of one rung of a steered conjure's ladder, named for the rung
+-- (the backend's name): the test filler when set (every rung), recorded
+-- fills when the client gave some; else that backend.
+rungFiller :: ServerState -> Project -> Text -> IO (Either Text (ModelFiller IO))
+rungFiller s project name = fmap (\f -> f {mfName = name}) <$> case (ssTestFiller s, scFills (ssConfig s)) of
+  (Just filler, _) -> pure (Right filler)
+  (_, Just file) -> recordedFiller s file
+  _ -> pure (modelFillerWith (ssCancel s) (prCatalog project) (Just name) >>= maybe (Left ("no backend " <> name <> " under [model.backends]")) Right)
+
+recordedFiller :: ServerState -> FilePath -> IO (Either Text (ModelFiller IO))
+recordedFiller s file =
+  readText (pFiles (ssPorts s)) file <&> \case
+    Nothing -> Left ("recorded fills: cannot read " <> T.pack file)
+    Just src -> ModelFiller "recorded" 0 . replayFiller <$> parseFills src
 
 -- | A progress event in words, as editors show them.
 describeProgress :: ProgressEvent -> Text

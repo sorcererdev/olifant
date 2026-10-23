@@ -15,6 +15,7 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
+import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Steer (..), Steering (..), noSeed)
 import Olifant.Generation.FillPhase (assertionSpan, cutToHole, fillPhase, looksLikeFile, reindented)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
@@ -871,6 +872,83 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       st `shouldSatisfy` \case [HoleUnfilled why] -> "the tests failed" `T.isInfixOf` why && "AssertionError" `T.isInfixOf` why; _ -> False
       kept <- outcome (VerifyKeep "f::t" ["f::k"]) (ran (TestRun ["f::t"] [("f::k", red Nothing)] Nothing))
       kept `shouldSatisfy` \case [HoleUnfilled why] -> "f::k: AssertionError" `T.isInfixOf` why; _ -> False
+    describe "steered rounds (toolSteering)" $ do
+      -- The filler answers "1", "2", … (or what ANSWER says for call n);
+      -- the hook records each round and answers from ANSWERS (given the filler,
+      -- so a Climb may reuse it); SEED Nothing is no steering.
+      let steered answer retries seed answers runner = do
+            (ws, _) <- memoryWorkspace []
+            count <- newIORef (0 :: Int)
+            reqs <- newIORef []
+            events <- newIORef []
+            states <- newIORef []
+            let filler = Filler $ \req -> do
+                  modifyIORef' reqs (++ [req])
+                  n <- atomicModifyIORef' count (\c -> (c + 1, c + 1))
+                  pure (answer n)
+            left <- newIORef (answers filler)
+            let hook s = do
+                  modifyIORef' states (++ [s])
+                  atomicModifyIORef' left (\case a : as -> (as, a); [] -> ([], Pause "no answer left"))
+                tools =
+                  (basicTools noSyntax noChecker [holeLang])
+                    { toolFiller = Just (ModelFiller "fake" retries filler)
+                    , toolTester = runner
+                    , toolProgress = \e -> modifyIORef' events (++ [e])
+                    , toolSteering = (`Steering` hook) <$> seed
+                    }
+            (_, hs, _) <- fillPhase ws tools (M.singleton "v" (VerifyRedAt "t" 3 True)) [] base [PlannedHole site (HoleUnfilled "") Nothing]
+            (,,,,) (map phStatus hs) <$> readIORef count <*> readIORef reqs <*> readIORef events <*> readIORef states
+          counting n = Right (M.fromList [("v", T.pack (show (n :: Int)))])
+          redRun = TestRun [] [("t", red (Just 2))] Nothing
+          alwaysRed = ran redRun
+      it "(a) every red round asks the hook; a pause ends the loop with HolePaused, the round's run and every previous fill" $ do
+        (st, n, _, _, states) <- steered counting 0 (Just noSeed) (const [Again, Again, Pause "budget spent"]) alwaysRed
+        st `shouldBe` [HolePaused "budget spent"]
+        n `shouldBe` 3
+        map rsRound states `shouldBe` [1, 2, 3]
+        map rsRung states `shouldBe` ["fake", "fake", "fake"]
+        case reverse states of
+          RoundState _ _ [h] : _ -> do
+            rhRun h `shouldBe` Just redRun
+            map fst (rhPrevious h) `shouldBe` ["1", "2", "3"]
+          other -> expectationFailure ("unexpected last round: " <> show (take 1 other))
+      it "(b) a climb goes on with the stronger filler, which the filled hole names" $ do
+        let runner = Runner (\_ _ files -> pure (Right (TestRun [] [("t", red (Just (if "v = 2" `T.isInfixOf` fold files then 3 else 2)))] Nothing)))
+        (st, _, _, events, _) <- steered counting 0 (Just noSeed) (\f -> [Climb (ModelFiller "strong" 0 f)]) runner
+        st `shouldBe` [HoleFilled "strong" 2]
+        [m | Filling _ _ m <- events] `shouldBe` ["fake", "strong"]
+      it "(c) a seed starts the loop after its rounds, each hole with its previous attempts" $ do
+        (_, _, reqs, events, states) <- steered counting 0 (Just (Seed 4 (M.singleton "v" [("0", "why0")]))) (const [Pause "p"]) alwaysRed
+        take 1 [a | Filling _ a _ <- events] `shouldBe` [5]
+        map fhPrevious (concatMap frHoles (take 1 reqs)) `shouldBe` [[("0", "why0")]]
+        take 1 (map rsRound states) `shouldBe` [5]
+      it "(d) tests that could not run never reach the hook" $ do
+        (st, _, _, _, states) <- steered counting 0 (Just noSeed) (const [Again]) (Runner (\_ _ _ -> pure (Left "pytest is not installed")))
+        length states `shouldBe` 0
+        st `shouldSatisfy` \case [HoleUnfilled why] -> "the tests could not run" `T.isPrefixOf` why; _ -> False
+      it "(e) a green first round never reaches the hook" $ do
+        (st, _, _, _, states) <- steered counting 0 (Just noSeed) (const [Again]) (ran (TestRun [] [("t", red (Just 3))] Nothing))
+        length states `shouldBe` 0
+        st `shouldBe` [HoleFilled "fake" 1]
+      it "(f) under steering the filler's retries are not consulted" $ do
+        (st, n, _, _, _) <- steered counting 0 (Just noSeed) (const [Again, Again, Again, Pause "p"]) alwaysRed
+        n `shouldBe` 4
+        st `shouldBe` [HolePaused "p"]
+      it "(g) without steering the retries rule stands" $ do
+        (st, n, _, _, states) <- steered counting 2 Nothing (const [Pause "never asked"]) alwaysRed
+        n `shouldBe` 3
+        length states `shouldBe` 0
+        st `shouldSatisfy` \case [HoleUnfilled _] -> True; _ -> False
+      it "(h) a rung that cannot answer is a red round: no run, the model's error as why" $ do
+        let answer n = if n == 1 then Left "ANTHROPIC_API_KEY is not set" else counting n
+        (st, _, _, _, states) <- steered answer 0 (Just noSeed) (const [Again, Pause "p"]) alwaysRed
+        st `shouldBe` [HolePaused "p"]
+        case states of
+          RoundState 1 "fake" [h] : _ -> do
+            rhRun h `shouldBe` Nothing
+            rhWhy h `shouldBe` "ANTHROPIC_API_KEY is not set"
+          other -> expectationFailure ("unexpected first round: " <> show (take 1 other))
   it "(q) a block whose continuation lines came one level too deep is read one level up, when that compiles (pack-opens)" $ do
     let blockLang = l
           where

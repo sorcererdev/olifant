@@ -114,14 +114,51 @@ on screen goes in as rejected); undo is the editor's. A visual selection (`<lead
 mode, `:'<,'>Durandal conjure`) conjures those lines instead of the unit's body.
 
 On the wire this is `olifant/conjure` with `{textDocument, position, selection?}` (the selection's
-`start` and `end` lines, 0-based, inclusive), answering `{file, unit, edits, summary, green,
-tests}` (`edits` null when the conjure changed nothing; `tests` the after-run as `olifant/tests/run`
-answers it), under `$/progress` `conjuring`. It is refused in one sentence outside any function or
+`start` and `end` lines, 0-based, inclusive) and an optional `resume`, answering `{file, unit,
+edits, summary, green, tests, rounds, rungs}` (`edits` null when the conjure changed nothing;
+`tests` the after-run as `olifant/tests/run` answers it; `rounds` the rounds used and `rungs` the
+models tried, in order), under `$/progress` `conjuring`. A steered conjure that pauses answers
+instead `{paused: {token, file, unit, lines: {first, last}, round, rung, summary, offers, why}}`
+(`lines` 1-based; `offers` a list of `"continue"`, `"climb:NAME"` and `"stop"`). To answer it, ask
+again with the same `textDocument` and `position` and `resume: {token, choice, hint?}`, `choice`
+being `"continue"`, `"climb"` or `"stop"` (an empty `hint` counts as none); the answer is a landed
+or a paused result again, and a token works once. A resume without a token and a choice is
+`InvalidParams` (`olifant/conjure resume needs a token and a choice (continue, climb or stop)`).
+A resume is also refused when the pause is gone (`this paused conjure is gone (it expired, was
+resumed, or its file changed): conjure again`), when the file changed since (`the file changed
+since the conjure paused; conjure again`), and on a climb with no stronger rung (`there is no
+stronger model in [model] ladder`). It is refused in one sentence outside any function or
 class, in a module with no test file yet (stub one first), on a function in a test file that is
 no test, on a one-line def with no selection, with no model configured, when the model gave no
 conjure at all, and when the file changed in the editor while the model conjured (your text
 stands). Each conjure is a line in the step log (`conjure person <file>::<unit> conjured by <model> ·
 <summary>`).
+
+When the last attempt leaves a name undefined (Python's `NameError`, or the checker's "is not
+defined"), the summary names it instead of the first failure: `red: NameError date`, or `green ·
+NameError date` when no test failed; a test's summary ends in `· NameError date`. That is usually a
+missing import line.
+
+**With a decision model.** When the project names one (`[decide] model`) and `[model] ladder` has
+a rung, the conjure is steered. After every red round Jev chooses: `again` (the same model once
+more), `climb` (the next rung of the ladder, a stronger model) or `ask` (stop and show you), within
+`[model] rounds` (default 6) and `[model] budget` (default 180 seconds). A few rules need no
+question. Green lands at once. A fill that does not parse or compile, or that leaves a name
+undefined, is an ordinary red round: the model is told to fix that first. When the test runner
+itself cannot run (no `[test]`, pytest missing), the conjure gets one fill and lands it with a plain
+`red: could not run · …`, never a pause, because no hint fixes a missing runner. A spent budget
+pauses. A `climb` to a rung whose `escalate` is `ask` (the default) pauses too and offers the climb;
+`auto` climbs at once, and `never` keeps Jev from choosing it.
+
+A pause answers `conjure · round 4 · red: test_handle · assert status == 404` with what you may
+do. **continue** grants a fresh `rounds` and `budget` on the same model. **climb** moves to the
+next rung, carrying the attempts so far into the stronger model's prompt. **stop** lands the last
+attempt as one edit and one undo step, as a conjure that ran out of retries does. A **hint**
+continues with your words added to the next prompt as "The person says: …". A pause is forgotten
+after 10 minutes, or as soon as its file changes in the editor; conjure again then. Without
+`[decide] model` nothing of this happens: the model's `retries` run as before and the last attempt
+lands. The landing line names the rungs and the rounds: `conjured by qwen → claude · 3 rounds ·
+green`.
 
 ## Mutating
 
@@ -233,6 +270,17 @@ it was on, and its outcome, tab-separated.
 2026-10-18T04:06:42Z	conjure	person	src/bistro/booking/commands/close_table__test.py::test_handle	conjured by qwen3-coder:30b · red at the assertion
 2026-10-18T04:06:45Z	conjure	person	src/bistro/booking/commands/close_table.py::handle	conjured by qwen3-coder:30b · green
 2026-10-18T04:06:47Z	mutate	person	src/bistro/booking/commands/close_table.py::handle	1 survivor · 5/6 killed
+```
+
+A steered conjure (one with `[decide] model`) adds a line for each of Jev's choices (the choice,
+its confidence or `-`, the round and the rung), one for a pause (why), and one for a resume (the
+choice only; a hint's words are never logged). Its `conjure` line names the rungs and the rounds:
+
+```
+2026-10-22T21:10:03Z	conjure-next	again	0.90	1	qwen
+2026-10-22T21:10:09Z	conjure-pause	budget spent
+2026-10-22T21:10:30Z	conjure-resume	climb
+2026-10-22T21:10:41Z	conjure	person	src/bistro/booking/commands/close_table.py::handle	conjured by qwen → claude · 3 rounds · green
 ```
 
 It answers what commits cannot: which lines a model conjured, and which you wrote.

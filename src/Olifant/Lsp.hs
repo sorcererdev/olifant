@@ -598,22 +598,17 @@ handlers env =
                     , Just z' <- toBoundedInteger z ->
                         Just (a' + 1, z' + 1)
                   _ -> Nothing
-            conjured' <- planProgress "conjuring" (\progress -> withSnapshot job (conjureAt progress path (line + 1) selection))
-            -- a conjure the editor cancelled is no result
-            stopped <- liftIO (cancelled (envCancel job))
-            case conjured' of
-              _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
-              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right a ->
-                respond . Right $
-                  object
-                    [ "file" .= daFile a
-                    , "unit" .= daUnit a
-                    , "edits" .= maybe Aeson.Null (\e -> toJSON (workspaceEdit [e])) (daEdit a)
-                    , "summary" .= daSummary a
-                    , "green" .= daGreen a
-                    , "tests" .= testsJson (daTests a)
-                    ]
+                invalid = respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure resume needs a token and a choice (continue, climb or stop)" Nothing))
+            case resumeOf (req ^. L.params) of
+              Left _ -> invalid
+              Right resumed -> do
+                conjured' <- planProgress "conjuring" (\progress -> withSnapshot job (maybe (conjureAt progress path (line + 1) selection) (resumeConjure progress path) resumed))
+                -- a conjure the editor cancelled is no result
+                stopped <- liftIO (cancelled (envCancel job))
+                case conjured' of
+                  _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+                  Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+                  Right outcome -> respond (Right (conjureJson outcome))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure needs a textDocument and a position" Nothing))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \req respond ->
         liftIO (readIORef (envDebug env)) >>= \case
@@ -722,6 +717,50 @@ documentPath :: Value -> Maybe FilePath
 documentPath = \case
   Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
   _ -> Nothing
+
+-- | A conjure request's `resume` (token, choice, optional hint; an empty hint
+-- is none): Nothing when it has none, an error when it is not whole.
+resumeOf :: Value -> Either T.Text (Maybe Resume)
+resumeOf = \case
+  Object o | Just r <- KM.lookup "resume" o -> case r of
+    Object ro
+      | Just (String tok) <- KM.lookup "token" ro
+      , not (T.null tok)
+      , Just (String c) <- KM.lookup "choice" ro
+      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop)] ->
+          Right (Just (Resume tok choice (case KM.lookup "hint" ro of Just (String h) | not (T.null h) -> Just h; _ -> Nothing)))
+    _ -> Left "bad resume"
+  _ -> Right Nothing
+
+-- | What `olifant/conjure` answers: a landed conjure, or a paused one.
+conjureJson :: ConjureOutcome -> Value
+conjureJson = \case
+  Landed a ->
+    object
+      [ "file" .= daFile a
+      , "unit" .= daUnit a
+      , "edits" .= maybe Aeson.Null (\e -> toJSON (workspaceEdit [e])) (daEdit a)
+      , "summary" .= daSummary a
+      , "green" .= daGreen a
+      , "tests" .= testsJson (daTests a)
+      , "rounds" .= daRounds a
+      , "rungs" .= daRungs a
+      ]
+  Paused p ->
+    object
+      [ "paused"
+          .= object
+            [ "token" .= paToken p
+            , "file" .= paFile p
+            , "unit" .= paUnit p
+            , "lines" .= object ["first" .= fst (paLines p), "last" .= snd (paLines p)]
+            , "round" .= paRound p
+            , "rung" .= paRung p
+            , "summary" .= paSummary p
+            , "offers" .= paOffers p
+            , "why" .= paWhy p
+            ]
+      ]
 
 -- | A request's `position` (0-based line and character), if it has one.
 positionOf :: Value -> Maybe (Int, Int)

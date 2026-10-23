@@ -7,7 +7,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor
 import Olifant.Language (Language, parseLanguage)
-import Olifant.Model (Backend (..), ModelConfig (..))
+import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
 import Test.Hspec
 
 rust :: Language
@@ -16,7 +16,7 @@ rust = l
     Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"cargo\", \"check\"]", "format = \"rustc-json\""])
 
 local :: ModelConfig
-local = ModelConfig (Just "local") 2 120 [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]
+local = defaultModelConfig {mcDefault = Just "local", mcBackends = [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]}
 
 input :: ModelConfig -> DoctorInput
 input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing
@@ -52,12 +52,12 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkStatus c `shouldBe` Warn
     checkDetail c `shouldSatisfy` T.isInfixOf "timed out after 3 s"
   it "(d) no [model]: a warning with the snippet to add" $ do
-    let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input (ModelConfig Nothing 2 120 [])))
+    let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input defaultModelConfig))
         [c] = [c' | c' <- cs, checkName c' == "model"]
     checkStatus c `shouldBe` Warn
     checkFix c `shouldSatisfy` maybe False (\f -> "[model]" `T.isInfixOf` f && "default = \"local\"" `T.isInfixOf` f)
   it "(e) anthropic: never probed; only whether the key's variable is set" $ do
-    let claude = ModelConfig (Just "claude") 2 120 [("claude", Anthropic "claude-x" "MY_KEY")]
+    let claude = defaultModelConfig {mcDefault = Just "claude", mcBackends = [("claude", Anthropic "claude-x" "MY_KEY")]}
         probeFails = ports ["ast-grep", "cargo"] (Left "must not be called") []
     statusOf "model" (runIdentity (doctor probeFails (input claude))) `shouldBe` Just Warn
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok

@@ -48,6 +48,7 @@ import Olifant.Fill (ModelFiller)
 import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
 import Olifant.Model (Backend (..), ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
+import Olifant.Server.ConjureNext (PausedConjure)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany, within)
@@ -114,6 +115,9 @@ data ServerState = ServerState
     ssLiveDoc :: Maybe (FilePath -> IO (Maybe (Int, Text)))
   , -- | a filler that answers instead of any model (tests)
     ssTestFiller :: Maybe (ModelFiller IO)
+  , -- | paused conjures by token (`conjure-N`), and the last N given: an
+    -- IORef, so a pause outlives the snapshot of the request that made it
+    ssPaused :: IORef (Int, Map Text PausedConjure)
   }
 
 newServerState :: Ports -> IO ServerState
@@ -122,7 +126,8 @@ newServerState ports = do
   bases <- newIORef M.empty
   decisions <- newIORef (M.empty, S.empty)
   onDecided <- newIORef (pure ())
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing)
+  paused <- newIORef (0, M.empty)
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

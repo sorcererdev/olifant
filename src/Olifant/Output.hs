@@ -273,6 +273,7 @@ holeJson h =
         HoleFilled m n -> ("filled" :: Text, Just m, Just n, Nothing)
         HoleUnfilled w -> ("unfilled", Nothing, Nothing, Just w)
         HoleSkipped w -> ("skipped", Nothing, Nothing, Just w)
+        HolePaused w -> ("paused", Nothing, Nothing, Just w)
       (kind, source) = holeSource (holeKind site)
    in object ["name" .= holeName site, "kind" .= kind, "source" .= source, "file" .= holeFile site, "line" .= holeLine site, "placeholder" .= holePlaceholder site, "status" .= status, "model" .= model, "attempts" .= attempts, "why" .= why, "fill" .= phFill h]
 
@@ -288,6 +289,7 @@ planHuman applied plan = T.unlines (header : map editLine (planEdits plan) ++ ma
             HoleFilled m n -> "filled by " <> m <> (if n > 1 then " (attempt " <> T.pack (show n) <> ")" else "") <> maybe "" (\f -> ": " <> T.intercalate " ⏎ " (T.lines f)) (phFill h)
             HoleUnfilled w -> "unfilled: " <> w
             HoleSkipped w -> "skipped: " <> w
+            HolePaused w -> "paused: " <> w
        in "  " <> holeName site <> " (" <> holeKind site <> ") " <> T.pack (holeFile site) <> ":" <> T.pack (show (holeLine site)) <> "  " <> status
     header =
       (if applied then "" else "Plan: ")

@@ -358,8 +358,9 @@ test's, so it is parsed, checked, auto-imported and retried as any hole is. Two 
 - **The verifier is the unit's tests.** A body is verified by its test file (every test there
   must pass). A test's body is verified the other way: the test must fail *at its assertion*, or
   pass (an error in the setup is a failed attempt). Each failure goes back to the model as the
-  reason, as a `verify` command's output does; when the retries run out, the last attempt lands
-  anyway, and the notification says what its tests said.
+  reason, as a `verify` command's output does; when the retries run out (or, with a decision
+  model, when the person stops a paused conjure) the last attempt lands anyway, and the
+  notification says what its tests said.
 
 ### Retries with the reason
 
@@ -440,6 +441,9 @@ project's is used, as a whole:
 default = "local"        # the backend gen uses when you don't pass --model
 retries = 2              # extra rounds for failing holes (default 2)
 timeout = 120            # seconds each model call may take (default 120)
+ladder  = ["local", "claude"]   # models a steered conjure climbs, local first (default: just `default`)
+rounds  = 6              # rounds a conjure may run (default 6)
+budget  = 180            # seconds a conjure may run (default 180)
 
 [model.backends.local]
 kind  = "openai-compatible"
@@ -450,6 +454,7 @@ model = "qwen3-coder:30b"
 kind        = "anthropic"
 model       = "claude-haiku-4-5-20251001"
 api_key_env = "ANTHROPIC_API_KEY"      # the default; the key is read from this variable
+escalate    = "ask"                    # never, ask (default) or auto: may Jev climb to this rung?
 ```
 
 There are three kinds of backend:
@@ -482,6 +487,22 @@ Choosing a backend for one run:
 
 Like `--plan`, `--model` and `--no-fill` apply to the whole run, wherever they appear in a
 `+` chain.
+
+### The ladder (conjures with a decision model)
+
+The ladder and the budget apply only to the editor's `conjure`, and only with `[decide] model`
+set. Without it, `retries` rules as before. `ladder` lists backends, local first; `rounds` and
+`budget` cap how long a conjure runs. Each `openai-compatible` or `anthropic` backend takes
+`escalate`, which says what happens when Jev wants to climb to it:
+
+| `escalate` | meaning |
+|---|---|
+| `never` | the rung is listed, but Jev may not climb to it (you still can) |
+| `ask` (default) | Jev's wish to climb pauses the conjure and asks you |
+| `auto` | Jev climbs |
+
+A `jev` backend cannot be a rung: it answers decisions, not prompts. The default `ask` keeps
+code from leaving your machine unless the config says it may.
 
 ### What is sent to the model
 
