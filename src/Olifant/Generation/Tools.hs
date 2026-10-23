@@ -29,7 +29,7 @@ data Tools m = Tools
   , -- | whether the plan was cancelled (the language server's superseded
     -- work): the fill phase stops between rounds
     toolCancelled :: m Bool
-  , -- | how the model is asked: to fill (the default) or to draft the least code
+  , -- | how the model is asked: to fill (the default) or to conjure the least code
     toolStance :: Stance
   }
 

@@ -82,8 +82,8 @@ data GeneratorWith src = Generator
 
 -- | How a hole's fill is verified: by a command (rendered, or its templates),
 -- or by the language's test runner over the module's tests (@verify = "tests"@).
--- Only the engine builds the last three (a draft's checks, never the TOML):
--- 'VerifyRedAt' wants the test to fail at that assertion line (a test draft),
+-- Only the engine builds the last three (a conjure's checks, never the TOML):
+-- 'VerifyRedAt' wants the test to fail at that assertion line (a test conjure),
 -- or, the flag set, to pass (a regression test; unset, its function's body
 -- raises, so a pass asserts nothing);
 -- 'VerifyKills' runs a test file: the tests that passed before and the new

@@ -192,7 +192,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           | null (trFailed run) -> Right (True, "")
           | otherwise -> Right (False, T.unlines [tid <> ": " <> fMessage fl <> "\n" <> fOutput fl | (tid, fl) <- trFailed run])
 
-    -- A code block's draft: its test's file runs whole; its test passes,
+    -- A code block's conjure: its test's file runs whole; its test passes,
     -- and each test it keeps that the run has (the failure named by its id).
     verifyKeep lang own keep everything =
       runTestsIn (toolTester tools) lang [fst (T.breakOn "::" own)] everything <&> \case
@@ -203,7 +203,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
               Right () -> Right (True, "")
               Left (at, fl) -> Right (False, fromMaybe own at <> ": " <> fMessage fl <> "\n" <> fOutput fl)
 
-    -- A test draft: the test must fail, and at its assertion: at or after
+    -- A test conjure: the test must fail, and at its assertion: at or after
     -- its first assert line, before its end, as the fills left the file
     -- (an arrangement or assertion over several lines moves it); a test
     -- not found there, at LINE exactly. Or, PASSING, pass: a regression
@@ -292,7 +292,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     -- A hole of lines (a block or statements): what a whole-file answer is cut to.
     linesKind s = T.takeWhile (/= '@') (holeKind s) `elem` ["block", "stmt"]
 
-    -- The file's other holes' placeholders beside this one's (a draft's
+    -- The file's other holes' placeholders beside this one's (a conjure's
     -- arrangement and assertion).
     siblings s = [holePlaceholder (phSite h) | h <- holes, holeFile (phSite h) == holeFile s, holeName (phSite h) /= holeName s]
 

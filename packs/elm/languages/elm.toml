@@ -75,7 +75,7 @@ container = { kind = "file" }
 items = { kind = "import_clause" }
 example = "end of imports"
 
-# The unit: the innermost of these node kinds at the cursor is what `draft`
-# drafts and `stub` stubs a test for.
+# The unit: the innermost of these node kinds at the cursor is what `conjure`
+# conjures and `stub` stubs a test for.
 [unit]
 kinds = ["value_declaration", "type_declaration", "type_alias_declaration"]

@@ -116,7 +116,7 @@ importOf lang moduleRel moduleText fn defLine
         _ -> fn
       _ -> fn
 
--- | The project modules a draft sees beside its file and the file beside it
+-- | The project modules a conjure sees beside its file and the file beside it
 -- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
 -- import's module (or a name imported from it that is a module) found as
 -- @src/a/b/c.py@ or @src/a/b/c/__init__.py@, then what those import (one
@@ -171,7 +171,7 @@ importedModules t = concatMap named (map T.strip (T.lines t))
     -- a name less its alias, brackets and comment
     nameOf = T.takeWhile (\c -> ident c || c == '.') . T.dropWhile (`elem` (" (" :: String)) . T.takeWhile (/= '#')
 
--- | A draft's imported modules: how many files, lines each, lines in all.
+-- | A conjure's imported modules: how many files, lines each, lines in all.
 importedFiles, importedLines, importedTotal :: Int
 importedFiles = 8
 importedLines = 120

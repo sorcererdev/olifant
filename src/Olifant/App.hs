@@ -629,7 +629,7 @@ data PlanOptions = PlanOptions
   , -- | stops the plan (between fills) and its checks, verifies and model
     -- calls, their processes killed (superseded work in the server)
     poCancel :: Cancel
-  , -- | how the model is asked: to fill well, or (a block's draft) to write
+  , -- | how the model is asked: to fill well, or (a block's conjure) to write
     -- the least code that makes its test pass
     poStance :: Stance
   }

@@ -42,13 +42,13 @@ spec = describe "Olifant.App" $ do
           line = 1 + length (takeWhile (not . T.isInfixOf "def __init__") (T.lines (given M.! file)))
       acts <- actionsAt' ports project file (line, 5)
       map actLabel acts `shouldSatisfy` elem "Add a port"
-  it "plans with the stance it is given (a draft asks for the least code)" $
+  it "plans with the stance it is given (a conjure asks for the least code)" $
     withPythonProject [("src/x.py", "x = 1\n")] $ \ports project -> do
       seen <- newIORef []
       let filler = ModelFiller "fake" 0 (Filler (\req -> modifyIORef' seen (++ [frStance req]) >> pure (Right (M.fromList [("body", "x = 2")]))))
           template = either (error . show) id (parseTemplate "{= ? body: block | anything =}")
-      Right _ <- planWith ports project planOptions {poFiller = Just filler, poStance = DraftStance} [Step (replaceGenerator "src/x.py" (1, 1) "x = 1" template) M.empty]
-      readIORef seen `shouldReturn` [DraftStance]
+      Right _ <- planWith ports project planOptions {poFiller = Just filler, poStance = ConjureStance} [Step (replaceGenerator "src/x.py" (1, 1) "x = 1" template) M.empty]
+      readIORef seen `shouldReturn` [ConjureStance]
   it "answers a snippet only when a step placed one: a replace that merely starts at the cursor's line is no snippet" $
     withPythonProject [("src/x.py", "x = 1\ny = 1\n")] $ \ports project -> do
       let template = either (error . show) id (parseTemplate "y = 2")

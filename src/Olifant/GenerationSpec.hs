@@ -821,7 +821,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       Right plan <- generate ws noResolve tools [Step gen M.empty] now Apply
       [phStatus h | h <- planHoles plan] `shouldSatisfy` all (\case HoleUnfilled why -> "FAILED test_v" `T.isInfixOf` why; _ -> False)
       (M.lookup "src/V.elm" <$> snap) `shouldReturn` Just "v = Debug.todo \"olifant: v\"\n"
-  describe "drafts: VerifyRedAt and VerifyKills (engine-built verifiers)" $ do
+  describe "conjures: VerifyRedAt and VerifyKills (engine-built verifiers)" $ do
     let site = HoleSite "v" "expr" "the value" "src/V.elm" 1 "Debug.todo \"olifant: v\""
         base = M.fromList [("src/V.elm", "v = Debug.todo \"olifant: v\"\n")]
         red l = Failure l "AssertionError" ""
@@ -923,7 +923,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
                 ++ ["Cannot access attribute \"find_by_id\"" | "find_by_id" `T.isInfixOf` t]
         rehearsal = "        booking = repo.find_by_id(1)\n                if booking is None:\n                    return 1\n                return 2"
         rescuedText = "        booking = repo.find_by_id(1)\n        if booking is None:\n            return 1\n        return 2"
-    it "(s) a fill that reads one level up with fewer findings is the one tried, its type error still the reason (the rehearsal's draft)" $ do
+    it "(s) a fill that reads one level up with fewer findings is the one tried, its type error still the reason (the rehearsal's conjure)" $ do
       calls <- newIORef []
       events <- newIORef []
       let filler = Filler $ \req -> modifyIORef' calls (++ [req]) >> pure (Right (M.fromList [("body", rehearsal)]))
@@ -985,7 +985,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       [phStatus h | h <- planHoles plan] `shouldBe` [HoleFilled "fake" 1]
       file `shouldBe` Just ("from bistro.booking import Bookings\nfrom bistro.tables import TableNotFound\n" <> T.drop (T.length "from bistro.booking import Bookings\n") prelude <> "def test_there_is_no_table() -> None:\n    bookings = Bookings()\n    result = command(bookings=bookings)\n    assert isinstance(result, TableNotFound)\n")
       events `shouldSatisfy` any (\case CutToHole "arrange" n _ -> n > 0; _ -> False)
-    it "(c) the two-hole draft: one whole-file answer for both is cut once, then split at its first assert" $ do
+    it "(c) the two-hole conjure: one whole-file answer for both is cut once, then split at its first assert" $ do
       (plan, file, _, _) <- run twoHoles (const (M.fromList [("arrange", wholeFile), ("assertion", wholeFile)]))
       [phStatus h | h <- planHoles plan] `shouldBe` [HoleFilled "fake" 1, HoleFilled "fake" 1]
       fmap (T.breakOnEnd "def test_there_is_no_table() -> None:\n") file `shouldSatisfy` \case

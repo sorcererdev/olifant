@@ -191,7 +191,7 @@ From the bottom up:
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
 | **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; the unsure band asks the decider's `recognize` choice | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `unsure`, `recognizeQuestion`, `consult` | Decide, Generator, Glob, Naming, Template |
 | **Preview** | The generate picker's form and placeholders: each input's value and where it came from (you, the file's folders, the cursor, a lone choice, a default, a `+ New` step), checked as `olifant gen` checks it; marks a missing name is planned with, and their renderings back to `⟨name⟩` | `Preview.hs` over `Preview/{Fields,Marks}`: `Field`, `Source`, `fieldsFor`, `markValue`, `unmark` | Generator, Naming |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Anticipate,Preview,Site,Unit,Tests,Stub,Draft,Mutate,Order}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the editor's TDD commands `testsRun`, `stubAt`, `draftAt`, `mutateAt` (with `unitAt`, `orderSurvivors`), … | Actions, Anchor, App, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, TestName, Workspace |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Anticipate,Preview,Site,Unit,Tests,Stub,Conjure,Mutate,Order}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the editor's TDD commands `testsRun`, `stubAt`, `conjureAt`, `mutateAt` (with `unitAt`, `orderSurvivors`), … | Actions, Anchor, App, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, TestName, Workspace |
 | **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
@@ -1409,7 +1409,7 @@ any of this, layout is repaired: `applyFills` places `dedented` lines (common in
 dropped), and a candidate failing to compile whose first line sits less deep than the rest
 (and opens no block) is tried `reindented`, kept when, with only it placed, its file then
 compiles, or, the original carrying a syntax-class finding (`syntaxError`), has fewer
-findings or loses that one; it is announced as `Reindented` (a draft
+findings or loses that one; it is announced as `Reindented` (a conjure
 writes that text). `Snippet.snippetOf` places a
 model fill the same way (shared `Holes.dedented`, continuation lines at the marker line's
 indent), so the editor's snippet matches the written file. `gen --fills FILE` makes the
@@ -2333,7 +2333,7 @@ engine features plus a pack (`python-strangler`):
 - **Fix data names its generator** (`Lsp`, a fix's `data.generator`), so the editor fills a
   fix's inputs in the generate picker and resolves the fix with them.
 
-### TDD in the editor (`Server/{Site,Unit,Tests,Stub,Draft,Mutate,Order}`)
+### TDD in the editor (`Server/{Site,Unit,Tests,Stub,Conjure,Mutate,Order}`)
 
 The editor's four TDD commands ([user book, chapter 18](../user/18-tdd-in-the-editor.md)) are
 stateless requests: each reads the editor's text, answers, and appends one line to the step log;
@@ -2344,7 +2344,7 @@ the server keeps nothing between them.
   `defName`); `functionAt` the def at the cursor while its body reaches it (`functionSpanAfter`
   over `locateContainers`); `importOf` the line importing a function (or its class) into a test
   file, Python's; `runOver` the runner over the editor's text; `importedContext` the project
-  modules a draft sees (the Python files its texts import, then what those import, one level;
+  modules a conjure sees (the Python files its texts import, then what those import, one level;
   at most 8 files of 120 lines, 600 in all); `appendStepLine` one line of
   `.olifant/state/steps.log`.
 - **`Server/Unit`**'s `unitAt` is the innermost definition enclosing a line, by the node kinds
@@ -2352,11 +2352,11 @@ the server keeps nothing between them.
 - **`Server/Stub`**'s `stubAt` appends `test_<unit>` (`uniqueTestName`) to the unit's test file
   with its import (`addImports`, the fill phase's), as one edit; given a survivor, the test is
   named from the mutant (`stubNameFor`) and carries it as a `# kills:` comment.
-- **`Server/Draft`**'s `draftAt` runs the test file (the before-run), makes the unit's body (or
-  the selection) a `block` hole and plans it with `planWith` under `DraftStance`: on a function
+- **`Server/Conjure`**'s `conjureAt` runs the test file (the before-run), makes the unit's body (or
+  the selection) a `block` hole and plans it with `planWith` under `ConjureStance`: on a function
   verified by its test file (`VerifyTests`), told the failing tests, the passing ones and the
   body on screen when it is no stub (rejected by the person); on a test, from its name, verified
-  red at its assertion or passing (`VerifyRedAt`). The draft lands whatever the after-run says,
+  red at its assertion or passing (`VerifyRedAt`). The conjure lands whatever the after-run says,
   unless the document moved on while the model wrote (`ssLiveDoc`).
 - **`Server/Mutate`**'s `mutateAt` runs the test file once unmutated (its passing tests are the
   judges, its wall time sets each mutant's timeout, `judgeTimeout`), mutates the unit's lines
