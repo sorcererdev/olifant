@@ -82,6 +82,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   completionSpec
   followupsSpec
   recognitionSpec
+  anticipationSpec
   generatePickerSpec
   newCodeSpec
   stranglerSpec
@@ -1522,7 +1523,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
     withPython [(legacy, base)] $ \ports dir -> do
       migrating dir "\n[decide]\nmodel = \"jev\"\n"
       let answers = dir </> "answers.json"
-          q = De.Question "bug-or-new" ["bug fix", "new behaviour"] [] []
+          q = De.choice "bug-or-new" "" [("bug fix", ""), ("new behaviour", "")] []
       TIO.writeFile answers "wait"
       (token, trip) <- newCancel
       trip
@@ -1540,7 +1541,7 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
             Just a -> pure (Just a)
             Nothing | n > (0 :: Int) -> threadDelay 50000 >> poll (n - 1)
             Nothing -> pure Nothing
-      poll 40 `shouldReturn` Just (De.Chosen "bug fix" [])
+      poll 40 `shouldReturn` Just (De.Chosen "bug fix" [] De.Unknown)
   it "(i) Jev answering nonsense: the hint stands, and nothing waits on it (Review Focus 5)" $
     withPython [(legacy, base)] $ \ports dir -> do
       migrating dir "\n[decide]\nmodel = \"jev\"\n"
@@ -2073,7 +2074,8 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
         NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)
       -- typing (a partial change: what the suggest job reacts to)
       typeIn doc v text = sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier (doc ^. L.uri) v) [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing text))])
-      yes = "{\"answers\": [{\"generator\": \"python-htmx/command\", \"is\": \"yes\", \"inputs\": {\"command\": \"close_table\"}}]}"
+      -- recognize_answers: the alias of decide_answers; the decider's form
+      yes = "{\"answers\": {\"recognize\": {\"choice\": \"python-htmx/command\", \"fields\": {}}}}"
   it "(h) an unsure recognition is pushed at once, then upgraded when the model says yes" $
     withPython [] $ \ports dir -> do
       (first, second) <- withModel ports dir yes $ \_ -> do
@@ -2189,3 +2191,110 @@ recognitionSpec = describe "recognition: this looks like a command" $ do
           t1 <- liftIO getCurrentTime
           pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
       sort times !! 2 `shouldSatisfy` (< 100)
+
+-- | Anticipation (Jev in olifant): asked after the deterministic push; a
+-- sure answer pushed as an upgrade for the version that asked (recorded
+-- answers stand in for Jev).
+anticipationSpec :: Spec
+anticipationSpec = describe "anticipation: asked after the deterministic push, pushed as an upgrade" $ do
+  let command = "src/bistro/booking/commands/reschedule_booking.py"
+      sure = "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.97}}}"
+      stepLog dir = dir </> ".olifant/state/steps.log"
+      -- the project asks Jev ([decide] model), answered from a file
+      withJev ports dir answer act = do
+        config <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[decide]\nmodel = \"jev\"\n")
+        let answers = dir </> "answers.json"
+        TIO.writeFile answers answer
+        r <- fst <$> inProcessWithConfig [("decide_answers", String (T.pack answers))] ports dir (act answers)
+        -- the step log's anticipate lines, without their time (read once the server is gone)
+        found <- doesFileExist (stepLog dir)
+        lines' <- if found then T.lines <$> TIO.readFile (stepLog dir) else pure []
+        pure (r, [T.intercalate "\t" (drop 1 fs) | l <- lines', let fs = T.splitOn "\t" l, take 1 (drop 1 fs) == ["anticipate"]])
+      openNew path = do
+        uri <- getDocUri path
+        sendNotification SMethod_TextDocumentDidOpen (DidOpenTextDocumentParams (TextDocumentItem uri "python" 0 ""))
+        pure (TextDocumentIdentifier uri)
+      typeIn doc v text = sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier (doc ^. L.uri) v) [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing text))])
+      feedback doc generator outcome =
+        sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/recognitionFeedback")) (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "generator" .= (generator :: Text), "outcome" .= (outcome :: Text)])
+      -- until a file appears (polled by its existence: never read while written)
+      appeared path = liftIO . void . timeout 5000000 $
+        let loop = doesFileExist path >>= \d -> if d then pure () else threadDelay 50000 >> loop in loop
+      suggestion = customNotification (Proxy :: Proxy "olifant/suggestion") >>= \case
+        NotMess (TNotificationMessage _ _ v) -> pure (v :: Value)
+      -- every olifant/suggestion pushed so far, in order
+      pushes = do
+        rid <- sendRequest (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) Aeson.Null
+        let await seen = (responseForId (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) rid >> pure (reverse seen)) <|> (suggestion >>= \v -> await (v : seen)) <|> (anyMessage >> await seen)
+        await []
+      offerFor v sg = (lookupKey "version" sg, lookupKey "kind" sg, lookupKey "generator" sg, lookupKey "band" sg) == (Just (Number v), Just (String "recognition"), Just (String "python-htmx/command"), Just (String "offer"))
+      -- the deterministic push: nothing, or a hint
+      deterministic = all (\sg -> lookupKey "band" sg == Just (String "hint"))
+      -- an answer under the gate, typed at a silence
+      unsureBy answer = withPython [] $ \ports dir ->
+        withJev ports dir answer $ \answers -> do
+          doc <- openNew command
+          typeIn doc 1 "class RescheduleBooking:"
+          appeared (answers <> ".asked")
+          liftIO (threadDelay 1000000)
+          pushes
+  it "(a) a sure answer (0.97) at a silence: pushed after the deterministic one, for the same version" $
+    withPython [] $ \ports dir -> do
+      (ps, logged) <- withJev ports dir sure $ \_ -> do
+        doc <- openNew command
+        typeIn doc 1 "class RescheduleBooking:"
+        appeared (stepLog dir)
+        pushes
+      (deterministic (take (length ps - 1) ps), map (offerFor 1) (drop (length ps - 1) ps)) `shouldBe` (True, [True])
+      logged `shouldBe` ["anticipate\tpython-htmx/command\t0.97\tshown"]
+  it "(b) an unsure answer (0.4): only the deterministic push; logged unsure" $ do
+    (ps, logged) <- unsureBy "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.4}}}"
+    deterministic ps `shouldBe` True
+    logged `shouldBe` ["anticipate\tpython-htmx/command\t0.4\tunsure"]
+  it "(b2) an answer without a confidence: only the deterministic push; logged unsure, its confidence -" $ do
+    (ps, logged) <- unsureBy "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\"}}}"
+    deterministic ps `shouldBe` True
+    logged `shouldBe` ["anticipate\tpython-htmx/command\t-\tunsure"]
+  it "(c) an answer landing after the buffer moved on is never pushed: logged stale (Review Focus 1)" $
+    withPython [] $ \ports dir -> do
+      (ps, logged) <- withJev ports dir "wait" $ \answers -> do
+        doc <- openNew command
+        typeIn doc 1 "class RescheduleBooking:"
+        appeared (answers <> ".asked")
+        typeIn doc 2 "# note\n"
+        liftIO (threadDelay 500000)
+        -- by a rename: the decider polls the file, and GHC refuses to write one being read
+        liftIO (TIO.writeFile (answers <> ".new") sure >> renameFile (answers <> ".new") answers)
+        appeared (stepLog dir)
+        liftIO (threadDelay 300000)
+        pushes
+      filter (offerFor 1) ps `shouldBe` []
+      logged `shouldBe` ["anticipate\tpython-htmx/command\t0.97\tstale"]
+  it "(d) a generator quieted by three dismissals is not pushed: logged quiet (Review Focus 4)" $
+    withPython [] $ \ports dir -> do
+      (ps, logged) <- withJev ports dir sure $ \_ -> do
+        forM_ ["a", "b", "c"] $ \n -> do
+          other <- openNew ("src/bistro/booking/commands/close_" <> n <> ".py")
+          feedback other "python-htmx/command" "dismissed"
+        doc <- openNew command
+        typeIn doc 1 "class RescheduleBooking:"
+        appeared (stepLog dir)
+        liftIO (threadDelay 300000)
+        pushes
+      filter (offerFor 1) ps `shouldBe` []
+      logged `shouldBe` ["anticipate\tpython-htmx/command\t0.97\tquiet"]
+  it "(e) the same prefix again, after an edit elsewhere: answered from the memo, Jev asked once" $
+    withPython [] $ \ports dir -> do
+      ((ps, asked), logged) <- withJev ports dir sure $ \answers -> do
+        doc <- openNew command
+        typeIn doc 1 "class RescheduleBooking:"
+        appeared (stepLog dir)
+        typeIn doc 2 "import os\n\n"
+        liftIO (threadDelay 1000000)
+        ps <- pushes
+        asked <- liftIO (TIO.readFile (answers <> ".asked"))
+        pure (ps, asked)
+      asked `shouldBe` "anticipate\n"
+      (any (offerFor 1) ps, any (offerFor 2) ps) `shouldBe` (True, True)
+      logged `shouldBe` replicate 2 "anticipate\tpython-htmx/command\t0.97\tshown"

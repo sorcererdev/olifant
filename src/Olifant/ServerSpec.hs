@@ -517,7 +517,7 @@ mutateSpecs = describe "a mutate (olifant/mutate)" $ do
           s = s1 {ssConfig = defaultServerConfig {scDecideAnswers = Just answers}}
           line' = T.strip (mutatedLine m)
           key = (root </> moduleRel, T.intercalate " " ["mutant-equivalent", muOperator m, T.pack (show (muLine m)), muFrom m, muTo m, line'])
-      writeIORef (ssDecisions s) (M.singleton key (line', De.Chosen "equivalent" []), mempty)
+      writeIORef (ssDecisions s) (M.singleton key (line', De.Yes De.Unknown), mempty)
       Right a <- mutate s 6
       map (\x -> (muLine x, muDim x)) (maSurvivors a) `shouldBe` [(7, False), (6, True)]
   it "each mutate is one line in the step log: mutate, person, the unit, the summary" $ do
@@ -760,10 +760,10 @@ orderSpecs = describe "the decision model's order" $ do
     let lineOf n = T.lines stubbed !! (n - 1)
         mutant n op to = Mutant n op "" "" (T.unlines [if i == n then to else l | (i, l) <- zip [1 ..] (T.lines stubbed)]) False
         ms = [mutant 3 "number" "        self.closed = 1", mutant 6 "string" (T.replace "later" "" (lineOf 6)), mutant 10 "boundary" "    return n >= 0"]
-        jev = De.Decider $ \q -> pure $ case (De.qKind q, lookup "mutant" (De.qContext q)) of
-          ("mutant-equivalent", Just m) | "\"\"" `T.isInfixOf` m -> De.Chosen "equivalent" []
-          ("mutant-equivalent", _) -> De.Chosen "changes-behaviour" []
-          ("mutant-matters", Just m) | ">=" `T.isInfixOf` m -> De.Chosen "high" []
+        jev = De.decider $ \q -> pure $ case (De.qKind q, lookup "mutant" (De.qContext q)) of
+          ("mutant-equivalent", Just m) | "\"\"" `T.isInfixOf` m -> De.Yes De.Unknown
+          ("mutant-equivalent", _) -> De.No De.Unknown
+          ("mutant-matters", Just m) | ">=" `T.isInfixOf` m -> De.Level 2 2 De.Unknown
           _ -> De.Unsure
     orderSurvivors s Nothing (root </> moduleRel) stubbed testText (pure ()) ms >>= (`shouldBe` ms)
     answered <- newIORef (0 :: Int)
@@ -777,7 +777,7 @@ orderSpecs = describe "the decision model's order" $ do
     asked <- newIORef (0 :: Int)
     let twin from to line = Mutant 10 "boundary" from to (T.unlines [if i == 10 then line else l | (i, l) <- zip [1 :: Int ..] (T.lines stubbed)]) False
         ms = [twin "a > b" "a >= b" "    return a >= b and c > d", twin "c > d" "c >= d" "    return a > b and c >= d"]
-        counting = De.Decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
+        counting = De.decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
         -- as the server does: each answer orders again
         again = void (orderSurvivors s (Just counting) (root </> moduleRel) stubbed testText again ms)
     again
@@ -787,8 +787,8 @@ orderSpecs = describe "the decision model's order" $ do
   it "(k2) a decision asked by many at once is asked once" $ do
     (s, _) <- blocks redOnStub []
     asked <- newIORef (0 :: Int)
-    let counting = De.Decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
-        q = De.Question "mutant-matters" [] [] []
+    let counting = De.decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
+        q = De.score "mutant-matters" "" [] []
         keys = [(root </> moduleRel, "matters:" <> T.pack (show i)) | i <- [1 .. 300 :: Int]]
     mapM_ (\key -> replicateConcurrently_ 8 (St.decision s counting key "fp" q (pure ()))) keys
     waitUntil (settled s (length keys))

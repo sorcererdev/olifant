@@ -181,9 +181,9 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
 
 ## With a model: decisions, progressively
 
-Everything above works with no model. With one (`[decide] model`, or the `[recognize]` one),
-three questions get a second opinion, asked once each in the background while the
-deterministic answer stands:
+Everything above works with no model. With one (`[decide] model`; `[recognize] model` is its
+alias, so one model answers every question), four questions get a second opinion, asked in the
+background while the deterministic answer stands:
 
 - **bug or new?** A big change in a legacy function: answered "new behaviour", its hint becomes
   the bug-fix-only warning; "bug fix", the hint goes.
@@ -191,8 +191,11 @@ deterministic answer stands:
   extract actions.
 - **which service?** When the tables name no single service's model, the answer is the
   suggestion.
+- **which convention?** When recognition is unsure (a hint, a choice, a rival shape), the
+  `recognize` choice asks which of the candidate generators the code is, with the inputs it
+  could not read; the convention chosen upgrades the hint to an offer.
 
-An answer outside the options, or none, changes nothing.
+An answer outside the options, or none, changes nothing. A `jev` backend ([chapter 12](12-holes-and-models.md)) answers with a confidence, and asks each batch of questions in one call.
 
 ## Mistakes
 

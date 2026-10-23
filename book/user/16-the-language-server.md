@@ -261,7 +261,7 @@ shape changes. Three dismissals in a row make that convention a quiet hint in th
 
 ```toml
 [recognize]
-model = "local"     # a [model.backends.NAME]
+model = "local"     # a [model.backends.NAME]; an alias of [decide] model
 ```
 
 the model is asked — only when recognition is unsure (a hint, a choice, a shape that favours

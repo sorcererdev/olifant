@@ -4,8 +4,10 @@
 -- whose configuration breaks keeps its last good catalog.
 module Olifant.Server.State
   ( ServerState (..)
+  , appendStepLine
   , cachedBase
   , deciderFor
+  , deciderUnder
   , decision
   , decisionsNow
   , ServerConfig (..)
@@ -30,7 +32,7 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Set qualified as S
-import Olifant.Decide (Answer, Decider (..), Question, curlDecider, recordedDecider)
+import Olifant.Decide (Answer, Decider (..), Question, curlDecider, jevDecider, recordedDecider)
 import Control.Concurrent (forkIO)
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (void, when)
@@ -39,10 +41,12 @@ import Data.Maybe (fromMaybe)
 import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Time (defaultTimeLocale, formatTime)
 import Olifant.App (Ports (..), Project (..), nearestProject, openProjectWith)
 import Olifant.Fill (ModelFiller)
 import Olifant.Catalog (Catalog (..), PackCache, catalogPackRoots, describeCatalogError, newPackCache)
-import Olifant.Model (ModelConfig (..))
+import Olifant.Model (Backend (..), ModelConfig (..))
 import Olifant.Process (Cancel, neverCancel)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
@@ -52,14 +56,15 @@ import System.FilePath (takeDirectory, (</>))
 -- | The client's settings (`initializationOptions`): how long slow work
 -- waits after typing stops, a model to use instead of the projects', and
 -- (tests) a file of recorded fills that stands in for the model.
--- | @scRecognizeAnswers@: a file holding a model's recorded answer, which
--- recognition uses instead of the model (tests, as fills use @scFills@).
+-- | @scDecideAnswers@: a file of recorded decisions, which the decider
+-- (recognition's too) answers from instead of the model (tests, as fills
+-- use @scFills@).
 -- @scTestScript@: a file of scripted test verdicts, which the server's
 -- test runner answers from instead of running anything (tests).
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scRecognizeAnswers :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath}
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).
@@ -256,19 +261,37 @@ usable = \case
   Broken _ p -> p
 
 -- | The typed decider a project asks, if it names a model ([decide] model,
--- or [recognize] model): the configured backend under this work's token, or
--- (tests) recorded answers.
+-- or [recognize] model): the configured backend (a Jev backend batches
+-- each askAll in one call and notes each call in the project's step log),
+-- or (tests) recorded answers. Under no token: a decision outlives the
+-- request that asked it (it is answered in the background); the model's
+-- timeout bounds it.
 deciderFor :: ServerState -> Project -> Maybe (Decider IO)
-deciderFor s project = do
+deciderFor = deciderUnder neverCancel
+
+-- | The decider under a token: recognition's unsure band asks under the
+-- work's token, so typing on cancels it.
+deciderUnder :: Cancel -> ServerState -> Project -> Maybe (Decider IO)
+deciderUnder token s project = do
   name <- catalogDecideModel (prCatalog project)
   case scDecideAnswers (ssConfig s) of
-    -- a decision outlives the request that asked it (it is answered in the
-    -- background): not that request's token; the model's timeout bounds it
-    Just recorded -> Just (recordedDecider recorded neverCancel)
+    Just recorded -> Just (recordedDecider recorded token)
     Nothing -> do
       let models = catalogModel (prCatalog project)
       backend <- lookup name (mcBackends models)
-      Just (curlDecider neverCancel (mcTimeout models) backend)
+      Just $ case backend of
+        Jev {} -> jevDecider token (mcTimeout models) backend (appendStepLine (ssPorts s) (prRoot project) . T.splitOn "\t")
+        _ -> curlDecider token (mcTimeout models) backend
+
+-- | One line of the step log (`.olifant/state/steps.log`, ignored by git):
+-- the time, then FIELDS, tab-separated, each on one line. A log that
+-- cannot be written never stops a move.
+appendStepLine :: Ports -> FilePath -> [Text] -> IO ()
+appendStepLine ports root fields = do
+  now <- pNow ports
+  let path = root </> ".olifant/state/steps.log"
+      entry = T.intercalate "\t" (T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now) : map (T.unwords . T.words) fields)
+  void (try (readText (pFiles ports) path >>= \old -> writeText (pFiles ports) path (fromMaybe "" old <> entry <> "\n")) :: IO (Either SomeException ()))
 
 -- | The decisions made, and those being asked (tests).
 decisionsNow :: ServerState -> IO (Map (FilePath, Text) (Text, Answer), Set (FilePath, Text))

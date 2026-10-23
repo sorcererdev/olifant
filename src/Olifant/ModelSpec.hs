@@ -26,6 +26,11 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
   it "refuses an unknown backend kind, naming the kinds" $ do
     let Right top = parseToml "[model.backends.x]\nkind = \"gemini\"\nmodel = \"m\"\n"
     parseModelConfig top `shouldSatisfy` either ("openai-compatible, anthropic" `T.isInfixOf`) (const False)
+  it "(a) reads a jev backend: model and key variable default; a stray key is refused" $ do
+    let Right top = parseToml "[model.backends.jev]\nkind = \"jev\"\n"
+        Right stray = parseToml "[model.backends.jev]\nkind = \"jev\"\nurl = \"http://x\"\n"
+    parseModelConfig top `shouldBe` Right (ModelConfig Nothing 2 120 [("jev", Jev "jev-latest" "JEV_API_KEY")])
+    parseModelConfig stray `shouldSatisfy` either ("url" `T.isInfixOf`) (const False)
   it "defaults to no backend and 2 retries without [model]" $
     parseModelConfig M.empty `shouldBe` Right (ModelConfig Nothing 2 120 [])
   it "asks an openai-compatible endpoint for tagged blocks, with the rules and the holes" $ do

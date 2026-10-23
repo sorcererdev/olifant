@@ -166,6 +166,23 @@ finished before what comes next is offered. The first one that offers something 
 shown. One that offers nothing (a plan with nothing to suggest, one you dismissed, a snippet
 whose trigger does not match) gives way to the next.
 
+**Anticipation.** With a decision model configured (`[decide] model`, [chapter
+17](17-strangling-a-legacy-codebase.md#with-a-model-decisions-progressively)), Olifant asks it
+one more question once the suggestion above is out: which generator you are writing, when the
+answer is not already plain. That is at a tie, two or more actions applying on the line, or at
+a silence, nothing applying and recognition unsure: `class CloseTable:` typed into a new file
+in `commands/`. The question carries the code from the nearest unindented line to the cursor,
+the cursor's line, the file's imports and the generators that could be meant, and it is asked
+once per prefix: the same code typed again is answered from what was kept. A sure answer
+(0.6 at a tie or a silence: an offer is easy to ignore) replaces what is shown, for the same version of the buffer:
+the chosen snippet at a tie, or the chosen convention recognised at a silence (an offer when
+the file gives every input, a hint otherwise). An answer that lands after you typed on is
+dropped, and a generator you dismissed three times in a row stays quiet. Each answer goes to
+the step log (`.olifant/state/steps.log`) as `anticipate`, the generator, the confidence (`-`
+for none given) and what came of it: `shown`, `quiet`, `stale`, `unsure` (under the gate, or
+no choice: generator `-`) or `none` (sure, but no suggestion comes of it). With no `[decide] model`, nothing is asked and what you see
+is the suggestion alone; `:DurandalGhosts off` turns both off.
+
 **`Tab` is Durandal's only while a suggestion is shown**, as a buffer-local mapping in normal
 and insert mode that is removed with the suggestion. A completion menu (the built-in one,
 `blink.cmp` or `nvim-cmp`) clears the suggestion when it opens, and none is drawn while one is

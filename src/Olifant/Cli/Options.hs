@@ -32,7 +32,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] Text | LspCmd
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] Text | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -118,6 +118,8 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "complete" completeP "Snippets for a completion menu at a position (for editors): --at FILE:LINE:COL [--content -]"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
+        -- hidden: the one Jev question at a line, for the prefix corpus
+        <|> subparser (cmd "anticipate" anticipateP "The anticipation question at a line: PATH --line N [--overlay FILE] [--answers FILE]" <> internal)
     cmd name p desc = command name (info (Options <$> formatP <*> p) (progDesc desc))
     formatP = optional (flag' Json (long "json" <> help "JSON output") <|> flag' Human (long "human" <> help "Human-readable output"))
     -- Used only to render `gen --help`; real `gen` parsing is 'parseGen'.
@@ -166,6 +168,12 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> optional (strArgument (metavar "NAME" <> help "The project's name (and its folder, unless --dir)"))
         <*> optional (strOption (long "dir" <> metavar "DIR" <> help "Where to make it (default: ./NAME)"))
         <*> switch (long "plan" <> help "Show what it would make; write nothing")
+    anticipateP =
+      AnticipateCmd
+        <$> strArgument (metavar "PATH")
+        <*> option auto (long "line" <> metavar "N" <> help "1-based line")
+        <*> optional (strOption (long "overlay" <> metavar "FILE" <> help "PATH's current (unsaved) text, read from FILE"))
+        <*> optional (strOption (long "answers" <> metavar "FILE" <> help "Recorded answers instead of the model (tests)"))
     completeP =
       (\(f, pos) content -> CompleteCmd f pos content)
         <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line, UTF-8 byte column")

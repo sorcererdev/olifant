@@ -2,7 +2,8 @@
 -- reply formats of each backend kind, and a `Filler` that calls them with
 -- curl (no HTTP library). The Anthropic key is read from the environment
 -- variable the config names and handed to curl in a private header file,
--- never on its command line, never in output.
+-- never on its command line, never in output. A Jev backend answers typed
+-- decisions only (`Olifant.Decide`), its key handled the same way.
 module Olifant.Model
   ( Backend (..)
   , ModelConfig (..)
@@ -17,14 +18,18 @@ module Olifant.Model
   , curlFiller
   , curlFillerWith
   , askBackend
+  , sendJev
   , probeBackend
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad ((>=>))
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BC
 import Data.ByteString.Lazy qualified as BL
 import Data.Foldable (toList)
 import Data.Scientific (floatingOrInteger)
@@ -36,7 +41,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), Stance (..))
-import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytes, runBytesCancellable)
+import Olifant.Process (Cancel, Outcome (..), cancelled, neverCancel, runBytes, runBytesCancellable)
 import Olifant.Toml (Table, inKey, int, onlyKeys, optional, required, table, text)
 import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
@@ -47,6 +52,7 @@ import System.IO.Temp (withSystemTempFile)
 data Backend
   = OpenAICompatible {beUrl :: Text, beModel :: Text}
   | Anthropic {beModel :: Text, beKeyEnv :: Text}
+  | Jev {beModel :: Text, beKeyEnv :: Text}
   deriving stock (Eq, Show)
 
 -- | 'mcTimeout': seconds a model call may take (default 120).
@@ -54,7 +60,7 @@ data ModelConfig = ModelConfig {mcDefault :: Maybe Text, mcRetries :: Int, mcTim
   deriving stock (Eq, Show)
 
 backendKinds :: [Text]
-backendKinds = ["openai-compatible", "anthropic"]
+backendKinds = ["openai-compatible", "anthropic", "jev"]
 
 backendModel :: Backend -> Text
 backendModel = beModel
@@ -76,6 +82,7 @@ parseModelConfig top =
       required "kind" text t >>= \case
         "openai-compatible" -> onlyKeys ["kind", "url", "model"] t >> OpenAICompatible <$> required "url" text t <*> required "model" text t
         "anthropic" -> onlyKeys ["kind", "model", "api_key_env"] t >> Anthropic <$> required "model" text t <*> (fromMaybe "ANTHROPIC_API_KEY" <$> optional "api_key_env" text t)
+        "jev" -> onlyKeys ["kind", "model", "api_key_env"] t >> Jev . fromMaybe "jev-latest" <$> optional "model" text t <*> (fromMaybe "JEV_API_KEY" <$> optional "api_key_env" text t)
         other -> Left ("unknown backend kind `" <> other <> "` (kinds: " <> T.intercalate ", " backendKinds <> ")")
 
 systemPrompt :: Text
@@ -148,6 +155,7 @@ chatBody b system user = case b of
       , "messages" .= [object ["role" .= ("system" :: Text), "content" .= system], object ["role" .= ("user" :: Text), "content" .= user]]
       , "temperature" .= (0 :: Int)
       ]
+  Jev {} -> object []
   Anthropic model _ ->
     object
       [ "model" .= model
@@ -250,6 +258,7 @@ sendChat token timeout b body =
   findExecutable "curl" >>= \case
     Nothing -> pure (Left "curl is not installed")
     Just curl -> case b of
+      Jev {} -> pure (Left "a jev backend answers decisions, not prompts")
       OpenAICompatible url _ -> post curl (T.unpack (T.dropWhileEnd (== '/') url) <> "/chat/completions") []
       Anthropic _ keyEnv ->
         lookupEnv (T.unpack keyEnv) >>= \case
@@ -267,12 +276,47 @@ sendChat token timeout b body =
         Right (Finished (ExitFailure c) _ err) -> pure (Left ("curl exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8 err)))
         Right _ -> pure (Left "cancelled")
 
+-- | Post a body of typed questions to Jev with curl: its raw reply. The key
+-- is read from its variable and passed in a temporary header file, never on
+-- the command line, never in a message. A 429 or 529 is retried twice
+-- (after 0.5 s, then 2 s); any other status is an error.
+sendJev :: Cancel -> Int -> Backend -> Value -> IO (Either Text ByteString)
+sendJev token timeout b body = case b of
+  Jev _ keyEnv ->
+    findExecutable "curl" >>= \case
+      Nothing -> pure (Left "curl is not installed")
+      Just curl ->
+        lookupEnv (T.unpack keyEnv) >>= \case
+          Nothing -> pure (Left (keyEnv <> " is not set"))
+          Just key -> withSystemTempFile "olifant-headers" $ \path h -> do
+            TIO.hPutStr h ("Authorization: Bearer " <> T.pack key <> "\n")
+            hClose h
+            attempt curl path [500000, 2000000]
+  _ -> pure (Left "not a jev backend")
+  where
+    attempt curl path backoff = do
+      let args = ["-sS", "-X", "POST", "https://api.typesafe.ai/v1/systemone", "-H", "content-type: application/json", "-H", "@" <> path, "--max-time", show timeout, "-w", "\n%{http_code}", "--data-binary", "@-"]
+      runBytesCancellable token Nothing curl args Nothing (BL.toStrict (encode body)) >>= \case
+        Left why -> pure (Left why)
+        Right (Finished ExitSuccess out _) ->
+          let (reply, code) = BS.breakEnd (== 10) out
+           in case (BC.unpack code, backoff) of
+                (c, wait : rest) | c `elem` ["429", "529"] -> do
+                  threadDelay wait
+                  stop <- cancelled token
+                  if stop then pure (Left "cancelled") else attempt curl path rest
+                ('2' : _, _) -> pure (Right (BS.dropWhileEnd (== 10) reply))
+                (c, _) -> pure (Left ("jev answered " <> T.pack c))
+        Right (Finished (ExitFailure c) _ err) -> pure (Left ("curl exited " <> T.pack (show c) <> ": " <> T.strip (TE.decodeUtf8Lenient err)))
+        Right _ -> pure (Left "cancelled")
+
 -- | Does the backend answer (`olifant doctor`)? openai-compatible: its model
--- list within 3 s, with the model in it. Anthropic is never called (that
--- would spend the user's key); doctor checks only that the key is set.
+-- list within 3 s, with the model in it. Anthropic and Jev are never called
+-- (that would spend the user's key); doctor checks only that the key is set.
 probeBackend :: Backend -> IO (Either Text ())
 probeBackend = \case
   Anthropic {} -> pure (Right ())
+  Jev {} -> pure (Right ())
   OpenAICompatible url model ->
     findExecutable "curl" >>= \case
       Nothing -> pure (Left "curl is not installed")

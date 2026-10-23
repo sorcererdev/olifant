@@ -189,9 +189,9 @@ From the bottom up:
 | **ProjectModel** | The project in a shared vocabulary (services, commands, ports, adapters, … and `uses`, `implements`, `calls`, `covers`), by each pack's `model.toml` | `ProjectModel.hs`: `Kind`, `RelKind`, `Element`, `Relation`, `ProjectModel`, `ModelMap`, `parseModelMap`, `buildModel` | Query, Template, Toml |
 | **App** | The operations the CLI and the language server share, over a **Ports** record (files, syntax, checker, verifier, test runner, clock, config dirs, doctor) and a loaded **Project** (root, catalog, workspace) | `App.hs`: `Ports`, `Project`, `nearestProject`, `openProject`, `listGenerators`, `showGenerator`, `actionsAt'`, `actionsIn`, `completeAt`, `findings`, `planWith`, `doctorChecks`, `projectModel`, … | Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace |
 | **Output** | What Olifant says, as JSON and text: plans, lists, `show`, file actions, doctor, errors. The CLI prints it; the language server sends the same JSON | `Output.hs`: `planJson`, `planHuman`, `listJson`, `showJson`, `fileActionsJson`, `doctorJson`, `errorJson`, … | Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template |
-| **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; an optional model for the unsure | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `Recognizer`, `consult`, `curlRecognizer` | Generator, Glob, Model, Naming, Process, Template |
+| **Recognize** | Convention recognition: which generator hand-written code is, how sure, with which inputs — by place (output paths, inverted) and shape (token-shape shingles weighted by rarity), banded; the unsure band asks the decider's `recognize` choice | `Recognize.hs` over `Recognize/{Shape,Weights,Paths,Index,Inputs,Types,Ask}`: `recognizeIn`, `Recognition`, `Band`, `buildIndex`, `Convention`, `Index`, `pathPattern`, `invertPath`, `shapes`, `shingles`, `weightsOf`, `containment`, `inputsFor`, `unsure`, `recognizeQuestion`, `consult` | Decide, Generator, Glob, Naming, Template |
 | **Preview** | The generate picker's form and placeholders: each input's value and where it came from (you, the file's folders, the cursor, a lone choice, a default, a `+ New` step), checked as `olifant gen` checks it; marks a missing name is planned with, and their renderings back to `⟨name⟩` | `Preview.hs` over `Preview/{Fields,Marks}`: `Field`, `Source`, `fieldsFor`, `markValue`, `unmark` | Generator, Naming |
-| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Preview,Site,Unit,Tests,Stub,Draft,Mutate,Order}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the editor's TDD commands `testsRun`, `stubAt`, `draftAt`, `mutateAt` (with `unitAt`, `orderSurvivors`), … | Actions, Anchor, App, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, TestName, Workspace |
+| **Server** | The language server's state and answers, with no LSP types: open documents (overlays), projects per root, caches, debounced jobs, and each feature as a function of the state | `Server.hs` over `Server/{State,Jobs,Edits,Actions,Fixes,Hints,Completion,Suggest,Holes,Regions,Model,Recognize,Anticipate,Preview,Site,Unit,Tests,Stub,Draft,Mutate,Order}`: `ServerState`, `projectFor`, `memo`, `editsOfPlan`, `findingsFor`, `actionsFor`, `suggestionFor`, `regionEdits`, `holesFor`, `modelFor`, `recognitionFor`, `suggestOrRecognize`, `previewFor`, `stepsPlanWith`, `submit`, the editor's TDD commands `testsRun`, `stubAt`, `draftAt`, `mutateAt` (with `unitAt`, `orderSurvivors`), … | Actions, Anchor, App, Catalog, Cursor, Decide, Fill, Generation, Generator, Holes, Language, Migration, Model, Mutate, Naming, Newness, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, TestName, Workspace |
 | **Lsp** | `olifant lsp`: the adapter between the protocol (the `lsp` library) and `Server` — handlers, positions, `WorkspaceEdit`s, progress, background work | `Lsp.hs`: `runLsp`, `runLspWithHandles` (specs), `serverDefinition` | Actions, App, Catalog, Generation, Output, Rules, Server, Snippet, Workspace |
 | **Cli** | The command line: parse arguments, call the use cases, print JSON or text, pick the exit code | `Cli.hs`: `Runtime`, `DoctorPorts` (re-exported for `Main`), `runCli`. Internal: `Cli/Options` (argument parsing) | almost everything, `Lsp` for `olifant lsp` |
 | **GeneratorTesting** | Running a pack's test cases against its fixture (the seed of `olifant test`), replaying recorded fills, placing a snippet case's cursor | `GeneratorTesting.hs`: `discoverCases`, `runCase`, `preparePack`, `parseCaseInputs`, `parseCaseCursor`, `atCaseCursor` | Anchor, Catalog, Cursor, Fill, Generation, Generator, Language, Query, Toml, Uncovered, Workspace |
@@ -268,7 +268,7 @@ Catalog              → Anchor, Generator, Language, Model, ProjectModel, Regio
 App                  → Actions, Anchor, Catalog, Cursor, Doctor, Fill, Generation, Generator, Holes, Language, Model, ProjectModel, Query, Rules, Snippet, Template, Uncovered, Workspace
 Output               → Actions, Anchor, Catalog, Cursor, Doctor, Generation, Generator, Holes, Language, Snippet, Template
 Preview              → Generator, Naming
-Recognize            → Generator, Glob, Model, Naming, Process, Template
+Recognize            → Decide, Generator, Glob, Naming, Template
 Server               → Actions, App, Catalog, Cursor, Fill, Generation, Generator, Holes, Language, Model, Naming, Preview, Process, ProjectModel, Recognize, Rules, Snippet, Template, Workspace
 Lsp                  → Actions, App, Catalog, Generation, Generator, Output, Preview, Process, Recognize, Rules, Server, Snippet, Workspace
 Cli                  → Actions, Anchor, App, Catalog, Cursor, Doctor, Fill, Generation, Generator, Language, Lsp, Output, Region, Rules, Template, Toml, Workspace
@@ -2248,8 +2248,11 @@ Recognition answers "which convention is this hand-written code, if any", withou
 - **Deciding** (`recognizeIn`): gates (3 lines; names beyond boilerplate), a convention whose
   template declares its main thing by a name needs code declaring that kind, scores (shape +
   place), the place-aware bands, a choice with a near runner-up, a rival for the model.
-- **The model** (`Recognize/Ask`): the `Recognizer` port; `consult` asks only the unsure ones and
-  validates the answer; `curlRecognizer` asks a configured backend through `Model.askBackend`.
+- **The model** (`Recognize/Ask`): `consult` asks the decider only for the unsure ones, one
+  `recognize` Choice (`recognizeQuestion`: the candidates' ids with their summaries, the best
+  one's unread inputs as fields, the path and the code as context); a convention chosen is an
+  offer with its validated inputs, anything else leaves the recognition as it was. The server
+  asks it through `Server/State.deciderUnder` with the work's token, so typing on cancels it.
 
 `Server/Recognize` turns a recognition into a `Suggestion` (kind `recognition`): its plan is the
 generator planned with the user's file hidden (`hidePath`), then converting that file (10
@@ -2302,8 +2305,9 @@ engine features plus a pack (`python-strangler`):
   the wholly new ones without an allowance (added), the registry now and at the base
   (extracted: switches the base lacks), markers it lacks. The registry is `[migrate] switches`,
   or a `switches.py` outside the legacy code. `check` prints its line; `olifant/model` carries it.
-- **Decisions** (`Decide`; `Server/State.deciderFor`, from `[decide] model` or the `[recognize]`
-  model): asked once per question in the background, the answer cached in `ssDecisions`; the
+- **Decisions** (`Decide`; `Server/State.deciderFor`, from `[decide] model` or its alias
+  `[recognize] model`; in tests one answers file, `decide_answers`, with `recognize_answers` its
+  alias): asked once per question in the background, the answer cached in `ssDecisions`; the
   deterministic answer stands meanwhile. Three kinds: `bug-or-new` (a big change in a legacy
   function, `Server/Fixes.decided`), `command-or-query` (when `readsOrWrites` is unsure,
   `Server/Actions.extractOrder`) and `service` (when the SQL's tables name no single service's
@@ -2311,6 +2315,18 @@ engine features plus a pack (`python-strangler`):
   through `Server/State.decision`: one decision per (file, kind, function name), at most one ask
   in flight (the answers and the asks in flight share `ssDecisions`, so knowing and claiming
   are one atomic step), asked again once it lands if the function's text changed since.
+- **Anticipation** (`Server/Anticipate`; `Lsp.anticipateLater`): the `anticipate` choice,
+  asked after the deterministic push when the line is a `Tie` (two or more actions cover it) or
+  a `Silence` (none does and recognition is unsure). `anticipationAsk` builds the question from
+  `prefixAt` (the unit, the cursor's line, the imports) and the candidates, with a fingerprint
+  of the unit, the line and the candidates; `Lsp` asks it through `decision`, keyed by that
+  fingerprint, so a prefix typed again is answered from `ssDecisions`. `sureAnswer` gates the
+  answer (`tieGate` and `silenceGate`, both 0.6) and `anticipationFrom` makes it a `Suggestion`
+  (the chosen action's at a tie, a snippet's as one; the convention's recognition at a
+  silence). It is pushed for the version that asked only if the document is still at it and
+  the generator has fewer than three dismissals in a row (`quietCounts`); each sure answer
+  is logged `anticipate GENERATOR CONFIDENCE shown|quiet|stale|none`, and one under the gate
+  `unsure` (`-` for a generator or confidence it lacks).
 - **Rules that look elsewhere** (`Rules`: `bind`, `when`): a slot captured from the found code,
   and a condition on another file's lines; retire is offered only once the registry says the
   flag is on.

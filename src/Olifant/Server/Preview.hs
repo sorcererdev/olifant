@@ -22,7 +22,7 @@ import Olifant.Preview (Field (..), Source (..), fieldsFor, markValue, unmark)
 import Olifant.Recognize (invertPath, pathPattern)
 import Olifant.Server.Actions (actionsFor, fillerFor)
 import Olifant.Server.State (decision, deciderFor, ServerState (..), projectFor)
-import Olifant.Decide (Answer (..), Question (..))
+import Olifant.Decide (Answer (..), choice)
 import Data.Functor ((<&>))
 import Olifant.Migration (functionText, tablesTouched)
 import Olifant.Rules (fingerprint)
@@ -177,8 +177,8 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
               _ -> case deciderFor s project of
                 Nothing -> pure Nothing
                 Just decider ->
-                  decision s decider (rel, "service:" <> fn) (fingerprint [text]) (Question "service" (services ++ ["new service"]) [] [("function", text), ("services", T.unwords services)]) (pure ()) <&> \case
-                    Just (Chosen c _) | c `elem` services -> Just c
+                  decision s decider (rel, "service:" <> fn) (fingerprint [text]) (choice "service" "Which service does this function belong to, or is it a new one" [(o, "") | o <- services ++ ["new service"]] [("function", text), ("services", T.unwords services)]) (pure ()) <&> \case
+                    Just (Chosen c _ _) | c `elem` services -> Just c
                     _ -> Nothing
             pure $ case pick of
               Just suggested | length services > 1 || fValue svc == Nothing -> [if fName f == "service" then f {fValue = Just suggested, fSource = Just FromSuggested, fValid = True, fWhy = Nothing} else f | f <- fields]

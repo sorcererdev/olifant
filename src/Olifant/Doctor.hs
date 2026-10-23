@@ -95,6 +95,10 @@ doctor ports di = do
           dpEnvSet ports keyEnv >>= \case
             True -> pure (Check "model" Ok (m <> " via Anthropic; " <> keyEnv <> " is set") Nothing)
             False -> pure (Check "model" Warn (keyEnv <> " is not set: holes stay placeholders") (Just ("export " <> keyEnv <> "=… in the shell that starts olifant (or your editor)")))
+        Just (Jev m keyEnv) ->
+          dpEnvSet ports keyEnv >>= \case
+            True -> pure (Check "model" Warn (m <> " via Jev answers decisions only, not holes; " <> keyEnv <> " is set") (Just "point [model] default at a chat backend and [decide] model at this one"))
+            False -> pure (Check "model" Warn (keyEnv <> " is not set: decisions stay unsure") (Just ("export " <> keyEnv <> "=… in the shell that starts olifant (or your editor)")))
 
 -- | Where a check tool usually comes from.
 installHint :: Text -> Text

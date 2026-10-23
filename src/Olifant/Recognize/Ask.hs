@@ -1,129 +1,68 @@
--- | Internal to Olifant.Recognize: asking the decision model (`[decide] model`) when
--- the deterministic answer is unsure — a hint, a choice, a rival shape. A
--- typed question: which of these conventions is this code, with which
--- inputs. Optional and never trusted blindly: inputs are validated, a
--- malformed or missing answer is "unsure", nothing waits on it.
+-- | Internal to Olifant.Recognize: asking the decider (`[decide] model`;
+-- `[recognize] model` is its alias) when the deterministic answer is unsure
+-- — a hint, a choice, a rival shape. One typed question, the `recognize`
+-- Choice: which of these conventions is this code, with which inputs.
+-- Optional and never trusted blindly: the answer is validated, a malformed
+-- or missing one is unsure, nothing waits on it.
 module Olifant.Recognize.Ask
-  ( Verdict (..)
-  , Recognizer (..)
-  , noRecognizer
-  , unsure
+  ( unsure
+  , recognizeQuestion
   , consult
-  , recognizerPrompt
-  , decodeVerdicts
-  , curlRecognizer
   ) where
 
-import Data.Aeson (Value (..), eitherDecodeStrict)
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KM
-import Data.Foldable (toList)
 import Data.List (nub)
-import Data.Maybe (isJust, listToMaybe, mapMaybe)
-import Data.Text (Text)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
-import Olifant.Generator (Choices (..), EditWith (..), Generator, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), generatorName)
-import Olifant.Model (Backend, askBackend)
-import Olifant.Process (Cancel)
-import Olifant.Recognize.Index (sampleText)
+import Olifant.Decide (Answer (..), Decider (..), Question (..), choice)
+import Olifant.Generator (Generator, GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), generatorIdText, generatorName)
 import Olifant.Recognize.Inputs (validInputs)
 import Olifant.Recognize.Types (Band (..), Change (..), Recognition (..))
-
--- | A model's answer for one candidate.
-data Verdict = Yes [(Text, Text)] | No | Unsure
-  deriving stock (Eq, Show)
-
--- | Is this change any of these conventions? One verdict per candidate.
-newtype Recognizer m = Recognizer {decide :: Change -> [Generator] -> m [Verdict]}
-
--- | No model: always unsure.
-noRecognizer :: Applicative m => Recognizer m
-noRecognizer = Recognizer (\_ cands -> pure (map (const Unsure) cands))
 
 -- | Is the deterministic answer unsure — a hint, a choice, a shape that
 -- favours another convention?
 unsure :: Recognition -> Bool
 unsure r = rcBand r == Hint || isJust (rcOr r) || isJust (rcRival r)
 
--- | A recognition, sharpened by a model when unsure: a yes makes it an offer
--- (for that convention, with the inputs it read, validated), all no make it
--- nothing, anything else leaves it as it was.
-consult :: Monad m => Recognizer m -> [Generator] -> Change -> Recognition -> m (Maybe Recognition)
-consult recognizer gens change r
-  | not (unsure r) = pure (Just r)
-  | null candidates = pure (Just r)
-  | otherwise = do
-      verdicts <- decide recognizer change candidates
-      pure $ case [(g, inputs) | (g, Yes inputs) <- zip candidates verdicts] of
-        (g, inputs) : _
-          | genId g == rcGenerator r ->
-              Just r {rcBand = Offer, rcInputs = merge (validInputs g inputs) (rcInputs r), rcOr = Nothing, rcRival = Nothing, rcReasons = rcReasons r <> ["the model agrees"]}
-          | otherwise ->
-              Just r {rcGenerator = genId g, rcName = generatorName g, rcBand = Offer, rcInputs = validInputs g inputs, rcOr = Nothing, rcRival = Nothing, rcReasons = ["the model says it is a " <> T.toLower (generatorName g)]}
-        []
-          | length verdicts == length candidates && all (== No) verdicts -> Nothing
-          | otherwise -> Just r
+-- | The candidates an unsure recognition is between: its convention, its
+-- alternative, its rival.
+candidatesOf :: [Generator] -> Recognition -> [Generator]
+candidatesOf gens r = mapMaybe (\i -> listToMaybe [g | g <- gens, genId g == i]) ids
   where
     ids = nub (rcGenerator r : maybe [] pure (rcOr r) <> maybe [] (pure . fst) (rcRival r))
-    candidates = mapMaybe (\i -> listToMaybe [g | g <- gens, genId g == i]) ids
-    merge new old = new <> [(k, v) | (k, v) <- old, k `notElem` map fst new]
 
--- | The question: the candidates (id, name, description, inputs with their
--- types and choices, the opening of each file they make), then the code,
--- and the answer's JSON.
-recognizerPrompt :: Change -> [Generator] -> Text
-recognizerPrompt (Change path text) cands =
-  T.unlines $
-    ["Someone is writing code in their project. Is it an instance of one of the project's conventions below, and with which inputs?", ""]
-      <> concatMap candidate cands
-      <> [ "The code, in " <> T.pack path <> ":"
-         , "```"
-         , T.unlines (take 200 (T.lines text))
-         , "```"
-         , ""
-         , "Answer with JSON only: {\"answers\": [{\"generator\": \"ID\", \"is\": \"yes\" | \"no\" | \"unsure\", \"inputs\": {\"NAME\": \"VALUE\"}}]} — one answer per convention, inputs only for a yes, values as names in snake_case."
-         ]
+-- | The `recognize` choice: the candidates (generator id, its summary; the
+-- backend adds unsure), the inputs of the best one it could not read as
+-- fields, from the path and the code; the instructions name each. Nothing
+-- when no candidate is known.
+recognizeQuestion :: [Generator] -> Change -> Recognition -> Maybe Question
+recognizeQuestion gens (Change path text) r = case candidatesOf gens r of
+  [] -> Nothing
+  cands@(best : _) ->
+    Just (choice "recognize" instructions (map described cands) [("path", T.pack path), ("code", T.unlines (take 200 (T.lines text)))])
+      { qFields = [(inputName i, fieldType (inputType i)) | i <- genInputs best, ScalarInput _ <- [inputType i], inputName i `notElem` map fst (rcInputs r)]
+      }
   where
-    candidate g =
-      [ "Convention " <> generatorIdText (genId g) <> " — " <> generatorName g <> ": " <> genDescription g
-      , "Inputs: " <> T.intercalate ", " (map input (genInputs g))
-      ]
-        <> concat [["It writes a file that begins:", "```", T.unlines (take 20 (T.lines (sampleText t))), "```"] | Create {editSource = t} <- take 1 [e | e@Create {editSource = s} <- genEdits g, not (T.null (T.strip (sampleText s)))]]
-        <> [""]
-    input i = inputName i <> " (" <> kind (inputType i) <> ")"
-    kind = \case
-      ScalarInput IdentS -> "ident"
+    instructions = "Which of these generators is the code in code, at path, a hand-written instance of? Give the inputs asked for as identifiers from code."
+    described g = (generatorIdText (genId g), fromMaybe (generatorName g) (genSummary g))
+    fieldType = \case
       ScalarInput TextS -> "text"
-      ScalarInput BoolS -> "bool"
-      ScalarInput (EnumS cs) -> "enum: " <> T.intercalate ", " cs
-      ScalarInput (EnumOf _ _ (Resolved cs _)) -> "enum: " <> T.intercalate ", " cs
-      ScalarInput (EnumOf {}) -> "enum"
-      ListInput _ -> "list"
+      _ -> "ident"
 
--- | The verdicts in a model's answer, one per candidate (a missing one is
--- unsure); the JSON may be wrapped in prose or a fence.
-decodeVerdicts :: [GeneratorId] -> Text -> Either Text [Verdict]
-decodeVerdicts ids reply = case eitherDecodeStrict (TE.encodeUtf8 (braces reply)) of
-  Right (Object o) | Just (Array as) <- KM.lookup "answers" o -> Right [verdictFor i (toList as) | i <- ids]
-  _ -> Left "the model's answer is not the JSON asked for"
+-- | A recognition, sharpened by the decider when unsure: a convention
+-- chosen makes it an offer (for that convention, with the inputs it read,
+-- validated); anything else leaves it as it was.
+consult :: Monad m => Decider m -> [Generator] -> Change -> Recognition -> m (Maybe Recognition)
+consult d gens change r
+  | not (unsure r) = pure (Just r)
+  | otherwise = case recognizeQuestion gens change r of
+      Nothing -> pure (Just r)
+      Just q ->
+        ask d q >>= \answer -> pure . Just $ case answer of
+          Chosen c inputs _
+            | g : _ <- [g | g <- candidatesOf gens r, generatorIdText (genId g) == c] ->
+                if genId g == rcGenerator r
+                  then r {rcBand = Offer, rcInputs = merge (validInputs g inputs) (rcInputs r), rcOr = Nothing, rcRival = Nothing, rcReasons = rcReasons r <> ["the model agrees"]}
+                  else r {rcGenerator = genId g, rcName = generatorName g, rcBand = Offer, rcInputs = validInputs g inputs, rcOr = Nothing, rcRival = Nothing, rcReasons = ["the model says it is a " <> T.toLower (generatorName g)]}
+          _ -> r
   where
-    braces t = case (T.breakOn "{" t, T.breakOnEnd "}" t) of
-      ((_, fromOpen), (toClose, _)) | not (T.null fromOpen), not (T.null toClose) -> T.take (T.length fromOpen - (T.length t - T.length toClose)) fromOpen
-      _ -> t
-    verdictFor (GeneratorId i) answers = case [a | Object a <- answers, KM.lookup "generator" a == Just (String i)] of
-      a : _ -> case KM.lookup "is" a of
-        Just (String "yes") -> Yes [(Key.toText k, v) | Just (Object ins) <- [KM.lookup "inputs" a], (k, String v) <- KM.toList ins]
-        Just (String "no") -> No
-        _ -> Unsure
-      [] -> Unsure
-
--- | A model recogniser over a configured backend: unsure for every
--- candidate when it does not answer, or answers something else.
-curlRecognizer :: Cancel -> Int -> Backend -> Recognizer IO
-curlRecognizer token timeout backend = Recognizer $ \change cands ->
-  askBackend token timeout backend system (recognizerPrompt change cands) >>= \case
-    Left _ -> pure (map (const Unsure) cands)
-    Right reply -> pure (either (const (map (const Unsure) cands)) id (decodeVerdicts (map genId cands) reply))
-  where
-    system = "You recognise which of a project's conventions a piece of code is. Answer only with the JSON asked for."
+    merge new old = new <> [(k, v) | (k, v) <- old, k `notElem` map fst new]

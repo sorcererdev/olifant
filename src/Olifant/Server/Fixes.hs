@@ -19,7 +19,7 @@ import Data.IORef (readIORef)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Decide (Answer (..), Question (..))
+import Olifant.Decide (Answer (..), choice)
 import Olifant.Server.State (decision, deciderFor, cachedBase, ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
 
@@ -53,9 +53,9 @@ decided s project path fs = case deciderFor s project of
       if fRule f /= "migrate-new-work"
         then pure [f]
         else
-          decision s decider (path, "bug-or-new:" <> definedName (fText f)) (fFingerprint f) (Question "bug-or-new" ["bug fix", "new behaviour"] [] [("function", fText f)]) (join (readIORef (ssOnDecided s))) <&> \case
-            Just (Chosen "new behaviour" _) -> [f {fRule = "legacy-bug-fix-only", fSeverity = severityOf "legacy-bug-fix-only", fMessage = "New work goes in the new architecture (legacy is bug-fix-only): this change adds behaviour"}]
-            Just (Chosen "bug fix" _) -> []
+          decision s decider (path, "bug-or-new:" <> definedName (fText f)) (fFingerprint f) (choice "bug-or-new" "Does this change fix a bug in the function, or add new behaviour" [("bug fix", ""), ("new behaviour", "")] [("function", fText f)]) (join (readIORef (ssOnDecided s))) <&> \case
+            Just (Chosen "new behaviour" _ _) -> [f {fRule = "legacy-bug-fix-only", fSeverity = severityOf "legacy-bug-fix-only", fMessage = "New work goes in the new architecture (legacy is bug-fix-only): this change adds behaviour"}]
+            Just (Chosen "bug fix" _ _) -> []
             _ -> [f]
   where
     cat = prCatalog project
