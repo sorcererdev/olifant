@@ -79,8 +79,8 @@ module Olifant.Server
   , stubAt
   , Unit (..)
   , unitAt
-  , DraftAnswer (..)
-  , draftAt
+  , ConjureAnswer (..)
+  , conjureAt
   , MutateAnswer (..)
   , waiveAt
   , mutateAt
@@ -108,7 +108,7 @@ import Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPla
 import Olifant.Server.State
 import Olifant.Server.Stub (StubAnswer (..), belowDecorators, classAt, stubAt, testNameOf)
 import Olifant.Server.Unit (Unit (..), unitAt)
-import Olifant.Server.Draft (DraftAnswer (..), draftAt)
+import Olifant.Server.Conjure (ConjureAnswer (..), conjureAt)
 import Olifant.Server.Mutate (MutateAnswer (..), mutateAt)
 import Olifant.Server.Waive (waiveAt)
 import Olifant.Server.Tests (TestsAnswer (..), TestsFile (..), testsFile, testsFileJson, testsJson, testsRun, testAt, TestsScope (..))

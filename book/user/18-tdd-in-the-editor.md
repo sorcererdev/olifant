@@ -8,7 +8,7 @@ for those steps, each one request to `olifant lsp`, each open at any time:
 |---|---|---|---|
 | `:Durandal test` | `<leader>mt` (`<leader>mT` the whole file) | runs its test file (`tests_for`) | runs this one test |
 | `:Durandal stub` | `<leader>ms` | appends a new test's stub to its test file | refused: stub from the module |
-| `:Durandal draft` | `<leader>md` (visual: the selection) | drafts its body to pass its tests | drafts the test's body from its name |
+| `:Durandal conjure` | `<leader>mc` (visual: the selection) | conjures its body to pass its tests | conjures the test's body from its name |
 | `:Durandal mutate` | `<leader>mm` | mutates its lines against its test file; lists the survivors | refused: mutate from the module |
 
 The server keeps nothing between them but the step log: there is no state to be in, nothing
@@ -17,14 +17,14 @@ gated, nothing to accept. You decide the order. A typical round:
 1. Cursor in `handle`, `stub` (`<leader>ms`): `test_handle` opens at the end of its test file,
    with `handle`'s import, a body of `...` and `assert ...`, the cursor on the name. The **name**
    is the spec: keep it or type over it.
-2. `draft` (`<leader>md`) on the test: the model writes its body from its name. The notification
+2. `conjure` (`<leader>mc`) on the test: the model writes its body from its name. The notification
    says `red at the assertion` (the test fails where it should: there is no code yet). Read the
    assertion; edit it if it is not what you meant.
-3. `draft` in `handle`: the model writes the least code that makes its failing tests pass. The
-   notification says `drafted · green`. Read it: if it is too simple, your test was; add a case.
+3. `conjure` in `handle`: the model writes the least code that makes its failing tests pass. The
+   notification says `conjured · green`. Read it: if it is too simple, your test was; add a case.
 4. `mutate` (`<leader>mm`) in `handle`: `1 survivor · 5/6 killed`, a warning on the survivor's
    line (`> → >= survives`), and the survivors modal. `s` stubs a test that kills it, named from
-   the mutant; `draft` it, as in step 2.
+   the mutant; `conjure` it, as in step 2.
 
 Each step is one undo in the editor and one line in the step log.
 
@@ -51,7 +51,7 @@ def test_closes_a_table() -> None:
 ```
 
 `<leader>mt` on it runs it (red). With a `[model]` configured
-([chapter 12](12-holes-and-models.md)), `<leader>md` in `handle` drafts the body; with none,
+([chapter 12](12-holes-and-models.md)), `<leader>mc` in `handle` conjures the body; with none,
 write it yourself, `<leader>mt` again, then `<leader>mm` to see what the tests miss.
 
 ## Running a file's tests
@@ -81,7 +81,7 @@ line counts as its def) appends a new test to the end of its test file: `test_<n
 name in snake case (`CloseTable` is `test_close_table`; `_2`, `_3` when the file already has it),
 with the unit's import (a test file that does not exist yet is created, starting with it; a file
 without it gains it among its imports), a body of `...` and an `assert ...`. The test file opens
-with the cursor on the name. Nothing is drafted. On the wire this is `olifant/stub` with
+with the cursor on the name. Nothing is conjured. On the wire this is `olifant/stub` with
 `{textDocument, position}`, answering `{file, line, name, edits}`. It is refused in one sentence:
 in a test file (stub writes a test from its module), or outside any function or class. Each stub
 is a line in the step log (`stub person <module>::<unit> stubbed <name>`).
@@ -89,38 +89,38 @@ is a line in the step log (`stub person <module>::<unit> stubbed <name>`).
 A survivor of `mutate` has its own stub ([below](#mutating)): named from the mutant, the mutant as
 a comment in its body.
 
-## Drafting
+## Conjuring
 
-`:Durandal draft` (`<leader>md`) drafts the innermost function, method or class at the cursor with
+`:Durandal conjure` (`<leader>mc`) conjures the innermost function, method or class at the cursor with
 the model: the unit is found by the language adapter's `[unit] kinds`, and a decorator line counts
 as the def it decorates. In a module, its test file runs first. The model gets the unit's body as a
 hole, the failing tests with their messages and sources ("make these pass"), the passing ones
 ("keep these passing"), the test file, the project modules it imports, and the body on screen when
 it is not a stub (`raise NotImplementedError`, `...`, `pass`): that body goes in as "rejected by
-the person". With no red test it is drafted anyway, told the tests pass. In a test file, on a test,
-the model drafts the test's body from its name, seeing the module under test in full, the sibling
+the person". With no red test it is conjured anyway, told the tests pass. In a test file, on a test,
+the model conjures the test's body from its name, seeing the module under test in full, the sibling
 tests in the file, and any notes (comments, such as a survivor's `# kills:`) in the stub's body.
-The fill pipeline is the usual one (stances, `[model]`, the cuts to a hole). The drafts stance
-asks for the least code that passes, so a constant (`return Ok(None)`) is a correct draft for one
+The fill pipeline is the usual one (stances, `[model]`, the cuts to a hole). The conjure stance
+asks for the least code that passes, so a constant (`return Ok(None)`) is a correct conjure for one
 test: every generalisation needs a test that asks for it.
 
-The draft always lands, as one edit and one undo step, whatever its tests say: nothing is refused
+The conjure always lands, as one edit and one undo step, whatever its tests say: nothing is refused
 for discipline. The test file runs again with it, and the notification says what the run said:
-`drafted · green` or `drafted · red: test_x · message` for a function; for a test, `red at the
+`conjured · green` or `conjured · red: test_x · message` for a function; for a test, `red at the
 assertion`, `red: error before the assertion`, `green: already passes`, each followed by `red:
 test_y no longer passes` for a sibling that passed before and fails now. Failures are
-diagnostics on their lines, as `:Durandal test` marks them. Draft again is `draft` again (the body
-on screen goes in as rejected); undo is the editor's. A visual selection (`<leader>md` in visual
-mode, `:'<,'>Durandal draft`) drafts those lines instead of the unit's body.
+diagnostics on their lines, as `:Durandal test` marks them. Conjure again is `conjure` again (the body
+on screen goes in as rejected); undo is the editor's. A visual selection (`<leader>mc` in visual
+mode, `:'<,'>Durandal conjure`) conjures those lines instead of the unit's body.
 
-On the wire this is `olifant/draft` with `{textDocument, position, selection?}` (the selection's
+On the wire this is `olifant/conjure` with `{textDocument, position, selection?}` (the selection's
 `start` and `end` lines, 0-based, inclusive), answering `{file, unit, edits, summary, green,
-tests}` (`edits` null when the draft changed nothing; `tests` the after-run as `olifant/tests/run`
-answers it), under `$/progress` `drafting`. It is refused in one sentence outside any function or
+tests}` (`edits` null when the conjure changed nothing; `tests` the after-run as `olifant/tests/run`
+answers it), under `$/progress` `conjuring`. It is refused in one sentence outside any function or
 class, in a module with no test file yet (stub one first), on a function in a test file that is
 no test, on a one-line def with no selection, with no model configured, when the model gave no
-draft at all, and when the file changed in the editor while the model drafted (your text
-stands). Each draft is a line in the step log (`draft person <file>::<unit> drafted by <model> ·
+conjure at all, and when the file changed in the editor while the model conjured (your text
+stands). Each conjure is a line in the step log (`conjure person <file>::<unit> conjured by <model> ·
 <summary>`).
 
 ## Mutating
@@ -157,7 +157,7 @@ a test for it, in the unit's test file. The name comes from the mutant, so you k
 is for: a string's first four words (`f"there is no table {input.table_id}"` →
 `test_there_is_no_table`), else the operator and the names on the mutated line
 (`if input.party > table.seats:` → `test_boundary_party_seats`), with `_2` when the test file has
-that name already. The mutant is a comment above the `...` in its body, which `draft` reads as a
+that name already. The mutant is a comment above the `...` in its body, which `conjure` reads as a
 note:
 
 ```python
@@ -167,7 +167,7 @@ def test_boundary_party_seats() -> None:
     assert ...
 ```
 
-`draft` it, then `mutate` the unit again: a test that fails on the mutant kills it. Marks of the
+`conjure` it, then `mutate` the unit again: a test that fails on the mutant kills it. Marks of the
 same unit are replaced by each mutate, those of other units stay. A survivor you decide does not
 matter you leave: nothing is gated on it, or you waive it.
 
@@ -230,12 +230,12 @@ it was on, and its outcome, tab-separated.
 
 ```
 2026-10-18T04:06:40Z	stub	person	src/bistro/booking/commands/close_table.py::handle	stubbed test_handle
-2026-10-18T04:06:42Z	draft	person	src/bistro/booking/commands/close_table__test.py::test_handle	drafted by qwen3-coder:30b · red at the assertion
-2026-10-18T04:06:45Z	draft	person	src/bistro/booking/commands/close_table.py::handle	drafted by qwen3-coder:30b · green
+2026-10-18T04:06:42Z	conjure	person	src/bistro/booking/commands/close_table__test.py::test_handle	conjured by qwen3-coder:30b · red at the assertion
+2026-10-18T04:06:45Z	conjure	person	src/bistro/booking/commands/close_table.py::handle	conjured by qwen3-coder:30b · green
 2026-10-18T04:06:47Z	mutate	person	src/bistro/booking/commands/close_table.py::handle	1 survivor · 5/6 killed
 ```
 
-It answers what commits cannot: which lines a model drafted, and which you wrote.
+It answers what commits cannot: which lines a model conjured, and which you wrote.
 
 ## Configuring tests: `[test]`
 
@@ -262,10 +262,10 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 ## Limits
 
 - **Mutation is Python only.** The operators are Python's; another language with a `[test]`
-  table runs its tests and drafts, and `mutate` says `no mutation operators for <language>`.
+  table runs its tests and conjures, and `mutate` says `no mutation operators for <language>`.
 - **A stub's import is Python's, and only the unit's** (or its class's): a name your assertion
   uses beyond it you import yourself. A file importing it already (on one line or several, in
   brackets) gains nothing; one importing from its module gains the name there.
-- **A draft sees** the test file (a test's draft, the module), the project modules either one
+- **A conjure sees** the test file (a test's conjure, the module), the project modules either one
   imports, and what those import (ports, models; at most 8 files, 120 lines each).
 - **Mutants are capped at 20** per mutate; a long unit is judged in part.

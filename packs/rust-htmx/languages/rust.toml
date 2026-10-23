@@ -113,7 +113,7 @@ wrap = "struct {= fill =};"
 placeholder = "{= hole =}"
 wrap = "const _: &str = \"{= fill =}\";"
 
-# The unit: the innermost of these node kinds at the cursor is what `draft`
-# drafts and `stub` stubs a test for.
+# The unit: the innermost of these node kinds at the cursor is what `conjure`
+# conjures and `stub` stubs a test for.
 [unit]
 kinds = ["function_item", "impl_item", "struct_item", "enum_item", "trait_item"]

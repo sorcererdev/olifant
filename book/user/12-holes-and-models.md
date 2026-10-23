@@ -287,7 +287,7 @@ and opens no block (it does not end with `:` or an open bracket, a trailing comm
 is read with the rest brought up to it when that compiles, or, when the fill as written has
 a syntax error, when that leaves fewer findings or no syntax error (each judged with only
 that fill in place, so another hole's errors in the file do not count).
-A draft read that way may still fail on a type error: that error is then the reason, and
+A conjure read that way may still fail on a type error: that error is then the reason, and
 the text written is the one read level. `--progress` reports the rescue as
 `{"event":"reindent","hole":…,"fill":…}`. Measured on `handle-body`: every
 failed qwen3-coder:30b attempt was one of these two layouts, and the model repeated it on
@@ -311,7 +311,7 @@ import or a new helper is code): the attempt fails with "the model answered with
 hole: a whole file", and the retry says *answer with the lines that replace the marker only:
 no `def` line, no imports, no other tests*. `--progress` reports
 `{"event":"cut","hole":…,"dropped":…,"fill":…}` and `{"event":"whole_file","hole":…}`; a
-draft's step log has `fill olifant cut to the hole (N lines dropped)`.
+conjure's step log has `fill olifant cut to the hole (N lines dropped)`.
 
 **Verify: a fill must pass a command.** A model hole may name a command its fill must pass,
 usually its tests:
@@ -345,15 +345,15 @@ binding the name, or none, leave it to the model's retry. `--progress` reports i
 `{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the
 name from a message (`supportUndefined`; pyright's does, the others don't yet).
 
-### Drafts: the editor's holes
+### Conjures: the editor's holes
 
-The editor's `draft` ([chapter 18](18-tdd-in-the-editor.md#drafting)) drafts through the same
-fill phase: a draft is a model hole made on demand, of kind `block` over a unit's body or a
+The editor's `conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)) conjures through the same
+fill phase: a conjure is a model hole made on demand, of kind `block` over a unit's body or a
 test's, so it is parsed, checked, auto-imported and retried as any hole is. Two things differ.
 
-- **The stance.** A draft's request asks for *the least code that makes this test pass and no
-  more: do not generalise beyond what the tests ask*. A constant is a good draft for one test;
-  the next test asks for more. A body on screen that is no stub (another `draft`) goes with the
+- **The stance.** A conjure's request asks for *the least code that makes this test pass and no
+  more: do not generalise beyond what the tests ask*. A constant is a good conjure for one test;
+  the next test asks for more. A body on screen that is no stub (another `conjure`) goes with the
   request as *the body on screen, rejected by the person*.
 - **The verifier is the unit's tests.** A body is verified by its test file (every test there
   must pass). A test's body is verified the other way: the test must fail *at its assertion*, or

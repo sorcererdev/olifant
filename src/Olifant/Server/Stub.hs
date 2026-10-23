@@ -80,7 +80,7 @@ data StubAnswer = StubAnswer
 -- | A new test's stub for the function, method or class at LINE (1-based;
 -- a decorator's is its def's) of a module: `test_<unit>` after the test
 -- file's last line, the unit's import joined to the file's (a new file
--- starts with it), its body `...` and `assert ...`. Nothing is drafted
+-- starts with it), its body `...` and `assert ...`. Nothing is conjured
 -- or stored. With a survivor (its line is LINE), the test
 -- is named from the mutant and the mutant is a comment in its body. Left is
 -- one sentence on why there is none.

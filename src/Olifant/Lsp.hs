@@ -127,7 +127,7 @@ advertise out
 serverDefinition :: Ports -> IO (ServerDefinition ())
 serverDefinition ports = do
   state <- newServerState ports >>= newMVar
-  -- a draft asks the document's version as the editor has it now, not as
+  -- a conjure asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
   modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
   env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel
@@ -584,9 +584,9 @@ handlers env =
                   Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
                   Right () -> respond (Right (object ["waived" .= True]))
               _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/waive needs a textDocument and a survivor" Nothing))
-    , -- a draft of the unit at a position (or of the selected lines): its
+    , -- a conjure of the unit at a position (or of the selected lines): its
       -- tests run before and after; the edit and the after-run
-      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/draft")) $ \req respond -> inBackground env req respond $ \job ->
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/conjure")) $ \req respond -> inBackground env req respond $ \job ->
         case (documentPath (req ^. L.params), positionOf (req ^. L.params)) of
           (Just path, Just (line, _)) -> do
             let selection = case req ^. L.params of
@@ -598,10 +598,10 @@ handlers env =
                     , Just z' <- toBoundedInteger z ->
                         Just (a' + 1, z' + 1)
                   _ -> Nothing
-            drafted' <- planProgress "drafting" (\progress -> withSnapshot job (draftAt progress path (line + 1) selection))
-            -- a draft the editor cancelled is no result
+            conjured' <- planProgress "conjuring" (\progress -> withSnapshot job (conjureAt progress path (line + 1) selection))
+            -- a conjure the editor cancelled is no result
             stopped <- liftIO (cancelled (envCancel job))
-            case drafted' of
+            case conjured' of
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right a ->
@@ -614,7 +614,7 @@ handlers env =
                     , "green" .= daGreen a
                     , "tests" .= testsJson (daTests a)
                     ]
-          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/draft needs a textDocument and a position" Nothing))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure needs a textDocument and a position" Nothing))
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/debugState")) $ \req respond ->
         liftIO (readIORef (envDebug env)) >>= \case
           False -> respond (Left (TResponseError (InR ErrorCodes_MethodNotFound) "olifant/debugState is for tests (initializationOptions.debug)" Nothing))

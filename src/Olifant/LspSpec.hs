@@ -93,7 +93,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   concurrencySpec
   testsRunSpec
   stubSpec
-  draftSpec
+  conjureSpec
   mutateSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
@@ -996,13 +996,13 @@ stubSpec = describe "olifant/stub" $ do
       field "edits" answer `shouldSatisfy` \case Just (Object _) -> True; _ -> False
       outside `shouldSatisfy` either ("no function or class at line 1" `T.isInfixOf`) (const False)
 
--- | `olifant/draft`: the unit at a position drafted (recorded fills, a
+-- | `olifant/conjure`: the unit at a position conjured (recorded fills, a
 -- scripted runner), its tests run before and after.
-draftSpec :: Spec
-draftSpec = describe "olifant/draft" $ do
+conjureSpec :: Spec
+conjureSpec = describe "olifant/conjure" $ do
   let moduleRel = "src/bistro/booking/commands/create_booking.py"
   it "in a method: the edit, the summary and the after-run; outside any unit, why" $
-    withSystemTempDirectory "olifant-draft" $ \tmp -> do
+    withSystemTempDirectory "olifant-conjure" $ \tmp -> do
       let script = tmp </> "tests.json"
           fills = tmp </> "fills.toml"
       BSL.writeFile script "{}"
@@ -1013,7 +1013,7 @@ draftSpec = describe "olifant/draft" $ do
           text <- documentContents doc
           -- the line after `def handle(`, 0-based
           let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
-              ask line = blockMove (Proxy :: Proxy "olifant/draft") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= line, "character" .= (0 :: Int)]])
+              ask line = blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= line, "character" .= (0 :: Int)]])
           answer <- ask (handleAt + 1)
           outside <- ask (0 :: Int)
           pure (answer, outside)

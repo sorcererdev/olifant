@@ -725,7 +725,7 @@ to walk its stops) and in the ⚡ menu.
 
 - **`test-case`**, on a blank line after a test in a `*__test.py`, retired from editors
   (`menu = false`: no ghost, completion or ⚡ entry; `olifant gen` still runs it). The editor's
-  `stub` and `draft` write the next test ([chapter 18](18-tdd-in-the-editor.md)):
+  `stub` and `conjure` write the next test ([chapter 18](18-tdd-in-the-editor.md)):
 
   ```python
   def test_⟨behaviour⟩() -> None:

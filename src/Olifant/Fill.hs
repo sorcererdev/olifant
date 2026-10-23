@@ -33,9 +33,9 @@ data FillHole = FillHole
   }
   deriving stock (Eq, Show)
 
--- | How the model is asked: to fill holes well, or (a draft) to write the
+-- | How the model is asked: to fill holes well, or (a conjure) to write the
 -- least code that makes one failing test pass.
-data Stance = FillStance | DraftStance
+data Stance = FillStance | ConjureStance
   deriving stock (Eq, Show)
 
 -- | 'frContext': related files the model should see (a fix's context, e.g.

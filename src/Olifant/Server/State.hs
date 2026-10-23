@@ -109,7 +109,7 @@ data ServerState = ServerState
     ssDecisions :: IORef (Map (FilePath, Text) (Text, Answer), Set (FilePath, Text))
   , ssOnDecided :: IORef (IO ())
   , -- | a document as the editor has it now (its version and text), not as
-    -- this state saw it (the adapter's live documents): long work (a draft)
+    -- this state saw it (the adapter's live documents): long work (a conjure)
     -- asks it before its result lands. None: this state's documents are the truth
     ssLiveDoc :: Maybe (FilePath -> IO (Maybe (Int, Text)))
   , -- | a filler that answers instead of any model (tests)

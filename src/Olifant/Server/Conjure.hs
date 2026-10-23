@@ -1,11 +1,11 @@
--- | Internal to Olifant.Server: a draft (`olifant/draft`) of the unit at a
+-- | Internal to Olifant.Server: a conjure (`olifant/conjure`) of the unit at a
 -- line, or of the selected lines: on a function, method or class, its body
 -- to pass its tests; on a test, its body from its name. The tests run
--- before and after; the draft lands whatever the after-run says. Nothing
+-- before and after; the conjure lands whatever the after-run says. Nothing
 -- is stored.
-module Olifant.Server.Draft
-  ( DraftAnswer (..)
-  , draftAt
+module Olifant.Server.Conjure
+  ( ConjureAnswer (..)
+  , conjureAt
   ) where
 
 import Control.Monad (unless, when)
@@ -37,10 +37,10 @@ import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (normalisePath)
 import System.FilePath ((</>))
 
--- | A draft's answer: the drafted file (absolute), the unit, the edit
--- (none when the draft changed nothing), the summary, whether the
+-- | A conjure's answer: the conjured file (absolute), the unit, the edit
+-- (none when the conjure changed nothing), the summary, whether the
 -- after-run is green, and the after-run.
-data DraftAnswer = DraftAnswer
+data ConjureAnswer = ConjureAnswer
   { daFile :: FilePath
   , daUnit :: Text
   , daEdit :: Maybe FileEdit
@@ -50,10 +50,10 @@ data DraftAnswer = DraftAnswer
   }
   deriving stock (Eq, Show)
 
--- | The draft of the unit at LINE (1-based) of PATH, or of the lines
+-- | The conjure of the unit at LINE (1-based) of PATH, or of the lines
 -- SELECTED (1-based, inclusive). Left is one sentence on why there is none.
-draftAt :: (ProgressEvent -> IO ()) -> FilePath -> Int -> Maybe (Int, Int) -> ServerState -> IO (ServerState, Either Text DraftAnswer)
-draftAt progress path line selected s0 =
+conjureAt :: (ProgressEvent -> IO ()) -> FilePath -> Int -> Maybe (Int, Int) -> ServerState -> IO (ServerState, Either Text ConjureAnswer)
+conjureAt progress path line selected s0 =
   siteAt path line s0 >>= \case
     (s, Left why) -> pure (s, Left why)
     (s, Right site) -> fmap (s,) . runExceptT $ do
@@ -68,10 +68,10 @@ draftAt progress path line selected s0 =
       found <- lift (unitAt (pSyntax (ssPorts s)) lang text line)
       (unit, span') <- case (selected, found) of
         (Just sp, _) -> pure (either (const "selection") unitName found, sp)
-        (Nothing, Left why) -> throwE (why <> ": put the cursor in one to draft it")
-        (Nothing, Right u) -> maybe (throwE (unitName u <> " is on one line: select the lines to draft")) (pure . (unitName u,)) (unitBody u)
+        (Nothing, Left why) -> throwE (why <> ": put the cursor in one to conjure it")
+        (Nothing, Right u) -> maybe (throwE (unitName u <> " is on one line: select the lines to conjure")) (pure . (unitName u,)) (unitBody u)
       when (fst span' < 1 || snd span' < fst span' || snd span' > length (T.splitOn "\n" text)) (throwE "the selection is not in the file")
-      when (onTest && isNothing selected && not ("test" `T.isPrefixOf` unit)) (throwE (unit <> " is no test: draft a test here, or a function from its module"))
+      when (onTest && isNothing selected && not ("test" `T.isPrefixOf` unit)) (throwE (unit <> " is no test: conjure a test here, or a function from its module"))
       -- a module needs its test file (on a test, the file is the test file)
       testText <- case siteTestText site of
         Just t -> pure t
@@ -84,13 +84,13 @@ draftAt progress path line selected s0 =
           then do
             -- (a helper in a test file was refused above)
             name <- maybe (throwE ("no test at line " <> tshow line)) pure (testAt text (fst span'))
-            except (testDraft text span' (T.pack (siteTestRel site) <> "::" <> name) (siteModuleRel site) (siteModuleText site))
-          else except (functionDraft text span' unit (siteTestRel site) testText before)
+            except (testConjure text span' (T.pack (siteTestRel site) <> "::" <> name) (siteModuleRel site) (siteModuleText site))
+          else except (functionConjure text span' unit (siteTestRel site) testText before)
       imported <- lift (importedContext ws lang (rel : map fst context) (text : map snd context))
       written <- fill progress s project rel text template verify (context ++ imported) filler
       latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
-      when (latest /= started) (throwE "the file changed while drafting; your text stands")
-      -- the after-run: the test file with the draft in place
+      when (latest /= started) (throwE "the file changed while conjuring; your text stands")
+      -- the after-run: the test file with the conjure in place
       (_, files) <- lift (projectFiles ws (M.empty :: Map FilePath Text) lang [siteTestRel site])
       start <- lift getMonotonicTime
       after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack (siteTestRel site)] (M.insert rel written files))
@@ -100,20 +100,20 @@ draftAt progress path line selected s0 =
           green = isNothing (trBroken after) && null (trFailed after)
           edit = [FileEdit file started False range new | written /= text, let (range, new) = smallestChange text written]
           tests = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) after (end - start)
-      lift (appendStepLine (ssPorts s) (siteRoot site) ["draft", "person", T.pack rel <> "::" <> unit, "drafted by " <> mfName filler <> " \183 " <> summary])
-      pure (DraftAnswer file unit (listToMaybe edit) summary green tests)
+      lift (appendStepLine (ssPorts s) (siteRoot site) ["conjure", "person", T.pack rel <> "::" <> unit, "conjured by " <> mfName filler <> " \183 " <> summary])
+      pure (ConjureAnswer file unit (listToMaybe edit) summary green tests)
 
 noModel :: Text
-noModel = "no model is configured: set [model] in .olifant/config.toml to draft"
+noModel = "no model is configured: set [model] in .olifant/config.toml to conjure"
 
--- | A function's draft: the file with the span's lines one `block` hole
+-- | A function's conjure: the file with the span's lines one `block` hole
 -- called `body` (at the span's first line's indentation), verified by its
 -- test file run whole (`verify = "tests"`: every test there must pass);
 -- the context: the test file, the failures with their tests' sources, the
 -- passing tests to keep, and the body on screen when it is no stub
 -- (rejected by the person).
-functionDraft :: Text -> (Int, Int) -> Text -> FilePath -> Text -> TestRun -> Either Text (Template, [(Text, Verify [Template])], [(FilePath, Text)])
-functionDraft text (l1, l2) unit testRel testText before = do
+functionConjure :: Text -> (Int, Int) -> Text -> FilePath -> Text -> TestRun -> Either Text (Template, [(Text, Verify [Template])], [(FilePath, Text)])
+functionConjure text (l1, l2) unit testRel testText before = do
   let ls = T.splitOn "\n" text
       body = take (l2 - l1 + 1) (drop (l1 - 1) ls)
       short = snd . T.breakOnEnd "::"
@@ -132,15 +132,15 @@ functionDraft text (l1, l2) unit testRel testText before = do
   template <- holeOver ls (l1, l2) instruction
   pure (template, [("body", VerifyTests)], context)
 
--- | A test's draft: the test file with the span's lines one `block` hole
+-- | A test's conjure: the test file with the span's lines one `block` hole
 -- called `body`, worded from the test's name; verified red at its
 -- assertion or passing (`VerifyRedAt`, passing allowed: an error before
 -- the assertion is asked again); the context: the module under test in
 -- full, the notes in the stub's body, and the body on screen when it is no
 -- stub (rejected by the person). The siblings are in the file itself.
 -- TID is the test's full id (`path::name`).
-testDraft :: Text -> (Int, Int) -> Text -> FilePath -> Text -> Either Text (Template, [(Text, Verify [Template])], [(FilePath, Text)])
-testDraft text (l1, l2) tid moduleRel moduleText = do
+testConjure :: Text -> (Int, Int) -> Text -> FilePath -> Text -> Either Text (Template, [(Text, Verify [Template])], [(FilePath, Text)])
+testConjure text (l1, l2) tid moduleRel moduleText = do
   let ls = T.splitOn "\n" text
       body = take (l2 - l1 + 1) (drop (l1 - 1) ls)
       short = snd (T.breakOnEnd "::" tid)
@@ -209,7 +209,7 @@ functionSummary run = case (trBroken run, trFailed run) of
 
 -- | TEMPLATE planned over REL (TEXT) with VERIFY and CONTEXT: the file as
 -- the fill writes it, or, when no attempt passed its verify, as the last
--- attempt writes it (a draft always lands). Left when the model gave no
+-- attempt writes it (a conjure always lands). Left when the model gave no
 -- attempt at all, or the plan could not be made.
 fill :: (ProgressEvent -> IO ()) -> ServerState -> Project -> FilePath -> Text -> Template -> [(Text, Verify [Template])] -> [(FilePath, Text)] -> ModelFiller IO -> ExceptT Text IO Text
 fill progress s project rel text template verify context filler = do
@@ -224,12 +224,12 @@ fill progress s project rel text template verify context filler = do
         WholeFile hole -> readIORef prior >>= \was -> modifyIORef' attempts (M.alter (const (M.lookup hole was)) hole) >> progress e
         _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = verify}
-      options = planOptions {poFiller = Just recording, poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = DraftStance}
+      options = planOptions {poFiller = Just recording, poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = ConjureStance}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
   tried <- lift (readIORef attempts)
   case planHoles plan of
-    [] -> throwE "the draft made no hole"
+    [] -> throwE "the conjure made no hole"
     hs
       | all (\h -> case phStatus h of HoleFilled _ _ -> True; _ -> False) hs -> pure (M.findWithDefault text rel (planWrites plan))
       | why : _ <- [w | h <- hs, HoleSkipped w <- [phStatus h]] -> throwE why
@@ -237,6 +237,6 @@ fill progress s project rel text template verify context filler = do
           let unfilled = [(h, w) | h <- hs, HoleUnfilled w <- [phStatus h]]
               why = maybe "" snd (listToMaybe unfilled)
               offered = [(phSite h, a) | (h, _) <- unfilled, Just a <- [M.lookup (holeName (phSite h)) tried]]
-          when (null offered) (throwE ("the model gave no draft: " <> why))
+          when (null offered) (throwE ("the model gave no conjure: " <> why))
           let langOf = languageFor (catalogLanguages (prCatalog project))
           pure (M.findWithDefault text rel (applyFills langOf (planWrites plan) offered))

@@ -11,7 +11,7 @@ module Olifant.Model
   , backendKinds
   , backendModel
   , systemPrompt
-  , draftSystemPrompt
+  , conjureSystemPrompt
   , userPrompt
   , requestBody
   , decodeFills
@@ -97,9 +97,9 @@ systemPrompt =
     , "matching the surrounding style. No surrounding code, no explanations, no markdown."
     ]
 
--- | The fill prompt for a draft: the least code that makes the test pass.
-draftSystemPrompt :: Text
-draftSystemPrompt =
+-- | The fill prompt for a conjure: the least code that makes the test pass.
+conjureSystemPrompt :: Text
+conjureSystemPrompt =
   systemPrompt
     <> T.unlines
       [ "Write the least code that makes this test pass and no more: do not generalise beyond what the tests ask,"
@@ -144,7 +144,7 @@ userPrompt req =
             ++ ["Fix it." <> (if fhImports h then " If it failed on a name that is not defined, add that name's import line first." else "")]
 
 requestBody :: Backend -> FillRequest -> Value
-requestBody b req = chatBody b (case frStance req of DraftStance -> draftSystemPrompt; FillStance -> systemPrompt) (userPrompt req)
+requestBody b req = chatBody b (case frStance req of ConjureStance -> conjureSystemPrompt; FillStance -> systemPrompt) (userPrompt req)
 
 -- | A chat request: a system prompt and one user message.
 chatBody :: Backend -> Text -> Text -> Value

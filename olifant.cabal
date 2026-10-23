@@ -119,7 +119,7 @@ library
     Olifant.Server.Actions
     Olifant.Server.Anticipate
     Olifant.Server.Completion
-    Olifant.Server.Draft
+    Olifant.Server.Conjure
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
@@ -276,7 +276,7 @@ test-suite spec
     Olifant.Server.Anticipate
     Olifant.Server.AnticipateSpec
     Olifant.Server.Completion
-    Olifant.Server.Draft
+    Olifant.Server.Conjure
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
