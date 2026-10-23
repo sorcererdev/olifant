@@ -75,6 +75,15 @@ spec = describe "Olifant.Server.Anticipate (the one Jev question at the cursor)"
     it "(g) 0.5 at Silence: nothing (below 0.6)" $ do
       (found, _) <- anticipating "{\"answers\": {\"anticipate\": {\"choice\": \"python-htmx/command\", \"confidence\": 0.5}}}"
       fmap anGenerator found `shouldBe` Nothing
+  describe "the Silence question's candidates" $
+    it "(k) each says what it makes, from its path pattern: the summary, then ` — makes ` and the place" $ do
+      let newCommand = "src/bistro/booking/commands/reschedule_booking.py"
+      withFixture [] $ \s _ -> do
+        (_, Just (_, _, q)) <- anticipationAsk (root </> newCommand) 1 (openDoc (root </> newCommand) 1 "class RescheduleBooking:\n" s)
+        let options = case qShape q of Choice os -> os; _ -> []
+            said = lookup "python-htmx/command" options
+        fmap (T.isInfixOf " — makes ") said `shouldBe` Just True
+        fmap (T.isInfixOf "commands/{command}.py") said `shouldBe` Just True
   describe "minPrefixLines (a silence needs that much of the unit)" $ do
     it "(i) a unit's lines of code, against a length" $ do
       let unit = T.intercalate "\n" ["class CloseTable:", "", "    def handle(self, input):"]

@@ -103,6 +103,9 @@ anticipateQuestion moment path (unit, cursor, imports) candidates =
 -- | What may be asked at a line: a tie (the actions covering it), or a
 -- silence (none does, and recognition offers nothing sure: the suggested
 -- generators that nearly apply, and those the file is at the place of).
+-- A silence candidate's text is its summary and what it makes, derived from
+-- its conventions' path patterns (" — makes src/{app}/.../{command}.py"):
+-- the place is what lets Jev match a generator to the path.
 anticipateCandidates :: FilePath -> Int -> ServerState -> IO (ServerState, Maybe (Moment, [(Text, Text)]))
 anticipateCandidates path line s =
   fileActionsFor path s >>= \case
@@ -118,14 +121,17 @@ anticipateCandidates path line s =
           recognitionFor path line s' >>= \case
             (s'', Just sg) | fmap rcBand (sgRecognition sg) /= Just Hint -> pure (s'', Nothing)
             (s'', _) -> do
-              (s''', placed) <- placedAt s''
+              (s''', placed, places) <- placedAt s''
               let cands = nub ([nbGenerator n | n <- near, suggested (nbGenerator n)] <> map generatorIdText placed)
-              pure (s''', if null cands then Nothing else Just (Silence, map described cands))
+                  making gid = case [patternText (cvPattern cv) | cv <- places, generatorIdText (cvGenerator cv) == gid] of
+                    [] -> described gid
+                    ps -> fmap (<> " — makes " <> T.intercalate ", " ps) (described gid)
+              pure (s''', if null cands then Nothing else Just (Silence, map making cands))
   where
     placedAt st =
       indexAt path st <&> \case
-        (st', Just (root, _, ix, _, _)) -> (st', placedGenerators ix (makeRelative root path))
-        (st', Nothing) -> (st', [])
+        (st', Just (root, _, ix, _, _)) -> (st', placedGenerators ix (makeRelative root path), ixConventions ix)
+        (st', Nothing) -> (st', [], [])
 
 -- | An answer as an anticipation: an option chosen at least as surely as
 -- the moment's gate. At a tie, the chosen action's suggestion (a snippet's
