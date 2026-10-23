@@ -16,9 +16,13 @@ module Olifant.Server.ConjureNext
   , conjureNextQuestion
   , nextFrom
   , withHint
+  , PausedConjure (..)
+  , pausedLifetime
+  , pruned
   ) where
 
 import Data.List (nub)
+import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -177,3 +181,38 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
   where
     addTo [] = []
     addTo xs = init xs ++ [(\(f, w) -> (f, w <> "\nThe person says: " <> h)) (last xs)]
+
+-- | A conjure paused, as the server keeps it under its token: the file (absolute) and its
+-- version when the conjure began, where it was asked (the line, the selection), where the
+-- loop resumes (the seed), the rung's index, the rungs used, the rounds and seconds used since
+-- the last grant, the last round's view, the person's hint, the file as the last attempt
+-- writes it (what stop lands), the names the last check left undefined, and when it paused
+-- (monotonic seconds).
+data PausedConjure = PausedConjure
+  { pdFile :: FilePath
+  , pdVersion :: Maybe Int
+  , pdLine :: Int
+  , pdSelected :: Maybe (Int, Int)
+  , pdSeed :: Seed
+  , pdRung :: Int
+  , pdRungs :: [Text]
+  , pdRounds :: Int
+  , pdSeconds :: Double
+  , pdLast :: RoundView
+  , pdHint :: Maybe Text
+  , pdLanding :: Text
+  , pdUndefined :: [Text]
+  , pdAt :: Double
+  }
+  deriving stock (Eq, Show)
+
+-- | Seconds a paused conjure is kept.
+pausedLifetime :: Double
+pausedLifetime = 600
+
+-- | The paused conjures still good at NOW: none older than 'pausedLifetime', none whose file
+-- the editor has at another version than when it paused (DOCS: version and text by path).
+pruned :: Double -> Map FilePath (Int, Text) -> Map Text PausedConjure -> Map Text PausedConjure
+pruned now docs = M.filter good
+  where
+    good pd = now - pdAt pd <= pausedLifetime && (fst <$> M.lookup (pdFile pd) docs) == pdVersion pd

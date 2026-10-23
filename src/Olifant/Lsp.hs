@@ -604,7 +604,9 @@ handlers env =
             case conjured' of
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right a ->
+              -- (the paused result and the resume form come with the editor's side)
+              Right (Paused _) -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "paused conjures need a newer editor" Nothing))
+              Right (Landed a) ->
                 respond . Right $
                   object
                     [ "file" .= daFile a

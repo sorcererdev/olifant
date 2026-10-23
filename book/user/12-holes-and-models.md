@@ -358,8 +358,9 @@ test's, so it is parsed, checked, auto-imported and retried as any hole is. Two 
 - **The verifier is the unit's tests.** A body is verified by its test file (every test there
   must pass). A test's body is verified the other way: the test must fail *at its assertion*, or
   pass (an error in the setup is a failed attempt). Each failure goes back to the model as the
-  reason, as a `verify` command's output does; when the retries run out, the last attempt lands
-  anyway, and the notification says what its tests said.
+  reason, as a `verify` command's output does; when the retries run out (or, with a decision
+  model, when the person stops a paused conjure) the last attempt lands anyway, and the
+  notification says what its tests said.
 
 ### Retries with the reason
 
