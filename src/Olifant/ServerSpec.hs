@@ -570,7 +570,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       either id (const "") r `shouldSatisfy` T.isInfixOf "changed"
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
-    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False
+    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" []
         pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True

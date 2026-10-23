@@ -41,7 +41,7 @@ import Olifant.Language (Failure (..), TestRun (..), languageFor, runTestsIn)
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Next (..), Offer, PausedConjure (..), RoundView, Standing (..), conjureNextQuestion, nextFrom, offerText, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
+import Olifant.Server.ConjureNext (Next (..), Offer, PausedConjure (..), RoundContext (..), RoundView, Standing (..), conjureNextQuestion, nextFrom, offerText, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -292,11 +292,11 @@ steer s stepLine begun counters sd record rs =
     False -> do
       c <- readIORef counters
       now <- getMonotonicTime
-      let view = roundView (cLast c) rs
+      let view = roundView (RoundContext "" "" [] False) (cLast c) rs
           used = cRounds c + 1
           seconds = cSecondsBefore c + (now - begun)
           above = drop (cRung c + 1) (sdLadder sd)
-          standing = Standing (sdRounds sd - used) (sdBudget sd - seconds) (fst <$> listToMaybe above) (cHint c)
+          standing = Standing (sdRounds sd - used) (sdBudget sd - seconds) (fst <$> listToMaybe above) (cHint c) False
       next <- case spent standing of
         Just n -> pure n
         Nothing -> do
