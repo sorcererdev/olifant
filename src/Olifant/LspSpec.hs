@@ -1069,6 +1069,97 @@ conjureSpec = describe "olifant/conjure" $ do
         again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
         later `shouldSatisfy` either ("continue, climb or stop" `T.isInfixOf`) (const False)
 
+  -- a steered conjure of handle, rounds = 2, Jev answering port (bookings:
+  -- BookingRepository); WIRE the `[conjure] wire`, CHANGED files; SESSION
+  -- given ask and resume; the step log's lines (less their time) after
+  let testRel = "src/bistro/booking/commands/create_booking__test.py"
+      fixture p = TIO.readFile ("packs/python-htmx/fixtures/app" </> p)
+      -- create_booking with no bookings port: the class lacks it
+      unwired = T.replace "from bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n" "" . T.replace "self, bookings: BookingRepository, ids: IdGenerator" "self, ids: IdGenerator" . T.replace "        self.bookings = bookings\n" ""
+      wiredConjure :: Maybe Text -> [(FilePath, Text)] -> (([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]])
+      wiredConjure wire changed session =
+        withSystemTempDirectory "olifant-conjure-wire" $ \tmp -> do
+          let script = tmp </> "tests.json"
+              fills = tmp </> "fills.toml"
+              answers = tmp </> "answers.json"
+          BSL.writeFile script "{\"src/bistro/booking/commands/create_booking__test.py::test_books_a_free_slot\": {\"line\": 34, \"message\": \"assert 1 == 2\"}}"
+          TIO.writeFile fills "[fills]\nbody = \"return None\"\n"
+          TIO.writeFile answers "{\"answers\": {\"conjure-next\": {\"choice\": \"port\", \"fields\": {\"param\": \"bookings\", \"port\": \"BookingRepository\"}, \"confidence\": 0.9}}}"
+          withPython changed $ \ports dir -> do
+            old <- TIO.readFile (dir </> ".olifant/config.toml")
+            TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 2\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n" <> maybe "" (\w -> "[conjure]\nwire = \"" <> w <> "\"\n") wire)
+            let config = [("test_script", String (T.pack script)), ("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+            (r, _) <- inProcessWithConfig config ports dir $ do
+              doc <- openDoc moduleRel "python"
+              text <- documentContents doc
+              let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+                  base = ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]]
+                  ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base <> extra))
+                  resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
+              session ask resume
+            let stepLog = dir </> ".olifant/state/steps.log"
+            found <- doesFileExist stepLog
+            lines' <- if found then T.lines <$> TIO.readFile stepLog else pure []
+            pure (r, [drop 1 (T.splitOn "\t" l) | l <- lines'])
+      field k = either (const Nothing) (lookupKey k)
+      inner k v = case v of Just (Object o) -> KM.lookup k o; _ -> Nothing
+      -- each changed document's path (from its uri) and its edits' new texts
+      changes v = [(T.pack (fromMaybe "" (uriToFilePath (Uri u))), [t | Object te <- toList es, Just (String t) <- [KM.lookup "newText" te]]) | Just (Array cs) <- [inner "documentChanges" v], Object c <- toList cs, Just (Object d) <- [KM.lookup "textDocument" c], Just (String u) <- [KM.lookup "uri" d], Just (Array es) <- [KM.lookup "edits" c]]
+      wroteIn rel needle v = any (\(p, ts) -> T.pack rel `T.isSuffixOf` p && any (needle `T.isInfixOf`) ts) (changes v)
+
+  it "a port answer wires the port in-process and the landing edits every file it wrote" $ do
+    unwiredModule <- unwired <$> fixture moduleRel
+    ((paused, stopped), steps) <- wiredConjure (Just "wire") [(moduleRel, unwiredModule)] $ \ask resume -> do
+      paused <- ask []
+      stopped <- resume "conjure-1" "stop"
+      pure (paused, stopped)
+    let pausedObj = field "paused" paused
+    inner "wired" pausedObj `shouldBe` Just (toJSON ["bookings: BookingRepository" :: Text])
+    inner "explanation" pausedObj `shouldSatisfy` \case Just (String x) -> not (T.null x); _ -> False
+    inner "failing" pausedObj `shouldBe` Just (toJSON [object ["test" .= (T.pack testRel <> "::test_books_a_free_slot"), "message" .= ("assert 1 == 2" :: Text)]])
+    steps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure-wire", "wire"] && "param=bookings" `elem` fs)
+    let edits = field "edits" stopped
+    edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
+    edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
+
+  -- (the brief asked for the explanation "needs a port the class lacks: …; no wire generator
+  -- applies here", but port is then not an option, so every decider validates the answer
+  -- to unsure: the round goes again and the budget pauses)
+  it "a port answer with no wire generator configured is not taken: no wire, the budget pauses" $ do
+    (paused, steps) <- wiredConjure Nothing [] $ \ask _ -> ask []
+    inner "explanation" (field "paused" paused) `shouldBe` Just (String "budget spent")
+    steps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure-next", "unsure"])
+    inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ([] :: [Text]))
+    steps `shouldSatisfy` all (\fs -> take 1 fs /= ["conjure-wire"])
+
+  it "a wire that writes nothing is logged as failed and the conjure goes on" $ do
+    -- the fixture as the wire leaves it: the module keeps bookings, the helper and the route's test pass it
+    testText <- fixture testRel
+    routesText <- fixture "src/bistro/web/bookings/routes__test.py"
+    let wiredTest =
+          T.replace "from bistro.shared.result import Ok\n" "from bistro.shared.result import Ok\nfrom bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n"
+            . T.replace "def command() -> tuple" "def command(\n    bookings: BookingRepository | None = None,\n) -> tuple"
+            . T.replace "        ids=InMemoryIdGenerator(),\n    )" "        ids=InMemoryIdGenerator(),\n        bookings=bookings or InMemoryBookingRepository(),\n    )"
+            $ testText
+        wiredRoutes = T.replace "                ids=InMemoryIdGenerator(),\n            )," "                ids=InMemoryIdGenerator(),\n                bookings=InMemoryBookingRepository(),\n            )," routesText
+    (paused, steps) <- wiredConjure (Just "wire") [(testRel, wiredTest), ("src/bistro/web/bookings/routes__test.py", wiredRoutes)] $ \ask _ -> ask []
+    steps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure-wire-failed", "wire"])
+    inner "explanation" (field "paused" paused) `shouldSatisfy` \case Just (String x) -> "wire failed:" `T.isPrefixOf` x; _ -> False
+    inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ([] :: [Text]))
+
+  it "a written file edited during the pause ends the resume and drops the token" $ do
+    unwiredModule <- unwired <$> fixture moduleRel
+    ((paused, changed, again), _) <- wiredConjure (Just "wire") [(moduleRel, unwiredModule)] $ \ask resume -> do
+      paused <- ask []
+      test <- openDoc testRel "python"
+      changeDoc test [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+      changed <- resume "conjure-1" "continue"
+      again <- resume "conjure-1" "continue"
+      pure (paused, changed, again)
+    inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ["bookings: BookingRepository" :: Text])
+    changed `shouldSatisfy` either ("your text stands" `T.isInfixOf`) (const False)
+    again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
+
 -- | `olifant/mutate`: the unit at a position mutated against its test
 -- file (a scripted runner that kills nothing); and a survivor's stub.
 mutateSpec :: Spec

@@ -228,8 +228,11 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
 -- version when the conjure began, where it was asked (the line, the selection), where the
 -- loop resumes (the seed), the rung's index, the rungs used, the rounds and seconds used since
 -- the last grant, the last round's view, the person's hint, the file as the last attempt
--- writes it (what stop lands), the names the last check left undefined, and when it paused
--- (monotonic seconds).
+-- writes it (what stop lands), the names the last check left undefined, when it paused
+-- (monotonic seconds); the conjure's working writes beside the unit's (root-relative path →
+-- text: a wire's), each written file's editor version (absolute path; none when it was not
+-- open) and its text when the conjure first read it (none: a new file), what is wired, and
+-- the pause's explanation.
 data PausedConjure = PausedConjure
   { pdFile :: FilePath
   , pdVersion :: Maybe Int
@@ -245,6 +248,11 @@ data PausedConjure = PausedConjure
   , pdLanding :: Text
   , pdUndefined :: [Text]
   , pdAt :: Double
+  , pdWrites :: Map FilePath Text
+  , pdVersions :: Map FilePath (Maybe Int)
+  , pdBases :: Map FilePath (Maybe Text)
+  , pdWired :: [Text]
+  , pdExplanation :: Text
   }
   deriving stock (Eq, Show)
 
@@ -254,6 +262,7 @@ pausedLifetime = 600
 
 -- | The paused conjures still good at NOW: none older than 'pausedLifetime', none whose file
 -- the editor has at another version than when it paused (DOCS: version and text by path).
+-- Only the unit's file is checked here; the other files it wrote are checked at resume.
 pruned :: Double -> Map FilePath (Int, Text) -> Map Text PausedConjure -> Map Text PausedConjure
 pruned now docs = M.filter good
   where

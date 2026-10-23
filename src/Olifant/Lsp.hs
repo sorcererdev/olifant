@@ -739,7 +739,7 @@ conjureJson = \case
     object
       [ "file" .= daFile a
       , "unit" .= daUnit a
-      , "edits" .= maybe Aeson.Null (\e -> toJSON (workspaceEdit [e])) (daEdit a)
+      , "edits" .= (if null (daEdits a) then Aeson.Null else toJSON (workspaceEdit (daEdits a)))
       , "summary" .= daSummary a
       , "green" .= daGreen a
       , "tests" .= testsJson (daTests a)
@@ -759,6 +759,9 @@ conjureJson = \case
             , "summary" .= paSummary p
             , "offers" .= paOffers p
             , "why" .= paWhy p
+            , "explanation" .= paExplanation p
+            , "failing" .= [object ["test" .= t, "message" .= m] | (t, m) <- paFailing p]
+            , "wired" .= paWired p
             ]
       ]
 
