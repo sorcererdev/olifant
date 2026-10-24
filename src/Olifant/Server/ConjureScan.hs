@@ -14,6 +14,7 @@ module Olifant.Server.ConjureScan
   , initParams
   , deriveParam
   , takesPort
+  , testSource
   , conjurePortQuestion
   , conjurePortGate
   , portFrom
@@ -28,7 +29,15 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
-import Olifant.Server.ConjureNext (testSource)
+
+-- | A test's source (it lives here, not in Site, which would import ConjureNext in a cycle): its def line and its body, trailing blank lines dropped.
+testSource :: Text -> Text -> Maybe Text
+testSource name text = case dropWhile (not . isDef) (T.lines text) of
+  [] -> Nothing
+  d : rest -> Just (T.intercalate "\n" (d : reverse (dropWhile (T.null . T.strip) (reverse (takeWhile (\l -> T.null (T.strip l) || indentOf l > indentOf d) rest)))))
+  where
+    isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
+    indentOf = T.length . T.takeWhile (== ' ')
 
 -- | A fake a test builds: the name it is bound to and the class (or @Mock@) called.
 data Fake = Fake {fkVariable :: Text, fkClass :: Text}

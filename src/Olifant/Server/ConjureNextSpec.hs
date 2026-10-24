@@ -21,6 +21,7 @@ import Olifant.Generation.Steer
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
 import Olifant.Server.ConjureNext
+import Olifant.Server.ConjureScan (Fake (..))
 import Olifant.Server.Unit (unitHeader)
 import Test.Hspec
 
@@ -37,7 +38,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
       viewB = roundView ctx Nothing (RoundState 1 "qwen" [hole {rhRun = Nothing, rhWhy = "does not parse as block"}])
       nextRung e = Just (Rung "claude" e)
       standing e = Standing 3 50 (nextRung e) Nothing False
-      keys = ["round", "rung", "attempt", "failing", "passing", "check", "tests", "unit", "wired", "repeat", "rounds_left", "seconds_left", "hint"]
+      keys = ["round", "rung", "rounds_left", "attempts", "failing", "passing", "trade", "repeat", "tests", "unit", "hint"]
   it "(a) roundView lists failures, counts passes and spots a repeat" $ do
     rvFailing view `shouldBe` [("t.py::test_a", "assert 0 == 1")]
     rvPassing view `shouldBe` 1
@@ -58,32 +59,28 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     undefinedNames "E   NameError: name 'date' is not defined" `shouldBe` ["date"]
     undefinedNames "src/a.py: \"Booking\" is not defined; src/a.py: \"Booking\" is not defined" `shouldBe` ["Booking"]
     undefinedNames "assert 0 == 1" `shouldBe` []
-  it "(e) the question offers again, climb and ask, with thirteen context keys" $ do
+  it "(e) the question offers again, climb and ask, with eleven context keys" $ do
     let q = conjureNextQuestion (standing EscalateAsk) view
     qKind q `shouldBe` "conjure-next"
-    map fst (qOptions' q) `shouldBe` ["again", "climb", "ask", "port", "test"]
+    map fst (qOptions' q) `shouldBe` ["again", "climb", "ask"]
     map fst (qContext q) `shouldBe` keys
     lookup "hint" (qContext q) `shouldBe` Just "none"
     lookup "repeat" (qContext q) `shouldBe` Just "no"
     lookup "repeat" (qContext (conjureNextQuestion (standing EscalateAsk) viewAgain)) `shouldBe` Just "yes"
-    map fst (qOptions' (conjureNextQuestion (standing EscalateNever) view)) `shouldBe` ["again", "ask", "port", "test"]
-    map fst (qOptions' (conjureNextQuestion (Standing 3 50 Nothing Nothing False) view)) `shouldBe` ["again", "ask", "port", "test"]
-  it "(f) spent pauses when rounds or seconds run out" $ do
-    spent (Standing 0 50 Nothing Nothing False) `shouldBe` Just (NextPause "budget spent" [OfferContinue, OfferStop])
-    spent (Standing 3 (-1) (Just (Rung "claude" EscalateNever)) Nothing False)
-      `shouldBe` Just (NextPause "budget spent" [OfferContinue, OfferClimb "claude", OfferStop])
-    spent (Standing 3 50 Nothing Nothing False) `shouldBe` Nothing
+    map fst (qOptions' (conjureNextQuestion (standing EscalateNever) view)) `shouldBe` ["again", "ask"]
+    map fst (qOptions' (conjureNextQuestion (Standing 3 50 Nothing Nothing False) view)) `shouldBe` ["again", "ask"]
+  it "(f) spent when rounds or seconds run out" $ do
+    spent (Standing 0 50 Nothing Nothing False) `shouldBe` True
+    spent (Standing 3 (-1) (Just (Rung "claude" EscalateNever)) Nothing False) `shouldBe` True
+    spent (Standing 3 50 Nothing Nothing False) `shouldBe` False
   it "(g) nextFrom follows a confident answer and otherwise goes again" $ do
     let st = standing EscalateAsk
-        offers = [OfferContinue, OfferClimb "claude", OfferStop]
-    nextFrom st view (Chosen "again" [] (Confidence 0.9)) `shouldBe` NextAgain
-    nextFrom st view (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextPause "Jev would climb to claude" offers
-    nextFrom (standing EscalateAuto) view (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextClimb "claude"
-    nextFrom st viewAgain (Chosen "ask" [] (Confidence 0.9)) `shouldBe` NextPause "the same failure twice" offers
-    nextFrom st view (Chosen "ask" [] (Confidence 0.9)) `shouldBe` NextPause "Jev asks you to look" offers
-    nextFrom st view (Chosen "climb" [] (Confidence 0.5)) `shouldBe` NextAgain
-    nextFrom st view (Chosen "ask" [] Unknown) `shouldBe` NextAgain
-    nextFrom st view Unsure `shouldBe` NextAgain
+    nextFrom st (Chosen "again" [] (Confidence 0.9)) `shouldBe` NextAgain
+    nextFrom st (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextPause (CauseClimb "claude")
+    nextFrom (standing EscalateAuto) (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextClimb "claude"
+    nextFrom st (Chosen "ask" [] (Confidence 0.9)) `shouldBe` NextPause CauseAsk
+    nextFrom st (Chosen "ask" [] Unknown) `shouldBe` NextAgain
+    nextFrom st Unsure `shouldBe` NextAgain
   it "(h0) roundSummary and offerText" $ do
     roundSummary view `shouldBe` "red: test_a \183 assert 0 == 1"
     roundSummary viewB `shouldBe` "red: does not parse as block"
@@ -103,40 +100,6 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
       `shouldBe` "class C:\n    def __init__(self, a: A) -> None:"
     unitHeader "def f():\n    pass\n" 2 `shouldBe` "def f():"
     unitHeader "x = 1\n" 1 `shouldBe` ""
-  it "(j) the question offers port, wireable or not (an unwireable one is explained), and names its fields" $ do
-    let w = (standing EscalateAsk) {stWireable = True}
-        q = conjureNextQuestion w view
-    map fst (qOptions' q) `shouldBe` ["again", "climb", "ask", "port", "test"]
-    qFields q `shouldBe` [("param", "ident"), ("port", "ident"), ("test", "text"), ("why", "text")]
-    map fst (qOptions' (conjureNextQuestion (standing EscalateAsk) view)) `shouldBe` ["again", "climb", "ask", "port", "test"]
-    map fst (qContext q) `shouldBe` keys
-    lookup "wired" (qContext q) `shouldBe` Just "x: X"
-  it "(k) nextFrom wires on port, pauses with a reconjure offer on test, explains on ask" $ do
-    let w = (standing EscalateAsk) {stWireable = True}
-        st = standing EscalateAsk
-        offers = [OfferContinue, OfferClimb "claude", OfferStop]
-        portA c = Chosen "port" [("param", "bookings"), ("port", "BookingRepository")] (Confidence c)
-    nextFrom w view (portA 0.9) `shouldBe` NextWire "bookings" "BookingRepository"
-    nextFrom st view (portA 0.9) `shouldBe` NextPause "needs a port the class lacks: bookings: BookingRepository; no wire generator applies here" offers
-    nextFrom w view (portA 0.5) `shouldBe` NextAgain
-    nextFrom st view (Chosen "test" [("test", "t.py::test_a"), ("why", "it builds a Mock it never passes in")] (Confidence 0.9))
-      `shouldBe` NextPause "it builds a Mock it never passes in" (offers ++ [OfferReconjure "t.py::test_a"])
-    nextFrom st view (Chosen "test" [("test", "t.py::nope")] (Confidence 0.9)) `shouldBe` NextPause "Jev asks you to look" offers
-    nextFrom st view (Chosen "ask" [("why", "the tests disagree")] (Confidence 0.9)) `shouldBe` NextPause "the tests disagree" offers
-    offerText (OfferReconjure "t.py::test_a") `shouldBe` "reconjure:t.py::test_a"
-    offerText OfferAccept `shouldBe` "accept"
-    offerText OfferReject `shouldBe` "reject"
-  it "(l) conjure-test asks ok or port and reads a confident port" $ do
-    let q = conjureTestQuestion "def test_a():\n    assert f() == 1" "class C:\n    def __init__(self) -> None:"
-    qKind q `shouldBe` "conjure-test"
-    map fst (qOptions' q) `shouldBe` ["ok", "port"]
-    qFields q `shouldBe` [("param", "ident"), ("port", "ident")]
-    map fst (qContext q) `shouldBe` ["test", "unit"]
-    testCheckFrom (Chosen "port" [("param", "bookings"), ("port", "BookingRepository")] (Confidence 0.8)) `shouldBe` TestPort "bookings" "BookingRepository"
-    testCheckFrom (Chosen "port" [] (Confidence 0.9)) `shouldBe` TestOk
-    testCheckFrom (Chosen "port" [("param", "bookings"), ("port", "BookingRepository")] (Confidence 0.5)) `shouldBe` TestOk
-    testCheckFrom (Chosen "ok" [] (Confidence 0.9)) `shouldBe` TestOk
-    testCheckFrom Unsure `shouldBe` TestOk
   it "(m) the cancel_booking rounds: rows, involved tests, a repeat and a trade" $ do
     roundRows "cancel_booking" cancelRecords
       `shouldBe` [ RoundRow 1 "local" "return Ok(None)" False ["not_found"]
@@ -159,6 +122,84 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
                  ]
     rvTrade v `shouldBe` True
     rvRepeat v `shouldBe` True
+  let nf = Fake "repository" "Mock"
+      cancelFacts =
+        DiagnosisFacts
+          { dfRung = "local"
+          , dfNext = Nothing
+          , dfStem = "cancel_booking"
+          , dfMethod = "handle"
+          , dfClass = "CancelBooking"
+          , dfHeader = cancelHeader
+          , dfTestText = cancelTestText
+          , dfBefore = cancelBefore
+          , dfHistory = cancelRecords
+          , dfFlagged = [(notFoundId, nf)]
+          , dfWired = []
+          , dfCandidates = []
+          , dfRounds = 3
+          , dfSeconds = 14
+          , dfWireFailed = Nothing
+          }
+  it "(o) the policy table, in order" $ do
+    let base = PolicyFacts [(notFoundId, nf)] [notFoundId] [notFoundId] True True [] (Just ("bookings", "BookingRepository")) False False False
+    policy base `shouldBe` PolicyWire "bookings" "BookingRepository"
+    policy base {pfDerived = Nothing} `shouldBe` PolicyPause CausePort
+    policy base {pfWired = ["bookings: BookingRepository"]} `shouldBe` PolicyPause (CauseTest notFoundId)
+    policy base {pfWireApplies = False} `shouldBe` PolicyPause (CauseTest notFoundId)
+    -- Review Focus 2: the class already takes the port (wired by hand): no wire, unsatisfiable
+    policy base {pfLacksPort = False} `shouldBe` PolicyPause (CauseTest notFoundId)
+    policy base {pfFailingNow = [], pfWired = ["x: X"], pfRepeat = True} `shouldBe` PolicyPause CauseRepeat
+    policy base {pfFlagged = [], pfTrade = True} `shouldBe` PolicyPause CauseTrade
+    policy base {pfFlagged = [], pfSpent = True} `shouldBe` PolicyPause CauseBudget
+    policy base {pfFlagged = []} `shouldBe` PolicyAsk
+  it "(p) the cancel_booking run as it happened: repeat, trade and the same call" $
+    diagnosis cancelFacts CauseRepeat
+      `shouldBe` [ "local wrote the same body in rounds 2 and 3."
+                 , "Every body so far passes one test and fails the other."
+                 , "Both tests call handle(CancelBookingInput(id=\"1\")) and expect different results."
+                 ]
+  it "(q) after the wire, round 1 red on not_found: unsatisfiable" $ do
+    diagnosis cancelFacts {dfHistory = take 1 cancelRecords, dfWired = ["bookings: BookingRepository"], dfRounds = 1} (CauseTest notFoundId)
+      `shouldBe` ["No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking takes bookings: BookingRepository since the wire; the test should pass its fake as command(bookings=\8230)."]
+    diagnosis cancelFacts {dfHistory = take 1 cancelRecords, dfRounds = 1} (CauseTest notFoundId)
+      `shouldBe` ["No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking() takes no ports."]
+    diagnosis cancelFacts {dfHistory = take 1 cancelRecords, dfCandidates = ["bookings: BookingRepository", "ids: IdGenerator"]} CausePort
+      `shouldBe` [ "not_found builds repository = Mock() for a port CancelBooking lacks; it could be bookings: BookingRepository or ids: IdGenerator."
+                 , "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking() takes no ports."
+                 ]
+    diagnosis cancelFacts {dfHistory = take 1 cancelRecords, dfFlagged = [], dfRounds = 6, dfSeconds = 180} CauseBudget `shouldBe` ["6 rounds used (180 s); nothing passed."]
+    diagnosis cancelFacts {dfHistory = take 1 cancelRecords, dfFlagged = [], dfWireFailed = Just "wire writes nothing here"} CauseAsk
+      `shouldBe` ["local is not converging.", "The wire failed: wire writes nothing here."]
+  it "(r) the offers, suspect first" $ do
+    let st = Standing 6 180 Nothing Nothing False
+    offersAt st CauseRepeat [notFoundId, succeedsId] [] 3 `shouldBe` [OfferContinue, OfferHint, OfferReconjure notFoundId, OfferReconjure succeedsId, OfferStop, OfferKeep 3]
+    offersAt st {stNext = Just (Rung "claude" EscalateAsk)} CausePort [notFoundId] ["bookings: BookingRepository", "ids: IdGenerator"] 1
+      `shouldBe` [OfferContinue, OfferHint, OfferClimb "claude", OfferWire "bookings" "BookingRepository", OfferWire "ids" "IdGenerator", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
+    offersAt st CauseRepeat [] ["bookings: BookingRepository"] 2 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 2]
+    suspectFirst [(notFoundId, nf)] (involved cancelBefore cancelRecords) `shouldBe` [notFoundId, succeedsId]
+    suspectFirst [] (involved cancelBefore cancelRecords) `shouldBe` [succeedsId, notFoundId]
+    map offerText [OfferHint, OfferWire "bookings" "BookingRepository", OfferKeep 3] `shouldBe` ["hint", "wire:bookings: BookingRepository", "keep:3"]
+    causeWords (CauseTest notFoundId) `shouldBe` ["test", notFoundId]
+  it "(s) the narrowed question and its gates" $ do
+    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore "cancel_booking") Nothing (cancelState 3)
+        st = Standing 3 50 Nothing Nothing False
+        q = conjureNextQuestion st v
+    map fst (qOptions' q) `shouldBe` ["again", "ask"]
+    map fst (qOptions' (conjureNextQuestion st {stNext = Just (Rung "claude" EscalateAuto)} v)) `shouldBe` ["again", "climb", "ask"]
+    qFields q `shouldBe` []
+    map fst (qContext q) `shouldBe` ["round", "rung", "rounds_left", "attempts", "failing", "passing", "trade", "repeat", "tests", "unit", "hint"]
+    lookup "failing" (qContext q) `shouldBe` Just (succeedsId <> ": assert NotFound(reason='Booking not found') == Ok(value=None)")
+    lookup "passing" (qContext q) `shouldBe` Just notFoundId
+    lookup "trade" (qContext q) `shouldBe` Just "yes"
+    nextFrom st (Chosen "ask" [] (Confidence 0.5)) `shouldBe` NextPause CauseAsk
+    nextFrom st (Chosen "ask" [] (Confidence 0.49)) `shouldBe` NextAgain
+    nextFrom st {stNext = Just (Rung "claude" EscalateAuto)} (Chosen "climb" [] (Confidence 0.6)) `shouldBe` NextClimb "claude"
+    nextFrom st {stNext = Just (Rung "claude" EscalateAsk)} (Chosen "climb" [] (Confidence 0.6)) `shouldBe` NextPause (CauseClimb "claude")
+    nextFrom st {stNext = Just (Rung "claude" EscalateAuto)} (Chosen "climb" [] (Confidence 0.59)) `shouldBe` NextAgain
+    trigger CauseAsk (Just (Decided "ask" (Just 0.68) [("ask", 0.68), ("again", 0.29), ("test", 0.02)])) Nothing `shouldBe` "Jev: ask .68 \183 again .29 \183 test .02"
+    trigger CauseRepeat Nothing (Just "x writes nothing here") `shouldBe` "repeat; wire failed: x writes nothing here"
+    trigger (CauseTest notFoundId) Nothing Nothing `shouldBe` "unsatisfiable test: " <> notFoundId
   where
     qOptions' q = case qShape q of
       Choice os -> os

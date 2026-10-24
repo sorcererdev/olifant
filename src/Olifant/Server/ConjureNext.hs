@@ -21,17 +21,24 @@ module Olifant.Server.ConjureNext
   , roundSummary
   , Standing (..)
   , Offer (..)
+  , Cause (..)
+  , causeWords
   , Next (..)
-  , conjureNextGate
-  , offersFor
+  , conjureAskGate
+  , conjureClimbGate
   , offerText
+  , offersAt
+  , suspectFirst
   , spent
+  , PolicyFacts (..)
+  , Policy (..)
+  , policy
+  , DiagnosisFacts (..)
+  , diagnosis
+  , trigger
   , conjureNextQuestion
   , nextFrom
   , withHint
-  , conjureTestQuestion
-  , TestCheck (..)
-  , testCheckFrom
   , PausedAnswer (..)
   , Proposal (..)
   , PausedConjure (..)
@@ -46,6 +53,8 @@ import Data.Maybe (fromMaybe, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
+import Olifant.Server.ConjureScan (Fake (..), actCall, helperOf, initParams, testSource)
+import Text.Printf (printf)
 import Olifant.Generation.Steer
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
@@ -184,15 +193,6 @@ isTrade before records = or [a /= b | a <- went True False, b <- went False True
     ids = nub (concat [map fst (trFailed r) ++ trPassed r | r <- runs])
     went from to = [t | t <- ids, let ss = [f | r <- runs, Just f <- [statusIn t r]], from `elem` ss, to `elem` dropWhile (/= from) ss]
 
--- | A test's source (it lives here, not in Site, which would import this module in a cycle): its def line and its body, trailing blank lines dropped.
-testSource :: Text -> Text -> Maybe Text
-testSource name text = case dropWhile (not . isDef) (T.lines text) of
-  [] -> Nothing
-  d : rest -> Just (T.intercalate "\n" (d : reverse (dropWhile (T.null . T.strip) (reverse (takeWhile (\l -> T.null (T.strip l) || indentOf l > indentOf d) rest)))))
-  where
-    isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
-    indentOf = T.length . T.takeWhile (== ' ')
-
 firstLines :: Int -> Text -> Text
 firstLines n = T.intercalate "\n" . take n . T.lines
 
@@ -271,115 +271,258 @@ roundSummary v = case rvFailing v of
 
 data Standing = Standing {stRoundsLeft :: Int, stSecondsLeft :: Double, stNext :: Maybe Rung, stHint :: Maybe Text, stWireable :: Bool}
 
-data Offer = OfferContinue | OfferClimb Text | OfferStop | OfferReconjure Text | OfferAccept | OfferReject
+-- | What a pause offers: go on, go on with the person's words, climb, run a wire (param,
+-- port), re-conjure a test, stop (nothing lands), stop keeping round N's body; a proposal's
+-- accept and reject.
+data Offer = OfferContinue | OfferHint | OfferClimb Text | OfferWire Text Text | OfferReconjure Text | OfferStop | OfferKeep Int | OfferAccept | OfferReject
   deriving stock (Eq, Show)
 
-data Next = NextAgain | NextClimb Text | NextPause Text [Offer] | NextWire Text Text
+-- | Why a conjure paused: a test no body can pass, a port not derived, the same body twice,
+-- bodies trading tests, the grant spent, Jev asking, Jev climbing to an `ask` rung.
+data Cause = CauseTest Text | CausePort | CauseRepeat | CauseTrade | CauseBudget | CauseAsk | CauseClimb Text
   deriving stock (Eq, Show)
 
-conjureNextGate :: Double
-conjureNextGate = 0.6
+-- | The cause as the step log has it.
+causeWords :: Cause -> [Text]
+causeWords = \case
+  CauseTest t -> ["test", t]
+  CausePort -> ["port"]
+  CauseRepeat -> ["repeat"]
+  CauseTrade -> ["trade"]
+  CauseBudget -> ["budget"]
+  CauseAsk -> ["ask"]
+  CauseClimb _ -> ["climb"]
 
--- | What the person may do at a pause. A `never` rung is still offered to the person.
-offersFor :: Standing -> [Offer]
-offersFor st = [OfferContinue] ++ [OfferClimb n | Just (Rung n _) <- [stNext st]] ++ [OfferStop]
+data Next = NextAgain | NextClimb Text | NextPause Cause
+  deriving stock (Eq, Show)
+
+-- | The confidence Jev's `ask` needs to pause (a pause is cheap: the person says continue).
+conjureAskGate :: Double
+conjureAskGate = 0.5
+
+-- | The confidence Jev's `climb` needs (it spends a stronger model).
+conjureClimbGate :: Double
+conjureClimbGate = 0.6
 
 offerText :: Offer -> Text
 offerText = \case
   OfferContinue -> "continue"
+  OfferHint -> "hint"
   OfferClimb n -> "climb:" <> n
-  OfferStop -> "stop"
+  OfferWire p q -> "wire:" <> p <> ": " <> q
   OfferReconjure i -> "reconjure:" <> i
+  OfferStop -> "stop"
+  OfferKeep n -> "keep:" <> T.pack (show n)
   OfferAccept -> "accept"
   OfferReject -> "reject"
 
--- | Rounds or time gone: a pause with no call to Jev.
-spent :: Standing -> Maybe Next
-spent st
-  | stRoundsLeft st <= 0 || stSecondsLeft st <= 0 = Just (NextPause "budget spent" (offersFor st))
-  | otherwise = Nothing
+-- | What the person may do at a pause, in order: continue, hint, climb (a rung above; a
+-- `never` rung is still offered to the person), a wire for each candidate (@param: Port@, a
+-- port pause only), a re-conjure of each involved test (suspect first), stop, and keep the
+-- last round's body.
+offersAt :: Standing -> Cause -> [Text] -> [Text] -> Int -> [Offer]
+offersAt st cause tests candidates lastRound =
+  [OfferContinue, OfferHint]
+    ++ [OfferClimb n | Just (Rung n _) <- [stNext st]]
+    ++ [OfferWire p q | cause == CausePort, c <- candidates, Just (p, q) <- [paramPort c]]
+    ++ map OfferReconjure tests
+    ++ [OfferStop]
+    ++ [OfferKeep lastRound | lastRound > 0]
 
+-- | @param: Port@ split.
+paramPort :: Text -> Maybe (Text, Text)
+paramPort c = case T.breakOn ": " c of
+  (p, q) | not (T.null p), not (T.null q) -> Just (T.strip p, T.strip (T.drop 2 q))
+  _ -> Nothing
+
+-- | The involved tests, the flagged first, then those failing now, then the rest.
+suspectFirst :: [(Text, Fake)] -> [TestStatus] -> [Text]
+suspectFirst flagged statuses = nub (flaggedIn ++ [tsTest t | t <- statuses, tsFailing t] ++ map tsTest statuses)
+  where
+    flaggedIn = [t | (t, _) <- flagged, t `elem` map tsTest statuses]
+
+-- | Rounds or time gone: a pause with no call to Jev.
+spent :: Standing -> Bool
+spent st = stRoundsLeft st <= 0 || stSecondsLeft st <= 0
+
+-- | What the policy is decided from, after the before-run or a red round: the tests the scan
+-- flags (with their fake), the tests failing now and those that failed in any round, whether
+-- the class lacks the flagged fake's port, whether a wire generator applies, what is wired,
+-- the wire's (param, port) when derived, and the repeat, the trade and the spent grant.
+data PolicyFacts = PolicyFacts
+  { pfFlagged :: [(Text, Fake)]
+  , pfFailingNow :: [Text]
+  , pfFailedEver :: [Text]
+  , pfLacksPort :: Bool
+  , pfWireApplies :: Bool
+  , pfWired :: [Text]
+  , pfDerived :: Maybe (Text, Text)
+  , pfRepeat :: Bool
+  , pfTrade :: Bool
+  , pfSpent :: Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | Wire (param, port), pause, or ask Jev.
+data Policy = PolicyWire Text Text | PolicyPause Cause | PolicyAsk
+  deriving stock (Eq, Show)
+
+-- | The policy in code (conjure-pause-context-design.md §3.3), checked in order: a flagged
+-- test that failed, the port lacking, a wire applying, none run: wire when derived, else a
+-- port pause; a flagged test failing now no wire can help: an unsatisfiable test; a repeat;
+-- a trade; the grant spent; else Jev is asked.
+policy :: PolicyFacts -> Policy
+policy pf
+  | wireable, Just (p, q) <- pfDerived pf = PolicyWire p q
+  | wireable = PolicyPause CausePort
+  | t : _ <- [t | (t, _) <- pfFlagged pf, t `elem` pfFailingNow pf], not (pfWireApplies pf) || not (null (pfWired pf)) || not (pfLacksPort pf) = PolicyPause (CauseTest t)
+  | pfRepeat pf = PolicyPause CauseRepeat
+  | pfTrade pf = PolicyPause CauseTrade
+  | pfSpent pf = PolicyPause CauseBudget
+  | otherwise = PolicyAsk
+  where
+    failed = [t | (t, _) <- pfFlagged pf, t `elem` pfFailingNow pf || t `elem` pfFailedEver pf]
+    wireable = not (null failed) && pfLacksPort pf && pfWireApplies pf && null (pfWired pf)
+
+-- | What the diagnosis is written from: the rung and the one above, the module's stem, the
+-- unit (its method or function name, its class, its header), the test file, the before-run
+-- and the rounds, the flagged tests, what is wired, the wire's candidates (@param: Port@),
+-- the rounds and seconds used, and a failed wire's reason.
+data DiagnosisFacts = DiagnosisFacts
+  { dfRung :: Text
+  , dfNext :: Maybe Text
+  , dfStem :: Text
+  , dfMethod :: Text
+  , dfClass :: Text
+  , dfHeader :: Text
+  , dfTestText :: Text
+  , dfBefore :: TestRun
+  , dfHistory :: [RoundRecord]
+  , dfFlagged :: [(Text, Fake)]
+  , dfWired :: [Text]
+  , dfCandidates :: [Text]
+  , dfRounds :: Int
+  , dfSeconds :: Int
+  , dfWireFailed :: Maybe Text
+  }
+  deriving stock (Eq, Show)
+
+-- | The pause in sentences: the cause's first, then every other that is true (unsatisfiable,
+-- trade, same call, repeat, no progress, spent, wire failed), at most three. Plain text.
+diagnosis :: DiagnosisFacts -> Cause -> [Text]
+diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
+  where
+    statuses = involved (dfBefore df) (dfHistory df)
+    failingNow = [tsTest t | t <- statuses, tsFailing t]
+    unsatisfiable = [t | (t, _) <- dfFlagged df, t `elem` failingNow]
+    trade = isTrade (dfBefore df) (dfHistory df)
+    rounds = dfHistory df
+    lastRound = maybe 0 rrRound (lastOf rounds)
+    calls = [c | t <- statuses, Just src <- [testSource (snd (T.breakOnEnd "::" (tsTest t))) (dfTestText df)], Just c <- [actCall (dfMethod df) src]]
+    sameCall = [c | (i, c) <- zip [0 :: Int ..] calls, c `elem` drop (i + 1) calls]
+    failingSets = [maybe [] (map fst . trFailed) (rrRun r) | r <- rounds]
+    noProgress = not trade && case reverse failingSets of
+      a : b : c : _ -> a == b && b == c && not (null a)
+      _ -> False
+    others =
+      [ take 1 (map unsatisfiableSentence unsatisfiable)
+      , [tradeSentence | trade]
+      , ["Both tests call " <> c <> " and expect different results." | trade, c <- take 1 sameCall]
+      , [repeatSentence | isRepeat rounds]
+      , ["Three rounds, the same test failing each time." | noProgress]
+      , [spentSentence | cause == CauseBudget]
+      , ["The wire failed: " <> w <> "." | Just w <- [dfWireFailed df]]
+      ]
+    causeSentence = case cause of
+      CauseTest t -> [unsatisfiableSentence t]
+      CausePort -> [portSentence]
+      CauseRepeat -> [repeatSentence]
+      CauseTrade -> [tradeSentence]
+      CauseBudget -> [spentSentence]
+      CauseAsk -> [dfRung df <> " is not converging."]
+      CauseClimb n -> [dfRung df <> " is stuck; " <> n <> " is offered."]
+    tradeSentence = "Every body so far passes one test and fails the other."
+    repeatSentence = dfRung df <> " wrote the same body in rounds " <> tshow' (lastRound - 1) <> " and " <> tshow' lastRound <> "."
+    spentSentence = tshow' (dfRounds df) <> (if dfRounds df == 1 then " round" else " rounds") <> " used (" <> tshow' (dfSeconds df) <> " s); nothing passed."
+    className = if T.null (dfClass df) then dfMethod df else dfClass df
+    unsatisfiableSentence t = case lookup t (dfFlagged df) of
+      Nothing -> "No body can pass " <> shortName (dfStem df) t <> "."
+      Just f ->
+        "No body can pass " <> shortName (dfStem df) t <> ": it builds " <> built f <> " and never hands it to " <> helperCall t <> ", so " <> dfMethod df <> " never sees it." <> takes t
+    built f = fkVariable f <> " = " <> fkClass f <> "()"
+    helperName t = testSource (snd (T.breakOnEnd "::" t)) (dfTestText df) >>= helperOf (dfMethod df)
+    helperCall t = maybe "the helper" (<> "()") (helperName t)
+    takes t = case (dfWired df, initParams (dfHeader df)) of
+      (w : _, _) | Just (p, q) <- paramPort w -> " " <> className <> " takes " <> p <> ": " <> q <> " since the wire; the test should pass its fake as " <> maybe ("the helper (" <> p <> "=\8230)") (\h -> h <> "(" <> p <> "=\8230)") (helperName t) <> "."
+      (_, []) -> " " <> className <> "() takes no ports."
+      (_, ps) -> " " <> className <> " takes " <> T.intercalate ", " [n <> ": " <> ty | (n, ty) <- ps] <> "."
+    portSentence = case [(t, f) | (t, f) <- dfFlagged df] of
+      (t, f) : _ ->
+        shortName (dfStem df) t <> " builds " <> built f <> " for a port " <> className <> " lacks" <> (if null (dfCandidates df) then "." else "; it could be " <> T.intercalate " or " (dfCandidates df) <> ".")
+      [] -> className <> " lacks a port a test needs."
+    lastOf xs = if null xs then Nothing else Just (last xs)
+
+-- | What triggered the pause, for the details: Jev's distribution (@Jev: ask .68 · again
+-- .29@), or the rule's word; a failed wire's reason after.
+trigger :: Cause -> Maybe Decided -> Maybe Text -> Text
+trigger cause decided wireFailed = base <> maybe "" ("; wire failed: " <>) wireFailed
+  where
+    base = case cause of
+      CauseAsk -> jev
+      CauseClimb _ -> jev
+      CauseRepeat -> "repeat"
+      CauseTrade -> "trade"
+      CauseBudget -> "budget spent"
+      CauseTest t -> "unsatisfiable test: " <> t
+      CausePort -> "port not derived"
+    jev = case decided of
+      Just d | not (null (dcProbabilities d)) -> "Jev: " <> T.intercalate " \183 " [o <> " " <> weight p | (o, p) <- dcProbabilities d]
+      Just d -> "Jev: " <> dcChoice d <> maybe "" ((" " <>) . weight) (dcConfidence d)
+      Nothing -> "Jev"
+    weight :: Double -> Text
+    weight p = let t = T.pack (printf "%.2f" p) in fromMaybe t (T.stripPrefix "0" t)
+
+tshow' :: Int -> Text
+tshow' = T.pack . show
+
+-- | Jev's question after a red round no rule paused: is the model converging.
 conjureNextQuestion :: Standing -> RoundView -> Question
-conjureNextQuestion st v = (choice "conjure-next" instructions options context) {qFields = [("param", "ident"), ("port", "ident"), ("test", "text"), ("why", "text")]}
+conjureNextQuestion st v = choice "conjure-next" instructions options context
   where
     instructions =
-      "A conjure is red after this round. Is it converging? The same failure twice (repeat: yes) is not; a smaller failing set, or a different and later failure, is. Choose again while it converges, climb when this model is stuck and a stronger one is offered, ask when the person should look. Choose port when a failing test names a collaborator the class lacks (fill param and port with the constructor argument and its type). Choose test when a failing test cannot be satisfied by any implementation (fill test with its id and why with the reason)."
+      "A conjure is red after this round; nothing in the state says it cannot pass (such cases never reach you). Is this model converging? `again` when the failing set shrank or the failure moved later in a test; `ask` when it is not converging and the person should look; `climb` when a stronger model is offered and this one is not converging. Attempts that trade one failing test for another (`trade: yes`) are not converging."
     options =
       [("again", "try once more with the same model")]
         ++ [("climb", "try the next, stronger model: " <> n) | Just (Rung n e) <- [stNext st], e /= EscalateNever]
         ++ [("ask", "stop and show the person where this stands")]
-        ++ [("port", "wire a missing port into the class, then go again")]
-        ++ [("test", "a failing test is wrong: offer to re-conjure it")]
+    yesNo b = if b then "yes" else "no"
     context =
-      [ ("round", num (rvRound v))
+      [ ("round", tshow' (rvRound v))
       , ("rung", rvRung v)
-      , ("attempt", rvAttempt v)
-      , ("failing", if null (rvFailing v) then "none" else T.intercalate "\n" [i <> ": " <> m | (i, m) <- rvFailing v])
-      , ("passing", num (rvPassing v) <> maybe "" (\d -> " (" <> (if d >= 0 then "+" else "") <> num d <> ")") (rvPassingDelta v))
-      , ("check", fromMaybe "none" (rvCheck v))
+      , ("rounds_left", tshow' (stRoundsLeft st))
+      , ("attempts", if null (rvAttempts v) then "none" else T.intercalate "\n" (rvAttempts v))
+      , ("failing", case (rvFailing v, rvCheck v) of
+          (fs@(_ : _), _) -> T.intercalate "\n" [i <> ": " <> m | (i, m) <- fs]
+          (_, Just c) -> c
+          _ -> "none")
+      , ("passing", if null (rvPassingTests v) then "none" else T.intercalate "\n" (rvPassingTests v))
+      , ("trade", yesNo (rvTrade v))
+      , ("repeat", yesNo (rvRepeat v))
       , ("tests", if null (rvTests v) then "none" else T.intercalate "\n\n" [i <> ":\n" <> src | (i, src) <- rvTests v])
       , ("unit", if T.null (rvUnit v) then "none" else rvUnit v)
-      , ("wired", if null (rvWired v) then "none" else T.intercalate "\n" (rvWired v))
-      , ("repeat", if rvRepeat v then "yes" else "no")
-      , ("rounds_left", num (stRoundsLeft st))
-      , ("seconds_left", num (round (stSecondsLeft st) :: Int))
       , ("hint", fromMaybe "none" (stHint st))
       ]
-    num :: Int -> Text
-    num = T.pack . show
 
--- | What to do after Jev's answer; anything not confident, or not an offered option, is again.
-nextFrom :: Standing -> RoundView -> Answer -> Next
-nextFrom st v a = case a of
-  Chosen o fs _ | confident conjureNextGate a -> case o of
-    "climb" -> case stNext st of
-      Just (Rung n EscalateAuto) -> NextClimb n
-      Just (Rung n EscalateAsk) -> NextPause ("Jev would climb to " <> n) (offersFor st)
-      _ -> NextAgain
-    "ask" -> NextPause (fromMaybe (if rvRepeat v then "the same failure twice" else "Jev asks you to look") (field "why" fs)) (offersFor st)
-    "port" -> case (field "param" fs, field "port" fs) of
-      (Just p, Just t)
-        | stWireable st -> NextWire p t
-        | otherwise -> NextPause ("needs a port the class lacks: " <> p <> ": " <> t <> "; no wire generator applies here") (offersFor st)
-      _ -> NextPause "Jev asks you to look" (offersFor st)
-    "test" -> case field "test" fs of
-      Just t | t `elem` map fst (rvFailing v) -> NextPause (fromMaybe "a test cannot be satisfied" (field "why" fs)) (offersFor st ++ [OfferReconjure t])
-      _ -> NextPause "Jev asks you to look" (offersFor st)
+-- | What to do after Jev's answer: a `climb` at 'conjureClimbGate' climbs (an `ask` rung
+-- pauses for the person); an `ask` at 'conjureAskGate' pauses; anything else is again.
+nextFrom :: Standing -> Answer -> Next
+nextFrom st a = case a of
+  Chosen "climb" _ _ | confident conjureClimbGate a -> case stNext st of
+    Just (Rung n EscalateAuto) -> NextClimb n
+    Just (Rung n EscalateAsk) -> NextPause (CauseClimb n)
     _ -> NextAgain
+  Chosen "ask" _ _ | confident conjureAskGate a -> NextPause CauseAsk
   _ -> NextAgain
-  where
-    field k fs = case lookup k fs of
-      Just x | not (T.null (T.strip x)) -> Just x
-      _ -> Nothing
-
--- | The check after a hand-started test conjure's fill passes its verify:
--- given the test's body and the unit's header (the class and its
--- @__init__@), does the test pass a fake for every port it builds (ok), or
--- want a port the class does not take (port, with its param and type)?
-conjureTestQuestion :: Text -> Text -> Question
-conjureTestQuestion test unit = (choice "conjure-test" instructions options context) {qFields = [("param", "ident"), ("port", "ident")]}
-  where
-    instructions =
-      "A test was just written for a unit. Does it build a fake for a collaborator the unit does not take (a fake it cannot pass in, a parameter the helper does not take)? Choose port then, and fill param and port with the constructor argument and its type; else choose ok."
-    options =
-      [ ("ok", "the test passes a fake for every port it builds, or builds none")
-      , ("port", "the test wants a port the class does not take; name it")
-      ]
-    context = [("test", test), ("unit", if T.null unit then "none" else unit)]
-
--- | What the check found.
-data TestCheck = TestOk | TestPort Text Text
-  deriving stock (Eq, Show)
-
--- | A confident port with both fields; anything else is ok.
-testCheckFrom :: Answer -> TestCheck
-testCheckFrom a = case a of
-  Chosen "port" fs _ | confident conjureNextGate a, Just p <- field "param" fs, Just q <- field "port" fs -> TestPort p q
-  _ -> TestOk
-  where
-    field k fs = case lookup k fs of
-      Just x | not (T.null (T.strip x)) -> Just x
-      _ -> Nothing
 
 -- | The person's words, added to the why of each hole's last attempt.
 withHint :: Text -> Seed -> Seed
