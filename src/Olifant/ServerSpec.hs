@@ -20,7 +20,7 @@ import Olifant.Mutate (Mutant (..))
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
-import Olifant.Server.ConjureNext (PausedConjure (..), RoundView (..), pruned)
+import Olifant.Server.ConjureNext (OfferRow (..), PausedConjure (..), RoundView (..), Title (..), offerText, pruned)
 import Olifant.Generation.Steer (noSeed)
 import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (replicateConcurrently_, wait)
@@ -488,6 +488,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
         True -> lines <$> readFile (answersFile <> ".asked")
         False -> pure []
       noDecide = fst . T.breakOn "[decide]"
+      offerWords = map (offerText . orOffer) . paOffers
       paused = \case
         Right (Paused p) -> pure p
         other -> fail ("not paused: " <> show other)
@@ -513,7 +514,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
     spentPause $ \s seen answersFile p -> do
       (paRound p, paRung p, paToken p) `shouldBe` (2, "qwen", "conjure-1")
       paWhy p `shouldSatisfy` T.isPrefixOf "2 rounds used ("
-      paOffers p `shouldBe` ["continue", "hint", "climb:claude", "reconjure:" <> testId, "stop", "keep:2"]
+      offerWords p `shouldBe` ["continue", "hint", "climb:claude", "reconjure:" <> testId, "stop", "keep:2"]
       paSummary p `shouldBe` "red: test_closes_a_table \183 assert 0 == 1"
       (paFile p, paUnit p, paLines p) `shouldBe` (path, "handle", (6, 6))
       length <$> readIORef seen `shouldReturn` 2
@@ -553,7 +554,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
     steered id (chooses "climb") ["return 0", "return int(seats > 2)"] greenOnSeats $ \s _ _ -> do
       p <- paused =<< conjure s
       paWhy p `shouldBe` "qwen is stuck; claude is offered."
-      paOffers p `shouldSatisfy` elem "climb:claude"
+      offerWords p `shouldSatisfy` elem "climb:claude"
       a <- lands =<< resume s (paToken p) ResumeClimb Nothing
       (daGreen a, daRungs a) `shouldBe` (True, ["qwen", "claude"])
   it "(g) the same body twice: a pause in code, Jev not asked again" $
@@ -581,7 +582,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
     let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" [] [] False []
-        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" [] "" "" [] [] Nothing)
+        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" "" (Title "u" 2 2 "qwen" "q" 1) [] "" [] [] "" [] "" [] [] 600 "u" Nothing)
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True
     held (M.singleton path (1, stubbed)) `shouldBe` True

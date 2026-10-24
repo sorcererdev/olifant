@@ -746,26 +746,7 @@ conjureJson = \case
       , "rounds" .= daRounds a
       , "rungs" .= daRungs a
       ]
-  Paused p ->
-    object
-      [ "paused"
-          .= object
-            ( [ "token" .= paToken p
-              , "file" .= paFile p
-              , "unit" .= paUnit p
-              , "lines" .= object ["first" .= fst (paLines p), "last" .= snd (paLines p)]
-              , "round" .= paRound p
-              , "rung" .= paRung p
-              , "summary" .= paSummary p
-              , "offers" .= paOffers p
-              , "why" .= paWhy p
-              , "explanation" .= paExplanation p
-              , "failing" .= [object ["test" .= t, "message" .= m] | (t, m) <- paFailing p]
-              , "wired" .= paWired p
-              ]
-                ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r] | Just r <- [paProposal p]]
-            )
-      ]
+  Paused p -> object ["paused" .= pausedJson p]
 
 -- | A request's `position` (0-based line and character), if it has one.
 positionOf :: Value -> Maybe (Int, Int)

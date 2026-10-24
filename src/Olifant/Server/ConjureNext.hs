@@ -40,16 +40,26 @@ module Olifant.Server.ConjureNext
   , nextFrom
   , withHint
   , PausedAnswer (..)
+  , Title (..)
+  , TestEntry (..)
+  , testEntries
+  , OfferRow (..)
+  , OfferFacts (..)
+  , offerRow
+  , pausedJson
   , Proposal (..)
   , PausedConjure (..)
   , pausedLifetime
   , pruned
   ) where
 
+import Control.Applicative ((<|>))
+import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson.Key qualified as Key
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
@@ -531,14 +541,13 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
     addTo [] = []
     addTo xs = init xs ++ [(\(f, w) -> (f, w <> "\nThe person says: " <> h)) (last xs)]
 
--- | A steered conjure paused: its token, the file (absolute), the unit, the
--- lines conjured (1-based), the round and rung it paused at, the last
--- round in a few words, what the person may do (`continue`,
--- `climb:NAME`, `stop`, `reconjure:ID`, `accept`, `reject`), why it
--- paused, the explanation (Jev's words, or the server's, after a failed
--- wire's or re-conjure's), the failing tests with their full messages,
--- what is wired (lands with the conjure), and a re-conjured test's
--- proposal.
+-- | A steered conjure paused, as the editor is answered (conjure-pause-context-design.md §5):
+-- its token, the file (absolute), the unit, the lines conjured (1-based), the round and
+-- rung it paused at, the last round in a few words, why (the first diagnosis sentence), the
+-- title, the diagnosis, what triggered it, every round, every involved test, the unit's
+-- header and the ports it takes (@param: Port@), what keep lands (a unified diff against the
+-- buffer), what each wire wrote (each file as a diff), the offers as rows, the seconds it is
+-- kept, the module's stem (the tests' short names), and a re-conjured test's proposal.
 data PausedAnswer = PausedAnswer
   { paToken :: Text
   , paFile :: FilePath
@@ -547,14 +556,158 @@ data PausedAnswer = PausedAnswer
   , paRound :: Int
   , paRung :: Text
   , paSummary :: Text
-  , paOffers :: [Text]
   , paWhy :: Text
-  , paExplanation :: Text
-  , paFailing :: [(Text, Text)]
-  , paWired :: [Text]
+  , paTitle :: Title
+  , paDiagnosis :: [Text]
+  , paTrigger :: Text
+  , paRounds :: [RoundRecord]
+  , paTests :: [TestEntry]
+  , paHeader :: Text
+  , paPorts :: [Text]
+  , paLanding :: Text
+  , paWired :: [(Text, [(FilePath, Text)])]
+  , paOffers :: [OfferRow]
+  , paExpires :: Int
+  , paStem :: Text
   , paProposal :: Maybe Proposal
   }
   deriving stock (Eq, Show)
+
+-- | The pause's title: the unit (@Class.method@ for a method), the round of the grant, the
+-- rung and its model, the seconds used.
+data Title = Title {tiUnit :: Text, tiRound :: Int, tiOf :: Int, tiRung :: Text, tiModel :: Text, tiSeconds :: Int}
+  deriving stock (Eq, Show)
+
+-- | An involved test as the pause shows it: its status, its source, the assertion (the line
+-- that failed, else its last @assert@), and the scan's note.
+data TestEntry = TestEntry {teStatus :: TestStatus, teSource :: Text, teAssertion :: Maybe Text, teNote :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | Every involved test (failing now first), from the diagnosis' facts.
+testEntries :: DiagnosisFacts -> [TestEntry]
+testEntries df = [entry t | t <- involved (dfBefore df) (dfHistory df)]
+  where
+    runs = [r | Just r <- map rrRun (reverse (dfHistory df))] ++ [dfBefore df]
+    entry t =
+      let tid = tsTest t
+          name = snd (T.breakOnEnd "::" tid)
+          src = fromMaybe "" (testSource name (dfTestText df))
+          lastFailure = listToMaybe [f | r <- runs, Just f <- [lookup tid (trFailed r)]]
+          lastAssert = listToMaybe (reverse [T.strip l | l <- T.lines src, "assert" `T.isPrefixOf` T.strip l])
+          assertion = if tsFailing t then (lastFailure >>= assertionLine name) <|> lastAssert else lastAssert
+       in TestEntry t src assertion (testNote df tid)
+
+-- | The scan's note on a flagged test: the fake it never hands in, and what the class takes.
+testNote :: DiagnosisFacts -> Text -> Maybe Text
+testNote df tid = do
+  f <- lookup tid (dfFlagged df)
+  let name = snd (T.breakOnEnd "::" tid)
+      helper = testSource name (dfTestText df) >>= helperOf (dfMethod df)
+      className = if T.null (dfClass df) then dfMethod df else dfClass df
+      takes = case (dfWired df, initParams (dfHeader df)) of
+        (w : _, _) -> className <> " takes " <> w <> " since the wire"
+        (_, []) -> className <> "() takes no ports"
+        (_, ps) -> className <> " takes " <> T.intercalate ", " [n <> ": " <> ty | (n, ty) <- ps]
+  Just ("builds " <> fkVariable f <> " = " <> fkClass f <> "() and never hands it to " <> maybe "the helper" (<> "()") helper <> "; " <> takes)
+
+-- | An offer as a row: what it is, its label, what it will do.
+data OfferRow = OfferRow {orOffer :: Offer, orLabel :: Text, orDetail :: Text}
+  deriving stock (Eq, Show)
+
+-- | What an offer's detail is written from: the rounds a grant gives, the rung, the one
+-- above, the round paused at, the class, the suspect test, whether a wire ran.
+data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool}
+  deriving stock (Eq, Show)
+
+offerRow :: OfferFacts -> Offer -> OfferRow
+offerRow o offer = uncurry (OfferRow offer) $ case offer of
+  OfferContinue -> ("continue", "up to " <> n (ofGrant o) <> " more rounds with " <> ofRung o <> ", from round " <> n (ofRound o + 1))
+  OfferHint -> ("hint\8230", "the same, with your words given to " <> ofRung o)
+  OfferClimb r -> ("climb to " <> r, "up to " <> n (ofGrant o) <> " rounds with " <> r <> ", from round " <> n (ofRound o + 1))
+  OfferWire p q -> ("wire " <> p <> ": " <> q, "wire it into " <> ofClass o <> ", then go on from round " <> n (ofRound o + 1))
+  OfferReconjure t
+    | Just t == ofSuspect o -> ("re-conjure " <> name t, "rewrite it against " <> ofClass o <> "'s ports; you see the diff first")
+    | otherwise -> ("re-conjure " <> name t, "rewrite it; you see the diff first")
+  OfferStop -> ("stop", "nothing changes; your text stands")
+  OfferKeep r -> ("stop, keep round " <> n r <> "'s body", if ofWired o then "lands it and the wire's files, red (unsaved; u undoes it)" else "lands it in the buffer, red (unsaved; u undoes it)")
+  OfferAccept -> ("accept", "lands the test with the conjure; the next round runs it")
+  OfferReject -> ("reject", "back to the pause; the test stands as it was")
+  where
+    n = T.pack . show
+    name = snd . T.breakOnEnd "::"
+
+-- | The paused answer's `paused` object (conjure-pause-context-design.md §5).
+pausedJson :: PausedAnswer -> Value
+pausedJson p =
+  object $
+    [ "token" .= paToken p
+    , "file" .= paFile p
+    , "lines" .= object ["first" .= fst (paLines p), "last" .= snd (paLines p)]
+    , "round" .= paRound p
+    , "rung" .= paRung p
+    , "summary" .= paSummary p
+    , "why" .= paWhy p
+    , "title" .= object ["unit" .= tiUnit t, "round" .= tiRound t, "of" .= tiOf t, "rung" .= tiRung t, "model" .= tiModel t, "seconds" .= tiSeconds t]
+    , "diagnosis" .= paDiagnosis p
+    , "trigger" .= paTrigger p
+    , "rounds" .= zipWith roundJson (roundRows (paStem p) (paRounds p)) (paRounds p)
+    , "tests" .= map testJson (paTests p)
+    , "unit" .= object ["header" .= paHeader p, "ports" .= paPorts p]
+    , "landing" .= object ["diff" .= paLanding p]
+    , "wired" .= [object ["param" .= fst (pq w), "port" .= snd (pq w), "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fs]] | (w, fs) <- paWired p]
+    , "offers" .= map offerJson (paOffers p)
+    , "expires" .= paExpires p
+    ]
+      ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r] | Just r <- [paProposal p]]
+  where
+    t = paTitle p
+    pq w = fromMaybe (w, "") (paramPort w)
+    roundJson row r =
+      object
+        [ "round" .= rrRound r
+        , "rung" .= rrRung r
+        , "attempt" .= rrAttempt r
+        , "line" .= rwLine row
+        , "verdict" .= (if rwGreen row then "green" else "red" :: Text)
+        , "failing" .= rwFailing row
+        , "failed" .= [failedJson tid f | Just run <- [rrRun r], (tid, f) <- trFailed run]
+        , "passed" .= maybe [] trPassed (rrRun r)
+        , "decide" .= fmap decideJson (rrDecided r)
+        ]
+    failedJson tid f =
+      let ge = gotExpected f
+       in object
+            [ "test" .= tid
+            , "message" .= fMessage f
+            , "summary" .= failureLine f
+            , "at" .= fLine f
+            , "assertion" .= assertionLine (snd (T.breakOnEnd "::" tid)) f
+            , "got" .= fmap fst ge
+            , "expected" .= fmap snd ge
+            , "output" .= fOutput f
+            ]
+    decideJson d = object ["choice" .= dcChoice d, "confidence" .= dcConfidence d, "probabilities" .= object [Key.fromText o .= w | (o, w) <- dcProbabilities d]]
+    testJson e =
+      object
+        [ "test" .= tsTest (teStatus e)
+        , "source" .= teSource e
+        , "status" .= (if tsFailing (teStatus e) then "failing" else "passing" :: Text)
+        , "flipped" .= tsFlipped (teStatus e)
+        , "assertion" .= teAssertion e
+        , "note" .= teNote e
+        ]
+    offerJson r =
+      let (choice', arg, land, hint) = case orOffer r of
+            OfferContinue -> ("continue", Nothing, Nothing, Nothing)
+            OfferHint -> ("continue", Nothing, Nothing, Just True)
+            OfferClimb _ -> ("climb", Nothing, Nothing, Nothing)
+            OfferWire a b -> ("wire", Just (a <> ": " <> b), Nothing, Nothing)
+            OfferReconjure i -> ("reconjure", Just i, Nothing, Nothing)
+            OfferStop -> ("stop", Nothing, Just False, Nothing)
+            OfferKeep _ -> ("stop", Nothing, Just True, Nothing)
+            OfferAccept -> ("accept", Nothing, Nothing, Nothing)
+            OfferReject -> ("reject", Nothing, Nothing, Nothing)
+       in object ["choice" .= (choice' :: Text), "arg" .= (arg :: Maybe Text), "label" .= orLabel r, "detail" .= orDetail r, "land" .= (land :: Maybe Bool), "hint" .= (hint :: Maybe Bool)]
 
 -- | A re-conjured test, proposed: its file (root-relative), its id, the
 -- file's text as the editor (or disk) has it and as the re-conjure writes

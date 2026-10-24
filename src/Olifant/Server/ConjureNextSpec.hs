@@ -10,11 +10,21 @@ module Olifant.Server.ConjureNextSpec
   , cancelState
   , round1Run
   , round2Run
+  , cancelModule
   ) where
 
+import Data.Aeson (Value (..), eitherDecodeFileStrict, encode, toJSON)
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Lazy qualified as BSL
+import Data.Foldable (toList)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as TIO
+import Olifant.Server.Edits (unifiedDiff)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import Olifant.Decide
 import Olifant.Generation.Steer
@@ -200,6 +210,39 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     trigger CauseAsk (Just (Decided "ask" (Just 0.68) [("ask", 0.68), ("again", 0.29), ("test", 0.02)])) Nothing `shouldBe` "Jev: ask .68 \183 again .29 \183 test .02"
     trigger CauseRepeat Nothing (Just "x writes nothing here") `shouldBe` "repeat; wire failed: x writes nothing here"
     trigger (CauseTest notFoundId) Nothing Nothing `shouldBe` "unsatisfiable test: " <> notFoundId
+  it "(t) the cancel_booking pause as it happened, as JSON (the plugin's fixture)" $ do
+    let v = pausedJson cancelPaused
+        labels = [x | Just (Array os) <- [at ["offers"] v], Object o <- toList os, Just (String x) <- [KM.lookup "label" o]]
+    at ["title", "unit"] v `shouldBe` Just (String "CancelBooking.handle")
+    at ["diagnosis"] v `shouldBe` Just (toJSON (diagnosis cancelFacts CauseRepeat))
+    at ["trigger"] v `shouldBe` Just (String "repeat")
+    at ["rounds", "2", "line"] v `shouldBe` Just (String "(the same as round 2)")
+    at ["rounds", "1", "failed", "0", "got"] v `shouldBe` Just (String "NotFound(reason='Booking not found')")
+    at ["rounds", "1", "failed", "0", "expected"] v `shouldBe` Just (String "Ok(value=None)")
+    at ["rounds", "1", "failed", "0", "assertion"] v `shouldBe` Just (String "assert result == Ok(None)")
+    at ["tests", "0", "test"] v `shouldBe` Just (String succeedsId)
+    at ["tests", "0", "status"] v `shouldBe` Just (String "failing")
+    at ["tests", "0", "flipped"] v `shouldBe` Just (Number 1)
+    at ["tests", "0", "note"] v `shouldBe` Just Null
+    at ["tests", "1", "test"] v `shouldBe` Just (String notFoundId)
+    at ["tests", "1", "status"] v `shouldBe` Just (String "passing")
+    at ["tests", "1", "flipped"] v `shouldBe` Just (Number 1)
+    at ["tests", "1", "assertion"] v `shouldBe` Just (String "assert isinstance(result, NotFound)")
+    at ["tests", "1", "note"] v `shouldBe` Just (String "builds repository = Mock() and never hands it to command(); CancelBooking() takes no ports")
+    labels `shouldBe` ["continue", "hint\8230", "re-conjure test_cancel_booking_not_found", "re-conjure test_cancel_booking_succeeds", "stop", "stop, keep round 3's body"]
+    at ["offers", "0", "detail"] v `shouldBe` Just (String "up to 6 more rounds with local, from round 4")
+    at ["offers", "2", "detail"] v `shouldBe` Just (String "rewrite it against CancelBooking's ports; you see the diff first")
+    at ["offers", "3", "detail"] v `shouldBe` Just (String "rewrite it; you see the diff first")
+    at ["offers", "5", "land"] v `shouldBe` Just (Bool True)
+    at ["offers", "4", "land"] v `shouldBe` Just (Bool False)
+    at ["offers", "1", "hint"] v `shouldBe` Just (Bool True)
+    at ["offers", "2", "arg"] v `shouldBe` Just (String notFoundId)
+    at ["landing", "diff"] v `shouldSatisfy` \case Just (String d) -> "--- a/src/bistro/booking/commands/cancel_booking.py" `T.isPrefixOf` d; _ -> False
+    -- OLIFANT_BLESS=1 writes the golden instead of comparing it
+    let golden = "src/Olifant/Server/testdata/cancel-booking-paused.json"
+    bless <- (== Just "1") <$> lookupEnv "OLIFANT_BLESS"
+    if bless then TIO.writeFile golden (pretty v) else pure ()
+    eitherDecodeFileStrict golden `shouldReturn` Right v
   where
     qOptions' q = case qShape q of
       Choice os -> os
@@ -295,3 +338,98 @@ cancelRecords =
 -- | Round N's state (rounds 2 and 3 wrote body 2).
 cancelState :: Int -> RoundState
 cancelState n = RoundState n "local" [RoundHole "body" "the tests failed:" [(b, "w") | b <- take n ["return Ok(None)", cancelBody2, cancelBody2]] (Just (if n == 1 then round1Run else round2Run))]
+
+-- | The cancel_booking pause at round 3 as it happened (no wire ran), with the morning
+-- module as the buffer and round 3's body as what keep lands.
+cancelPaused :: PausedAnswer
+cancelPaused =
+  PausedAnswer
+    { paToken = "conjure-1"
+    , paFile = "/demo/src/bistro/booking/commands/cancel_booking.py"
+    , paUnit = "handle"
+    , paLines = (27, 28)
+    , paRound = 3
+    , paRung = "local"
+    , paSummary = "red: test_cancel_booking_succeeds \183 assert NotFound(reason='Booking not found') == Ok(value=None)"
+    , paWhy = T.concat (take 1 sentences)
+    , paTitle = Title "CancelBooking.handle" 3 6 "local" "qwen3-coder:30b" 14
+    , paDiagnosis = sentences
+    , paTrigger = trigger CauseRepeat Nothing Nothing
+    , paRounds = cancelRecords
+    , paTests = testEntries cancelPausedFacts
+    , paHeader = cancelHeader
+    , paPorts = []
+    , paLanding = unifiedDiff "src/bistro/booking/commands/cancel_booking.py" cancelModule landing
+    , paWired = []
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
+    , paExpires = 600
+    , paStem = "cancel_booking"
+    , paProposal = Nothing
+    }
+  where
+    sentences = diagnosis cancelPausedFacts CauseRepeat
+    suspects = suspectFirst (dfFlagged cancelPausedFacts) (involved cancelBefore cancelRecords)
+    landing = T.replace "        return Ok(None)" (T.intercalate "\n" (map ("        " <>) (T.lines cancelBody2))) cancelModule
+    listToMaybe' = \case
+      x : _ -> Just x
+      [] -> Nothing
+
+cancelPausedFacts :: DiagnosisFacts
+cancelPausedFacts =
+  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing
+
+-- | The demo's morning cancel_booking.py.
+cancelModule :: Text
+cancelModule =
+  T.unlines
+    [ "\"\"\"Cancel booking.\"\"\""
+    , ""
+    , "from dataclasses import dataclass"
+    , ""
+    , "from bistro.shared.result import Ok"
+    , ""
+    , ""
+    , "@dataclass(frozen=True)"
+    , "class CancelBookingInput:"
+    , "    id: str"
+    , ""
+    , ""
+    , "@dataclass(frozen=True)"
+    , "class NotFound:"
+    , "    reason: str"
+    , ""
+    , ""
+    , "type CancelBookingFailure = NotFound"
+    , ""
+    , "type CancelBookingOutput = Ok[None] | CancelBookingFailure"
+    , ""
+    , ""
+    , "class CancelBooking:"
+    , "    def __init__(self) -> None:"
+    , "        \"\"\"Takes the ports it uses; main.py passes their adapters.\"\"\""
+    , ""
+    , "    def handle(self, input: CancelBookingInput) -> CancelBookingOutput:"
+    , "        return Ok(None)"
+    ]
+
+-- | A JSON value along a path of keys (an array's by index).
+at :: [Text] -> Value -> Maybe Value
+at [] v = Just v
+at (k : ks) v = case v of
+  Object o -> KM.lookup (Key.fromText k) o >>= at ks
+  Array xs | [(i, "")] <- reads (T.unpack k) -> case drop i (toList xs) of
+    x : _ -> at ks x
+    [] -> Nothing
+  _ -> Nothing
+
+-- | A JSON value, two spaces an indent, keys in order (the golden file).
+pretty :: Value -> Text
+pretty v0 = go 0 v0 <> "\n"
+  where
+    go :: Int -> Value -> Text
+    go n = \case
+      Object o | not (KM.null o) -> "{\n" <> T.intercalate ",\n" [pad (n + 1) <> scalar (String (Key.toText k)) <> ": " <> go (n + 1) x | (k, x) <- KM.toAscList o] <> "\n" <> pad n <> "}"
+      Array xs | not (null xs) -> "[\n" <> T.intercalate ",\n" [pad (n + 1) <> go (n + 1) x | x <- toList xs] <> "\n" <> pad n <> "]"
+      x -> scalar x
+    pad n = T.replicate (2 * n) " "
+    scalar = TE.decodeUtf8 . BSL.toStrict . encode
