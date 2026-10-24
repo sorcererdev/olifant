@@ -1437,8 +1437,10 @@ conjureSpec = describe "olifant/conjure" $ do
         offerDetails (field "paused" paused) `shouldSatisfy` elem "hand repository to command(bookings=repository); you see the diff"
         inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> changedLines d == ["-    cancel_booking = command()", "+    cancel_booking = command(bookings=repository)"]; _ -> False
         -- with not_found fixed, round 3 is red for find_by_id: the checker refuses the body
-        -- before pytest runs (recorded 2026-10-24)
-        inner "round" (field "paused" after) `shouldBe` Just (Number 3)
+        -- before pytest runs (recorded 2026-10-24). The same body after the fix is a new
+        -- round, not a repeat: Jev is asked, and round 4 writing it again is the repeat
+        inner "round" (field "paused" after) `shouldBe` Just (Number 4)
+        inner "why" (field "paused" after) `shouldBe` Just (String "local wrote the same body in rounds 3 and 4.")
         inner "summary" (field "paused" after) `shouldSatisfy` \case Just (String x) -> "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"" `T.isInfixOf` x; _ -> False
         -- the test now hands its fake in: no longer flagged, so no edit is offered for it again
         offerDetails (field "paused" after) `shouldSatisfy` notElem "hand repository to command(bookings=repository); you see the diff"
@@ -1452,12 +1454,12 @@ conjureSpec = describe "olifant/conjure" $ do
         -- diagnosis says it, not the before-run's assertion
         inner "kind" (inner "failure" (field "paused" after)) `shouldBe` Just (String "check")
         inner "tool" (inner "failure" (field "paused" after)) `shouldBe` Just (String "pyright")
-        inner "round" (inner "failure" (field "paused" after)) `shouldBe` Just (Number 3)
+        inner "round" (inner "failure" (field "paused" after)) `shouldBe` Just (Number 4)
         inner "problems" (inner "failure" (field "paused" after)) `shouldSatisfy` \case
           Just (Array (toList -> x : _)) -> inner "message" (Just x) == Just (String "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"") && (case inner "line" (Just x) of Just (Number _) -> True; _ -> False)
           _ -> False
         inner "diagnosis" (field "paused" after) `shouldSatisfy` \case
-          Just (Array ds) -> any (\case String d -> "Round 3 did not type-check: pyright refused it before the tests ran (cancel_booking.py:" `T.isPrefixOf` d; _ -> False) ds
+          Just (Array ds) -> any (\case String d -> "Round 4 did not type-check: pyright refused it before the tests ran (cancel_booking.py:" `T.isPrefixOf` d; _ -> False) ds
           _ -> False
   it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
     (proposed, steps, _) <- cancelChecked $ \script ask resume -> do

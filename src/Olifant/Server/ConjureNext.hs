@@ -243,7 +243,7 @@ roundRows stem records = zipWith row (Nothing : map Just records) records
         (rrRound r)
         (rrRung r)
         (case prev of
-           Just p | T.strip (rrAttempt p) == T.strip (rrAttempt r) -> "(the same as round " <> T.pack (show (rrRound p)) <> ")"
+           Just p | sameRound p r -> "(the same as round " <> T.pack (show (rrRound p)) <> ")"
            _ -> attemptLine (rrAttempt r))
         (isGreen r)
         (maybe [] (\run -> [shortName stem t | (t, _) <- trFailed run]) (rrRun r))
@@ -251,11 +251,16 @@ roundRows stem records = zipWith row (Nothing : map Just records) records
       Just run -> null (trFailed run) && isNothing (trBroken run) && isNothing (rrCheck r)
       Nothing -> False
 
--- | The last two attempts are the same.
+-- | The last two attempts are the same, and no step came between them (the same body over
+-- a changed test, or a port with a new method, is a new round).
 isRepeat :: [RoundRecord] -> Bool
 isRepeat records = case reverse records of
-  a : b : _ -> T.strip (rrAttempt a) == T.strip (rrAttempt b)
+  a : b : _ -> sameRound b a
   _ -> False
+
+-- | Round B is round A again: the same body, the same steps in force.
+sameRound :: RoundRecord -> RoundRecord -> Bool
+sameRound a b = T.strip (rrAttempt a) == T.strip (rrAttempt b) && rrSteps a == rrSteps b
 
 -- | Over the before-run and the rounds, some test failed then passed while another passed
 -- then failed.

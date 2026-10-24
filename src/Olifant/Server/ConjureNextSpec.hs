@@ -359,6 +359,12 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     -- the root cause first: what the checker says is unknown because of it, after
     rootFirst [("a.py", Just 30, "Type of \"booking\" is unknown"), ("a.py", Just 30, "Cannot access attribute \"x\" for class \"P\"")]
       `shouldBe` [("a.py", Just 30, "Cannot access attribute \"x\" for class \"P\""), ("a.py", Just 30, "Type of \"booking\" is unknown")]
+  it "(aa) a repeat means nothing changed: the same body after a step is a new round" $ do
+    let r2 = cancelRecords !! 1
+        r3 = (cancelRecords !! 2) {rrSteps = 1}
+    isRepeat [r2, r3] `shouldBe` False
+    isRepeat [r2, r3 {rrSteps = 0}] `shouldBe` True
+    map rwLine (roundRows "cancel_booking" [r2, r3]) `shouldBe` ["return NotFound(reason=\"Booking not found\")", "return NotFound(reason=\"Booking not found\")"]
   where
     qOptions' q = case qShape q of
       Choice os -> os
