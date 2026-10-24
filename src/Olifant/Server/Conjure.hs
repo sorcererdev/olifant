@@ -47,7 +47,7 @@ import Olifant.Language (CheckReport (..), Checker (..), Failure (..), Language 
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, fixWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
+import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
 import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, derivePort, deriveParam, fakeCalls, initParams, portCandidates, portFrom, protocolPorts, takesPort, testSource, unpassedFake)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
@@ -416,6 +416,30 @@ conjureWith progress path line selected resuming s0 = do
           now <- lift getMonotonicTime
           lift (keep s (reToken re) (withoutProposal pd) {pdShown = prev, pdAt = now})
           pure (Paused prev)
+        -- reconjure of a test the scan flagged, once the wire gave the unit its port: the
+        -- fake handed to the helper, edited here (no model), proposed as a re-conjure is
+        Just (re, pd)
+          | reChoice re == ResumeReconjure
+          , Just tid <- reconjureOf re pd
+          , before <- M.findWithDefault testText0 testRel writes0
+          , Just (_, after) <- testFix unit (pdFlagged pd) (pdWired pd) before tid -> do
+              now <- lift getMonotonicTime
+              let plain = plainPause (pdShown pd)
+                  testAbs = absOf testRel
+                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing
+                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) []))
+                  shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
+              lift . keep s (reToken re) $
+                pd
+                  { pdProposal = Just proposal
+                  , pdPrevious = Just plain
+                  , pdAt = now
+                  , pdBases = M.insertWith (\_ old -> old) testAbs (Just testText0) (pdBases pd)
+                  , pdVersions = M.insertWith (\_ old -> old) testAbs (fst <$> M.lookup testAbs (ssDocs s)) (pdVersions pd)
+                  , pdShown = shown
+                  }
+              lift (stepLine ["conjure-proposal", tid])
+              pure (Paused shown)
         -- reconjure: the wrong test conjured again over the working files, proposed
         Just (re, pd) | reChoice re == ResumeReconjure, Just tid <- reconjureOf re pd -> do
           wk <- prepare writes0

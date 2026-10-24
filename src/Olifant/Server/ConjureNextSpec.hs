@@ -306,7 +306,8 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
         )
     -- succeeds passes before and after every round: not involved, so no row of its own
     labels `shouldBe` ["continue", "continue with a hint\8230", "fix the test: not_found", "stop", "keep round 2"]
-    at ["offers", "2", "detail"] v `shouldBe` Just (String "re-conjure it to hand its fake to command(bookings=\8230); you see its diff, then the rounds go on over it")
+    -- the scan knows the fix: the row says the edit itself (made without a model)
+    at ["offers", "2", "detail"] v `shouldBe` Just (String "hand repository to command(bookings=repository); you see the diff")
     at ["offers", "3", "detail"] v `shouldBe` Just (String "nothing lands, not the wire either; your text stands")
     at ["wired", "0", "param"] v `shouldBe` Just (String "bookings")
     at ["wired", "0", "test"] v `shouldBe` Just (String notFoundId)

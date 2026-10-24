@@ -8,6 +8,7 @@ module Olifant.Server.ConjureScan
   , fakeCalls
   , actCall
   , helperOf
+  , handFake
   , Port (..)
   , protocolPorts
   , derivePort
@@ -128,6 +129,31 @@ helperOf method src = listToMaybe [callee | (i, l) <- zip [0 :: Int ..] ls, Just
       if "=" `T.isPrefixOf` r2 then Nothing else Just ()
       let (callee, r3) = T.span isIdent (T.stripStart r2)
       if T.null x || T.null callee || not ("(" `T.isPrefixOf` r3) then Nothing else Just (x, callee)
+
+-- | The test NAME in TEXT (a test file) with its fake VAR handed to its first call of HELPER
+-- as PARAM: @command()@ becomes @command(bookings=repository)@, @command(x)@ becomes
+-- @command(x, bookings=repository)@; none when that test has no such call on one line, or
+-- the call already has the fake.
+handFake :: Text -> Text -> Text -> Text -> Text -> Maybe Text
+handFake name helper param var text = do
+  d <- listToMaybe [i | (i, l) <- numbered, ("def " <> name <> "(") `T.isPrefixOf` T.strip l]
+  let indent = indentOf (ls !! d)
+      body = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l > indent) (drop (d + 1) numbered)
+  (i, l') <- listToMaybe [(i, l') | (i, l) <- body, Just l' <- [handIn l]]
+  pure (T.intercalate "\n" [if j == i then l' else l | (j, l) <- numbered])
+  where
+    ls = T.splitOn "\n" text
+    numbered = zip [0 :: Int ..] ls
+    indentOf = T.length . T.takeWhile (== ' ')
+    handIn l =
+      listToMaybe
+        [ b <> helper <> "(" <> (if T.null (T.strip inner) then "" else inner <> ", ") <> param <> "=" <> var <> ")" <> T.drop (T.length args) r
+        | (b, a) <- occurrences helper l
+        , Just r <- [T.stripPrefix "(" a]
+        , Just args <- [balanced r]
+        , let inner = T.dropEnd 1 args
+        , not (passedIn ("(" <> args) var)
+        ]
 
 -- | A service's port: its Protocol class and its method lines.
 data Port = Port {ptName :: Text, ptMethods :: [Text]}

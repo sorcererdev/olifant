@@ -1006,6 +1006,13 @@ conjureSpec = describe "olifant/conjure" $ do
       offerLabels = \case
         Just (Object p) | Just (Array os) <- KM.lookup "offers" p -> [l | Object o <- toList os, Just (String l) <- [KM.lookup "label" o]]
         _ -> []
+      offerDetails :: Maybe Value -> [Text]
+      offerDetails = \case
+        Just (Object p) | Just (Array os) <- KM.lookup "offers" p -> [l | Object o <- toList os, Just (String l) <- [KM.lookup "detail" o]]
+        _ -> []
+      -- a unified diff's changed lines (its headers left out)
+      changedLines :: Text -> [Text]
+      changedLines d = [l | l <- T.lines d, any (`T.isPrefixOf` l) ["+", "-"], not (any (`T.isPrefixOf` l) ["+++", "---"])]
       -- the (param, port) of a paused object's wires
       wiredPorts :: Maybe Value -> [(Text, Text)]
       wiredPorts = \case
@@ -1246,7 +1253,9 @@ conjureSpec = describe "olifant/conjure" $ do
             all' = concat [found p t | (p, t) <- M.toList files]
          in pure (Right (Report [] (map fst all') [] all'))
       -- the cancel_booking conjure with that check; the session's fills file is beside its script
-      cancelChecked = (\(a, steps, asked, _) -> (a, steps, asked)) <$$> cancelOnDiskWith lambdaChecker (Just "wire") morningModule morningTest
+      -- (the test calls the helper inline, so the scan knows no edit: the model re-conjures it)
+      cancelChecked = (\(a, steps, asked, _) -> (a, steps, asked)) <$$> cancelOnDiskWith lambdaChecker (Just "wire") morningModule inlineTest
+      inlineTest = T.replace "    cancel_booking = command()\n    result = cancel_booking.handle(" "    result = command().handle(" morningTest
       (<$$>) f g x = f <$> g x
       fillsBeside script body = TIO.writeFile (takeDirectory script </> "fills.toml") ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\n")
       notFoundBody bad = T.intercalate "\n" (["repository = Mock()", "repository.find_by_id = lambda id: None"] ++ ["BAD" | bad] ++ ["cancel_booking = command(bookings=repository)", "result = cancel_booking.handle(CancelBookingInput(id=\"1\"))", "assert isinstance(result, NotFound)"])
@@ -1301,7 +1310,11 @@ conjureSpec = describe "olifant/conjure" $ do
     inner "why" (field "paused" paused) `shouldBe` Just (String "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking takes bookings: BookingRepository since the wire; the test should pass its fake as command(bookings=\8230).")
     offerLabels (field "paused" paused) `shouldBe` ["continue", "continue with a hint\8230", "fix the test: not_found", "stop", "keep round 1"]
     wiredPorts (field "paused" paused) `shouldBe` [("bookings", "BookingRepository")]
+    offerDetails (field "paused" paused) !! 2 `shouldBe` "hand repository to command(bookings=repository); you see the diff"
     offerLabels (field "paused" proposed) `shouldBe` ["accept", "reject"]
+    -- the scan knows the fix: the engine makes it, no model; the proposal is that one line
+    inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> changedLines d == ["-    cancel_booking = command()", "+    cancel_booking = command(bookings=repository)"]; _ -> False
+    steps `shouldSatisfy` elem ["conjure-proposal", notFound]
     steps `shouldSatisfy` elem ["conjure-resume", "reconjure"]
     steps `shouldSatisfy` elem ["conjure-resume", "accept"]
     -- the landing edits every file the wire wrote: the module and the test file's helper
@@ -1393,6 +1406,41 @@ conjureSpec = describe "olifant/conjure" $ do
     steps `shouldSatisfy` any (== ["conjure-proposal", notFound])
     steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
 
+  it "cancel_booking with the real checker and pytest: the scanned test's fix is one line, and round by round what is red after it" $ do
+    let body = T.intercalate "\n" ["booking = self.bookings.find_by_id(input.id)", "if booking is None:", "    return NotFound(\"Booking not found\")", "return Ok(None)"]
+    withSystemTempDirectory "olifant-conjure-real" $ \tmp -> do
+      let fills = tmp </> "fills.toml"
+          answers = tmp </> "answers.json"
+      TIO.writeFile fills ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\n")
+      TIO.writeFile answers "{\"answers\": {}}"
+      withPythonChecked [(cbModule, morningModule), (cbTest, morningTest)] $ \ports0 dir -> do
+        let ports = ports0 {pVerifier = (`processVerifierCancellable` 120), pTester = (`processRunner` 120), pTesterWithin = flip processRunner}
+        old <- TIO.readFile (dir </> ".olifant/config.toml")
+        TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 6\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n[conjure]\nwire = \"wire\"\n")
+        let config = [("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+        ((paused, proposed, after), _) <- inProcessWithConfig config ports dir $ do
+          doc <- openDoc cbModule "python"
+          text <- documentContents doc
+          let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+              base = ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]]
+              ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base <> extra))
+              resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
+              tokenOf v = case inner "token" (field "paused" v) of Just (String t) -> t; _ -> ""
+          paused <- ask []
+          proposed <- resume (tokenOf paused) "reconjure"
+          after <- resume (tokenOf proposed) "accept"
+          pure (paused, proposed, after)
+        -- round 1 is refused by the check (BookingRepository has no find_by_id); Jev is unsure,
+        -- round 2 writes the same body: a repeat pause, the scanned test's fix offered
+        inner "why" (field "paused" paused) `shouldBe` Just (String "local wrote the same body in rounds 1 and 2.")
+        offerDetails (field "paused" paused) `shouldSatisfy` elem "hand repository to command(bookings=repository); you see the diff"
+        inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> changedLines d == ["-    cancel_booking = command()", "+    cancel_booking = command(bookings=repository)"]; _ -> False
+        -- with not_found fixed, round 3 is red for find_by_id: the checker refuses the body
+        -- before pytest runs (recorded 2026-10-24)
+        inner "round" (field "paused" after) `shouldBe` Just (Number 3)
+        inner "summary" (field "paused" after) `shouldSatisfy` \case Just (String x) -> "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"" `T.isInfixOf` x; _ -> False
+        -- the test now hands its fake in: no longer flagged, so no edit is offered for it again
+        offerDetails (field "paused" after) `shouldSatisfy` notElem "hand repository to command(bookings=repository); you see the diff"
   it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
     (proposed, steps, _) <- cancelChecked $ \script ask resume -> do
       _ <- ask []

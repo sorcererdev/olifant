@@ -32,7 +32,7 @@
     {
       "arg": "src/bistro/booking/commands/cancel_booking__test.py::test_cancel_booking_not_found",
       "choice": "reconjure",
-      "detail": "re-conjure it to hand its fake to command(bookings=…); you see its diff, then the rounds go on over it",
+      "detail": "hand repository to command(bookings=repository); you see the diff",
       "hint": null,
       "label": "fix the test: not_found",
       "land": null

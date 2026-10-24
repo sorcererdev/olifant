@@ -1,6 +1,7 @@
 module Olifant.Server.ConjureScanSpec (spec) where
 
 import Data.Maybe (fromJust)
+import Data.Text qualified as T
 import Olifant.Decide
 import Olifant.Server.ConjureNext (testSource)
 import Olifant.Server.ConjureNextSpec (cancelTestText)
@@ -54,3 +55,11 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
       , ("p/in_memory.py", "class InMemoryBookingRepository:\n    def table(self, table_id: str) -> Table | None:\n        return None\n")
       ]
       `shouldBe` [Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ..."]]
+  it "(h) handFake hands the fake to the helper's call in that test alone" $ do
+    let fixed = handFake "test_cancel_booking_not_found" "command" "bookings" "repository" cancelTestText
+        changed t = [(a, b) | (a, b) <- zip (T.lines cancelTestText) (T.lines t), a /= b]
+    fmap changed fixed `shouldBe` Just [("    cancel_booking = command()", "    cancel_booking = command(bookings=repository)")]
+    handFake "test_b" "command" "bookings" "repo" "def test_b():\n    repo = Mock()\n    c = command(1)\n" `shouldBe` Just "def test_b():\n    repo = Mock()\n    c = command(1, bookings=repo)\n"
+    handFake "test_c" "command" "bookings" "repo" "def test_c():\n    repo = Mock()\n    c = CancelBooking()\n" `shouldBe` Nothing
+    handFake "test_nope" "command" "bookings" "repository" cancelTestText `shouldBe` Nothing
+    handFake "test_d" "command" "bookings" "repo" "def test_d():\n    repo = Mock()\n    c = command(bookings=repo)\n" `shouldBe` Nothing

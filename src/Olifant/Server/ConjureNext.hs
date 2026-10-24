@@ -47,6 +47,7 @@ module Olifant.Server.ConjureNext
   , OfferFacts (..)
   , offerRow
   , fixMoves
+  , testFix
   , paramPort
   , reconjureWhy
   , roundWords
@@ -72,7 +73,7 @@ import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
-import Olifant.Server.ConjureScan (Fake (..), actCall, helperOf, initParams, testSource)
+import Olifant.Server.ConjureScan (Fake (..), actCall, handFake, helperOf, initParams, testSource)
 import Text.Printf (printf)
 import Olifant.Generation.Steer
 import Olifant.Generation.Tools (ProgressEvent (..))
@@ -649,7 +650,7 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
   OfferHint -> ("continue with a hint\8230", "your sentence goes to " <> ofRung o <> " with round " <> next)
   OfferClimb r -> ("climb to " <> r, n (ofGrant o) <> " rounds with " <> r <> ", from round " <> next)
   OfferWire p q -> ("wire " <> p <> ": " <> q, "give " <> ofClass o <> " the port the test's fake stands for, then round " <> next)
-  OfferReconjure t -> ("fix the test: " <> short t, "re-conjure it " <> maybe "from its name and the unit" ("to " <>) (lookup t (ofFixes o)) <> "; you see its diff, then the rounds go on over it")
+  OfferReconjure t -> ("fix the test: " <> short t, maybe "re-conjure it from its name and the unit; you see its diff, then the rounds go on over it" (<> "; you see the diff") (lookup t (ofFixes o)))
   OfferStop -> ("stop", if ofWired o then "nothing lands, not the wire either; your text stands" else "nothing lands; your text stands")
   OfferKeep r -> ("keep round " <> n r, "lands the diff on the right, red (unsaved; u undoes it)")
   OfferAccept -> ("accept", "the test lands with the conjure; round " <> next <> " runs against it")
@@ -661,14 +662,24 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
     next = n (ofRound o + 1)
     short = shortName (ofStem o)
 
--- | What re-conjuring each flagged test should do, once a wire gave the class its port:
--- hand the fake to the helper as that param (@hand its fake to command(bookings=…)@).
+-- | The edit each flagged test gets, once a wire gave the class its port, in words
+-- (@hand repository to command(bookings=repository)@): see 'testFix'.
 fixMoves :: DiagnosisFacts -> [(Text, Text)]
-fixMoves df = case dfWired df of
-  w : _ | Just (p, _) <- paramPort w -> [(t, "hand its fake to " <> helper t <> "(" <> p <> "=\8230)") | (t, _) <- dfFlagged df]
-  _ -> []
-  where
-    helper t = fromMaybe "the helper " (testSource (snd (T.breakOnEnd "::" t)) (dfTestText df) >>= helperOf (dfMethod df))
+fixMoves df = [(t, w) | (t, _) <- dfFlagged df, Just (w, _) <- [testFix (dfMethod df) (dfFlagged df) (dfWired df) (dfTestText df) t]]
+
+-- | The fix of the flagged test TID in the test file's TEXT once the first of WIRED gave the
+-- unit its param: the test's fake handed to its helper's call (the helper is what the test
+-- calls METHOD on) as that param. Its words and the file's new text; none when the test is
+-- not flagged, nothing is wired, or the test has no helper call to edit.
+testFix :: Text -> [(Text, Fake)] -> [Text] -> Text -> Text -> Maybe (Text, Text)
+testFix method flagged wired text tid = do
+  f <- lookup tid flagged
+  (p, _) <- listToMaybe wired >>= paramPort
+  let name = snd (T.breakOnEnd "::" tid)
+      var = fkVariable f
+  helper <- testSource name text >>= helperOf method
+  fixed <- handFake name helper p var text
+  pure ("hand " <> var <> " to " <> helper <> "(" <> p <> "=" <> var <> ")", fixed)
 
 -- | Why the test TID is wrong, as the re-conjure is told: its note when the scan flagged it,
 -- else the pause's first sentence.
