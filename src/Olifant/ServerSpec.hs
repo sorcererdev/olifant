@@ -482,7 +482,8 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
         k s seen answersFile
       steered edit answers fills = steeredWith edit answers fills (\_ _ -> pure ())
       conjure s = snd <$> conjureAt (const (pure ())) path 6 Nothing s
-      resume s token choice' hint = snd <$> resumeConjure (const (pure ())) path (Resume token choice' hint) s
+      resume s token choice' hint = snd <$> resumeConjure (const (pure ())) path (Resume token choice' hint Nothing False) s
+      keepIt s token = snd <$> resumeConjure (const (pure ())) path (Resume token ResumeStop Nothing Nothing True) s
       logOf s = fromMaybe "" <$> readText (pFiles (ssPorts s)) (root </> ".olifant/state/steps.log")
       asked answersFile = doesFileExist (answersFile <> ".asked") >>= \case
         True -> lines <$> readFile (answersFile <> ".asked")
@@ -522,17 +523,26 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       logged <- logOf s
       logged `shouldSatisfy` T.isInfixOf "\tconjure-next\tagain\t0.90\t1\tqwen\n"
       logged `shouldSatisfy` T.isInfixOf "\tconjure-pause\tbudget\n"
-  it "(c) stop lands the last attempt, red; a second resume finds it gone" $
+  it "(c) stop keeping the body lands the last attempt, red; a second resume finds it gone" $
     spentPause $ \s _ _ _ -> do
-      a <- lands =<< resume s "conjure-1" ResumeStop Nothing
+      a <- lands =<< keepIt s "conjure-1"
       applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 1" stubbed
-      daSummary a `shouldSatisfy` T.isPrefixOf "red: test_closes_a_table"
+      daSummary a `shouldSatisfy` T.isPrefixOf "round 2's body is in the buffer, red: test_closes_a_table"
+      daSummary a `shouldSatisfy` T.isSuffixOf " \183 unsaved \183 u undoes it"
+      daStopped a `shouldBe` True
       (daRounds a, daRungs a) `shouldBe` (2, ["qwen"])
       logged <- logOf s
-      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tstop\n"
-      logged `shouldSatisfy` T.isInfixOf "conjured by qwen \183 2 rounds \183 red: "
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tkeep\n"
+      logged `shouldSatisfy` T.isInfixOf "kept round 2 \183 red: test_closes_a_table"
       again' <- resume s "conjure-1" ResumeStop Nothing
       either id (const "") again' `shouldSatisfy` T.isInfixOf "gone"
+  it "(c2) a bare stop lands nothing" $
+    spentPause $ \s _ _ _ -> do
+      a <- lands =<< resume s "conjure-1" ResumeStop Nothing
+      (daEdits a, daSummary a, daStopped a, daGreen a) `shouldBe` ([], "nothing landed", True, False)
+      logged <- logOf s
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tstop\n"
+      logged `shouldSatisfy` T.isInfixOf "stopped \183 nothing landed"
   it "(d) continue with a hint: the hint in the next prompt, fresh rounds, a new pause" $
     spentPause $ \s seen _ _ -> do
       p <- paused =<< resume s "conjure-1" ResumeContinue (Just "seats over two close it")

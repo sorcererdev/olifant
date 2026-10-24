@@ -1036,7 +1036,7 @@ conjureSpec = describe "olifant/conjure" $ do
         field "edits" answer `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         outside `shouldSatisfy` either ("no function or class at line 1" `T.isInfixOf`) (const False)
 
-  it "a steered conjure pauses as a result; resume stop lands it; a token resumes once" $
+  it "a steered conjure pauses as a result; resume stop keeping the body lands it; a token resumes once" $
     withSystemTempDirectory "olifant-conjure-steered" $ \tmp -> do
       let script = tmp </> "tests.json"
           fills = tmp </> "fills.toml"
@@ -1056,7 +1056,7 @@ conjureSpec = describe "olifant/conjure" $ do
               ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base (handleAt + 1) <> extra))
               resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
           paused <- ask []
-          stopped <- resume "conjure-1" "stop"
+          stopped <- ask ["resume" .= object ["token" .= ("conjure-1" :: Text), "choice" .= ("stop" :: Text), "land" .= True]]
           again <- resume "conjure-1" "stop"
           later <- resume "conjure-1" "later"
           pure (paused, stopped, again, later)
@@ -1072,12 +1072,13 @@ conjureSpec = describe "olifant/conjure" $ do
         let lines' = inner "lines" pausedObj
         inner "first" lines' `shouldSatisfy` \case Just (Number _) -> True; _ -> False
         inner "last" lines' `shouldSatisfy` \case Just (Number _) -> True; _ -> False
-        field "summary" stopped `shouldSatisfy` \case Just (String x) -> "red: test_books_a_free_slot" `T.isPrefixOf` x; _ -> False
+        field "summary" stopped `shouldSatisfy` \case Just (String x) -> "round 1's body is in the buffer, red: test_books_a_free_slot" `T.isPrefixOf` x; _ -> False
+        field "stopped" stopped `shouldBe` Just (Bool True)
         field "edits" stopped `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         field "rounds" stopped `shouldBe` Just (Number 1)
         field "rungs" stopped `shouldBe` Just (toJSON ["local" :: Text])
         again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
-        later `shouldSatisfy` either ("continue, climb, stop, reconjure, accept or reject" `T.isInfixOf`) (const False)
+        later `shouldSatisfy` either ("continue, climb, stop, reconjure, accept, reject or wire" `T.isInfixOf`) (const False)
 
   -- the files of the steered conjures below; FIELD a key of an answer, INNER of an object;
   -- each changed document's path (from its uri) and its edits' new texts
@@ -1235,7 +1236,10 @@ conjureSpec = describe "olifant/conjure" $ do
       round1Section = T.unlines ["src/bistro/booking/commands/cancel_booking__test.py:26: in test_cancel_booking_not_found", "    assert isinstance(result, NotFound)", "E   assert False", "E    +  where False = isinstance(Ok(value=None), NotFound)"]
       notFoundRed = Aeson.encode (object [Key.fromText notFound .= object ["line" .= (26 :: Int), "message" .= ("assert False\n+  where False = isinstance(Ok(value=None), NotFound)" :: Text), "output" .= round1Section]])
       cancelWith :: Maybe Text -> Text -> Text -> (FilePath -> ([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]], [String])
-      cancelWith wire moduleText testText session =
+      cancelWith wire moduleText testText session = (\(a, steps, asked, _) -> (a, steps, asked)) <$> cancelOnDisk wire moduleText testText session
+      -- the same, with the module and the test file as they are on disk after
+      cancelOnDisk :: Maybe Text -> Text -> Text -> (FilePath -> ([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]], [String], (Text, Text))
+      cancelOnDisk wire moduleText testText session =
         withSystemTempDirectory "olifant-conjure-cancel" $ \tmp -> do
           let script = tmp </> "tests.json"
               fills = tmp </> "fills.toml"
@@ -1261,7 +1265,8 @@ conjureSpec = describe "olifant/conjure" $ do
             asked <- doesFileExist (answers <> ".asked") >>= \case
               True -> lines <$> readFile (answers <> ".asked")
               False -> pure []
-            pure (r, [drop 1 (T.splitOn "\t" l) | l <- lines'], asked)
+            disk <- (,) <$> TIO.readFile (dir </> cbModule) <*> TIO.readFile (dir </> cbTest)
+            pure (r, [drop 1 (T.splitOn "\t" l) | l <- lines'], asked, disk)
       cancelConjure = cancelWith (Just "wire") morningModule morningTest
       -- the first pause of a conjure over MODULE and TEST, the wire configured
       cancelConjure' moduleText testText = cancelWith (Just "wire") moduleText testText (\_ ask _ -> ask [])
@@ -1373,6 +1378,61 @@ conjureSpec = describe "olifant/conjure" $ do
     continued `shouldSatisfy` either (const False) (const True)
     steps `shouldSatisfy` any (== ["conjure-proposal", notFound])
     steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
+
+  let resumeWith tok extra = ["resume" .= object (["token" .= (tok :: Text)] <> extra)]
+      -- not_found's fake renamed: no rule names its port, and Jev (answering nothing) is unsure
+      thingTest = T.replace "repository" "thing" morningTest
+
+  it "bare stop lands nothing, even after the wire; keep lands round 1's body and the wire" $ do
+    (stopped, stopSteps, _, (diskModule, diskTest)) <- cancelOnDisk (Just "wire") morningModule morningTest $ \_ ask _ -> do
+      _ <- ask []
+      ask (resumeWith "conjure-1" ["choice" .= ("stop" :: Text), "land" .= False])
+    field "edits" stopped `shouldBe` Just Aeson.Null
+    field "stopped" stopped `shouldBe` Just (Bool True)
+    field "summary" stopped `shouldBe` Just (String "nothing landed")
+    field "green" stopped `shouldBe` Just (Bool False)
+    -- Review Focus 4: the module and the test file on disk are the morning ones, byte for byte
+    (diskModule, diskTest) `shouldBe` (morningModule, morningTest)
+    stopSteps `shouldSatisfy` elem ["conjure-resume", "stop"]
+    stopSteps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure", "person"] && "stopped \183 nothing landed" `elem` fs)
+    (kept, keepSteps, _) <- cancelConjure $ \_ ask _ -> do
+      _ <- ask []
+      ask (resumeWith "conjure-1" ["choice" .= ("stop" :: Text), "land" .= True])
+    field "summary" kept `shouldSatisfy` \case Just (String x) -> "round 1's body is in the buffer, red: test_cancel_booking_not_found" `T.isPrefixOf` x && " \183 unsaved \183 u undoes it" `T.isSuffixOf` x; _ -> False
+    field "stopped" kept `shouldBe` Just (Bool True)
+    field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
+    field "edits" kept `shouldSatisfy` wroteIn cbTest "bookings: BookingRepository | None = None"
+    keepSteps `shouldSatisfy` elem ["conjure-resume", "keep"]
+    keepSteps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure", "person"] && any ("kept round 1 \183 red: test_cancel_booking_not_found" `T.isPrefixOf`) fs)
+
+  it "a wire resume runs the offered wire; an arg not offered is refused and keeps the token" $ do
+    ((paused, refused, wired), steps, asked) <- cancelWith (Just "wire") morningModule thingTest $ \_ ask _ -> do
+      paused <- ask []
+      refused <- ask (resumeWith "conjure-1" ["choice" .= ("wire" :: Text), "arg" .= ("x: Nope" :: Text)])
+      wired <- ask (resumeWith "conjure-1" ["choice" .= ("wire" :: Text), "arg" .= ("bookings: BookingRepository" :: Text)])
+      pure (paused, refused, wired)
+    let wireArgs = [a | Just (Array os) <- [inner "offers" (field "paused" paused)], Object o <- toList os, Just (String "wire") <- [KM.lookup "choice" o], Just (String a) <- [KM.lookup "arg" o]]
+    steps `shouldSatisfy` elem ["conjure-pause", "port"]
+    asked `shouldSatisfy` elem "conjure-port"
+    wireArgs `shouldBe` ["bookings: BookingRepository", "ids: IdGenerator"]
+    offerLabels (field "paused" paused) `shouldSatisfy` elem "wire bookings: BookingRepository"
+    inner "why" (field "paused" paused) `shouldBe` Just (String "not_found builds thing = Mock() for a port CancelBooking lacks; it could be bookings: BookingRepository or ids: IdGenerator.")
+    refused `shouldBe` Left "this pause offers no wire for x: Nope"
+    let after = dropWhile (/= ["conjure-resume", "wire"]) steps
+    after `shouldSatisfy` (not . null)
+    map (take 2) after `shouldSatisfy` elem ["conjure-wire", "wire"]
+    wiredPorts (field "paused" wired) `shouldBe` [("bookings", "BookingRepository")]
+
+  it "a reconjure arg not offered, and land as a string, are refused" $ do
+    ((refused, badLand, continued), _, _) <- cancelConjure $ \_ ask _ -> do
+      _ <- ask []
+      refused <- ask (resumeWith "conjure-1" ["choice" .= ("reconjure" :: Text), "arg" .= (T.pack cbTest <> "::test_nope")])
+      badLand <- ask (resumeWith "conjure-1" ["choice" .= ("stop" :: Text), "land" .= ("yes" :: Text)])
+      continued <- ask (resumeWith "conjure-1" ["choice" .= ("continue" :: Text)])
+      pure (refused, badLand, continued)
+    refused `shouldBe` Left ("this pause offers no re-conjure of " <> T.pack cbTest <> "::test_nope")
+    badLand `shouldSatisfy` either ("continue, climb, stop, reconjure, accept, reject or wire" `T.isInfixOf`) (const False)
+    continued `shouldSatisfy` either (const False) (const True)
 
   -- a test conjure of a stub test appended to the test file (CHANGED on top), its fill
   -- BODY; WIRE the `[conjure] wire`; the answer and the step log's lines

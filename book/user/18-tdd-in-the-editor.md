@@ -147,15 +147,21 @@ again:
   (`choice`, and `arg`, `land` or `hint` when the row needs one), a label and what the row will do
   in numbers (rounds, rung, what lands where);
 - `expires`: the seconds the pause is kept; `proposal`: `{file, test, before, after, diff}`,
-  present only while a re-conjured test waits for you. To
-answer it, ask again with the same `textDocument` and `position` and `resume: {token, choice,
-hint?}`, `choice` being `"continue"`, `"climb"`, `"stop"`, `"reconjure"`, `"accept"` or
-`"reject"` (an empty `hint` counts as none); the answer is a landed or a paused result again, and
-a token works once, except that `reject` and a refused resume keep it. A resume without a token
-and a choice is `InvalidParams` (`olifant/conjure resume needs a token and a choice (continue,
-climb, stop, reconjure, accept or reject)`). `reconjure` with no `reconjure:` offer, and `accept`
-or `reject` with no proposal, are refused in one sentence (`this pause offers no re-conjure`,
-`there is no proposal to accept`) and the pause stays.
+  present only while a re-conjured test waits for you.
+
+To answer it, ask again with the same `textDocument` and `position` and `resume: {token, choice,
+arg?, land?, hint?}`, as the offer's row says: `choice` is `"continue"`, `"climb"`, `"stop"`,
+`"reconjure"`, `"accept"`, `"reject"` or `"wire"`; `arg` a re-conjure's test id or a wire's
+`"param: Port"` (needed for `wire`); `land` a boolean for `stop`, false when absent; an empty
+`hint` counts as none. The answer is a landed or a paused result again, and a token works once,
+except that `reject` and a refused resume keep it. A resume without a token and a choice, a `land`
+that is not a boolean, or a `wire` without its `arg`, is `InvalidParams` (`olifant/conjure resume
+needs a token and a choice (continue, climb, stop, reconjure, accept, reject or wire)`). These are
+refused in one sentence and the pause stays: a `wire` the pause does not offer (`this pause offers
+no wire for <arg>`), a `reconjure` of a test it does not offer (`this pause offers no re-conjure of
+<arg>`; with no `arg` the first offered test is re-conjured), a `stop` with `land: true` and no
+body to keep (`there is no body to keep`), and `accept` or `reject` with no proposal (`there is no
+proposal to accept`). A landed answer carries `stopped`: true when the person stopped it.
 A resume is also refused when the pause is gone (`this paused conjure is gone (it expired, was
 resumed, or its file changed): conjure again`), when the file changed since (`the file changed
 since the conjure paused; conjure again`), and on a climb with no stronger rung (`there is no
@@ -225,8 +231,11 @@ ends `needs a port the class lacks: <param>: <port>`.
 
 A pause answers `conjure · round 4 · red: test_handle · assert status == 404` with what you may
 do. **continue** grants a fresh `rounds` and `budget` on the same model. **climb** moves to the
-next rung, carrying the attempts so far into the stronger model's prompt. **stop** lands the last
-attempt as one edit and one undo step, as a conjure that ran out of retries does. A **hint**
+next rung, carrying the attempts so far into the stronger model's prompt. **wire** runs the
+offered wire, then goes on as continue. **stop** lands nothing: your text stands, the wire's
+writes are dropped, and the answer says `nothing landed`. **stop, keep round N's body** lands the
+last attempt and the wire's files as one edit and one undo step, red and unsaved, and says `round
+N's body is in the buffer, red: … · unsaved · u undoes it`. A **hint**
 continues with your words added to the next prompt as "The person says: …". A pause is forgotten
 after 10 minutes, or as soon as its file changes in the editor; conjure again then. Without
 `[decide] model` nothing of this happens: the model's `retries` run as before and the last attempt
@@ -353,7 +362,9 @@ for each test it flags (and `conjure-test ok -` for a hand-started test conjure 
 fakes); Jev's pick of a port `conjure-port <choice> <confidence|->`. A wire adds `conjure-wire
 <generator> k=v …` (the inputs it ran with) or `conjure-wire-failed <generator>`; a proposal
 `conjure-proposal <test id>`; a failed re-conjure `conjure-reconjure-failed <test id>`.
-`conjure-resume` takes `reconjure`, `accept` and `reject` besides `continue`, `climb` and `stop`.
+`conjure-resume` takes `reconjure`, `accept`, `reject` and `wire` besides `continue`, `climb`,
+`stop` and `keep` (a stop that keeps the body). A bare stop's `conjure` line says `stopped ·
+nothing landed`; a keep's `kept round N · red: …`.
 Its `conjure` line names the rungs and the rounds:
 
 ```

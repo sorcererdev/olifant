@@ -61,7 +61,8 @@ import Text.Printf (printf)
 -- (the unit's file first, when the conjure changed it, then every other
 -- file a wire wrote), the summary, whether the after-run is green, the
 -- after-run, the rounds run in all, and the models that ran them (a
--- steered conjure's rungs, in the order climbed).
+-- steered conjure's rungs, in the order climbed), and whether the person
+-- stopped it (a bare stop lands nothing; a keep lands the last body, red).
 data ConjureAnswer = ConjureAnswer
   { daFile :: FilePath
   , daUnit :: Text
@@ -71,18 +72,21 @@ data ConjureAnswer = ConjureAnswer
   , daTests :: TestsAnswer
   , daRounds :: Int
   , daRungs :: [Text]
+  , daStopped :: Bool
   }
   deriving stock (Eq, Show)
 
 data ConjureOutcome = Landed ConjureAnswer | Paused PausedAnswer
   deriving stock (Eq, Show)
 
-data ResumeChoice = ResumeContinue | ResumeClimb | ResumeStop | ResumeReconjure | ResumeAccept | ResumeReject
+data ResumeChoice = ResumeContinue | ResumeClimb | ResumeStop | ResumeReconjure | ResumeAccept | ResumeReject | ResumeWire
   deriving stock (Eq, Show)
 
--- | The person's answer to a pause: its token, the choice, and words to add
--- to the next prompt (never logged).
-data Resume = Resume {reToken :: Text, reChoice :: ResumeChoice, reHint :: Maybe Text}
+-- | The person's answer to a pause: its token, the choice, words to add to
+-- the next prompt (never logged), the offer's argument (a wire's
+-- @param: Port@, a re-conjure's test id), and, for a stop, whether to keep
+-- the last body.
+data Resume = Resume {reToken :: Text, reChoice :: ResumeChoice, reHint :: Maybe Text, reArg :: Maybe Text, reLand :: Bool}
   deriving stock (Eq, Show)
 
 -- | A steered conjure's means: the decider, the ladder (each rung with its
@@ -186,7 +190,11 @@ resumeConjure progress path re s = do
   where
     relOf pd p = fromMaybe p (listToMaybe [r | r <- M.keys (pdWrites pd), ("/" <> r) `isSuffixOf` p])
     refused pd = case reChoice re of
-      ResumeReconjure | isNothing (reconjureOf pd) -> Just "this pause offers no re-conjure"
+      ResumeReconjure
+        | Just a <- reArg re, isNothing (reconjureOf re pd) -> Just ("this pause offers no re-conjure of " <> a)
+        | isNothing (reconjureOf re pd) -> Just "this pause offers no re-conjure"
+      ResumeWire | isNothing (wireOf re pd) -> Just ("this pause offers no wire for " <> fromMaybe "" (reArg re))
+      ResumeStop | reLand re, null [() | OfferRow (OfferKeep _) _ _ <- paOffers (pdShown pd)] -> Just "there is no body to keep"
       c | c `elem` [ResumeAccept, ResumeReject], isNothing (pdProposal pd) -> Just "there is no proposal to accept"
       _ -> Nothing
     -- accept: the proposed test file joins the working writes; reject keeps
@@ -197,8 +205,20 @@ resumeConjure progress path re s = do
       _ -> withoutProposal pd
 
 -- | The test a pause offers to re-conjure, by its id.
-reconjureOf :: PausedConjure -> Maybe Text
-reconjureOf pd = listToMaybe [t | OfferRow (OfferReconjure t) _ _ <- paOffers (pdShown pd)]
+reconjureOf :: Resume -> PausedConjure -> Maybe Text
+reconjureOf re pd = listToMaybe [t | OfferRow (OfferReconjure t) _ _ <- paOffers (pdShown pd), maybe True (== t) (reArg re)]
+
+-- | The wire a resume names (@param: Port@), when the pause offers it.
+wireOf :: Resume -> PausedConjure -> Maybe (Text, Text)
+wireOf re pd = do
+  (p, q) <- paramPortOf =<< reArg re
+  listToMaybe [(p, q) | OfferRow (OfferWire p' q') _ _ <- paOffers (pdShown pd), (p', q') == (p, q)]
+
+-- | @param: Port@ split.
+paramPortOf :: Text -> Maybe (Text, Text)
+paramPortOf a = case T.breakOn ":" a of
+  (p, q) | not (T.null (T.strip p)), not (T.null (T.strip (T.drop 1 q))) -> Just (T.strip p, T.strip (T.drop 1 q))
+  _ -> Nothing
 
 -- | PD less its proposal, and less the proposed file's recorded version and
 -- text when the conjure has not written that file.
@@ -293,7 +313,7 @@ conjureWith progress path line selected resuming s0 = do
         taken <- lift (takeToken s (reToken re))
         unless taken (throwE gone)
         when (reChoice re /= ResumeStop && isNothing steered) (throwE "this project no longer names a [decide] model and a [model] ladder: conjure again")
-        lift (stepLine ["conjure-resume", choiceWord (reChoice re)])
+        lift (stepLine ["conjure-resume", if reChoice re == ResumeStop && reLand re then "keep" else choiceWord (reChoice re)])
       let stopping = maybe False ((== ResumeStop) . reChoice . fst) resuming
           rung0 = case resuming of
             Just (re, pd) | reChoice re == ResumeClimb -> pdRung pd + 1
@@ -335,13 +355,18 @@ conjureWith progress path line selected resuming s0 = do
             pure (Working project {prWorkspace = ws'} working at testText before template verify (context ++ imported))
           writes0 = maybe M.empty (pdWrites . snd) resuming
       case resuming of
+        -- stop: nothing lands, the working files (a wire's) are dropped
+        Just (re, pd) | reChoice re == ResumeStop, not (reLand re) -> do
+          lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, "stopped \183 nothing landed"])
+          let none = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) (TestRun [] [] Nothing) 0
+          pure (Landed (ConjureAnswer file unit [] "nothing landed" False none (seedRound (pdSeed pd)) (pdRungs pd) True))
         -- reject: the pause the proposal came from, under the same token
         Just (re, pd) | reChoice re == ResumeReject, Just prev <- pdPrevious pd -> do
           now <- lift getMonotonicTime
           lift (keep s (reToken re) (withoutProposal pd) {pdShown = prev, pdAt = now})
           pure (Paused prev)
         -- reconjure: the wrong test conjured again over the working files, proposed
-        Just (re, pd) | reChoice re == ResumeReconjure, Just tid <- reconjureOf pd -> do
+        Just (re, pd) | reChoice re == ResumeReconjure, Just tid <- reconjureOf re pd -> do
           wk <- prepare writes0
           let name = snd (T.breakOnEnd "::" tid)
               working = wkTestText wk
@@ -544,6 +569,13 @@ conjureWith progress path line selected resuming s0 = do
           (tried, wk0) <- case resuming of
             Just (_, pd) | stopping -> pure (Right (Written Nothing (pdLanding pd) (pdUndefined pd)), first)
             Nothing | not onTest, isNothing selected -> beforeRound1 >>= \wk1 -> loop wk1 filler seed0
+            -- wire: the offered wire runs over the working files, then the rounds go on
+            Just (re, pd) | reChoice re == ResumeWire, Just (p, q) <- wireOf re pd -> case wire of
+              Just (gid, pathSets) -> do
+                c <- lift (readIORef counters)
+                wired <- wireOver (cWrites c) p q gid pathSets
+                loop (either (const first) id wired) filler seed0
+              Nothing -> throwE "no wire generator applies here any more: conjure again"
             _ -> loop first filler seed0
           -- a cancelled conjure lands nothing and keeps no pause
           stop <- lift (cancelled (ssCancel s))
@@ -656,7 +688,11 @@ conjureWith progress path line selected resuming s0 = do
               after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack testRel] (M.insert rel written files))
               end <- lift getMonotonicTime
               n <- lift (readIORef rounds)
-              let summary = wiredNote (if onTest then testSummary extra tid (wkBefore wk) after written else functionSummary extra after) <> note
+              let kept = case resuming of
+                    Just (re, pd) | reChoice re == ResumeStop, reLand re -> Just (paRound (pdShown pd))
+                    _ -> Nothing
+                  keptLine k = "round " <> tshow k <> "'s body is in the buffer, " <> functionSummary extra after <> " \183 unsaved \183 u undoes it"
+                  summary = maybe (wiredNote (if onTest then testSummary extra tid (wkBefore wk) after written else functionSummary extra after) <> note) keptLine kept
                   wiredNote t = if null (cWired c) then t else t <> " \183 wired " <> T.intercalate ", " (cWired c)
                   tid = T.pack testRel <> "::" <> fromMaybe unit (testAt written (fst (wkSpan wk)))
                   green = isNothing (trBroken after) && null (trFailed after)
@@ -675,8 +711,8 @@ conjureWith progress path line selected resuming s0 = do
                   by
                     | isSteered = T.intercalate " \8594 " rungs <> " \183 " <> tshow n <> (if n == 1 then " round" else " rounds")
                     | otherwise = mfName filler
-              lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, "conjured by " <> by <> " \183 " <> summary])
-              pure (Landed (ConjureAnswer file unit (edit ++ edits) summary green tests n rungs))
+              lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, maybe ("conjured by " <> by <> " \183 " <> summary) (\k -> "kept round " <> tshow k <> " \183 " <> functionSummary extra after) kept])
+              pure (Landed (ConjureAnswer file unit (edit ++ edits) summary green tests n rungs (isJust kept)))
 
 -- | The `[conjure] wire` generator for the unit at REL (root-relative):
 -- its id and the inputs its `[applies_at] path` binds there; none when
@@ -743,6 +779,7 @@ choiceWord = \case
   ResumeReconjure -> "reconjure"
   ResumeAccept -> "accept"
   ResumeReject -> "reject"
+  ResumeWire -> "wire"
 
 -- | The steered path's means, when the project names a decider and a
 -- ladder (the client's model, if any, in place of the first rung); Left
