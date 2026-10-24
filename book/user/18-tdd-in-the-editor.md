@@ -134,8 +134,10 @@ again:
   the failing tests' short names, each failure as `{test, message, summary, at, assertion, got,
   expected, output}` (pytest's whole `E` block, its one line, the line it failed at, the
   assertion's source line, the two sides of an `assert a == b` or an `isinstance`, null for any
-  other shape, and the test's whole section), the tests that passed, and Jev's answer `{choice,
-  confidence, probabilities}` or null;
+  other shape, and the test's whole section), the tests that passed, Jev's answer `{choice,
+  confidence, probabilities}` or null, and the round's change: `diff`, the unit's file with that
+  round's body against the buffer, and `files: [{file, diff}]`, every file keeping that round
+  lands (the unit's file first, then the wire's);
 - `tests`: every test involved (failing now, or failed in any round) as `{test, source, status,
   flipped, assertion, note}`: `failing` or `passing`, the last round its status was otherwise
   (0 the run before round 1), the assertion's line, and the scan's note on a fake it never
@@ -146,13 +148,17 @@ again:
 - `offers`: the rows in order, each `{choice, arg, label, detail, land, hint}`: what to send back
   (`choice`, and `arg`, `land` or `hint` when the row needs one), a label and what the row will do
   in numbers (rounds, rung, what lands where);
-- `expires`: the seconds the pause is kept; `proposal`: `{file, test, before, after, diff}`,
-  present only while a re-conjured test waits for you.
+- `expires`: the seconds the pause is kept; `proposal`: `{file, test, before, after, diff,
+  refused}`, present only while a re-conjured test waits for you, or after a refused one (then
+  `refused` says why: ``it adds `<error>` at line N``);
+- `outcome`: what your last choice came to, when the pause would not show it otherwise (a refused
+  re-conjure: `Your re-conjure of not_found was refused: it adds … at line 26.`), else null.
 
 To answer it, ask again with the same `textDocument` and `position` and `resume: {token, choice,
 arg?, land?, hint?}`, as the offer's row says: `choice` is `"continue"`, `"climb"`, `"stop"`,
 `"reconjure"`, `"accept"`, `"reject"` or `"wire"`; `arg` a re-conjure's test id or a wire's
-`"param: Port"` (needed for `wire`); `land` a boolean for `stop`, false when absent; an empty
+`"param: Port"` (needed for `wire`) or the round a keep lands (`"2"`; the pause's round when
+absent); `land` a boolean for `stop`, false when absent; an empty
 `hint` counts as none. The answer is a landed or a paused result again, and a token works once,
 except that `reject` and a refused resume keep it. A resume without a token and a choice, a `land`
 that is not a boolean, or a `wire` without its `arg`, is `InvalidParams` (`olifant/conjure resume
@@ -160,7 +166,7 @@ needs a token and a choice (continue, climb, stop, reconjure, accept, reject or 
 refused in one sentence and the pause stays: a `wire` the pause does not offer (`this pause offers
 no wire for <arg>`), a `reconjure` of a test it does not offer (`this pause offers no re-conjure of
 <arg>`; with no `arg` the first offered test is re-conjured), a `stop` with `land: true` and no
-body to keep (`there is no body to keep`), and `accept` or `reject` with no proposal (`there is no
+body to keep (`there is no body to keep`, or `there is no round N body to keep`), and `accept` or `reject` with no proposal (`there is no
 proposal to accept`). A landed answer carries `stopped`: true when the person stopped it.
 A resume is also refused when the pause is gone (`this paused conjure is gone (it expired, was
 resumed, or its file changed): conjure again`), when the file changed since (`the file changed
@@ -221,7 +227,14 @@ it was wrong, that the helper now takes the wired port (when one was wired), and
 any, and answers a **proposal**: the test file before and after, with a unified diff, and offers
 `accept` and `reject`. **accept** writes the new test into the conjure's working files and goes
 on; it lands with the rest. **reject** returns the pause as it was. Nothing touches your buffer
-before the conjure lands.
+before the conjure lands. The re-conjure is refused only for what it adds: the errors the test
+file already had (pyright's, matched by file and message, so a line moved does not count) do not
+fail its check, and the model is told of them (`the test already has these errors; fix them if you
+touch those lines`). Like any test conjure it is asked again with its verify's reason, up to
+`[model] retries` more times. When it is still refused, the pause comes back with `outcome` saying
+so first; the refused proposal is kept, offered as `see the refused proposal` (choice
+`proposal`, answered in the editor; `accept` lands it anyway, as your choice), and the row
+`re-conjure <test> again` takes the re-conjure's place.
 
 A conjure you start by hand on a test is scanned after its fill. A test that builds a fake for a
 port its class lacks has the port wired as above, before the test lands, and the test is filled
@@ -233,8 +246,8 @@ A pause answers `conjure · round 4 · red: test_handle · assert status == 404`
 do. **continue** grants a fresh `rounds` and `budget` on the same model. **climb** moves to the
 next rung, carrying the attempts so far into the stronger model's prompt. **wire** runs the
 offered wire, then goes on as continue. **stop** lands nothing: your text stands, the wire's
-writes are dropped, and the answer says `nothing landed`. **stop, keep round N's body** lands the
-last attempt and the wire's files as one edit and one undo step, red and unsaved, and says `round
+writes are dropped, and the answer says `nothing landed`. **stop, keep round N's body** lands that
+round's body (the last round's unless `arg` names another) and the wire's files as one edit and one undo step, red and unsaved, and says `round
 N's body is in the buffer, red: … · unsaved · u undoes it`. A **hint**
 continues with your words added to the next prompt as "The person says: …". A pause is forgotten
 after 10 minutes, or as soon as its file changes in the editor; conjure again then. Without

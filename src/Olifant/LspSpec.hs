@@ -1239,7 +1239,18 @@ conjureSpec = describe "olifant/conjure" $ do
       cancelWith wire moduleText testText session = (\(a, steps, asked, _) -> (a, steps, asked)) <$> cancelOnDisk wire moduleText testText session
       -- the same, with the module and the test file as they are on disk after
       cancelOnDisk :: Maybe Text -> Text -> Text -> (FilePath -> ([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]], [String], (Text, Text))
-      cancelOnDisk wire moduleText testText session =
+      cancelOnDisk = cancelOnDiskWith noChecker
+      -- a check that says pyright's two errors here: a lambda's untyped parameter, and BAD
+      lambdaChecker = Checker $ \_ files ->
+        let found p t = [((p, m), i) | (i, l) <- zip [1 ..] (T.lines t), (needle, m) <- [("lambda id: None", "Type of parameter \"id\" is unknown"), ("BAD", "\"BAD\" is not defined")], needle `T.isInfixOf` l]
+            all' = concat [found p t | (p, t) <- M.toList files]
+         in pure (Right (Report [] (map fst all') [] all'))
+      -- the cancel_booking conjure with that check; the session's fills file is beside its script
+      cancelChecked = (\(a, steps, asked, _) -> (a, steps, asked)) <$$> cancelOnDiskWith lambdaChecker (Just "wire") morningModule morningTest
+      (<$$>) f g x = f <$> g x
+      fillsBeside script body = TIO.writeFile (takeDirectory script </> "fills.toml") ("[fills]\nbody = " <> T.pack (show (T.unpack body)) <> "\n")
+      notFoundBody bad = T.intercalate "\n" (["repository = Mock()", "repository.find_by_id = lambda id: None"] ++ ["BAD" | bad] ++ ["cancel_booking = command(bookings=repository)", "result = cancel_booking.handle(CancelBookingInput(id=\"1\"))", "assert isinstance(result, NotFound)"])
+      cancelOnDiskWith checker wire moduleText testText session =
         withSystemTempDirectory "olifant-conjure-cancel" $ \tmp -> do
           let script = tmp </> "tests.json"
               fills = tmp </> "fills.toml"
@@ -1247,7 +1258,8 @@ conjureSpec = describe "olifant/conjure" $ do
           BSL.writeFile script notFoundRed
           TIO.writeFile fills "[fills]\nbody = \"return Ok(None)\"\n"
           TIO.writeFile answers "{\"answers\": {}}"
-          withPython [(cbModule, moduleText), (cbTest, testText)] $ \ports dir -> do
+          withPython [(cbModule, moduleText), (cbTest, testText)] $ \ports0 dir -> do
+            let ports = ports0 {pChecker = const checker}
             old <- TIO.readFile (dir </> ".olifant/config.toml")
             TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 6\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n" <> maybe "" (\w -> "[conjure]\nwire = \"" <> w <> "\"\n") wire)
             let config = [("test_script", String (T.pack script)), ("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
@@ -1378,6 +1390,70 @@ conjureSpec = describe "olifant/conjure" $ do
     continued `shouldSatisfy` either (const False) (const True)
     steps `shouldSatisfy` any (== ["conjure-proposal", notFound])
     steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
+
+  it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
+    (proposed, steps, _) <- cancelChecked $ \script ask resume -> do
+      _ <- ask []
+      liftIO (BSL.writeFile script "{}")
+      liftIO (fillsBeside script (notFoundBody False))
+      resume "conjure-1" "reconjure"
+    offerLabels (field "paused" proposed) `shouldBe` ["accept", "reject"]
+    inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> "+    cancel_booking = command(bookings=repository)" `elem` T.lines d; _ -> False
+    steps `shouldSatisfy` elem ["conjure-proposal", notFound]
+
+  it "a refused re-conjure leads the pause, keeps its proposal to see, and offers it again" $ do
+    ((refused, again, accepted), steps, _) <- cancelChecked $ \script ask resume -> do
+      _ <- ask []
+      liftIO (BSL.writeFile script "{}")
+      liftIO (fillsBeside script (notFoundBody True))
+      refused <- resume "conjure-1" "reconjure"
+      liftIO (fillsBeside script (notFoundBody False))
+      again <- ask ["resume" .= object ["token" .= ("conjure-1" :: Text), "choice" .= ("reconjure" :: Text), "arg" .= notFound]]
+      _ <- resume "conjure-1" "reject"
+      liftIO (fillsBeside script (notFoundBody True))
+      _ <- resume "conjure-1" "reconjure"
+      accepted <- resume "conjure-1" "accept"
+      pure (refused, again, accepted)
+    let p = field "paused" refused
+        after = case inner "after" (inner "proposal" p) of Just (String t) -> t; _ -> ""
+        badAt = length (takeWhile (not . ("    BAD" ==)) (T.lines after)) + 1
+        reason = "it adds `\"BAD\" is not defined` at line " <> T.pack (show badAt)
+    inner "outcome" p `shouldBe` Just (String ("Your re-conjure of not_found was refused: " <> reason <> "."))
+    inner "diagnosis" p `shouldSatisfy` \case Just (Array xs) -> not (any (\case String x -> "re-conjure" `T.isInfixOf` x; _ -> False) (toList xs)); _ -> False
+    offerLabels p `shouldBe` ["continue", "hint\8230", "see the refused proposal", "re-conjure test_cancel_booking_not_found again", "stop", "stop, keep round 1's body"]
+    inner "refused" (inner "proposal" p) `shouldBe` Just (String reason)
+    after `shouldSatisfy` T.isInfixOf "    BAD\n"
+    offerLabels (field "paused" again) `shouldBe` ["accept", "reject"]
+    inner "outcome" (field "paused" again) `shouldBe` Just Aeson.Null
+    -- accept lands the refused proposal as the person's choice: the conjure goes on over it
+    accepted `shouldSatisfy` either (const False) (const True)
+    steps `shouldSatisfy` elem ["conjure-reconjure-failed", notFound]
+    steps `shouldSatisfy` elem ["conjure-resume", "accept"]
+
+  it "each round's change is in the pause; keep lands the round it names" $ do
+    ((second, refused, kept), _, _) <- cancelConjure $ \script ask resume -> do
+      _ <- ask []
+      liftIO (fillsBeside script "return NotFound(reason=\"x\")")
+      second <- resume "conjure-1" "continue"
+      let tok = case inner "token" (field "paused" second) of Just (String t) -> t; _ -> ""
+      refused <- ask ["resume" .= object ["token" .= tok, "choice" .= ("stop" :: Text), "land" .= True, "arg" .= ("9" :: Text)]]
+      kept <- ask ["resume" .= object ["token" .= tok, "choice" .= ("stop" :: Text), "land" .= True, "arg" .= ("1" :: Text)]]
+      pure (second, refused, kept)
+    let p = field "paused" second
+        roundAt i k = case inner "rounds" p of
+          Just (Array rs) | r : _ <- drop i (toList rs) -> inner k (Just r)
+          _ -> Nothing
+        files i = case roundAt i "files" of
+          Just (Array fs) -> [f | Object o <- toList fs, Just (String f) <- [KM.lookup "file" o]]
+          _ -> []
+    roundAt 1 "diff" `shouldSatisfy` \case Just (String d) -> "+        return NotFound(reason=\"x\")" `elem` T.lines d; _ -> False
+    roundAt 0 "diff" `shouldSatisfy` \case Just (String d) -> not ("NotFound(reason" `T.isInfixOf` d); _ -> False
+    files 0 `shouldBe` [T.pack cbModule, T.pack cbTest]
+    offerLabels p `shouldSatisfy` elem "stop, keep round 2's body"
+    refused `shouldBe` Left "there is no round 9 body to keep"
+    field "summary" kept `shouldSatisfy` \case Just (String x) -> "round 1's body is in the buffer" `T.isPrefixOf` x; _ -> False
+    field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
+    field "edits" kept `shouldSatisfy` (not . wroteIn cbModule "NotFound(reason=\"x\")")
 
   let resumeWith tok extra = ["resume" .= object (["token" .= (tok :: Text)] <> extra)]
       -- not_found's fake renamed: no rule names its port, and Jev (answering nothing) is unsure

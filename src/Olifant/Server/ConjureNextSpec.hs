@@ -210,6 +210,32 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     trigger CauseAsk (Just (Decided "ask" (Just 0.68) [("ask", 0.68), ("again", 0.29), ("test", 0.02)])) Nothing `shouldBe` "Jev: ask .68 \183 again .29 \183 test .02"
     trigger CauseRepeat Nothing (Just "x writes nothing here") `shouldBe` "repeat; wire failed: x writes nothing here"
     trigger (CauseTest notFoundId) Nothing Nothing `shouldBe` "unsatisfiable test: " <> notFoundId
+  it "(u) the errors a test already has are not a re-conjure's: matched by file and message, once each" $ do
+    let lambda = "Type of parameter \"id\" is unknown"
+        report = Report [] [("booking/commands/cancel_booking__test.py", lambda), ("booking/commands/cancel_booking__test.py", lambda), ("booking/x.py", "BAD")] [] [(("booking/commands/cancel_booking__test.py", lambda), 23), (("booking/commands/cancel_booking__test.py", lambda), 30), (("booking/x.py", "BAD"), 2)]
+        known = [("src/booking/commands/cancel_booking__test.py", lambda)]
+    -- one known lambda error takes one of the two; the other is the re-conjure's
+    reportBroken (withoutKnown known report) `shouldBe` [("booking/commands/cancel_booking__test.py", lambda), ("booking/x.py", "BAD")]
+    reportBroken (withoutKnown [] report) `shouldBe` reportBroken report
+    reportBroken (withoutKnown [("src/other.py", lambda)] report) `shouldBe` reportBroken report
+    knownNote [(Just 23, lambda)] `shouldBe` "the test already has these errors; fix them if you touch those lines:\nline 23: Type of parameter \"id\" is unknown"
+    knownNote [(Nothing, "x")] `shouldBe` "the test already has these errors; fix them if you touch those lines:\nx"
+  it "(v) a refused re-conjure: the sentence, its rows, and the keep row's round" $ do
+    refusedSentence "not_found" (addsReason "\"BAD\" is not defined" (Just 26)) `shouldBe` "Your re-conjure of not_found was refused: it adds `\"BAD\" is not defined` at line 26."
+    addsReason "x" Nothing `shouldBe` "it adds `x`"
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False)
+        json = pausedJson cancelPaused {paOffers = map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2]}
+    map (\r -> (orLabel r, orDetail r)) (map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2])
+      `shouldBe` [ ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
+                 , ("re-conjure test_cancel_booking_not_found again", "rewrite it again; you see the diff first")
+                 , ("stop, keep round 2's body", "lands it in the buffer, red (unsaved; u undoes it); you see what lands first")
+                 ]
+    at ["offers", "0", "choice"] json `shouldBe` Just (String "proposal")
+    at ["offers", "1", "choice"] json `shouldBe` Just (String "reconjure")
+    at ["offers", "1", "arg"] json `shouldBe` Just (String notFoundId)
+    at ["offers", "2", "arg"] json `shouldBe` Just (String "2")
+    at ["outcome"] (pausedJson cancelPaused {paOutcome = Just "Your re-conjure of not_found was refused: x."}) `shouldBe` Just (String "Your re-conjure of not_found was refused: x.")
+    at ["proposal", "refused"] (pausedJson cancelPaused {paProposal = Just (Proposal "t.py" notFoundId "a" "b" "d" (Just "it adds `x`"))}) `shouldBe` Just (String "it adds `x`")
   it "(t) the cancel_booking pause as it happened, as JSON (the plugin's fixture)" $ do
     let v = pausedJson cancelPaused
         labels = [x | Just (Array os) <- [at ["offers"] v], Object o <- toList os, Just (String x) <- [KM.lookup "label" o]]
@@ -238,6 +264,13 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["offers", "1", "hint"] v `shouldBe` Just (Bool True)
     at ["offers", "2", "arg"] v `shouldBe` Just (String notFoundId)
     at ["landing", "diff"] v `shouldSatisfy` \case Just (String d) -> "--- a/src/bistro/booking/commands/cancel_booking.py" `T.isPrefixOf` d; _ -> False
+    at ["offers", "5", "arg"] v `shouldBe` Just (String "3")
+    at ["outcome"] v `shouldBe` Just Null
+    -- each round's change: the unit's diff, and every file keeping it lands (the unit's first)
+    at ["rounds", "0", "diff"] v `shouldBe` Just (String "")
+    at ["rounds", "1", "diff"] v `shouldSatisfy` \case Just (String d) -> "+        return NotFound(reason=\"Booking not found\")" `elem` T.lines d; _ -> False
+    at ["rounds", "1", "files", "0", "file"] v `shouldBe` Just (String "src/bistro/booking/commands/cancel_booking.py")
+    at ["rounds", "1", "files", "0", "diff"] v `shouldBe` at ["rounds", "1", "diff"] v
     -- OLIFANT_BLESS=1 writes the golden instead of comparing it
     let golden = "src/Olifant/Server/testdata/cancel-booking-paused.json"
     bless <- (== Just "1") <$> lookupEnv "OLIFANT_BLESS"
@@ -359,14 +392,17 @@ cancelPaused =
     , paTests = testEntries cancelPausedFacts
     , paHeader = cancelHeader
     , paPorts = []
-    , paLanding = unifiedDiff "src/bistro/booking/commands/cancel_booking.py" cancelModule landing
+    , paLanding = unifiedDiff rel cancelModule landing
     , paWired = []
     , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
     , paExpires = 600
     , paStem = "cancel_booking"
     , paProposal = Nothing
+    , paOutcome = Nothing
+    , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule l)]) | (n, l) <- [(1, cancelModule), (2, landing), (3, landing)]]
     }
   where
+    rel = "src/bistro/booking/commands/cancel_booking.py"
     sentences = diagnosis cancelPausedFacts CauseRepeat
     suspects = suspectFirst (dfFlagged cancelPausedFacts) (involved cancelBefore cancelRecords)
     landing = T.replace "        return Ok(None)" (T.intercalate "\n" (map ("        " <>) (T.lines cancelBody2))) cancelModule

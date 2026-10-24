@@ -51,12 +51,16 @@ module Olifant.Server.ConjureNext
   , PausedConjure (..)
   , pausedLifetime
   , pruned
+  , withoutKnown
+  , knownNote
+  , refusedSentence
+  , addsReason
   ) where
 
 import Control.Applicative ((<|>))
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as Key
-import Data.List (nub)
+import Data.List (isSuffixOf, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
@@ -283,8 +287,8 @@ data Standing = Standing {stRoundsLeft :: Int, stSecondsLeft :: Double, stNext :
 
 -- | What a pause offers: go on, go on with the person's words, climb, run a wire (param,
 -- port), re-conjure a test, stop (nothing lands), stop keeping round N's body; a proposal's
--- accept and reject.
-data Offer = OfferContinue | OfferHint | OfferClimb Text | OfferWire Text Text | OfferReconjure Text | OfferStop | OfferKeep Int | OfferAccept | OfferReject
+-- accept and reject; after a refused re-conjure, its proposal to see and the re-conjure again.
+data Offer = OfferContinue | OfferHint | OfferClimb Text | OfferWire Text Text | OfferReconjure Text | OfferStop | OfferKeep Int | OfferAccept | OfferReject | OfferRefused | OfferReconjureAgain Text
   deriving stock (Eq, Show)
 
 -- | Why a conjure paused: a test no body can pass, a port not derived, the same body twice,
@@ -325,6 +329,8 @@ offerText = \case
   OfferKeep n -> "keep:" <> T.pack (show n)
   OfferAccept -> "accept"
   OfferReject -> "reject"
+  OfferRefused -> "proposal"
+  OfferReconjureAgain i -> "reconjure:" <> i
 
 -- | What the person may do at a pause, in order: continue, hint, climb (a rung above; a
 -- `never` rung is still offered to the person), a wire for each candidate (@param: Port@, a
@@ -547,7 +553,9 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
 -- title, the diagnosis, what triggered it, every round, every involved test, the unit's
 -- header and the ports it takes (@param: Port@), what keep lands (a unified diff against the
 -- buffer), what each wire wrote (each file as a diff), the offers as rows, the seconds it is
--- kept, the module's stem (the tests' short names), and a re-conjured test's proposal.
+-- kept, the module's stem (the tests' short names), and a re-conjured test's proposal; what
+-- the person's last choice came to, when it is news (a refused re-conjure), and each round's
+-- change: every file keeping that round's body lands, as a diff (the unit's file first).
 data PausedAnswer = PausedAnswer
   { paToken :: Text
   , paFile :: FilePath
@@ -570,6 +578,8 @@ data PausedAnswer = PausedAnswer
   , paExpires :: Int
   , paStem :: Text
   , paProposal :: Maybe Proposal
+  , paOutcome :: Maybe Text
+  , paRoundFiles :: [(Int, [(FilePath, Text)])]
   }
   deriving stock (Eq, Show)
 
@@ -629,9 +639,11 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
     | Just t == ofSuspect o -> ("re-conjure " <> name t, "rewrite it against " <> ofClass o <> "'s ports; you see the diff first")
     | otherwise -> ("re-conjure " <> name t, "rewrite it; you see the diff first")
   OfferStop -> ("stop", "nothing changes; your text stands")
-  OfferKeep r -> ("stop, keep round " <> n r <> "'s body", if ofWired o then "lands it and the wire's files, red (unsaved; u undoes it)" else "lands it in the buffer, red (unsaved; u undoes it)")
+  OfferKeep r -> ("stop, keep round " <> n r <> "'s body", (if ofWired o then "lands it and the wire's files, red (unsaved; u undoes it)" else "lands it in the buffer, red (unsaved; u undoes it)") <> "; you see what lands first")
   OfferAccept -> ("accept", "lands the test with the conjure; the next round runs it")
   OfferReject -> ("reject", "back to the pause; the test stands as it was")
+  OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
+  OfferReconjureAgain t -> ("re-conjure " <> name t <> " again", "rewrite it again; you see the diff first")
   where
     n = T.pack . show
     name = snd . T.breakOnEnd "::"
@@ -657,8 +669,9 @@ pausedJson p =
     , "wired" .= [object ["param" .= fst (pq w), "port" .= snd (pq w), "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fs]] | (w, fs) <- paWired p]
     , "offers" .= map offerJson (paOffers p)
     , "expires" .= paExpires p
+    , "outcome" .= paOutcome p
     ]
-      ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r] | Just r <- [paProposal p]]
+      ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r] | Just r <- [paProposal p]]
   where
     t = paTitle p
     pq w = fromMaybe (w, "") (paramPort w)
@@ -673,6 +686,8 @@ pausedJson p =
         , "failed" .= [failedJson tid f | Just run <- [rrRun r], (tid, f) <- trFailed run]
         , "passed" .= maybe [] trPassed (rrRun r)
         , "decide" .= fmap decideJson (rrDecided r)
+        , "diff" .= fmap snd (listToMaybe =<< lookup (rrRound r) (paRoundFiles p))
+        , "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fromMaybe [] (lookup (rrRound r) (paRoundFiles p))]
         ]
     failedJson tid f =
       let ge = gotExpected f
@@ -704,15 +719,18 @@ pausedJson p =
             OfferWire a b -> ("wire", Just (a <> ": " <> b), Nothing, Nothing)
             OfferReconjure i -> ("reconjure", Just i, Nothing, Nothing)
             OfferStop -> ("stop", Nothing, Just False, Nothing)
-            OfferKeep _ -> ("stop", Nothing, Just True, Nothing)
+            OfferKeep k -> ("stop", Just (T.pack (show k)), Just True, Nothing)
             OfferAccept -> ("accept", Nothing, Nothing, Nothing)
             OfferReject -> ("reject", Nothing, Nothing, Nothing)
+            OfferRefused -> ("proposal", Nothing, Nothing, Nothing)
+            OfferReconjureAgain i -> ("reconjure", Just i, Nothing, Nothing)
        in object ["choice" .= (choice' :: Text), "arg" .= (arg :: Maybe Text), "label" .= orLabel r, "detail" .= orDetail r, "land" .= (land :: Maybe Bool), "hint" .= (hint :: Maybe Bool)]
 
 -- | A re-conjured test, proposed: its file (root-relative), its id, the
 -- file's text as the editor (or disk) has it and as the re-conjure writes
--- it, and the unified diff between the two.
-data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text}
+-- it, and the unified diff between the two; why its verify refused it (a refused proposal
+-- is kept to be seen, and accepted as the person's choice).
+data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text, prRefused :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | A conjure paused, as the server keeps it under its token: the file (absolute) and its
@@ -725,7 +743,8 @@ data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, 
 -- open) and its text when the conjure first read it (none: a new file), what is wired, and
 -- the pause's explanation, the rounds so far, the conjure's first before-run, the tests the scan flagged and the pause's cause; a re-conjured test's proposal, the pause it was
 -- proposed from (what reject answers again), and what the pause answered
--- the editor (its offers say what a resume may do).
+-- the editor (its offers say what a resume may do); the unit's file as each round's body
+-- writes it (what keeping that round lands).
 data PausedConjure = PausedConjure
   { pdFile :: FilePath
   , pdVersion :: Maybe Int
@@ -753,8 +772,39 @@ data PausedConjure = PausedConjure
   , pdProposal :: Maybe Proposal
   , pdPrevious :: Maybe PausedAnswer
   , pdShown :: PausedAnswer
+  , pdLandings :: [(Int, Text)]
   }
   deriving stock (Eq, Show)
+
+-- | REPORT less the problems KNOWN (file, message) it repeats: each known problem takes one
+-- of the same message in the same file (either path may be under a check's scope), so a
+-- line moved does not make it new; their lines go with them.
+withoutKnown :: [(FilePath, Text)] -> CheckReport -> CheckReport
+withoutKnown known r = r {reportBroken = kept, reportLines = keptLines}
+  where
+    (kept, _) = foldl step ([], known) (reportBroken r)
+    step (acc, left) (p, m) = case break (\(q, m') -> m' == m && samePath p q) left of
+      (before, _ : after) -> (acc, before ++ after)
+      _ -> (acc ++ [(p, m)], left)
+    keptLines = take' kept (reportLines r)
+    -- each kept problem's line, in order (a problem dropped leaves its line out)
+    take' [] _ = []
+    take' (k : ks) ls = case break ((== k) . fst) ls of
+      (before, l : after) -> l : take' ks (before ++ after)
+      _ -> take' ks ls
+    samePath a b = a == b || ("/" <> a) `isSuffixOf` b || ("/" <> b) `isSuffixOf` a
+
+-- | What the model is told of the errors a test already has (with their lines, when said).
+knownNote :: [(Maybe Int, Text)] -> Text
+knownNote es = T.intercalate "\n" ("the test already has these errors; fix them if you touch those lines:" : [maybe "" (\l -> "line " <> T.pack (show l) <> ": ") at <> m | (at, m) <- es])
+
+-- | A refused re-conjure of the test SHORT, as the pause's first sentence.
+refusedSentence :: Text -> Text -> Text
+refusedSentence short why = "Your re-conjure of " <> short <> " was refused: " <> why <> "."
+
+-- | What a re-conjure added that refused it: an error, and its line when said.
+addsReason :: Text -> Maybe Int -> Text
+addsReason m at = "it adds `" <> m <> "`" <> maybe "" (\l -> " at line " <> T.pack (show l)) at
 
 -- | Seconds a paused conjure is kept.
 pausedLifetime :: Double
