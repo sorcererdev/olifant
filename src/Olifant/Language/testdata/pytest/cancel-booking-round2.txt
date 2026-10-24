@@ -1,0 +1,12 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+_________________________ test_cancel_booking_succeeds _________________________
+src/bistro/booking/commands/cancel_booking__test.py:18: in test_cancel_booking_succeeds
+    assert result == Ok(None)
+E   AssertionError: assert NotFound(reason='Booking not found') == Ok(value=None)
+E    +  where Ok(value=None) = Ok(None)
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED src/bistro/booking/commands/cancel_booking__test.py::test_cancel_booking_not_found
+FAILED src/bistro/booking/commands/cancel_booking__test.py::test_cancel_booking_succeeds
+1 failed, 1 passed in 0.02s

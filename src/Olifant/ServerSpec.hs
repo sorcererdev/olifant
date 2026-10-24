@@ -20,7 +20,7 @@ import Olifant.Mutate (Mutant (..))
 import Olifant.Language (Failure (..), Match (..), Rewrite (..), Runner (..), Syntax (..), TestRun (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
-import Olifant.Server.ConjureNext (PausedConjure (..), RoundView (..), pruned)
+import Olifant.Server.ConjureNext (OfferRow (..), PausedConjure (..), RoundView (..), Title (..), offerText, pruned)
 import Olifant.Generation.Steer (noSeed)
 import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (replicateConcurrently_, wait)
@@ -482,20 +482,24 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
         k s seen answersFile
       steered edit answers fills = steeredWith edit answers fills (\_ _ -> pure ())
       conjure s = snd <$> conjureAt (const (pure ())) path 6 Nothing s
-      resume s token choice' hint = snd <$> resumeConjure (const (pure ())) path (Resume token choice' hint) s
+      resume s token choice' hint = snd <$> resumeConjure (const (pure ())) path (Resume token choice' hint Nothing False) s
+      keepIt s token = snd <$> resumeConjure (const (pure ())) path (Resume token ResumeStop Nothing Nothing True) s
       logOf s = fromMaybe "" <$> readText (pFiles (ssPorts s)) (root </> ".olifant/state/steps.log")
       asked answersFile = doesFileExist (answersFile <> ".asked") >>= \case
         True -> lines <$> readFile (answersFile <> ".asked")
         False -> pure []
       noDecide = fst . T.breakOn "[decide]"
+      offerWords = map (offerText . orOffer) . paOffers
       paused = \case
         Right (Paused p) -> pure p
         other -> fail ("not paused: " <> show other)
       lands = \case
         Right (Landed a) -> pure a
         other -> fail ("not landed: " <> show other)
+      -- a new body each round (the same body twice is a repeat, paused in code)
+      reds = [T.pack ("return " <> show i) | i <- [0 .. 20 :: Int]]
       -- (b): a steered conjure that stays red pauses when its rounds are spent
-      spentPause k = steered id again ["return 0"] greenOnSeats $ \s seen answersFile -> do
+      spentPause k = steered id again reds greenOnSeats $ \s seen answersFile -> do
         p <- paused =<< conjure s
         k s seen answersFile p
   it "(a) no [decide]: today's retries, the rounds counted, nothing paused" $
@@ -509,26 +513,36 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       M.null . snd <$> readIORef (ssPaused s) `shouldReturn` True
   it "(b) always red: Jev asked after round 1, round 2 spends the budget and pauses" $
     spentPause $ \s seen answersFile p -> do
-      (paRound p, paRung p, paWhy p, paToken p) `shouldBe` (2, "qwen", "budget spent", "conjure-1")
-      paOffers p `shouldBe` ["continue", "climb:claude", "stop"]
+      (paRound p, paRung p, paToken p) `shouldBe` (2, "qwen", "conjure-1")
+      paWhy p `shouldSatisfy` T.isPrefixOf "2 rounds used ("
+      offerWords p `shouldBe` ["continue", "hint", "climb:claude", "reconjure:" <> testId, "stop", "keep:2"]
       paSummary p `shouldBe` "red: test_closes_a_table \183 assert 0 == 1"
       (paFile p, paUnit p, paLines p) `shouldBe` (path, "handle", (6, 6))
       length <$> readIORef seen `shouldReturn` 2
       asked answersFile `shouldReturn` ["conjure-next"]
       logged <- logOf s
       logged `shouldSatisfy` T.isInfixOf "\tconjure-next\tagain\t0.90\t1\tqwen\n"
-      logged `shouldSatisfy` T.isInfixOf "\tconjure-pause\tbudget spent\n"
-  it "(c) stop lands the last attempt, red; a second resume finds it gone" $
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-pause\tbudget\n"
+  it "(c) stop keeping the body lands the last attempt, red; a second resume finds it gone" $
     spentPause $ \s _ _ _ -> do
-      a <- lands =<< resume s "conjure-1" ResumeStop Nothing
-      applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
-      daSummary a `shouldSatisfy` T.isPrefixOf "red: test_closes_a_table"
+      a <- lands =<< keepIt s "conjure-1"
+      applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 1" stubbed
+      daSummary a `shouldSatisfy` T.isPrefixOf "round 2's body is in the buffer, red: test_closes_a_table"
+      daSummary a `shouldSatisfy` T.isSuffixOf " \183 unsaved \183 u undoes it"
+      daStopped a `shouldBe` True
       (daRounds a, daRungs a) `shouldBe` (2, ["qwen"])
       logged <- logOf s
-      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tstop\n"
-      logged `shouldSatisfy` T.isInfixOf "conjured by qwen \183 2 rounds \183 red: "
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tkeep\n"
+      logged `shouldSatisfy` T.isInfixOf "kept round 2 \183 red: test_closes_a_table"
       again' <- resume s "conjure-1" ResumeStop Nothing
       either id (const "") again' `shouldSatisfy` T.isInfixOf "gone"
+  it "(c2) a bare stop lands nothing" $
+    spentPause $ \s _ _ _ -> do
+      a <- lands =<< resume s "conjure-1" ResumeStop Nothing
+      (daEdits a, daSummary a, daStopped a, daGreen a) `shouldBe` ([], "nothing landed", True, False)
+      logged <- logOf s
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tstop\n"
+      logged `shouldSatisfy` T.isInfixOf "stopped \183 nothing landed"
   it "(d) continue with a hint: the hint in the next prompt, fresh rounds, a new pause" $
     spentPause $ \s seen _ _ -> do
       p <- paused =<< resume s "conjure-1" ResumeContinue (Just "seats over two close it")
@@ -549,19 +563,26 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
   it "(f) climb, ask: a pause offering the climb; climbing lands green" $
     steered id (chooses "climb") ["return 0", "return int(seats > 2)"] greenOnSeats $ \s _ _ -> do
       p <- paused =<< conjure s
-      paWhy p `shouldBe` "Jev would climb to claude"
-      paOffers p `shouldSatisfy` elem "climb:claude"
+      paWhy p `shouldBe` "qwen is stuck; claude is offered."
+      offerWords p `shouldSatisfy` elem "climb:claude"
       a <- lands =<< resume s (paToken p) ResumeClimb Nothing
       (daGreen a, daRungs a) `shouldBe` (True, ["qwen", "claude"])
-  it "(g) the same failure twice, and Jev asks: a pause" $ do
+  it "(g) the same body twice: a pause in code, Jev not asked again" $
+    steered (T.replace "rounds = 2" "rounds = 4") again ["return 0", "return 0"] greenOnSeats $ \s _ answersFile -> do
+      p <- paused =<< conjure s
+      (paWhy p, paRound p) `shouldBe` ("qwen wrote the same body in rounds 1 and 2.", 2)
+      asked answersFile `shouldReturn` ["conjure-next"]
+      logged <- logOf s
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-pause\trepeat\n"
+  it "(g2) Jev asks: a pause" $ do
     let switch n answersFile = if n == 2 then TIO.writeFile answersFile (chooses "ask") else pure ()
-    steeredWith (T.replace "rounds = 2" "rounds = 4") again ["return 0", "return 1"] switch greenOnSeats $ \s _ _ -> do
+    steeredWith (T.replace "rounds = 2" "rounds = 4") again reds switch greenOnSeats $ \s _ _ -> do
       p <- paused =<< conjure s
-      (paWhy p, paRound p) `shouldBe` ("the same failure twice", 2)
+      (paWhy p, paRound p) `shouldBe` ("qwen is not converging.", 2)
   it "(h) no answer from Jev means again" $
-    steered id "{\"answers\": {}}" ["return 0"] greenOnSeats $ \s seen _ -> do
+    steered id "{\"answers\": {}}" reds greenOnSeats $ \s seen _ -> do
       p <- paused =<< conjure s
-      paWhy p `shouldBe` "budget spent"
+      paWhy p `shouldSatisfy` T.isPrefixOf "2 rounds used ("
       length <$> readIORef seen `shouldReturn` 2
   it "(i) a resume after the file changed: changed, and the pause is forgotten" $
     spentPause $ \s _ _ _ -> do
@@ -570,8 +591,8 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       either id (const "") r `shouldSatisfy` T.isInfixOf "changed"
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
-    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" []
-        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" [] "" "" [] [] Nothing)
+    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" [] [] False []
+        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" "" (Title "u" 2 2 "qwen" "q" 1) [] "" [] [] "" [] "" [] [] 600 "u" Nothing)
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True
     held (M.singleton path (1, stubbed)) `shouldBe` True
@@ -583,10 +604,10 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       r `shouldBe` Left "cancelled"
       M.null . snd <$> readIORef (ssPaused s) `shouldReturn` True
   it "(l) Jev failing (an unreadable answers file) means again" $
-    withSystemTempDirectory "unreadable" $ \dir -> steered id again ["return 0"] greenOnSeats $ \s0 _ _ -> do
+    withSystemTempDirectory "unreadable" $ \dir -> steered id again reds greenOnSeats $ \s0 _ _ -> do
       let s = s0 {ssConfig = (ssConfig s0) {scDecideAnswers = Just dir}}
       p <- paused =<< conjure s
-      paWhy p `shouldBe` "budget spent"
+      paWhy p `shouldSatisfy` T.isPrefixOf "2 rounds used ("
       Dir.removeFile (dir <> ".asked")
   it "(m) an undefined name: the summary names it" $
     steered noDecide again ["return date.today()"] (const (Right (TestRun [] [(testId, Failure (Just 6) "NameError: name 'date' is not defined" "")] Nothing))) $ \s _ _ -> do

@@ -34,6 +34,9 @@ import Olifant.Process (neverCancel)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Test.Hspec
 
+cb :: Text
+cb = "src/bistro/booking/commands/cancel_booking__test.py"
+
 elmToml :: Text
 elmToml =
   T.unlines
@@ -110,6 +113,46 @@ spec = do
           run = parsePytest (ExitFailure 1) out
       fmap (fLine . snd) (listToMaybe (trFailed run)) `shouldBe` Just (Just 7)
       fmap (fMessage . snd) (listToMaybe (trFailed run)) `shouldBe` Just "assert 3 == 4"
+    it "(f) the whole E block is the message; the one-line form names the assertion" $ do
+      r2 <- parsePytest (ExitFailure 1) <$> TIO.readFile "src/Olifant/Language/testdata/pytest/cancel-booking-round2.txt"
+      let Just f = lookup (cb <> "::test_cancel_booking_succeeds") (trFailed r2)
+      fMessage f `shouldBe` "AssertionError: assert NotFound(reason='Booking not found') == Ok(value=None)\n+  where Ok(value=None) = Ok(None)"
+      failureLine f `shouldBe` "assert NotFound(reason='Booking not found') == Ok(value=None)"
+      assertionLine "test_cancel_booking_succeeds" f `shouldBe` Just "assert result == Ok(None)"
+      gotExpected f `shouldBe` Just ("NotFound(reason='Booking not found')", "Ok(value=None)")
+    it "(g) assert isinstance: the where line is the one-line form; got is the value, expected the type" $ do
+      r1 <- parsePytest (ExitFailure 1) <$> TIO.readFile "src/Olifant/Language/testdata/pytest/cancel-booking-round1.txt"
+      let Just f = lookup (cb <> "::test_cancel_booking_not_found") (trFailed r1)
+      failureLine f `shouldBe` "False = isinstance(Ok(value=None), NotFound)"
+      assertionLine "test_cancel_booking_not_found" f `shouldBe` Just "assert isinstance(result, NotFound)"
+      gotExpected f `shouldBe` Just ("Ok(value=None)", "NotFound")
+      fLine f `shouldBe` Just 26
+      trPassed r1 `shouldBe` [cb <> "::test_cancel_booking_succeeds"]
+    it "(h) a raised error before the assertion: the error is the message, no got/expected" $ do
+      let out = T.unlines
+            [ "=================================== FAILURES ==================================="
+            , "____________________________________ test_x ____________________________________"
+            , "src/x__test.py:5: in test_x"
+            , "    result = f()"
+            , "src/x.py:3: in f"
+            , "    raise TypeError(\"bad\")"
+            , "E   TypeError: bad"
+            , "=========================== short test summary info ============================"
+            , "FAILED src/x__test.py::test_x"
+            , "1 failed in 0.01s" ]
+          Just f = lookup "src/x__test.py::test_x" (trFailed (parsePytest (ExitFailure 1) out))
+      fMessage f `shouldBe` "TypeError: bad"
+      failureLine f `shouldBe` "TypeError: bad"
+      assertionLine "test_x" f `shouldBe` Just "result = f()"
+      gotExpected f `shouldBe` Nothing
+    it "(i) no section, a -rA tail: the tail is the message" $ do
+      let out = T.unlines ["FAILED pkg/a__test.py::test_y - assert 3 == 4", "1 failed in 0.01s"]
+          Just f = lookup "pkg/a__test.py::test_y" (trFailed (parsePytest (ExitFailure 1) out))
+      fMessage f `shouldBe` "assert 3 == 4"
+      failureLine f `shouldBe` "assert 3 == 4"
+    it "(j) the scripted runner carries output" $ do
+      Right run <- runTests (scriptedRunner (M.fromList [("t.py::test_a", object ["line" .= (2 :: Int), "message" .= ("m" :: Text), "output" .= ("S" :: Text)])])) undefined ["t.py::test_a"] M.empty
+      map (fOutput . snd) (trFailed run) `shouldBe` ["S"]
     it "(e) processRunner on the fixture: a red test is red at its assert (uv)" $ do
       strict <- (== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS"
       findExecutable "uv" >>= \case

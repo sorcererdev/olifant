@@ -28,7 +28,7 @@ import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
-import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), languageFor, testsForFile)
+import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), failureLine, languageFor, testsForFile)
 import Olifant.Server.Site (appendStepLine, defName, runOver, tshow)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -198,7 +198,7 @@ testsJson a =
     , "passed" .= trPassed (taRun a)
     , "scope" .= (case (taTest a, taScope a) of (Just _, _) -> "test"; (_, ScopeAll) -> "all"; _ -> "file" :: Text)
     , "test" .= taTest a
-    , "failed" .= [object ["id" .= tid, "file" .= normalisePath (taRoot a </> T.unpack (T.takeWhile (/= ':') tid)), "line" .= fLine f, "message" .= fMessage f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
+    , "failed" .= [object ["id" .= tid, "file" .= normalisePath (taRoot a </> T.unpack (T.takeWhile (/= ':') tid)), "line" .= fLine f, "message" .= failureLine f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
     , "broken" .= trBroken (taRun a)
     , "seconds" .= taSeconds a
     ]

@@ -118,20 +118,50 @@ On the wire this is `olifant/conjure` with `{textDocument, position, selection?}
 edits, summary, green, tests, rounds, rungs}` (`edits` a workspace edit over every file the conjure wrote, null when it changed nothing;
 `tests` the after-run as `olifant/tests/run` answers it; `rounds` the rounds used and `rungs` the
 models tried, in order), under `$/progress` `conjuring`. A steered conjure that pauses answers
-instead `{paused: {token, file, unit, lines: {first, last}, round, rung, summary, offers, why,
-explanation, failing, wired, proposal?}}` (`lines` 1-based; `offers` a list of `"continue"`,
-`"climb:NAME"`, `"stop"`, `"reconjure:TEST_ID"`, `"accept"` and `"reject"`; `explanation` Jev's
-words, or the server's reason; `failing` a list of `{test, message}` from the last round, the
-messages whole; `wired` a list of `"param: Port"`, empty when nothing was wired; `proposal`
-`{file, test, before, after, diff}`, present only while a re-conjured test waits for you). To
-answer it, ask again with the same `textDocument` and `position` and `resume: {token, choice,
-hint?}`, `choice` being `"continue"`, `"climb"`, `"stop"`, `"reconjure"`, `"accept"` or
-`"reject"` (an empty `hint` counts as none); the answer is a landed or a paused result again, and
-a token works once, except that `reject` and a refused resume keep it. A resume without a token
-and a choice is `InvalidParams` (`olifant/conjure resume needs a token and a choice (continue,
-climb, stop, reconjure, accept or reject)`). `reconjure` with no `reconjure:` offer, and `accept`
-or `reject` with no proposal, are refused in one sentence (`this pause offers no re-conjure`,
-`there is no proposal to accept`) and the pause stays.
+instead `{paused: {…}}`, every fact the pause stands on, so the editor can show it without asking
+again:
+
+- `token`, `file`, `lines: {first, last}` (1-based), `round`, `rung`, `summary` (the last round in
+  a few words) and `why` (the first sentence of the diagnosis, for a one-line notification);
+- `title: {unit, round, of, rung, model, seconds}`: the unit as `Class.method` (or the function),
+  the round of the grant's `of`, the rung and its backend's model, the seconds used;
+- `diagnosis`: one to three sentences the engine writes from the facts below (no model writes
+  them), the cause's first; `trigger`: what caused the pause in one line (`repeat`, `trade`,
+  `budget spent`, `unsatisfiable test: <id>`, `port not derived`, or Jev's distribution as
+  `Jev: ask .68 · again .29`, then `; wire failed: …` when a wire failed);
+- `rounds`: every round as `{round, rung, attempt, line, verdict, failing, failed, passed,
+  decide}`: the attempt's body, its first line (or `(the same as round N)`), `red` or `green`,
+  the failing tests' short names, each failure as `{test, message, summary, at, assertion, got,
+  expected, output}` (pytest's whole `E` block, its one line, the line it failed at, the
+  assertion's source line, the two sides of an `assert a == b` or an `isinstance`, null for any
+  other shape, and the test's whole section), the tests that passed, and Jev's answer `{choice,
+  confidence, probabilities}` or null;
+- `tests`: every test involved (failing now, or failed in any round) as `{test, source, status,
+  flipped, assertion, note}`: `failing` or `passing`, the last round its status was otherwise
+  (0 the run before round 1), the assertion's line, and the scan's note on a fake it never
+  hands in;
+- `unit: {header, ports}`: the class and its `__init__`, and the ports it takes as `param: Port`;
+- `landing: {diff}`: what `stop, keep round N's body` would land, as a unified diff against the
+  buffer; `wired`: each wire as `{param, port, files: [{file, diff}]}`;
+- `offers`: the rows in order, each `{choice, arg, label, detail, land, hint}`: what to send back
+  (`choice`, and `arg`, `land` or `hint` when the row needs one), a label and what the row will do
+  in numbers (rounds, rung, what lands where);
+- `expires`: the seconds the pause is kept; `proposal`: `{file, test, before, after, diff}`,
+  present only while a re-conjured test waits for you.
+
+To answer it, ask again with the same `textDocument` and `position` and `resume: {token, choice,
+arg?, land?, hint?}`, as the offer's row says: `choice` is `"continue"`, `"climb"`, `"stop"`,
+`"reconjure"`, `"accept"`, `"reject"` or `"wire"`; `arg` a re-conjure's test id or a wire's
+`"param: Port"` (needed for `wire`); `land` a boolean for `stop`, false when absent; an empty
+`hint` counts as none. The answer is a landed or a paused result again, and a token works once,
+except that `reject` and a refused resume keep it. A resume without a token and a choice, a `land`
+that is not a boolean, or a `wire` without its `arg`, is `InvalidParams` (`olifant/conjure resume
+needs a token and a choice (continue, climb, stop, reconjure, accept, reject or wire)`). These are
+refused in one sentence and the pause stays: a `wire` the pause does not offer (`this pause offers
+no wire for <arg>`), a `reconjure` of a test it does not offer (`this pause offers no re-conjure of
+<arg>`; with no `arg` the first offered test is re-conjured), a `stop` with `land: true` and no
+body to keep (`there is no body to keep`), and `accept` or `reject` with no proposal (`there is no
+proposal to accept`). A landed answer carries `stopped`: true when the person stopped it.
 A resume is also refused when the pause is gone (`this paused conjure is gone (it expired, was
 resumed, or its file changed): conjure again`), when the file changed since (`the file changed
 since the conjure paused; conjure again`), and on a climb with no stronger rung (`there is no
@@ -158,37 +188,54 @@ itself cannot run (no `[test]`, pytest missing), the conjure gets one fill and l
 pauses. A `climb` to a rung whose `escalate` is `ask` (the default) pauses too and offers the climb;
 `auto` climbs at once, and `never` keeps Jev from choosing it.
 
-Each red round Jev sees the failing tests' source and the unit's class header besides their
-messages, and may answer `port` or `test` besides `again`, `climb` and `ask`. `port` says a test
-wants a constructor parameter the class lacks, and names it and its port. `test` says a test
-cannot be satisfied as written. Both end in a pause when nothing can act on them, and the pause
-carries Jev's explanation.
+Some pauses need no question either; the engine decides them in code, in this order, after the
+run before round 1 and after every red round. The **scan** reads each failing test for a fake it
+builds (`Mock()`, `MagicMock()`, a `Fake…`, `InMemory…` or `Stub…` class) and never hands to any
+call. A flagged test whose class lacks the fake's port is **wired** (below), silently, when a wire
+generator applies and the port and its parameter can be named; when they cannot, it pauses
+(`port`) and offers a `wire` row for each of the two likeliest ports. A flagged test still failing
+when no wire can help (none applies, one ran, or the class takes the port already) is a test no
+body can pass: it pauses at once (`test <id>`). The same body twice pauses (`repeat`); bodies that
+pass one test and fail the other pause (`trade`); a spent budget pauses (`budget`). Only then is
+Jev asked, and only whether the model is converging: it sees every round's first line and failing
+tests, the failures, the tests passing now, every involved test's source, the unit's header, and
+whether the rounds trade or repeat. An `ask` at 0.5 or more pauses, a `climb` at 0.6 or more
+climbs, anything else is `again`.
 
 **A missing port.** With `[conjure] wire = "<generator id>"` in `.olifant/config.toml` (the
 python-htmx pack's is `wire`) and a unit whose path matches that generator's `applies_at` path,
-a `port` answer runs the generator inside the conjure: the import, the `__init__` parameter
-(added when missing), `self.x = x`, the test helper's fake and `main.py`'s adapter. The conjure
-goes on over the wired files; every file it wrote lands with it, as one edit and one undo step
-across files, and the pause lists what was wired. One wire per conjure. Without the key, or when
-the path does not match, a `port` answer pauses with `needs a port the class lacks: <param>:
-<port>; no wire generator applies here`.
+a flagged test's port is wired inside the conjure, before round 1: the import, the `__init__`
+parameter (added when missing), `self.x = x`, the test helper's fake and `main.py`'s adapter. The
+port is the one the fake's class names (`InMemoryBookingRepository` → `BookingRepository`), else
+the one whose last word the fake's name ends in (`repository` → `BookingRepository`), else the
+service's only port, else Jev's pick among the service's ports (Protocol classes under
+`src/{app}/{service}/ports/`) at 0.6 or more; the parameter is the name the sibling commands and
+queries give that port in their `__init__` (`bookings`), else the fake's name. The conjure goes on
+over the wired files; every file it wrote lands with it, as one edit and one undo step across
+files, and the pause lists what was wired, each file as a diff. One wire per conjure; a wire that
+writes nothing is not tried again.
 
-**A wrong test.** A `test` answer pauses with Jev's explanation and an extra offer,
-`reconjure:<test id>`. **reconjure** has the model write that test again, told why it was wrong
-(and your hint, if any), and answers a **proposal**: the test file before and after, with a
-unified diff, and offers `accept` and `reject`. **accept** writes the new test into the conjure's
-working files and goes on; it lands with the rest. **reject** returns the pause as it was. Nothing
-touches your buffer before the conjure lands.
+**A wrong test.** Every pause offers to re-conjure each involved test, the suspect first (a
+flagged test, else one failing now). **reconjure** has the model write that test again, told why
+it was wrong, that the helper now takes the wired port (when one was wired), and your hint, if
+any, and answers a **proposal**: the test file before and after, with a unified diff, and offers
+`accept` and `reject`. **accept** writes the new test into the conjure's working files and goes
+on; it lands with the rest. **reject** returns the pause as it was. Nothing touches your buffer
+before the conjure lands.
 
-A conjure you start by hand on a test is checked after its fill when the project has a decision
-model: Jev answers `ok` or `port`. On `port` the missing port is wired as above, before the test
-lands, and the test is filled once more over the wired files. The summary ends `wired <param>:
-<port>`; with no wire generator it ends `needs a port the class lacks: <param>: <port>`.
+A conjure you start by hand on a test is scanned after its fill. A test that builds a fake for a
+port its class lacks has the port wired as above, before the test lands, and the test is filled
+once more over the wired files. The summary ends `wired <param>: <port>` (and `; the test still
+builds its own fake, re-conjure it` when the second fill still does); with no wire generator it
+ends `needs a port the class lacks: <param>: <port>`.
 
 A pause answers `conjure · round 4 · red: test_handle · assert status == 404` with what you may
 do. **continue** grants a fresh `rounds` and `budget` on the same model. **climb** moves to the
-next rung, carrying the attempts so far into the stronger model's prompt. **stop** lands the last
-attempt as one edit and one undo step, as a conjure that ran out of retries does. A **hint**
+next rung, carrying the attempts so far into the stronger model's prompt. **wire** runs the
+offered wire, then goes on as continue. **stop** lands nothing: your text stands, the wire's
+writes are dropped, and the answer says `nothing landed`. **stop, keep round N's body** lands the
+last attempt and the wire's files as one edit and one undo step, red and unsaved, and says `round
+N's body is in the buffer, red: … · unsaved · u undoes it`. A **hint**
 continues with your words added to the next prompt as "The person says: …". A pause is forgotten
 after 10 minutes, or as soon as its file changes in the editor; conjure again then. Without
 `[decide] model` nothing of this happens: the model's `retries` run as before and the last attempt
@@ -308,17 +355,21 @@ it was on, and its outcome, tab-separated.
 ```
 
 A steered conjure (one with `[decide] model`) adds a line for each of Jev's choices (the choice,
-its confidence or `-`, the round and the rung), one for a pause (why), and one for a resume (the
-choice only; a hint's words are never logged). A wire adds `conjure-wire <generator> k=v …` (the
-inputs it ran with) or `conjure-wire-failed <generator>`; a proposal `conjure-proposal <test id>`;
-a failed re-conjure `conjure-reconjure-failed <test id>`; a checked test conjure
-`conjure-test <choice> <confidence|->`. `conjure-pause` also covers a test's pause, and
-`conjure-resume` takes `reconjure`, `accept` and `reject` besides `continue`, `climb` and `stop`.
+its confidence or `-`, the round and the rung), one for a pause (its cause: `test <id>`, `port`,
+`repeat`, `trade`, `budget`, `ask` or `climb`), and one for a resume (the choice only; a hint's
+words are never logged). The scan logs `conjure-test flagged <test id> <variable> <class>` once
+for each test it flags (and `conjure-test ok -` for a hand-started test conjure that passes its
+fakes); Jev's pick of a port `conjure-port <choice> <confidence|->`. A wire adds `conjure-wire
+<generator> k=v …` (the inputs it ran with) or `conjure-wire-failed <generator>`; a proposal
+`conjure-proposal <test id>`; a failed re-conjure `conjure-reconjure-failed <test id>`.
+`conjure-resume` takes `reconjure`, `accept`, `reject` and `wire` besides `continue`, `climb`,
+`stop` and `keep` (a stop that keeps the body). A bare stop's `conjure` line says `stopped ·
+nothing landed`; a keep's `kept round N · red: …`.
 Its `conjure` line names the rungs and the rounds:
 
 ```
 2026-10-22T21:10:03Z	conjure-next	again	0.90	1	qwen
-2026-10-22T21:10:09Z	conjure-pause	budget spent
+2026-10-22T21:10:09Z	conjure-pause	budget
 2026-10-22T21:10:30Z	conjure-resume	climb
 2026-10-22T21:10:41Z	conjure	person	src/bistro/booking/commands/close_table.py::handle	conjured by qwen → claude · 3 rounds · green
 ```

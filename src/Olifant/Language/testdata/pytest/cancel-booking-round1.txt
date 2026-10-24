@@ -1,0 +1,12 @@
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+________________________ test_cancel_booking_not_found _________________________
+src/bistro/booking/commands/cancel_booking__test.py:26: in test_cancel_booking_not_found
+    assert isinstance(result, NotFound)
+E   assert False
+E    +  where False = isinstance(Ok(value=None), NotFound)
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED src/bistro/booking/commands/cancel_booking__test.py::test_cancel_booking_succeeds
+FAILED src/bistro/booking/commands/cancel_booking__test.py::test_cancel_booking_not_found
+1 failed, 1 passed in 0.02s
