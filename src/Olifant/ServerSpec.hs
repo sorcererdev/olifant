@@ -279,8 +279,8 @@ conjureSpecs = describe "a conjure (olifant/conjure)" $ do
       (s, _, _) <- serving onStub [] [("body", "return int(seats > 2)")]
       Right a <- conjure s 6
       (daFile a, daUnit a, daSummary a, daGreen a) `shouldBe` (root </> moduleRel, "handle", "green", True)
-      fmap feVersion (daEdit a) `shouldBe` Just (Just 1)
-      applyEdits (maybe [] pure (daEdit a)) stubbed `shouldBe` written
+      fmap feVersion (listToMaybe (daEdits a)) `shouldBe` Just (Just 1)
+      applyEdits (daEdits a) stubbed `shouldBe` written
       taFile (daTests a) `shouldBe` root </> testRel
     it "the model is told the failing tests and sees the test file; the hole is the body's lines" $ do
       (s, seen, _) <- serving onStub [] [("body", "return int(seats > 2)")]
@@ -311,13 +311,13 @@ conjureSpecs = describe "a conjure (olifant/conjure)" $ do
       (s, _, _) <- serving verdict [] [("body", "return 0")]
       Right a <- conjure s 6
       (daSummary a, daGreen a) `shouldBe` ("red: test_closes_a_table \183 assert 0 == 1", False)
-      applyEdits (maybe [] pure (daEdit a)) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
+      applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
       map fst (trFailed (taRun (daTests a))) `shouldBe` [testId]
     it "a selection conjures its lines only, in no unit or in one" $ do
       (s, seen, _) <- serving onStub [] [("body", "self.closed = 1")]
       Right a <- landed . snd <$> conjureAt (const (pure ())) (root </> moduleRel) 3 (Just (3, 3)) s
       daUnit a `shouldBe` "__init__"
-      applyEdits (maybe [] pure (daEdit a)) stubbed `shouldBe` T.replace "self.closed = 0" "self.closed = 1" stubbed
+      applyEdits (daEdits a) stubbed `shouldBe` T.replace "self.closed = 0" "self.closed = 1" stubbed
       req : _ <- readIORef seen
       fmap fhKind (bodyHole req) `shouldBe` Just "block"
       Right b <- landed . snd <$> conjureAt (const (pure ())) (root </> moduleRel) 8 (Just (7, 8)) s
@@ -360,7 +360,7 @@ conjureSpecs = describe "a conjure (olifant/conjure)" $ do
       Right a <- conjureTest s
       (daFile a, daUnit a) `shouldBe` (root </> testRel, "test_handles_two_seats")
       daSummary a `shouldBe` "red at the assertion \183 AssertionError"
-      applyEdits (maybe [] pure (daEdit a)) stubbedTest `shouldBe` T.replace "    ...\n    assert ...\n" "    table = CloseTable()\n    assert table.handle(5) == 2\n" stubbedTest
+      applyEdits (daEdits a) stubbedTest `shouldBe` T.replace "    ...\n    assert ...\n" "    table = CloseTable()\n    assert table.handle(5) == 2\n" stubbedTest
     it "the model is told the test's name and sees the module under test in full" $ do
       (s, seen) <- onTestServer killedBy [("body", conjured)]
       Right _ <- conjureTest s
@@ -377,7 +377,7 @@ conjureSpecs = describe "a conjure (olifant/conjure)" $ do
       (s, _) <- onTestServer erring [("body", "table = Table()\nassert table.handle(5) == 2")]
       Right a <- conjureTest s
       daSummary a `shouldBe` "red: error before the assertion \183 NameError: name 'Table' is not defined"
-      fmap feText (daEdit a) `shouldSatisfy` maybe False ("Table()" `T.isInfixOf`)
+      fmap feText (listToMaybe (daEdits a)) `shouldSatisfy` maybe False ("Table()" `T.isInfixOf`)
     it "a sibling that passed before and fails after: named in the summary" $ do
       let breaking files =
             let t = M.findWithDefault "" testRel files
@@ -521,7 +521,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
   it "(c) stop lands the last attempt, red; a second resume finds it gone" $
     spentPause $ \s _ _ _ -> do
       a <- lands =<< resume s "conjure-1" ResumeStop Nothing
-      applyEdits (maybe [] pure (daEdit a)) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
+      applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
       daSummary a `shouldSatisfy` T.isPrefixOf "red: test_closes_a_table"
       (daRounds a, daRungs a) `shouldBe` (2, ["qwen"])
       logged <- logOf s
@@ -570,8 +570,8 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       either id (const "") r `shouldSatisfy` T.isInfixOf "changed"
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
-    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False
-        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0
+    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" []
+        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" [] "" "" [] [] Nothing)
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True
     held (M.singleton path (1, stubbed)) `shouldBe` True

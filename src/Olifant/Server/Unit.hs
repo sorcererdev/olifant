@@ -4,6 +4,7 @@
 module Olifant.Server.Unit
   ( Unit (..)
   , unitAt
+  , unitHeader
   ) where
 
 import Control.Applicative ((<|>))
@@ -54,3 +55,30 @@ unitAt syntax lang text line
       rest <- T.stripPrefix "class " (T.strip l)
       let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
       if T.null n then Nothing else Just n
+
+-- | The header of the unit at LINE (1-based) of a Python module: for a method, its
+-- class line and the class's `__init__` def line (through its closing `:`); for a free
+-- function, its def line; empty when neither.
+unitHeader :: Text -> Int -> Text
+unitHeader text line = case ([c | c <- cands, isHead "class " (snd c)], [d | d <- cands, not (isHead "class " (snd d))]) of
+  ((ci, cl) : _, _ : _) -> T.intercalate "\n" (cl : initDef ci cl)
+  (_, (_, d) : _) -> T.stripEnd d
+  _ -> ""
+  where
+    cands = [(i, l) | (i, l) <- reverse (take line ls), isHead "class " l || isHead "def " l || isHead "async def " l, enclosing i l]
+    ls = zip [1 :: Int ..] (T.lines text)
+    indentOf = T.length . T.takeWhile (== ' ')
+    blank = T.null . T.strip
+    isHead p = (p `T.isPrefixOf`) . T.stripStart
+    enclosing i l =
+      i == line
+        || all (\(_, x) -> blank x || indentOf x > indentOf l) [x | x@(j, _) <- ls, j > i, j <= line]
+    initDef ci cl =
+      let body = takeWhile (\(_, x) -> blank x || indentOf x > indentOf cl) (drop ci ls)
+       in case dropWhile (not . isHead "def __init__(" . snd) body of
+            [] -> []
+            found -> [T.intercalate "\n" (map snd (upToColon found))]
+    upToColon [] = []
+    upToColon (x@(_, l) : r)
+      | ":" `T.isSuffixOf` T.stripEnd (T.takeWhile (/= '#') l) = [x]
+      | otherwise = x : upToColon r

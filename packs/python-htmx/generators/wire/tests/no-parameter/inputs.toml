@@ -1,0 +1,13 @@
+now = "2026-10-05T12:00:00Z"
+# A conjure's wire: the command's __init__ has no such parameter yet; the
+# wire adds it, keeps the port, and its test passes a fake. The stub still fails.
+run_tests = true
+expect_failing = 1
+
+[inputs]
+app = "bistro"
+service = "booking"
+kind = "commands"
+command = "cancel_booking"
+param = "bookings"
+port = "BookingRepository"

@@ -75,6 +75,14 @@ spec = describe "catalog" $ do
       withCatalog [("/proj/.olifant/config.toml", "[decide]\nmodel = \"jev\"\n")] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "jev"
       withCatalog [("/proj/.olifant/config.toml", "[recognize]\nmodel = \"local\"\n")] $ \_ cat -> catalogDecideModel cat `shouldBe` Just "local"
       withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogDecideModel cat `shouldBe` Nothing
+  describe "[conjure] (conjure, second pass)" $
+    it "reads [conjure] wire and refuses other keys" $ do
+      withCatalog [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\n")] $ \_ cat -> catalogConjureWire cat `shouldBe` Just "wire"
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogConjureWire cat `shouldBe` Nothing
+      r <- openWith [("/proj/.olifant/config.toml", "[conjure]\nwire = \"wire\"\nother = 1\n")]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "conjure"
+        _ -> expectationFailure "expected ConfigInvalid naming conjure"
   describe "[migrate] (strangling a legacy codebase)" $ do
     it "reads legacy, base, switches, new_work_lines and count, with defaults" $ do
       withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"legacy/**\"]\n")] $ \_ cat ->

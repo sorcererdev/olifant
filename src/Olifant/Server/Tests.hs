@@ -8,6 +8,7 @@ module Olifant.Server.Tests
   , TestsScope (..)
   , testsRun
   , testAt
+  , testLineOf
   , testsJson
   , TestsFile (..)
   , testsFile
@@ -201,6 +202,11 @@ testsJson a =
     , "broken" .= trBroken (taRun a)
     , "seconds" .= taSeconds a
     ]
+
+-- | The first line (1-based) of the test NAME (as 'testAt' names it) in
+-- a Python test file: its def's, or its first decorator's.
+testLineOf :: Text -> Text -> Maybe Int
+testLineOf text name = listToMaybe [i | i <- [1 .. length (T.lines text)], testAt text i == Just name]
 
 -- | The test enclosing LINE (1-based) of a Python test file, as pytest
 -- names it after `path::`: `test_x`, or `TestX::test_y` for a method of a

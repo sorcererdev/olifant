@@ -1067,7 +1067,212 @@ conjureSpec = describe "olifant/conjure" $ do
         field "rounds" stopped `shouldBe` Just (Number 1)
         field "rungs" stopped `shouldBe` Just (toJSON ["local" :: Text])
         again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
-        later `shouldSatisfy` either ("continue, climb or stop" `T.isInfixOf`) (const False)
+        later `shouldSatisfy` either ("continue, climb, stop, reconjure, accept or reject" `T.isInfixOf`) (const False)
+
+  -- a steered conjure of handle, rounds = 2, Jev answering port (bookings:
+  -- BookingRepository); WIRE the `[conjure] wire`, CHANGED files; SESSION
+  -- given ask and resume; the step log's lines (less their time) after
+  let testRel = "src/bistro/booking/commands/create_booking__test.py"
+      fixture p = TIO.readFile ("packs/python-htmx/fixtures/app" </> p)
+      -- create_booking with no bookings port: the class lacks it
+      unwired = T.replace "from bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n" "" . T.replace "self, bookings: BookingRepository, ids: IdGenerator" "self, ids: IdGenerator" . T.replace "        self.bookings = bookings\n" ""
+      wiredConjure :: Maybe Text -> [(FilePath, Text)] -> (([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]])
+      wiredConjure wire changed session =
+        answeredConjure "{\"answers\": {\"conjure-next\": {\"choice\": \"port\", \"fields\": {\"param\": \"bookings\", \"port\": \"BookingRepository\"}, \"confidence\": 0.9}}}" wire changed (const session)
+      -- the same with Jev's recorded ANSWERS, the SESSION given the test script's path too
+      answeredConjure :: Text -> Maybe Text -> [(FilePath, Text)] -> (FilePath -> ([(Key.Key, Value)] -> Session (Either Text Value)) -> (Text -> Text -> Session (Either Text Value)) -> Session a) -> IO (a, [[Text]])
+      answeredConjure recorded wire changed session =
+        withSystemTempDirectory "olifant-conjure-wire" $ \tmp -> do
+          let script = tmp </> "tests.json"
+              fills = tmp </> "fills.toml"
+              answers = tmp </> "answers.json"
+          BSL.writeFile script "{\"src/bistro/booking/commands/create_booking__test.py::test_books_a_free_slot\": {\"line\": 34, \"message\": \"assert 1 == 2\"}}"
+          TIO.writeFile fills "[fills]\nbody = \"return None\"\n"
+          TIO.writeFile answers recorded
+          withPython changed $ \ports dir -> do
+            old <- TIO.readFile (dir </> ".olifant/config.toml")
+            TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 2\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n" <> maybe "" (\w -> "[conjure]\nwire = \"" <> w <> "\"\n") wire)
+            let config = [("test_script", String (T.pack script)), ("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+            (r, _) <- inProcessWithConfig config ports dir $ do
+              doc <- openDoc moduleRel "python"
+              text <- documentContents doc
+              let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
+                  base = ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= (handleAt + 1 :: Int), "character" .= (0 :: Int)]]
+                  ask extra = blockMove (Proxy :: Proxy "olifant/conjure") (object (base <> extra))
+                  resume tok choice = ask ["resume" .= object ["token" .= (tok :: Text), "choice" .= (choice :: Text)]]
+              session script ask resume
+            let stepLog = dir </> ".olifant/state/steps.log"
+            found <- doesFileExist stepLog
+            lines' <- if found then T.lines <$> TIO.readFile stepLog else pure []
+            pure (r, [drop 1 (T.splitOn "\t" l) | l <- lines'])
+      field k = either (const Nothing) (lookupKey k)
+      inner k v = case v of Just (Object o) -> KM.lookup k o; _ -> Nothing
+      -- each changed document's path (from its uri) and its edits' new texts
+      changes v = [(T.pack (fromMaybe "" (uriToFilePath (Uri u))), [t | Object te <- toList es, Just (String t) <- [KM.lookup "newText" te]]) | Just (Array cs) <- [inner "documentChanges" v], Object c <- toList cs, Just (Object d) <- [KM.lookup "textDocument" c], Just (String u) <- [KM.lookup "uri" d], Just (Array es) <- [KM.lookup "edits" c]]
+      wroteIn rel needle v = any (\(p, ts) -> T.pack rel `T.isSuffixOf` p && any (needle `T.isInfixOf`) ts) (changes v)
+
+  it "a port answer wires the port in-process and the landing edits every file it wrote" $ do
+    unwiredModule <- unwired <$> fixture moduleRel
+    ((paused, stopped), steps) <- wiredConjure (Just "wire") [(moduleRel, unwiredModule)] $ \ask resume -> do
+      paused <- ask []
+      stopped <- resume "conjure-1" "stop"
+      pure (paused, stopped)
+    let pausedObj = field "paused" paused
+    inner "wired" pausedObj `shouldBe` Just (toJSON ["bookings: BookingRepository" :: Text])
+    inner "explanation" pausedObj `shouldSatisfy` \case Just (String x) -> not (T.null x); _ -> False
+    inner "failing" pausedObj `shouldBe` Just (toJSON [object ["test" .= (T.pack testRel <> "::test_books_a_free_slot"), "message" .= ("assert 1 == 2" :: Text)]])
+    steps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure-wire", "wire"] && "param=bookings" `elem` fs)
+    let edits = field "edits" stopped
+    edits `shouldSatisfy` wroteIn moduleRel "def __init__(self, ids: IdGenerator, bookings: BookingRepository) -> None:"
+    edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
+    edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
+
+  it "a port answer with no wire generator configured pauses with an explanation" $ do
+    (paused, steps) <- wiredConjure Nothing [] $ \ask _ -> ask []
+    inner "explanation" (field "paused" paused) `shouldBe` Just (String "needs a port the class lacks: bookings: BookingRepository; no wire generator applies here")
+    inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ([] :: [Text]))
+    steps `shouldSatisfy` all (\fs -> take 1 fs /= ["conjure-wire"])
+
+  it "a wire that writes nothing is logged as failed and the conjure goes on" $ do
+    -- the fixture as the wire leaves it: the module keeps bookings, the helper and the route's test pass it
+    testText <- fixture testRel
+    routesText <- fixture "src/bistro/web/bookings/routes__test.py"
+    let wiredTest =
+          T.replace "from bistro.shared.result import Ok\n" "from bistro.shared.result import Ok\nfrom bistro.booking.ports.booking_repository.booking_repository import BookingRepository\n"
+            . T.replace "def command() -> tuple" "def command(\n    bookings: BookingRepository | None = None,\n) -> tuple"
+            . T.replace "        ids=InMemoryIdGenerator(),\n    )" "        ids=InMemoryIdGenerator(),\n        bookings=bookings or InMemoryBookingRepository(),\n    )"
+            $ testText
+        wiredRoutes = T.replace "                ids=InMemoryIdGenerator(),\n            )," "                ids=InMemoryIdGenerator(),\n                bookings=InMemoryBookingRepository(),\n            )," routesText
+    (paused, steps) <- wiredConjure (Just "wire") [(testRel, wiredTest), ("src/bistro/web/bookings/routes__test.py", wiredRoutes)] $ \ask _ -> ask []
+    steps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure-wire-failed", "wire"])
+    inner "explanation" (field "paused" paused) `shouldSatisfy` \case Just (String x) -> "wire failed:" `T.isPrefixOf` x; _ -> False
+    inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ([] :: [Text]))
+
+  it "a written file edited during the pause ends the resume and drops the token" $ do
+    unwiredModule <- unwired <$> fixture moduleRel
+    ((paused, changed, again), _) <- wiredConjure (Just "wire") [(moduleRel, unwiredModule)] $ \ask resume -> do
+      paused <- ask []
+      test <- openDoc testRel "python"
+      changeDoc test [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# edited\n"))]
+      changed <- resume "conjure-1" "continue"
+      again <- resume "conjure-1" "continue"
+      pure (paused, changed, again)
+    inner "wired" (field "paused" paused) `shouldBe` Just (toJSON ["bookings: BookingRepository" :: Text])
+    changed `shouldSatisfy` either ("your text stands" `T.isInfixOf`) (const False)
+    again `shouldSatisfy` either ("gone" `T.isInfixOf`) (const False)
+
+  let freeSlot = T.pack testRel <> "::test_books_a_free_slot"
+      wrongTest = "{\"answers\": {\"conjure-next\": {\"choice\": \"test\", \"fields\": {\"test\": \"" <> freeSlot <> "\", \"why\": \"it asserts two results of one call\"}, \"confidence\": 0.9}}}"
+      threeOffers = toJSON ["continue", "stop", "reconjure:" <> freeSlot]
+
+  it "a test answer pauses with a reconjure offer; reconjure answers a proposal; accept continues, reject returns" $ do
+    ((paused, proposed, rejected, again, accepted), steps) <- answeredConjure wrongTest Nothing [] $ \script ask resume -> do
+      paused <- ask []
+      -- the tests pass from here on: the re-conjured test is green (allowed), the function lands
+      liftIO (BSL.writeFile script "{}")
+      proposed <- resume "conjure-1" "reconjure"
+      rejected <- resume "conjure-1" "reject"
+      again <- resume "conjure-1" "reconjure"
+      accepted <- resume "conjure-1" "accept"
+      pure (paused, proposed, rejected, again, accepted)
+    let pausedObj = field "paused" paused
+        proposal v = inner "proposal" (field "paused" v)
+    inner "token" pausedObj `shouldBe` Just (String "conjure-1")
+    inner "offers" pausedObj `shouldBe` Just threeOffers
+    inner "why" pausedObj `shouldBe` Just (String "it asserts two results of one call")
+    inner "explanation" pausedObj `shouldBe` inner "why" pausedObj
+    inner "token" (field "paused" proposed) `shouldBe` Just (String "conjure-1")
+    inner "offers" (field "paused" proposed) `shouldBe` Just (toJSON ["accept", "reject" :: Text])
+    inner "file" (proposal proposed) `shouldBe` Just (String (T.pack testRel))
+    inner "test" (proposal proposed) `shouldBe` Just (String freeSlot)
+    inner "diff" (proposal proposed) `shouldSatisfy` \case Just (String d) -> "--- a/" `T.isPrefixOf` d; _ -> False
+    inner "after" (proposal proposed) `shouldSatisfy` \case Just (String a) -> "    return None" `T.isInfixOf` a; _ -> False
+    inner "token" (field "paused" rejected) `shouldBe` Just (String "conjure-1")
+    inner "offers" (field "paused" rejected) `shouldBe` Just threeOffers
+    inner "proposal" (field "paused" rejected) `shouldBe` Nothing
+    inner "offers" (field "paused" again) `shouldBe` Just (toJSON ["accept", "reject" :: Text])
+    field "edits" accepted `shouldSatisfy` wroteIn testRel "return None"
+    steps `shouldSatisfy` any (== ["conjure-proposal", freeSlot])
+    steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
+    steps `shouldSatisfy` any (== ["conjure-resume", "accept"])
+
+  it "accept without a proposal and reconjure without the offer are refused and keep the token" $ do
+    -- Jev answers port with no wire generator: a pause offering continue and stop
+    ((accepted, reconjured, continued), _) <- wiredConjure Nothing [] $ \ask resume -> do
+      _ <- ask []
+      accepted <- resume "conjure-1" "accept"
+      reconjured <- resume "conjure-1" "reconjure"
+      continued <- resume "conjure-1" "continue"
+      pure (accepted, reconjured, continued)
+    accepted `shouldBe` Left "there is no proposal to accept"
+    reconjured `shouldBe` Left "this pause offers no re-conjure"
+    continued `shouldSatisfy` either (const False) (const True)
+
+  -- a test conjure of a stub test appended to the test file (CHANGED on top),
+  -- Jev answering the check port (bookings: BookingRepository); WIRE the
+  -- `[conjure] wire`; the answer and the step log's lines
+  let stubTest = "\n\ndef test_lists_the_bookings() -> None:\n    ...\n"
+      portCheck = "{\"answers\": {\"conjure-test\": {\"choice\": \"port\", \"fields\": {\"param\": \"bookings\", \"port\": \"BookingRepository\"}, \"confidence\": 0.9}}}"
+      testConjured :: Maybe Text -> [(FilePath, Text)] -> IO (Either Text Value, [[Text]])
+      testConjured = testConjuredWith "return None" (const "{}")
+      -- the same with the stub's recorded BODY and the test SCRIPT given the stub's body line (1-based)
+      testConjuredWith :: Text -> (Int -> BSL.ByteString) -> Maybe Text -> [(FilePath, Text)] -> IO (Either Text Value, [[Text]])
+      testConjuredWith body scripted wire changed =
+        withSystemTempDirectory "olifant-conjure-test-wire" $ \tmp -> do
+          let script = tmp </> "tests.json"
+              fills = tmp </> "fills.toml"
+              answers = tmp </> "answers.json"
+          testText <- (<> stubTest) . T.stripEnd <$> fixture testRel
+          BSL.writeFile script (scripted (length (takeWhile (not . ("def test_lists_the_bookings(" `T.isPrefixOf`)) (T.lines testText)) + 2))
+          TIO.writeFile fills ("[fills]\nbody = \"" <> body <> "\"\n")
+          TIO.writeFile answers portCheck
+          withPython ((testRel, testText) : changed) $ \ports dir -> do
+            old <- TIO.readFile (dir </> ".olifant/config.toml")
+            TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 2\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n" <> maybe "" (\w -> "[conjure]\nwire = \"" <> w <> "\"\n") wire)
+            let config = [("test_script", String (T.pack script)), ("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+            (r, _) <- inProcessWithConfig config ports dir $ do
+              doc <- openDoc testRel "python"
+              text <- documentContents doc
+              -- the stub's body line, 0-based
+              let stubAt = length (takeWhile (not . ("def test_lists_the_bookings(" `T.isPrefixOf`)) (T.lines text)) + 1
+              blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= stubAt, "character" .= (0 :: Int)]])
+            let stepLog = dir </> ".olifant/state/steps.log"
+            found <- doesFileExist stepLog
+            lines' <- if found then T.lines <$> TIO.readFile stepLog else pure []
+            pure (r, [drop 1 (T.splitOn "\t" l) | l <- lines'])
+
+  it "a test conjure that needs a port wires it and lands the wire with the test" $ do
+    unwiredModule <- unwired <$> fixture moduleRel
+    (landed, steps) <- testConjured (Just "wire") [(moduleRel, unwiredModule)]
+    let edits = field "edits" landed
+    edits `shouldSatisfy` wroteIn testRel "return None"
+    edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
+    edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 wired bookings: BookingRepository" `T.isSuffixOf` x; _ -> False
+    let kinds = map (take 2) steps
+    kinds `shouldSatisfy` elem ["conjure-test", "port"]
+    kinds `shouldSatisfy` elem ["conjure-wire", "wire"]
+    takeWhile (/= ["conjure-wire", "wire"]) kinds `shouldSatisfy` elem ["conjure-test", "port"]
+    steps `shouldSatisfy` elem ["conjure-test", "port", "0.90"]
+
+  it "without a wire generator the test lands and the summary names the port" $ do
+    (landed, steps) <- testConjured Nothing []
+    field "edits" landed `shouldSatisfy` wroteIn testRel "return None"
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> "needs a port the class lacks: bookings: BookingRepository" `T.isSuffixOf` x; _ -> False
+    steps `shouldSatisfy` elem ["conjure-test", "port", "0.90"]
+    steps `shouldSatisfy` all (\fs -> take 1 fs /= ["conjure-wire"])
+
+  it "a re-fill that fails lands the wire with the test as first written" $ do
+    -- red at the stub's body line: at its assertion before the wire, before it once the wire moves it down
+    unwiredModule <- unwired <$> fixture moduleRel
+    let redAt l = Aeson.encode (object [Key.fromText (T.pack testRel <> "::test_lists_the_bookings") .= object ["line" .= l, "message" .= ("assert False" :: Text)]])
+    (landed, steps) <- testConjuredWith "assert False" redAt (Just "wire") [(moduleRel, unwiredModule)]
+    let edits = field "edits" landed
+    edits `shouldSatisfy` wroteIn testRel "    assert False"
+    edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
+    edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 wired bookings: BookingRepository; the test still builds its own fake, re-conjure it" `T.isSuffixOf` x; _ -> False
+    map (take 2) steps `shouldSatisfy` elem ["conjure-wire", "wire"]
 
 -- | `olifant/mutate`: the unit at a position mutated against its test
 -- file (a scripted runner that kills nothing); and a survivor's stub.

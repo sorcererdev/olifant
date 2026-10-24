@@ -283,6 +283,7 @@ test-suite spec
     Olifant.Server.ConjureNext
     Olifant.Server.ConjureNextSpec
     Olifant.Server.Edits
+    Olifant.Server.EditsSpec
     Olifant.Server.Fixes
     Olifant.Server.Hints
     Olifant.Server.Holes

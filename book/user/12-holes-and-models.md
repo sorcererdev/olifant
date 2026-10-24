@@ -504,6 +504,9 @@ set. Without it, `retries` rules as before. `ladder` lists backends, local first
 A `jev` backend cannot be a rung: it answers decisions, not prompts. The default `ask` keeps
 code from leaving your machine unless the config says it may.
 
+`[conjure] wire = "<generator id>"` names the generator a steered conjure may run itself when Jev
+says a class lacks a port ([chapter 18](18-tdd-in-the-editor.md)); it is unset by default.
+
 ### What is sent to the model
 
 **A request contains your code.** For every hole, the request holds up to 201 lines of the

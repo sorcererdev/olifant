@@ -598,7 +598,7 @@ handlers env =
                     , Just z' <- toBoundedInteger z ->
                         Just (a' + 1, z' + 1)
                   _ -> Nothing
-                invalid = respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure resume needs a token and a choice (continue, climb or stop)" Nothing))
+                invalid = respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/conjure resume needs a token and a choice (continue, climb, stop, reconjure, accept or reject)" Nothing))
             case resumeOf (req ^. L.params) of
               Left _ -> invalid
               Right resumed -> do
@@ -727,7 +727,7 @@ resumeOf = \case
       | Just (String tok) <- KM.lookup "token" ro
       , not (T.null tok)
       , Just (String c) <- KM.lookup "choice" ro
-      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop)] ->
+      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop), ("reconjure", ResumeReconjure), ("accept", ResumeAccept), ("reject", ResumeReject)] ->
           Right (Just (Resume tok choice (case KM.lookup "hint" ro of Just (String h) | not (T.null h) -> Just h; _ -> Nothing)))
     _ -> Left "bad resume"
   _ -> Right Nothing
@@ -739,7 +739,7 @@ conjureJson = \case
     object
       [ "file" .= daFile a
       , "unit" .= daUnit a
-      , "edits" .= maybe Aeson.Null (\e -> toJSON (workspaceEdit [e])) (daEdit a)
+      , "edits" .= (if null (daEdits a) then Aeson.Null else toJSON (workspaceEdit (daEdits a)))
       , "summary" .= daSummary a
       , "green" .= daGreen a
       , "tests" .= testsJson (daTests a)
@@ -750,16 +750,21 @@ conjureJson = \case
     object
       [ "paused"
           .= object
-            [ "token" .= paToken p
-            , "file" .= paFile p
-            , "unit" .= paUnit p
-            , "lines" .= object ["first" .= fst (paLines p), "last" .= snd (paLines p)]
-            , "round" .= paRound p
-            , "rung" .= paRung p
-            , "summary" .= paSummary p
-            , "offers" .= paOffers p
-            , "why" .= paWhy p
-            ]
+            ( [ "token" .= paToken p
+              , "file" .= paFile p
+              , "unit" .= paUnit p
+              , "lines" .= object ["first" .= fst (paLines p), "last" .= snd (paLines p)]
+              , "round" .= paRound p
+              , "rung" .= paRung p
+              , "summary" .= paSummary p
+              , "offers" .= paOffers p
+              , "why" .= paWhy p
+              , "explanation" .= paExplanation p
+              , "failing" .= [object ["test" .= t, "message" .= m] | (t, m) <- paFailing p]
+              , "wired" .= paWired p
+              ]
+                ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r] | Just r <- [paProposal p]]
+            )
       ]
 
 -- | A request's `position` (0-based line and character), if it has one.

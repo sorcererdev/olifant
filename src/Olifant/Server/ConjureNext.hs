@@ -2,6 +2,8 @@
 -- it (spec: steered-conjure-design.md §2, §3).
 module Olifant.Server.ConjureNext
   ( RoundView (..)
+  , RoundContext (..)
+  , testSource
   , roundView
   , attemptDiff
   , undefinedNames
@@ -16,6 +18,11 @@ module Olifant.Server.ConjureNext
   , conjureNextQuestion
   , nextFrom
   , withHint
+  , conjureTestQuestion
+  , TestCheck (..)
+  , testCheckFrom
+  , PausedAnswer (..)
+  , Proposal (..)
   , PausedConjure (..)
   , pausedLifetime
   , pruned
@@ -27,7 +34,7 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Decide (Answer (..), Question, choice, confident)
+import Olifant.Decide (Answer (..), Question (..), choice, confident)
 import Olifant.Generation.Steer
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
@@ -42,8 +49,20 @@ data RoundView = RoundView
   , rvPassingDelta :: Maybe Int
   , rvCheck :: Maybe Text
   , rvRepeat :: Bool
+  , rvTests :: [(Text, Text)]
+  , rvUnit :: Text
+  , rvWired :: [Text]
   }
   deriving stock (Eq, Show)
+
+-- | A test's source (it lives here, not in Site, which would import this module in a cycle): its def line and its body, trailing blank lines dropped.
+testSource :: Text -> Text -> Maybe Text
+testSource name text = case dropWhile (not . isDef) (T.lines text) of
+  [] -> Nothing
+  d : rest -> Just (T.intercalate "\n" (d : reverse (dropWhile (T.null . T.strip) (reverse (takeWhile (\l -> T.null (T.strip l) || indentOf l > indentOf d) rest)))))
+  where
+    isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
+    indentOf = T.length . T.takeWhile (== ' ')
 
 firstLines :: Int -> Text -> Text
 firstLines n = T.intercalate "\n" . take n . T.lines
@@ -51,10 +70,15 @@ firstLines n = T.intercalate "\n" . take n . T.lines
 firstLine :: Text -> Text
 firstLine = firstLines 1
 
+-- | What the round's view needs beyond the round: the test file's text, the unit's header,
+-- what is wired, and whether a wire may still run.
+data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool}
+  deriving stock (Eq, Show)
+
 -- | The previous view, the round; built from the first hole. A passing delta needs a test
 -- verdict in both rounds (no check on either).
-roundView :: Maybe RoundView -> RoundState -> RoundView
-roundView prev rs =
+roundView :: RoundContext -> Maybe RoundView -> RoundState -> RoundView
+roundView ctx prev rs =
   RoundView
     { rvRound = rsRound rs
     , rvRung = rsRung rs
@@ -64,6 +88,9 @@ roundView prev rs =
     , rvPassingDelta = delta
     , rvCheck = check
     , rvRepeat = maybe False (\p -> rvFailing p == failing && rvCheck p == check) prev
+    , rvTests = [(i, fromMaybe "(source not found)" (testSource (snd (T.breakOnEnd "::" i)) (rcTestText ctx))) | (i, _) <- failing]
+    , rvUnit = rcUnit ctx
+    , rvWired = rcWired ctx
     }
   where
     hole = case rsHoles rs of
@@ -112,12 +139,12 @@ roundSummary v = case rvFailing v of
   (i, msg) : _ -> "red: " <> snd (T.breakOnEnd "::" i) <> " \183 " <> msg
   [] -> "red: " <> maybe "" firstLine (rvCheck v)
 
-data Standing = Standing {stRoundsLeft :: Int, stSecondsLeft :: Double, stNext :: Maybe Rung, stHint :: Maybe Text}
+data Standing = Standing {stRoundsLeft :: Int, stSecondsLeft :: Double, stNext :: Maybe Rung, stHint :: Maybe Text, stWireable :: Bool}
 
-data Offer = OfferContinue | OfferClimb Text | OfferStop
+data Offer = OfferContinue | OfferClimb Text | OfferStop | OfferReconjure Text | OfferAccept | OfferReject
   deriving stock (Eq, Show)
 
-data Next = NextAgain | NextClimb Text | NextPause Text [Offer]
+data Next = NextAgain | NextClimb Text | NextPause Text [Offer] | NextWire Text Text
   deriving stock (Eq, Show)
 
 conjureNextGate :: Double
@@ -132,6 +159,9 @@ offerText = \case
   OfferContinue -> "continue"
   OfferClimb n -> "climb:" <> n
   OfferStop -> "stop"
+  OfferReconjure i -> "reconjure:" <> i
+  OfferAccept -> "accept"
+  OfferReject -> "reject"
 
 -- | Rounds or time gone: a pause with no call to Jev.
 spent :: Standing -> Maybe Next
@@ -140,14 +170,16 @@ spent st
   | otherwise = Nothing
 
 conjureNextQuestion :: Standing -> RoundView -> Question
-conjureNextQuestion st v = choice "conjure-next" instructions options context
+conjureNextQuestion st v = (choice "conjure-next" instructions options context) {qFields = [("param", "ident"), ("port", "ident"), ("test", "text"), ("why", "text")]}
   where
     instructions =
-      "A conjure is red after this round. Is it converging? The same failure twice (repeat: yes) is not; a smaller failing set, or a different and later failure, is. Choose again while it converges, climb when this model is stuck and a stronger one is offered, ask when the person should look."
+      "A conjure is red after this round. Is it converging? The same failure twice (repeat: yes) is not; a smaller failing set, or a different and later failure, is. Choose again while it converges, climb when this model is stuck and a stronger one is offered, ask when the person should look. Choose port when a failing test names a collaborator the class lacks (fill param and port with the constructor argument and its type). Choose test when a failing test cannot be satisfied by any implementation (fill test with its id and why with the reason)."
     options =
       [("again", "try once more with the same model")]
         ++ [("climb", "try the next, stronger model: " <> n) | Just (Rung n e) <- [stNext st], e /= EscalateNever]
         ++ [("ask", "stop and show the person where this stands")]
+        ++ [("port", "wire a missing port into the class, then go again")]
+        ++ [("test", "a failing test is wrong: offer to re-conjure it")]
     context =
       [ ("round", num (rvRound v))
       , ("rung", rvRung v)
@@ -155,6 +187,9 @@ conjureNextQuestion st v = choice "conjure-next" instructions options context
       , ("failing", if null (rvFailing v) then "none" else T.intercalate "\n" [i <> ": " <> m | (i, m) <- rvFailing v])
       , ("passing", num (rvPassing v) <> maybe "" (\d -> " (" <> (if d >= 0 then "+" else "") <> num d <> ")") (rvPassingDelta v))
       , ("check", fromMaybe "none" (rvCheck v))
+      , ("tests", if null (rvTests v) then "none" else T.intercalate "\n\n" [i <> ":\n" <> src | (i, src) <- rvTests v])
+      , ("unit", if T.null (rvUnit v) then "none" else rvUnit v)
+      , ("wired", if null (rvWired v) then "none" else T.intercalate "\n" (rvWired v))
       , ("repeat", if rvRepeat v then "yes" else "no")
       , ("rounds_left", num (stRoundsLeft st))
       , ("seconds_left", num (round (stSecondsLeft st) :: Int))
@@ -166,14 +201,55 @@ conjureNextQuestion st v = choice "conjure-next" instructions options context
 -- | What to do after Jev's answer; anything not confident, or not an offered option, is again.
 nextFrom :: Standing -> RoundView -> Answer -> Next
 nextFrom st v a = case a of
-  Chosen o _ _ | confident conjureNextGate a -> case o of
+  Chosen o fs _ | confident conjureNextGate a -> case o of
     "climb" -> case stNext st of
       Just (Rung n EscalateAuto) -> NextClimb n
       Just (Rung n EscalateAsk) -> NextPause ("Jev would climb to " <> n) (offersFor st)
       _ -> NextAgain
-    "ask" -> NextPause (if rvRepeat v then "the same failure twice" else "Jev asks you to look") (offersFor st)
+    "ask" -> NextPause (fromMaybe (if rvRepeat v then "the same failure twice" else "Jev asks you to look") (field "why" fs)) (offersFor st)
+    "port" -> case (field "param" fs, field "port" fs) of
+      (Just p, Just t)
+        | stWireable st -> NextWire p t
+        | otherwise -> NextPause ("needs a port the class lacks: " <> p <> ": " <> t <> "; no wire generator applies here") (offersFor st)
+      _ -> NextPause "Jev asks you to look" (offersFor st)
+    "test" -> case field "test" fs of
+      Just t | t `elem` map fst (rvFailing v) -> NextPause (fromMaybe "a test cannot be satisfied" (field "why" fs)) (offersFor st ++ [OfferReconjure t])
+      _ -> NextPause "Jev asks you to look" (offersFor st)
     _ -> NextAgain
   _ -> NextAgain
+  where
+    field k fs = case lookup k fs of
+      Just x | not (T.null (T.strip x)) -> Just x
+      _ -> Nothing
+
+-- | The check after a hand-started test conjure's fill passes its verify:
+-- given the test's body and the unit's header (the class and its
+-- @__init__@), does the test pass a fake for every port it builds (ok), or
+-- want a port the class does not take (port, with its param and type)?
+conjureTestQuestion :: Text -> Text -> Question
+conjureTestQuestion test unit = (choice "conjure-test" instructions options context) {qFields = [("param", "ident"), ("port", "ident")]}
+  where
+    instructions =
+      "A test was just written for a unit. Does it build a fake for a collaborator the unit does not take (a fake it cannot pass in, a parameter the helper does not take)? Choose port then, and fill param and port with the constructor argument and its type; else choose ok."
+    options =
+      [ ("ok", "the test passes a fake for every port it builds, or builds none")
+      , ("port", "the test wants a port the class does not take; name it")
+      ]
+    context = [("test", test), ("unit", if T.null unit then "none" else unit)]
+
+-- | What the check found.
+data TestCheck = TestOk | TestPort Text Text
+  deriving stock (Eq, Show)
+
+-- | A confident port with both fields; anything else is ok.
+testCheckFrom :: Answer -> TestCheck
+testCheckFrom a = case a of
+  Chosen "port" fs _ | confident conjureNextGate a, Just p <- field "param" fs, Just q <- field "port" fs -> TestPort p q
+  _ -> TestOk
+  where
+    field k fs = case lookup k fs of
+      Just x | not (T.null (T.strip x)) -> Just x
+      _ -> Nothing
 
 -- | The person's words, added to the why of each hole's last attempt.
 withHint :: Text -> Seed -> Seed
@@ -182,12 +258,48 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
     addTo [] = []
     addTo xs = init xs ++ [(\(f, w) -> (f, w <> "\nThe person says: " <> h)) (last xs)]
 
+-- | A steered conjure paused: its token, the file (absolute), the unit, the
+-- lines conjured (1-based), the round and rung it paused at, the last
+-- round in a few words, what the person may do (`continue`,
+-- `climb:NAME`, `stop`, `reconjure:ID`, `accept`, `reject`), why it
+-- paused, the explanation (Jev's words, or the server's, after a failed
+-- wire's or re-conjure's), the failing tests with their full messages,
+-- what is wired (lands with the conjure), and a re-conjured test's
+-- proposal.
+data PausedAnswer = PausedAnswer
+  { paToken :: Text
+  , paFile :: FilePath
+  , paUnit :: Text
+  , paLines :: (Int, Int)
+  , paRound :: Int
+  , paRung :: Text
+  , paSummary :: Text
+  , paOffers :: [Text]
+  , paWhy :: Text
+  , paExplanation :: Text
+  , paFailing :: [(Text, Text)]
+  , paWired :: [Text]
+  , paProposal :: Maybe Proposal
+  }
+  deriving stock (Eq, Show)
+
+-- | A re-conjured test, proposed: its file (root-relative), its id, the
+-- file's text as the editor (or disk) has it and as the re-conjure writes
+-- it, and the unified diff between the two.
+data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text}
+  deriving stock (Eq, Show)
+
 -- | A conjure paused, as the server keeps it under its token: the file (absolute) and its
 -- version when the conjure began, where it was asked (the line, the selection), where the
 -- loop resumes (the seed), the rung's index, the rungs used, the rounds and seconds used since
 -- the last grant, the last round's view, the person's hint, the file as the last attempt
--- writes it (what stop lands), the names the last check left undefined, and when it paused
--- (monotonic seconds).
+-- writes it (what stop lands), the names the last check left undefined, when it paused
+-- (monotonic seconds); the conjure's working writes beside the unit's (root-relative path →
+-- text: a wire's), each written file's editor version (absolute path; none when it was not
+-- open) and its text when the conjure first read it (none: a new file), what is wired, and
+-- the pause's explanation; a re-conjured test's proposal, the pause it was
+-- proposed from (what reject answers again), and what the pause answered
+-- the editor (its offers say what a resume may do).
 data PausedConjure = PausedConjure
   { pdFile :: FilePath
   , pdVersion :: Maybe Int
@@ -203,6 +315,14 @@ data PausedConjure = PausedConjure
   , pdLanding :: Text
   , pdUndefined :: [Text]
   , pdAt :: Double
+  , pdWrites :: Map FilePath Text
+  , pdVersions :: Map FilePath (Maybe Int)
+  , pdBases :: Map FilePath (Maybe Text)
+  , pdWired :: [Text]
+  , pdExplanation :: Text
+  , pdProposal :: Maybe Proposal
+  , pdPrevious :: Maybe PausedAnswer
+  , pdShown :: PausedAnswer
   }
   deriving stock (Eq, Show)
 
@@ -212,6 +332,7 @@ pausedLifetime = 600
 
 -- | The paused conjures still good at NOW: none older than 'pausedLifetime', none whose file
 -- the editor has at another version than when it paused (DOCS: version and text by path).
+-- Only the unit's file is checked here; the other files it wrote are checked at resume.
 pruned :: Double -> Map FilePath (Int, Text) -> Map Text PausedConjure -> Map Text PausedConjure
 pruned now docs = M.filter good
   where

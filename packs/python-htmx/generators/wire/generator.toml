@@ -66,6 +66,14 @@ at     = "end of imports"
 text   = "from {= ports =}.{= port_ =} import {= Port =}"
 unless = { matches = "^from [A-Za-z0-9_.]+ import .*{= Port =}([^A-Za-z0-9_]|$)" }
 
+# __init__ takes the port (a conjure's wire runs on a class that lacks
+# it; in the editor the person typed it already)
+[[edits]]
+insert = "{= module =}"
+at     = "end of parameters in __init__"
+text   = "{= param =}: {= Port =}"
+unless = { matches = "^[[:space:]]*def __init__\\(.*[(,][[:space:]]*{= param =}[[:space:]]*:|^[[:space:]]+{= param =}[[:space:]]*:[^=]*,[[:space:]]*$" }
+
 [[edits]]
 insert = "{= module =}"
 at     = "end of function __init__"
