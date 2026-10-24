@@ -154,6 +154,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
           , dfRounds = 3
           , dfSeconds = 14
           , dfWireFailed = Nothing
+          , dfFailure = Nothing
           }
   it "(o) the policy table, in order" $ do
     let base = PolicyFacts [(notFoundId, nf)] [notFoundId] [notFoundId] True True [] (Just ("bookings", "BookingRepository")) False False False
@@ -340,6 +341,24 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     fixAgain [fixed] before2 succeedsId `shouldBe` Just Nothing
     let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing True "cancel_booking" [] [(notFoundId, "AttributeError: 'Mock' object has no attribute 'cancel'")])
     orDetail (row (OfferReconjure notFoundId)) `shouldBe` "fixed already; it fails anew: AttributeError: 'Mock' object has no attribute 'cancel'; re-conjure it, you see its diff"
+  it "(z) the failing section is the latest round's real failure: a check's refusal, with its lines, leads the diagnosis' others" $ do
+    let refusal = LatestCheck 3 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
+        checked = RoundRecord 3 "local" "x" Nothing (Just "src/bistro/booking/commands/cancel_booking.py: Cannot access attribute \"find_by_id\" for class \"BookingRepository\"") Nothing 2
+        facts = cancelPausedFacts {dfHistory = take 2 cancelRecords ++ [checked], dfFlagged = [], dfFailure = Just refusal}
+    take 2 (diagnosis facts CauseAsk)
+      `shouldBe` ["local is not converging.", "Round 3 did not type-check: pyright refused it before the tests ran (cancel_booking.py:30: Cannot access attribute \"find_by_id\" for class \"BookingRepository\")."]
+    let v = pausedJson cancelPaused {paFailure = Just refusal, paRounds = take 2 cancelRecords ++ [checked]}
+    at ["failure", "kind"] v `shouldBe` Just (String "check")
+    at ["failure", "round"] v `shouldBe` Just (Number 3)
+    at ["failure", "tool"] v `shouldBe` Just (String "pyright")
+    at ["failure", "problems", "0", "line"] v `shouldBe` Just (Number 30)
+    at ["failure", "problems", "0", "file"] v `shouldBe` Just (String "src/bistro/booking/commands/cancel_booking.py")
+    at ["rounds", "2", "check"] v `shouldBe` Just (String "src/bistro/booking/commands/cancel_booking.py: Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")
+    at ["rounds", "1", "check"] v `shouldBe` Just Null
+    at ["failure", "tests"] (pausedJson cancelPaused {paFailure = Just (LatestTests 3 [succeedsId])}) `shouldBe` Just (toJSON [succeedsId])
+    -- the root cause first: what the checker says is unknown because of it, after
+    rootFirst [("a.py", Just 30, "Type of \"booking\" is unknown"), ("a.py", Just 30, "Cannot access attribute \"x\" for class \"P\"")]
+      `shouldBe` [("a.py", Just 30, "Cannot access attribute \"x\" for class \"P\""), ("a.py", Just 30, "Type of \"booking\" is unknown")]
   where
     qOptions' q = case qShape q of
       Choice os -> os
@@ -467,6 +486,7 @@ cancelPaused =
     , paWiredFor = Nothing
     , paHeld = []
     , paSteps = []
+    , paFailure = Nothing
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -479,7 +499,7 @@ cancelPaused =
 
 cancelPausedFacts :: DiagnosisFacts
 cancelPausedFacts =
-  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing
+  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing Nothing
 
 -- | The cancel_booking pause as the by-hand run of 2026-10-24 had it (design §10): the wire
 -- before round 1 gave CancelBooking bookings: BookingRepository and the test's helper the
@@ -514,6 +534,7 @@ cancelWiredPaused =
     , paWiredFor = Just notFoundId
     , paHeld = []
     , paSteps = []
+    , paFailure = Nothing
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -524,7 +545,7 @@ cancelWiredPaused =
       ]
     roundSummaryText = "red: test_cancel_booking_not_found \183 False = isinstance(Ok(value=None), NotFound)"
     facts =
-      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing
+      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing Nothing
     sentences = diagnosis facts CauseRepeat
     suspects = suspectFirst (dfFlagged facts) (involved cancelBefore records)
     landing = T.replace "        return Ok(None)" (T.intercalate "\n" (map ("        " <>) (T.lines body))) wiredModule

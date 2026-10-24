@@ -65,6 +65,8 @@ module Olifant.Server.ConjureNext
   , StepKind (..)
   , proposalStep
   , fixAgain
+  , LatestFailure (..)
+  , rootFirst
   ) where
 
 import Control.Applicative ((<|>))
@@ -134,6 +136,17 @@ proposalStep short before after = "test fixed: " <> short <> maybe "" (\l -> " (
     rhs l = case T.breakOn " = " l of
       (lhs, r) | not (T.null r), T.all (\ch -> ch == '_' || ch == '.' || ch == ' ' || ch `elem` ['a' .. 'z'] || ch `elem` ['A' .. 'Z'] || ch `elem` ['0' .. '9']) lhs -> T.drop 3 r
       _ -> l
+
+-- | The latest round's real failure: its checker (by name) refused the body before the
+-- tests ran, each problem with its file and line; or its tests ran and these failed.
+data LatestFailure = LatestCheck Int Text [(FilePath, Maybe Int, Text)] | LatestTests Int [Text]
+  deriving stock (Eq, Show)
+
+-- | A check's problems with what the checker says is unknown (a consequence) after the rest.
+rootFirst :: [(FilePath, Maybe Int, Text)] -> [(FilePath, Maybe Int, Text)]
+rootFirst ps = [p | p <- ps, not (consequence p)] ++ [p | p <- ps, consequence p]
+  where
+    consequence (_, _, m) = "Type of " `T.isPrefixOf` m && ("is unknown" `T.isInfixOf` m || "is partially unknown" `T.isInfixOf` m)
 
 -- | Whether the test TID is offered for a fix, given the STEPS so far and the rounds: Just
 -- Nothing when no step fixed it; when one did, only if the last run after that step that
@@ -466,6 +479,7 @@ data DiagnosisFacts = DiagnosisFacts
   , dfRounds :: Int
   , dfSeconds :: Int
   , dfWireFailed :: Maybe Text
+  , dfFailure :: Maybe LatestFailure
   }
   deriving stock (Eq, Show)
 
@@ -487,7 +501,8 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
       a : b : c : _ -> a == b && b == c && not (null a)
       _ -> False
     others =
-      [ take 1 (map unsatisfiableSentence unsatisfiable)
+      [ [checkSentence r tool p | Just (LatestCheck r tool (p : _)) <- [dfFailure df]]
+      , take 1 (map unsatisfiableSentence unsatisfiable)
       , [tradeSentence | trade]
       , ["Both tests call " <> c <> " and expect different results." | trade, c <- take 1 sameCall]
       , [repeatSentence | isRepeat rounds]
@@ -504,6 +519,8 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
       CauseAsk -> [dfRung df <> " is not converging."]
       CauseClimb n -> [dfRung df <> " is stuck; " <> n <> " is offered."]
     tradeSentence = "Every body so far passes one test and fails the other."
+    checkSentence r tool (f, l, m) = "Round " <> tshow' r <> " did not type-check: " <> tool <> " refused it before the tests ran (" <> T.pack (takeFileName' f) <> maybe "" ((":" <>) . tshow') l <> ": " <> m <> ")."
+    takeFileName' = reverse . takeWhile (/= '/') . reverse
     repeatSentence = dfRung df <> " wrote the same body in rounds " <> tshow' (lastRound - 1) <> " and " <> tshow' lastRound <> "."
     spentSentence = tshow' (dfRounds df) <> (if dfRounds df == 1 then " round" else " rounds") <> " used (" <> tshow' (dfSeconds df) <> " s); nothing passed."
     className = if T.null (dfClass df) then dfMethod df else dfClass df
@@ -632,6 +649,7 @@ data PausedAnswer = PausedAnswer
   , paWiredFor :: Maybe Text
   , paHeld :: [OfferRow]
   , paSteps :: [ConjureStep]
+  , paFailure :: Maybe LatestFailure
   }
   deriving stock (Eq, Show)
 
@@ -765,6 +783,7 @@ pausedJson p =
     , "expires" .= paExpires p
     , "outcome" .= paOutcome p
     , "steps" .= map stepJson (paSteps p)
+    , "failure" .= fmap failureJson (paFailure p)
     ]
       ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r, "step" .= prStep r] | Just r <- [paProposal p]]
   where
@@ -780,6 +799,7 @@ pausedJson p =
         , "failing" .= rwFailing row
         , "failed" .= [failedJson tid f | Just run <- [rrRun r], (tid, f) <- trFailed run]
         , "passed" .= maybe [] trPassed (rrRun r)
+        , "check" .= (if isNothing (rrRun r) then rrCheck r else Nothing)
         , "decide" .= fmap decideJson (rrDecided r)
         , "diff" .= fmap snd (listToMaybe =<< lookup (rrRound r) (paRoundFiles p))
         , "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fromMaybe [] (lookup (rrRound r) (paRoundFiles p))]
@@ -796,6 +816,9 @@ pausedJson p =
             , "expected" .= fmap snd ge
             , "output" .= fOutput f
             ]
+    failureJson = \case
+      LatestCheck r tool ps -> object ["round" .= r, "kind" .= ("check" :: Text), "tool" .= tool, "problems" .= [object ["file" .= f, "line" .= l, "message" .= m] | (f, l, m) <- ps]]
+      LatestTests r ts -> object ["round" .= r, "kind" .= ("tests" :: Text), "tests" .= ts]
     stepJson st =
       object $
         [ "after" .= csAfter st

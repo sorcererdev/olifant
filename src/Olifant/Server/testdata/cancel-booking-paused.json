@@ -5,6 +5,7 @@
     "Both tests call handle(CancelBookingInput(id=\"1\")) and expect different results."
   ],
   "expires": 600,
+  "failure": null,
   "file": "/demo/src/bistro/booking/commands/cancel_booking.py",
   "landing": {
     "diff": "--- a/src/bistro/booking/commands/cancel_booking.py\n+++ b/src/bistro/booking/commands/cancel_booking.py\n@@ -25,4 +25,6 @@\n         \"\"\"Takes the ports it uses; main.py passes their adapters.\"\"\"\n \n     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n-        return Ok(None)\n+        # This is a mock implementation that always returns NotFound\n+        # In a real implementation, this would interact with a repository\n+        return NotFound(reason=\"Booking not found\")\n"
@@ -68,6 +69,7 @@
   "rounds": [
     {
       "attempt": "return Ok(None)",
+      "check": null,
       "decide": {
         "choice": "again",
         "confidence": 0.21,
@@ -105,6 +107,7 @@
     },
     {
       "attempt": "# This is a mock implementation that always returns NotFound\n# In a real implementation, this would interact with a repository\nreturn NotFound(reason=\"Booking not found\")",
+      "check": null,
       "decide": {
         "choice": "ask",
         "confidence": 0.19,
@@ -142,6 +145,7 @@
     },
     {
       "attempt": "# This is a mock implementation that always returns NotFound\n# In a real implementation, this would interact with a repository\nreturn NotFound(reason=\"Booking not found\")",
+      "check": null,
       "decide": null,
       "diff": "--- a/src/bistro/booking/commands/cancel_booking.py\n+++ b/src/bistro/booking/commands/cancel_booking.py\n@@ -25,4 +25,6 @@\n         \"\"\"Takes the ports it uses; main.py passes their adapters.\"\"\"\n \n     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n-        return Ok(None)\n+        # This is a mock implementation that always returns NotFound\n+        # In a real implementation, this would interact with a repository\n+        return NotFound(reason=\"Booking not found\")\n",
       "failed": [

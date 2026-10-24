@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Olifant.LspSpec (spec) where
 
@@ -1447,6 +1448,17 @@ conjureSpec = describe "olifant/conjure" $ do
           Just (Array xs) -> [(inner "kind" (Just x), inner "after" (Just x), inner "text" (Just x)) | x <- toList xs] == [(Just (String "wire"), Just (Number 0), Just (String "wire bookings: BookingRepository")), (Just (String "test"), Just (Number 2), Just (String "test fixed: not_found (command(bookings=repository))"))]
           _ -> False
         offerLabels (field "paused" after) `shouldSatisfy` notElem "fix the test: not_found"
+        -- the failing section is round 3's real failure: the check's refusal, its line; the
+        -- diagnosis says it, not the before-run's assertion
+        inner "kind" (inner "failure" (field "paused" after)) `shouldBe` Just (String "check")
+        inner "tool" (inner "failure" (field "paused" after)) `shouldBe` Just (String "pyright")
+        inner "round" (inner "failure" (field "paused" after)) `shouldBe` Just (Number 3)
+        inner "problems" (inner "failure" (field "paused" after)) `shouldSatisfy` \case
+          Just (Array (toList -> x : _)) -> inner "message" (Just x) == Just (String "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"") && (case inner "line" (Just x) of Just (Number _) -> True; _ -> False)
+          _ -> False
+        inner "diagnosis" (field "paused" after) `shouldSatisfy` \case
+          Just (Array ds) -> any (\case String d -> "Round 3 did not type-check: pyright refused it before the tests ran (cancel_booking.py:" `T.isPrefixOf` d; _ -> False) ds
+          _ -> False
   it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
     (proposed, steps, _) <- cancelChecked $ \script ask resume -> do
       _ <- ask []

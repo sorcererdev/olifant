@@ -4,6 +4,7 @@
     "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking takes bookings: BookingRepository since the wire; the test should pass its fake as command(bookings=…)."
   ],
   "expires": 600,
+  "failure": null,
   "file": "/demo/src/bistro/booking/commands/cancel_booking.py",
   "landing": {
     "diff": "--- a/src/bistro/booking/commands/cancel_booking.py\n+++ b/src/bistro/booking/commands/cancel_booking.py\n@@ -2,6 +2,9 @@\n \n from dataclasses import dataclass\n \n+from bistro.booking.ports.booking_repository.booking_repository import (\n+    BookingRepository,\n+)\n from bistro.shared.result import Ok\n \n \n@@ -21,8 +24,12 @@\n \n \n class CancelBooking:\n-    def __init__(self) -> None:\n+    def __init__(self, bookings: BookingRepository) -> None:\n         \"\"\"Takes the ports it uses; main.py passes their adapters.\"\"\"\n+        self.bookings = bookings\n \n     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n+        booking = self.bookings.find_by_id(input.id)\n+        if booking is not None:\n+            self.bookings.save(booking)\n         return Ok(None)\n"
@@ -59,6 +60,7 @@
   "rounds": [
     {
       "attempt": "booking = self.bookings.find_by_id(input.id)\nif booking is not None:\n    self.bookings.save(booking)\nreturn Ok(None)",
+      "check": null,
       "decide": {
         "choice": "again",
         "confidence": 0.31,
@@ -100,6 +102,7 @@
     },
     {
       "attempt": "booking = self.bookings.find_by_id(input.id)\nif booking is not None:\n    self.bookings.save(booking)\nreturn Ok(None)",
+      "check": null,
       "decide": null,
       "diff": "--- a/src/bistro/booking/commands/cancel_booking.py\n+++ b/src/bistro/booking/commands/cancel_booking.py\n@@ -2,6 +2,9 @@\n \n from dataclasses import dataclass\n \n+from bistro.booking.ports.booking_repository.booking_repository import (\n+    BookingRepository,\n+)\n from bistro.shared.result import Ok\n \n \n@@ -21,8 +24,12 @@\n \n \n class CancelBooking:\n-    def __init__(self) -> None:\n+    def __init__(self, bookings: BookingRepository) -> None:\n         \"\"\"Takes the ports it uses; main.py passes their adapters.\"\"\"\n+        self.bookings = bookings\n \n     def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n+        booking = self.bookings.find_by_id(input.id)\n+        if booking is not None:\n+            self.bookings.save(booking)\n         return Ok(None)\n",
       "failed": [

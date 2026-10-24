@@ -43,11 +43,11 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (CheckReport (..), Checker (..), Failure (..), Language (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn)
+import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), Failure (..), Language (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
+import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
 import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, derivePort, deriveParam, fakeCalls, initParams, portCandidates, portFrom, protocolPorts, takesPort, testSource, unpassedFake)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
@@ -750,9 +750,23 @@ conjureWith progress path line selected resuming s0 = do
             Halted landing why -> do
               (view, rs) <- maybe (throwE "the conjure paused before any round") pure ((,) <$> cLast c <*> cState c)
               now <- lift getMonotonicTime
+              -- the latest round's real failure: its tests', or the check's that refused it before
+              -- they ran, each problem with its line (the check run over what that round wrote)
+              failure <- lift $ case listToMaybe (reverse (cHistory c)) of
+                Just r | Just run <- rrRun r -> pure (Just (LatestTests (rrRound r) (map fst (trFailed run))))
+                Just r | Just refusal <- rrCheck r -> do
+                  found <- checkedOver s (prWorkspace (wkProject wk)) lang (M.singleton rel landing)
+                  let tool = maybe "the check" (T.takeWhile (/= '-') . checkFormat) (langCheck lang)
+                      problems = nub [(p, l, m') | ((p, m), l) <- found, let m' = T.strip (T.takeWhile (/= '\n') m), m' `T.isInfixOf` refusal]
+                      -- unmatched (the check said it otherwise): the refusal's own words, no line
+                      said = [(T.unpack (T.strip p), Nothing, T.strip (T.drop 1 m)) | piece <- T.splitOn "; " refusal, let (p, m) = T.breakOn ": " piece, not (T.null m)]
+                  pure (Just (LatestCheck (rrRound r) tool (rootFirst (if null problems then said else problems))))
+                _ -> pure Nothing
               let lastWhy = maybe "" rhWhy (listToMaybe (rsHoles rs))
                   seed' = Seed (rsRound rs) (M.fromList [(rhName h, rhPrevious h) | h <- rsHoles rs])
-                  sentences = if null (cDiagnosis c) then [why] else cDiagnosis c
+                  sentences = case cCause c of
+                    Just cause' | not (null (cDiagnosis c)) -> diagnosis facts {dfFailure = failure} cause'
+                    _ -> if null (cDiagnosis c) then [why] else cDiagnosis c
                   explanation = T.unwords sentences
                   models = catalogModel (prCatalog project)
                   grant = maybe 0 sdRounds steered
@@ -789,7 +803,7 @@ conjureWith progress path line selected resuming s0 = do
                       , paRound = rsRound rs
                       , paRung = rsRung rs
                       , paSummary = roundSummary view
-                      , paWhy = why
+                      , paWhy = fromMaybe why (listToMaybe sentences)
                       , paTitle = title
                       , paDiagnosis = sentences
                       , paTrigger = trigger cause lastDecided (dfWireFailed facts)
@@ -808,6 +822,7 @@ conjureWith progress path line selected resuming s0 = do
                       , paWiredFor = cWiredFor c
                       , paHeld = []
                       , paSteps = cSteps c
+                      , paFailure = failure
                       }
                   pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation (cHistory c) (cBefore c) (cFlagged c) (cCause c) Nothing Nothing
               token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t) landings (cRewritten c) (cSteps c)) m), t)))
@@ -1043,6 +1058,7 @@ diagnosisFacts c rung next seconds =
     , dfRounds = cRounds c
     , dfSeconds = seconds
     , dfWireFailed = T.stripPrefix "wire failed: " =<< cExplanation c
+    , dfFailure = Nothing
     }
 
 -- | The class a header opens (@class X:@ or @class X(…):@), or none.
