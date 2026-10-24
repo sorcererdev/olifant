@@ -122,6 +122,7 @@ library
     Olifant.Server.Completion
     Olifant.Server.Conjure
     Olifant.Server.ConjureNext
+    Olifant.Server.ConjureScan
     Olifant.Server.Edits
     Olifant.Server.Fixes
     Olifant.Server.Hints
@@ -282,6 +283,8 @@ test-suite spec
     Olifant.Server.Conjure
     Olifant.Server.ConjureNext
     Olifant.Server.ConjureNextSpec
+    Olifant.Server.ConjureScan
+    Olifant.Server.ConjureScanSpec
     Olifant.Server.Edits
     Olifant.Server.EditsSpec
     Olifant.Server.Fixes

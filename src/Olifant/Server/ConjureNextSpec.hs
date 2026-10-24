@@ -1,4 +1,16 @@
-module Olifant.Server.ConjureNextSpec (spec) where
+module Olifant.Server.ConjureNextSpec
+  ( spec
+  , cb
+  , succeedsId
+  , notFoundId
+  , cancelTestText
+  , cancelHeader
+  , cancelBefore
+  , cancelRecords
+  , cancelState
+  , round1Run
+  , round2Run
+  ) where
 
 import Data.Map.Strict qualified as M
 import Data.Text (Text)

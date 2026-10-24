@@ -46,6 +46,7 @@ import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
 import Olifant.Server.ConjureNext (Decided (..), Next (..), Offer (..), RoundRecord (..), roundRecord, PausedAnswer (..), PausedConjure (..), Proposal (..), RoundContext (..), RoundView, Standing (..), TestCheck (..), conjureNextQuestion, conjureTestQuestion, testCheckFrom, nextFrom, offerText, offersFor, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
 import Olifant.Server.ConjureNext qualified as ConjureNext (testSource)
+import Olifant.Server.ConjureScan (Port (..), initParams, protocolPorts)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -591,6 +592,26 @@ wireFor s project rel = case catalogConjureWire cat of
         _ -> Nothing
   where
     cat = prCatalog project
+
+-- | What the wire's inputs are derived from: the service's ports and the
+-- @__init__@ parameters of the unit's siblings (one list a sibling).
+data ServiceFacts = ServiceFacts {sfPorts :: [Port], sfSiblings :: [[(Text, Text)]]}
+  deriving stock (Eq, Show)
+
+-- | The service of the unit at REL (root-relative), by the wire's path
+-- sets (@app@, @service@): the Protocol classes of every @.py@ under
+-- @src/{app}/{service}/ports/@, and the @__init__@ parameters of every
+-- other module (no test) under its @commands/@ and @queries/@.
+serviceFacts :: Workspace IO -> FilePath -> [(Text, Text)] -> IO ServiceFacts
+serviceFacts ws rel sets = case (lookup "app" sets, lookup "service" sets) of
+  (Just app, Just service) -> do
+    let base = "src" </> T.unpack app </> T.unpack service
+        under dir = map (dir </>) . filter (isSuffixOf ".py") <$> listFiles ws dir
+        texts fs = concat <$> traverse (\f -> maybe [] (pure . (f,)) <$> readText ws f) fs
+    ports <- texts =<< under (base </> "ports")
+    siblings <- texts . filter (\f -> normalisePath f /= normalisePath rel && not ("__test.py" `isSuffixOf` f)) . concat =<< traverse (under . (base </>)) ["commands", "queries"]
+    pure (ServiceFacts (protocolPorts ports) (filter (not . null) (map (initParams . snd) siblings)))
+  _ -> pure (ServiceFacts [] [])
 
 -- | The generator GID run in-process with SETS over the project with the
 -- conjure's WRITES on top (no model fills it): the files it writes
