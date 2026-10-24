@@ -1208,6 +1208,72 @@ conjureSpec = describe "olifant/conjure" $ do
     reconjured `shouldBe` Left "this pause offers no re-conjure"
     continued `shouldSatisfy` either (const False) (const True)
 
+  -- a test conjure of a stub test appended to the test file (CHANGED on top),
+  -- Jev answering the check port (bookings: BookingRepository); WIRE the
+  -- `[conjure] wire`; the answer and the step log's lines
+  let stubTest = "\n\ndef test_lists_the_bookings() -> None:\n    ...\n"
+      portCheck = "{\"answers\": {\"conjure-test\": {\"choice\": \"port\", \"fields\": {\"param\": \"bookings\", \"port\": \"BookingRepository\"}, \"confidence\": 0.9}}}"
+      testConjured :: Maybe Text -> [(FilePath, Text)] -> IO (Either Text Value, [[Text]])
+      testConjured = testConjuredWith "return None" (const "{}")
+      -- the same with the stub's recorded BODY and the test SCRIPT given the stub's body line (1-based)
+      testConjuredWith :: Text -> (Int -> BSL.ByteString) -> Maybe Text -> [(FilePath, Text)] -> IO (Either Text Value, [[Text]])
+      testConjuredWith body scripted wire changed =
+        withSystemTempDirectory "olifant-conjure-test-wire" $ \tmp -> do
+          let script = tmp </> "tests.json"
+              fills = tmp </> "fills.toml"
+              answers = tmp </> "answers.json"
+          testText <- (<> stubTest) . T.stripEnd <$> fixture testRel
+          BSL.writeFile script (scripted (length (takeWhile (not . ("def test_lists_the_bookings(" `T.isPrefixOf`)) (T.lines testText)) + 2))
+          TIO.writeFile fills ("[fills]\nbody = \"" <> body <> "\"\n")
+          TIO.writeFile answers portCheck
+          withPython ((testRel, testText) : changed) $ \ports dir -> do
+            old <- TIO.readFile (dir </> ".olifant/config.toml")
+            TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 2\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n" <> maybe "" (\w -> "[conjure]\nwire = \"" <> w <> "\"\n") wire)
+            let config = [("test_script", String (T.pack script)), ("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
+            (r, _) <- inProcessWithConfig config ports dir $ do
+              doc <- openDoc testRel "python"
+              text <- documentContents doc
+              -- the stub's body line, 0-based
+              let stubAt = length (takeWhile (not . ("def test_lists_the_bookings(" `T.isPrefixOf`)) (T.lines text)) + 1
+              blockMove (Proxy :: Proxy "olifant/conjure") (object ["textDocument" .= object ["uri" .= (doc ^. L.uri)], "position" .= object ["line" .= stubAt, "character" .= (0 :: Int)]])
+            let stepLog = dir </> ".olifant/state/steps.log"
+            found <- doesFileExist stepLog
+            lines' <- if found then T.lines <$> TIO.readFile stepLog else pure []
+            pure (r, [drop 1 (T.splitOn "\t" l) | l <- lines'])
+
+  it "a test conjure that needs a port wires it and lands the wire with the test" $ do
+    unwiredModule <- unwired <$> fixture moduleRel
+    (landed, steps) <- testConjured (Just "wire") [(moduleRel, unwiredModule)]
+    let edits = field "edits" landed
+    edits `shouldSatisfy` wroteIn testRel "return None"
+    edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
+    edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 wired bookings: BookingRepository" `T.isSuffixOf` x; _ -> False
+    let kinds = map (take 2) steps
+    kinds `shouldSatisfy` elem ["conjure-test", "port"]
+    kinds `shouldSatisfy` elem ["conjure-wire", "wire"]
+    takeWhile (/= ["conjure-wire", "wire"]) kinds `shouldSatisfy` elem ["conjure-test", "port"]
+    steps `shouldSatisfy` elem ["conjure-test", "port", "0.90"]
+
+  it "without a wire generator the test lands and the summary names the port" $ do
+    (landed, steps) <- testConjured Nothing []
+    field "edits" landed `shouldSatisfy` wroteIn testRel "return None"
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> "needs a port the class lacks: bookings: BookingRepository" `T.isSuffixOf` x; _ -> False
+    steps `shouldSatisfy` elem ["conjure-test", "port", "0.90"]
+    steps `shouldSatisfy` all (\fs -> take 1 fs /= ["conjure-wire"])
+
+  it "a re-fill that fails lands the wire with the test as first written" $ do
+    -- red at the stub's body line: at its assertion before the wire, before it once the wire moves it down
+    unwiredModule <- unwired <$> fixture moduleRel
+    let redAt l = Aeson.encode (object [Key.fromText (T.pack testRel <> "::test_lists_the_bookings") .= object ["line" .= l, "message" .= ("assert False" :: Text)]])
+    (landed, steps) <- testConjuredWith "assert False" redAt (Just "wire") [(moduleRel, unwiredModule)]
+    let edits = field "edits" landed
+    edits `shouldSatisfy` wroteIn testRel "    assert False"
+    edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
+    edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 wired bookings: BookingRepository; the test still builds its own fake, re-conjure it" `T.isSuffixOf` x; _ -> False
+    map (take 2) steps `shouldSatisfy` elem ["conjure-wire", "wire"]
+
 -- | `olifant/mutate`: the unit at a position mutated against its test
 -- file (a scripted runner that kills nothing); and a survivor's stub.
 mutateSpec :: Spec

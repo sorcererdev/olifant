@@ -32,7 +32,7 @@ import GHC.Clock (getMonotonicTime)
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, planWith)
 import Olifant.Actions (matchPathSlots)
 import Olifant.Catalog (catalogConjureWire, catalogLanguages, catalogModel, describeCatalogError, findEntry, loadGenerator)
-import Olifant.Decide (Answer (..), Confidence (..), Decider (..))
+import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question)
 import Olifant.Fill (Filler (..), ModelFiller (..), Stance (..))
 import Olifant.Generation (HoleStatus (..), Plan (..), PlannedHole (..), ProgressEvent (..), Step (..), describeConflict, describeGenerationError)
 import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Steer (..), Steering (..), noSeed)
@@ -44,7 +44,8 @@ import Olifant.Language (Failure (..), TestRun (..), languageFor, runTestsIn)
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Next (..), Offer (..), PausedAnswer (..), PausedConjure (..), Proposal (..), RoundContext (..), RoundView, Standing (..), conjureNextQuestion, nextFrom, offerText, offersFor, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
+import Olifant.Server.ConjureNext (Next (..), Offer (..), PausedAnswer (..), PausedConjure (..), Proposal (..), RoundContext (..), RoundView, Standing (..), TestCheck (..), conjureNextQuestion, conjureTestQuestion, testCheckFrom, nextFrom, offerText, offersFor, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
+import Olifant.Server.ConjureNext qualified as ConjureNext (testSource)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -458,13 +459,66 @@ conjureWith progress path line selected resuming s0 = do
                         lift (stepLine ["conjure-wire-failed", gid])
                         loop wk f' seed'
                   _ -> pure (tried, wk)
-          (tried, wk) <- case resuming of
+          (tried, wk0) <- case resuming of
             Just (_, pd) | stopping -> pure (Right (Written Nothing (pdLanding pd) (pdUndefined pd)), first)
             _ -> loop first filler seed0
           -- a cancelled conjure lands nothing and keeps no pause
           stop <- lift (cancelled (ssCancel s))
           when stop (throwE "cancelled")
-          outcome <- except tried
+          outcome0 <- except tried
+          -- a test conjure whose fill passed its verify: Jev checks it builds
+          -- no port the class lacks; a port is wired (when a generator
+          -- applies) and the test filled once more over the wired files
+          let refill p q wk' = do
+                c <- lift (readIORef counters)
+                let f' = fromMaybe filler (steered >>= \sd -> snd <$> listToMaybe (drop (cRung c) (sdLadder sd)))
+                    relabel (k, v) = (if k == rejectedBody then T.unpack ("the test as first written; the helper now takes " <> p <> ": " <> q <> ": pass the test's fake to it") else k, v)
+                fill progress rounds s (wkProject wk') rel (wkText wk') (wkTemplate wk') (wkVerify wk') (map relabel (wkContext wk')) f' (const Nothing)
+          (outcome, wk, note) <- case (outcome0, deciderUnder (ssCancel s) s project) of
+            (Written Nothing written0 _, Just decider')
+              | onTest && isNothing selected && not stopping -> do
+                  c <- lift (readIORef counters)
+                  let name = fromMaybe unit (testAt written0 (fst (wkSpan wk0)))
+                      moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) (cWrites c)
+                  answer <- lift (askOr decider' (conjureTestQuestion (fromMaybe "" (ConjureNext.testSource name written0)) (classHeaders moduleText)))
+                  lift (stepLine ["conjure-test", answerChoice answer, answerConfidence answer])
+                  case testCheckFrom answer of
+                    TestOk -> pure (outcome0, wk0, "")
+                    TestPort p q -> do
+                      let lacks = " \183 needs a port the class lacks: " <> p <> ": " <> q
+                      wire' <- lift (if null (cWired c) then wireFor s project (siteModuleRel site) else pure Nothing)
+                      case wire' of
+                        Nothing -> pure (outcome0, wk0, lacks)
+                        Just (gid, pathSets) -> do
+                          let sets = [("param", p), ("port", q)] ++ pathSets
+                              filled = M.insert rel written0 (cWrites c)
+                          planned <- lift (wirePlan s project filled gid sets)
+                          ready <- case planned of
+                            Left why -> pure (Left why)
+                            Right new -> fmap (new,) <$> lift (runExceptT (prepare (M.union new filled)))
+                          case ready of
+                            Left _ -> do
+                              lift (stepLine ["conjure-wire-failed", gid])
+                              pure (outcome0, wk0, lacks)
+                            Right (new, wk') -> do
+                              -- each file the wire wrote, as the conjure first read it (the test file's is the editor's)
+                              read' <- lift (traverse (\r -> (absOf r,) <$> readText ws r) [r | r <- M.keys new, r /= rel, M.notMember (absOf r) (cBases c)])
+                              lift . writeIORef counters $
+                                c
+                                  { cWired = cWired c ++ [p <> ": " <> q]
+                                  , cWrites = M.union new filled
+                                  , cVersions = M.union (cVersions c) (M.fromList [(a, fst <$> M.lookup a (ssDocs s)) | (a, _) <- read'])
+                                  , cBases = M.union (cBases c) (M.fromList read')
+                                  }
+                              lift (stepLine ("conjure-wire" : gid : [k <> "=" <> v | (k, v) <- sets]))
+                              refilled <- lift (runExceptT (refill p q wk'))
+                              cancelled' <- lift (cancelled (ssCancel s))
+                              when cancelled' (throwE "cancelled")
+                              case refilled of
+                                Right o@(Written Nothing _ _) -> pure (o, wk', "")
+                                -- the wire and the test as first written land together
+                                _ -> pure (Written Nothing (wkText wk') [], wk', "; the test still builds its own fake, re-conjure it")
+            _ -> pure (outcome0, wk0, "")
           latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
           when (latest /= started) (throwE "the file changed while conjuring; your text stands")
           c <- lift (readIORef counters)
@@ -491,7 +545,7 @@ conjureWith progress path line selected resuming s0 = do
               after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack testRel] (M.insert rel written files))
               end <- lift getMonotonicTime
               n <- lift (readIORef rounds)
-              let summary = wiredNote (if onTest then testSummary extra tid (wkBefore wk) after written else functionSummary extra after)
+              let summary = wiredNote (if onTest then testSummary extra tid (wkBefore wk) after written else functionSummary extra after) <> note
                   wiredNote t = if null (cWired c) then t else t <> " \183 wired " <> T.intercalate ", " (cWired c)
                   tid = T.pack testRel <> "::" <> fromMaybe unit (testAt written (fst (wkSpan wk)))
                   green = isNothing (trBroken after) && null (trFailed after)
@@ -594,12 +648,8 @@ steer s stepLine begun counters sd wires record rs =
       next <- case spent standing of
         Just n -> pure n
         Nothing -> do
-          answer <-
-            try (ask (sdDecider sd) (conjureNextQuestion standing view)) >>= \case
-              Right a -> pure a
-              Left e | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
-              Left (_ :: SomeException) -> pure Unsure
-          stepLine ["conjure-next", choiceOf answer, confidenceOf answer, tshow (rsRound rs), rsRung rs]
+          answer <- askOr (sdDecider sd) (conjureNextQuestion standing view)
+          stepLine ["conjure-next", answerChoice answer, answerConfidence answer, tshow (rsRound rs), rsRung rs]
           pure (nextFrom standing view answer)
       let c' = c {cRounds = used, cSeconds = seconds, cLast = Just view, cState = Just rs}
       case next of
@@ -607,13 +657,34 @@ steer s stepLine begun counters sd wires record rs =
         NextPause why offers -> Pause why <$ writeIORef counters c' {cOffers = offers}
         NextWire p q -> Pause "wire" <$ writeIORef counters c' {cWire = Just (p, q), cOffers = offersFor standing}
         _ -> Again <$ writeIORef counters c'
-  where
-    choiceOf = \case
-      Chosen o _ _ -> o
-      _ -> "unsure"
-    confidenceOf = \case
-      Chosen _ _ (Confidence d) -> T.pack (printf "%.2f" d)
-      _ -> "-"
+
+-- | Jev's answer to Q (a failure to ask is `unsure`; a cancel is rethrown).
+askOr :: Decider IO -> Question -> IO Answer
+askOr d q =
+  try (ask d q) >>= \case
+    Right a -> pure a
+    Left e | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+    Left (_ :: SomeException) -> pure Unsure
+
+-- | An answer's choice and confidence, as the step log has them.
+answerChoice :: Answer -> Text
+answerChoice = \case
+  Chosen o _ _ -> o
+  _ -> "unsure"
+
+answerConfidence :: Answer -> Text
+answerConfidence = \case
+  Chosen _ _ (Confidence d) -> T.pack (printf "%.2f" d)
+  _ -> "-"
+
+-- | The header of each top-level class with an @__init__@ in a module: the
+-- ports the class under a test takes.
+classHeaders :: Text -> Text
+classHeaders t = T.intercalate "\n\n" [h | (i, l) <- zip [1 ..] (T.lines t), "class " `T.isPrefixOf` l, let h = unitHeader t i, "__init__" `T.isInfixOf` h]
+
+-- | The context key of a body on screen that is no stub.
+rejectedBody :: FilePath
+rejectedBody = "the body on screen, rejected by the person (write another)"
 
 noModel :: Text
 noModel = "no model is configured: set [model] in .olifant/config.toml to conjure"
@@ -640,7 +711,7 @@ functionConjure text (l1, l2) unit testRel testText before = do
         [(testRel, testText)]
           ++ [("failing now (make these pass)", failing) | not (null failed)]
           ++ [("passing now (keep these passing)", T.intercalate "\n" (trPassed before)) | not (null (trPassed before))]
-          ++ [("the body on screen, rejected by the person (write another)", T.intercalate "\n" (dedent body)) | not (isStub body)]
+          ++ [(rejectedBody, T.intercalate "\n" (dedent body)) | not (isStub body)]
   template <- holeOver ls (l1, l2) instruction
   pure (template, [("body", VerifyTests)], context)
 
@@ -662,7 +733,7 @@ testConjure text (l1, l2) tid moduleRel moduleText = do
       context =
         [(moduleRel, moduleText)]
           ++ [("notes in the test's body", T.intercalate "\n" notes) | not (null notes)]
-          ++ [("the body on screen, rejected by the person (write another)", T.intercalate "\n" (dedent body)) | not (isStub body)]
+          ++ [(rejectedBody, T.intercalate "\n" (dedent body)) | not (isStub body)]
   template <- holeOver ls (l1, l2) instruction
   pure (template, [("body", VerifyRedAt tid l1 True)], context)
 

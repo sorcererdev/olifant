@@ -18,6 +18,9 @@ module Olifant.Server.ConjureNext
   , conjureNextQuestion
   , nextFrom
   , withHint
+  , conjureTestQuestion
+  , TestCheck (..)
+  , testCheckFrom
   , PausedAnswer (..)
   , Proposal (..)
   , PausedConjure (..)
@@ -214,6 +217,35 @@ nextFrom st v a = case a of
       _ -> NextPause "Jev asks you to look" (offersFor st)
     _ -> NextAgain
   _ -> NextAgain
+  where
+    field k fs = case lookup k fs of
+      Just x | not (T.null (T.strip x)) -> Just x
+      _ -> Nothing
+
+-- | The check after a hand-started test conjure's fill passes its verify:
+-- given the test's body and the unit's header (the class and its
+-- @__init__@), does the test pass a fake for every port it builds (ok), or
+-- want a port the class does not take (port, with its param and type)?
+conjureTestQuestion :: Text -> Text -> Question
+conjureTestQuestion test unit = (choice "conjure-test" instructions options context) {qFields = [("param", "ident"), ("port", "ident")]}
+  where
+    instructions =
+      "A test was just written for a unit. Does it build a fake for a collaborator the unit does not take (a fake it cannot pass in, a parameter the helper does not take)? Choose port then, and fill param and port with the constructor argument and its type; else choose ok."
+    options =
+      [ ("ok", "the test passes a fake for every port it builds, or builds none")
+      , ("port", "the test wants a port the class does not take; name it")
+      ]
+    context = [("test", test), ("unit", if T.null unit then "none" else unit)]
+
+-- | What the check found.
+data TestCheck = TestOk | TestPort Text Text
+  deriving stock (Eq, Show)
+
+-- | A confident port with both fields; anything else is ok.
+testCheckFrom :: Answer -> TestCheck
+testCheckFrom a = case a of
+  Chosen "port" fs _ | confident conjureNextGate a, Just p <- field "param" fs, Just q <- field "port" fs -> TestPort p q
+  _ -> TestOk
   where
     field k fs = case lookup k fs of
       Just x | not (T.null (T.strip x)) -> Just x

@@ -109,6 +109,17 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     offerText (OfferReconjure "t.py::test_a") `shouldBe` "reconjure:t.py::test_a"
     offerText OfferAccept `shouldBe` "accept"
     offerText OfferReject `shouldBe` "reject"
+  it "(l) conjure-test asks ok or port and reads a confident port" $ do
+    let q = conjureTestQuestion "def test_a():\n    assert f() == 1" "class C:\n    def __init__(self) -> None:"
+    qKind q `shouldBe` "conjure-test"
+    map fst (qOptions' q) `shouldBe` ["ok", "port"]
+    qFields q `shouldBe` [("param", "ident"), ("port", "ident")]
+    map fst (qContext q) `shouldBe` ["test", "unit"]
+    testCheckFrom (Chosen "port" [("param", "bookings"), ("port", "BookingRepository")] (Confidence 0.8)) `shouldBe` TestPort "bookings" "BookingRepository"
+    testCheckFrom (Chosen "port" [] (Confidence 0.9)) `shouldBe` TestOk
+    testCheckFrom (Chosen "port" [("param", "bookings"), ("port", "BookingRepository")] (Confidence 0.5)) `shouldBe` TestOk
+    testCheckFrom (Chosen "ok" [] (Confidence 0.9)) `shouldBe` TestOk
+    testCheckFrom Unsure `shouldBe` TestOk
   where
     qOptions' q = case qShape q of
       Choice os -> os
