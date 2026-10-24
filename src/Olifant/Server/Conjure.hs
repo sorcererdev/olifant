@@ -940,7 +940,7 @@ steer s stepLine begun counters sd wires derive record rs =
         PolicyAsk -> do
           (answer, weights) <- weighOr (sdDecider sd) (conjureNextQuestion standing view)
           stepLine ["conjure-next", answerChoice answer, answerConfidence answer, tshow (rsRound rs), rsRung rs]
-          pure (Right (nextFrom standing answer), Just (decidedOf answer weights))
+          pure (Right (nextFrom standing (rsRound rs) answer), Just (decidedOf answer weights))
       let history = cHistory c ++ [record0 {rrDecided = decided}]
           c' = c {cRounds = used, cSeconds = seconds, cLast = Just view, cState = Just rs, cHistory = history, cFlagged = flags, cCandidates = candidates}
           facts = diagnosisFacts c' (rsRung rs) (rungName . fst <$> listToMaybe above) (round seconds)

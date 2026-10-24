@@ -535,15 +535,16 @@ conjureNextQuestion st v = choice "conjure-next" instructions options context
       , ("hint", fromMaybe "none" (stHint st))
       ]
 
--- | What to do after Jev's answer: a `climb` at 'conjureClimbGate' climbs (an `ask` rung
--- pauses for the person); an `ask` at 'conjureAskGate' pauses; anything else is again.
-nextFrom :: Standing -> Answer -> Next
-nextFrom st a = case a of
+-- | What to do after Jev's answer to round R: a `climb` at 'conjureClimbGate' climbs (an
+-- `ask` rung pauses for the person); an `ask` at 'conjureAskGate' pauses from round 2 on (one
+-- round cannot show the model is not converging); anything else is again.
+nextFrom :: Standing -> Int -> Answer -> Next
+nextFrom st r a = case a of
   Chosen "climb" _ _ | confident conjureClimbGate a -> case stNext st of
     Just (Rung n EscalateAuto) -> NextClimb n
     Just (Rung n EscalateAsk) -> NextPause (CauseClimb n)
     _ -> NextAgain
-  Chosen "ask" _ _ | confident conjureAskGate a -> NextPause CauseAsk
+  Chosen "ask" _ _ | r >= 2, confident conjureAskGate a -> NextPause CauseAsk
   _ -> NextAgain
 
 -- | The person's words, added to the why of each hole's last attempt.

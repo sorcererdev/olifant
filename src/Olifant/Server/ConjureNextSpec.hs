@@ -86,12 +86,15 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     spent (Standing 3 50 Nothing Nothing False) `shouldBe` False
   it "(g) nextFrom follows a confident answer and otherwise goes again" $ do
     let st = standing EscalateAsk
-    nextFrom st (Chosen "again" [] (Confidence 0.9)) `shouldBe` NextAgain
-    nextFrom st (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextPause (CauseClimb "claude")
-    nextFrom (standing EscalateAuto) (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextClimb "claude"
-    nextFrom st (Chosen "ask" [] (Confidence 0.9)) `shouldBe` NextPause CauseAsk
-    nextFrom st (Chosen "ask" [] Unknown) `shouldBe` NextAgain
-    nextFrom st Unsure `shouldBe` NextAgain
+    nextFrom st 2 (Chosen "again" [] (Confidence 0.9)) `shouldBe` NextAgain
+    nextFrom st 2 (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextPause (CauseClimb "claude")
+    nextFrom (standing EscalateAuto) 2 (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextClimb "claude"
+    nextFrom st 2 (Chosen "ask" [] (Confidence 0.9)) `shouldBe` NextPause CauseAsk
+    nextFrom st 2 (Chosen "ask" [] Unknown) `shouldBe` NextAgain
+    nextFrom st 2 Unsure `shouldBe` NextAgain
+    -- one round cannot show convergence: an ask after round 1 goes on
+    nextFrom st 1 (Chosen "ask" [] (Confidence 0.9)) `shouldBe` NextAgain
+    nextFrom st 1 (Chosen "climb" [] (Confidence 0.9)) `shouldBe` NextPause (CauseClimb "claude")
   it "(h0) roundSummary and offerText" $ do
     roundSummary view `shouldBe` "red: test_a \183 assert 0 == 1"
     roundSummary viewB `shouldBe` "red: does not parse as block"
@@ -203,11 +206,11 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     lookup "failing" (qContext q) `shouldBe` Just (succeedsId <> ": assert NotFound(reason='Booking not found') == Ok(value=None)")
     lookup "passing" (qContext q) `shouldBe` Just notFoundId
     lookup "trade" (qContext q) `shouldBe` Just "yes"
-    nextFrom st (Chosen "ask" [] (Confidence 0.5)) `shouldBe` NextPause CauseAsk
-    nextFrom st (Chosen "ask" [] (Confidence 0.49)) `shouldBe` NextAgain
-    nextFrom st {stNext = Just (Rung "claude" EscalateAuto)} (Chosen "climb" [] (Confidence 0.6)) `shouldBe` NextClimb "claude"
-    nextFrom st {stNext = Just (Rung "claude" EscalateAsk)} (Chosen "climb" [] (Confidence 0.6)) `shouldBe` NextPause (CauseClimb "claude")
-    nextFrom st {stNext = Just (Rung "claude" EscalateAuto)} (Chosen "climb" [] (Confidence 0.59)) `shouldBe` NextAgain
+    nextFrom st 2 (Chosen "ask" [] (Confidence 0.5)) `shouldBe` NextPause CauseAsk
+    nextFrom st 2 (Chosen "ask" [] (Confidence 0.49)) `shouldBe` NextAgain
+    nextFrom st {stNext = Just (Rung "claude" EscalateAuto)} 2 (Chosen "climb" [] (Confidence 0.6)) `shouldBe` NextClimb "claude"
+    nextFrom st {stNext = Just (Rung "claude" EscalateAsk)} 2 (Chosen "climb" [] (Confidence 0.6)) `shouldBe` NextPause (CauseClimb "claude")
+    nextFrom st {stNext = Just (Rung "claude" EscalateAuto)} 2 (Chosen "climb" [] (Confidence 0.59)) `shouldBe` NextAgain
     trigger CauseAsk (Just (Decided "ask" (Just 0.68) [("ask", 0.68), ("again", 0.29), ("test", 0.02)])) Nothing `shouldBe` "Jev: ask .68 \183 again .29 \183 test .02"
     trigger CauseRepeat Nothing (Just "x writes nothing here") `shouldBe` "repeat; wire failed: x writes nothing here"
     trigger (CauseTest notFoundId) Nothing Nothing `shouldBe` "unsatisfiable test: " <> notFoundId
