@@ -475,7 +475,12 @@ conjureWith progress path line selected resuming s0 = do
                   diff = T.concat [unifiedDiff f b a | (f, b, a) <- files]
                   proposal = Proposal protoRel (q <> "." <> m) pb pa diff Nothing ("port method: " <> q <> "." <> m <> "(" <> T.drop 2 ps <> ") -> " <> r) "port" others
                   rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
-                  shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
+                  -- the rows say what lands: the method, not a test
+                  said row = case orOffer row of
+                    OfferAccept -> row {orDetail = m <> " lands in " <> q <> " and its adapters with the conjure; round " <> tshow (paRound plain + 1) <> " runs against it"}
+                    OfferReject -> row {orDetail = "back to the rows; " <> q <> " stands as it was"}
+                    _ -> row
+                  shown = plain {paOffers = map said (rows [OfferAccept, OfferReject]), paProposal = Just proposal}
               lift . keep s (reToken re) $
                 pd
                   { pdProposal = Just proposal
@@ -810,11 +815,12 @@ conjureWith progress path line selected resuming s0 = do
               now <- lift getMonotonicTime
               -- the latest round's real failure: its tests', or the check's that refused it before
               -- they ran, each problem with its line (the check run over what that round wrote)
+              let checker = T.takeWhile (/= '-') . checkFormat <$> langCheck lang
               failure <- lift $ case listToMaybe (reverse (cHistory c)) of
                 Just r | Just run <- rrRun r -> pure (Just (LatestTests (rrRound r) (map fst (trFailed run))))
                 Just r | Just refusal <- rrCheck r -> do
                   problemsAt <- checkedOver s (prWorkspace (wkProject wk)) lang (M.singleton rel landing)
-                  let tool = maybe "the check" (T.takeWhile (/= '-') . checkFormat) (langCheck lang)
+                  let tool = fromMaybe "the check" checker
                       problems = nub [(p, l, m') | ((p, m), l) <- problemsAt, let m' = T.strip (T.takeWhile (/= '\n') m), m' `T.isInfixOf` refusal]
                       -- unmatched (the check said it otherwise): the refusal's own words, no line
                       said = [(T.unpack (T.strip p), Nothing, T.strip (T.drop 1 m)) | piece <- T.splitOn "; " refusal, let (p, m) = T.breakOn ": " piece, not (T.null m)]
@@ -841,9 +847,8 @@ conjureWith progress path line selected resuming s0 = do
                   -- what each written file is against what the conjure read (the unit's file: the buffer)
                   baseOf r = if r == rel then text else fromMaybe "" (M.findWithDefault Nothing (absOf r) (cBases c))
                   wiredFiles = [(r, unifiedDiff r (baseOf r) new) | (r, new) <- M.toList (cWrites c), baseOf r /= new]
-                  wired = case cWired c of
-                    w : rest -> (w, wiredFiles) : [(w', []) | w' <- rest]
-                    [] -> []
+                  -- each wire with what it wrote (its step's files), not the steps after it
+                  wired = zip (cWired c) ([csFiles st | st@(ConjureStep _ StepWire _ _) <- cSteps c] ++ repeat [])
                   -- each round's body over the working unit's file (the last round's: what the fill left)
                   lastRound = rrRound <$> listToMaybe (reverse (cHistory c))
                   landings =
@@ -881,6 +886,7 @@ conjureWith progress path line selected resuming s0 = do
                       , paHeld = []
                       , paSteps = cSteps c
                       , paFailure = failure
+                      , paChecker = checker
                       }
                   pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation (cHistory c) (cBefore c) (cFlagged c) (cCause c) Nothing Nothing
               token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t) landings (cRewritten c) (cSteps c)) m), t)))

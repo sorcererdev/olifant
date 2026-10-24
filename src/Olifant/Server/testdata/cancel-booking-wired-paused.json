@@ -1,4 +1,5 @@
 {
+  "checker": null,
   "diagnosis": [
     "local wrote the same body in rounds 1 and 2.",
     "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking takes bookings: BookingRepository since the wire; the test should pass its fake as command(bookings=…)."

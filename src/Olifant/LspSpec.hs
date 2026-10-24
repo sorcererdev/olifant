@@ -1470,6 +1470,14 @@ conjureSpec = describe "olifant/conjure" $ do
           Just (Array fs) -> all (`elem` [f | String f <- toList fs]) ["src/bistro/booking/ports/booking_repository/booking_repository.py", "src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py"]
           _ -> False
         offerLabels (field "paused" portProposed) `shouldBe` ["accept", "reject"]
+        offerDetails (field "paused" portProposed) `shouldBe` ["find_by_id lands in BookingRepository and its adapters with the conjure; round 3 runs against it", "back to the rows; BookingRepository stands as it was"]
+        inner "checker" (field "paused" afterPort) `shouldBe` Just (String "pyright")
+        -- the wire entry is the wire's files alone, not the steps after it
+        inner "wired" (field "paused" afterPort) `shouldSatisfy` \case
+          Just (Array (toList -> w : _)) -> case inner "files" (Just w) of
+            Just (Array fs) -> [f | x <- toList fs, Just (String f) <- [inner "file" (Just x)]] == map T.pack [cbModule, cbTest]
+            _ -> False
+          _ -> False
         -- accepted, it is a step: round 3 type-checks, and its tests ran
         inner "steps" (field "paused" afterPort) `shouldSatisfy` \case
           Just (Array xs) -> [inner "kind" (Just x) | x <- toList xs] == map (Just . String) ["wire", "test", "port"]

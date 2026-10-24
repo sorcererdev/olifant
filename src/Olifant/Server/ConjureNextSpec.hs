@@ -349,6 +349,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
       `shouldBe` ["local is not converging.", "Round 3 did not type-check: pyright refused it before the tests ran (cancel_booking.py:30: Cannot access attribute \"find_by_id\" for class \"BookingRepository\")."]
     let v = pausedJson cancelPaused {paFailure = Just refusal, paRounds = take 2 cancelRecords ++ [checked]}
     at ["failure", "kind"] v `shouldBe` Just (String "check")
+    at ["checker"] (pausedJson cancelPaused {paChecker = Just "pyright"}) `shouldBe` Just (String "pyright")
     at ["failure", "round"] v `shouldBe` Just (Number 3)
     at ["failure", "tool"] v `shouldBe` Just (String "pyright")
     at ["failure", "problems", "0", "line"] v `shouldBe` Just (Number 30)
@@ -378,7 +379,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     offersAt st cause [notFoundId] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
     offersAt st (CauseMethod "BookingRepository" "find_by_id" Nothing) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
     let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True "cancel_booking" [] []) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
-    (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "port-method writes find_by_id(self, id: str) -> Booking | None into BookingRepository, port-method-adapters into each adapter (local fills their bodies); you see the diff")
+    (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None into the Protocol and its adapters (local fills their bodies); you see the diff")
     let refusal = LatestCheck 1 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
         checked = RoundRecord 1 "local" "x" Nothing (Just "pyright") Nothing 1
         facts = cancelPausedFacts {dfHistory = [checked], dfFailure = Just refusal}
@@ -519,6 +520,7 @@ cancelPaused =
     , paHeld = []
     , paSteps = []
     , paFailure = Nothing
+    , paChecker = Nothing
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -567,6 +569,7 @@ cancelWiredPaused =
     , paHeld = []
     , paSteps = []
     , paFailure = Nothing
+    , paChecker = Nothing
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"

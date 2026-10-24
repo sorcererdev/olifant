@@ -675,6 +675,7 @@ data PausedAnswer = PausedAnswer
   , paHeld :: [OfferRow]
   , paSteps :: [ConjureStep]
   , paFailure :: Maybe LatestFailure
+  , paChecker :: Maybe Text
   }
   deriving stock (Eq, Show)
 
@@ -741,7 +742,7 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
   OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
   OfferReconjureAgain t -> ("fix the test: " <> short t <> ", again", "re-conjure it once more; you see its diff")
-  OfferPort q m ps r -> ("add " <> m <> " to " <> q, "port-method writes " <> m <> "(self" <> ps <> ") -> " <> r <> " into " <> q <> ", port-method-adapters into each adapter (" <> ofRung o <> " fills their bodies); you see the diff")
+  OfferPort q m ps r -> ("add " <> m <> " to " <> q, m <> "(self" <> ps <> ") -> " <> r <> " into the Protocol and its adapters (" <> ofRung o <> " fills their bodies); you see the diff")
   where
     n = T.pack . show
     next = n (ofRound o + 1)
@@ -817,6 +818,7 @@ pausedJson p =
     , "outcome" .= paOutcome p
     , "steps" .= map stepJson (paSteps p)
     , "failure" .= fmap failureJson (paFailure p)
+    , "checker" .= paChecker p
     ]
       ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r, "step" .= prStep r, "kind" .= prKind r, "files" .= (prFile r : [f | (f, _, _) <- prOthers r])] | Just r <- [paProposal p]]
   where
