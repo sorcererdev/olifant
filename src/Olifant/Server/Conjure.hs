@@ -40,7 +40,7 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Failure (..), TestRun (..), languageFor, runTestsIn)
+import Olifant.Language (Failure (..), TestRun (..), failureLine, languageFor, runTestsIn)
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
@@ -704,7 +704,7 @@ functionConjure text (l1, l2) unit testRel testText before = do
       instruction = oneLine $ case (trBroken before, failed) of
         (Just why, _) -> "the tests could not run (" <> firstLine why <> "); write the body of " <> unit <> " its tests describe"
         (_, []) -> "the tests pass; write the body of " <> unit <> " they describe, keeping them passing"
-        _ -> "make the failing tests pass (" <> T.intercalate ", " [short t <> ": " <> firstLine (fMessage f) | (t, f) <- failed] <> ") and keep the file's other tests passing; the tests and their messages are in the context; write the least code that does it"
+        _ -> "make the failing tests pass (" <> T.intercalate ", " [short t <> ": " <> failureLine f | (t, f) <- failed] <> ") and keep the file's other tests passing; the tests and their messages are in the context; write the least code that does it"
       failing = T.intercalate "\n\n" [t <> "\n" <> fMessage f <> "\n" <> T.unlines (testSource (short t)) | (t, f) <- failed]
       testSource n = let base = fst (T.breakOn "[" n) in ("def " <> base <> "(…):") : testBody base testText
       context =
@@ -752,8 +752,8 @@ testSummary extra tid before after written = base <> (if null missing then "" el
     own = case (trBroken after, [f | (t, f) <- trFailed after, isOwn t]) of
       (Just why, _) -> "red: could not run \183 " <> firstLine why
       (_, f : _)
-        | Just l <- fLine f, Just (a, z) <- assertionSpan (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> firstLine (fMessage f)
-        | otherwise -> "red: error before the assertion \183 " <> firstLine (fMessage f)
+        | Just l <- fLine f, Just (a, z) <- assertionSpan (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> failureLine f
+        | otherwise -> "red: error before the assertion \183 " <> failureLine f
       _
         | any isOwn (trPassed after) -> "green: already passes"
         | otherwise -> "red: " <> short tid <> " did not run"
@@ -793,7 +793,7 @@ functionSummary extra run = case (trBroken run, trFailed run) of
   (Just why, _) -> "red: could not run \183 " <> firstLine why
   (_, failed) | names@(_ : _) <- nub (concatMap (undefinedNames . fMessage . snd) failed ++ extra) -> (if null failed then "green \183 NameError " else "red: NameError ") <> T.intercalate ", " names
   (_, []) -> "green"
-  (_, (t, f) : _) -> "red: " <> snd (T.breakOnEnd "::" t) <> " \183 " <> firstLine (fMessage f)
+  (_, (t, f) : _) -> "red: " <> snd (T.breakOnEnd "::" t) <> " \183 " <> failureLine f
 
 -- | TEMPLATE planned over REL (TEXT) with VERIFY and CONTEXT: the file as
 -- the fill writes it, or, when no attempt passed its verify, as the last

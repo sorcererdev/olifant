@@ -10,6 +10,9 @@ module Olifant.Language.Test
   , scriptedRunner
   , scriptFileRunner
   , parsePytest
+  , failureLine
+  , assertionLine
+  , gotExpected
   , testsForFile
   , keptVerdict
   , ranIn
@@ -24,7 +27,7 @@ import Data.Containers.ListUtils (nubOrd)
 import Data.ByteString qualified as BS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -58,7 +61,8 @@ ranIn :: TestRun -> TestId -> Bool
 ranIn run t = t `elem` trPassed run || t `elem` map fst (trFailed run)
 
 -- | Why a test is red: the line of the test that failed, what the framework
--- said (the assertion), and its whole section of the report.
+-- said (pytest's whole @E@ block, gutter stripped), and its whole section of
+-- the report.
 data Failure = Failure {fLine :: Maybe Int, fMessage :: Text, fOutput :: Text}
   deriving stock (Eq, Show)
 
@@ -98,7 +102,7 @@ scriptedRunner script = Runner $ \_ ids files ->
       let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
       if "test" `T.isPrefixOf` n && "(" `T.isPrefixOf` T.drop (T.length n) rest then Just n else Nothing
     failureIn = \case
-      Object o -> Just (Failure (KM.lookup "line" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing) (case KM.lookup "message" o of Just (String m) -> m; _ -> "failed") "")
+      Object o -> Just (Failure (KM.lookup "line" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing) (case KM.lookup "message" o of Just (String m) -> m; _ -> "failed") (case KM.lookup "output" o of Just (String x) -> x; _ -> ""))
       _ -> Nothing
 
 -- | 'scriptedRunner' over a JSON file, read again at every run (a test may
@@ -134,9 +138,11 @@ parsePytest code out = TestRun passed failed broken
           name = T.replace "::" "." (T.drop 2 (snd (T.breakOn "::" tid)))
           section = takeWhile (not . isRule) (drop 1 (dropWhile (not . isHeaderOf name) ls))
           line = listToMaybe [n | l <- reverse section, Just n <- [lineOf (T.takeWhile (/= ':') tid) l]]
-          said = case T.breakOn " - " rest of
-            (_, r) | not (T.null r) -> T.strip (T.drop 3 r)
-            _ -> maybe "" (T.strip . T.drop 1) (listToMaybe (reverse [l | l <- section, "E " `T.isPrefixOf` l]))
+          said = case [T.stripStart (T.drop 1 l) | l <- section, "E " `T.isPrefixOf` l] of
+            es@(_ : _) -> T.intercalate "\n" (map T.stripEnd es)
+            [] -> case T.breakOn " - " rest of
+              (_, r) | not (T.null r) -> T.strip (T.drop 3 r)
+              _ -> ""
        in Failure line said (T.unlines section)
     broken
       | code == ExitFailure 5 = Just "no tests collected"
@@ -154,3 +160,37 @@ parsePytest code out = TestRun passed failed broken
     lineOf file l = case T.breakOn ":" l of
       (f, rest) | f == file, Right (n, _) <- TR.decimal (T.drop 1 rest) -> Just n
       _ -> Nothing
+
+-- | A failure in one line: the first line of its message less a leading
+-- @AssertionError: @; when that is bare (@assert False@, @assert None@,
+-- @AssertionError@, nothing), the first @+  where@ line, less that.
+failureLine :: Failure -> Text
+failureLine f
+  | bare first, w : _ <- [T.strip r | l <- T.lines (fMessage f), Just r <- [T.stripPrefix "+  where " (T.strip l)]] = w
+  | otherwise = first
+  where
+    first = headLine f
+    bare l = l `elem` ["assert False", "assert None", "AssertionError", ""]
+
+headLine :: Failure -> Text
+headLine f = case T.lines (fMessage f) of
+  l : _ -> let s = T.strip l in fromMaybe s (T.stripPrefix "AssertionError: " s)
+  [] -> ""
+
+-- | The test's source line that failed: the line after the first
+-- @…: in NAME@ line of the section (NAME the test's short name).
+assertionLine :: Text -> Failure -> Maybe Text
+assertionLine name f = case drop 1 (dropWhile (not . (T.isSuffixOf (": in " <> name) . T.stripEnd)) (T.lines (fOutput f))) of
+  l : _ | not (T.null (T.strip l)) -> Just (T.strip l)
+  _ -> Nothing
+
+-- | What came back and what was expected, for the two shapes the panel reads:
+-- @assert A == B@ (A got, B expected) and @+  where False = isinstance(A, T)@.
+gotExpected :: Failure -> Maybe (Text, Text)
+gotExpected f
+  | Just e <- T.stripPrefix "assert " (headLine f), (a, b) <- T.breakOn " == " e, not (T.null b) = Just (T.strip a, T.strip (T.drop 4 b))
+  | i : _ <- [r | l <- T.lines (fMessage f), Just r <- [T.stripPrefix "+  where False = isinstance(" (T.strip l)], ")" `T.isSuffixOf` r] =
+      let inner = T.dropEnd 1 i
+          (a, t) = T.breakOnEnd ", " inner
+       in if T.null a then Nothing else Just (T.strip (T.dropEnd 2 a), T.strip t)
+  | otherwise = Nothing

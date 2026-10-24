@@ -103,7 +103,7 @@ roundView ctx prev rs =
         Just b -> ([], length (trPassed r), Just (firstLines 3 b))
         Nothing
           | null (trFailed r) -> ([], length (trPassed r), Just why)
-          | otherwise -> ([(i, firstLine (fMessage f)) | (i, f) <- trFailed r], length (trPassed r), Nothing)
+          | otherwise -> ([(i, failureLine f) | (i, f) <- trFailed r], length (trPassed r), Nothing)
     delta = case prev of
       Just p | check == Nothing, rvCheck p == Nothing -> Just (passing - rvPassing p)
       _ -> Nothing
