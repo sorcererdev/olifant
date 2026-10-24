@@ -570,7 +570,7 @@ data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, 
 -- (monotonic seconds); the conjure's working writes beside the unit's (root-relative path →
 -- text: a wire's), each written file's editor version (absolute path; none when it was not
 -- open) and its text when the conjure first read it (none: a new file), what is wired, and
--- the pause's explanation, the rounds so far and the conjure's first before-run; a re-conjured test's proposal, the pause it was
+-- the pause's explanation, the rounds so far, the conjure's first before-run, the tests the scan flagged and the pause's cause; a re-conjured test's proposal, the pause it was
 -- proposed from (what reject answers again), and what the pause answered
 -- the editor (its offers say what a resume may do).
 data PausedConjure = PausedConjure
@@ -595,6 +595,8 @@ data PausedConjure = PausedConjure
   , pdExplanation :: Text
   , pdHistory :: [RoundRecord]
   , pdBefore :: TestRun
+  , pdFlagged :: [(Text, Fake)]
+  , pdCause :: Maybe Cause
   , pdProposal :: Maybe Proposal
   , pdPrevious :: Maybe PausedAnswer
   , pdShown :: PausedAnswer

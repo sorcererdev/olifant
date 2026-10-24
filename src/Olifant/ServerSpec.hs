@@ -494,8 +494,10 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       lands = \case
         Right (Landed a) -> pure a
         other -> fail ("not landed: " <> show other)
+      -- a new body each round (the same body twice is a repeat, paused in code)
+      reds = [T.pack ("return " <> show i) | i <- [0 .. 20 :: Int]]
       -- (b): a steered conjure that stays red pauses when its rounds are spent
-      spentPause k = steered id again ["return 0"] greenOnSeats $ \s seen answersFile -> do
+      spentPause k = steered id again reds greenOnSeats $ \s seen answersFile -> do
         p <- paused =<< conjure s
         k s seen answersFile p
   it "(a) no [decide]: today's retries, the rounds counted, nothing paused" $
@@ -522,7 +524,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
   it "(c) stop lands the last attempt, red; a second resume finds it gone" $
     spentPause $ \s _ _ _ -> do
       a <- lands =<< resume s "conjure-1" ResumeStop Nothing
-      applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 0" stubbed
+      applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 1" stubbed
       daSummary a `shouldSatisfy` T.isPrefixOf "red: test_closes_a_table"
       (daRounds a, daRungs a) `shouldBe` (2, ["qwen"])
       logged <- logOf s
@@ -554,13 +556,20 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       paOffers p `shouldSatisfy` elem "climb:claude"
       a <- lands =<< resume s (paToken p) ResumeClimb Nothing
       (daGreen a, daRungs a) `shouldBe` (True, ["qwen", "claude"])
-  it "(g) the same body twice, and Jev asks: a pause" $ do
+  it "(g) the same body twice: a pause in code, Jev not asked again" $
+    steered (T.replace "rounds = 2" "rounds = 4") again ["return 0", "return 0"] greenOnSeats $ \s _ answersFile -> do
+      p <- paused =<< conjure s
+      (paWhy p, paRound p) `shouldBe` ("qwen wrote the same body in rounds 1 and 2.", 2)
+      asked answersFile `shouldReturn` ["conjure-next"]
+      logged <- logOf s
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-pause\trepeat\n"
+  it "(g2) Jev asks: a pause" $ do
     let switch n answersFile = if n == 2 then TIO.writeFile answersFile (chooses "ask") else pure ()
-    steeredWith (T.replace "rounds = 2" "rounds = 4") again ["return 0", "return 0"] switch greenOnSeats $ \s _ _ -> do
+    steeredWith (T.replace "rounds = 2" "rounds = 4") again reds switch greenOnSeats $ \s _ _ -> do
       p <- paused =<< conjure s
       (paWhy p, paRound p) `shouldBe` ("qwen is not converging.", 2)
   it "(h) no answer from Jev means again" $
-    steered id "{\"answers\": {}}" ["return 0"] greenOnSeats $ \s seen _ -> do
+    steered id "{\"answers\": {}}" reds greenOnSeats $ \s seen _ -> do
       p <- paused =<< conjure s
       paWhy p `shouldSatisfy` T.isPrefixOf "2 rounds used ("
       length <$> readIORef seen `shouldReturn` 2
@@ -572,7 +581,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
     let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" [] [] False []
-        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" [] "" "" [] [] Nothing)
+        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" [] "" "" [] [] Nothing)
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True
     held (M.singleton path (1, stubbed)) `shouldBe` True
@@ -584,7 +593,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       r `shouldBe` Left "cancelled"
       M.null . snd <$> readIORef (ssPaused s) `shouldReturn` True
   it "(l) Jev failing (an unreadable answers file) means again" $
-    withSystemTempDirectory "unreadable" $ \dir -> steered id again ["return 0"] greenOnSeats $ \s0 _ _ -> do
+    withSystemTempDirectory "unreadable" $ \dir -> steered id again reds greenOnSeats $ \s0 _ _ -> do
       let s = s0 {ssConfig = (ssConfig s0) {scDecideAnswers = Just dir}}
       p <- paused =<< conjure s
       paWhy p `shouldSatisfy` T.isPrefixOf "2 rounds used ("
