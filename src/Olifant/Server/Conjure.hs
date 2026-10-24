@@ -19,7 +19,7 @@ module Olifant.Server.Conjure
 
 import Control.Applicative ((<|>))
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM_, join, unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), except, runExceptT, throwE, withExceptT)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
@@ -47,7 +47,7 @@ import Olifant.Language (CheckReport (..), Checker (..), Failure (..), Language 
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
+import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
 import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, derivePort, deriveParam, fakeCalls, initParams, portCandidates, portFrom, protocolPorts, takesPort, testSource, unpassedFake)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
@@ -103,7 +103,7 @@ data Steered = Steered {sdDecider :: Decider IO, sdLadder :: [(Rung, ModelFiller
 -- text when first read (absolute paths), a failed wire's text for the next
 -- pause; the working test file and the unit's header (Jev's context); every
 -- round so far (kept across a resume), the conjure's first before-run, and
--- the module's stem (the tests' short names); the flagged test the first wire ran for; the tests rewritten by an accepted proposal.
+-- the module's stem (the tests' short names); the flagged test the first wire ran for; the tests rewritten by an accepted proposal; every step in force (the wire, a test's fix, a hint, a port's method), in order.
 data Counters = Counters
   { cRung :: Int
   , cRungs :: [Text]
@@ -134,6 +134,7 @@ data Counters = Counters
   , cDiagnosis :: [Text]
   , cWiredFor :: Maybe Text
   , cRewritten :: [Text]
+  , cSteps :: [ConjureStep]
   }
 
 -- | What a fill gave: why its last attempt failed its verify (none: it
@@ -203,10 +204,12 @@ resumeConjure progress path re s = do
       ResumeStop | reLand re, Just a <- reArg re, isNothing (keptLanding re pd) -> Just ("there is no round " <> a <> " body to keep")
       c | c `elem` [ResumeAccept, ResumeReject], isNothing (pdProposal pd) -> Just "there is no proposal to accept"
       _ -> Nothing
-    -- accept: the proposed test file joins the working writes; reject keeps
+    -- the test's last failure (its line), in the rounds or the before-run
+    failedAs pd tid = listToMaybe [failureLine f | run <- reverse [r | Just r <- map rrRun (pdHistory pd)] ++ [pdBefore pd], Just f <- [lookup tid (trFailed run)]]
+    -- accept: the proposed test file joins the working writes (a step); reject keeps
     -- the proposal (to answer the pause before it); any other answer drops it
     answered pd = case (reChoice re, pdProposal pd) of
-      (ResumeAccept, Just p) -> pd {pdWrites = M.insert (prFile p) (prAfter p) (pdWrites pd), pdProposal = Nothing, pdPrevious = Nothing, pdRewritten = pdRewritten pd ++ [prTest p | prTest p `notElem` pdRewritten pd]}
+      (ResumeAccept, Just p) -> pd {pdWrites = M.insert (prFile p) (prAfter p) (pdWrites pd), pdProposal = Nothing, pdPrevious = Nothing, pdRewritten = pdRewritten pd ++ [prTest p | prTest p `notElem` pdRewritten pd], pdSteps = pdSteps pd ++ [ConjureStep (paRound (pdShown pd)) (StepTest (prTest p) (failedAs pd (prTest p))) (prStep p) [(prFile p, prDiff p)]]}
       (ResumeReject, _) -> pd
       _ -> withoutProposal pd
 
@@ -403,7 +406,9 @@ conjureWith progress path line selected resuming s0 = do
                   except (testConjure working at (T.pack testRel <> "::" <> name) (siteModuleRel site) moduleText)
                 else except (functionConjure working at unit testRel testText before)
             imported <- lift (importedContext ws' lang (rel : map fst context) (working : map snd context))
-            pure (Working project {prWorkspace = ws'} working at testText before template verify (context ++ imported))
+            -- every hint the person gave stays in force, round after round
+            let hints = [("the person says", h) | Just (re, pd) <- [resuming], h <- [h' | ConjureStep _ (StepHint h') _ _ <- pdSteps pd] ++ maybe [] pure (reHint re)]
+            pure (Working project {prWorkspace = ws'} working at testText before template verify (context ++ imported ++ hints))
           writes0 = maybe M.empty (pdWrites . snd) resuming
       case resuming of
         -- stop: nothing lands, the working files (a wire's) are dropped
@@ -426,8 +431,8 @@ conjureWith progress path line selected resuming s0 = do
               now <- lift getMonotonicTime
               let plain = plainPause (pdShown pd)
                   testAbs = absOf testRel
-                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing
-                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) []))
+                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (shortName (paStem plain) tid) before after)
+                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift . keep s (reToken re) $
                 pd
@@ -482,10 +487,10 @@ conjureWith progress path line selected resuming s0 = do
                   , pdBases = M.insertWith (\_ old -> old) testAbs (Just testText0) (pdBases pd)
                   , pdVersions = M.insertWith (\_ old -> old) testAbs (fst <$> M.lookup testAbs (ssDocs s)) (pdVersions pd)
                   }
-              rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) []))
+              rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
           case attempt of
             Right (Written Nothing after _) | after /= testText0 -> do
-              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing
+              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (shortName (paStem plain) tid) testText0 after)
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift (keep s (reToken re) (proposing proposal plain) {pdShown = shown})
               lift (stepLine ["conjure-proposal", tid])
@@ -504,7 +509,7 @@ conjureWith progress path line selected resuming s0 = do
               let reason = case [(m, l) | ((p, m), l) <- added, p == testRel] of
                     (m, l) : _ -> addsReason m l
                     [] -> T.dropWhileEnd (== '.') (firstLine why)
-                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason)) <$> written'
+                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason) (proposalStep (shortName (paStem plain) tid) testText0 l)) <$> written'
                   again r = case r of
                     OfferRow (OfferReconjure t) _ _ | t == tid -> rows ([OfferRefused | isJust refusal] ++ [OfferReconjureAgain t])
                     _ -> [r]
@@ -548,6 +553,7 @@ conjureWith progress path line selected resuming s0 = do
                     , cDiagnosis = []
                     , cWiredFor = Nothing
                     , cRewritten = []
+                    , cSteps = []
                     }
              in case resuming of
                   Nothing -> fresh
@@ -571,6 +577,7 @@ conjureWith progress path line selected resuming s0 = do
                           , cFlagged = pdFlagged pd
                           , cWiredFor = paWiredFor (pdShown pd)
                           , cRewritten = pdRewritten pd
+                          , cSteps = pdSteps pd ++ [ConjureStep (paRound (pdShown pd)) (StepHint h) ("hint: " <> h) [] | Just h <- [reHint re]]
                           }
           rounds <- lift (newIORef (maybe 0 (seedRound . pdSeed . snd) resuming))
           -- a steered conjure's progress names the round (of the rounds this grant reaches)
@@ -625,10 +632,15 @@ conjureWith progress path line selected resuming s0 = do
                   Right (new, wk') -> do
                     -- each file the wire wrote, as the conjure first read it
                     read' <- lift (traverse (\r -> (absOf r,) <$> readText ws r) [r | r <- M.keys new, r /= rel, M.notMember (absOf r) (cBases c)])
+                    let oldOf r = case M.lookup r base of
+                          Just t -> t
+                          Nothing | r == rel -> text
+                          Nothing -> fromMaybe "" (join (lookup (absOf r) read' <|> M.lookup (absOf r) (cBases c)))
                     lift . writeIORef counters $
                       c
                         { cWire = Nothing
                         , cWired = cWired c ++ [p <> ": " <> q]
+                        , cSteps = cSteps c ++ [ConjureStep (maybe 0 rsRound (cState c)) StepWire ("wire " <> p <> ": " <> q) [(r, unifiedDiff r (oldOf r) t) | (r, t) <- M.toList new, oldOf r /= t]]
                         , cWiredFor = cWiredFor c <|> listToMaybe (map fst (cFlagged c))
                         , cWrites = M.union new base
                         , cVersions = M.union (cVersions c) (M.fromList [(a', fst <$> M.lookup a' (ssDocs s)) | (a', _) <- read'])
@@ -752,7 +764,8 @@ conjureWith progress path line selected resuming s0 = do
                   cause = fromMaybe CauseAsk (cCause c)
                   lastDecided = rrDecided =<< listToMaybe (reverse (cHistory c))
                   suspects = suspectFirst (cFlagged c) (involved (cBefore c) (cHistory c))
-                  rows = map (offerRow (OfferFacts grant (rsRung rs) next (rsRound rs) owner (listToMaybe suspects) (not (null (cWired c))) (cStem c) (fixMoves facts))) (cOffers c)
+                  again = [(t, f) | t <- suspects, Just (Just f) <- [fixAgain (cSteps c) (cHistory c) t]]
+                  rows = map (offerRow (OfferFacts grant (rsRung rs) next (rsRound rs) owner (listToMaybe suspects) (not (null (cWired c))) (cStem c) (fixMoves facts) again)) (cOffers c)
                   -- what each written file is against what the conjure read (the unit's file: the buffer)
                   baseOf r = if r == rel then text else fromMaybe "" (M.findWithDefault Nothing (absOf r) (cBases c))
                   wiredFiles = [(r, unifiedDiff r (baseOf r) new) | (r, new) <- M.toList (cWrites c), baseOf r /= new]
@@ -794,9 +807,10 @@ conjureWith progress path line selected resuming s0 = do
                       , paRoundFiles = roundFiles
                       , paWiredFor = cWiredFor c
                       , paHeld = []
+                      , paSteps = cSteps c
                       }
                   pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation (cHistory c) (cBefore c) (cFlagged c) (cCause c) Nothing Nothing
-              token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t) landings (cRewritten c)) m), t)))
+              token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t) landings (cRewritten c) (cSteps c)) m), t)))
               lift (stepLine ("conjure-pause" : maybe [why] causeWords (cCause c)))
               pure (Paused (shownAs token))
             Written _ written extra -> do
@@ -938,7 +952,7 @@ steer s stepLine begun counters sd wires derive record rs =
     False -> do
       c0 <- readIORef counters
       now <- getMonotonicTime
-      let record0 = roundRecord rs
+      let record0 = (roundRecord rs) {rrSteps = length (cSteps c0)}
           history0 = cHistory c0 ++ [record0]
           runs = cBefore c0 : [r | Just r <- map rrRun history0]
           flags = nubOn fst (concatMap (scanFlags (cTestText c0)) runs)
@@ -972,7 +986,7 @@ steer s stepLine begun counters sd wires derive record rs =
         Left (p, q) -> Pause "wire" <$ writeIORef counters c' {cWire = Just (p, q)}
         Right (NextClimb _) | (r, f) : _ <- above -> Climb (record f) <$ writeIORef counters c' {cRung = cRung c + 1, cRungs = cRungs c ++ [rungName r]}
         Right (NextPause cause) -> do
-          let suspects = suspectFirst flags (involved (cBefore c) history)
+          let suspects = [t | t <- suspectFirst flags (involved (cBefore c) history), isJust (fixAgain (cSteps c) history t)]
               sentences = diagnosis facts cause
           Pause (fromMaybe "" (listToMaybe sentences)) <$ writeIORef counters c' {cOffers = offersAt standing cause suspects candidates (rsRound rs), cCause = Just cause, cDiagnosis = sentences}
         _ -> Again <$ writeIORef counters c'

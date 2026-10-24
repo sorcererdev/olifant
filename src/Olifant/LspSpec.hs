@@ -1441,6 +1441,12 @@ conjureSpec = describe "olifant/conjure" $ do
         inner "summary" (field "paused" after) `shouldSatisfy` \case Just (String x) -> "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"" `T.isInfixOf` x; _ -> False
         -- the test now hands its fake in: no longer flagged, so no edit is offered for it again
         offerDetails (field "paused" after) `shouldSatisfy` notElem "hand repository to command(bookings=repository); you see the diff"
+        -- composable: the accepted fix is a step after round 2, in force from round 3; no fix is
+        -- offered again for the test it fixed (it has not failed anew since)
+        inner "steps" (field "paused" after) `shouldSatisfy` \case
+          Just (Array xs) -> [(inner "kind" (Just x), inner "after" (Just x), inner "text" (Just x)) | x <- toList xs] == [(Just (String "wire"), Just (Number 0), Just (String "wire bookings: BookingRepository")), (Just (String "test"), Just (Number 2), Just (String "test fixed: not_found (command(bookings=repository))"))]
+          _ -> False
+        offerLabels (field "paused" after) `shouldSatisfy` notElem "fix the test: not_found"
   it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
     (proposed, steps, _) <- cancelChecked $ \script ask resume -> do
       _ <- ask []

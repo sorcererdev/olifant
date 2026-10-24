@@ -61,6 +61,10 @@ module Olifant.Server.ConjureNext
   , knownNote
   , refusedSentence
   , addsReason
+  , ConjureStep (..)
+  , StepKind (..)
+  , proposalStep
+  , fixAgain
   ) where
 
 import Control.Applicative ((<|>))
@@ -105,12 +109,47 @@ data Decided = Decided {dcChoice :: Text, dcConfidence :: Maybe Double, dcProbab
 
 -- | A red round as the conjure keeps it: its number, rung, the attempt's body, the verify's
 -- run, the check (when no run judged it), and Jev's answer (when asked).
-data RoundRecord = RoundRecord {rrRound :: Int, rrRung :: Text, rrAttempt :: Text, rrRun :: Maybe TestRun, rrCheck :: Maybe Text, rrDecided :: Maybe Decided}
+data RoundRecord = RoundRecord {rrRound :: Int, rrRung :: Text, rrAttempt :: Text, rrRun :: Maybe TestRun, rrCheck :: Maybe Text, rrDecided :: Maybe Decided, rrSteps :: Int}
   deriving stock (Eq, Show)
+
+-- | A step the person or the engine took in a conjure that stays in force for every later
+-- round (composable): the round it follows (0: before round 1), what it is, its words for
+-- the rounds list, and the files it wrote (each a diff). A round records how many steps
+-- were in force when it ran ('rrSteps').
+data ConjureStep = ConjureStep {csAfter :: Int, csKind :: StepKind, csText :: Text, csFiles :: [(FilePath, Text)]}
+  deriving stock (Eq, Show)
+
+-- | The wire; a test's fix (its id, its last failure's line when it was fixed); the
+-- person's hint (its words); a method added to a port (the port, the method).
+data StepKind = StepWire | StepTest Text (Maybe Text) | StepHint Text | StepPort Text Text
+  deriving stock (Eq, Show)
+
+-- | The words of a test fix's step for the test SHORT, from the test file BEFORE and AFTER:
+-- the first line it changed (no import), less what that line assigns to.
+proposalStep :: Text -> Text -> Text -> Text
+proposalStep short before after = "test fixed: " <> short <> maybe "" (\l -> " (" <> l <> ")") changed
+  where
+    olds = map T.strip (T.lines before)
+    changed = listToMaybe [rhs l | l <- map T.strip (T.lines after), not (T.null l), l `notElem` olds, not ("import " `T.isPrefixOf` l), not ("from " `T.isPrefixOf` l)]
+    rhs l = case T.breakOn " = " l of
+      (lhs, r) | not (T.null r), T.all (\ch -> ch == '_' || ch == '.' || ch == ' ' || ch `elem` ['a' .. 'z'] || ch `elem` ['A' .. 'Z'] || ch `elem` ['0' .. '9']) lhs -> T.drop 3 r
+      _ -> l
+
+-- | Whether the test TID is offered for a fix, given the STEPS so far and the rounds: Just
+-- Nothing when no step fixed it; when one did, only if the last run after that step that
+-- has the test fails it for another reason than it failed when fixed (Just that failure's line).
+fixAgain :: [ConjureStep] -> [RoundRecord] -> Text -> Maybe (Maybe Text)
+fixAgain steps records tid = case reverse [(a, was) | ConjureStep a (StepTest t was) _ _ <- steps, t == tid] of
+  [] -> Just Nothing
+  (a, was) : _ ->
+    let runs = [run | r <- records, rrRound r > a, Just run <- [rrRun r], tid `elem` map fst (trFailed run) || tid `elem` trPassed run]
+     in case reverse runs of
+          run : _ | Just f <- failureLine <$> lookup tid (trFailed run), Just f /= was -> Just (Just f)
+          _ -> Nothing
 
 -- | The record of a round, from its first hole (Jev not yet asked).
 roundRecord :: RoundState -> RoundRecord
-roundRecord rs = RoundRecord (rsRound rs) (rsRung rs) attempt (rhRun hole) (snd (verdictOf hole)) Nothing
+roundRecord rs = RoundRecord (rsRound rs) (rsRung rs) attempt (rhRun hole) (snd (verdictOf hole)) Nothing 0
   where
     hole = firstHole rs
     attempt = case reverse (map fst (rhPrevious hole)) of
@@ -592,6 +631,7 @@ data PausedAnswer = PausedAnswer
   , paRoundFiles :: [(Int, [(FilePath, Text)])]
   , paWiredFor :: Maybe Text
   , paHeld :: [OfferRow]
+  , paSteps :: [ConjureStep]
   }
   deriving stock (Eq, Show)
 
@@ -639,7 +679,7 @@ data OfferRow = OfferRow {orOffer :: Offer, orLabel :: Text, orDetail :: Text}
 -- | What an offer's detail is written from: the rounds a grant gives, the rung, the one
 -- above, the round paused at, the class, the suspect test, whether a wire ran, the module's
 -- stem (the tests' short names), and each flagged test's fix ('fixMoves').
-data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool, ofStem :: Text, ofFixes :: [(Text, Text)]}
+data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool, ofStem :: Text, ofFixes :: [(Text, Text)], ofAgain :: [(Text, Text)]}
   deriving stock (Eq, Show)
 
 -- | An offer in plain words (conjure-pause-ux-design.md §6): the label says what it is, the
@@ -650,6 +690,7 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
   OfferHint -> ("continue with a hint\8230", "your sentence goes to " <> ofRung o <> " with round " <> next)
   OfferClimb r -> ("climb to " <> r, n (ofGrant o) <> " rounds with " <> r <> ", from round " <> next)
   OfferWire p q -> ("wire " <> p <> ": " <> q, "give " <> ofClass o <> " the port the test's fake stands for, then round " <> next)
+  OfferReconjure t | Just f <- lookup t (ofAgain o) -> ("fix the test: " <> short t, "fixed already; it fails anew: " <> f <> "; re-conjure it, you see its diff")
   OfferReconjure t -> ("fix the test: " <> short t, maybe "re-conjure it from its name and the unit; you see its diff, then the rounds go on over it" (<> "; you see the diff") (lookup t (ofFixes o)))
   OfferStop -> ("stop", if ofWired o then "nothing lands, not the wire either; your text stands" else "nothing lands; your text stands")
   OfferKeep r -> ("keep round " <> n r, "lands the diff on the right, red (unsaved; u undoes it)")
@@ -723,8 +764,9 @@ pausedJson p =
     , "offers" .= map offerJson (paOffers p)
     , "expires" .= paExpires p
     , "outcome" .= paOutcome p
+    , "steps" .= map stepJson (paSteps p)
     ]
-      ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r] | Just r <- [paProposal p]]
+      ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r, "step" .= prStep r] | Just r <- [paProposal p]]
   where
     t = paTitle p
     pq w = fromMaybe (w, "") (paramPort w)
@@ -754,6 +796,14 @@ pausedJson p =
             , "expected" .= fmap snd ge
             , "output" .= fOutput f
             ]
+    stepJson st =
+      object $
+        [ "after" .= csAfter st
+        , "kind" .= (case csKind st of StepWire -> "wire"; StepTest {} -> "test"; StepHint _ -> "hint"; StepPort {} -> "port" :: Text)
+        , "text" .= csText st
+        , "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- csFiles st]
+        ]
+          ++ ["test" .= tid | StepTest tid _ <- [csKind st]]
     decideJson d = object ["choice" .= dcChoice d, "confidence" .= dcConfidence d, "probabilities" .= object [Key.fromText o .= w | (o, w) <- dcProbabilities d]]
     testJson e =
       object
@@ -782,8 +832,8 @@ pausedJson p =
 -- | A re-conjured test, proposed: its file (root-relative), its id, the
 -- file's text as the editor (or disk) has it and as the re-conjure writes
 -- it, and the unified diff between the two; why its verify refused it (a refused proposal
--- is kept to be seen, and accepted as the person's choice).
-data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text, prRefused :: Maybe Text}
+-- is kept to be seen, and accepted as the person's choice); the step's words once accepted.
+data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text, prRefused :: Maybe Text, prStep :: Text}
   deriving stock (Eq, Show)
 
 -- | A conjure paused, as the server keeps it under its token: the file (absolute) and its
@@ -827,6 +877,7 @@ data PausedConjure = PausedConjure
   , pdShown :: PausedAnswer
   , pdLandings :: [(Int, Text)]
   , pdRewritten :: [Text]
+  , pdSteps :: [ConjureStep]
   }
   deriving stock (Eq, Show)
 

@@ -137,6 +137,7 @@
     }
   ],
   "rung": "local",
+  "steps": [],
   "summary": "red: test_cancel_booking_not_found · False = isinstance(Ok(value=None), NotFound)",
   "tests": [
     {

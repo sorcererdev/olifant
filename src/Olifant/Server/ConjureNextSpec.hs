@@ -227,7 +227,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
   it "(v) a refused re-conjure: the sentence, its rows, and the keep row's round" $ do
     refusedSentence "not_found" (addsReason "\"BAD\" is not defined" (Just 26)) `shouldBe` "Your re-conjure of not_found was refused: it adds `\"BAD\" is not defined` at line 26."
     addsReason "x" Nothing `shouldBe` "it adds `x`"
-    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False "cancel_booking" [])
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False "cancel_booking" [] [])
         json = pausedJson cancelPaused {paOffers = map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2]}
     map (\r -> (orLabel r, orDetail r)) (map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2])
       `shouldBe` [ ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
@@ -239,7 +239,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["offers", "1", "arg"] json `shouldBe` Just (String notFoundId)
     at ["offers", "2", "arg"] json `shouldBe` Just (String "2")
     at ["outcome"] (pausedJson cancelPaused {paOutcome = Just "Your re-conjure of not_found was refused: x."}) `shouldBe` Just (String "Your re-conjure of not_found was refused: x.")
-    at ["proposal", "refused"] (pausedJson cancelPaused {paProposal = Just (Proposal "t.py" notFoundId "a" "b" "d" (Just "it adds `x`"))}) `shouldBe` Just (String "it adds `x`")
+    at ["proposal", "refused"] (pausedJson cancelPaused {paProposal = Just (Proposal "t.py" notFoundId "a" "b" "d" (Just "it adds `x`") "")}) `shouldBe` Just (String "it adds `x`")
   it "(t) the cancel_booking pause as it happened, as JSON (the plugin's fixture)" $ do
     let v = pausedJson cancelPaused
         labels = [x | Just (Array os) <- [at ["offers"] v], Object o <- toList os, Just (String x) <- [KM.lookup "label" o]]
@@ -317,6 +317,29 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     bless <- (== Just "1") <$> lookupEnv "OLIFANT_BLESS"
     if bless then TIO.writeFile golden (pretty v) else pure ()
     eitherDecodeFileStrict golden `shouldReturn` Right v
+  it "(y) steps: each accepted step an entry after its round; a fixed test is offered again only for a new failure" $ do
+    let fixed = ConjureStep 2 (StepTest notFoundId (Just "False = isinstance(Ok(value=None), NotFound)")) "test fixed: not_found (command(bookings=repository))" [(T.unpack cb, "--- a/x\n+++ b/x\n")]
+        v = pausedJson cancelWiredPaused {paSteps = [ConjureStep 0 StepWire "wire bookings: BookingRepository" [], fixed]}
+    at ["steps", "1", "after"] v `shouldBe` Just (Number 2)
+    at ["steps", "1", "kind"] v `shouldBe` Just (String "test")
+    at ["steps", "1", "test"] v `shouldBe` Just (String notFoundId)
+    at ["steps", "1", "text"] v `shouldBe` Just (String "test fixed: not_found (command(bookings=repository))")
+    at ["steps", "1", "files", "0", "file"] v `shouldBe` Just (String cb)
+    at ["steps", "0", "kind"] v `shouldBe` Just (String "wire")
+    -- the step's words: the line it changed, less what it assigns to
+    proposalStep "not_found" cancelTestText (T.replace "    cancel_booking = command()\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" "    cancel_booking = command(bookings=repository)\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" cancelTestText)
+      `shouldBe` "test fixed: not_found (command(bookings=repository))"
+    -- no run since the fix: not offered; a run failing the same way: not offered; failing anew: offered, saying so
+    let checked = RoundRecord 3 "local" "x" Nothing (Just "pyright") Nothing 2
+        same = checked {rrRun = Just round1Run}
+        anew = checked {rrRun = Just (TestRun [] [(notFoundId, Failure (Just 26) "AttributeError: 'Mock' object has no attribute 'cancel'" "")] Nothing)}
+        before2 = take 2 cancelRecords
+    fixAgain [fixed] (before2 ++ [checked]) notFoundId `shouldBe` Nothing
+    fixAgain [fixed] (before2 ++ [same]) notFoundId `shouldBe` Nothing
+    fixAgain [fixed] (before2 ++ [anew]) notFoundId `shouldBe` Just (Just "AttributeError: 'Mock' object has no attribute 'cancel'")
+    fixAgain [fixed] before2 succeedsId `shouldBe` Just Nothing
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing True "cancel_booking" [] [(notFoundId, "AttributeError: 'Mock' object has no attribute 'cancel'")])
+    orDetail (row (OfferReconjure notFoundId)) `shouldBe` "fixed already; it fails anew: AttributeError: 'Mock' object has no attribute 'cancel'; re-conjure it, you see its diff"
   where
     qOptions' q = case qShape q of
       Choice os -> os
@@ -404,9 +427,9 @@ cancelBody2 = "# This is a mock implementation that always returns NotFound\n# I
 
 cancelRecords :: [RoundRecord]
 cancelRecords =
-  [ RoundRecord 1 "local" "return Ok(None)" (Just round1Run) Nothing (Just (Decided "again" (Just 0.21) []))
-  , RoundRecord 2 "local" cancelBody2 (Just round2Run) Nothing (Just (Decided "ask" (Just 0.19) []))
-  , RoundRecord 3 "local" cancelBody2 (Just round2Run) Nothing Nothing
+  [ RoundRecord 1 "local" "return Ok(None)" (Just round1Run) Nothing (Just (Decided "again" (Just 0.21) [])) 0
+  , RoundRecord 2 "local" cancelBody2 (Just round2Run) Nothing (Just (Decided "ask" (Just 0.19) [])) 0
+  , RoundRecord 3 "local" cancelBody2 (Just round2Run) Nothing Nothing 0
   ]
 
 -- | Round N's state (rounds 2 and 3 wrote body 2).
@@ -435,7 +458,7 @@ cancelPaused =
     , paPorts = []
     , paLanding = unifiedDiff rel cancelModule landing
     , paWired = []
-    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False "cancel_booking" (fixMoves cancelPausedFacts))) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False "cancel_booking" (fixMoves cancelPausedFacts) [])) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
     , paExpires = 600
     , paStem = "cancel_booking"
     , paProposal = Nothing
@@ -443,6 +466,7 @@ cancelPaused =
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule l)]) | (n, l) <- [(1, cancelModule), (2, landing), (3, landing)]]
     , paWiredFor = Nothing
     , paHeld = []
+    , paSteps = []
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -481,7 +505,7 @@ cancelWiredPaused =
     , paPorts = ["bookings: BookingRepository"]
     , paLanding = unifiedDiff rel cancelModule landing
     , paWired = [("bookings: BookingRepository", [(rel, unifiedDiff rel cancelModule wiredModule), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)])]
-    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True "cancel_booking" (fixMoves facts))) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True "cancel_booking" (fixMoves facts) [])) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
     , paExpires = 600
     , paStem = "cancel_booking"
     , paProposal = Nothing
@@ -489,13 +513,14 @@ cancelWiredPaused =
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule landing), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)]) | n <- [1, 2]]
     , paWiredFor = Just notFoundId
     , paHeld = []
+    , paSteps = []
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
     body = "booking = self.bookings.find_by_id(input.id)\nif booking is not None:\n    self.bookings.save(booking)\nreturn Ok(None)"
     records =
-      [ RoundRecord 1 "local" body (Just round1Run) Nothing (Just (Decided "again" (Just 0.31) []))
-      , RoundRecord 2 "local" body (Just round1Run) Nothing Nothing
+      [ RoundRecord 1 "local" body (Just round1Run) Nothing (Just (Decided "again" (Just 0.31) [])) 0
+      , RoundRecord 2 "local" body (Just round1Run) Nothing Nothing 0
       ]
     roundSummaryText = "red: test_cancel_booking_not_found \183 False = isinstance(Ok(value=None), NotFound)"
     facts =

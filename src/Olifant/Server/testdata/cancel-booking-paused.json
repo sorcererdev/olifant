@@ -175,6 +175,7 @@
     }
   ],
   "rung": "local",
+  "steps": [],
   "summary": "red: test_cancel_booking_succeeds · assert NotFound(reason='Booking not found') == Ok(value=None)",
   "tests": [
     {
