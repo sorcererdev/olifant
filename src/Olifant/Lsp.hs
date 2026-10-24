@@ -729,7 +729,7 @@ resumeOf = \case
       | Just (String tok) <- KM.lookup "token" ro
       , not (T.null tok)
       , Just (String c) <- KM.lookup "choice" ro
-      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop), ("reconjure", ResumeReconjure), ("accept", ResumeAccept), ("reject", ResumeReject), ("wire", ResumeWire)]
+      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop), ("reconjure", ResumeReconjure), ("accept", ResumeAccept), ("reject", ResumeReject), ("wire", ResumeWire), ("port", ResumePort)]
       , Just arg <- case KM.lookup "arg" ro of
           Nothing -> Just Nothing
           Just Aeson.Null -> Just Nothing

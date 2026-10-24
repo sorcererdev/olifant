@@ -1407,7 +1407,7 @@ conjureSpec = describe "olifant/conjure" $ do
     steps `shouldSatisfy` any (== ["conjure-proposal", notFound])
     steps `shouldSatisfy` any (== ["conjure-resume", "reject"])
 
-  it "cancel_booking with the real checker and pytest: the scanned test's fix is one line, and round by round what is red after it" $ do
+  it "cancel_booking with the real checker and pytest: the steps compose (the wire, the test's fix, the port's method), round by round what is red after each" $ do
     let body = T.intercalate "\n" ["booking = self.bookings.find_by_id(input.id)", "if booking is None:", "    return NotFound(\"Booking not found\")", "return Ok(None)"]
     withSystemTempDirectory "olifant-conjure-real" $ \tmp -> do
       let fills = tmp </> "fills.toml"
@@ -1419,7 +1419,7 @@ conjureSpec = describe "olifant/conjure" $ do
         old <- TIO.readFile (dir </> ".olifant/config.toml")
         TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n[model]\ndefault = \"local\"\nrounds = 6\n[model.backends.local]\nkind = \"openai-compatible\"\nurl = \"http://127.0.0.1:9\"\nmodel = \"q\"\n[model.backends.jev]\nkind = \"jev\"\n[decide]\nmodel = \"jev\"\n[conjure]\nwire = \"wire\"\n")
         let config = [("fills", String (T.pack fills)), ("decide_answers", String (T.pack answers))]
-        ((paused, proposed, after), _) <- inProcessWithConfig config ports dir $ do
+        ((paused, proposed, after, portProposed, afterPort), _) <- inProcessWithConfig config ports dir $ do
           doc <- openDoc cbModule "python"
           text <- documentContents doc
           let handleAt = length (takeWhile (not . ("    def handle(" `T.isPrefixOf`)) (T.lines text))
@@ -1430,37 +1430,53 @@ conjureSpec = describe "olifant/conjure" $ do
           paused <- ask []
           proposed <- resume (tokenOf paused) "reconjure"
           after <- resume (tokenOf proposed) "accept"
-          pure (paused, proposed, after)
-        -- round 1 is refused by the check (BookingRepository has no find_by_id); Jev is unsure,
-        -- round 2 writes the same body: a repeat pause, the scanned test's fix offered
-        inner "why" (field "paused" paused) `shouldBe` Just (String "local wrote the same body in rounds 1 and 2.")
+          portProposed <- resume (tokenOf after) "port"
+          afterPort <- resume (tokenOf portProposed) "accept"
+          pure (paused, proposed, after, portProposed, afterPort)
+        -- round 1 is refused by the check: BookingRepository has no find_by_id. That wall pauses
+        -- at once (no Jev), offering its step beside the scanned test's fix
+        inner "trigger" (field "paused" paused) `shouldBe` Just (String "a port lacks a method: BookingRepository.find_by_id")
+        inner "round" (field "paused" paused) `shouldBe` Just (Number 1)
+        offerLabels (field "paused" paused) `shouldSatisfy` \ls -> "add find_by_id to BookingRepository" `elem` ls && "fix the test: not_found" `elem` ls
         offerDetails (field "paused" paused) `shouldSatisfy` elem "hand repository to command(bookings=repository); you see the diff"
         inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> changedLines d == ["-    cancel_booking = command()", "+    cancel_booking = command(bookings=repository)"]; _ -> False
-        -- with not_found fixed, round 3 is red for find_by_id: the checker refuses the body
-        -- before pytest runs (recorded 2026-10-24). The same body after the fix is a new
-        -- round, not a repeat: Jev is asked, and round 4 writing it again is the repeat
-        inner "round" (field "paused" after) `shouldBe` Just (Number 4)
-        inner "why" (field "paused" after) `shouldBe` Just (String "local wrote the same body in rounds 3 and 4.")
+        -- with not_found fixed, round 2 writes the same body: no repeat (a step came between),
+        -- and the check refuses it for the same wall
+        inner "round" (field "paused" after) `shouldBe` Just (Number 2)
+        inner "trigger" (field "paused" after) `shouldBe` Just (String "a port lacks a method: BookingRepository.find_by_id")
         inner "summary" (field "paused" after) `shouldSatisfy` \case Just (String x) -> "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"" `T.isInfixOf` x; _ -> False
-        -- the test now hands its fake in: no longer flagged, so no edit is offered for it again
-        offerDetails (field "paused" after) `shouldSatisfy` notElem "hand repository to command(bookings=repository); you see the diff"
-        -- composable: the accepted fix is a step after round 2, in force from round 3; no fix is
+        -- composable: the accepted fix is a step after round 1, in force from round 2; no fix is
         -- offered again for the test it fixed (it has not failed anew since)
         inner "steps" (field "paused" after) `shouldSatisfy` \case
-          Just (Array xs) -> [(inner "kind" (Just x), inner "after" (Just x), inner "text" (Just x)) | x <- toList xs] == [(Just (String "wire"), Just (Number 0), Just (String "wire bookings: BookingRepository")), (Just (String "test"), Just (Number 2), Just (String "test fixed: not_found (command(bookings=repository))"))]
+          Just (Array xs) -> [(inner "kind" (Just x), inner "after" (Just x), inner "text" (Just x)) | x <- toList xs] == [(Just (String "wire"), Just (Number 0), Just (String "wire bookings: BookingRepository")), (Just (String "test"), Just (Number 1), Just (String "test fixed: not_found (command(bookings=repository))"))]
           _ -> False
         offerLabels (field "paused" after) `shouldSatisfy` notElem "fix the test: not_found"
-        -- the failing section is round 3's real failure: the check's refusal, its line; the
+        offerLabels (field "paused" after) `shouldSatisfy` elem "add find_by_id to BookingRepository"
+        -- the failing section is round 2's real failure: the check's refusal, its line; the
         -- diagnosis says it, not the before-run's assertion
         inner "kind" (inner "failure" (field "paused" after)) `shouldBe` Just (String "check")
         inner "tool" (inner "failure" (field "paused" after)) `shouldBe` Just (String "pyright")
-        inner "round" (inner "failure" (field "paused" after)) `shouldBe` Just (Number 4)
+        inner "round" (inner "failure" (field "paused" after)) `shouldBe` Just (Number 2)
         inner "problems" (inner "failure" (field "paused" after)) `shouldSatisfy` \case
           Just (Array (toList -> x : _)) -> inner "message" (Just x) == Just (String "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"") && (case inner "line" (Just x) of Just (Number _) -> True; _ -> False)
           _ -> False
-        inner "diagnosis" (field "paused" after) `shouldSatisfy` \case
-          Just (Array ds) -> any (\case String d -> "Round 4 did not type-check: pyright refused it before the tests ran (cancel_booking.py:" `T.isPrefixOf` d; _ -> False) ds
+        inner "why" (field "paused" after) `shouldSatisfy` \case Just (String w) -> "BookingRepository has no find_by_id: pyright refuses round 2's body before the tests run (cancel_booking.py:" `T.isPrefixOf` w; _ -> False
+        -- p: the pack's port-method writes the derived signature into the Protocol, and
+        -- port-method-adapters each adapter; one proposal, every file's diff
+        inner "kind" (inner "proposal" (field "paused" portProposed)) `shouldBe` Just (String "port")
+        inner "step" (inner "proposal" (field "paused" portProposed)) `shouldBe` Just (String "port method: BookingRepository.find_by_id(id: str) -> Booking | None")
+        inner "diff" (inner "proposal" (field "paused" portProposed)) `shouldSatisfy` \case Just (String d) -> "+    def find_by_id(self, id: str) -> Booking | None: ..." `elem` T.lines d; _ -> False
+        inner "files" (inner "proposal" (field "paused" portProposed)) `shouldSatisfy` \case
+          Just (Array fs) -> all (`elem` [f | String f <- toList fs]) ["src/bistro/booking/ports/booking_repository/booking_repository.py", "src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py"]
           _ -> False
+        offerLabels (field "paused" portProposed) `shouldBe` ["accept", "reject"]
+        -- accepted, it is a step: round 3 type-checks, and its tests ran
+        inner "steps" (field "paused" afterPort) `shouldSatisfy` \case
+          Just (Array xs) -> [inner "kind" (Just x) | x <- toList xs] == map (Just . String) ["wire", "test", "port"]
+          _ -> False
+        inner "round" (field "paused" afterPort) `shouldBe` Just (Number 3)
+        inner "kind" (inner "failure" (field "paused" afterPort)) `shouldBe` Just (String "tests")
+        offerLabels (field "paused" afterPort) `shouldSatisfy` notElem "add find_by_id to BookingRepository"
   it "a re-conjure is refused only for what it adds: the lambda's error the test already had does not refuse it" $ do
     (proposed, steps, _) <- cancelChecked $ \script ask resume -> do
       _ <- ask []

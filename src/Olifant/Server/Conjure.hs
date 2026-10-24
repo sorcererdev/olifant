@@ -32,7 +32,7 @@ import Text.Read (readMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
-import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, planWith)
+import Olifant.App (PlanOptions (..), Ports (..), Project (..), placeAt, planOptions, planWith)
 import Olifant.Actions (matchPathSlots)
 import Olifant.Catalog (catalogConjureWire, catalogLanguages, catalogModel, describeCatalogError, findEntry, loadGenerator)
 import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question)
@@ -42,13 +42,13 @@ import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Ste
 import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
-import Olifant.Holes (HoleSite (..))
+import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
 import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), Failure (..), Language (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
-import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, derivePort, deriveParam, fakeCalls, initParams, portCandidates, portFrom, protocolPorts, takesPort, testSource, unpassedFake)
+import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
+import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, derivePort, deriveParam, fakeCalls, initParams, methodSignature, missingMethod, portCandidates, portFrom, protocolEnd, protocolPorts, takesPort, testSource, unpassedFake)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -56,7 +56,7 @@ import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testAt, testLine
 import Olifant.Server.Unit (Unit (..), unitAt, unitHeader)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
-import System.FilePath (splitDirectories, takeBaseName, (</>))
+import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 import Text.Printf (printf)
 
 -- | A conjure's answer: the conjured file (absolute), the unit, the edits
@@ -81,7 +81,7 @@ data ConjureAnswer = ConjureAnswer
 data ConjureOutcome = Landed ConjureAnswer | Paused PausedAnswer
   deriving stock (Eq, Show)
 
-data ResumeChoice = ResumeContinue | ResumeClimb | ResumeStop | ResumeReconjure | ResumeAccept | ResumeReject | ResumeWire
+data ResumeChoice = ResumeContinue | ResumeClimb | ResumeStop | ResumeReconjure | ResumeAccept | ResumeReject | ResumeWire | ResumePort
   deriving stock (Eq, Show)
 
 -- | The person's answer to a pause: its token, the choice, words to add to
@@ -199,17 +199,24 @@ resumeConjure progress path re s = do
         | Just a <- reArg re, isNothing (reconjureOf re pd) -> Just ("this pause offers no re-conjure of " <> a)
         | isNothing (reconjureOf re pd) -> Just "this pause offers no re-conjure"
       ResumeWire | isNothing (wireOf re pd) -> Just ("this pause offers no wire for " <> fromMaybe "" (reArg re))
+      ResumePort | isNothing (portOf re pd) -> Just ("this pause offers no method for " <> fromMaybe "a port" (reArg re))
       ResumeStop | reLand re, null [() | OfferRow (OfferKeep _) _ _ <- paOffers (pdShown pd)] -> Just "there is no body to keep"
       ResumeStop | reLand re, Just a <- reArg re, T.strip a == "0", isNothing (keptLanding re pd) -> Just "there is no wire to keep"
       ResumeStop | reLand re, Just a <- reArg re, isNothing (keptLanding re pd) -> Just ("there is no round " <> a <> " body to keep")
       c | c `elem` [ResumeAccept, ResumeReject], isNothing (pdProposal pd) -> Just "there is no proposal to accept"
       _ -> Nothing
+    -- every file a proposal writes joins the working writes
+    written pd p = foldr (\(f, _, a) -> M.insert f a) (M.insert (prFile p) (prAfter p) (pdWrites pd)) (prOthers p)
     -- the test's last failure (its line), in the rounds or the before-run
     failedAs pd tid = listToMaybe [failureLine f | run <- reverse [r | Just r <- map rrRun (pdHistory pd)] ++ [pdBefore pd], Just f <- [lookup tid (trFailed run)]]
     -- accept: the proposed test file joins the working writes (a step); reject keeps
     -- the proposal (to answer the pause before it); any other answer drops it
     answered pd = case (reChoice re, pdProposal pd) of
-      (ResumeAccept, Just p) -> pd {pdWrites = M.insert (prFile p) (prAfter p) (pdWrites pd), pdProposal = Nothing, pdPrevious = Nothing, pdRewritten = pdRewritten pd ++ [prTest p | prTest p `notElem` pdRewritten pd], pdSteps = pdSteps pd ++ [ConjureStep (paRound (pdShown pd)) (StepTest (prTest p) (failedAs pd (prTest p))) (prStep p) [(prFile p, prDiff p)]]}
+      (ResumeAccept, Just p)
+        | prKind p == "port" ->
+            let (q, m) = T.breakOn "." (prTest p)
+             in pd {pdWrites = written pd p, pdProposal = Nothing, pdPrevious = Nothing, pdSteps = pdSteps pd ++ [ConjureStep (paRound (pdShown pd)) (StepPort q (T.drop 1 m)) (prStep p) [(f, unifiedDiff f b a) | (f, b, a) <- (prFile p, prBefore p, prAfter p) : prOthers p]]}
+        | otherwise -> pd {pdWrites = written pd p, pdProposal = Nothing, pdPrevious = Nothing, pdRewritten = pdRewritten pd ++ [prTest p | prTest p `notElem` pdRewritten pd], pdSteps = pdSteps pd ++ [ConjureStep (paRound (pdShown pd)) (StepTest (prTest p) (failedAs pd (prTest p))) (prStep p) [(prFile p, prDiff p)]]}
       (ResumeReject, _) -> pd
       _ -> withoutProposal pd
 
@@ -265,21 +272,26 @@ wireOf re pd = do
   (p, q) <- paramPortOf =<< reArg re
   listToMaybe [(p, q) | OfferRow (OfferWire p' q') _ _ <- paOffers (pdShown pd), (p', q') == (p, q)]
 
+-- | The method a resume names (@Port.method@, or none: the first), when the pause offers it:
+-- the port, the method, its parameters after self, what it returns.
+portOf :: Resume -> PausedConjure -> Maybe (Text, Text, Text, Text)
+portOf re pd = listToMaybe [(q, m, ps, r) | OfferRow (OfferPort q m ps r) _ _ <- paOffers (pdShown pd), maybe True (== q <> "." <> m) (T.strip <$> reArg re)]
+
 -- | @param: Port@ split.
 paramPortOf :: Text -> Maybe (Text, Text)
 paramPortOf a = case T.breakOn ":" a of
   (p, q) | not (T.null (T.strip p)), not (T.null (T.strip (T.drop 1 q))) -> Just (T.strip p, T.strip (T.drop 1 q))
   _ -> Nothing
 
--- | PD less its proposal, and less the proposed file's recorded version and
+-- | PD less its proposal, and less each proposed file's recorded version and
 -- text when the conjure has not written that file.
 withoutProposal :: PausedConjure -> PausedConjure
 withoutProposal pd = case pdProposal pd of
-  Just p
-    | M.notMember (prFile p) (pdWrites pd) ->
-        let others :: Map FilePath v -> Map FilePath v
-            others = M.filterWithKey (\k _ -> not (("/" <> prFile p) `isSuffixOf` k))
-         in pd' {pdBases = others (pdBases pd), pdVersions = others (pdVersions pd)}
+  Just p ->
+    let unwritten = [f | f <- prFile p : [f' | (f', _, _) <- prOthers p], M.notMember f (pdWrites pd)]
+        others :: Map FilePath v -> Map FilePath v
+        others = M.filterWithKey (\k _ -> not (any (\f -> ("/" <> f) `isSuffixOf` k) unwritten))
+     in pd' {pdBases = others (pdBases pd), pdVersions = others (pdVersions pd)}
   _ -> pd'
   where
     pd' = pd {pdProposal = Nothing, pdPrevious = Nothing}
@@ -431,7 +443,7 @@ conjureWith progress path line selected resuming s0 = do
               now <- lift getMonotonicTime
               let plain = plainPause (pdShown pd)
                   testAbs = absOf testRel
-                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (shortName (paStem plain) tid) before after)
+                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (shortName (paStem plain) tid) before after) "test" []
                   rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift . keep s (reToken re) $
@@ -444,6 +456,41 @@ conjureWith progress path line selected resuming s0 = do
                   , pdShown = shown
                   }
               lift (stepLine ["conjure-proposal", tid])
+              pure (Paused shown)
+        -- port: the method a port lacks added by the pack's generators over the working files
+        -- (port-method, its holes the derived signature; port-method-adapters, each adapter's
+        -- body the rung's model's), proposed as a test's fix is
+        Just (re, pd) | reChoice re == ResumePort, Just (q, m, ps, r) <- portOf re pd -> do
+          let plain = plainPause (pdShown pd)
+              sets = maybe [] snd wire ++ pathService (siteModuleRel site)
+              short = m <> " to " <> q
+          attempt <- lift (portMethodPlan s project (worded (methodWords short) progress) filler writes0 sets q m ps r)
+          stop <- lift (cancelled (ssCancel s))
+          when stop (throwE "cancelled")
+          now <- lift getMonotonicTime
+          case attempt of
+            Right (protoRel, files) -> do
+              let (pb, pa) = fromMaybe ("", "") (listToMaybe [(b, a) | (f, b, a) <- files, f == protoRel])
+                  others = [x | x@(f, _, _) <- files, f /= protoRel]
+                  diff = T.concat [unifiedDiff f b a | (f, b, a) <- files]
+                  proposal = Proposal protoRel (q <> "." <> m) pb pa diff Nothing ("port method: " <> q <> "." <> m <> "(" <> T.drop 2 ps <> ") -> " <> r) "port" others
+                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
+                  shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
+              lift . keep s (reToken re) $
+                pd
+                  { pdProposal = Just proposal
+                  , pdPrevious = Just plain
+                  , pdAt = now
+                  , pdBases = foldr (\(f, b, _) -> M.insertWith (\_ old -> old) (absOf f) (if M.member f writes0 then Nothing else Just b)) (pdBases pd) files
+                  , pdVersions = foldr (\(f, _, _) -> M.insertWith (\_ old -> old) (absOf f) (fst <$> M.lookup (absOf f) (ssDocs s))) (pdVersions pd) files
+                  , pdShown = shown
+                  }
+              lift (stepLine ["conjure-proposal", q <> "." <> m])
+              pure (Paused shown)
+            Left why -> do
+              let shown = plain {paOutcome = Just ("Adding " <> short <> " failed: " <> T.dropWhileEnd (== '.') why <> ".")}
+              lift (keep s (reToken re) pd {pdShown = shown, pdAt = now})
+              lift (stepLine ["conjure-port-failed", q <> "." <> m])
               pure (Paused shown)
         -- reconjure: the wrong test conjured again over the working files, proposed
         Just (re, pd) | reChoice re == ResumeReconjure, Just tid <- reconjureOf re pd -> do
@@ -490,7 +537,7 @@ conjureWith progress path line selected resuming s0 = do
               rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
           case attempt of
             Right (Written Nothing after _) | after /= testText0 -> do
-              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (shortName (paStem plain) tid) testText0 after)
+              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (shortName (paStem plain) tid) testText0 after) "test" []
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift (keep s (reToken re) (proposing proposal plain) {pdShown = shown})
               lift (stepLine ["conjure-proposal", tid])
@@ -509,7 +556,7 @@ conjureWith progress path line selected resuming s0 = do
               let reason = case [(m, l) | ((p, m), l) <- added, p == testRel] of
                     (m, l) : _ -> addsReason m l
                     [] -> T.dropWhileEnd (== '.') (firstLine why)
-                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason) (proposalStep (shortName (paStem plain) tid) testText0 l)) <$> written'
+                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason) (proposalStep (shortName (paStem plain) tid) testText0 l) "test" []) <$> written'
                   again r = case r of
                     OfferRow (OfferReconjure t) _ _ | t == tid -> rows ([OfferRefused | isJust refusal] ++ [OfferReconjureAgain t])
                     _ -> [r]
@@ -587,7 +634,18 @@ conjureWith progress path line selected resuming s0 = do
           let seed0 = case resuming of
                 Just (re, pd) -> maybe id withHint (reHint re) (pdSeed pd)
                 Nothing -> noSeed
-              steering seed record = (\sd -> Steering seed (steer s stepLine begun counters sd (isJust wire) derive record)) <$> steered
+              steering seed record = (\sd -> Steering seed (steer s stepLine begun counters sd (isJust wire) derive methodWall record)) <$> steered
+              -- the method a round's check says a port the unit takes lacks, and its signature
+              -- when the call and the test's fake give it
+              methodWall attempt why = do
+                c <- readIORef counters
+                case missingMethod (map snd (initParams (cHeader c))) why of
+                  Nothing -> pure Nothing
+                  Just (q, m) -> do
+                    sf <- service
+                    let moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) (cWrites c)
+                        sig = listToMaybe [p | p <- sfPorts sf, ptName p == q] >>= \p -> methodSignature m p attempt moduleText (cTestText c)
+                    pure (Just (q, m, sig))
               decider = deciderUnder (ssCancel s) s project
               -- the service the wire's inputs come from (read once)
               service = do
@@ -680,7 +738,7 @@ conjureWith progress path line selected resuming s0 = do
                     (derived, _) <- lift (derive decider flagged)
                     sf <- lift service
                     let lacks = not (any (takesPort (cHeader c)) (maybe (map ptName (sfPorts sf)) (pure . snd) derived))
-                    case policy (PolicyFacts flags failing failing lacks True (cWired c) derived False False False) of
+                    case policy (PolicyFacts flags failing failing lacks True (cWired c) derived False False False Nothing) of
                       PolicyWire p q -> either (const first) id <$> wireOver (cWrites c) p q gid pathSets
                       _ -> pure first
                   _ -> pure first
@@ -755,9 +813,9 @@ conjureWith progress path line selected resuming s0 = do
               failure <- lift $ case listToMaybe (reverse (cHistory c)) of
                 Just r | Just run <- rrRun r -> pure (Just (LatestTests (rrRound r) (map fst (trFailed run))))
                 Just r | Just refusal <- rrCheck r -> do
-                  found <- checkedOver s (prWorkspace (wkProject wk)) lang (M.singleton rel landing)
+                  problemsAt <- checkedOver s (prWorkspace (wkProject wk)) lang (M.singleton rel landing)
                   let tool = maybe "the check" (T.takeWhile (/= '-') . checkFormat) (langCheck lang)
-                      problems = nub [(p, l, m') | ((p, m), l) <- found, let m' = T.strip (T.takeWhile (/= '\n') m), m' `T.isInfixOf` refusal]
+                      problems = nub [(p, l, m') | ((p, m), l) <- problemsAt, let m' = T.strip (T.takeWhile (/= '\n') m), m' `T.isInfixOf` refusal]
                       -- unmatched (the check said it otherwise): the refusal's own words, no line
                       said = [(T.unpack (T.strip p), Nothing, T.strip (T.drop 1 m)) | piece <- T.splitOn "; " refusal, let (p, m) = T.breakOn ": " piece, not (T.null m)]
                   pure (Just (LatestCheck (rrRound r) tool (rootFirst (if null problems then said else problems))))
@@ -931,6 +989,44 @@ wirePlan s project writes gid sets = case findEntry cat gid of
     ports = ssPorts s
     changed plan = M.filterWithKey (\r t -> M.lookup r (planBefore plan) /= Just (Just t)) (planWrites plan)
 
+-- | The method M (its parameters PS after self, returning R) added to the port Q over the
+-- project with the conjure's WRITES on top, the service's SETS (@app@, @service@): the pack's
+-- @port-method@ at the line that ends Q's Protocol, its holes filled with the signature as
+-- the person would fill its tab stops, then @port-method-adapters@ over that for each adapter
+-- beside it (their bodies filled by FILLER) and the contract test's stub. The Protocol's file
+-- and each file changed (root-relative, before, after); Left: why not.
+portMethodPlan :: ServerState -> Project -> (ProgressEvent -> IO ()) -> ModelFiller IO -> Map FilePath Text -> [(Text, Text)] -> Text -> Text -> Text -> Text -> IO (Either Text (FilePath, [(FilePath, Text, Text)]))
+portMethodPlan s project progress filler writes sets q m ps r = runExceptT $ do
+  (app, service) <- maybe (throwE "the unit's app and service are not known") pure ((,) <$> lookup "app" sets <*> lookup "service" sets)
+  let portsDir = "src" </> T.unpack app </> T.unpack service </> "ports"
+  found <- lift (listFiles ws portsDir)
+  texts <- lift (traverse (\f -> (f,) <$> readText ws f) [normalisePath (portsDir </> f) | f <- found, ".py" `isSuffixOf` f])
+  (protoRel, protoText) <- maybe (throwE ("no Protocol " <> q <> " under " <> T.pack portsDir)) pure (listToMaybe [(f, t) | (f, Just t) <- texts, ("class " <> q <> "(Protocol)") `T.isInfixOf` t])
+  line <- maybe (throwE ("no blank line ends " <> q <> " for port-method")) pure (protocolEnd q protoText)
+  method0 <- load "port-method"
+  let here = project {prWorkspace = ws}
+  method <- lift (placeAt ports here (protoRel, line) [method0]) >>= either throwE (maybe (throwE "port-method placed nothing") pure . listToMaybe)
+  planned <- lift (planWith ports here planOptions {poAt = Just (protoRel, line), poSnippet = True, poCancel = ssCancel s} [Step method M.empty]) >>= either (throwE . describeGenerationError) pure
+  marked <- maybe (throwE "port-method wrote no method there") pure (M.lookup protoRel (planMarked planned))
+  let values = [("name", m), ("params", ps), ("returns", r)]
+  protoAfter <- T.concat <$> traverse (either (\mk -> maybe (throwE ("port-method has a hole `" <> markerName mk <> "` the signature does not fill")) pure (lookup (markerName mk) values)) pure) (splitMarkers marked)
+  adapters <- load "port-method-adapters"
+  let folder = takeFileName (takeDirectory protoRel)
+      inputs = [("app", app), ("service", service), ("port", T.pack folder), ("name", m), ("signature", m <> "(self" <> ps <> ") -> " <> r)]
+      ws' = overlayMany (M.singleton protoRel protoAfter) ws
+  plan <- lift (planWith ports project {prWorkspace = ws'} planOptions {poFiller = Just filler, poProgress = progress, poCancel = ssCancel s} [Step adapters (M.fromList inputs)]) >>= either (throwE . describeGenerationError) pure
+  unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
+  let changed = [(f, t) | (f, t) <- M.toList (planWrites plan), M.lookup f (planBefore plan) /= Just (Just t), f /= protoRel]
+  befores <- lift (traverse (\(f, t) -> (\b -> (f, fromMaybe "" b, t)) <$> readText ws f) changed)
+  pure (protoRel, (protoRel, protoText, protoAfter) : befores)
+  where
+    cat = prCatalog project
+    ports = ssPorts s
+    ws = overlayMany writes (prWorkspace project)
+    load gid = case findEntry cat gid of
+      Left err -> throwE (describeCatalogError err)
+      Right entry -> lift (loadGenerator (pFiles ports) (pSyntax ports) cat entry) >>= either (throwE . describeCatalogError) pure
+
 choiceWord :: ResumeChoice -> Text
 choiceWord = \case
   ResumeContinue -> "continue"
@@ -940,6 +1036,7 @@ choiceWord = \case
   ResumeAccept -> "accept"
   ResumeReject -> "reject"
   ResumeWire -> "wire"
+  ResumePort -> "port"
 
 -- | The steered path's means, when the project names a decider and a
 -- ladder (the client's model, if any, in place of the first rung); Left
@@ -960,8 +1057,8 @@ steeredFor s project = case (deciderUnder (ssCancel s) s project, mcLadder model
 -- climbed rung's filler as the first one is. A port answer, when a wire
 -- generator applies (WIRES) and none ran yet, pauses the loop for the
 -- wire (`cWire`).
-steer :: ServerState -> ([Text] -> IO ()) -> Double -> IORef Counters -> Steered -> Bool -> (Maybe (Decider IO) -> (Text, Fake) -> IO (Maybe (Text, Text), [Text])) -> (ModelFiller IO -> ModelFiller IO) -> RoundState -> IO (Steer IO)
-steer s stepLine begun counters sd wires derive record rs =
+steer :: ServerState -> ([Text] -> IO ()) -> Double -> IORef Counters -> Steered -> Bool -> (Maybe (Decider IO) -> (Text, Fake) -> IO (Maybe (Text, Text), [Text])) -> (Text -> Text -> IO (Maybe (Text, Text, Maybe (Text, Text)))) -> (ModelFiller IO -> ModelFiller IO) -> RoundState -> IO (Steer IO)
+steer s stepLine begun counters sd wires derive wall record rs =
   cancelled (ssCancel s) >>= \case
     True -> pure Again
     False -> do
@@ -986,8 +1083,15 @@ steer s stepLine begun counters sd wires derive record rs =
           failedEver = nub [t | r <- runs, (t, _) <- trFailed r]
           ports = maybe [] sfPorts (cService c)
           lacks = not (any (takesPort (cHeader c)) (maybe (map ptName ports) (pure . snd) derived))
-          facts0 = PolicyFacts flags failingNow failedEver lacks wireable (cWired c) derived (isRepeat history0) (isTrade (cBefore c) history0) (spent standing)
-      (next, decided) <- case policy facts0 of
+      -- a check that refused the body for a method a port lacks
+      missing <- case rrRun record0 of
+        Nothing -> wall (rrAttempt record0) (maybe "" rhWhy (listToMaybe (rsHoles rs)))
+        Just _ -> pure Nothing
+      let facts0 = PolicyFacts flags failingNow failedEver lacks wireable (cWired c) derived (isRepeat history0) (isTrade (cBefore c) history0) (spent standing) ((\(q, m, _) -> (q, m)) <$> missing)
+          withSignature = \case
+            PolicyPause (CauseMethod q m _) -> PolicyPause (CauseMethod q m (missing >>= \(_, _, sig) -> sig))
+            p -> p
+      (next, decided) <- case withSignature (policy facts0) of
         PolicyWire p q -> pure (Left (p, q), Nothing)
         PolicyPause cause -> pure (Right (NextPause cause), Nothing)
         PolicyAsk -> do

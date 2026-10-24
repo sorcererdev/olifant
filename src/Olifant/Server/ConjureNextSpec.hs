@@ -157,7 +157,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
           , dfFailure = Nothing
           }
   it "(o) the policy table, in order" $ do
-    let base = PolicyFacts [(notFoundId, nf)] [notFoundId] [notFoundId] True True [] (Just ("bookings", "BookingRepository")) False False False
+    let base = PolicyFacts [(notFoundId, nf)] [notFoundId] [notFoundId] True True [] (Just ("bookings", "BookingRepository")) False False False Nothing
     policy base `shouldBe` PolicyWire "bookings" "BookingRepository"
     policy base {pfDerived = Nothing} `shouldBe` PolicyPause CausePort
     policy base {pfWired = ["bookings: BookingRepository"]} `shouldBe` PolicyPause (CauseTest notFoundId)
@@ -240,7 +240,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["offers", "1", "arg"] json `shouldBe` Just (String notFoundId)
     at ["offers", "2", "arg"] json `shouldBe` Just (String "2")
     at ["outcome"] (pausedJson cancelPaused {paOutcome = Just "Your re-conjure of not_found was refused: x."}) `shouldBe` Just (String "Your re-conjure of not_found was refused: x.")
-    at ["proposal", "refused"] (pausedJson cancelPaused {paProposal = Just (Proposal "t.py" notFoundId "a" "b" "d" (Just "it adds `x`") "")}) `shouldBe` Just (String "it adds `x`")
+    at ["proposal", "refused"] (pausedJson cancelPaused {paProposal = Just (Proposal "t.py" notFoundId "a" "b" "d" (Just "it adds `x`") "" "test" [])}) `shouldBe` Just (String "it adds `x`")
   it "(t) the cancel_booking pause as it happened, as JSON (the plugin's fixture)" $ do
     let v = pausedJson cancelPaused
         labels = [x | Just (Array os) <- [at ["offers"] v], Object o <- toList os, Just (String x) <- [KM.lookup "label" o]]
@@ -365,6 +365,32 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     isRepeat [r2, r3] `shouldBe` False
     isRepeat [r2, r3 {rrSteps = 0}] `shouldBe` True
     map rwLine (roundRows "cancel_booking" [r2, r3]) `shouldBe` ["return NotFound(reason=\"Booking not found\")", "return NotFound(reason=\"Booking not found\")"]
+  it "(bb) a port missing a method pauses at once and offers it: p adds it, the diagnosis says where the check refused" $ do
+    let base = PolicyFacts [] [] [] False True ["bookings: BookingRepository"] Nothing True False False (Just ("BookingRepository", "find_by_id"))
+        sig = Just (", id: str", "Booking | None")
+        cause = CauseMethod "BookingRepository" "find_by_id" sig
+    -- before the repeat: the same body cannot pass while the port lacks it
+    policy base `shouldBe` PolicyPause (CauseMethod "BookingRepository" "find_by_id" Nothing)
+    policy base {pfFlagged = [(notFoundId, nf)], pfFailingNow = [notFoundId]} `shouldBe` PolicyPause (CauseTest notFoundId)
+    causeWords cause `shouldBe` ["method", "BookingRepository.find_by_id"]
+    trigger cause Nothing Nothing `shouldBe` "a port lacks a method: BookingRepository.find_by_id"
+    let st = Standing 6 180 Nothing Nothing False
+    offersAt st cause [notFoundId] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
+    offersAt st (CauseMethod "BookingRepository" "find_by_id" Nothing) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
+    let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True "cancel_booking" [] []) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
+    (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "port-method writes find_by_id(self, id: str) -> Booking | None into BookingRepository, port-method-adapters into each adapter (local fills their bodies); you see the diff")
+    let refusal = LatestCheck 1 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
+        checked = RoundRecord 1 "local" "x" Nothing (Just "pyright") Nothing 1
+        facts = cancelPausedFacts {dfHistory = [checked], dfFailure = Just refusal}
+    take 2 (diagnosis facts cause)
+      `shouldBe` [ "BookingRepository has no find_by_id: pyright refuses round 1's body before the tests run (cancel_booking.py:30)."
+                 , "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking() takes no ports."
+                 ]
+    take 1 (diagnosis facts (CauseMethod "BookingRepository" "find_by_id" Nothing))
+      `shouldBe` ["BookingRepository has no find_by_id: pyright refuses round 1's body before the tests run (cancel_booking.py:30). Its signature does not follow from the call and the test's fake: add it to BookingRepository yourself."]
+    let v = pausedJson cancelPaused {paOffers = [row]}
+    at ["offers", "0", "choice"] v `shouldBe` Just (String "port")
+    at ["offers", "0", "arg"] v `shouldBe` Just (String "BookingRepository.find_by_id")
   where
     qOptions' q = case qShape q of
       Choice os -> os

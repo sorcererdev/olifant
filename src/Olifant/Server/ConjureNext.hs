@@ -52,6 +52,7 @@ module Olifant.Server.ConjureNext
   , reconjureWhy
   , roundWords
   , fixWords
+  , methodWords
   , pausedJson
   , Proposal (..)
   , PausedConjure (..)
@@ -351,13 +352,15 @@ data Standing = Standing {stRoundsLeft :: Int, stSecondsLeft :: Double, stNext :
 
 -- | What a pause offers: go on, go on with the person's words, climb, run a wire (param,
 -- port), re-conjure a test, stop (nothing lands), stop keeping round N's body; a proposal's
--- accept and reject; after a refused re-conjure, its proposal to see and the re-conjure again.
-data Offer = OfferContinue | OfferHint | OfferClimb Text | OfferWire Text Text | OfferReconjure Text | OfferStop | OfferKeep Int | OfferAccept | OfferReject | OfferRefused | OfferReconjureAgain Text
+-- accept and reject; after a refused re-conjure, its proposal to see and the re-conjure again;
+-- a method added to a port (the port, the method, its parameters after self, what it returns).
+data Offer = OfferContinue | OfferHint | OfferClimb Text | OfferWire Text Text | OfferReconjure Text | OfferStop | OfferKeep Int | OfferAccept | OfferReject | OfferRefused | OfferReconjureAgain Text | OfferPort Text Text Text Text
   deriving stock (Eq, Show)
 
 -- | Why a conjure paused: a test no body can pass, a port not derived, the same body twice,
--- bodies trading tests, the grant spent, Jev asking, Jev climbing to an `ask` rung.
-data Cause = CauseTest Text | CausePort | CauseRepeat | CauseTrade | CauseBudget | CauseAsk | CauseClimb Text
+-- bodies trading tests, the grant spent, Jev asking, Jev climbing to an `ask` rung; a port the
+-- unit takes lacking a method its body calls (the port, the method, its signature when known).
+data Cause = CauseTest Text | CausePort | CauseRepeat | CauseTrade | CauseBudget | CauseAsk | CauseClimb Text | CauseMethod Text Text (Maybe (Text, Text))
   deriving stock (Eq, Show)
 
 -- | The cause as the step log has it.
@@ -370,6 +373,7 @@ causeWords = \case
   CauseBudget -> ["budget"]
   CauseAsk -> ["ask"]
   CauseClimb _ -> ["climb"]
+  CauseMethod q m _ -> ["method", q <> "." <> m]
 
 data Next = NextAgain | NextClimb Text | NextPause Cause
   deriving stock (Eq, Show)
@@ -395,6 +399,7 @@ offerText = \case
   OfferReject -> "reject"
   OfferRefused -> "proposal"
   OfferReconjureAgain i -> "reconjure:" <> i
+  OfferPort q m _ _ -> "port:" <> q <> "." <> m
 
 -- | What the person may do at a pause, in order: continue, hint, climb (a rung above; a
 -- `never` rung is still offered to the person), a wire for each candidate (@param: Port@, a
@@ -405,6 +410,7 @@ offersAt st cause tests candidates lastRound =
   [OfferContinue, OfferHint]
     ++ [OfferClimb n | Just (Rung n _) <- [stNext st]]
     ++ [OfferWire p q | cause == CausePort, c <- candidates, Just (p, q) <- [paramPort c]]
+    ++ [OfferPort q m ps r | CauseMethod q m (Just (ps, r)) <- [cause]]
     ++ map OfferReconjure tests
     ++ [OfferStop]
     ++ [OfferKeep lastRound | lastRound > 0]
@@ -440,6 +446,7 @@ data PolicyFacts = PolicyFacts
   , pfRepeat :: Bool
   , pfTrade :: Bool
   , pfSpent :: Bool
+  , pfMissing :: Maybe (Text, Text)
   }
   deriving stock (Eq, Show)
 
@@ -449,13 +456,16 @@ data Policy = PolicyWire Text Text | PolicyPause Cause | PolicyAsk
 
 -- | The policy in code (conjure-pause-context-design.md §3.3), checked in order: a flagged
 -- test that failed, the port lacking, a wire applying, none run: wire when derived, else a
--- port pause; a flagged test failing now no wire can help: an unsatisfiable test; a repeat;
+-- port pause; a flagged test failing now no wire can help: an unsatisfiable test; a port the
+-- unit takes missing a method its body calls (the check's refusal; the signature is the
+-- caller's to add); a repeat;
 -- a trade; the grant spent; else Jev is asked.
 policy :: PolicyFacts -> Policy
 policy pf
   | wireable, Just (p, q) <- pfDerived pf = PolicyWire p q
   | wireable = PolicyPause CausePort
   | t : _ <- [t | (t, _) <- pfFlagged pf, t `elem` pfFailingNow pf], not (pfWireApplies pf) || not (null (pfWired pf)) || not (pfLacksPort pf) = PolicyPause (CauseTest t)
+  | Just (q, m) <- pfMissing pf = PolicyPause (CauseMethod q m Nothing)
   | pfRepeat pf = PolicyPause CauseRepeat
   | pfTrade pf = PolicyPause CauseTrade
   | pfSpent pf = PolicyPause CauseBudget
@@ -506,7 +516,7 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
       a : b : c : _ -> a == b && b == c && not (null a)
       _ -> False
     others =
-      [ [checkSentence r tool p | Just (LatestCheck r tool (p : _)) <- [dfFailure df]]
+      [ [checkSentence r tool p | Just (LatestCheck r tool (p : _)) <- [dfFailure df], not (isMethod cause)]
       , take 1 (map unsatisfiableSentence unsatisfiable)
       , [tradeSentence | trade]
       , ["Both tests call " <> c <> " and expect different results." | trade, c <- take 1 sameCall]
@@ -523,7 +533,16 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
       CauseBudget -> [spentSentence]
       CauseAsk -> [dfRung df <> " is not converging."]
       CauseClimb n -> [dfRung df <> " is stuck; " <> n <> " is offered."]
+      CauseMethod q m sig -> [methodSentence q m <> maybe (" Its signature does not follow from the call and the test's fake: add it to " <> q <> " yourself.") (const "") sig]
     tradeSentence = "Every body so far passes one test and fails the other."
+    isMethod = \case
+      CauseMethod {} -> True
+      _ -> False
+    methodSentence q m = case dfFailure df of
+      Just (LatestCheck r tool ps) ->
+        let at = listToMaybe ([p | p@(_, _, msg) <- ps, ("\"" <> m <> "\"") `T.isInfixOf` msg] ++ ps)
+         in q <> " has no " <> m <> ": " <> tool <> " refuses round " <> tshow' r <> "'s body before the tests run" <> maybe "" (\(f, l, _) -> " (" <> T.pack (takeFileName' f) <> maybe "" ((":" <>) . tshow') l <> ")") at <> "."
+      _ -> q <> " has no " <> m <> ": the check refuses round " <> tshow' lastRound <> "'s body before the tests run."
     checkSentence r tool (f, l, m) = "Round " <> tshow' r <> " did not type-check: " <> tool <> " refused it before the tests ran (" <> T.pack (takeFileName' f) <> maybe "" ((":" <>) . tshow') l <> ": " <> m <> ")."
     takeFileName' = reverse . takeWhile (/= '/') . reverse
     repeatSentence = dfRung df <> " wrote the same body in rounds " <> tshow' (lastRound - 1) <> " and " <> tshow' lastRound <> "."
@@ -559,6 +578,7 @@ trigger cause decided wireFailed = base <> maybe "" ("; wire failed: " <>) wireF
       CauseBudget -> "budget spent"
       CauseTest t -> "unsatisfiable test: " <> t
       CausePort -> "port not derived"
+      CauseMethod q m _ -> "a port lacks a method: " <> q <> "." <> m
     jev = case decided of
       Just d | not (null (dcProbabilities d)) -> "Jev: " <> T.intercalate " \183 " [o <> " " <> weight p | (o, p) <- dcProbabilities d]
       Just d -> "Jev: " <> dcChoice d <> maybe "" ((" " <>) . weight) (dcConfidence d)
@@ -721,6 +741,7 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
   OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
   OfferReconjureAgain t -> ("fix the test: " <> short t <> ", again", "re-conjure it once more; you see its diff")
+  OfferPort q m ps r -> ("add " <> m <> " to " <> q, "port-method writes " <> m <> "(self" <> ps <> ") -> " <> r <> " into " <> q <> ", port-method-adapters into each adapter (" <> ofRung o <> " fills their bodies); you see the diff")
   where
     n = T.pack . show
     next = n (ofRound o + 1)
@@ -758,6 +779,13 @@ roundWords total modelOf r = \case
   Verifying _ | r > 0 -> Just ("round " <> tshow' r <> " \183 testing\8230")
   _ -> Nothing
 
+-- | Adding a method to a port's progress (SHORT: @find_by_id to BookingRepository@).
+methodWords :: Text -> ProgressEvent -> Maybe Text
+methodWords short = \case
+  Filling _ _ rung -> Just ("add " <> short <> " \183 " <> rung <> " fills each adapter\8230")
+  Checking _ -> Just ("add " <> short <> " \183 checking\8230")
+  _ -> Nothing
+
 -- | A re-conjure's progress, naming the test it fixes (SHORT).
 fixWords :: Text -> ProgressEvent -> Maybe Text
 fixWords short = \case
@@ -790,7 +818,7 @@ pausedJson p =
     , "steps" .= map stepJson (paSteps p)
     , "failure" .= fmap failureJson (paFailure p)
     ]
-      ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r, "step" .= prStep r] | Just r <- [paProposal p]]
+      ++ ["proposal" .= object ["file" .= prFile r, "test" .= prTest r, "before" .= prBefore r, "after" .= prAfter r, "diff" .= prDiff r, "refused" .= prRefused r, "step" .= prStep r, "kind" .= prKind r, "files" .= (prFile r : [f | (f, _, _) <- prOthers r])] | Just r <- [paProposal p]]
   where
     t = paTitle p
     pq w = fromMaybe (w, "") (paramPort w)
@@ -855,13 +883,16 @@ pausedJson p =
             OfferReject -> ("reject", Nothing, Nothing, Nothing)
             OfferRefused -> ("proposal", Nothing, Nothing, Nothing)
             OfferReconjureAgain i -> ("reconjure", Just i, Nothing, Nothing)
+            OfferPort q m _ _ -> ("port", Just (q <> "." <> m), Nothing, Nothing)
        in object ["choice" .= (choice' :: Text), "arg" .= (arg :: Maybe Text), "label" .= orLabel r, "detail" .= orDetail r, "land" .= (land :: Maybe Bool), "hint" .= (hint :: Maybe Bool)]
 
 -- | A re-conjured test, proposed: its file (root-relative), its id, the
 -- file's text as the editor (or disk) has it and as the re-conjure writes
 -- it, and the unified diff between the two; why its verify refused it (a refused proposal
--- is kept to be seen, and accepted as the person's choice); the step's words once accepted.
-data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text, prRefused :: Maybe Text, prStep :: Text}
+-- is kept to be seen, and accepted as the person's choice); the step's words once accepted;
+-- what it is (@test@, a test's fix; @port@, a port's method: its test is @Port.method@, its
+-- file the Protocol's), and every other file it writes (file, before, after).
+data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, prAfter :: Text, prDiff :: Text, prRefused :: Maybe Text, prStep :: Text, prKind :: Text, prOthers :: [(FilePath, Text, Text)]}
   deriving stock (Eq, Show)
 
 -- | A conjure paused, as the server keeps it under its token: the file (absolute) and its

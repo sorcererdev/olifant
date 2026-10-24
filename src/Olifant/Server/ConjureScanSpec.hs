@@ -63,3 +63,21 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     handFake "test_c" "command" "bookings" "repo" "def test_c():\n    repo = Mock()\n    c = CancelBooking()\n" `shouldBe` Nothing
     handFake "test_nope" "command" "bookings" "repository" cancelTestText `shouldBe` Nothing
     handFake "test_d" "command" "bookings" "repo" "def test_d():\n    repo = Mock()\n    c = command(bookings=repo)\n" `shouldBe` Nothing
+  it "(i) a port missing a method: the check's words, on a class the unit takes" $ do
+    let why = "src/bistro/booking/commands/cancel_booking.py: Type of \"booking\" is unknown; src/bistro/booking/commands/cancel_booking.py: Cannot access attribute \"find_by_id\" for class \"BookingRepository\"\n  Attribute \"find_by_id\" is unknown"
+    missingMethod ["BookingRepository"] why `shouldBe` Just ("BookingRepository", "find_by_id")
+    missingMethod ["IdGenerator"] why `shouldBe` Nothing
+    missingMethod ["BookingRepository"] "src/x.py: \"y\" is not defined" `shouldBe` Nothing
+  it "(j) the missing method's signature: names from the test's fake, types from the call, the result from its use" $ do
+    let port = Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ...", "def booking_at(self, table_id: str, slot: Slot) -> Booking | None: ...", "def bookings_on(self, day: date) -> list[Booking]: ..."]
+        body = "booking = self.bookings.find_by_id(input.id)\nif booking is None:\n    return NotFound(\"Booking not found\")\nreturn Ok(None)"
+        moduleText = "@dataclass(frozen=True)\nclass CancelBookingInput:\n    id: str\n\n\nclass CancelBooking:\n    def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n        return Ok(None)\n"
+    methodSignature "find_by_id" port body moduleText cancelTestText `shouldBe` Just (", id: str", "Booking | None")
+    -- the call as a statement returns nothing
+    methodSignature "cancel" port "self.bookings.cancel(input.id)\nreturn Ok(None)" moduleText "" `shouldBe` Just (", id: str", "None")
+    -- an argument whose type is not known: none
+    methodSignature "find_by_id" port "booking = self.bookings.find_by_id(thing)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
+  it "(k) where a method goes in a port's file: the line after its Protocol's last" $ do
+    protocolEnd "BookingRepository" "class BookingRepository(Protocol):\n    def table(self) -> None: ...\n\n    def save(self) -> None: ...\n" `shouldBe` Just 5
+    protocolEnd "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n\n\nclass Other:\n    pass\n" `shouldBe` Just 3
+    protocolEnd "Nope" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n" `shouldBe` Nothing
