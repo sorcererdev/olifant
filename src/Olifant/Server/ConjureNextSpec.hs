@@ -223,12 +223,12 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
   it "(v) a refused re-conjure: the sentence, its rows, and the keep row's round" $ do
     refusedSentence "not_found" (addsReason "\"BAD\" is not defined" (Just 26)) `shouldBe` "Your re-conjure of not_found was refused: it adds `\"BAD\" is not defined` at line 26."
     addsReason "x" Nothing `shouldBe` "it adds `x`"
-    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False)
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False "cancel_booking" [])
         json = pausedJson cancelPaused {paOffers = map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2]}
     map (\r -> (orLabel r, orDetail r)) (map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2])
       `shouldBe` [ ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
-                 , ("re-conjure test_cancel_booking_not_found again", "rewrite it again; you see the diff first")
-                 , ("stop, keep round 2's body", "you see what lands first; lands it in the buffer, red (unsaved; u undoes it)")
+                 , ("fix the test: not_found, again", "re-conjure it once more; you see its diff")
+                 , ("keep round 2", "lands the diff on the right, red (unsaved; u undoes it)")
                  ]
     at ["offers", "0", "choice"] json `shouldBe` Just (String "proposal")
     at ["offers", "1", "choice"] json `shouldBe` Just (String "reconjure")
@@ -255,10 +255,13 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["tests", "1", "flipped"] v `shouldBe` Just (Number 1)
     at ["tests", "1", "assertion"] v `shouldBe` Just (String "assert isinstance(result, NotFound)")
     at ["tests", "1", "note"] v `shouldBe` Just (String "builds repository = Mock() and never hands it to command(); CancelBooking() takes no ports")
-    labels `shouldBe` ["continue", "hint\8230", "re-conjure test_cancel_booking_not_found", "re-conjure test_cancel_booking_succeeds", "stop", "stop, keep round 3's body"]
-    at ["offers", "0", "detail"] v `shouldBe` Just (String "up to 6 more rounds with local, from round 4")
-    at ["offers", "2", "detail"] v `shouldBe` Just (String "rewrite it against CancelBooking's ports; you see the diff first")
-    at ["offers", "3", "detail"] v `shouldBe` Just (String "rewrite it; you see the diff first")
+    labels `shouldBe` ["continue", "continue with a hint\8230", "fix the test: not_found", "fix the test: succeeds", "stop", "keep round 3"]
+    at ["offers", "0", "detail"] v `shouldBe` Just (String "6 more rounds with local, from round 4")
+    at ["offers", "1", "detail"] v `shouldBe` Just (String "your sentence goes to local with round 4")
+    at ["offers", "2", "detail"] v `shouldBe` Just (String "re-conjure it from its name and the unit; you see its diff, then the rounds go on over it")
+    at ["offers", "4", "detail"] v `shouldBe` Just (String "nothing lands; your text stands")
+    at ["offers", "5", "detail"] v `shouldBe` Just (String "lands the diff on the right, red (unsaved; u undoes it)")
+    at ["wired"] v `shouldBe` Just (Array mempty)
     at ["offers", "5", "land"] v `shouldBe` Just (Bool True)
     at ["offers", "4", "land"] v `shouldBe` Just (Bool False)
     at ["offers", "1", "hint"] v `shouldBe` Just (Bool True)
@@ -273,6 +276,30 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["rounds", "1", "files", "0", "diff"] v `shouldBe` at ["rounds", "1", "diff"] v
     -- OLIFANT_BLESS=1 writes the golden instead of comparing it
     let golden = "src/Olifant/Server/testdata/cancel-booking-paused.json"
+    bless <- (== Just "1") <$> lookupEnv "OLIFANT_BLESS"
+    if bless then TIO.writeFile golden (pretty v) else pure ()
+    eitherDecodeFileStrict golden `shouldReturn` Right v
+  it "(w) the cancel_booking pause after the wire, as design §10 draws it (the plugin's wired fixture)" $ do
+    let v = pausedJson cancelWiredPaused
+        labels = [x | Just (Array os) <- [at ["offers"] v], Object o <- toList os, Just (String x) <- [KM.lookup "label" o]]
+        files i = [f | Just (Array fs) <- [at ["rounds", i, "files"] v], Object o <- toList fs, Just (String f) <- [KM.lookup "file" o]]
+    at ["title", "round"] v `shouldBe` Just (Number 2)
+    at ["diagnosis"] v
+      `shouldBe` Just
+        ( toJSON
+            [ "local wrote the same body in rounds 1 and 2." :: Text
+            , "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking takes bookings: BookingRepository since the wire; the test should pass its fake as command(bookings=\8230)."
+            ]
+        )
+    -- succeeds passes before and after every round: not involved, so no row of its own
+    labels `shouldBe` ["continue", "continue with a hint\8230", "fix the test: not_found", "stop", "keep round 2"]
+    at ["offers", "2", "detail"] v `shouldBe` Just (String "re-conjure it to hand its fake to command(bookings=\8230); you see its diff, then the rounds go on over it")
+    at ["offers", "3", "detail"] v `shouldBe` Just (String "nothing lands, not the wire either; your text stands")
+    at ["wired", "0", "param"] v `shouldBe` Just (String "bookings")
+    at ["wired", "0", "test"] v `shouldBe` Just (String notFoundId)
+    at ["rounds", "1", "line"] v `shouldBe` Just (String "(the same as round 1)")
+    files "1" `shouldBe` ["src/bistro/booking/commands/cancel_booking.py", cb]
+    let golden = "src/Olifant/Server/testdata/cancel-booking-wired-paused.json"
     bless <- (== Just "1") <$> lookupEnv "OLIFANT_BLESS"
     if bless then TIO.writeFile golden (pretty v) else pure ()
     eitherDecodeFileStrict golden `shouldReturn` Right v
@@ -394,12 +421,14 @@ cancelPaused =
     , paPorts = []
     , paLanding = unifiedDiff rel cancelModule landing
     , paWired = []
-    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False "cancel_booking" (fixMoves cancelPausedFacts))) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
     , paExpires = 600
     , paStem = "cancel_booking"
     , paProposal = Nothing
     , paOutcome = Nothing
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule l)]) | (n, l) <- [(1, cancelModule), (2, landing), (3, landing)]]
+    , paWiredFor = Nothing
+    , paHeld = []
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -413,6 +442,75 @@ cancelPaused =
 cancelPausedFacts :: DiagnosisFacts
 cancelPausedFacts =
   DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing
+
+-- | The cancel_booking pause as the by-hand run of 2026-10-24 had it (design §10): the wire
+-- before round 1 gave CancelBooking bookings: BookingRepository and the test's helper the
+-- param; rounds 1 and 2 wrote the same body; not_found still fails (it never hands its fake
+-- in). The body is illustrative: the run recorded only its first line.
+cancelWiredPaused :: PausedAnswer
+cancelWiredPaused =
+  PausedAnswer
+    { paToken = "conjure-1"
+    , paFile = "/demo/src/bistro/booking/commands/cancel_booking.py"
+    , paUnit = "handle"
+    , paLines = (31, 32)
+    , paRound = 2
+    , paRung = "local"
+    , paSummary = roundSummaryText
+    , paWhy = T.concat (take 1 sentences)
+    , paTitle = Title "CancelBooking.handle" 2 6 "local" "qwen3-coder:30b" 16
+    , paDiagnosis = sentences
+    , paTrigger = trigger CauseRepeat Nothing Nothing
+    , paRounds = records
+    , paTests = testEntries facts
+    , paHeader = wiredHeader
+    , paPorts = ["bookings: BookingRepository"]
+    , paLanding = unifiedDiff rel cancelModule landing
+    , paWired = [("bookings: BookingRepository", [(rel, unifiedDiff rel cancelModule wiredModule), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)])]
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True "cancel_booking" (fixMoves facts))) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
+    , paExpires = 600
+    , paStem = "cancel_booking"
+    , paProposal = Nothing
+    , paOutcome = Nothing
+    , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule landing), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)]) | n <- [1, 2]]
+    , paWiredFor = Just notFoundId
+    , paHeld = []
+    }
+  where
+    rel = "src/bistro/booking/commands/cancel_booking.py"
+    body = "booking = self.bookings.find_by_id(input.id)\nif booking is not None:\n    self.bookings.save(booking)\nreturn Ok(None)"
+    records =
+      [ RoundRecord 1 "local" body (Just round1Run) Nothing (Just (Decided "again" (Just 0.31) []))
+      , RoundRecord 2 "local" body (Just round1Run) Nothing Nothing
+      ]
+    roundSummaryText = "red: test_cancel_booking_not_found \183 False = isinstance(Ok(value=None), NotFound)"
+    facts =
+      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing
+    sentences = diagnosis facts CauseRepeat
+    suspects = suspectFirst (dfFlagged facts) (involved cancelBefore records)
+    landing = T.replace "        return Ok(None)" (T.intercalate "\n" (map ("        " <>) (T.lines body))) wiredModule
+    listToMaybe' = \case
+      x : _ -> Just x
+      [] -> Nothing
+
+wiredHeader :: Text
+wiredHeader = "class CancelBooking:\n    def __init__(self, bookings: BookingRepository) -> None:"
+
+-- | The morning module as the wire wrote it: the port imported, taken and kept.
+wiredModule :: Text
+wiredModule =
+  T.replace "        \"\"\"Takes the ports it uses; main.py passes their adapters.\"\"\"\n" "        \"\"\"Takes the ports it uses; main.py passes their adapters.\"\"\"\n        self.bookings = bookings\n"
+    . T.replace "    def __init__(self) -> None:" "    def __init__(self, bookings: BookingRepository) -> None:"
+    . T.replace "from bistro.shared.result import Ok\n" "from bistro.booking.ports.booking_repository.booking_repository import (\n    BookingRepository,\n)\nfrom bistro.shared.result import Ok\n"
+    $ cancelModule
+
+-- | The morning test file as the wire wrote it: its helper takes the port, an in-memory one by default.
+wiredTest :: Text
+wiredTest =
+  T.replace "def command() -> CancelBooking:\n    return CancelBooking()" "def command(bookings: BookingRepository | None = None) -> CancelBooking:\n    return CancelBooking(bookings or InMemoryBookingRepository())"
+    . T.replace "from unittest.mock import Mock\n\n" "from unittest.mock import Mock\n\nfrom bistro.booking.adapters.in_memory_booking_repository import (\n    InMemoryBookingRepository,\n)\n"
+    . T.replace ")\nfrom bistro.shared.result import Ok" ")\nfrom bistro.booking.ports.booking_repository.booking_repository import (\n    BookingRepository,\n)\nfrom bistro.shared.result import Ok"
+    $ cancelTestText
 
 -- | The demo's morning cancel_booking.py.
 cancelModule :: Text

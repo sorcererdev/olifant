@@ -1065,7 +1065,7 @@ conjureSpec = describe "olifant/conjure" $ do
             pausedObj = field "paused" paused
         inner "token" pausedObj `shouldBe` Just (String "conjure-1")
         inner "why" pausedObj `shouldSatisfy` \case Just (String x) -> "1 round used (" `T.isPrefixOf` x; _ -> False
-        offerLabels pausedObj `shouldBe` ["continue", "hint\8230", "re-conjure test_books_a_free_slot", "stop", "stop, keep round 1's body"]
+        offerLabels pausedObj `shouldBe` ["continue", "continue with a hint\8230", "fix the test: books_a_free_slot", "stop", "keep round 1"]
         inner "round" pausedObj `shouldBe` Just (Number 1)
         inner "rung" pausedObj `shouldBe` Just (String "local")
         inner "summary" pausedObj `shouldBe` Just (String "red: test_books_a_free_slot \183 assert 1 == 2")
@@ -1299,7 +1299,7 @@ conjureSpec = describe "olifant/conjure" $ do
     map (take 1) (takeWhile ((/= ["conjure-pause"]) . take 1) steps) `shouldSatisfy` notElem ["conjure-next"]
     asked `shouldBe` []
     inner "why" (field "paused" paused) `shouldBe` Just (String "No body can pass not_found: it builds repository = Mock() and never hands it to command(), so handle never sees it. CancelBooking takes bookings: BookingRepository since the wire; the test should pass its fake as command(bookings=\8230).")
-    offerLabels (field "paused" paused) `shouldBe` ["continue", "hint\8230", "re-conjure test_cancel_booking_not_found", "stop", "stop, keep round 1's body"]
+    offerLabels (field "paused" paused) `shouldBe` ["continue", "continue with a hint\8230", "fix the test: not_found", "stop", "keep round 1"]
     wiredPorts (field "paused" paused) `shouldBe` [("bookings", "BookingRepository")]
     offerLabels (field "paused" proposed) `shouldBe` ["accept", "reject"]
     steps `shouldSatisfy` elem ["conjure-resume", "reconjure"]
@@ -1326,13 +1326,14 @@ conjureSpec = describe "olifant/conjure" $ do
     inner "model" title `shouldBe` Just (String "q")
     inner "param" wired `shouldBe` Just (String "bookings")
     inner "port" wired `shouldBe` Just (String "BookingRepository")
+    inner "test" wired `shouldBe` Just (String notFound)
     map fst files `shouldSatisfy` \fs -> T.pack cbModule `elem` fs && T.pack cbTest `elem` fs
     map snd files `shouldSatisfy` all ("--- a/" `T.isPrefixOf`)
     inner "diff" (inner "landing" p) `shouldSatisfy` \case Just (String d) -> "--- a/src/bistro/booking/commands/cancel_booking.py" `T.isPrefixOf` d; _ -> False
     inner "expires" p `shouldBe` Just (Number 600)
     inner "header" (inner "unit" p) `shouldBe` Just (String "class CancelBooking:\n    def __init__(self, bookings: BookingRepository) -> None:")
     inner "ports" (inner "unit" p) `shouldBe` Just (toJSON ["bookings: BookingRepository" :: Text])
-    firstOffer `shouldBe` Just (object ["choice" .= ("continue" :: Text), "arg" .= Aeson.Null, "label" .= ("continue" :: Text), "detail" .= ("up to 6 more rounds with local, from round 2" :: Text), "land" .= Aeson.Null, "hint" .= Aeson.Null])
+    firstOffer `shouldBe` Just (object ["choice" .= ("continue" :: Text), "arg" .= Aeson.Null, "label" .= ("continue" :: Text), "detail" .= ("6 more rounds with local, from round 2" :: Text), "land" .= Aeson.Null, "hint" .= Aeson.Null])
 
   it "without a wire generator the unsatisfiable test pauses round 1, the class's ports named" $ do
     (paused, steps, asked) <- cancelWith Nothing morningModule morningTest $ \_ ask _ -> ask []
@@ -1384,7 +1385,7 @@ conjureSpec = describe "olifant/conjure" $ do
     inner "test" (proposal proposed) `shouldBe` Just (String notFound)
     inner "diff" (proposal proposed) `shouldSatisfy` \case Just (String d) -> "--- a/" `T.isPrefixOf` d; _ -> False
     inner "token" (field "paused" rejected) `shouldBe` Just (String "conjure-1")
-    offerLabels (field "paused" rejected) `shouldBe` ["continue", "hint\8230", "re-conjure test_cancel_booking_not_found", "stop", "stop, keep round 1's body"]
+    offerLabels (field "paused" rejected) `shouldBe` ["continue", "continue with a hint\8230", "fix the test: not_found", "stop", "keep round 1"]
     inner "proposal" (field "paused" rejected) `shouldBe` Nothing
     offerLabels (field "paused" again) `shouldBe` ["accept", "reject"]
     continued `shouldSatisfy` either (const False) (const True)
@@ -1420,7 +1421,7 @@ conjureSpec = describe "olifant/conjure" $ do
         reason = "it adds `\"BAD\" is not defined` at line " <> T.pack (show badAt)
     inner "outcome" p `shouldBe` Just (String ("Your re-conjure of not_found was refused: " <> reason <> "."))
     inner "diagnosis" p `shouldSatisfy` \case Just (Array xs) -> not (any (\case String x -> "re-conjure" `T.isInfixOf` x; _ -> False) (toList xs)); _ -> False
-    offerLabels p `shouldBe` ["continue", "hint\8230", "see the refused proposal", "re-conjure test_cancel_booking_not_found again", "stop", "stop, keep round 1's body"]
+    offerLabels p `shouldBe` ["continue", "continue with a hint\8230", "see the refused proposal", "fix the test: not_found, again", "stop", "keep round 1"]
     inner "refused" (inner "proposal" p) `shouldBe` Just (String reason)
     after `shouldSatisfy` T.isInfixOf "    BAD\n"
     offerLabels (field "paused" again) `shouldBe` ["accept", "reject"]
@@ -1449,7 +1450,7 @@ conjureSpec = describe "olifant/conjure" $ do
     roundAt 1 "diff" `shouldSatisfy` \case Just (String d) -> "+        return NotFound(reason=\"x\")" `elem` T.lines d; _ -> False
     roundAt 0 "diff" `shouldSatisfy` \case Just (String d) -> not ("NotFound(reason" `T.isInfixOf` d); _ -> False
     files 0 `shouldBe` [T.pack cbModule, T.pack cbTest]
-    offerLabels p `shouldSatisfy` elem "stop, keep round 2's body"
+    offerLabels p `shouldSatisfy` elem "keep round 2"
     refused `shouldBe` Left "there is no round 9 body to keep"
     field "summary" kept `shouldSatisfy` \case Just (String x) -> "round 1's body is in the buffer" `T.isPrefixOf` x; _ -> False
     field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"

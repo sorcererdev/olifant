@@ -46,6 +46,7 @@ module Olifant.Server.ConjureNext
   , OfferRow (..)
   , OfferFacts (..)
   , offerRow
+  , fixMoves
   , pausedJson
   , Proposal (..)
   , PausedConjure (..)
@@ -555,7 +556,9 @@ withHint h s = s {seedPrevious = M.map addTo (seedPrevious s)}
 -- buffer), what each wire wrote (each file as a diff), the offers as rows, the seconds it is
 -- kept, the module's stem (the tests' short names), and a re-conjured test's proposal; what
 -- the person's last choice came to, when it is news (a refused re-conjure), and each round's
--- change: every file keeping that round's body lands, as a diff (the unit's file first).
+-- change: every file keeping that round's body lands, as a diff (the unit's file first); the
+-- flagged test the first wire was run for; and (not sent) the rows a refused re-conjure
+-- replaced, which 'plainPause' puts back.
 data PausedAnswer = PausedAnswer
   { paToken :: Text
   , paFile :: FilePath
@@ -580,6 +583,8 @@ data PausedAnswer = PausedAnswer
   , paProposal :: Maybe Proposal
   , paOutcome :: Maybe Text
   , paRoundFiles :: [(Int, [(FilePath, Text)])]
+  , paWiredFor :: Maybe Text
+  , paHeld :: [OfferRow]
   }
   deriving stock (Eq, Show)
 
@@ -625,28 +630,39 @@ data OfferRow = OfferRow {orOffer :: Offer, orLabel :: Text, orDetail :: Text}
   deriving stock (Eq, Show)
 
 -- | What an offer's detail is written from: the rounds a grant gives, the rung, the one
--- above, the round paused at, the class, the suspect test, whether a wire ran.
-data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool}
+-- above, the round paused at, the class, the suspect test, whether a wire ran, the module's
+-- stem (the tests' short names), and each flagged test's fix ('fixMoves').
+data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool, ofStem :: Text, ofFixes :: [(Text, Text)]}
   deriving stock (Eq, Show)
 
+-- | An offer in plain words (conjure-pause-ux-design.md §6): the label says what it is, the
+-- detail what it does and what follows.
 offerRow :: OfferFacts -> Offer -> OfferRow
 offerRow o offer = uncurry (OfferRow offer) $ case offer of
-  OfferContinue -> ("continue", "up to " <> n (ofGrant o) <> " more rounds with " <> ofRung o <> ", from round " <> n (ofRound o + 1))
-  OfferHint -> ("hint\8230", "the same, with your words given to " <> ofRung o)
-  OfferClimb r -> ("climb to " <> r, "up to " <> n (ofGrant o) <> " rounds with " <> r <> ", from round " <> n (ofRound o + 1))
-  OfferWire p q -> ("wire " <> p <> ": " <> q, "wire it into " <> ofClass o <> ", then go on from round " <> n (ofRound o + 1))
-  OfferReconjure t
-    | Just t == ofSuspect o -> ("re-conjure " <> name t, "rewrite it against " <> ofClass o <> "'s ports; you see the diff first")
-    | otherwise -> ("re-conjure " <> name t, "rewrite it; you see the diff first")
-  OfferStop -> ("stop", "nothing changes; your text stands")
-  OfferKeep r -> ("stop, keep round " <> n r <> "'s body", "you see what lands first; " <> (if ofWired o then "lands it and the wire's files, red (unsaved; u undoes it)" else "lands it in the buffer, red (unsaved; u undoes it)"))
-  OfferAccept -> ("accept", "lands the test with the conjure; the next round runs it")
-  OfferReject -> ("reject", "back to the pause; the test stands as it was")
+  OfferContinue -> ("continue", n (ofGrant o) <> " more rounds with " <> ofRung o <> ", from round " <> next)
+  OfferHint -> ("continue with a hint\8230", "your sentence goes to " <> ofRung o <> " with round " <> next)
+  OfferClimb r -> ("climb to " <> r, n (ofGrant o) <> " rounds with " <> r <> ", from round " <> next)
+  OfferWire p q -> ("wire " <> p <> ": " <> q, "give " <> ofClass o <> " the port the test's fake stands for, then round " <> next)
+  OfferReconjure t -> ("fix the test: " <> short t, "re-conjure it " <> maybe "from its name and the unit" ("to " <>) (lookup t (ofFixes o)) <> "; you see its diff, then the rounds go on over it")
+  OfferStop -> ("stop", if ofWired o then "nothing lands, not the wire either; your text stands" else "nothing lands; your text stands")
+  OfferKeep r -> ("keep round " <> n r, "lands the diff on the right, red (unsaved; u undoes it)")
+  OfferAccept -> ("accept", "the test lands with the conjure; round " <> next <> " runs against it")
+  OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
-  OfferReconjureAgain t -> ("re-conjure " <> name t <> " again", "rewrite it again; you see the diff first")
+  OfferReconjureAgain t -> ("fix the test: " <> short t <> ", again", "re-conjure it once more; you see its diff")
   where
     n = T.pack . show
-    name = snd . T.breakOnEnd "::"
+    next = n (ofRound o + 1)
+    short = shortName (ofStem o)
+
+-- | What re-conjuring each flagged test should do, once a wire gave the class its port:
+-- hand the fake to the helper as that param (@hand its fake to command(bookings=…)@).
+fixMoves :: DiagnosisFacts -> [(Text, Text)]
+fixMoves df = case dfWired df of
+  w : _ | Just (p, _) <- paramPort w -> [(t, "hand its fake to " <> helper t <> "(" <> p <> "=\8230)") | (t, _) <- dfFlagged df]
+  _ -> []
+  where
+    helper t = fromMaybe "the helper " (testSource (snd (T.breakOnEnd "::" t)) (dfTestText df) >>= helperOf (dfMethod df))
 
 -- | The paused answer's `paused` object (conjure-pause-context-design.md §5).
 pausedJson :: PausedAnswer -> Value
@@ -666,7 +682,7 @@ pausedJson p =
     , "tests" .= map testJson (paTests p)
     , "unit" .= object ["header" .= paHeader p, "ports" .= paPorts p]
     , "landing" .= object ["diff" .= paLanding p]
-    , "wired" .= [object ["param" .= fst (pq w), "port" .= snd (pq w), "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fs]] | (w, fs) <- paWired p]
+    , "wired" .= [object ["param" .= fst (pq w), "port" .= snd (pq w), "test" .= (if i == 0 then paWiredFor p else Nothing), "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fs]] | (i, (w, fs)) <- zip [0 :: Int ..] (paWired p)]
     , "offers" .= map offerJson (paOffers p)
     , "expires" .= paExpires p
     , "outcome" .= paOutcome p
