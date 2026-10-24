@@ -742,7 +742,7 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
   OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
   OfferReconjureAgain t -> ("fix the test: " <> short t <> ", again", "re-conjure it once more; you see its diff")
-  OfferPort q m ps r -> ("add " <> m <> " to " <> q, m <> "(self" <> ps <> ") -> " <> r <> " into the Protocol and its adapters (" <> ofRung o <> " fills their bodies); you see the diff")
+  OfferPort q m ps r -> ("add " <> m <> " to " <> q, m <> "(self" <> ps <> ") -> " <> r <> " into the Protocol and its adapters; you see the diff")
   where
     n = T.pack . show
     next = n (ofRound o + 1)

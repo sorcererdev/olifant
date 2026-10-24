@@ -379,7 +379,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     offersAt st cause [notFoundId] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
     offersAt st (CauseMethod "BookingRepository" "find_by_id" Nothing) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
     let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True "cancel_booking" [] []) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
-    (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None into the Protocol and its adapters (local fills their bodies); you see the diff")
+    (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None into the Protocol and its adapters; you see the diff")
     let refusal = LatestCheck 1 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
         checked = RoundRecord 1 "local" "x" Nothing (Just "pyright") Nothing 1
         facts = cancelPausedFacts {dfHistory = [checked], dfFailure = Just refusal}
