@@ -47,6 +47,10 @@ module Olifant.Server.ConjureNext
   , OfferFacts (..)
   , offerRow
   , fixMoves
+  , paramPort
+  , reconjureWhy
+  , roundWords
+  , fixWords
   , pausedJson
   , Proposal (..)
   , PausedConjure (..)
@@ -71,6 +75,7 @@ import Olifant.Decide (Answer (..), Question (..), choice, confident)
 import Olifant.Server.ConjureScan (Fake (..), actCall, helperOf, initParams, testSource)
 import Text.Printf (printf)
 import Olifant.Generation.Steer
+import Olifant.Generation.Tools (ProgressEvent (..))
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
 import Text.Regex.TDFA ((=~))
@@ -664,6 +669,26 @@ fixMoves df = case dfWired df of
   where
     helper t = fromMaybe "the helper " (testSource (snd (T.breakOnEnd "::" t)) (dfTestText df) >>= helperOf (dfMethod df))
 
+-- | Why the test TID is wrong, as the re-conjure is told: its note when the scan flagged it,
+-- else the pause's first sentence.
+reconjureWhy :: PausedAnswer -> Text -> Text
+reconjureWhy p tid = fromMaybe (fromMaybe (paWhy p) (listToMaybe (paDiagnosis p))) (listToMaybe [x | e <- paTests p, tsTest (teStatus e) == tid, Just x <- [teNote e]])
+
+-- | A steered conjure's progress in words that name the round (design §11.4): of TOTAL, the
+-- rung's model by MODELOF, the round R being run; Nothing leaves the event as it is.
+roundWords :: Int -> (Text -> Text) -> Int -> ProgressEvent -> Maybe Text
+roundWords total modelOf r = \case
+  Filling _ n rung -> Just ("round " <> tshow' n <> " of " <> tshow' total <> " \183 asking " <> rung <> (case modelOf rung of "" -> ""; m -> " (" <> m <> ")") <> "\8230")
+  Verifying _ | r > 0 -> Just ("round " <> tshow' r <> " \183 testing\8230")
+  _ -> Nothing
+
+-- | A re-conjure's progress, naming the test it fixes (SHORT).
+fixWords :: Text -> ProgressEvent -> Maybe Text
+fixWords short = \case
+  Filling _ _ rung -> Just ("fix the test: " <> short <> " \183 asking " <> rung <> "\8230")
+  Verifying _ -> Just ("fix the test: " <> short <> " \183 testing\8230")
+  _ -> Nothing
+
 -- | The paused answer's `paused` object (conjure-pause-context-design.md §5).
 pausedJson :: PausedAnswer -> Value
 pausedJson p =
@@ -760,7 +785,7 @@ data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, 
 -- the pause's explanation, the rounds so far, the conjure's first before-run, the tests the scan flagged and the pause's cause; a re-conjured test's proposal, the pause it was
 -- proposed from (what reject answers again), and what the pause answered
 -- the editor (its offers say what a resume may do); the unit's file as each round's body
--- writes it (what keeping that round lands).
+-- writes it (what keeping that round lands); the tests an accepted proposal rewrote.
 data PausedConjure = PausedConjure
   { pdFile :: FilePath
   , pdVersion :: Maybe Int
@@ -789,6 +814,7 @@ data PausedConjure = PausedConjure
   , pdPrevious :: Maybe PausedAnswer
   , pdShown :: PausedAnswer
   , pdLandings :: [(Int, Text)]
+  , pdRewritten :: [Text]
   }
   deriving stock (Eq, Show)
 

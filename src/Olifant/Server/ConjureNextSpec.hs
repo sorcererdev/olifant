@@ -32,6 +32,7 @@ import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
 import Olifant.Server.ConjureNext
 import Olifant.Server.ConjureScan (Fake (..))
+import Olifant.Generation.Tools (ProgressEvent (..))
 import Olifant.Server.Unit (unitHeader)
 import Test.Hspec
 
@@ -279,6 +280,15 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     bless <- (== Just "1") <$> lookupEnv "OLIFANT_BLESS"
     if bless then TIO.writeFile golden (pretty v) else pure ()
     eitherDecodeFileStrict golden `shouldReturn` Right v
+  it "(x) the re-conjure is told the test's note; progress names the round" $ do
+    reconjureWhy cancelWiredPaused notFoundId `shouldBe` "builds repository = Mock() and never hands it to command(); CancelBooking takes bookings: BookingRepository since the wire"
+    reconjureWhy cancelWiredPaused succeedsId `shouldBe` "local wrote the same body in rounds 1 and 2."
+    let modelOf r = if r == "local" then "qwen3-coder:30b" else ""
+    roundWords 8 modelOf 0 (Filling ["body"] 3 "local") `shouldBe` Just "round 3 of 8 \183 asking local (qwen3-coder:30b)\8230"
+    roundWords 8 modelOf 0 (Filling ["body"] 3 "claude") `shouldBe` Just "round 3 of 8 \183 asking claude\8230"
+    roundWords 8 modelOf 3 (Verifying "body") `shouldBe` Just "round 3 \183 testing\8230"
+    roundWords 8 modelOf 3 (Checking "python") `shouldBe` Nothing
+    fixWords "not_found" (Filling ["body"] 1 "local") `shouldBe` Just "fix the test: not_found \183 asking local\8230"
   it "(w) the cancel_booking pause after the wire, as design §10 draws it (the plugin's wired fixture)" $ do
     let v = pausedJson cancelWiredPaused
         labels = [x | Just (Array os) <- [at ["offers"] v], Object o <- toList os, Just (String x) <- [KM.lookup "label" o]]

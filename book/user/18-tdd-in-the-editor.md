@@ -143,8 +143,9 @@ again:
   (0 the run before round 1), the assertion's line, and the scan's note on a fake it never
   hands in;
 - `unit: {header, ports}`: the class and its `__init__`, and the ports it takes as `param: Port`;
-- `landing: {diff}`: what `stop, keep round N's body` would land, as a unified diff against the
-  buffer; `wired`: each wire as `{param, port, files: [{file, diff}]}`;
+- `landing: {diff}`: what `keep round N` would land, as a unified diff against the
+  buffer; `wired`: each wire as `{param, port, test, files: [{file, diff}]}` (`test`: the flagged
+  test the first wire ran for);
 - `offers`: the rows in order, each `{choice, arg, label, detail, land, hint}`: what to send back
   (`choice`, and `arg`, `land` or `hint` when the row needs one), a label and what the row will do
   in numbers (rounds, rung, what lands where);
@@ -157,7 +158,7 @@ again:
 To answer it, ask again with the same `textDocument` and `position` and `resume: {token, choice,
 arg?, land?, hint?}`, as the offer's row says: `choice` is `"continue"`, `"climb"`, `"stop"`,
 `"reconjure"`, `"accept"`, `"reject"` or `"wire"`; `arg` a re-conjure's test id or a wire's
-`"param: Port"` (needed for `wire`) or the round a keep lands (`"2"`; the pause's round when
+`"param: Port"` (needed for `wire`) or the round a keep lands (`"2"`; `"0"` the wire alone; the pause's round when
 absent); `land` a boolean for `stop`, false when absent; an empty
 `hint` counts as none. The answer is a landed or a paused result again, and a token works once,
 except that `reject` and a refused resume keep it. A resume without a token and a choice, a `land`
@@ -234,26 +235,34 @@ touch those lines`). Like any test conjure it is asked again with its verify's r
 `[model] retries` more times. When it is still refused, the pause comes back with `outcome` saying
 so first; the refused proposal is kept, offered as `see the refused proposal` (choice
 `proposal`, answered in the editor; `accept` lands it anyway, as your choice), and the row
-`re-conjure <test> again` takes the re-conjure's place.
+`fix the test: <test>, again` takes the re-conjure's place. The re-conjure is told the test's note
+as why it is wrong (the pause's first sentence when the scan has none). An accepted proposal is
+named in the landing: `· not_found rewritten`.
 
 A conjure you start by hand on a test is scanned after its fill. A test that builds a fake for a
 port its class lacks has the port wired as above, before the test lands, and the test is filled
-once more over the wired files. The summary ends `wired <param>: <port>` (and `; the test still
+once more over the wired files. The summary ends `<param> wired` (and `; the test still
 builds its own fake, re-conjure it` when the second fill still does); with no wire generator it
 ends `needs a port the class lacks: <param>: <port>`.
 
-A pause answers `conjure · round 4 · red: test_handle · assert status == 404` with what you may
+While a steered conjure runs, its progress names the round: `round 3 of 8 · asking local
+(qwen3-coder:30b)…`, `round 3 · testing…`; a re-conjure's `fix the test: not_found · asking
+local…`. A pause answers `conjure · round 4 · red: test_handle · assert status == 404` with what you may
 do. **continue** grants a fresh `rounds` and `budget` on the same model. **climb** moves to the
 next rung, carrying the attempts so far into the stronger model's prompt. **wire** runs the
 offered wire, then goes on as continue. **stop** lands nothing: your text stands, the wire's
-writes are dropped, and the answer says `nothing landed`. **stop, keep round N's body** lands that
-round's body (the last round's unless `arg` names another) and the wire's files as one edit and one undo step, red and unsaved, and says `round
-N's body is in the buffer, red: … · unsaved · u undoes it`. A **hint**
+writes are dropped, and the answer says `nothing landed`. **keep round N** lands that
+round's body (the last round's unless `arg` names another) and the wire's files as one edit and
+one undo step, red and unsaved, and says `kept round N · red: not_found · bookings wired`; `arg`
+`"0"` keeps the wire alone (its files, your body standing: `kept the wire alone · …`), refused
+`there is no wire to keep` when none ran. The rows say each choice in plain words (`continue`,
+`continue with a hint…`, `climb to claude`, `wire bookings: BookingRepository`, `fix the test:
+not_found`, `stop`, `keep round 2`), and their details what follows. A **hint**
 continues with your words added to the next prompt as "The person says: …". A pause is forgotten
 after 10 minutes, or as soon as its file changes in the editor; conjure again then. Without
 `[decide] model` nothing of this happens: the model's `retries` run as before and the last attempt
-lands. The landing line names the rungs and the rounds: `conjured by qwen → claude · 3 rounds ·
-green`.
+lands. A steered conjure that goes green says `green in round 4 · local · bookings wired ·
+not_found rewritten` (the round, the rungs, then what was wired and rewritten).
 
 ## Mutating
 
@@ -376,7 +385,7 @@ fakes); Jev's pick of a port `conjure-port <choice> <confidence|->`. A wire adds
 <generator> k=v …` (the inputs it ran with) or `conjure-wire-failed <generator>`; a proposal
 `conjure-proposal <test id>`; a failed re-conjure `conjure-reconjure-failed <test id>`.
 `conjure-resume` takes `reconjure`, `accept`, `reject` and `wire` besides `continue`, `climb`,
-`stop` and `keep` (a stop that keeps the body). A bare stop's `conjure` line says `stopped ·
+`stop` and `keep N` (a stop that keeps round N's body; `keep 0` the wire alone). A bare stop's `conjure` line says `stopped ·
 nothing landed`; a keep's `kept round N · red: …`.
 Its `conjure` line names the rungs and the rounds:
 

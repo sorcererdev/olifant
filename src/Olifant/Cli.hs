@@ -798,6 +798,7 @@ progressJson = \case
   CutToHole hole n fill -> object ["event" .= ("cut" :: Text), "hole" .= hole, "dropped" .= n, "fill" .= fill]
   WholeFile hole -> object ["event" .= ("whole_file" :: Text), "hole" .= hole]
   Verifying hole -> object ["event" .= ("verify" :: Text), "hole" .= hole]
+  Said words -> object ["event" .= ("said" :: Text), "message" .= words]
 
 -- | `olifant anticipate PATH --line N` (hidden; the prefix corpus calls
 -- it): the one anticipation question at the line, as the language server

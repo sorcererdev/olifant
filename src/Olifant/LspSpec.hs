@@ -1072,7 +1072,7 @@ conjureSpec = describe "olifant/conjure" $ do
         let lines' = inner "lines" pausedObj
         inner "first" lines' `shouldSatisfy` \case Just (Number _) -> True; _ -> False
         inner "last" lines' `shouldSatisfy` \case Just (Number _) -> True; _ -> False
-        field "summary" stopped `shouldSatisfy` \case Just (String x) -> "round 1's body is in the buffer, red: test_books_a_free_slot" `T.isPrefixOf` x; _ -> False
+        field "summary" stopped `shouldBe` Just (String "kept round 1 \183 red: books_a_free_slot")
         field "stopped" stopped `shouldBe` Just (Bool True)
         field "edits" stopped `shouldSatisfy` \case Just (Object _) -> True; _ -> False
         field "rounds" stopped `shouldBe` Just (Number 1)
@@ -1308,6 +1308,7 @@ conjureSpec = describe "olifant/conjure" $ do
     field "edits" accepted `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
     field "edits" accepted `shouldSatisfy` wroteIn cbTest "bookings: BookingRepository | None = None"
     field "green" accepted `shouldBe` Just (Bool True)
+    field "summary" accepted `shouldBe` Just (String "green in round 2 \183 local \183 bookings wired \183 not_found rewritten")
 
   it "the cancel_booking pause carries the title, the wire's diffs and the landing diff" $ do
     (paused, _, _) <- cancelConjure $ \_ ask _ -> ask []
@@ -1452,7 +1453,7 @@ conjureSpec = describe "olifant/conjure" $ do
     files 0 `shouldBe` [T.pack cbModule, T.pack cbTest]
     offerLabels p `shouldSatisfy` elem "keep round 2"
     refused `shouldBe` Left "there is no round 9 body to keep"
-    field "summary" kept `shouldSatisfy` \case Just (String x) -> "round 1's body is in the buffer" `T.isPrefixOf` x; _ -> False
+    field "summary" kept `shouldBe` Just (String "kept round 1 \183 red: not_found \183 bookings wired")
     field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
     field "edits" kept `shouldSatisfy` (not . wroteIn cbModule "NotFound(reason=\"x\")")
 
@@ -1475,12 +1476,27 @@ conjureSpec = describe "olifant/conjure" $ do
     (kept, keepSteps, _) <- cancelConjure $ \_ ask _ -> do
       _ <- ask []
       ask (resumeWith "conjure-1" ["choice" .= ("stop" :: Text), "land" .= True])
-    field "summary" kept `shouldSatisfy` \case Just (String x) -> "round 1's body is in the buffer, red: test_cancel_booking_not_found" `T.isPrefixOf` x && " \183 unsaved \183 u undoes it" `T.isSuffixOf` x; _ -> False
+    field "summary" kept `shouldBe` Just (String "kept round 1 \183 red: not_found \183 bookings wired")
     field "stopped" kept `shouldBe` Just (Bool True)
     field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
     field "edits" kept `shouldSatisfy` wroteIn cbTest "bookings: BookingRepository | None = None"
-    keepSteps `shouldSatisfy` elem ["conjure-resume", "keep"]
+    keepSteps `shouldSatisfy` elem ["conjure-resume", "keep", "1"]
     keepSteps `shouldSatisfy` any (\fs -> take 2 fs == ["conjure", "person"] && any ("kept round 1 \183 red: test_cancel_booking_not_found" `T.isPrefixOf`) fs)
+
+  it "keep 0 lands the wire alone, the person's body standing; with no wire it is refused" $ do
+    ((kept, steps), _, _) <- cancelConjure $ \_ ask _ -> do
+      _ <- ask []
+      fills <- ask (resumeWith "conjure-1" ["choice" .= ("stop" :: Text), "land" .= True, "arg" .= ("0" :: Text)])
+      pure (fills, ())
+    field "summary" kept `shouldSatisfy` \case Just (String x) -> "kept the wire alone \183 red: not_found" `T.isPrefixOf` x && " \183 bookings wired" `T.isSuffixOf` x; _ -> False
+    field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
+    field "edits" kept `shouldSatisfy` wroteIn cbTest "bookings: BookingRepository | None = None"
+    steps `shouldBe` ()
+    (refused, keepSteps, _) <- cancelWith Nothing morningModule morningTest $ \_ ask _ -> do
+      _ <- ask []
+      ask (resumeWith "conjure-1" ["choice" .= ("stop" :: Text), "land" .= True, "arg" .= ("0" :: Text)])
+    refused `shouldBe` Left "there is no wire to keep"
+    keepSteps `shouldSatisfy` notElem ["conjure-resume", "keep", "0"]
 
   it "a wire resume runs the offered wire; an arg not offered is refused and keeps the token" $ do
     ((paused, refused, wired), steps, asked) <- cancelWith (Just "wire") morningModule thingTest $ \_ ask _ -> do
@@ -1552,7 +1568,7 @@ conjureSpec = describe "olifant/conjure" $ do
     edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
     edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
     -- the recorded fill repeats: the refilled test still builds its own fake
-    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 wired bookings: BookingRepository; the test still builds its own fake, re-conjure it" `T.isSuffixOf` x; _ -> False
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 bookings wired; the test still builds its own fake, re-conjure it" `T.isSuffixOf` x; _ -> False
     let kinds = map (take 2) steps
     steps `shouldSatisfy` elem ["conjure-test", "flagged", lists, "repository", "InMemoryBookingRepository"]
     takeWhile (/= ["conjure-wire", "wire"]) kinds `shouldSatisfy` elem ["conjure-test", "flagged"]
@@ -1582,7 +1598,7 @@ conjureSpec = describe "olifant/conjure" $ do
     edits `shouldSatisfy` wroteIn testRel "    assert False"
     edits `shouldSatisfy` wroteIn testRel "bookings: BookingRepository | None = None"
     edits `shouldSatisfy` wroteIn moduleRel "self.bookings = bookings"
-    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 wired bookings: BookingRepository; the test still builds its own fake, re-conjure it" `T.isSuffixOf` x; _ -> False
+    field "summary" landed `shouldSatisfy` \case Just (String x) -> " \183 bookings wired; the test still builds its own fake, re-conjure it" `T.isSuffixOf` x; _ -> False
     map (take 2) steps `shouldSatisfy` elem ["conjure-wire", "wire"]
 
 -- | `olifant/mutate`: the unit at a position mutated against its test
