@@ -639,7 +639,7 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
     | Just t == ofSuspect o -> ("re-conjure " <> name t, "rewrite it against " <> ofClass o <> "'s ports; you see the diff first")
     | otherwise -> ("re-conjure " <> name t, "rewrite it; you see the diff first")
   OfferStop -> ("stop", "nothing changes; your text stands")
-  OfferKeep r -> ("stop, keep round " <> n r <> "'s body", (if ofWired o then "lands it and the wire's files, red (unsaved; u undoes it)" else "lands it in the buffer, red (unsaved; u undoes it)") <> "; you see what lands first")
+  OfferKeep r -> ("stop, keep round " <> n r <> "'s body", "you see what lands first; " <> (if ofWired o then "lands it and the wire's files, red (unsaved; u undoes it)" else "lands it in the buffer, red (unsaved; u undoes it)"))
   OfferAccept -> ("accept", "lands the test with the conjure; the next round runs it")
   OfferReject -> ("reject", "back to the pause; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")

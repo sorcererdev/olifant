@@ -228,7 +228,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     map (\r -> (orLabel r, orDetail r)) (map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2])
       `shouldBe` [ ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
                  , ("re-conjure test_cancel_booking_not_found again", "rewrite it again; you see the diff first")
-                 , ("stop, keep round 2's body", "lands it in the buffer, red (unsaved; u undoes it); you see what lands first")
+                 , ("stop, keep round 2's body", "you see what lands first; lands it in the buffer, red (unsaved; u undoes it)")
                  ]
     at ["offers", "0", "choice"] json `shouldBe` Just (String "proposal")
     at ["offers", "1", "choice"] json `shouldBe` Just (String "reconjure")

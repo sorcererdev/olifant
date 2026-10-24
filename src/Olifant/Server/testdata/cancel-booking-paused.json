@@ -57,7 +57,7 @@
     {
       "arg": "3",
       "choice": "stop",
-      "detail": "lands it in the buffer, red (unsaved; u undoes it); you see what lands first",
+      "detail": "you see what lands first; lands it in the buffer, red (unsaved; u undoes it)",
       "hint": null,
       "label": "stop, keep round 3's body",
       "land": true
