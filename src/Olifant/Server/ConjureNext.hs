@@ -5,6 +5,17 @@ module Olifant.Server.ConjureNext
   , RoundContext (..)
   , testSource
   , roundView
+  , Decided (..)
+  , RoundRecord (..)
+  , roundRecord
+  , TestStatus (..)
+  , involved
+  , shortName
+  , attemptLine
+  , RoundRow (..)
+  , roundRows
+  , isRepeat
+  , isTrade
   , attemptDiff
   , undefinedNames
   , roundSummary
@@ -31,7 +42,7 @@ module Olifant.Server.ConjureNext
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
@@ -52,8 +63,126 @@ data RoundView = RoundView
   , rvTests :: [(Text, Text)]
   , rvUnit :: Text
   , rvWired :: [Text]
+  , rvAttempts :: [Text]
+  , rvTrade :: Bool
+  , rvPassingTests :: [Text]
   }
   deriving stock (Eq, Show)
+
+-- | What Jev answered after a round: its choice, its confidence, its distribution (highest first).
+data Decided = Decided {dcChoice :: Text, dcConfidence :: Maybe Double, dcProbabilities :: [(Text, Double)]}
+  deriving stock (Eq, Show)
+
+-- | A red round as the conjure keeps it: its number, rung, the attempt's body, the verify's
+-- run, the check (when no run judged it), and Jev's answer (when asked).
+data RoundRecord = RoundRecord {rrRound :: Int, rrRung :: Text, rrAttempt :: Text, rrRun :: Maybe TestRun, rrCheck :: Maybe Text, rrDecided :: Maybe Decided}
+  deriving stock (Eq, Show)
+
+-- | The record of a round, from its first hole (Jev not yet asked).
+roundRecord :: RoundState -> RoundRecord
+roundRecord rs = RoundRecord (rsRound rs) (rsRung rs) attempt (rhRun hole) (snd (verdictOf hole)) Nothing
+  where
+    hole = firstHole rs
+    attempt = case reverse (map fst (rhPrevious hole)) of
+      a : _ -> a
+      [] -> ""
+
+firstHole :: RoundState -> RoundHole
+firstHole rs = case rsHoles rs of
+  h : _ -> h
+  [] -> RoundHole "" "" [] Nothing
+
+-- | A hole's failing tests (with their one-line messages) and its check: the run's broken
+-- text, or the hole's why when no run judged it.
+verdictOf :: RoundHole -> ([(Text, Text)], Maybe Text)
+verdictOf hole = case rhRun hole of
+  Nothing -> ([], Just why)
+  Just r -> case trBroken r of
+    Just b -> ([], Just (firstLines 3 b))
+    Nothing
+      | null (trFailed r) -> ([], Just why)
+      | otherwise -> ([(i, failureLine f) | (i, f) <- trFailed r], Nothing)
+  where
+    why = firstLines 3 (rhWhy hole)
+
+-- | A test involved in a conjure: whether it fails now, and the last round whose status
+-- differed from now (0: the before-run).
+data TestStatus = TestStatus {tsTest :: Text, tsFailing :: Bool, tsFlipped :: Maybe Int}
+  deriving stock (Eq, Show)
+
+-- | The runs in order, the before-run as round 0 (a round no run judged is left out).
+timeline :: TestRun -> [RoundRecord] -> [(Int, TestRun)]
+timeline before records = (0, before) : [(rrRound r, run) | r <- records, Just run <- [rrRun r]]
+
+-- | A test's status in a run: failing, passing, or not in it.
+statusIn :: Text -> TestRun -> Maybe Bool
+statusIn t run
+  | t `elem` map fst (trFailed run) = Just True
+  | t `elem` trPassed run = Just False
+  | otherwise = Nothing
+
+-- | Every test that failed in the before-run or a round, with its status now (the last run
+-- that has it); failing now first, each group in first-seen order.
+involved :: TestRun -> [RoundRecord] -> [TestStatus]
+involved before records = [s | s <- statuses, tsFailing s] ++ [s | s <- statuses, not (tsFailing s)]
+  where
+    runs = timeline before records
+    ids = nub [t | (_, run) <- runs, (t, _) <- trFailed run]
+    statuses = map status ids
+    status t =
+      let seen = [(n, f) | (n, run) <- runs, Just f <- [statusIn t run]]
+          now = maybe False snd (lastOf seen)
+          flipped = fst <$> lastOf [x | x@(_, f) <- seen, f /= now]
+       in TestStatus t now flipped
+    lastOf xs = if null xs then Nothing else Just (last xs)
+
+-- | A test's short name beside its module's stem: less @test_<stem>_@, else less @test_@.
+shortName :: Text -> Text -> Text
+shortName stem tid = fromMaybe (fromMaybe name (T.stripPrefix "test_" name)) (T.stripPrefix ("test_" <> stem <> "_") name)
+  where
+    name = snd (T.breakOnEnd "::" tid)
+
+-- | An attempt's first line that is neither blank nor a comment.
+attemptLine :: Text -> Text
+attemptLine a = case [l | l <- map T.strip (T.lines a), not (T.null l), not ("#" `T.isPrefixOf` l)] of
+  l : _ -> l
+  [] -> ""
+
+-- | A round in one line: its number, rung, the attempt's first line (or the round it
+-- repeats), whether it is green, the failing tests' short names.
+data RoundRow = RoundRow {rwRound :: Int, rwRung :: Text, rwLine :: Text, rwGreen :: Bool, rwFailing :: [Text]}
+  deriving stock (Eq, Show)
+
+roundRows :: Text -> [RoundRecord] -> [RoundRow]
+roundRows stem records = zipWith row (Nothing : map Just records) records
+  where
+    row prev r =
+      RoundRow
+        (rrRound r)
+        (rrRung r)
+        (case prev of
+           Just p | T.strip (rrAttempt p) == T.strip (rrAttempt r) -> "(the same as round " <> T.pack (show (rrRound p)) <> ")"
+           _ -> attemptLine (rrAttempt r))
+        (isGreen r)
+        (maybe [] (\run -> [shortName stem t | (t, _) <- trFailed run]) (rrRun r))
+    isGreen r = case rrRun r of
+      Just run -> null (trFailed run) && isNothing (trBroken run) && isNothing (rrCheck r)
+      Nothing -> False
+
+-- | The last two attempts are the same.
+isRepeat :: [RoundRecord] -> Bool
+isRepeat records = case reverse records of
+  a : b : _ -> T.strip (rrAttempt a) == T.strip (rrAttempt b)
+  _ -> False
+
+-- | Over the before-run and the rounds, some test failed then passed while another passed
+-- then failed.
+isTrade :: TestRun -> [RoundRecord] -> Bool
+isTrade before records = or [a /= b | a <- went True False, b <- went False True]
+  where
+    runs = map snd (timeline before records)
+    ids = nub (concat [map fst (trFailed r) ++ trPassed r | r <- runs])
+    went from to = [t | t <- ids, let ss = [f | r <- runs, Just f <- [statusIn t r]], from `elem` ss, to `elem` dropWhile (/= from) ss]
 
 -- | A test's source (it lives here, not in Site, which would import this module in a cycle): its def line and its body, trailing blank lines dropped.
 testSource :: Text -> Text -> Maybe Text
@@ -72,7 +201,7 @@ firstLine = firstLines 1
 
 -- | What the round's view needs beyond the round: the test file's text, the unit's header,
 -- what is wired, and whether a wire may still run.
-data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool}
+data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool, rcHistory :: [RoundRecord], rcBefore :: TestRun, rcStem :: Text}
   deriving stock (Eq, Show)
 
 -- | The previous view, the round; built from the first hole. A passing delta needs a test
@@ -87,23 +216,24 @@ roundView ctx prev rs =
     , rvPassing = passing
     , rvPassingDelta = delta
     , rvCheck = check
-    , rvRepeat = maybe False (\p -> rvFailing p == failing && rvCheck p == check) prev
-    , rvTests = [(i, fromMaybe "(source not found)" (testSource (snd (T.breakOnEnd "::" i)) (rcTestText ctx))) | (i, _) <- failing]
+    , rvRepeat = isRepeat history
+    , rvTests = [(i, fromMaybe "(source not found)" (testSource (snd (T.breakOnEnd "::" i)) (rcTestText ctx))) | i <- map tsTest tests]
     , rvUnit = rcUnit ctx
     , rvWired = rcWired ctx
+    , rvAttempts = [attemptText r | r <- roundRows (rcStem ctx) history]
+    , rvTrade = isTrade (rcBefore ctx) history
+    , rvPassingTests = [tsTest t | t <- tests, not (tsFailing t)]
     }
   where
-    hole = case rsHoles rs of
-      h : _ -> h
-      [] -> RoundHole "" "" [] Nothing
-    why = firstLines 3 (rhWhy hole)
-    (failing, passing, check) = case rhRun hole of
-      Nothing -> ([], 0, Just why)
-      Just r -> case trBroken r of
-        Just b -> ([], length (trPassed r), Just (firstLines 3 b))
-        Nothing
-          | null (trFailed r) -> ([], length (trPassed r), Just why)
-          | otherwise -> ([(i, failureLine f) | (i, f) <- trFailed r], length (trPassed r), Nothing)
+    hole = firstHole rs
+    (failing, check) = verdictOf hole
+    passing = maybe 0 (length . trPassed) (rhRun hole)
+    -- the history with this round (once: a record of it may be there already)
+    history = case reverse (rcHistory ctx) of
+      r : _ | rrRound r == rsRound rs -> rcHistory ctx
+      _ -> rcHistory ctx ++ [roundRecord rs]
+    tests = involved (rcBefore ctx) history
+    attemptText r = "round " <> T.pack (show (rwRound r)) <> ": " <> rwLine r <> (if rwGreen r then " \183 green" else " \183 red: " <> T.intercalate ", " (rwFailing r))
     delta = case prev of
       Just p | check == Nothing, rvCheck p == Nothing -> Just (passing - rvPassing p)
       _ -> Nothing
@@ -297,7 +427,7 @@ data Proposal = Proposal {prFile :: FilePath, prTest :: Text, prBefore :: Text, 
 -- (monotonic seconds); the conjure's working writes beside the unit's (root-relative path →
 -- text: a wire's), each written file's editor version (absolute path; none when it was not
 -- open) and its text when the conjure first read it (none: a new file), what is wired, and
--- the pause's explanation; a re-conjured test's proposal, the pause it was
+-- the pause's explanation, the rounds so far and the conjure's first before-run; a re-conjured test's proposal, the pause it was
 -- proposed from (what reject answers again), and what the pause answered
 -- the editor (its offers say what a resume may do).
 data PausedConjure = PausedConjure
@@ -320,6 +450,8 @@ data PausedConjure = PausedConjure
   , pdBases :: Map FilePath (Maybe Text)
   , pdWired :: [Text]
   , pdExplanation :: Text
+  , pdHistory :: [RoundRecord]
+  , pdBefore :: TestRun
   , pdProposal :: Maybe Proposal
   , pdPrevious :: Maybe PausedAnswer
   , pdShown :: PausedAnswer

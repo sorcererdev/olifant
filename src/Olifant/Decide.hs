@@ -22,6 +22,7 @@ module Olifant.Decide
   , curlDecider
   , jevBody
   , jevAnswers
+  , jevWeighed
   , jevDecider
   , recordedDecider
   ) where
@@ -32,9 +33,9 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BL
-import Data.List (maximumBy)
+import Data.List (maximumBy, sortOn)
 import Data.Maybe (fromMaybe)
-import Data.Ord (comparing)
+import Data.Ord (Down (..), comparing)
 import Data.Scientific (toRealFloat)
 import GHC.Clock (getMonotonicTime)
 import Text.Read (readMaybe)
@@ -76,11 +77,22 @@ data Answer
   | Unsure
   deriving stock (Eq, Show)
 
-data Decider m = Decider {ask :: Question -> m Answer, askAll :: [Question] -> m [Answer]}
+-- | Ask one question, a batch in order, or one with the answer's
+-- distribution (option, probability; highest first; none when the
+-- answerer gives none).
+data Decider m = Decider {ask :: Question -> m Answer, askAll :: [Question] -> m [Answer], weigh :: Question -> m (Answer, [(Text, Double)])}
 
 -- | A decider from one question at a time; a batch is asked in order.
 decider :: Applicative m => (Question -> m Answer) -> Decider m
-decider f = Decider f (traverse f)
+decider f = Decider f (traverse f) (fmap (,[]) . f)
+
+-- | A decider from one weighed question at a time.
+weighed :: Applicative m => (Question -> m (Answer, [(Text, Double)])) -> Decider m
+weighed f = Decider (fmap fst . f) (traverse (fmap fst . f)) f
+
+-- | A distribution, highest first.
+byWeight :: [(Text, Double)] -> [(Text, Double)]
+byWeight = sortOn (Down . snd)
 
 -- | Kind, instructions, the options (name, meaning), the context.
 choice :: Text -> Text -> [(Text, Text)] -> [(Text, Text)] -> Question
@@ -213,11 +225,19 @@ jevBody qs = object ["state" .= Object (KM.fromList [(Key.fromText k, String v) 
 -- that is not JSON, lacks a question, or answers one outside its shape
 -- makes the whole batch unsure.
 jevAnswers :: [Question] -> ByteString -> [Answer]
-jevAnswers qs raw = fromMaybe (map (const Unsure) qs) $ do
+jevAnswers qs = map fst . jevWeighed qs
+
+-- | 'jevAnswers' with each choice's distribution (its `probabilities`,
+-- highest first; none for other shapes or an unsure batch).
+jevWeighed :: [Question] -> ByteString -> [(Answer, [(Text, Double)])]
+jevWeighed qs raw = fromMaybe (map (const (Unsure, [])) qs) $ do
   Object o <- either (const Nothing) Just (eitherDecodeStrict raw)
   Object as <- KM.lookup "answers" o
-  traverse (\q -> KM.lookup (Key.fromText (qKind q)) as >>= answer q) qs
+  traverse (\q -> KM.lookup (Key.fromText (qKind q)) as >>= \v -> (,distribution q v) <$> answer q v) qs
   where
+    distribution q = \case
+      Object a | Choice _ <- qShape q, Just (Object ps) <- KM.lookup "probabilities" a -> byWeight [(Key.toText k, p) | (k, v) <- KM.toList ps, Just p <- [number v]]
+      _ -> []
     answer q = \case
       Object a -> do
         raw' <- case (qShape q, KM.lookup "type" a) of
@@ -248,35 +268,36 @@ jevAnswers qs raw = fromMaybe (map (const Unsure) qs) $ do
 -- input tokens and time go to LOG as "decide\tjev\tN tokens\tM ms". No
 -- key, an error, a timeout or a malformed reply is unsure for the batch.
 jevDecider :: Cancel -> Int -> Backend -> (Text -> IO ()) -> Decider IO
-jevDecider token timeout backend logLine = Decider (\q -> head' <$> batch [q]) batch
+jevDecider token timeout backend logLine = Decider (\q -> fst . head' <$> weighs [q]) (fmap (map fst) . weighs) (\q -> head' <$> weighs [q])
   where
     head' = \case
       a : _ -> a
-      [] -> Unsure
-    batch [] = pure []
-    batch qs = do
+      [] -> (Unsure, [])
+    weighs [] = pure []
+    weighs qs = do
       let body = case jevBody qs of
             Object o -> Object (KM.insert "model" (String (beModel backend)) o)
             v -> v
       start <- getMonotonicTime
       sendJev token timeout backend body >>= \case
-        Left _ -> pure (map (const Unsure) qs)
+        Left _ -> pure (map (const (Unsure, [])) qs)
         Right raw -> do
           end <- getMonotonicTime
           logLine (T.intercalate "\t" ["decide", "jev", tshow (tokens raw body) <> " tokens", tshow (round ((end - start) * 1000) :: Int) <> " ms"])
-          pure (jevAnswers qs raw)
+          pure (jevWeighed qs raw)
     -- the reply's count when it gives one; else about four bytes a token
     tokens raw body = case eitherDecodeStrict raw of
       Right (Object o) | Just (Object u) <- KM.lookup "usage" o, Just (Number n) <- KM.lookup "input_tokens" u -> round n :: Int
       _ -> fromIntegral (BL.length (encode body) `div` 4)
     tshow = T.pack . show
 
--- | Recorded answers (tests): `{"answers": {KIND: CHOICE or {choice, fields}}}`;
+-- | Recorded answers (tests): `{"answers": {KIND: CHOICE or {choice, fields,
+-- confidence, probabilities: {OPTION: P}}}}`;
 -- "wait" waits until the file holds an answer, or the work is cancelled
 -- (then unsure, noted in FILE.cancelled). Each question asked
 -- is noted in FILE.asked.
 recordedDecider :: FilePath -> Cancel -> Decider IO
-recordedDecider file token = decider $ \q -> do
+recordedDecider file token = weighed $ \q -> do
   appendFile (file <> ".asked") (T.unpack (qKind q) <> "\n")
   -- "wait": until the file holds an answer, or the work is cancelled
   let current = T.strip . T.pack <$> readFile file
@@ -285,7 +306,11 @@ recordedDecider file token = decider $ \q -> do
         stop <- cancelled token
         if answer /= "wait" then pure (Just answer) else if stop then Nothing <$ writeFile (file <> ".cancelled") "" else threadDelay 20000 >> loop
   loop >>= \case
-    Nothing -> pure Unsure
+    Nothing -> pure (Unsure, [])
     Just answer -> pure $ case eitherDecodeStrict (TE.encodeUtf8 answer) of
-      Right (Object o) | Just (Object as) <- KM.lookup "answers" o, Just v <- KM.lookup (Key.fromText (qKind q)) as -> validated q (fromValue v)
-      _ -> Unsure
+      Right (Object o) | Just (Object as) <- KM.lookup "answers" o, Just v <- KM.lookup (Key.fromText (qKind q)) as -> (validated q (fromValue v), probabilities v)
+      _ -> (Unsure, [])
+  where
+    probabilities = \case
+      Object a | Just (Object ps) <- KM.lookup "probabilities" a -> byWeight [(Key.toText k, toRealFloat n) | (k, Number n) <- KM.toList ps]
+      _ -> []

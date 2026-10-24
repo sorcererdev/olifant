@@ -44,7 +44,7 @@ import Olifant.Language (Failure (..), TestRun (..), failureLine, languageFor, r
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Next (..), Offer (..), PausedAnswer (..), PausedConjure (..), Proposal (..), RoundContext (..), RoundView, Standing (..), TestCheck (..), conjureNextQuestion, conjureTestQuestion, testCheckFrom, nextFrom, offerText, offersFor, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
+import Olifant.Server.ConjureNext (Decided (..), Next (..), Offer (..), RoundRecord (..), roundRecord, PausedAnswer (..), PausedConjure (..), Proposal (..), RoundContext (..), RoundView, Standing (..), TestCheck (..), conjureNextQuestion, conjureTestQuestion, testCheckFrom, nextFrom, offerText, offersFor, pausedLifetime, pruned, roundSummary, roundView, spent, undefinedNames, withHint)
 import Olifant.Server.ConjureNext qualified as ConjureNext (testSource)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, testBody, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
@@ -53,7 +53,7 @@ import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testAt, testLine
 import Olifant.Server.Unit (Unit (..), unitAt, unitHeader)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
-import System.FilePath ((</>))
+import System.FilePath (takeBaseName, (</>))
 import Text.Printf (printf)
 
 -- | A conjure's answer: the conjured file (absolute), the unit, the edits
@@ -94,7 +94,9 @@ data Steered = Steered {sdDecider :: Decider IO, sdLadder :: [(Rung, ModelFiller
 -- of a pause; the wire Jev asked for (param, port), what is wired, the
 -- working writes (root-relative), each written file's editor version and
 -- text when first read (absolute paths), a failed wire's text for the next
--- pause; and the working test file and the unit's header (Jev's context).
+-- pause; the working test file and the unit's header (Jev's context); every
+-- round so far (kept across a resume), the conjure's first before-run, and
+-- the module's stem (the tests' short names).
 data Counters = Counters
   { cRung :: Int
   , cRungs :: [Text]
@@ -113,6 +115,9 @@ data Counters = Counters
   , cExplanation :: Maybe Text
   , cTestText :: Text
   , cHeader :: Text
+  , cHistory :: [RoundRecord]
+  , cBefore :: TestRun
+  , cStem :: Text
   }
 
 -- | What a fill gave: why its last attempt failed its verify (none: it
@@ -400,6 +405,9 @@ conjureWith progress path line selected resuming s0 = do
                     , cExplanation = Nothing
                     , cTestText = wkTestText first
                     , cHeader = unitHeader (wkText first) (fst (wkSpan first))
+                    , cHistory = []
+                    , cBefore = wkBefore first
+                    , cStem = T.pack (takeBaseName (siteModuleRel site))
                     }
              in case resuming of
                   Nothing -> fresh
@@ -418,6 +426,8 @@ conjureWith progress path line selected resuming s0 = do
                           , cWired = pdWired pd
                           , cVersions = M.insert file (pdVersion pd) (pdVersions pd)
                           , cBases = pdBases pd
+                          , cHistory = pdHistory pd
+                          , cBefore = pdBefore pd
                           }
           rounds <- lift (newIORef (maybe 0 (seedRound . pdSeed . snd) resuming))
           let seed0 = case resuming of
@@ -532,7 +542,7 @@ conjureWith progress path line selected resuming s0 = do
                   explanation = maybe why (<> "; " <> why) (cExplanation c)
                   failing = [(t, fMessage f) | h <- take 1 (rsHoles rs), Just r <- [rhRun h], (t, f) <- trFailed r]
                   shownAs t = PausedAnswer t file unit span' (rsRound rs) (rsRung rs) (roundSummary view) (map offerText (cOffers c)) why explanation failing (cWired c) Nothing
-                  pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation Nothing Nothing
+                  pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation (cHistory c) (cBefore c) Nothing Nothing
               token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t)) m), t)))
               lift (stepLine ["conjure-pause", why])
               pure (Paused (shownAs token))
@@ -640,18 +650,19 @@ steer s stepLine begun counters sd wires record rs =
       c <- readIORef counters
       now <- getMonotonicTime
       let wireable = wires && null (cWired c)
-          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable) (cLast c) rs
+          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable (cHistory c) (cBefore c) (cStem c)) (cLast c) rs
           used = cRounds c + 1
           seconds = cSecondsBefore c + (now - begun)
           above = drop (cRung c + 1) (sdLadder sd)
           standing = Standing (sdRounds sd - used) (sdBudget sd - seconds) (fst <$> listToMaybe above) (cHint c) wireable
-      next <- case spent standing of
-        Just n -> pure n
+      (next, decided) <- case spent standing of
+        Just n -> pure (n, Nothing)
         Nothing -> do
-          answer <- askOr (sdDecider sd) (conjureNextQuestion standing view)
+          (answer, weights) <- weighOr (sdDecider sd) (conjureNextQuestion standing view)
           stepLine ["conjure-next", answerChoice answer, answerConfidence answer, tshow (rsRound rs), rsRung rs]
-          pure (nextFrom standing view answer)
-      let c' = c {cRounds = used, cSeconds = seconds, cLast = Just view, cState = Just rs}
+          pure (nextFrom standing view answer, Just (decidedOf answer weights))
+      let record' = (roundRecord rs) {rrDecided = decided}
+          c' = c {cRounds = used, cSeconds = seconds, cLast = Just view, cState = Just rs, cHistory = cHistory c ++ [record']}
       case next of
         NextClimb _ | (r, f) : _ <- above -> Climb (record f) <$ writeIORef counters c' {cRung = cRung c + 1, cRungs = cRungs c ++ [rungName r]}
         NextPause why offers -> Pause why <$ writeIORef counters c' {cOffers = offers}
@@ -660,11 +671,22 @@ steer s stepLine begun counters sd wires record rs =
 
 -- | Jev's answer to Q (a failure to ask is `unsure`; a cancel is rethrown).
 askOr :: Decider IO -> Question -> IO Answer
-askOr d q =
-  try (ask d q) >>= \case
+askOr d q = fst <$> weighOr d q
+
+-- | Jev's answer to Q with its distribution (a failure to ask is `unsure`; a cancel is rethrown).
+weighOr :: Decider IO -> Question -> IO (Answer, [(Text, Double)])
+weighOr d q =
+  try (weigh d q) >>= \case
     Right a -> pure a
     Left e | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
-    Left (_ :: SomeException) -> pure Unsure
+    Left (_ :: SomeException) -> pure (Unsure, [])
+
+-- | An answer as a round keeps it.
+decidedOf :: Answer -> [(Text, Double)] -> Decided
+decidedOf a weights = case a of
+  Chosen o _ (Confidence d) -> Decided o (Just d) weights
+  Chosen o _ _ -> Decided o Nothing weights
+  _ -> Decided "unsure" Nothing weights
 
 -- | An answer's choice and confidence, as the step log has them.
 answerChoice :: Answer -> Text

@@ -95,6 +95,10 @@ spec = describe "Olifant.Decide" $ do
     it "(c) jevAnswers reads a choice with its confidence and a noul's probability" $
       jevAnswers [which, done] "{\"answers\": {\"which\": {\"type\":\"choice\",\"choice\":\"command\",\"probabilities\":{\"command\":0.84,\"query\":0.1,\"unsure\":0.06},\"confidence\":0.84}, \"done\": {\"type\":\"noul\",\"noul\":0.93}}}"
         `shouldBe` [Chosen "command" [] (Confidence 0.84), Yes (Confidence 0.93)]
+    it "(c2) jevWeighed keeps a choice's distribution, highest first" $ do
+      let next = choice "conjure-next" "" [("again", ""), ("ask", ""), ("port", ""), ("test", "")] []
+      jevWeighed [next] "{\"answers\":{\"conjure-next\":{\"type\":\"choice\",\"choice\":\"ask\",\"confidence\":0.49,\"probabilities\":{\"again\":0.29,\"ask\":0.59,\"port\":0.02,\"test\":0.07,\"unsure\":0.03}}}}"
+        `shouldBe` [(Chosen "ask" [] (Confidence 0.49), [("ask", 0.59), ("again", 0.29), ("test", 0.07), ("unsure", 0.03), ("port", 0.02)])]
     it "(d) a choice not among the options makes the whole batch unsure" $
       jevAnswers [which, done] "{\"answers\": {\"which\": {\"type\":\"choice\",\"choice\":\"event\",\"confidence\":0.9}, \"done\": {\"type\":\"noul\",\"noul\":0.93}}}"
         `shouldBe` [Unsure, Unsure]

@@ -553,9 +553,9 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       paOffers p `shouldSatisfy` elem "climb:claude"
       a <- lands =<< resume s (paToken p) ResumeClimb Nothing
       (daGreen a, daRungs a) `shouldBe` (True, ["qwen", "claude"])
-  it "(g) the same failure twice, and Jev asks: a pause" $ do
+  it "(g) the same body twice, and Jev asks: a pause" $ do
     let switch n answersFile = if n == 2 then TIO.writeFile answersFile (chooses "ask") else pure ()
-    steeredWith (T.replace "rounds = 2" "rounds = 4") again ["return 0", "return 1"] switch greenOnSeats $ \s _ _ -> do
+    steeredWith (T.replace "rounds = 2" "rounds = 4") again ["return 0", "return 0"] switch greenOnSeats $ \s _ _ -> do
       p <- paused =<< conjure s
       (paWhy p, paRound p) `shouldBe` ("the same failure twice", 2)
   it "(h) no answer from Jev means again" $
@@ -570,8 +570,8 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       either id (const "") r `shouldSatisfy` T.isInfixOf "changed"
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
-    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" []
-        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" [] "" "" [] [] Nothing)
+    let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" [] [] False []
+        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" [] "" "" [] [] Nothing)
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True
     held (M.singleton path (1, stubbed)) `shouldBe` True
