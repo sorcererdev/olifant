@@ -125,6 +125,7 @@ library
     Olifant.Server.ConjureNext
     Olifant.Server.ConjureScan
     Olifant.Server.Edits
+    Olifant.Server.Errand
     Olifant.Server.Fixes
     Olifant.Server.Hints
     Olifant.Server.Holes
@@ -291,6 +292,8 @@ test-suite spec
     Olifant.Server.ConjureScanSpec
     Olifant.Server.Edits
     Olifant.Server.EditsSpec
+    Olifant.Server.Errand
+    Olifant.Server.ErrandSpec
     Olifant.Server.Fixes
     Olifant.Server.Hints
     Olifant.Server.Holes
