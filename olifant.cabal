@@ -141,6 +141,7 @@ library
     Olifant.Server.State
     Olifant.Server.Stub
     Olifant.Server.Suggest
+    Olifant.Server.Telemetry
     Olifant.Server.Tests
     Olifant.Server.Unit
     Olifant.Server.Waive
@@ -310,6 +311,8 @@ test-suite spec
     Olifant.Server.State
     Olifant.Server.Stub
     Olifant.Server.Suggest
+    Olifant.Server.Telemetry
+    Olifant.Server.TelemetrySpec
     Olifant.Server.Tests
     Olifant.Server.Unit
     Olifant.Server.UnitSpec
