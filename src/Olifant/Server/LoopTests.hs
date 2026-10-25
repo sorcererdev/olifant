@@ -15,12 +15,13 @@ module Olifant.Server.LoopTests
 
 import Data.Char (isAlphaNum, isAscii)
 import Data.Map.Strict qualified as M
+import Data.Functor ((<&>))
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Language (TestRun (..))
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, testState, withTestState, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, testState, withTestState, withVerdict)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), confined, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), projectFor)
@@ -42,7 +43,7 @@ testNameFor t = "test_" <> if null ws then "step" else T.intercalate "_" ws
 wordsOf :: Text -> Text
 wordsOf t = T.strip (foldr (\p acc -> fromMaybe acc (T.stripPrefix p acc)) body ["- [ ]", "- [x]", "- test:"])
   where
-    body = T.stripStart (fst (T.breakOn "@" t))
+    body = T.stripStart (maybe t (\a -> T.take (anStart a) t) (listToMaybe (parsePlan t) >>= lnAnchor))
 
 -- | A step's stubbed test: the stub, the test child line (two deeper than
 -- the step, pending) and that line as a fact, after the step's children.
@@ -90,21 +91,32 @@ stepTest path row s0 =
     (s, Left why) -> pure (s, Left why)
     (s, Right (p, ls)) -> testsOf s p ls row
 
--- | 'stepTest' over lines already read, its facts only: none when there are
--- no tests or they could not run.
+-- | 'stepTest' over lines already read, its facts only: a test that could
+-- not run is pending; none when there are no tests.
 stepTestFacts :: ServerState -> Project -> [Line] -> Int -> IO [Fact]
-stepTestFacts s p ls row = either (const []) ttFacts . snd <$> testsOf s p ls row
+stepTestFacts s p ls row = maybe [] (\(_, _, facts) -> facts) . snd <$> testsRan s p ls row
 
 testsOf :: ServerState -> Project -> [Line] -> Int -> IO (ServerState, Either Text StepTest)
-testsOf s0 p ls row = case drop row ls of
-  target : _ | Just step <- stepOf target, tests@(_ : _) <- [(c, a) | c <- kidsOf step target, Just a <- [lnAnchor c]] -> go s0 [] tests >>= \case
-    (s, Left why) -> pure (s, Left why)
-    (s, Right ran) -> do
-      fp <- maybe (pure Nothing) (fmap rsFingerprint . resolveAnchor s p) (lnAnchor step)
-      let states = [(u, st) | (u, Just st, _) <- ran]
-          count st = length (filter ((== st) . snd) states)
-      pure (s, Right (StepTest (testFacts ls (lnRow step) states fp) (count TestGreen) (count TestRed) (sum [t | (_, _, t) <- ran])))
-  _ -> pure (s0, Left "the step has no tests")
+testsOf s0 p ls row =
+  testsRan s0 p ls row <&> \case
+    (s, Nothing) -> (s, Left "the step has no tests")
+    (s, Just (ran, secs, facts))
+      | why : _ <- [w | Left w <- ran], length [() | Left _ <- ran] == length ran -> (s, Left why)
+      | otherwise -> (s, Right (StepTest facts (count TestGreen) (count TestRed) secs))
+      where
+        count st = length [() | Right x <- ran, x == st]
+
+-- | Each test of the line at ROW run (Left: why it could not), their
+-- seconds, and the facts: a test that could not run, or that the run did
+-- not report, is pending (never its old mark). Nothing: no tests there.
+testsRan :: ServerState -> Project -> [Line] -> Int -> IO (ServerState, Maybe ([Either Text TestState], Double, [Fact]))
+testsRan s0 p ls row = case drop row ls of
+  target : _ | Just step <- stepOf target, tests@(_ : _) <- [a | c <- kidsOf step target, Just a <- [lnAnchor c]] -> do
+    (s, ran) <- go s0 [] tests
+    fp <- maybe (pure Nothing) (fmap rsFingerprint . resolveAnchor s p) (lnAnchor step)
+    let states = [(anUnit a, either (const TestPending) id r) | (a, (r, _)) <- zip tests ran]
+    pure (s, Just (map fst ran, sum (map snd ran), testFacts ls (lnRow step) states fp))
+  _ -> pure (s0, Nothing)
   where
     stepOf l = case lnKind l of
       Step _ -> Just l
@@ -114,32 +126,30 @@ testsOf s0 p ls row = case drop row ls of
     kidsOf step target
       | lnKind target == TestChild = [target]
       | otherwise = [c | c <- childrenOf ls (lnRow step), lnIndent c == lnIndent step + 2, lnKind c == TestChild]
+    -- every test, one failing to run keeping the others' results
     go s acc = \case
-      [] -> pure (s, Right (reverse acc))
-      (_, a) : rest ->
-        runOne s a >>= \case
-          (s', Left why) -> pure (s', Left why)
-          (s', Right r) -> go s' (r : acc) rest
-    -- one test: its unit, its state (none when the run did not report it), its seconds
+      [] -> pure (s, reverse acc)
+      a : rest -> runOne s a >>= \(s', r) -> go s' (r : acc) rest
+    -- one test: its state (pending when the run did not report it), its seconds
     runOne s a = case confined (anPath a) of
-      Nothing -> pure (s, Right (anUnit a, Just TestRed, 0))
+      Nothing -> pure (s, (Left (anchorText a <> " is outside the project"), 0))
       Just rel -> do
         text <- safely Nothing (readText (prWorkspace p) rel)
         case text >>= \t -> testLineOf t (T.replace "." "::" (anUnit a)) of
-          Nothing -> pure (s, Right (anUnit a, Just TestRed, 0))
+          Nothing -> pure (s, (Left (anUnit a <> " is not in " <> T.pack rel), 0))
           Just line ->
-            testsRun (ScopeAt line) (normalisePath (prRoot p </> rel)) s >>= \case
-              (s', Left why) -> pure (s', Left why)
-              (s', Right ta) -> pure (s', Right (anUnit a, stateOf ta, taSeconds ta))
+            testsRun (ScopeAt line) (normalisePath (prRoot p </> rel)) s <&> \case
+              (s', Left why) -> (s', (Left why, 0))
+              (s', Right ta) -> (s', (Right (stateOf ta), taSeconds ta))
     stateOf ta =
       let run = taRun ta
           own t = maybe False (\tid -> t == tid || (tid <> "[") `T.isPrefixOf` t) (taTest ta)
        in case () of
             _
-              | Just _ <- trBroken run -> Just TestRed
-              | any (own . fst) (trFailed run) -> Just TestRed
-              | any own (trPassed run) -> Just TestGreen
-              | otherwise -> Nothing
+              | Just _ <- trBroken run -> TestRed
+              | any (own . fst) (trFailed run) -> TestRed
+              | any own (trPassed run) -> TestGreen
+              | otherwise -> TestPending
 
 -- | The plan at PATH (its editor text, else the file) in its project.
 planAt :: FilePath -> ServerState -> IO (ServerState, Either Text (Project, [Line]))

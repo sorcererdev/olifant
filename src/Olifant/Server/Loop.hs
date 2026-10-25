@@ -278,18 +278,20 @@ factJson (Insert n ls) = object ["after" .= n, "lines" .= ls]
 
 -- | The facts of a work set over lines LS: re-anchors, then the pending
 -- marks over the re-anchored lines, one fact per row (the later wins).
--- FORCED, a touched step with test children runs them instead: their
--- marks and its tick.
+-- FORCED, a touched step with test children then runs them over the
+-- pending lines: their marks (pending when not reported) and its tick win.
 loopFacts :: ServerState -> Project -> Bool -> [Line] -> WorkSet -> IO [Fact]
 loopFacts s p forced ls ws = do
-  ran <- concat <$> mapM (stepTestFacts s p moved') tested
-  pure (mergeFacts (moved ++ pendingFacts moved' [t | t@(l, _) <- wsTouched ws, lnRow l `notElem` tested] ++ ran))
+  ran <- concat <$> mapM (stepTestFacts s p pending) tested
+  pure (mergeFacts (base ++ ran))
   where
     moved = reanchorFacts ls (wsChanged ws)
     moved' = applyFacts moved ls
+    base = moved ++ pendingFacts moved' (wsTouched ws)
+    pending = applyFacts base ls
     tested =
       if forced
-        then nubOrd [lnRow l | (l, _) <- wsTouched ws, any ((== TestChild) . lnKind) (directChildren moved' l)]
+        then nubOrd [lnRow l | (l, _) <- wsTouched ws, any ((== TestChild) . lnKind) (directChildren pending l)]
         else []
 
 -- | Replacements by row, the later winning, in row order; inserts after.

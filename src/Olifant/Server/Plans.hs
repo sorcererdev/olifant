@@ -257,7 +257,7 @@ runErrand after token verb path row s0 =
               (blocks, dropped) -> do
                 fps <- mapM (mapM (fpOf s p) . blLines) blocks
                 changed <- if verb == Do then changedFiles root else pure []
-                facts <- if verb == Do then after s p ls row else pure []
+                facts <- if verb == Do then safely [] (after s p ls row) else pure []
                 let ghosts = concatMap blLines blocks
                     resolved = length (filter isJust (concat fps))
                     unresolved = length (filter (isJust . ghAnchor) ghosts) - resolved

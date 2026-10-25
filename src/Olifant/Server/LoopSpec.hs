@@ -443,6 +443,12 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       fp <- fpNow dir s "helper"
       raFacts forced `shouldBe` [Replace 4 ("- [x] tidy the helper @src/bistro/booking/models/table.py:helper \10003 " <> fp), Replace 5 ("  - test: it helps @" <> T.pack tableTest <> ":test_helper \9679")]
       raBlocks forced `shouldBe` []
+  it "(l2) a forced reconcile whose tests do not run leaves them pending and the step alone" $ do
+    let child n = "  - test: " <> n <> " @src/bistro/nowhere__test.py:test_" <> n
+        plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n" <> child "a" <> " \9679\n" <> child "b" <> " \10007\n"
+    withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "in_progress")])) $ \dir s -> do
+      (_, a) <- run True dir s
+      raFacts a `shouldBe` [Replace 5 (child "a" <> " \9675"), Replace 6 (child "b" <> " \9675")]
   it "(k) the record carries decisions and per-block units; the step log has one plan-reconcile line" $
     withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
       (_, a) <- run False dir s
@@ -562,6 +568,7 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
     testNameFor "the repository answers closed_on" `shouldBe` "test_the_repository_answers_closed_on"
     testNameFor "- [ ] Count the seats!  @src/a.py:F \10003 abc1234" `shouldBe` "test_count_the_seats"
     testNameFor "close -- the   table" `shouldBe` "test_close_the_table"
+    testNameFor "- [ ] mail user@host about it @src/a.py:F" `shouldBe` "test_mail_user_host_about_it"
   it "(b) stepStub: a test named for the step in the unit's test file, and its child line" $
     withLoop plan [] $ \s _ dir -> do
       (s1, r) <- stepStub (planPath dir) 4 s
