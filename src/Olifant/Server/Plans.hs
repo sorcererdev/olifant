@@ -27,7 +27,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, errandPrompt, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, errandPrompt, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, projectFor)
@@ -249,7 +249,7 @@ runErrand after token verb path row s0 =
               _ <- record (rfStatus f) (Just (rfWhy f)) (rfSession f) Nothing 0 0 0 0 0 (length changed)
               pure (Left (rfWhy f))
             Right rr -> case parseAnswer verb ls target (rrText rr) of
-              ([], dropped) -> do
+              ([], dropped) | verb /= Do || not (doAnswered (rrText rr)) -> do
                 changed <- if verb == Do then changedFiles root else pure []
                 let why = verbName <> " answered nothing in the grammar"
                 _ <- record Empty (Just why) (rrSession rr) (Just rr) 0 dropped 0 0 0 (length changed)

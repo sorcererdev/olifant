@@ -101,6 +101,15 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       let (bs, _) = parseAnswer Do ls step "DONE @src/a.py:Foo.bar\nDONE @src/c.py:Baz\nBLOCKED no port\n"
       map ghText (concatMap blLines bs) `shouldBe` ["- [ ] the step   @src/a.py:Foo.bar", "  - also @src/c.py:Baz", "  - ✗ blocked: no port"]
       map blAfterRow bs `shouldBe` [3]
+    it "do makes no also child of the step's own anchor (nor a test child's own)" $ do
+      let anchored = parsePlan "## S\n- [ ] the step @src/a.py:Foo.bar\n  - test: it works @tests/t.py:test_it\n"
+          own = parseAnswer Do anchored (anchored !! 1) "DONE @src/a.py:Foo.bar\nDONE @src/c.py:Baz\n"
+          test = parseAnswer Do anchored (anchored !! 2) "DONE @tests/t.py:test_it\nDONE @src/a.py:Foo.bar\n"
+      map ghText (concatMap blLines (fst own)) `shouldBe` ["  - also @src/c.py:Baz"]
+      snd own `shouldBe` 0
+      map ghText (concatMap blLines (fst test)) `shouldBe` []
+      snd test `shouldBe` 0
+      (doAnswered "DONE @tests/t.py:test_it\n", doAnswered "BLOCKED no port", doAnswered "Sure, done.") `shouldBe` (True, True, False)
     it "never fails on odd input" $ do
       parseAnswer Ask ls q "" `shouldBe` ([], 0)
       fst (parseAnswer Validate ls heading "AFTER:") `shouldBe` []

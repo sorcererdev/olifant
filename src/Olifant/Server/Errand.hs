@@ -5,7 +5,7 @@ module Olifant.Server.Errand
   ( Verb (..), RunResult (..), Tokens (..), ModelUse (..), Status (..), RunFailure (..)
   , statusName, runnerArgs, runClaude
   , Grounded (..), Ghost (..), Block (..)
-  , errandPrompt, parseAnswer, groundingLimit, cutBody
+  , errandPrompt, parseAnswer, doAnswered, groundingLimit, cutBody
   ) where
 
 import Data.Aeson (Value (..), decodeStrict)
@@ -278,26 +278,17 @@ parseDo ls target rows = (blocks, dropped)
       Step _ -> lnIndent l < lnIndent target
       _ -> False
     ind = lnIndent stepLine + 2
-    parsed = map classify rows
-    classify l
-      | Just r <- T.stripPrefix "DONE" l, T.isPrefixOf " " r || T.isPrefixOf "\t" r
-      , Just a <- exactAnchor (T.strip r) = Right (Left a)
-      | Just r <- T.stripPrefix "BLOCKED" l, T.isPrefixOf " " r, not (T.null (T.strip r)) = Right (Right (T.strip r))
-      | "- ? " `T.isPrefixOf` l = Left (Just (Ghost (pad ind l) Nothing))
-      | otherwise = Left Nothing
-    exactAnchor r = case T.stripPrefix "@" r of
-      Just _ -> case anchorIn r of
-        Just a | anStart a == 0, anEnd a == T.length r -> Just a
-        _ -> Nothing
-      Nothing -> Nothing
-    anchors = nub' [a | Right (Left a) <- parsed]
+    parsed = map (classifyDo ind) rows
+    -- the step's own anchor (and a test child's) is no `also`
+    own a = any (same a) [b | Just b <- [lnAnchor stepLine, lnAnchor target]]
+    anchors = filter (not . own) (nub' [a | Right (Left a) <- parsed])
     nub' = foldl (\acc a -> if any (same a) acc then acc else acc ++ [a]) []
     same a b = anPath a == anPath b && anUnit a == anUnit b
     blocked = take 1 [w | Right (Right w) <- parsed]
     questions = [g | Left (Just g) <- parsed]
     usedDone = length [() | Right (Left _) <- parsed]
     usedBlocked = length [() | Right (Right _) <- parsed]
-    dropped = length [() | Left Nothing <- parsed] + (usedDone - length anchors) + (usedBlocked - length blocked)
+    dropped = length [() | Left Nothing <- parsed] + (usedDone - length (nub' [a | Right (Left a) <- parsed])) + (usedBlocked - length blocked)
     unanchored = case lnAnchor stepLine of
       Nothing | Step _ <- lnKind stepLine -> True
       _ -> False
@@ -309,3 +300,24 @@ parseDo ls target rows = (blocks, dropped)
     fixFirst (g : rest) | unanchored, not (null anchors) = g {ghAnchor = anchorIn (ghText g)} : rest
     fixFirst x = x
     blocks = [Block (lnRow stepLine) Nothing gs | not (null gs)]
+
+-- | One line of a `do`'s answer: a DONE anchor, a BLOCKED reason, a
+-- question ghost (indented by IND), or out of the grammar.
+classifyDo :: Int -> Text -> Either (Maybe Ghost) (Either Anchor Text)
+classifyDo ind l
+  | Just r <- T.stripPrefix "DONE" l, T.isPrefixOf " " r || T.isPrefixOf "\t" r
+  , Just a <- exactAnchor (T.strip r) = Right (Left a)
+  | Just r <- T.stripPrefix "BLOCKED" l, T.isPrefixOf " " r, not (T.null (T.strip r)) = Right (Right (T.strip r))
+  | "- ? " `T.isPrefixOf` l = Left (Just (Ghost (pad ind l) Nothing))
+  | otherwise = Left Nothing
+  where
+    exactAnchor r = case T.stripPrefix "@" r of
+      Just _ -> case anchorIn r of
+        Just a | anStart a == 0, anEnd a == T.length r -> Just a
+        _ -> Nothing
+      Nothing -> Nothing
+
+-- | Whether a `do`'s answer reported in its grammar (a DONE or a BLOCKED
+-- line), though it may leave no ghost: DONE of the step's own unit only.
+doAnswered :: Text -> Bool
+doAnswered out = or [True | Right _ <- map (classifyDo 0 . T.strip) (T.lines (T.replace "\r" "" out))]
