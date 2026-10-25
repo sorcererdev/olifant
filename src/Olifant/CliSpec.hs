@@ -24,6 +24,8 @@ import Data.Text.Lazy.Encoding qualified as TLE
 import Olifant.Generator (GeneratorId (..))
 import Olifant.Language (Syntax, noChecker, noRunner, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
+import Olifant.Server.Errand (Status (..))
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), recordJson)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Control.Monad (forM)
@@ -268,7 +270,7 @@ jsonAt path out = decodeStrict (TE.encodeUtf8 out) >>= go path
     go _ _ = Nothing
 
 spec :: Spec
-spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> anticipateCliSpec
+spec = planOutputSpec >> runCliSpec >> newCodeCheckSpec >> initMigrateSpec >> anticipateCliSpec >> plansCostSpec
 
 planOutputSpec :: Spec
 planOutputSpec = describe "planHuman" $ do
@@ -1148,3 +1150,99 @@ readTree top = M.fromList <$> go top
         let p = d </> n
         isDir <- doesDirectoryExist p
         if isDir then go p else (\t -> [(makeRelative top p, t)]) <$> TIO.readFile p
+
+-- | `olifant plans cost`: errands against Claude Code sessions, per branch.
+plansCostSpec :: Spec
+plansCostSpec = describe "plans cost" $ do
+  let at d h = UTCTime (fromGregorian 2026 10 d) (secondsToDiffTime (h * 3600))
+      errand i t branch status blocks cost session =
+        AnErrand
+          ErrandRecord
+            { erId = i, erAt = t, erVerb = "draft", erPlan = "plans/p.md", erRow = 3, erSection = "Tasks"
+            , erBranch = branch, erModel = "sonnet", erStatus = status, erWhy = Nothing
+            , erSession = session, erSeconds = Just 10, erTurns = Just 2, erTokens = Nothing
+            , erCost = cost, erModels = [], erPromptChars = 100, erGrounded = 0
+            , erBlocks = blocks, erLines = 4, erDropped = 0, erUnresolved = 0, erChanged = 0, erDenials = 0 }
+      outcome i b o = AnOutcome (OutcomeRecord i b (at 25 12) o)
+      line r = TL.toStrict (TLE.decodeUtf8 (encode (recordJson r)))
+      records rs extra = ("/proj/.olifant/state/errands.jsonl", T.unlines (map line rs ++ extra))
+      e1 = errand "E1" (at 25 9) (Just "feat") Ok 2 (Just 0.05) (Just "S1")
+      e2 = errand "E2" (at 25 10) (Just "feat") Empty 0 (Just 0.02) (Just "S2")
+      base = [e1, e2, outcome "E1" 0 "accepted", outcome "E1" 1 "rejected"]
+      -- one assistant line of a transcript
+      msg session branch t mid model (i, o, w, r) =
+        "{\"type\":\"assistant\",\"sessionId\":\"" <> session <> "\",\"timestamp\":\"" <> t <> "\""
+          <> maybe "" (\b -> ",\"gitBranch\":\"" <> b <> "\"") branch
+          <> ",\"requestId\":\"r-" <> mid <> "\",\"message\":{\"id\":\"" <> mid <> "\",\"model\":\"" <> model
+          <> "\",\"usage\":{\"input_tokens\":" <> tshow i <> ",\"output_tokens\":" <> tshow o
+          <> ",\"cache_creation_input_tokens\":" <> tshow w <> ",\"cache_read_input_tokens\":" <> tshow r
+          <> ",\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":" <> tshow w <> "}}}}"
+      tshow = T.pack . show :: Int -> Text
+      sonnet = "claude-sonnet-5-5"
+      transcripts =
+        [ ("/transcripts/S1.jsonl", T.unlines [msg "S1" (Just "feat") "2026-10-25T09:00:00Z" "m1" sonnet (1000, 1000, 0, 0)])
+        , ("/transcripts/S2.jsonl", T.unlines [msg "S2" (Just "feat") "2026-10-25T10:00:00Z" "m2" sonnet (1000, 1000, 0, 0)])
+        , ( "/transcripts/S3.jsonl"
+          , T.unlines
+              [ "{\"type\":\"user\",\"sessionId\":\"S3\",\"message\":{\"role\":\"user\"}}"
+              , msg "S3" (Just "feat") "2026-10-25T11:00:00Z" "m3" sonnet (100, 50, 1000, 4000)
+              , -- streaming wrote the same usage twice
+                msg "S3" (Just "feat") "2026-10-25T11:00:00Z" "m3" sonnet (100, 50, 1000, 4000)
+              , -- Claude Code's own synthetic lines carry no tokens
+                msg "S3" (Just "feat") "2026-10-25T11:00:01Z" "m3s" "<synthetic>" (0, 0, 0, 0)
+              ]
+          )
+        , ("/transcripts/S4/subagents/a.jsonl", T.unlines [msg "S4" (Just "main") "2026-10-24T08:00:00Z" "m4" sonnet (1000, 0, 0, 0)])
+        , ("/transcripts/S5.jsonl", T.unlines [msg "S5" Nothing "2026-10-23T08:00:00Z" "m5" sonnet (1000, 0, 0, 0)])
+        ]
+      run files args = runWith "" (project ++ files) False (["plans", "cost"] ++ args)
+      rowsOf out = case decodeStrict (TE.encodeUtf8 out) >>= lookupKey "rows" of
+        Just (Array rs) -> toList rs
+        _ -> []
+  it "one row per branch with errand and session cost, errand sessions not double counted" $ do
+    (code, out, err, _) <- run (records base [] : transcripts) ["--transcripts", "/transcripts"]
+    code `shouldBe` ExitSuccess
+    err `shouldBe` ""
+    T.lines out !! 0 `shouldSatisfy` ("branch" `T.isPrefixOf`)
+    T.words (T.lines out !! 0) `shouldBe` ["branch", "errands", "accepted", "errand", "$", "sessions", "session", "$", "total", "$"]
+    T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "1/2", "(0", "?)", "0.07", "1", "0.01", "0.08"]
+    map (head . T.words) (drop 2 (T.lines out)) `shouldBe` ["main", "?"]
+    T.words (T.lines out !! 3) `shouldBe` ["?", "0", "0/0", "(0", "?)", "0.00", "1", "0.00", "0.00"]
+  it "--json carries rows and raw errands with exact session cost" $ do
+    (code, out, _, _) <- run (records base [] : transcripts) ["--transcripts", "/transcripts", "--json"]
+    code `shouldBe` ExitSuccess
+    let feat = head (rowsOf out)
+    lookupKey "branch" feat `shouldBe` Just (String "feat")
+    lookupKey "session_cost" feat `shouldBe` Just (Number 0.0055)
+    lookupKey "errand_cost" feat `shouldBe` Just (Number 0.07)
+    lookupKey "accepted" feat `shouldBe` Just (Number 1)
+    lookupKey "decided" feat `shouldBe` Just (Number 2)
+    lookupKey "undecided" feat `shouldBe` Just (Number 0)
+    lookupKey "last" feat `shouldBe` Just (String "2026-10-25T11:00:01Z")
+    case jsonAt ["errands"] out of
+      Just (Array es) -> map (lookupKey "id") (toList es) `shouldBe` [Just (String "E1"), Just (String "E2")]
+      other -> expectationFailure ("no errands array: " <> show other)
+  it "--branch and --since filter" $ do
+    let early = errand "E0" (at 24 23) (Just "feat") Ok 1 (Just 1) (Just "S0")
+        midnight = errand "E3" (at 25 0) (Just "feat") Ok 1 (Just 0.5) (Just "S6")
+    (code, out, _, _) <- run (records (early : midnight : base) [] : transcripts) ["--branch", "feat", "--since", "2026-10-25", "--transcripts", "/transcripts", "--json"]
+    code `shouldBe` ExitSuccess
+    map (lookupKey "branch") (rowsOf out) `shouldBe` [Just (String "feat")]
+    lookupKey "errands" (head (rowsOf out)) `shouldBe` Just (Number 3)
+    lookupKey "undecided" (head (rowsOf out)) `shouldBe` Just (Number 1)
+    (_, text, _, _) <- run (records base [] : transcripts) ["--since", "2026-10-25", "--transcripts", "/transcripts"]
+    map (head . T.words) (drop 1 (T.lines text)) `shouldBe` ["feat"]
+  it "unknown models and bad lines are reported, not fatal" $ do
+    let odd' = ("/transcripts/S7.jsonl", T.unlines [msg "S7" (Just "main") "2026-10-24T09:00:00Z" "m7" "claude-unknown-9" (10, 10, 0, 0), msg "S7" (Just "main") "2026-10-24T09:01:00Z" "m8" "claude-unknown-9" (10, 10, 0, 0)])
+    (code, out, err, _) <- run (records base ["{not json", ""] : odd' : transcripts) ["--transcripts", "/transcripts"]
+    code `shouldBe` ExitSuccess
+    err `shouldSatisfy` ("no price for claude-unknown-9" `T.isInfixOf`)
+    length (filter ("no price" `T.isInfixOf`) (T.lines err)) `shouldBe` 1
+    err `shouldSatisfy` ("skipped 1 unreadable" `T.isInfixOf`)
+    err `shouldNotSatisfy` ("synthetic" `T.isInfixOf`)
+    T.words (T.lines out !! 2) `shouldBe` ["main", "0", "0/0", "(0", "?)", "0.00", "2", "0.00", "0.00"]
+  it "no transcripts dir prints errands only" $ do
+    (code, out, err, _) <- run [records base []] ["--transcripts", "/nowhere"]
+    code `shouldBe` ExitSuccess
+    err `shouldSatisfy` ("no Claude Code transcripts at /nowhere" `T.isInfixOf`)
+    T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "1/2", "(0", "?)", "0.07", "0", "0.00", "0.07"]
