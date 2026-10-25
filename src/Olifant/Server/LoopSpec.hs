@@ -133,6 +133,12 @@ workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
       map (\(l, c) -> (lnRow l, cuName c)) (wsTouched ws) `shouldBe` [(2, "Table.label")]
       map cuName (wsUnaccounted ws) `shouldNotContain` ["Table.label"]
       map cuName (wsUnaccounted ws) `shouldNotContain` ["Table"]
+  it "(f3) a step anchored at a bare method name is touched, and its unit not unaccounted" $ do
+    let plan = "# T\n\n- [ ] tidy the label @" <> T.pack table <> ":label\n"
+    withLoop plan [(table, labelEdited)] $ \s p _ -> do
+      ws <- workSet s p "plans/t.md" (parsePlan plan)
+      map (\(l, c) -> (lnRow l, cuName c)) (wsTouched ws) `shouldBe` [(2, "Table.label")]
+      map cuName (wsUnaccounted ws) `shouldNotContain` ["Table.label"]
   it "(f2) a changed class is not unaccounted when one of its methods is" $
     withLoop "# T\n" [(table, labelEdited)] $ \s p _ -> do
       ws <- workSet s p "plans/t.md" (parsePlan "# T\n")

@@ -206,7 +206,9 @@ accounted s p = do
     ls <- parsePlan . fromMaybe "" <$> safely Nothing (readText ws (dir </> f))
     tests <- forM [a | l <- ls, lnKind l == TestChild, Just a <- [lnAnchor l]] $ \a ->
       resolveAnchor s p a <&> \r -> (rsRel r,,) <$> fmap namedName (rsUnit r) <*> rsFingerprint r
-    pure ([(rel, anUnit a, fp) | l <- ls, Just a <- [lnAnchor l], Verified fp <- [lnVerdict l], Just rel <- [confined (anPath a)]] ++ catMaybes tests)
+    verified <- forM [(rel, a, fp) | l <- ls, Just a <- [lnAnchor l], Verified fp <- [lnVerdict l], Just rel <- [confined (anPath a)]] $ \(rel, a, fp) ->
+      qualified s p a <&> \unit -> (rel, unit, fp)
+    pure (verified ++ catMaybes tests)
   rejected <- rejectedReadings s (prRoot p)
   pure (S.fromList (concat entries) <> rejected)
   where
@@ -234,6 +236,11 @@ workSet s p plan ls =
   baseline (prRoot p) plan >>= \case
     Nothing -> pure (WorkSet Nothing [] [] 0 [])
     Just b -> do
+      -- a step's anchor as the unit it resolves to (a bare method name is
+      -- its qualified one)
+      steps <- forM [(l, rel, a) | l <- ls, Step _ <- [lnKind l], Just a <- [lnAnchor l], Just rel <- [confined (anPath a)]] $ \(l, rel, a) ->
+        qualified s p a <&> \unit -> (l, (rel, unit))
+      let own = S.fromList (map snd steps)
       changed <- changedUnits s p b
       acc <- accounted s p
       let isAccounted cu = maybe False (\fp -> (cuPath cu, cuName cu, fp) `S.member` acc) (cuFingerprint cu)
@@ -241,13 +248,16 @@ workSet s p plan ls =
           (shown, rest) = splitAt unaccountedCap unaccounted
       pure (WorkSet (Just b) changed shown (length rest) [(l, cu) | (l, k) <- steps, cu <- changed, k `elem` keys cu])
   where
-    steps = [(l, (rel, anUnit a)) | l <- ls, Step _ <- [lnKind l], Just a <- [lnAnchor l], Just rel <- [confined (anPath a)]]
-    own = S.fromList (map snd steps)
     -- a class whose method (or other member) changed with it: the member
     -- speaks for it (a removed member does not)
     container changed cu = or [True | o <- changed, cuPath o == cuPath cu, cuChange o /= Removed, (cuName cu <> ".") `T.isPrefixOf` cuName o]
     -- a unit's (path, name), and where it was before a move
     keys cu = (cuPath cu, cuName cu) : [(o, n) | Moved o n <- [cuChange cu]]
+
+-- | The qualified name of the unit an anchor resolves to; its own name when
+-- it does not resolve (a removed unit, a moved one's old path).
+qualified :: ServerState -> Project -> Anchor -> IO Text
+qualified s p a = maybe (anUnit a) namedName . rsUnit <$> resolveAnchor s p a
 
 -- | A read-only git command's whole output; Nothing when it fails.
 gitText :: FilePath -> [String] -> IO (Maybe Text)
