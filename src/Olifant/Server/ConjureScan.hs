@@ -8,6 +8,7 @@ module Olifant.Server.ConjureScan
   , fakeCalls
   , actCall
   , helperOf
+  , handFake
   , Port (..)
   , protocolPorts
   , derivePort
@@ -19,6 +20,9 @@ module Olifant.Server.ConjureScan
   , conjurePortGate
   , portFrom
   , portCandidates
+  , missingMethod
+  , methodSignature
+  , protocolEnd
   ) where
 
 import Data.Char (isAlphaNum, isSpace, isUpper, toLower)
@@ -129,6 +133,31 @@ helperOf method src = listToMaybe [callee | (i, l) <- zip [0 :: Int ..] ls, Just
       let (callee, r3) = T.span isIdent (T.stripStart r2)
       if T.null x || T.null callee || not ("(" `T.isPrefixOf` r3) then Nothing else Just (x, callee)
 
+-- | The test NAME in TEXT (a test file) with its fake VAR handed to its first call of HELPER
+-- as PARAM: @command()@ becomes @command(bookings=repository)@, @command(x)@ becomes
+-- @command(x, bookings=repository)@; none when that test has no such call on one line, or
+-- the call already has the fake.
+handFake :: Text -> Text -> Text -> Text -> Text -> Maybe Text
+handFake name helper param var text = do
+  d <- listToMaybe [i | (i, l) <- numbered, ("def " <> name <> "(") `T.isPrefixOf` T.strip l]
+  let indent = indentOf (ls !! d)
+      body = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l > indent) (drop (d + 1) numbered)
+  (i, l') <- listToMaybe [(i, l') | (i, l) <- body, Just l' <- [handIn l]]
+  pure (T.intercalate "\n" [if j == i then l' else l | (j, l) <- numbered])
+  where
+    ls = T.splitOn "\n" text
+    numbered = zip [0 :: Int ..] ls
+    indentOf = T.length . T.takeWhile (== ' ')
+    handIn l =
+      listToMaybe
+        [ b <> helper <> "(" <> (if T.null (T.strip inner) then "" else inner <> ", ") <> param <> "=" <> var <> ")" <> T.drop (T.length args) r
+        | (b, a) <- occurrences helper l
+        , Just r <- [T.stripPrefix "(" a]
+        , Just args <- [balanced r]
+        , let inner = T.dropEnd 1 args
+        , not (passedIn ("(" <> args) var)
+        ]
+
 -- | A service's port: its Protocol class and its method lines.
 data Port = Port {ptName :: Text, ptMethods :: [Text]}
   deriving stock (Eq, Show)
@@ -230,3 +259,77 @@ portCandidates probabilities ports = take 2 (nub (probable ++ names))
   where
     names = map ptName ports
     probable = [n | (n, _) <- sortOn (Down . snd) probabilities, n `elem` names]
+
+-- | The method a check says a port lacks: @Cannot access attribute "M" for class "Q"@ in its
+-- words WHY, Q one of PORTS (the classes the unit takes): (Q, M).
+missingMethod :: [Text] -> Text -> Maybe (Text, Text)
+missingMethod ports why = listToMaybe [(q, m) | (_, r) <- T.breakOnAll "Cannot access attribute \"" why, Just (m, q) <- [names (T.drop (T.length "Cannot access attribute \"") r)], q `elem` ports]
+  where
+    names r = do
+      let (m, r1) = T.breakOn "\"" r
+      r2 <- T.stripPrefix "\" for class \"" r1
+      let (q, r3) = T.breakOn "\"" r2
+      if T.null m || T.null q || T.null r3 then Nothing else Just (m, q)
+
+-- | The signature of the method M a BODY calls on a port (@x = self.p.M(args)@, or the call
+-- alone), as the port-method snippet takes it: its parameters after @self@ (@, id: str@) and
+-- what it returns. The names: the test file's fake (@.M = lambda id: None@), else the
+-- arguments'; their types: an argument @a.f@ where the unit's MODULE has @a: T@ and @T@'s
+-- field @f: ty@, a string or a number; what it returns: @None@ for the call alone, else the
+-- port's own entity (a type its methods return whose name starts the port's) with @| None@
+-- when the body tests the result against @None@ or the fake returns it. None when any of
+-- that is not known.
+methodSignature :: Text -> Port -> Text -> Text -> Text -> Maybe (Text, Text)
+methodSignature m port body moduleText testText = do
+  (result, args) <- listToMaybe [(assignedTo l, as) | l <- T.lines body, (_, a) <- T.breakOnAll ("." <> m <> "(") l, Just r <- [balanced (T.drop (T.length m + 2) a)], let as = splitArgs (T.dropEnd 1 r)]
+  types <- traverse argType args
+  let fakeParams = listToMaybe [(splitArgs ps, T.strip res) | (_, a) <- T.breakOnAll ("." <> m <> " = lambda") testText, let r = T.drop (T.length m + 10) a, let (ps, res0) = T.breakOn ":" (T.takeWhile (/= '\n') r), not (T.null res0), let res = T.drop 1 res0]
+      names = case fakeParams of
+        Just (ns, _) | length ns == length args -> ns
+        _ -> map argName args
+      fakeNone = maybe False ((== "None") . snd) fakeParams
+  if any T.null names then Nothing else Just ()
+  returns <- case result of
+    Nothing -> Just "None"
+    Just v -> do
+      e <- entity
+      let optional = fakeNone || any (\l -> (v <> " is None") `T.isInfixOf` l || (v <> " is not None") `T.isInfixOf` l) (T.lines body)
+      Just (if optional then e <> " | None" else e)
+  pure (T.concat [", " <> n <> ": " <> t | (n, t) <- zip names types], returns)
+  where
+    assignedTo l =
+      let (v, r) = T.span isIdent (T.stripStart l)
+       in if not (T.null v) && "=" `T.isPrefixOf` T.stripStart r && not ("==" `T.isPrefixOf` T.stripStart r) then Just v else Nothing
+    splitArgs t = filter (not . T.null) (map T.strip (T.splitOn "," t))
+    argName a = case T.breakOnEnd "." a of
+      ("", n) -> if T.all isIdent n then n else ""
+      (_, n) -> if T.all isIdent n then n else ""
+    argType a
+      | Just _ <- T.stripPrefix "\"" a = Just "str"
+      | T.all (`elem` ['0' .. '9']) a, not (T.null a) = Just "int"
+      | (o, f) <- T.breakOn "." a, not (T.null f) = do
+          ty <- paramType o
+          fieldType ty (T.drop 1 f)
+      | otherwise = Nothing
+    -- @o: T@ in a def line of the module
+    paramType o = listToMaybe [T.strip (T.takeWhile (\ch -> ch /= ',' && ch /= ')') r) | l <- T.lines moduleText, "def " `T.isPrefixOf` T.strip l, (_, r0) <- T.breakOnAll ("(" <> o <> ": ") l <> T.breakOnAll (" " <> o <> ": ") l, let r = T.drop (T.length o + 3) r0]
+    -- @f: ty@ in class T's body
+    fieldType ty f = case dropWhile (not . (("class " <> ty) `T.isPrefixOf`)) (T.lines moduleText) of
+      _ : rest -> listToMaybe [T.strip t | l <- takeWhile (\l -> T.null l || isSpace (T.head l)) rest, Just t <- [T.stripPrefix (f <> ":") (T.strip l)]]
+      [] -> Nothing
+    entity = listToMaybe [e | d <- ptMethods port, let ret = snd (T.breakOnEnd "->" d), e <- idents ret, e /= ptName port, e `T.isPrefixOf` ptName port]
+    idents t = [w | w <- T.split (not . isIdent) t, not (T.null w), isUpper (T.head w)]
+
+-- | The line (1-based) a method goes in the file TEXT to end the Protocol class Q: the line
+-- after its last, when that is blank or the end of the file; none when Q is not there.
+protocolEnd :: Text -> Text -> Maybe Int
+protocolEnd q text = do
+  let ls = T.splitOn "\n" text
+      numbered = zip [1 :: Int ..] ls
+  start <- listToMaybe [i | (i, l) <- numbered, ("class " <> q <> "(") `T.isPrefixOf` l]
+  let body = takeWhile (\(_, l) -> T.null (T.strip l) || isSpace (T.head l)) (drop start numbered)
+      lastLine = maybe start fst (listToMaybe (reverse [x | x@(_, l) <- body, not (T.null (T.strip l))]))
+      next = lastLine + 1
+  case drop (next - 1) ls of
+    l : _ | T.null (T.strip l) -> Just next
+    _ -> Nothing

@@ -145,3 +145,4 @@ describeProgress = \case
   CutToHole hole n _ -> hole <> ": " <> cutSentence n
   WholeFile hole -> hole <> ": " <> wholeFileReason
   Verifying hole -> "testing " <> hole <> "…"
+  Said words -> words

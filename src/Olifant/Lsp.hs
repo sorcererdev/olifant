@@ -729,7 +729,7 @@ resumeOf = \case
       | Just (String tok) <- KM.lookup "token" ro
       , not (T.null tok)
       , Just (String c) <- KM.lookup "choice" ro
-      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop), ("reconjure", ResumeReconjure), ("accept", ResumeAccept), ("reject", ResumeReject), ("wire", ResumeWire)]
+      , Just choice <- lookup c [("continue", ResumeContinue), ("climb", ResumeClimb), ("stop", ResumeStop), ("reconjure", ResumeReconjure), ("accept", ResumeAccept), ("reject", ResumeReject), ("wire", ResumeWire), ("port", ResumePort)]
       , Just arg <- case KM.lookup "arg" ro of
           Nothing -> Just Nothing
           Just Aeson.Null -> Just Nothing
@@ -752,7 +752,7 @@ conjureJson = \case
     object
       [ "file" .= daFile a
       , "unit" .= daUnit a
-      , "edits" .= (if null (daEdits a) then Aeson.Null else toJSON (workspaceEdit (daEdits a)))
+      , "edits" .= (if null (daEdits a) then Aeson.Null else toJSON (acceptedEdit (daEdits a)))
       , "summary" .= daSummary a
       , "green" .= daGreen a
       , "tests" .= testsJson (daTests a)
@@ -1204,9 +1204,18 @@ fixData = \case
 -- its document's version (the editor refuses it if the text moved on). An
 -- edit of several files asks to be confirmed (spec §2).
 workspaceEdit :: [FileEdit] -> WorkspaceEdit
-workspaceEdit edits = WorkspaceEdit Nothing (Just (concatMap change edits)) annotations
+workspaceEdit = workspaceEditAsking True
+
+-- | Edits the person already accepted, step by step (a conjure's landing):
+-- one workspace edit that asks nothing again. Annotated, Neovim asks once per
+-- file and notifies once per file.
+acceptedEdit :: [FileEdit] -> WorkspaceEdit
+acceptedEdit = workspaceEditAsking False
+
+workspaceEditAsking :: Bool -> [FileEdit] -> WorkspaceEdit
+workspaceEditAsking asking edits = WorkspaceEdit Nothing (Just (concatMap change edits)) annotations
   where
-    several = length edits > 1
+    several = asking && length edits > 1
     plan = ChangeAnnotationIdentifier "olifant-plan"
     annotations
       | several = Just (M.singleton plan (ChangeAnnotation "Olifant plan" (Just True) (Just (T.pack (show (length edits)) <> " files"))))

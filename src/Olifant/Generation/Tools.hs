@@ -45,7 +45,7 @@ data Tools m = Tools
 -- 'CutToHole': a fill that repeated the file around its hole, cut to the
 -- hole (the lines dropped, the fill as cut); 'WholeFile': one that still
 -- answered a file, not placed (asked again).
-data ProgressEvent = Checking Text | Filling [Text] Int Text | Filled Text Int | Unfilled Text Text | AutoImported Text Text | Reindented Text Text | CutToHole Text Int Text | WholeFile Text | Verifying Text
+data ProgressEvent = Checking Text | Filling [Text] Int Text | Filled Text Int | Unfilled Text Text | AutoImported Text Text | Reindented Text Text | CutToHole Text Int Text | WholeFile Text | Verifying Text | Said Text
   deriving stock (Eq, Show)
 
 noTools :: Applicative m => Tools m

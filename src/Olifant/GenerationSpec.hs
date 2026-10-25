@@ -16,7 +16,7 @@ import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
 import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Steer (..), Steering (..), noSeed)
-import Olifant.Generation.FillPhase (assertionSpan, cutToHole, fillPhase, looksLikeFile, reindented)
+import Olifant.Generation.FillPhase (assertionSpan, cutToHole, fillLines, fillPhase, looksLikeFile, reindented)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
@@ -1090,6 +1090,10 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       (ws, snap) <- memoryWorkspace []
       Right _ <- generate ws noResolve tools [Step body M.empty] now Apply
       (M.lookup "src/t__test.py" <$> snap) `shouldReturn` Just "def collect(xs):\n    result = []\n    for x in xs:\n        if x is None:\n            return result\n        result.append(x)\n    return result\n"
+    it "(c0) a fill over a file's lines lands at their first line's indentation, as a placeholder's would" $ do
+      let base = "def f():\n    x = 1\n    return x\n\ndef g():\n    pass\n"
+      fillLines Nothing base (2, 3) "if a:\n    return 1\nreturn 2" `shouldBe` "def f():\n    if a:\n        return 1\n    return 2\n\ndef g():\n    pass\n"
+      fillLines Nothing base (6, 6) "return 3" `shouldBe` "def f():\n    x = 1\n    return x\n\ndef g():\n    return 3\n"
     it "(c) cut only where the fill repeats the file: the line below at the fill's own level, never nested; an opener held twice is no anchor" $ do
       let base = "def collect(xs):\n    result = []\n    PH\n    return result\n"
       -- the def repeated, an early return nested: cut at the base-level one

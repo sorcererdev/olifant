@@ -527,15 +527,21 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
     spentPause $ \s _ _ _ -> do
       a <- lands =<< keepIt s "conjure-1"
       applyEdits (daEdits a) stubbed `shouldBe` T.replace "raise NotImplementedError(\"later\")" "return 1" stubbed
-      daSummary a `shouldSatisfy` T.isPrefixOf "round 2's body is in the buffer, red: test_closes_a_table"
-      daSummary a `shouldSatisfy` T.isSuffixOf " \183 unsaved \183 u undoes it"
+      daSummary a `shouldBe` "kept round 2 \183 red: closes_a_table"
       daStopped a `shouldBe` True
       (daRounds a, daRungs a) `shouldBe` (2, ["qwen"])
       logged <- logOf s
-      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tkeep\n"
+      logged `shouldSatisfy` T.isInfixOf "\tconjure-resume\tkeep\t2\n"
       logged `shouldSatisfy` T.isInfixOf "kept round 2 \183 red: test_closes_a_table"
       again' <- resume s "conjure-1" ResumeStop Nothing
       either id (const "") again' `shouldSatisfy` T.isInfixOf "gone"
+  it "(c3) a steered conjure's progress names the round and the rung" $
+    steered id again reds greenOnSeats $ \s _ _ -> do
+      said <- newIORef []
+      _ <- conjureAt (\e -> modifyIORef' said (++ [describeProgress e])) path 6 Nothing s
+      words' <- readIORef said
+      words' `shouldSatisfy` any ("round 1 of 2 \183 asking qwen" `T.isPrefixOf`)
+      words' `shouldSatisfy` elem "round 1 \183 testing\8230"
   it "(c2) a bare stop lands nothing" $
     spentPause $ \s _ _ _ -> do
       a <- lands =<< resume s "conjure-1" ResumeStop Nothing
@@ -592,7 +598,7 @@ steeredSpecs = describe "a steered conjure (a [decide] model)" $ do
       M.member "conjure-1" . snd <$> readIORef (ssPaused s) `shouldReturn` False
   it "(j) pruned: by age, and by the file's version" $ do
     let v = RoundView 2 "qwen" "none" [] 0 Nothing Nothing False [] "" [] [] False []
-        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" "" (Title "u" 2 2 "qwen" "q" 1) [] "" [] [] "" [] "" [] [] 600 "u" Nothing)
+        pd = PausedConjure path (Just 1) 6 Nothing noSeed 0 ["qwen"] 2 1 v Nothing "" [] 0 M.empty M.empty M.empty [] "" [] (TestRun [] [] Nothing) [] Nothing Nothing Nothing (PausedAnswer "conjure-1" path "u" (6, 6) 2 "qwen" "" "" (Title "u" 2 2 "qwen" "q" 1) [] "" [] [] "" [] "" [] [] 600 "u" Nothing Nothing [] Nothing [] [] Nothing Nothing) [] [] []
         held docs = M.member "conjure-1" (pruned 10 docs (M.singleton "conjure-1" pd))
     M.null (pruned 601 (M.singleton path (1, stubbed)) (M.singleton "conjure-1" pd)) `shouldBe` True
     held (M.singleton path (1, stubbed)) `shouldBe` True

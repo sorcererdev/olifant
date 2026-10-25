@@ -273,8 +273,8 @@ checkSlots = unsafePerformIO (newMVar M.empty)
 
 -- | GHC already prints relative paths; makeRelative leaves those unchanged.
 relativeTo :: FilePath -> CheckReport -> CheckReport
-relativeTo dir (CheckReport missingPs broken unplaced) =
-  CheckReport [rel m | m <- missingPs] [(makeRelative dir p, t) | (p, t) <- broken] [(rel m, f) | (m, f) <- unplaced]
+relativeTo dir (Report missingPs broken unplaced ls) =
+  Report [rel m | m <- missingPs] [(makeRelative dir p, t) | (p, t) <- broken] [(rel m, f) | (m, f) <- unplaced] [((makeRelative dir p, t), l) | ((p, t), l) <- ls]
   where
     rel m = m {missingFile = makeRelative dir (missingFile m)}
 
@@ -351,7 +351,7 @@ into scope files = M.fromList [(rel, t) | (p, t) <- M.toList files, Just rel <- 
 
 outOf :: FilePath -> CheckReport -> CheckReport
 outOf "" report = report
-outOf scope (CheckReport missingPs broken unplaced) =
-  CheckReport [up m | m <- missingPs] [(scope </> p, t) | (p, t) <- broken] [(up m, f) | (m, f) <- unplaced]
+outOf scope (Report missingPs broken unplaced ls) =
+  Report [up m | m <- missingPs] [(scope </> p, t) | (p, t) <- broken] [(up m, f) | (m, f) <- unplaced] [((scope </> p, t), l) | ((p, t), l) <- ls]
   where
     up m = m {missingFile = scope </> missingFile m}

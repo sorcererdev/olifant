@@ -50,8 +50,9 @@ parsePyrightReport raw = case eitherDecodeStrict raw >>= parseEither report of
     let sites = [MissingPatterns (dFile d) (dLine d, dLine d) (unhandled (dMessage d)) Nothing | d <- ds, dRule d == Just "reportMatchNotExhaustive"]
         withSites = map missingFile sites
         consequence d = dRule d == Just "reportReturnType" && "must return value on all code paths" `T.isInfixOf` dMessage d && dFile d `elem` withSites
-        broken = [(dFile d, dMessage d) | d <- ds, dSeverity d == "error", dRule d /= Just "reportMatchNotExhaustive", not (consequence d)]
-     in Right (CheckReport sites broken [])
+        brokenDiags = [d | d <- ds, dSeverity d == "error", dRule d /= Just "reportMatchNotExhaustive", not (consequence d)]
+        broken = [(dFile d, dMessage d) | d <- brokenDiags]
+     in Right (Report sites broken [] [((dFile d, dMessage d), dLine d + 1) | d <- brokenDiags])
   where
     report :: Value -> Parser [Diag]
     report = withObject "report" $ \o -> o .: "generalDiagnostics" >>= traverse diag

@@ -2,7 +2,7 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, splitImports, addImports, isImportLine, projectFiles, reindented, cutToHole, looksLikeFile, markerOnly, wholeFile, wholeFileReason, cutSentence, testsFailed, passesAgainstRaise, assertionSpan) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, fillLines, splitImports, addImports, isImportLine, projectFiles, reindented, cutToHole, looksLikeFile, markerOnly, wholeFile, wholeFileReason, cutSentence, testsFailed, passesAgainstRaise, assertionSpan) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
@@ -380,17 +380,27 @@ projectFiles ws files lang judged = do
 -- (or, with `[import_merge]`, adds its new names to the line that imports
 -- from the same module).
 applyFills :: (FilePath -> Maybe Language) -> Map FilePath Text -> [(HoleSite, Text)] -> Map FilePath Text
-applyFills langOf = foldl (\files (s, f) -> M.adjust (fillIn s f) (holeFile s) files)
+applyFills langOf = foldl (\files (s, f) -> M.adjust (fillPlaceholder (langOf (holeFile s)) (holePlaceholder s) f) (holeFile s) files)
+
+-- | TEXT with the fill F in place of PLACEHOLDER, as 'applyFills' places it.
+fillPlaceholder :: Maybe Language -> Text -> Text -> Text -> Text
+fillPlaceholder lang placeholder f t = case T.breakOn placeholder t of
+  (_, "") -> t
+  (before, after) ->
+    let (imports, code) = splitImports (langImports =<< lang) f
+        lineStart = snd (T.breakOnEnd "\n" before)
+        indent = T.takeWhile (`elem` (" \t" :: String)) lineStart
+        body = T.intercalate ("\n" <> indent) (dedented code)
+     in maybe id (\l -> addImports l imports) lang (before <> body <> T.drop (T.length placeholder) after)
+
+-- | TEXT with its lines L1..L2 (1-based) the fill F, at L1's indentation: what a hole
+-- over those lines lands as, filled with F (a conjure's round, kept).
+fillLines :: Maybe Language -> Text -> (Int, Int) -> Text -> Text
+fillLines lang text (l1, l2) f = fillPlaceholder lang marker f (T.intercalate "\n" (take (l1 - 1) ls ++ [indent <> marker] ++ drop l2 ls))
   where
-    fillIn s f t = case T.breakOn (holePlaceholder s) t of
-      (_, "") -> t
-      (before, after) ->
-        let lang = langOf (holeFile s)
-            (imports, code) = splitImports (langImports =<< lang) f
-            lineStart = snd (T.breakOnEnd "\n" before)
-            indent = T.takeWhile (`elem` (" \t" :: String)) lineStart
-            body = T.intercalate ("\n" <> indent) (dedented code)
-         in maybe id (\l -> addImports l imports) lang (before <> body <> T.drop (T.length (holePlaceholder s)) after)
+    ls = T.splitOn "\n" text
+    indent = T.takeWhile (`elem` (" \t" :: String)) (fromMaybe "" (listToMaybe (drop (l1 - 1) ls)))
+    marker = "\0olifant-fill\0"
 
 -- | A fill's leading import lines (blank lines between them dropped), and
 -- the code after them.

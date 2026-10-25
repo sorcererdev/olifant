@@ -1,9 +1,11 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 -- | What a compiler check reports, and the per-format support the check loop
 -- uses to read it and act on it (spec §5.6). Language-neutral.
 module Olifant.Language.Diagnostics
   ( MissingPatterns (..)
   , missing
-  , CheckReport (..)
+  , CheckReport (Report, CheckReport, reportMissing, reportBroken, reportUnplaced, reportLines)
   , CompilerSupport (..)
   , declarationAt
   , indentBlockEnd
@@ -28,8 +30,18 @@ missing f c ps = MissingPatterns f c ps Nothing
 -- problem (path, problem title), and sites the loop cannot extend (with the
 -- function they are in). A broken file hides its dependents' missing
 -- patterns, so callers must not read "nothing missing" as "complete".
-data CheckReport = CheckReport {reportMissing :: [MissingPatterns], reportBroken :: [(FilePath, Text)], reportUnplaced :: [(MissingPatterns, Text)]}
+-- The line (1-based) of a broken file's problem, when the check says it
+-- (pyright does), is beside it.
+data CheckReport = Report {reportMissing :: [MissingPatterns], reportBroken :: [(FilePath, Text)], reportUnplaced :: [(MissingPatterns, Text)], reportLines :: [((FilePath, Text), Int)]}
   deriving stock (Eq, Show)
+
+-- | A report with no lines said (most checks say none).
+pattern CheckReport :: [MissingPatterns] -> [(FilePath, Text)] -> [(MissingPatterns, Text)] -> CheckReport
+pattern CheckReport m b u <- Report m b u _
+  where
+    CheckReport m b u = Report m b u []
+
+{-# COMPLETE CheckReport #-}
 
 -- | The language half of a compiler check, one per `[check] format`.
 data CompilerSupport = CompilerSupport
