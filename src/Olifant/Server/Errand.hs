@@ -43,7 +43,9 @@ data RunResult = RunResult
 -- 'Empty' (answered, nothing in the grammar) is the caller's to set.
 data Status = Ok | Empty | Error | Timeout | Cancelled deriving (Eq, Show)
 
-data RunFailure = RunFailure {rfStatus :: Status, rfWhy :: Text}
+-- | 'rfSession' is the runner's @session_id@ when it answered but reported
+-- @is_error@; Nothing when it never answered (timeout, cancel, exit, exec).
+data RunFailure = RunFailure {rfStatus :: Status, rfWhy :: Text, rfSession :: Maybe Text}
   deriving (Eq, Show)
 
 statusName :: Status -> Text
@@ -64,25 +66,23 @@ runnerArgs cfg verb testTools =
 runClaude :: Cancel -> PlansConfig -> Verb -> [Text] -> FilePath -> Text -> IO (Either RunFailure RunResult)
 runClaude token cfg verb testTools root prompt =
   runBytesCancellable token (Just (pcTimeout cfg)) "env" (["-u", "CLAUDECODE", pcRunner cfg] ++ runnerArgs cfg verb testTools) (Just root) (TE.encodeUtf8 prompt) >>= \case
-    Left why -> pure (Left (RunFailure Error why))
-    Right P.Cancelled -> pure (Left (RunFailure Cancelled "cancelled"))
-    Right P.TimedOut -> pure (Left (RunFailure Timeout ("timed out after " <> T.pack (show (pcTimeout cfg)) <> " s")))
+    Left why -> pure (Left (RunFailure Error why Nothing))
+    Right P.Cancelled -> pure (Left (RunFailure Cancelled "cancelled" Nothing))
+    Right P.TimedOut -> pure (Left (RunFailure Timeout ("timed out after " <> T.pack (show (pcTimeout cfg)) <> " s") Nothing))
     Right (P.Finished (ExitFailure n) out err) ->
-      pure (Left (RunFailure Error (T.pack (pcRunner cfg) <> " exited " <> T.pack (show n) <> ": " <> first120 out err)))
+      pure (Left (RunFailure Error (T.pack (pcRunner cfg) <> " exited " <> T.pack (show n) <> ": " <> first120 out err) Nothing))
     Right (P.Finished ExitSuccess out err) -> pure $ case decodeStrict out of
       Just (Object o) -> fromObject o
-      _ -> Left (RunFailure Error (first120 out err))
+      _ -> Left (RunFailure Error (first120 out err) Nothing)
 
 fromObject :: KM.KeyMap Value -> Either RunFailure RunResult
 fromObject o = case KM.lookup "result" o of
-  _ | KM.lookup "is_error" o == Just (Bool True) -> Left (RunFailure Error (T.take 120 (maybe "the runner reported an error" asText (KM.lookup "result" o))))
+  _ | KM.lookup "is_error" o == Just (Bool True) -> Left (RunFailure Error (T.take 120 (maybe "the runner reported an error" asText (KM.lookup "result" o))) session)
   Just (String t) ->
     Right
       RunResult
         { rrText = t, rrSeconds = maybe 0 (/ 1000) (num "duration_ms" o), rrCost = num "total_cost_usd" o
-        , rrSession = case KM.lookup "session_id" o of
-            Just (String s) -> Just s
-            _ -> Nothing
+        , rrSession = session
         , rrTurns = round <$> num "num_turns" o
         , rrTokens = case KM.lookup "usage" o of
             Just (Object u) -> Just (tokens "input_tokens" "output_tokens" "cache_creation_input_tokens" "cache_read_input_tokens" u)
@@ -93,8 +93,11 @@ fromObject o = case KM.lookup "result" o of
         , rrDenials = case KM.lookup "permission_denials" o of
             Just (Array a) -> length a
             _ -> 0 }
-  _ -> Left (RunFailure Error (T.take 120 (T.pack (show (Object o)))))
+  _ -> Left (RunFailure Error (T.take 120 (T.pack (show (Object o)))) session)
   where
+    session = case KM.lookup "session_id" o of
+      Just (String s) -> Just s
+      _ -> Nothing
     num k m = case KM.lookup (K.fromText k) m of
       Just (Number n) -> Just (toRealFloat n :: Double)
       _ -> Nothing

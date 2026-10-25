@@ -37,9 +37,16 @@ changed is shown stale. A line inside a code fence is read like any other.
   The prompt holds the plan and the bodies of the units it anchors. The answer is read against the
   grammar: lines outside it are dropped, anchors that do not resolve are kept as `? not found`,
   and both are counted in the notification. An answer with nothing in the grammar is an error.
-- Each errand writes a line to `.olifant/state/steps.log`: `plan-ask`, `plan-validate` or
-  `plan-do`, the plan and line, lines returned, anchors resolved, seconds, cost and model. A failed
-  run writes none. Measured on a clone of the demo: `plan-ask` 4.1 s, $0.054; `plan-validate`
+- Every errand that reaches the runner, however it ends, appends one JSON line to
+  `.olifant/state/errands.jsonl` (ignored by git): its id (the runner's session when it answered),
+  when it started, the verb, plan, row and section, the branch, the model, its status and why, the
+  session, seconds, turns, tokens, cost and per-model use, the prompt's length and the units
+  grounded, and the blocks, lines, dropped lines, unresolved anchors, changed files and permission
+  denials of its answer. The status is `ok`, `empty` (answered, nothing in the grammar), `error`,
+  `timeout` or `cancelled`. A line the verb refuses writes nothing. The answer carries the same id.
+- `.olifant/state/steps.log` keeps a readable echo of each: `plan-ask`, `plan-validate` or
+  `plan-do`, the plan and line, lines returned, anchors resolved, seconds, cost, model and status.
+  Measured on a clone of the demo: `plan-ask` 4.1 s, $0.054; `plan-validate`
   10.7 s, $0.077; `plan-do` 5.3 s, $0.060 (model `sonnet`).
 
 ## `[plans]`

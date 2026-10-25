@@ -9,7 +9,7 @@ prompt=$(cat)
 case "$prompt" in
   *SHIM:FAIL*) echo "no credentials" >&2; exit 2 ;;
   *SHIM:LOGIN*) echo "Please run /login"; exit 0 ;;
-  *SHIM:PROSE*) echo '{"result":"Sure! Here is what I found."}'; exit 0 ;;
+  *SHIM:PROSE*) echo '{"result":"Sure! Here is what I found.","session_id":"shim-prose"}'; exit 0 ;;
   *SHIM:ERRORJSON*) printf '{"type":"result","is_error":true,"result":"the runner reported an error","session_id":"shim-%s"}\n' "$$"; exit 0 ;;
   *SHIM:SLEEP*) exec sleep 30 ;;
   *SHIM:SLOW*) sleep 2 ;;

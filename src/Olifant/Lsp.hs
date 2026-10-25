@@ -1274,7 +1274,8 @@ errandRequest env verb title req params respond = case (documentPath params, lin
 errandJson :: T.Text -> ErrandAnswer -> Value
 errandJson verb a =
   object
-    [ "verb" .= verb
+    [ "id" .= eaId a
+    , "verb" .= verb
     , "blocks" .= [object ["after" .= blAfterRow b, "after_text" .= blAfterText b, "lines" .= [object ["text" .= ghText g, "fp" .= fp] | (g, fp) <- zip (blLines b) fps]] | (b, fps) <- eaBlocks a]
     , "dropped" .= eaDropped a
     , "unresolved" .= eaUnresolved a
