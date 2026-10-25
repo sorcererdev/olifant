@@ -10,6 +10,7 @@ module Olifant.Toml
   , inKey
   , text
   , int
+  , number
   , bool
   , list
   , table
@@ -28,7 +29,7 @@ import Data.Text qualified as T
 import Olifant.Suggest (closest)
 import Toml qualified
 
-data Tree = TText Text | TInt Integer | TBool Bool | TList [Tree] | TTable Table | TOther Text
+data Tree = TText Text | TInt Integer | TDouble Double | TBool Bool | TList [Tree] | TTable Table | TOther Text
   deriving stock (Eq, Show)
 
 type Table = Map Text Tree
@@ -44,6 +45,7 @@ parseToml src = case Toml.parse src of
     fromValue = \case
       Toml.Text' _ t -> TText t
       Toml.Integer' _ i -> TInt i
+      Toml.Double' _ d -> TDouble d
       Toml.Bool' _ b -> TBool b
       Toml.List' _ xs -> TList (map fromValue xs)
       Toml.Table' _ t -> TTable (fromTable t)
@@ -80,6 +82,13 @@ int = \case
   TInt i -> Right i
   other -> Left ("expected an integer, got " <> describeTree other)
 
+-- | A float, or an integer read as one (`input = 2` means 2.0).
+number :: Tree -> Either Text Double
+number = \case
+  TDouble d -> Right d
+  TInt i -> Right (fromInteger i)
+  other -> Left ("expected a number, got " <> describeTree other)
+
 bool :: Tree -> Either Text Bool
 bool = \case
   TBool b -> Right b
@@ -115,6 +124,7 @@ describeTree :: Tree -> Text
 describeTree = \case
   TText _ -> "a string"
   TInt _ -> "an integer"
+  TDouble _ -> "a float"
   TBool _ -> "a boolean"
   TList _ -> "an array"
   TTable _ -> "a table"

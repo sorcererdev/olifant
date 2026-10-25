@@ -15,6 +15,8 @@ module Olifant.Catalog
   , catalogPlans
   , PlansConfig (..)
   , defaultPlans
+  , Price (..)
+  , defaultPrices
   , catalogPacks
   , catalogPackRoots
   , catalogBroken
@@ -125,18 +127,35 @@ data Catalog = Catalog
   }
 
 -- | `[plans]`: the plans directory, the runner command, its model, a timeout
--- in seconds, and extra `--allowedTools` entries for `do`.
+-- in seconds, extra `--allowedTools` entries for `do`, and the price table
+-- (full model id to list price) that errand cost telemetry uses.
 data PlansConfig = PlansConfig
   { pcDir :: FilePath
   , pcRunner :: FilePath
   , pcModel :: Text
   , pcTimeout :: Int
   , pcDoTools :: [Text]
+  , pcPrices :: [(Text, Price)]
   }
   deriving (Eq, Show)
 
 defaultPlans :: PlansConfig
-defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 []
+defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices
+
+-- | One model's list price in USD per million tokens: input, output, cache
+-- read, and cache writes with the 5-minute and 1-hour TTLs.
+data Price = Price {prInput, prOutput, prCacheRead, prCacheWrite5m, prCacheWrite1h :: Double}
+  deriving (Eq, Show)
+
+-- | List prices on 2026-10-25, keyed by the full model ids transcripts name.
+-- `[plans.prices.<model>]` replaces a row or adds one.
+defaultPrices :: [(Text, Price)]
+defaultPrices =
+  [ ("claude-opus-5-5", Price 4 20 0.20 5 8)
+  , ("claude-sonnet-5-5", Price 2 10 0.20 2.5 4)
+  , ("claude-haiku-5-5", Price 0.10 0.50 0.01 0.125 0.20)
+  , ("claude-fable-5-1", Price 10 50 0.25 12.5 20)
+  ]
 
 -- | `[recognize] enabled` (default true) and `model` (a [model.backends]
 -- name; none: deterministic only).
@@ -280,7 +299,7 @@ openProjectCatalogWith loadP root paths = do
       Toml.optional "plans" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "plans" $ do
-          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools"] t
+          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools", "prices"] t
           fmap Just $
             PlansConfig
               <$> (maybe (pcDir defaultPlans) T.unpack <$> Toml.optional "dir" Toml.text t)
@@ -288,6 +307,22 @@ openProjectCatalogWith loadP root paths = do
               <*> (fromMaybe (pcModel defaultPlans) <$> Toml.optional "model" Toml.text t)
               <*> (maybe (pcTimeout defaultPlans) fromInteger <$> Toml.optional "timeout" Toml.int t)
               <*> (fromMaybe (pcDoTools defaultPlans) <$> Toml.optional "do_tools" (Toml.list Toml.text) t)
+              <*> (maybe (pcPrices defaultPlans) (overlayPrices (pcPrices defaultPlans)) <$> (Toml.optional "prices" Toml.table t >>= traverse (Toml.inKey "prices" . pricesIn)))
+    pricesIn ps = traverse (\(m, v) -> Toml.inKey m ((m,) <$> (Toml.table v >>= priceIn))) (M.toList ps)
+    priceKeys = ["input", "output", "cache_read", "cache_write_5m", "cache_write_1h"]
+    priceIn p = do
+      Toml.onlyKeys priceKeys p
+      case filter (`M.notMember` p) priceKeys of
+        [] -> Right ()
+        missing -> Left ("missing " <> T.intercalate ", " ["`" <> k <> "`" | k <- missing] <> " (a price row needs all five, in USD per million tokens)")
+      Price
+        <$> Toml.required "input" Toml.number p
+        <*> Toml.required "output" Toml.number p
+        <*> Toml.required "cache_read" Toml.number p
+        <*> Toml.required "cache_write_5m" Toml.number p
+        <*> Toml.required "cache_write_1h" Toml.number p
+    -- Configured rows replace defaults of the same model; new models follow.
+    overlayPrices defs given = [(m, fromMaybe p (lookup m given)) | (m, p) <- defs] ++ [r | r@(m, _) <- given, m `notElem` map fst defs]
     migrateIn top =
       Toml.optional "migrate" Toml.table top >>= \case
         Nothing -> Right Nothing
