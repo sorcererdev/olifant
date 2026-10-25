@@ -130,6 +130,7 @@ library
     Olifant.Server.Hints
     Olifant.Server.Holes
     Olifant.Server.Jobs
+    Olifant.Server.Loop
     Olifant.Server.Model
     Olifant.Server.Mutate
     Olifant.Server.Order
@@ -300,6 +301,8 @@ test-suite spec
     Olifant.Server.Hints
     Olifant.Server.Holes
     Olifant.Server.Jobs
+    Olifant.Server.Loop
+    Olifant.Server.LoopSpec
     Olifant.Server.Model
     Olifant.Server.Mutate
     Olifant.Server.Order

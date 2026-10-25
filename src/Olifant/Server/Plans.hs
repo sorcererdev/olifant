@@ -13,6 +13,9 @@ module Olifant.Server.Plans
   , ErrandAnswer (..)
   , runErrand
   , currentBranch
+  , gitOut
+  , confined
+  , safely
   ) where
 
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
