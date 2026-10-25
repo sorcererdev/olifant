@@ -25,7 +25,7 @@ import Olifant.Generator (GeneratorId (..))
 import Olifant.Language (Syntax, noChecker, noRunner, noSyntax, noVerifier)
 import Olifant.Workspace (memoryWorkspace)
 import Olifant.Server.Errand (Status (..))
-import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), recordJson)
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), recordJson)
 import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Control.Monad (forM)
@@ -1204,10 +1204,19 @@ plansCostSpec = describe "plans cost" $ do
     code `shouldBe` ExitSuccess
     err `shouldBe` ""
     T.lines out !! 0 `shouldSatisfy` ("branch" `T.isPrefixOf`)
-    T.words (T.lines out !! 0) `shouldBe` ["branch", "errands", "accepted", "errand", "$", "sessions", "session", "$", "total", "$"]
-    T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "1/2", "(0", "?)", "0.07", "1", "0.01", "0.08"]
+    T.words (T.lines out !! 0) `shouldBe` ["branch", "errands", "reconciles", "reconcile", "s", "accepted", "errand", "$", "sessions", "session", "$", "total", "$"]
+    T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "0", "0.0", "1/2", "(0", "?)", "0.07", "1", "0.01", "0.08"]
     map (head . T.words) (drop 2 (T.lines out)) `shouldBe` ["main", "?"]
-    T.words (T.lines out !! 3) `shouldBe` ["?", "0", "0/0", "(0", "?)", "0.00", "1", "0.00", "0.00"]
+    T.words (T.lines out !! 3) `shouldBe` ["?", "0", "0", "0.0", "0/0", "(0", "?)", "0.00", "1", "0.00", "0.00"]
+  it "counts a branch's reconciles and sums their climb seconds" $ do
+    let rec i t climbs = AReconcile (ReconcileRecord i (at 25 t) "plans/p.md" (Just "feat") Nothing False 1 0 0 0 1 climbs [] [])
+        rcs = [rec "R1" 13 [("local", 1.0), ("sonnet", 1.5)], rec "R2" 14 []]
+    (_, out, _, _) <- run (records (base ++ rcs) [] : transcripts) ["--transcripts", "/transcripts"]
+    T.words (T.lines out !! 0) `shouldBe` ["branch", "errands", "reconciles", "reconcile", "s", "accepted", "errand", "$", "sessions", "session", "$", "total", "$"]
+    take 4 (T.words (T.lines out !! 1)) `shouldBe` ["feat", "2", "2", "2.5"]
+    (_, js, _, _) <- run (records (base ++ rcs) [] : transcripts) ["--transcripts", "/transcripts", "--json"]
+    lookupKey "reconciles" (head (rowsOf js)) `shouldBe` Just (Number 2)
+    lookupKey "reconcile_seconds" (head (rowsOf js)) `shouldBe` Just (Number 2.5)
   it "--json carries rows and raw errands with exact session cost" $ do
     (code, out, _, _) <- run (records base [] : transcripts) ["--transcripts", "/transcripts", "--json"]
     code `shouldBe` ExitSuccess

@@ -9,7 +9,7 @@ import Data.List (nub, sortOn)
 import Numeric (showFFloat)
 import Olifant.Server.Errand (Tokens (..))
 import Olifant.Server.Errand qualified as Errand
-import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), readRecords, recordJson, recordsPath)
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), readRecords, recordJson, recordsPath)
 import Olifant.Transcripts (Message (..), messageCost, readTranscripts, slugOf)
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), Stance (..), parseFills, replayFiller)
@@ -575,7 +575,8 @@ runPlansCost rt cat onlyBranch since asJson transcripts = do
   where
     rowJson r =
       object
-        [ "branch" .= rowBranch r, "errands" .= rowErrands r, "accepted" .= rowAccepted r, "decided" .= rowDecided r
+        [ "branch" .= rowBranch r, "errands" .= rowErrands r, "reconciles" .= rowReconciles r
+        , "reconcile_seconds" .= rowReconcileSeconds r, "accepted" .= rowAccepted r, "decided" .= rowDecided r
         , "undecided" .= rowUndecided r, "errand_cost" .= rowErrandCost r, "sessions" .= rowSessions r
         , "session_cost" .= rowSessionCost r, "total_cost" .= (rowErrandCost r + rowSessionCost r), "last" .= stamp (rowLast r) ]
     stamp = T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ"
@@ -583,7 +584,7 @@ runPlansCost rt cat onlyBranch since asJson transcripts = do
 -- | One branch's line of `plans cost`. Accepted, decided and undecided
 -- count ghost blocks of the branch's answered (ok) errands.
 data Row = Row
-  { rowBranch :: Text, rowErrands :: Int, rowAccepted :: Int, rowDecided :: Int, rowUndecided :: Int
+  { rowBranch :: Text, rowErrands :: Int, rowReconciles :: Int, rowReconcileSeconds :: Double, rowAccepted :: Int, rowDecided :: Int, rowUndecided :: Int
   , rowErrandCost :: Double, rowSessions :: Int, rowSessionCost :: Double, rowLast :: UTCTime }
   deriving (Eq, Show)
 
@@ -609,41 +610,45 @@ costRows prices since records messages = sortOn (Down . rowLast) (map row branch
   where
     errands = [e | AnErrand e <- records, after since (erAt e)]
     msgs = countedMessages since records messages
-    branches = nub (map (branchName . erBranch) errands ++ map (branchName . msBranch) msgs)
+    reconciles = [r | AReconcile r <- records, after since (rcAt r)]
+    branches = nub (map (branchName . erBranch) errands ++ map (branchName . rcBranch) reconciles ++ map (branchName . msBranch) msgs)
     -- the later record of a block wins (fromListWith passes the new one first)
     outcomes = M.fromListWith M.union [(orId o, M.singleton (orBlock o) (orOutcome o)) | AnOutcome o <- records]
     blocksOf e = [o | (b, o) <- M.toList (M.findWithDefault M.empty (erId e) outcomes), b >= 0, b < erBlocks e]
     row b =
       let es = filter ((== b) . branchName . erBranch) errands
           ms = filter ((== b) . branchName . msBranch) msgs
+          rs = filter ((== b) . branchName . rcBranch) reconciles
           oks = filter ((== Errand.Ok) . erStatus) es
           outs = concatMap blocksOf oks
        in Row
             { rowBranch = b
             , rowErrands = length es
+            , rowReconciles = length rs
+            , rowReconcileSeconds = sum [sec | r <- rs, (_, sec) <- rcClimbs r]
             , rowAccepted = length (filter (== "accepted") outs)
             , rowDecided = length outs
             , rowUndecided = sum [max 0 (erBlocks e - length (blocksOf e)) | e <- oks]
             , rowErrandCost = sum (map (fromMaybe 0 . erCost) es)
             , rowSessions = S.size (S.fromList (map msSession ms))
             , rowSessionCost = sum (map (fromMaybe 0 . messageCost prices) ms)
-            , rowLast = maximum (map erAt es ++ map msAt ms)
+            , rowLast = maximum (map erAt es ++ map rcAt rs ++ map msAt ms)
             }
 
 -- | The rows as a table: columns two spaces apart, money to the cent.
 costTable :: [Row] -> Text
 costTable rows = T.unlines (map line (header : map cells rows))
   where
-    header = ["branch", "errands", "accepted", "errand $", "sessions", "session $", "total $"]
+    header = ["branch", "errands", "reconciles", "reconcile s", "accepted", "errand $", "sessions", "session $", "total $"]
     cells r =
-      [ rowBranch r, tshow (rowErrands r), tshow (rowAccepted r) <> "/" <> tshow (rowDecided r) <> " (" <> tshow (rowUndecided r) <> " ?)"
+      [ rowBranch r, tshow (rowErrands r), tshow (rowReconciles r), T.pack (showFFloat (Just 1) (rowReconcileSeconds r) ""), tshow (rowAccepted r) <> "/" <> tshow (rowDecided r) <> " (" <> tshow (rowUndecided r) <> " ?)"
       , money (rowErrandCost r), tshow (rowSessions r), money (rowSessionCost r), money (rowErrandCost r + rowSessionCost r) ]
     tshow = T.pack . show
     money x = T.pack (showFFloat (Just 2) x "")
     widths = foldr (zipWith max . map T.length) (map (const 0) header) (header : map cells rows)
     -- the branch and acceptance read left to right; numbers line up right
     line cs = T.stripEnd (T.intercalate "  " (zipWith3 pad [0 :: Int ..] widths cs))
-    pad i w c = if i `elem` [0, 2] then T.justifyLeft w ' ' c else T.justifyRight w ' ' c
+    pad i w c = if i `elem` [0, 4] then T.justifyLeft w ' ' c else T.justifyRight w ' ' c
 
 -- | Snippets (spec §5.3): a snippet needs `--at`; its line is read from the
 -- overlay's text when there is one.
