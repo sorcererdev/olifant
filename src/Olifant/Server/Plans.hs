@@ -12,9 +12,11 @@ module Olifant.Server.Plans
   , planFiles
   , ErrandAnswer (..)
   , runErrand
+  , currentBranch
   ) where
 
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
+import Data.Functor ((<&>))
 import Data.List (find, isPrefixOf, nub)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
@@ -22,7 +24,8 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunResult (..), Verb (..), cutBody, errandPrompt, groundingLimit, parseAnswer, runClaude)
+import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, errandPrompt, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, projectFor)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative)
@@ -164,9 +167,11 @@ planFiles s p text = do
 -- | An errand's answer: its blocks, each ghost line with its anchor's
 -- fingerprint when that resolved (Nothing otherwise); the lines the
 -- grammar dropped, the anchored lines that did not resolve, the run's
--- seconds and cost, and (a `do`) the files changed in the tree.
+-- seconds and cost, and (a `do`) the files changed in the tree. 'eaId' is
+-- the id of the errand's record (outcomes name it).
 data ErrandAnswer = ErrandAnswer
-  { eaBlocks :: [(Block, [Maybe Text])]
+  { eaId :: Text
+  , eaBlocks :: [(Block, [Maybe Text])]
   , eaDropped :: Int
   , eaUnresolved :: Int
   , eaSeconds :: Double
@@ -179,7 +184,10 @@ data ErrandAnswer = ErrandAnswer
 -- line grounded in the units its section points at, the runner run from the
 -- project's root, its answer read into ghost blocks and logged. Left is one
 -- sentence: the line does not fit the verb, the runner failed, or it
--- answered nothing in the grammar. Nothing is written to the plan.
+-- answered nothing in the grammar. Nothing is written to the plan. Every
+-- errand that reaches the runner, however it ends, appends a record to
+-- `.olifant/state/errands.jsonl` and a line to the step log; a line the
+-- verb refuses writes neither.
 runErrand :: Cancel -> Verb -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text ErrandAnswer)
 runErrand token verb path row s0 =
   projectFor path s0 >>= \case
@@ -200,26 +208,53 @@ runErrand token verb path row s0 =
               anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] [a | l <- around, Just a <- [lnAnchor l]])
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
           let tools = if verb == Do then testTools p else []
-          runClaude token cfg verb tools root (errandPrompt verb text ls target grounded) >>= \case
-            Left why -> pure (Left why)
+              prompt = errandPrompt verb text ls target grounded
+              rel = makeRelative root (normalisePath path)
+          branch <- currentBranch root
+          now <- pNow (ssPorts s)
+          -- this ending's record and step log line (neither can fail the
+          -- errand); its id, which the answer carries
+          let record status why session mrr blocks dropped ghosts resolved unresolved changed = do
+                let rid = errandId now verbName rel row session
+                appendRecord (ssPorts s) root . AnErrand $
+                  ErrandRecord
+                    { erId = rid, erAt = now, erVerb = verbName, erPlan = rel, erRow = row, erSection = secTitle sec
+                    , erBranch = branch, erModel = pcModel cfg, erStatus = status, erWhy = why
+                    , erSession = session, erSeconds = rrSeconds <$> mrr, erTurns = mrr >>= rrTurns
+                    , erTokens = mrr >>= rrTokens, erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr
+                    , erPromptChars = T.length prompt, erGrounded = length grounded
+                    , erBlocks = blocks, erLines = ghosts, erDropped = dropped, erUnresolved = unresolved
+                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr }
+                appendStepLine (ssPorts s) root
+                  [ "plan-" <> verbName
+                  , T.pack rel <> ":" <> tshow row
+                  , tshow ghosts <> " lines"
+                  , tshow (resolved :: Int) <> " resolve"
+                  , tshow (maybe 0 rrSeconds mrr) <> " s"
+                  , maybe "cost unknown" (\c -> tshow c <> " usd") (mrr >>= rrCost)
+                  , pcModel cfg
+                  , statusName status
+                  ]
+                pure rid
+          runClaude token cfg verb tools root prompt >>= \case
+            Left f -> do
+              changed <- if verb == Do then changedFiles root else pure []
+              _ <- record (rfStatus f) (Just (rfWhy f)) (rfSession f) Nothing 0 0 0 0 0 (length changed)
+              pure (Left (rfWhy f))
             Right rr -> case parseAnswer verb ls target (rrText rr) of
-              ([], _) -> pure (Left (verbName <> " answered nothing in the grammar"))
+              ([], dropped) -> do
+                changed <- if verb == Do then changedFiles root else pure []
+                let why = verbName <> " answered nothing in the grammar"
+                _ <- record Empty (Just why) (rrSession rr) (Just rr) 0 dropped 0 0 0 (length changed)
+                pure (Left why)
               (blocks, dropped) -> do
                 fps <- mapM (mapM (fpOf s p) . blLines) blocks
                 changed <- if verb == Do then changedFiles root else pure []
                 let ghosts = concatMap blLines blocks
                     resolved = length (filter isJust (concat fps))
                     unresolved = length (filter (isJust . ghAnchor) ghosts) - resolved
-                appendStepLine (ssPorts s) root
-                  [ "plan-" <> verbName
-                  , T.pack (makeRelative root (normalisePath path)) <> ":" <> tshow row
-                  , tshow (length ghosts) <> " lines"
-                  , tshow resolved <> " resolve"
-                  , tshow (rrSeconds rr) <> " s"
-                  , maybe "cost unknown" (\c -> tshow c <> " usd") (rrCost rr)
-                  , pcModel cfg
-                  ]
-                pure (Right (ErrandAnswer (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed))
+                rid <- record Ok Nothing (rrSession rr) (Just rr) (length blocks) dropped (length ghosts) resolved unresolved (length changed)
+                pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed))
         _ -> pure (Left (verbName <> " needs a " <> kindName <> " line"))
     fits = case verb of
       Ask -> (== Question)
@@ -242,16 +277,27 @@ runErrand token verb path row s0 =
     -- untracked ones, but not the plan nor Olifant's state; nothing when git
     -- cannot say (no repository, no HEAD). Both calls only read.
     changedFiles root = do
-      diffed <- gitLines root ["diff", "--name-only", "--relative", "HEAD"]
-      untracked <- gitLines root ["ls-files", "--others", "--exclude-standard"]
+      diffed <- gitOut root ["diff", "--name-only", "--relative", "HEAD"]
+      untracked <- gitOut root ["ls-files", "--others", "--exclude-standard"]
       let plan = normalisePath path
       pure $ case (diffed, untracked) of
         (Just d, Just u) -> [f | f <- nub (map (normalisePath . (root </>)) (d ++ u)), f /= plan, not ((normalisePath (root </> ".olifant/state") <> "/") `isPrefixOf` f)]
         _ -> []
-    gitLines root args =
-      safely Nothing $ runBytes "git" (["-C", root] ++ args) (Just root) "" >>= \case
-        Right (ExitSuccess, out, _) -> pure (Just (map T.unpack (filter (not . T.null) (T.lines (TE.decodeUtf8Lenient out)))))
-        _ -> pure Nothing
+
+-- | The branch checked out at ROOT; Nothing when it is no repository or
+-- HEAD is detached.
+currentBranch :: FilePath -> IO (Maybe Text)
+currentBranch root =
+  gitOut root ["rev-parse", "--abbrev-ref", "HEAD"] <&> \case
+    Just [b] | b /= "HEAD" -> Just (T.pack b)
+    _ -> Nothing
+
+-- | A read-only git command's output lines; Nothing when it fails.
+gitOut :: FilePath -> [String] -> IO (Maybe [String])
+gitOut root args =
+  safely Nothing $ runBytes "git" (["-C", root] ++ args) (Just root) "" >>= \case
+    Right (ExitSuccess, out, _) -> pure (Just (map T.unpack (filter (not . T.null) (T.lines (TE.decodeUtf8Lenient out)))))
+    _ -> pure Nothing
 
 -- | A `do`'s test tool: the first two words of the project's test command
 -- (past an `env` and its assignments), e.g. `Bash(uv run*)`; none without

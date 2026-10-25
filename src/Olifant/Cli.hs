@@ -3,6 +3,14 @@
 module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) where
 
 import Data.Set (Set)
+import Data.Set qualified as S
+import Data.Ord (Down (..))
+import Data.List (nub, sortOn)
+import Numeric (showFFloat)
+import Olifant.Server.Errand (Tokens (..))
+import Olifant.Server.Errand qualified as Errand
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), readRecords, recordJson, recordsPath)
+import Olifant.Transcripts (Message (..), messageCost, readTranscripts, slugOf)
 import Control.Applicative ((<|>))
 import Olifant.Fill (ModelFiller (..), Stance (..), parseFills, replayFiller)
 import Olifant.Migration (MigrationReport (..), Switch (..), migrationJson, reportLine)
@@ -21,13 +29,13 @@ import Data.Bifunctor (first)
 import Data.Map.Strict qualified as M
 import Data.Functor ((<&>))
 import Data.List (find)
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Olifant.Template (render)
 import Olifant.Template qualified as Tm
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (UTCTime)
+import Data.Time (Day, UTCTime (..), defaultTimeLocale, formatTime)
 import Olifant.Anchor (Located (..), RenderedAnchor (..), describeMisses, insertLines, parsePhrase, resolveLayers)
 import Olifant.Region (RegionDef, RegionDefWith (..), RegionProblem (..), applyRegion, fenceLines, wholeHeader)
 import Olifant.App
@@ -529,6 +537,7 @@ runCommand rt cwd fmt cat = \case
           Right gens0 -> placeCursor rt cwd cat g gens0 >>= \case
             Left why -> failWith rt fmt 2 "usage" why Nothing []
             Right gens -> runStepsWith [] (any isSnippet gens0) rt cwd fmt cat g [] (zipWith (\gen s -> Step gen (M.fromList (specSets s))) gens ss)
+  PlansCostCmd onlyBranch since asJson transcripts -> runPlansCost rt cat onlyBranch since asJson transcripts
   FixCmd rule file (line, _) n given g ->
     fixSteps (portsOf rt) (projectOf rt cat) rule (projectPath rt cwd file) line n given >>= \case
       Left (FixNotFound why) -> failWith rt fmt 3 "finding_not_found" why (Just "run `olifant check --file` to see the findings") []
@@ -536,6 +545,105 @@ runCommand rt cwd fmt cat = \case
       Left (FixCatalog err) -> catalogFailure rt fmt err
       Left (FixFailed why) -> failWith rt fmt 1 "fix_failed" why Nothing []
       Right (context, steps, warnings) -> runStepsWith warnings False rt cwd fmt cat g context steps
+
+-- | `olifant plans cost`: the errand records of the project and Claude
+-- Code's transcripts of it, one row per branch. Unreadable record lines,
+-- unpriced models and a missing transcript directory are notes on stderr,
+-- never failures.
+runPlansCost :: Runtime -> Catalog -> Maybe Text -> Maybe Day -> Bool -> Maybe FilePath -> IO ExitCode
+runPlansCost rt cat onlyBranch since asJson transcripts = do
+  let root = rtProjectDir rt
+      ws = rtRoot rt
+      prices = pcPrices (catalogPlans cat)
+      dir = fromMaybe (fromMaybe "~" (rtHomeDir rt) </> ".claude/projects" </> slugOf root) transcripts
+      note t = rtErr rt ("plans cost: " <> t <> "\n")
+  (records, bad) <- maybe ([], 0) readRecords <$> readText ws (recordsPath root)
+  when (bad > 0) $ note ("skipped " <> T.pack (show bad) <> " unreadable line" <> (if bad == 1 then "" else "s") <> " in errands.jsonl")
+  present <- (== Directory) <$> inspectPath ws dir
+  unless present $ note ("no Claude Code transcripts at " <> T.pack dir)
+  messages <- if present then readTranscripts (listFiles ws) (readText ws) dir else pure []
+  let mine b = maybe True (== b) onlyBranch
+      counted = [m | m <- countedMessages since records messages, mine (branchName (msBranch m))]
+      unpriced = nub [msModel m | m <- counted, msTokens m /= Tokens 0 0 0 0, isNothing (messageCost prices m)]
+      rows = filter (mine . rowBranch) (costRows prices since records messages)
+      errands = [e | AnErrand e <- records, after since (erAt e), mine (branchName (erBranch e))]
+  forM_ unpriced $ \m -> note ("no price for " <> m <> "; counted as $0")
+  if asJson
+    then rtOut rt (encodeJson (object ["rows" .= map rowJson rows, "errands" .= map (recordJson . AnErrand) errands]) <> "\n")
+    else rtOut rt (costTable rows)
+  pure ExitSuccess
+  where
+    rowJson r =
+      object
+        [ "branch" .= rowBranch r, "errands" .= rowErrands r, "accepted" .= rowAccepted r, "decided" .= rowDecided r
+        , "undecided" .= rowUndecided r, "errand_cost" .= rowErrandCost r, "sessions" .= rowSessions r
+        , "session_cost" .= rowSessionCost r, "total_cost" .= (rowErrandCost r + rowSessionCost r), "last" .= stamp (rowLast r) ]
+    stamp = T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ"
+
+-- | One branch's line of `plans cost`. Accepted, decided and undecided
+-- count ghost blocks of the branch's answered (ok) errands.
+data Row = Row
+  { rowBranch :: Text, rowErrands :: Int, rowAccepted :: Int, rowDecided :: Int, rowUndecided :: Int
+  , rowErrandCost :: Double, rowSessions :: Int, rowSessionCost :: Double, rowLast :: UTCTime }
+  deriving (Eq, Show)
+
+-- | A branch, or @?@ for work with none.
+branchName :: Maybe Text -> Text
+branchName = fromMaybe "?"
+
+-- | On or after the day's start (UTC), when there is a day.
+after :: Maybe Day -> UTCTime -> Bool
+after since t = maybe True (\d -> t >= UTCTime d 0) since
+
+-- | The messages of interactive sessions: a session that is some errand's
+-- (whatever its ending, and whenever) is that errand's, priced by the runner.
+countedMessages :: Maybe Day -> [Record] -> [Message] -> [Message]
+countedMessages since records messages = [m | m <- messages, msSession m `S.notMember` errandSessions, after since (msAt m)]
+  where
+    errandSessions = S.fromList [s | AnErrand e <- records, Just s <- [erSession e]]
+
+-- | The rows, newest activity first. A block's last outcome counts; an
+-- errand with no cost (it failed) costs 0 but still counts as an errand.
+costRows :: [(Text, Price)] -> Maybe Day -> [Record] -> [Message] -> [Row]
+costRows prices since records messages = sortOn (Down . rowLast) (map row branches)
+  where
+    errands = [e | AnErrand e <- records, after since (erAt e)]
+    msgs = countedMessages since records messages
+    branches = nub (map (branchName . erBranch) errands ++ map (branchName . msBranch) msgs)
+    -- the later record of a block wins (fromListWith passes the new one first)
+    outcomes = M.fromListWith M.union [(orId o, M.singleton (orBlock o) (orOutcome o)) | AnOutcome o <- records]
+    blocksOf e = [o | (b, o) <- M.toList (M.findWithDefault M.empty (erId e) outcomes), b >= 0, b < erBlocks e]
+    row b =
+      let es = filter ((== b) . branchName . erBranch) errands
+          ms = filter ((== b) . branchName . msBranch) msgs
+          oks = filter ((== Errand.Ok) . erStatus) es
+          outs = concatMap blocksOf oks
+       in Row
+            { rowBranch = b
+            , rowErrands = length es
+            , rowAccepted = length (filter (== "accepted") outs)
+            , rowDecided = length outs
+            , rowUndecided = sum [max 0 (erBlocks e - length (blocksOf e)) | e <- oks]
+            , rowErrandCost = sum (map (fromMaybe 0 . erCost) es)
+            , rowSessions = S.size (S.fromList (map msSession ms))
+            , rowSessionCost = sum (map (fromMaybe 0 . messageCost prices) ms)
+            , rowLast = maximum (map erAt es ++ map msAt ms)
+            }
+
+-- | The rows as a table: columns two spaces apart, money to the cent.
+costTable :: [Row] -> Text
+costTable rows = T.unlines (map line (header : map cells rows))
+  where
+    header = ["branch", "errands", "accepted", "errand $", "sessions", "session $", "total $"]
+    cells r =
+      [ rowBranch r, tshow (rowErrands r), tshow (rowAccepted r) <> "/" <> tshow (rowDecided r) <> " (" <> tshow (rowUndecided r) <> " ?)"
+      , money (rowErrandCost r), tshow (rowSessions r), money (rowSessionCost r), money (rowErrandCost r + rowSessionCost r) ]
+    tshow = T.pack . show
+    money x = T.pack (showFFloat (Just 2) x "")
+    widths = foldr (zipWith max . map T.length) (map (const 0) header) (header : map cells rows)
+    -- the branch and acceptance read left to right; numbers line up right
+    line cs = T.stripEnd (T.intercalate "  " (zipWith3 pad [0 :: Int ..] widths cs))
+    pad i w c = if i `elem` [0, 2] then T.justifyLeft w ' ' c else T.justifyRight w ' ' c
 
 -- | Snippets (spec §5.3): a snippet needs `--at`; its line is read from the
 -- overlay's text when there is one.

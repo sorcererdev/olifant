@@ -19,7 +19,7 @@ import Data.Map.Strict qualified as M
 import Data.List (intercalate)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time (UTCTime)
+import Data.Time (Day, UTCTime, defaultTimeLocale, parseTimeM)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Options.Applicative
 import Control.Applicative ((<|>))
@@ -33,6 +33,9 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
 data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] Text | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
+  | -- | `plans cost`: errands against Claude Code sessions, per branch.
+    -- 'pcoTranscripts' overrides @~/.claude/projects/<slug>@.
+    PlansCostCmd {pcoBranch :: Maybe Text, pcoSince :: Maybe Day, pcoJson :: Bool, pcoTranscripts :: Maybe FilePath}
   deriving stock (Eq, Show)
 
 -- | `olifant sync` (spec §5.8): refresh regions, check them (write nothing), or create one's fences.
@@ -116,6 +119,7 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
             <> cmd "init" initP "Start a project from a pack's starter in an empty folder: init --pack PACK NAME [--dir DIR] [--plan]; or, in an existing repo, init --migrate PATH [--migrate PATH]… [--pack PACK]: strangle the legacy code under PATH"
             <> cmd "lsp" (pure LspCmd) "Run the language server over stdin/stdout (editors start it; every Olifant project in the editor's folders)"
             <> cmd "complete" completeP "Snippets for a completion menu at a position (for editors): --at FILE:LINE:COL [--content -]"
+            <> cmd "plans" plansP "Plan errands: `plans cost [--branch B] [--since YYYY-MM-DD] [--json]` shows what errands cost against Claude Code sessions, per branch"
             <> cmd "gen" (GenCmd <$> genP) "Run generators: GEN [--set K=V]... [+ GEN [--set K=V]...]... (applies by default; --plan previews; --steps FILE|- reads the steps as JSON)"
         )
         -- hidden: the one Jev question at a line, for the prefix corpus
@@ -174,6 +178,21 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
         <*> option auto (long "line" <> metavar "N" <> help "1-based line")
         <*> optional (strOption (long "overlay" <> metavar "FILE" <> help "PATH's current (unsaved) text, read from FILE"))
         <*> optional (strOption (long "answers" <> metavar "FILE" <> help "Recorded answers instead of the model (tests)"))
+    plansP =
+      hsubparser
+        ( command
+            "cost"
+            ( info
+                ( PlansCostCmd
+                    <$> optional (T.pack <$> strOption (long "branch" <> metavar "BRANCH" <> help "Only this branch's row (`?` for work with no branch)"))
+                    <*> optional (option (eitherReader dayP) (long "since" <> metavar "YYYY-MM-DD" <> help "Only errands and messages from this day on (UTC, the day included)"))
+                    <*> switch (long "json" <> help "The rows and the raw errand records as JSON")
+                    <*> optional (strOption (long "transcripts" <> metavar "DIR" <> help "Claude Code transcripts (default: ~/.claude/projects/<this project's slug>)"))
+                )
+                (progDesc "What errands cost, against Claude Code sessions, per branch (list prices)")
+            )
+        )
+    dayP s = maybe (Left "expected a date like 2026-10-25") Right (parseTimeM False defaultTimeLocale "%Y-%m-%d" s)
     completeP =
       (\(f, pos) content -> CompleteCmd f pos content)
         <$> option (eitherReader positionP) (long "at" <> metavar "FILE:LINE:COL" <> help "1-based line, UTF-8 byte column")

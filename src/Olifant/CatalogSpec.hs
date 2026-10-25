@@ -85,15 +85,42 @@ spec = describe "catalog" $ do
         _ -> expectationFailure "expected ConfigInvalid naming conjure"
   describe "[plans] (plans, stage 1)" $ do
     it "defaults when absent" $
-      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogPlans cat `shouldBe` PlansConfig "plans" "claude" "sonnet" 300 []
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogPlans cat `shouldBe` PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices
     it "reads every key" $
       withCatalog [("/proj/.olifant/config.toml", "[plans]\ndir = \"docs/plans\"\nrunner = \"/tmp/shim\"\nmodel = \"opus\"\ntimeout = 900\ndo_tools = [\"Bash(cabal test*)\"]\n")] $ \_ cat ->
-        catalogPlans cat `shouldBe` PlansConfig "docs/plans" "/tmp/shim" "opus" 900 ["Bash(cabal test*)"]
+        catalogPlans cat `shouldBe` PlansConfig "docs/plans" "/tmp/shim" "opus" 900 ["Bash(cabal test*)"] defaultPrices
     it "refuses other keys, naming the section" $ do
       r <- openWith [("/proj/.olifant/config.toml", "[plans]\nother = 1\n")]
       case r of
         Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "plans"
         _ -> expectationFailure "expected ConfigInvalid naming plans"
+    it "prices default to the four current models at list price" $
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> do
+        map fst (pcPrices (catalogPlans cat)) `shouldMatchList` ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+        lookup "claude-opus-5-5" (pcPrices (catalogPlans cat)) `shouldBe` Just (Price 4 20 0.2 5 8)
+        lookup "claude-sonnet-5-5" (pcPrices (catalogPlans cat)) `shouldBe` Just (Price 2 10 0.2 2.5 4)
+        lookup "claude-haiku-5-5" (pcPrices (catalogPlans cat)) `shouldBe` Just (Price 0.1 0.5 0.01 0.125 0.2)
+        lookup "claude-fable-5-1" (pcPrices (catalogPlans cat)) `shouldBe` Just (Price 10 50 0.25 12.5 20)
+    it "[plans.prices.<model>] overlays a row and adds new models" $
+      withCatalog [("/proj/.olifant/config.toml", "[plans.prices.\"claude-sonnet-5-5\"]\ninput = 1.0\noutput = 2\ncache_read = 0.1\ncache_write_5m = 1.25\ncache_write_1h = 2.0\n[plans.prices.\"claude-x\"]\ninput = 3.0\noutput = 4.0\ncache_read = 0.3\ncache_write_5m = 3.75\ncache_write_1h = 6.0\n")] $ \_ cat -> do
+        lookup "claude-sonnet-5-5" (pcPrices (catalogPlans cat)) `shouldBe` Just (Price 1 2 0.1 1.25 2)
+        lookup "claude-x" (pcPrices (catalogPlans cat)) `shouldBe` Just (Price 3 4 0.3 3.75 6)
+        lookup "claude-opus-5-5" (pcPrices (catalogPlans cat)) `shouldBe` Just (Price 4 20 0.2 5 8)
+        length (pcPrices (catalogPlans cat)) `shouldBe` 5
+    it "a price row missing a key is a config error naming it" $ do
+      r <- openWith [("/proj/.olifant/config.toml", "[plans.prices.\"m\"]\ninput = 1.0\n")]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "cache_read"
+        _ -> expectationFailure "expected ConfigInvalid naming cache_read"
+    it "a price row with an unknown key or a non-number is a config error" $ do
+      r <- openWith [("/proj/.olifant/config.toml", "[plans.prices.\"m\"]\ninput = 1.0\noutput = 2.0\ncache_read = 0.1\ncache_write_5m = 1.25\ncache_write_1h = 2.0\ncache_write = 1.0\n")]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "cache_write"
+        _ -> expectationFailure "expected ConfigInvalid naming the unknown key"
+      r' <- openWith [("/proj/.olifant/config.toml", "[plans.prices.\"m\"]\ninput = \"1\"\noutput = 2.0\ncache_read = 0.1\ncache_write_5m = 1.25\ncache_write_1h = 2.0\n")]
+      case r' of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "input"
+        _ -> expectationFailure "expected ConfigInvalid naming input"
   describe "[migrate] (strangling a legacy codebase)" $ do
     it "reads legacy, base, switches, new_work_lines and count, with defaults" $ do
       withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"legacy/**\"]\n")] $ \_ cat ->

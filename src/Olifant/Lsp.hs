@@ -15,7 +15,7 @@ import Olifant.Recognize qualified as Recognize
 import Olifant.Decide qualified as De
 import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
-import Control.Monad (unless, void)
+import Control.Monad (forM_, guard, unless, void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -45,6 +45,7 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
+import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, inMenu, listGenerators, migrationFor, showGenerator, subsOf)
@@ -585,6 +586,15 @@ handlers env =
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
+    , -- what the editor did with an errand's ghost block: an outcome record
+      -- (anything malformed, or out of a project, is ignored; a record that
+      -- cannot be written is dropped: telemetry never reaches the editor)
+      notificationHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/outcome")) $ \msg ->
+        forM_ (outcomeParams (msg ^. L.params)) $ \(path, eid, block, outcome) -> liftIO $ do
+          found <- withSnapshot env (\s -> projectFor path s >>= \(s', p) -> pure (s', (ssPorts s',) . prRoot . snd <$> p))
+          forM_ found $ \(ports, root) -> do
+            now <- pNow ports
+            appendRecord ports root (AnOutcome (OutcomeRecord {orId = eid, orBlock = block, orAt = now, orOutcome = outcome}))
     , -- a file's other side: a module's test file (which may not exist
       -- yet), or a test file's module; it reads only config and the file list
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/file")) $ \req respond ->
@@ -775,6 +785,19 @@ documentPath :: Value -> Maybe FilePath
 documentPath = \case
   Object o | Just (Object doc) <- KM.lookup "textDocument" o, Just (String uri) <- KM.lookup "uri" doc -> uriToFilePath (Uri uri)
   _ -> Nothing
+
+-- | An `olifant/plans/outcome`'s params: the plan, the errand's id, the
+-- block's 0-based index and `accepted` or `rejected`; else Nothing.
+outcomeParams :: Value -> Maybe (FilePath, T.Text, Int, T.Text)
+outcomeParams params = do
+  path <- documentPath params
+  Object o <- pure params
+  String eid <- KM.lookup "id" o
+  Number n <- KM.lookup "block" o
+  block <- toBoundedInteger n
+  String outcome <- KM.lookup "outcome" o
+  guard (not (T.null eid) && block >= 0 && outcome `elem` ["accepted", "rejected"])
+  pure (path, eid, block, outcome)
 
 -- | A conjure request's `resume` (token, choice, optional hint, arg and land;
 -- an empty hint is none; `land` a boolean, false when absent; `wire` needs an
@@ -1274,7 +1297,8 @@ errandRequest env verb title req params respond = case (documentPath params, lin
 errandJson :: T.Text -> ErrandAnswer -> Value
 errandJson verb a =
   object
-    [ "verb" .= verb
+    [ "id" .= eaId a
+    , "verb" .= verb
     , "blocks" .= [object ["after" .= blAfterRow b, "after_text" .= blAfterText b, "lines" .= [object ["text" .= ghText g, "fp" .= fp] | (g, fp) <- zip (blLines b) fps]] | (b, fps) <- eaBlocks a]
     , "dropped" .= eaDropped a
     , "unresolved" .= eaUnresolved a

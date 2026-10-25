@@ -36,6 +36,8 @@ import Data.List (isInfixOf, sort, sortOn)
 import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
+import Olifant.Server.Errand (Status (..), Tokens (..))
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), readRecords)
 import Olifant.Server.State qualified as St
 import Olifant.Decide qualified as De
 import Olifant.Rules qualified as Ru
@@ -2009,6 +2011,9 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
         Just (Array xs) -> toList xs
         _ -> []
       linesOf b = arr (lookupKey "lines" b)
+      -- the errand records the repo holds, and the lines that were not one
+      records dir = readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
+      lastStatus dir = (\l -> last (T.splitOn "\t" (last (T.lines l)))) <$> TIO.readFile (dir </> ".olifant/state/steps.log")
   it "ask answers ghost blocks with fingerprints for anchors that resolve" $
     withPlan plan $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand askP 3)
@@ -2056,11 +2061,65 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       map (map (lookupKey "text") . linesOf) (arr (lookupKey "blocks" v))
         `shouldBe` [[Just (String ("- [ ] add a method SHIM:SLOW   @" <> T.pack table <> ":Table.label"))]]
       either Just (const Nothing) third `shouldBe` Nothing
+      -- the refused second do writes no record
+      (rs, 0) <- records dir
+      [(erVerb r, erChanged r, erStatus r) | AnErrand r <- rs] `shouldBe` [("do", 1, Ok), ("do", 1, Ok)]
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand askP 3)
       either (T.isInfixOf "no credentials") (const False) answer `shouldBe` True
       TIO.readFile (dir </> "plans/t.md") >>= (`shouldBe` T.replace "where is the table" "where is the table SHIM:FAIL" plan)
+  it "an answered ask writes an ok record with tokens, session and the answer's id" $
+    withPlan plan $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      v <- either (fail . T.unpack) pure answer
+      ([AnErrand r], 0) <- records dir
+      (erVerb r, erStatus r, erPlan r, erRow r, erLines r, erGrounded r) `shouldBe` ("ask", Ok, "plans/t.md", 3, 3, 1)
+      (erBlocks r, erDropped r, erUnresolved r, erChanged r, erWhy r) `shouldBe` (1, 0, 1, 0, Nothing)
+      erTokens r `shouldBe` Just (Tokens 2 40 1000 5000)
+      (erSeconds r, erTurns r, erCost r) `shouldBe` (Just 1.2, Just 1, Just 0.0123)
+      erSession r `shouldSatisfy` maybe False ("shim-" `T.isPrefixOf`)
+      erId r `shouldBe` fromMaybe "" (erSession r)
+      lookupKey "id" v `shouldBe` Just (String (erId r))
+      erSection r `shouldBe` "Hypothesis"
+      erPromptChars r `shouldSatisfy` (> 0)
+      erBranch r `shouldBe` Nothing
+      lastStatus dir >>= (`shouldBe` "ok")
+  it "a runner failure writes an error record with why and a step log line" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
+      _ <- inProcessWith ports dir (errand askP 3)
+      ([AnErrand r], 0) <- records dir
+      (erStatus r, erCost r, erSession r, erSeconds r, erLines r) `shouldBe` (Error, Nothing, Nothing, Nothing, 0)
+      erWhy r `shouldSatisfy` maybe False ("exited 2" `T.isInfixOf`)
+      erId r `shouldSatisfy` ("ask-plans/t.md:3@" `T.isPrefixOf`)
+      lastStatus dir >>= (`shouldBe` "error")
+  it "a runner's is_error writes an error record that keeps the session" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:ERRORJSON" plan) $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      answer `shouldBe` Left "the runner reported an error"
+      ([AnErrand r], 0) <- records dir
+      (erStatus r, erWhy r) `shouldBe` (Error, Just "the runner reported an error")
+      erSession r `shouldSatisfy` maybe False ("shim-" `T.isPrefixOf`)
+      erId r `shouldBe` fromMaybe "" (erSession r)
+  it "prose outside the grammar writes an empty record that still has the session" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:PROSE" plan) $ \ports dir -> do
+      _ <- inProcessWith ports dir (errand askP 3)
+      ([AnErrand r], 0) <- records dir
+      (erStatus r, erSession r, erWhy r, erBlocks r) `shouldBe` (Empty, Just "shim-prose", Just "ask answered nothing in the grammar", 0)
+      lastStatus dir >>= (`shouldBe` "empty")
+  it "a refused verb (ask on a step) writes nothing" $
+    withPlan plan $ \ports dir -> do
+      _ <- inProcessWith ports dir (errand askP 7)
+      records dir >>= (`shouldBe` ([], 0))
+  it "an errand in a git repository records its branch" $
+    withPlan plan $ \ports dir -> do
+      let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+      git ["init", "-q", "-b", "trial"]
+      git ["add", "."]
+      git ["commit", "-q", "-m", "the fixture"]
+      _ <- inProcessWith ports dir (errand askP 3)
+      ([AnErrand r], 0) <- records dir
+      erBranch r `shouldBe` Just "trial"
   it "prose only is 'answered nothing in the grammar'" $
     withPlan (T.replace "where is the table" "where is the table SHIM:PROSE" plan) $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand askP 3)
@@ -2080,6 +2139,42 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
         pure (either (Just . (^. L.code)) (const Nothing) r, diffUTCTime end start)
       code `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
       took `shouldSatisfy` (< 2)
+      ([AnErrand r], 0) <- records dir
+      (erStatus r, erSession r, erWhy r) `shouldBe` (Cancelled, Nothing, Just "cancelled")
+      lastStatus dir >>= (`shouldBe` "cancelled")
+  let outcomeP = Proxy :: Proxy "olifant/plans/outcome"
+      -- an errand asked, then the given outcome notifications; the debugState
+      -- round trip after them means the server handled them
+      decided outcomes = do
+        v <- errand askP 3 >>= either (fail . T.unpack) pure
+        let Just (String eid) = lookupKey "id" v
+        uri <- getDocUri "plans/t.md"
+        forM_ outcomes $ \fields -> sendNotification (SMethod_CustomMethod outcomeP) (object (("textDocument" .= object ["uri" .= uri]) : fields eid))
+        _ <- debugState
+        pure eid
+  it "olifant/plans/outcome appends an outcome record" $
+    withPlan plan $ \ports dir -> do
+      (eid, _) <- inProcessWith ports dir $ decided
+        [ \eid -> ["id" .= eid, "block" .= (0 :: Int), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (1 :: Int), "outcome" .= ("rejected" :: Text)] ]
+      (rs, 0) <- records dir
+      length rs `shouldBe` 3
+      [(orId o, orBlock o, orOutcome o) | AnOutcome o <- rs] `shouldBe` [(eid, 0, "accepted"), (eid, 1, "rejected")]
+      -- its time to the second, as every record's
+      raw <- TIO.readFile (dir </> ".olifant/state/errands.jsonl")
+      [T.length at | Just (Object o) <- map (Aeson.decodeStrict . TE.encodeUtf8) (T.lines raw), Just (String "outcome") <- [KM.lookup "kind" o], Just (String at) <- [KM.lookup "at" o]]
+        `shouldBe` [20, 20]
+  it "an outcome with a bad verb, block or id is ignored" $
+    withPlan plan $ \ports dir -> do
+      _ <- inProcessWith ports dir $ decided
+        [ \eid -> ["id" .= eid, "block" .= (0 :: Int), "outcome" .= ("maybe" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= ("0" :: Text), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (-1 :: Int), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (0.5 :: Double), "outcome" .= ("accepted" :: Text)]
+        , \_ -> ["id" .= (7 :: Int), "block" .= (0 :: Int), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (0 :: Int)] ]
+      (rs, 0) <- records dir
+      length rs `shouldBe` 1
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
