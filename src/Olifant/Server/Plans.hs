@@ -28,6 +28,7 @@ import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, errandPrompt, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.LoopTypes (Fact)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, projectFor)
 import System.Exit (ExitCode (..))
@@ -170,8 +171,9 @@ planFiles s p text = do
 -- | An errand's answer: its blocks, each ghost line with its anchor's
 -- fingerprint when that resolved (Nothing otherwise); the lines the
 -- grammar dropped, the anchored lines that did not resolve, the run's
--- seconds and cost, and (a `do`) the files changed in the tree. 'eaId' is
--- the id of the errand's record (outcomes name it).
+-- seconds and cost, and (a `do`) the files changed in the tree and the
+-- facts its step's tests left (their marks, its tick). 'eaId' is the id of
+-- the errand's record (outcomes name it).
 data ErrandAnswer = ErrandAnswer
   { eaId :: Text
   , eaBlocks :: [(Block, [Maybe Text])]
@@ -180,6 +182,7 @@ data ErrandAnswer = ErrandAnswer
   , eaSeconds :: Double
   , eaCost :: Maybe Double
   , eaChanged :: [FilePath]
+  , eaFacts :: [Fact]
   }
   deriving stock (Eq, Show)
 
@@ -190,9 +193,10 @@ data ErrandAnswer = ErrandAnswer
 -- answered nothing in the grammar. Nothing is written to the plan. Every
 -- errand that reaches the runner, however it ends, appends a record to
 -- `.olifant/state/errands.jsonl` and a line to the step log; a line the
--- verb refuses writes neither.
-runErrand :: Cancel -> Verb -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text ErrandAnswer)
-runErrand token verb path row s0 =
+-- verb refuses writes neither. A `do` that answered runs AFTER over the
+-- plan's lines and its row (the step's tests) before its record.
+runErrand :: (ServerState -> Project -> [Line] -> Int -> IO [Fact]) -> Cancel -> Verb -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text ErrandAnswer)
+runErrand after token verb path row s0 =
   projectFor path s0 >>= \case
     (s, Nothing) -> pure (s, Left "this plan is in no Olifant project")
     (s, Just (_, p)) -> (s,) <$> errand s p
@@ -253,11 +257,12 @@ runErrand token verb path row s0 =
               (blocks, dropped) -> do
                 fps <- mapM (mapM (fpOf s p) . blLines) blocks
                 changed <- if verb == Do then changedFiles root else pure []
+                facts <- if verb == Do then after s p ls row else pure []
                 let ghosts = concatMap blLines blocks
                     resolved = length (filter isJust (concat fps))
                     unresolved = length (filter (isJust . ghAnchor) ghosts) - resolved
                 rid <- record Ok Nothing (rrSession rr) (Just rr) (length blocks) dropped (length ghosts) resolved unresolved (length changed)
-                pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed))
+                pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed facts))
         _ -> pure (Left (verbName <> " needs a " <> kindName <> " line"))
     fits = case verb of
       Ask -> (== Question)

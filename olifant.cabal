@@ -132,6 +132,7 @@ library
     Olifant.Server.Jobs
     Olifant.Server.Loop
     Olifant.Server.LoopQuestions
+    Olifant.Server.LoopTests
     Olifant.Server.LoopTypes
     Olifant.Server.Model
     Olifant.Server.Mutate
@@ -306,6 +307,7 @@ test-suite spec
     Olifant.Server.Loop
     Olifant.Server.LoopQuestions
     Olifant.Server.LoopSpec
+    Olifant.Server.LoopTests
     Olifant.Server.LoopTypes
     Olifant.Server.Model
     Olifant.Server.Mutate

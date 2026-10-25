@@ -5,22 +5,25 @@ import Data.Aeson (Value (..), encode, object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
-import Data.List (find, sort)
+import Data.List (find, isSuffixOf, sort)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
 import Olifant.Decide (Question (..), Shape (..))
 import Olifant.Process (newCancel, neverCancel)
+import Olifant.Server.Edits (FileEdit (..))
 import Olifant.Server.Errand (Block (..), Ghost (..))
+import Olifant.Server.Stub (StubAnswer (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
 import System.Directory (doesFileExist)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.App (Ports, Project)
-import Olifant.LspSpec (withPython)
+import Olifant.App (Ports (..), Project)
+import Olifant.Language (processRunner)
+import Olifant.LspSpec (needsUv, withPython)
 import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
 import Olifant.Server (newServerState, projectFor)
 import Olifant.Server.Loop
@@ -35,7 +38,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
-spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec
+spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec
 
 workSetSpec :: Spec
 workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
@@ -120,14 +123,21 @@ workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
       ws <- workSet s p "plans/t.md" (parsePlan "# T\n")
       map cuName (wsChanged ws) `shouldContain` ["Table.label"]
       map cuName (wsUnaccounted ws) `shouldNotContain` ["Table.label"]
-      map cuName (wsUnaccounted ws) `shouldContain` ["Table"]
+      -- its class changed with it, and is not unaccounted on its own
+      map cuName (wsChanged ws) `shouldContain` ["Table"]
+      map cuName (wsUnaccounted ws) `shouldNotContain` ["Table"]
   it "(f) a step's own changed anchor is touched, not unaccounted" $ do
     let plan = "# T\n\n- [ ] tidy the label @" <> T.pack table <> ":Table.label\n"
     withLoop plan [(table, labelEdited)] $ \s p _ -> do
       ws <- workSet s p "plans/t.md" (parsePlan plan)
       map (\(l, c) -> (lnRow l, cuName c)) (wsTouched ws) `shouldBe` [(2, "Table.label")]
       map cuName (wsUnaccounted ws) `shouldNotContain` ["Table.label"]
-      map cuName (wsUnaccounted ws) `shouldContain` ["Table"]
+      map cuName (wsUnaccounted ws) `shouldNotContain` ["Table"]
+  it "(f2) a changed class is not unaccounted when one of its methods is" $
+    withLoop "# T\n" [(table, labelEdited)] $ \s p _ -> do
+      ws <- workSet s p "plans/t.md" (parsePlan "# T\n")
+      map cuName (wsChanged ws) `shouldContain` ["Table", "Table.label"]
+      map cuName (wsUnaccounted ws) `shouldBe` ["Table.label"]
   it "(g) files without a language are skipped" $ do
     pyproject <- TIO.readFile "packs/python-htmx/fixtures/app/pyproject.toml"
     withLoop "# T\n" [("pyproject.toml", pyproject <> "\n# edited\n"), (table, labelEdited)] $ \s p _ -> do
@@ -424,6 +434,15 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       write dir table (T.replace "return 1" "return 3" tableText)
       (_, a3) <- run False dir s2
       map (\(_, _, _, _, u) -> fmap (\(_, n, _) -> n) u) (map summary (raBlocks a3)) `shouldBe` [Just "helper"]
+  it "(l) a forced reconcile runs a touched step's tests and ticks it; an automatic one marks them pending" $ do
+    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n  - test: it helps @" <> T.pack tableTest <> ":test_helper \9679\n"
+    withReconcileTested plan [(table, T.replace "return 1" "return 0 + 1" tableText), (tableTest, T.unlines (take 5 (T.lines tableTestText)))] jevConfig (Just (answersOf [("plan-state", "in_progress")])) $ \dir s -> do
+      (s1, auto) <- run False dir s
+      raFacts auto `shouldBe` [Replace 5 ("  - test: it helps @" <> T.pack tableTest <> ":test_helper \9675")]
+      (_, forced) <- run True dir s1
+      fp <- fpNow dir s "helper"
+      raFacts forced `shouldBe` [Replace 4 ("- [x] tidy the helper @src/bistro/booking/models/table.py:helper \10003 " <> fp), Replace 5 ("  - test: it helps @" <> T.pack tableTest <> ":test_helper \9679")]
+      raBlocks forced `shouldBe` []
   it "(k) the record carries decisions and per-block units; the step log has one plan-reconcile line" $
     withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
       (_, a) <- run False dir s
@@ -453,8 +472,24 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
 -- | 'withLoopPorts' with CONFIG appended to the project's config and, when
 -- given, recorded ANSWERS the decider answers from; a fresh state.
 withReconcile :: Text -> [(FilePath, Text)] -> Text -> Maybe Text -> (FilePath -> ServerState -> IO a) -> IO a
-withReconcile plan edits config answers act =
-  withLoopPorts plan edits $ \ports dir -> do
+withReconcile = withReconcileOn id
+
+-- | 'withReconcile' with the real pytest (through uv): pending without uv,
+-- failing with OLIFANT_REQUIRE_TOOLS=1.
+withReconcileTested :: Text -> [(FilePath, Text)] -> Text -> Maybe Text -> (FilePath -> ServerState -> IO ()) -> IO ()
+withReconcileTested plan edits config answers act = needsUv (withReconcileOn tested plan edits config answers act)
+
+-- | 'withLoop' with the real pytest (through uv).
+withLoopTested :: Text -> [(FilePath, Text)] -> (ServerState -> Project -> FilePath -> IO ()) -> IO ()
+withLoopTested plan edits act = needsUv (withLoopPorts plan edits $ \ports dir -> loaded (tested ports) dir >>= \(s, p) -> act s p dir)
+
+tested :: Ports -> Ports
+tested ports = ports {pTester = (`processRunner` 120)}
+
+withReconcileOn :: (Ports -> Ports) -> Text -> [(FilePath, Text)] -> Text -> Maybe Text -> (FilePath -> ServerState -> IO a) -> IO a
+withReconcileOn withPorts plan edits config answers act =
+  withLoopPorts plan edits $ \ports0 dir -> do
+    let ports = withPorts ports0
     old <- TIO.readFile (dir </> ".olifant/config.toml")
     TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n" <> config)
     forM_ answers (TIO.writeFile (answersFile dir))
@@ -500,6 +535,71 @@ fpNow dir s unit =
   projectFor (dir </> "plans/t.md") s >>= \case
     (s', Just (_, p)) -> fromMaybe "" . rsFingerprint <$> resolveAnchor s' p (Anchor table unit 0 0)
     _ -> fail "no project"
+
+-- | The table module's test file, with a passing and a failing test.
+tableTest :: FilePath
+tableTest = "src/bistro/booking/models/table__test.py"
+
+tableTestText :: Text
+tableTestText =
+  T.unlines
+    [ "from bistro.booking.models.table import Table, helper", "", ""
+    , "def test_helper() -> None:", "    assert helper() == 1", "", ""
+    , "def test_label() -> None:", "    assert Table(\"a\", 2).label() == \"a\"", "", ""
+    , "def test_wrong() -> None:", "    assert Table(\"a\", 2).label() == \"b\"" ]
+
+stepTestsSpec :: Spec
+stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
+  let plan = T.unlines
+        [ "# T", "", "## S", ""
+        , "- [ ] the table labels itself @" <> T.pack table <> ":Table.label"
+        , "  - test: it labels @" <> T.pack tableTest <> ":test_label \9675"
+        , "- [ ] the table is wrong @" <> T.pack table <> ":Table.other"
+        , "  - test: it is wrong @" <> T.pack tableTest <> ":test_wrong \9679"
+        , "- [ ] no anchor here", "- [ ] gone @" <> T.pack table <> ":Nope" ]
+      planPath dir = dir </> "plans/t.md"
+  it "(a) testNameFor: the step's words in snake case, past its anchor and marks" $ do
+    testNameFor "the repository answers closed_on" `shouldBe` "test_the_repository_answers_closed_on"
+    testNameFor "- [ ] Count the seats!  @src/a.py:F \10003 abc1234" `shouldBe` "test_count_the_seats"
+    testNameFor "close -- the   table" `shouldBe` "test_close_the_table"
+  it "(b) stepStub: a test named for the step in the unit's test file, and its child line" $
+    withLoop plan [] $ \s _ dir -> do
+      (s1, r) <- stepStub (planPath dir) 4 s
+      st <- either (fail . T.unpack) pure r
+      let name = "test_the_table_labels_itself"
+          child = "  - test: the table labels itself @" <> T.pack tableTest <> ":" <> name <> " \9675"
+      saName (stAnswer st) `shouldBe` name
+      stChild st `shouldBe` child
+      stFact st `shouldBe` Insert 5 [child]
+      let edit = saEdit (stAnswer st)
+      fePath edit `shouldSatisfy` (tableTest `isSuffixOf`)
+      feCreate edit `shouldBe` True
+      TIO.writeFile (fePath edit) (feText edit)
+      doesFileExist (dir </> tableTest) `shouldReturn` True
+      (feText edit) `shouldSatisfy` T.isInfixOf ("def " <> name <> "()")
+      -- again, the name is made unique against the test file
+      (_, r2) <- stepStub (planPath dir) 4 s1
+      fmap (saName . stAnswer) r2 `shouldSatisfy` either (const False) (\n -> n /= name && name `T.isPrefixOf` n)
+  it "(c) stepStub refuses a step without an anchor, and one whose unit is not found" $
+    withLoop plan [] $ \s _ dir -> do
+      (_, r1) <- stepStub (planPath dir) 8 s
+      either id (const "stubbed") r1 `shouldBe` "the step has no anchor"
+      (_, r2) <- stepStub (planPath dir) 9 s
+      either id (const "stubbed") r2 `shouldBe` "the step's unit was not found"
+  it "(d) stepTest on a step runs its tests: green ticks it at its fingerprint; on a test child, red keeps it open" $
+    withLoopTested plan [(tableTest, tableTestText)] $ \s _ dir -> do
+      fp <- fpNow dir s "Table.label"
+      (s1, r) <- stepTest (planPath dir) 4 s
+      t <- either (fail . T.unpack) pure r
+      ttFacts t `shouldBe` [Replace 5 ("  - test: it labels @" <> T.pack tableTest <> ":test_label \9679"), Replace 4 ("- [x] the table labels itself @" <> T.pack table <> ":Table.label \10003 " <> fp)]
+      (ttPassed t, ttFailed t) `shouldBe` (1, 0)
+      ttSeconds t `shouldSatisfy` (> 0)
+      (_, r2) <- stepTest (planPath dir) 7 s1
+      t2 <- either (fail . T.unpack) pure r2
+      ttFacts t2 `shouldBe` [Replace 7 ("  - test: it is wrong @" <> T.pack tableTest <> ":test_wrong \10007")]
+      (ttPassed t2, ttFailed t2) `shouldBe` (0, 1)
+      (_, r3) <- stepTest (planPath dir) 8 s1
+      either id (const "ran") r3 `shouldBe` "the step has no tests"
 
 tidyPlan, jevConfig, climbConfig, helperEdited, withSpare :: Text
 tidyPlan = "# T\n\n## Tables\n\nThe tables a bistro seats.\n\n- [ ] count the seats\n- [ ] tidy the helper\n"

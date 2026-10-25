@@ -16,6 +16,12 @@ module Olifant.Server.Loop
   , reanchorFacts
   , pendingFacts
   , testFacts
+  , testNameFor
+  , StepStub (..)
+  , stepStub
+  , StepTest (..)
+  , stepTest
+  , stepTestFacts
   , factJson
   , rejectedReadings
     -- * the questions
@@ -60,6 +66,7 @@ import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState
 import Olifant.Process (Cancel, cancelled, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.LoopQuestions
+import Olifant.Server.LoopTests
 import Olifant.Server.LoopTypes
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
@@ -230,12 +237,15 @@ workSet s p plan ls =
       changed <- changedUnits s p b
       acc <- accounted s p
       let isAccounted cu = maybe False (\fp -> (cuPath cu, cuName cu, fp) `S.member` acc) (cuFingerprint cu)
-          unaccounted = [cu | cu <- changed, not (isAccounted cu), not (any (`S.member` own) (keys cu))]
+          unaccounted = [cu | cu <- changed, not (isAccounted cu), not (any (`S.member` own) (keys cu)), not (container changed cu)]
           (shown, rest) = splitAt unaccountedCap unaccounted
       pure (WorkSet (Just b) changed shown (length rest) [(l, cu) | (l, k) <- steps, cu <- changed, k `elem` keys cu])
   where
     steps = [(l, (rel, anUnit a)) | l <- ls, Step _ <- [lnKind l], Just a <- [lnAnchor l], Just rel <- [confined (anPath a)]]
     own = S.fromList (map snd steps)
+    -- a class whose method (or other member) changed with it: the member
+    -- speaks for it (a removed member does not)
+    container changed cu = or [True | o <- changed, cuPath o == cuPath cu, cuChange o /= Removed, (cuName cu <> ".") `T.isPrefixOf` cuName o]
     -- a unit's (path, name), and where it was before a move
     keys cu = (cuPath cu, cuName cu) : [(o, n) | Moved o n <- [cuChange cu]]
 
@@ -261,46 +271,26 @@ pendingFacts ls touched =
   | (s, _) <- touched, c <- childrenOf ls (lnRow s), lnKind c == TestChild
   , testState c `elem` [Just TestGreen, Just TestRed] ]
 
--- | Test results for a step's children (by test unit name): the children
--- rewritten; all green ticks the step at FP; a red test on a done step
--- un-ticks it and notes "red again" once.
-testFacts :: [Line] -> Int -> [(Text, TestState)] -> Maybe Text -> [Fact]
-testFacts ls row states fp = case drop row ls of
-  [] -> []
-  (step : _) ->
-    let direct = [c | c <- childrenOf ls row, lnIndent c == lnIndent step + 2]
-        kids = [c | c <- direct, lnKind c == TestChild]
-        stateOf c = fromMaybe (testState c) (Just <$> (lnAnchor c >>= \a -> lookup (anUnit a) states))
-        rewrites = [Replace (lnRow c) (withTestState (lnText c) s) | c <- kids, Just a <- [lnAnchor c], Just s <- [lookup (anUnit a) states]]
-        reds = [anUnit a | c <- kids, Just a <- [lnAnchor c], stateOf c == Just TestRed]
-        allGreen = not (null kids) && all ((== Just TestGreen) . stateOf) kids
-        open = lnKind step == Step False
-        tick = [Replace row (withVerdict (checkbox "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified fp)) | allGreen, open]
-        pad = T.replicate (lnIndent step + 2) " "
-        noted t = any (\c -> evidenceTag c == Just "red again" && T.strip (lnText c) == "- ✗ " <> t <> " red again") direct
-        fresh = [pad <> "- ✗ " <> t <> " red again" | t <- reds, not (noted t)]
-        lastRow = maybe row lnRow (listToMaybe (reverse (childrenOf ls row)))
-        untick = [Replace row (withVerdict (checkbox "- [x]" "- [ ]" (lnText step)) NoVerdict) | not (null reds), lnKind step == Step True]
-        note = [Insert lastRow fresh | not (null reds), lnKind step == Step True, not (null fresh)]
-    in rewrites ++ tick ++ untick ++ note
-
 -- | A fact for the wire: {"row", "text"} or {"after", "lines"}.
 factJson :: Fact -> Value
 factJson (Replace n t) = object ["row" .= n, "text" .= t]
 factJson (Insert n ls) = object ["after" .= n, "lines" .= ls]
 
--- | Swap the checkbox right after the indent, leaving the rest of the line alone.
-checkbox :: Text -> Text -> Text -> Text
-checkbox from to txt =
-  let (ind, rest) = T.span (== ' ') txt
-  in maybe txt (\r -> ind <> to <> r) (T.stripPrefix from rest)
-
 -- | The facts of a work set over lines LS: re-anchors, then the pending
 -- marks over the re-anchored lines, one fact per row (the later wins).
-loopFacts :: [Line] -> WorkSet -> [Fact]
-loopFacts ls ws = mergeFacts (moved ++ pendingFacts (applyFacts moved ls) (wsTouched ws))
+-- FORCED, a touched step with test children runs them instead: their
+-- marks and its tick.
+loopFacts :: ServerState -> Project -> Bool -> [Line] -> WorkSet -> IO [Fact]
+loopFacts s p forced ls ws = do
+  ran <- concat <$> mapM (stepTestFacts s p moved') tested
+  pure (mergeFacts (moved ++ pendingFacts moved' [t | t@(l, _) <- wsTouched ws, lnRow l `notElem` tested] ++ ran))
   where
     moved = reanchorFacts ls (wsChanged ws)
+    moved' = applyFacts moved ls
+    tested =
+      if forced
+        then nubOrd [lnRow l | (l, _) <- wsTouched ws, any ((== TestChild) . lnKind) (directChildren moved' l)]
+        else []
 
 -- | Replacements by row, the later winning, in row order; inserts after.
 mergeFacts :: [Fact] -> [Fact]
@@ -340,8 +330,9 @@ reconcile token forced path s0 = do
       rejected <- rejectedReadings s root
       branch <- currentBranch root
       now <- pNow (ssPorts s)
-      let facts = loopFacts ls0 ws
-          -- ghosts are read against the plan as the facts leave it
+      -- before the questions: plan-state reads the tests' marks
+      facts <- loopFacts s p forced ls0 ws
+      let -- ghosts are read against the plan as the facts leave it
           ls = applyFacts facts ls0
           lineAt r = fromMaybe (Line r 0 Prose "" Nothing NoVerdict) (listToMaybe (drop r ls))
           unaccounted = [cu | cu <- wsUnaccounted ws, cuChange cu /= Removed]

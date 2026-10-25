@@ -5,6 +5,7 @@
 module Olifant.Server.Stub
   ( StubAnswer (..)
   , stubAt
+  , stubWith
   , classAt
   , testNameOf
   , belowDecorators
@@ -85,7 +86,12 @@ data StubAnswer = StubAnswer
 -- is named from the mutant and the mutant is a comment in its body. Left is
 -- one sentence on why there is none.
 stubAt :: FilePath -> Int -> Maybe Mutant -> ServerState -> IO (ServerState, Either Text StubAnswer)
-stubAt path line0 survivor s0 =
+stubAt = stubWith Nothing
+
+-- | 'stubAt' with the test's name given (still made unique against the
+-- test file); Nothing names it as 'stubAt' does.
+stubWith :: Maybe Text -> FilePath -> Int -> Maybe Mutant -> ServerState -> IO (ServerState, Either Text StubAnswer)
+stubWith given path line0 survivor s0 =
   siteAt path line0 s0 >>= \case
     (s, Left why) -> pure (s, Left why)
     (s, Right site0) -> fmap (s,) . runExceptT $ do
@@ -103,7 +109,9 @@ stubAt path line0 survivor s0 =
       let testFile = siteTestFile site
           testText0 = siteTestText site
           base = fromMaybe "" testText0
-          name = maybe (uniqueTestName (testNameOf unit) base) (\m -> stubNameFor m base (langKeywords lang)) survivor
+          name = case given of
+            Just n -> uniqueTestName n base
+            Nothing -> maybe (uniqueTestName (testNameOf unit) base) (\m -> stubNameFor m base (langKeywords lang)) survivor
           flat = T.replace "\n" "\9166"
           note = case survivor of
             Just m -> ind <> "# kills: " <> flat (muFrom m) <> " \8594 " <> flat (muTo m) <> " on line " <> tshow (muLine m) <> "\n"

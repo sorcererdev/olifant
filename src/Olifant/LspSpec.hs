@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Olifant.LspSpec (spec, withPython) where
+module Olifant.LspSpec (spec, needsUv, withPython) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
@@ -2001,6 +2001,8 @@ plansLoopSpec = describe "plans, stage 2" $ do
       docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
       reconcileP = Proxy :: Proxy "olifant/plans/reconcile"
       anchorP = Proxy :: Proxy "olifant/plans/anchor"
+      stubP = Proxy :: Proxy "olifant/plans/stub"
+      testP = Proxy :: Proxy "olifant/plans/test"
       -- the fixture, the plan and an edit of the anchored unit, committed first
       tableText = T.unlines ["def label(id: str) -> str:", "    return id"]
       withEdited config act = withPython [("plans/t.md", plan), (table, tableText)] $ \ports dir -> do
@@ -2071,6 +2073,37 @@ plansLoopSpec = describe "plans, stage 2" $ do
       let Just start = lookupKey "line" v >>= \case Number n -> Just (round n :: Int); _ -> Nothing
       lookupKey "fp" v `shouldSatisfy` \case Just (String fp) -> T.length fp == 7 && T.all (`elem` ("0123456789abcdef" :: String)) fp; _ -> False
       lookupKey "fp" v `shouldBe` Just (String (Un.fingerprint text (start, start + 1)))
+
+  it "(d) plans/stub answers the stub and its test child as a fact" $
+    withEdited "" $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        blockMove stubP (object [docOf p, "line" .= (0 :: Int)])
+      v <- either (fail . T.unpack) pure answer
+      case v of
+        Object o -> sort (KM.keys o) `shouldBe` ["edits", "facts", "file", "line", "name"]
+        _ -> expectationFailure ("not an object: " <> show v)
+      lookupKey "name" v `shouldBe` Just (String "test_s")
+      lookupKey "file" v `shouldSatisfy` \case Just (String f) -> "src/bistro/booking/models/table__test.py" `T.isSuffixOf` f; _ -> False
+      arr (lookupKey "facts" v) `shouldBe` [object ["after" .= (1 :: Int), "lines" .= ["  - test: s @src/bistro/booking/models/table__test.py:test_s \9675" :: Text]]]
+  it "(e) plans/test runs a step's tests: passed, failed, the facts that tick it" $ do
+    let green = "- [ ] s @" <> T.pack table <> ":Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675\n"
+    withPythonChecked [("plans/t.md", green)] $ \ports dir -> do
+      (answer, _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        blockMove testP (object [docOf p, "line" .= (0 :: Int)])
+      v <- either (fail . T.unpack) pure answer
+      case v of
+        Object o -> sort (KM.keys o) `shouldBe` ["facts", "failed", "passed", "seconds"]
+        _ -> expectationFailure ("not an object: " <> show v)
+      (lookupKey "passed" v, lookupKey "failed" v) `shouldBe` (Just (Number 1), Just (Number 0))
+      case arr (lookupKey "facts" v) of
+        [child, step] -> do
+          child `shouldBe` object ["row" .= (1 :: Int), "text" .= ("  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9679" :: Text)]
+          (lookupKey "row" step, lookupKey "text" step) `shouldSatisfy` \case
+            (Just (Number 0), Just (String t)) -> ("- [x] s @" <> T.pack table <> ":Table \10003 ") `T.isPrefixOf` t
+            _ -> False
+        other -> expectationFailure ("two facts, got " <> show other)
 
 plansStage1Spec :: Spec
 plansStage1Spec = describe "olifant/plans (stage 1)" $ do
@@ -2146,6 +2179,19 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       -- the refused second do writes no record
       (rs, 0) <- records dir
       [(erVerb r, erChanged r, erStatus r) | AnErrand r <- rs] `shouldBe` [("do", 1, Ok), ("do", 1, Ok)]
+  it "do on a step with a green test child answers the facts that tick it" $
+    withPlan (planWith "- [ ] add a method @src/bistro/booking/models/table.py:Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675") $ \ports dir -> needsUv $ do
+      (answer, _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir (errand doP 7)
+      v <- either (fail . T.unpack) pure answer
+      case arr (lookupKey "facts" v) of
+        [child, step] -> do
+          child `shouldBe` object ["row" .= (8 :: Int), "text" .= ("  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9679" :: Text)]
+          (lookupKey "row" step, lookupKey "text" step) `shouldSatisfy` \case
+            (Just (Number 7), Just (String t)) -> ("- [x] add a method @" <> T.pack table <> ":Table \10003 ") `T.isPrefixOf` t
+            _ -> False
+        other -> expectationFailure ("two facts, got " <> show other)
+      -- the blocks are the runner's, as before
+      length (arr (lookupKey "blocks" v)) `shouldBe` 1
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand askP 3)
@@ -2363,11 +2409,16 @@ editVersions a = [te ^. L.textDocument . L.version | Just e <- [a ^. L.edit], Ju
 -- | 'withPython', its files checked by the real compiler (pyright through
 -- uv): pending without uv, failing with OLIFANT_REQUIRE_TOOLS=1.
 withPythonChecked :: [(FilePath, Text)] -> (Ports -> FilePath -> IO ()) -> IO ()
-withPythonChecked changed act = do
+withPythonChecked changed act = needsUv (withPython changed (\ports dir -> act ports {pChecker = processCheckerWith} dir))
+
+-- | An example that needs uv (the real pyright or pytest): pending without
+-- it, failing with OLIFANT_REQUIRE_TOOLS=1.
+needsUv :: IO () -> IO ()
+needsUv act = do
   strict <- (== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS"
   findExecutable "uv" >>= \case
     Nothing -> if strict then expectationFailure "required tool missing: uv" else pendingWith "uv is not installed"
-    Just _ -> withPython changed (\ports dir -> act ports {pChecker = processCheckerWith} dir)
+    Just _ -> act
 
 -- | The python-htmx fixture app with some files changed, as a project on
 -- disk using the pack from this repository, and ports with the real syntax.
