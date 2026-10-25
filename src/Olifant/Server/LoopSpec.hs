@@ -6,11 +6,12 @@ import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
 import Data.List (find, sort)
+import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
 import Olifant.Decide (Question (..), Shape (..))
-import Olifant.Process (neverCancel)
+import Olifant.Process (newCancel, neverCancel)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
 import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
@@ -283,6 +284,12 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
     withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do
       (_, a) <- run False dir s
       map (\(r, _, ls, rep, _) -> (r, ls, rep)) (map summary (raBlocks a)) `shouldBe` [(4, ["  - ✗ changed: helper changed"], False)]
+  it "(c3) a step with a changed child already is not asked again" $ do
+    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n  - ✗ changed: helper changed\n"
+    withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      raBlocks a `shouldBe` []
+      asked dir `shouldReturn` []
   it "(d) a touched done step answered reopened is a replacing open line" $
     withReconcile "# T\n" [] jevConfig (Just (answersOf [("plan-state", "reopened")])) $ \dir s -> do
       old <- fpNow dir s "helper"
@@ -297,9 +304,21 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
     let plan = "# T\n\n## S\n\n- [ ] keep the helper @src/bistro/booking/models/table.py:helper\n"
     withReconcile plan [(table, T.replace helper "" tableText)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
       (_, a) <- run False dir s
-      map summary (raBlocks a) `shouldBe` [(4, Just "- [ ] keep the helper @src/bistro/booking/models/table.py:helper", ["  - ✗ gone: @src/bistro/booking/models/table.py:helper no longer exists"], False, Nothing)]
+      map summary (raBlocks a) `shouldBe` [(4, Just "- [ ] keep the helper @src/bistro/booking/models/table.py:helper", ["  - ✗ gone: @src/bistro/booking/models/table.py:helper no longer exists"], False, Just (table, "helper", ""))]
       asked dir `shouldReturn` []
       map (map dcKind . rcDecisions) <$> reconciles dir `shouldReturn` [[]]
+  it "(e2) a rejected gone ghost does not return; a done step's gone unit has none" $ do
+    let plan = "# T\n\n## S\n\n- [ ] keep the helper @src/bistro/booking/models/table.py:helper\n"
+    withReconcile plan [(table, T.replace helper "" tableText)] jevConfig (Just (answersOf [])) $ \dir s -> do
+      (s1, a1) <- run False dir s
+      map rbUnit (raBlocks a1) `shouldBe` [Just (table, "helper", "")]
+      now <- getCurrentTime
+      appendRecord (ssPorts s) dir (AnOutcome (OutcomeRecord (raId a1) 0 now "rejected"))
+      (_, a2) <- run False dir s1
+      raBlocks a2 `shouldBe` []
+    withReconcile (T.replace "- [ ] keep" "- [x] keep" plan) [(table, T.replace helper "" tableText)] jevConfig (Just (answersOf [])) $ \dir s -> do
+      (_, a) <- run False dir s
+      raBlocks a `shouldBe` []
   it "(f) none → a new step after the section's last step, with the unit header when no chat rung" $ do
     let planned branch = "# T\n\n## Tables" <> branch <> "\n\n- [ ] count the seats\n  - test: counts @tests/test_t.py:test_count ○\n\n## Later\n\n- [ ] later\n"
         ghost = "- [ ] def spare() -> str @src/bistro/booking/models/table.py:spare"
@@ -310,6 +329,10 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
     withReconcile (planned "") [(table, withSpare)] jevConfig (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
       (_, a) <- run False dir s
       map (\(r, t, ls, _, _) -> (r, t, ls)) (map summary (raBlocks a)) `shouldBe` [(9, Just "- [ ] later", [ghost])]
+  it "(f2) a new step never lands under a sub-step" $
+    withReconcile "# T\n\n## Tables\n\n- [ ] count the seats\n  - [ ] a sub-step\n" [(table, withSpare)] jevConfig (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      map (\(r, t, ls, _, _) -> (r, t, ls)) (map summary (raBlocks a)) `shouldBe` [(5, Just "  - [ ] a sub-step", ["- [ ] def spare() -> str @src/bistro/booking/models/table.py:spare"])]
   it "(g) no decider, no ladder → one summary ghost" $
     withReconcile "# T\n\n- [ ] x\n" [(table, T.replace "return 1" "return 2" withSpare)] "" Nothing $ \dir s -> do
       (_, a) <- run False dir s
@@ -334,6 +357,24 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       raId a2 `shouldBe` raId a1
       length <$> reconciles dir `shouldReturn` 1
       length <$> asked dir `shouldReturn` 2
+  it "(i2) the plan with the facts applied answers from the cache" $ do
+    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n  - test: it works @tests/t.py:test_it ●\n"
+    withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
+      (s1, a1) <- run False dir s
+      raFacts a1 `shouldBe` [Replace 5 "  - test: it works @tests/t.py:test_it ○"]
+      write dir "plans/t.md" (T.replace "test_it ●" "test_it ○" plan)
+      (_, a2) <- run False dir s1
+      (raId a2, raFacts a2, map summary (raBlocks a2)) `shouldBe` (raId a1, [], map summary (raBlocks a1))
+      length <$> reconciles dir `shouldReturn` 1
+      asked dir `shouldReturn` ["plan-state"]
+  it "(i3) a cancelled reconcile answers Left, records nothing, caches nothing" $
+    withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7")])) $ \dir s -> do
+      (token, trip) <- newCancel
+      trip
+      (s1, r) <- reconcile token False (dir </> "plans/t.md") s
+      either id (const "answered") r `shouldBe` "cancelled"
+      reconciles dir `shouldReturn` []
+      M.null (ssReconciled s1) `shouldBe` True
   it "(j) a rejected reading is not proposed again at the same fingerprint" $
     withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
       (s1, a1) <- run False dir s

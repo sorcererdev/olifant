@@ -147,12 +147,13 @@ parseWords n reply = [M.lookup i found | i <- [1 .. n]]
 
 -- | The rungs a reconcile may ask: the decide model (Jev), and the chat
 -- ladder (`[plans] ladder`, else `[model] ladder`) without Jev backends or
--- the decide model itself, keeping `auto` rungs, and `ask` ones when forced.
-data Rungs = Rungs {rgJev :: Maybe (Decider IO), rgChat :: [(Rung, Backend)]}
+-- the decide model itself, keeping `auto` rungs, and `ask` ones when forced;
+-- the decide model's name (its rung in the record).
+data Rungs = Rungs {rgJev :: Maybe (Decider IO), rgChat :: [(Rung, Backend)], rgJevName :: Text}
 
 -- | The rungs for a project, under the state's token; FORCED allows `ask` rungs.
 rungsFor :: ServerState -> Project -> Bool -> Rungs
-rungsFor s p forced = Rungs (deciderUnder (ssCancel s) s p) chat
+rungsFor s p forced = Rungs (deciderUnder (ssCancel s) s p) chat (fromMaybe "decide" (catalogDecideModel cat))
   where
     cat = prCatalog p
     m = catalogModel cat
@@ -182,7 +183,7 @@ accepted q a = case a of
 -- | Ask Jev, then each chat rung, until one answers at the gate (or the
 -- work is cancelled): the last answer, and each rung asked with its seconds.
 decideOver :: Cancel -> Int -> Rungs -> Question -> IO (Answer, [(Text, Double)])
-decideOver token timeout rungs q = go ([("jev", d) | Just d <- [rgJev rungs]] ++ [(rungName r, curlDecider token timeout b) | (r, b) <- rgChat rungs]) Unsure []
+decideOver token timeout rungs q = go ([(rgJevName rungs, d) | Just d <- [rgJev rungs]] ++ [(rungName r, curlDecider token timeout b) | (r, b) <- rgChat rungs]) Unsure []
   where
     go [] a climbs = pure (a, reverse climbs)
     go ((name, d) : rest) a0 climbs =

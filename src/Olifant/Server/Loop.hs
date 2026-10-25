@@ -57,7 +57,7 @@ import Olifant.Decide (Answer (..), Confidence (..), Question (..), qOptions)
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
-import Olifant.Process (Cancel, runBytes)
+import Olifant.Process (Cancel, cancelled, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.LoopQuestions
 import Olifant.Server.LoopTypes
@@ -346,15 +346,25 @@ reconcile token forced path s0 = do
           lineAt r = fromMaybe (Line r 0 Prose "" Nothing NoVerdict) (listToMaybe (drop r ls))
           unaccounted = [cu | cu <- wsUnaccounted ws, cuChange cu /= Removed]
           touched = M.toList (M.fromListWith (flip (++)) [(lnRow l, [cu]) | (l, cu) <- wsTouched ws])
-          -- steps whose unit is gone, unless they say so already
-          gone = [(step, cus) | (r, cus) <- touched, any ((== Removed) . cuChange) cus, let step = lineAt r, not (any ((== Just "gone") . evidenceTag) (directChildren ls step))]
+          -- open steps whose unit is gone, unless they say so already or
+          -- the reading was rejected (a gone unit's key has no fingerprint)
+          gone =
+            [ (step, cu)
+            | (r, cus) <- touched, let step = lineAt r, not (stepDone step)
+            , cu <- take 1 [c | c <- cus, cuChange c == Removed]
+            , not (any ((== Just "gone") . evidenceTag) (directChildren ls step))
+            , goneKey cu `S.notMember` rejected ]
           -- a step settled already: verified at the unit now, its tests
-          -- deciding it, or its reading rejected at this fingerprint
+          -- deciding it, a `✗ changed` child saying so, or its reading
+          -- rejected at this fingerprint
           settled step cu =
             maybe False (\fp -> lnVerdict step == Verified fp || (cuPath cu, cuName cu, fp) `S.member` rejected) (cuFingerprint cu)
               || (stepDone step && any ((== TestChild) . lnKind) (directChildren ls step))
+              || any ((== Just "changed") . evidenceTag) (directChildren ls step)
           asking = [(lineAt r, cus) | (r, cus) <- touched, not (any ((== Removed) . cuChange) cus), not (all (settled (lineAt r)) cus)]
-          key = T.intercalate "\0" [text, if forced then "forced" else "auto", tshow (sort (map triple (wsChanged ws))), tshow (sort (map triple unaccounted)), tshow [(lnRow l, map triple cus) | (l, cus) <- asking]]
+          -- the plan as the facts leave it: the plugin applies them, and the
+          -- next reconcile sees that text
+          key = T.intercalate "\0" [T.intercalate "\n" (map lnText ls), if forced then "forced" else "auto", tshow (sort (map triple (wsChanged ws))), tshow (sort (map triple unaccounted)), tshow [(lnRow l, map triple cus) | (l, cus) <- asking]]
           answer i blocks more secs rungs = ReconcileAnswer i (wsBaseline ws) facts blocks (length (wsChanged ws)) more secs rungs
           rid = errandId now "reconcile" rel 0 Nothing
       case M.lookup path (ssReconciled s) of
@@ -400,68 +410,73 @@ reconcile token forced path s0 = do
                 askQ (planStateQuestion (lineAt r) ls units) <&> \case
                   Nothing -> (lineAt r, own, units, Nothing, True)
                   Just (_, c) -> (lineAt r, own, units, c, False)
-          let unplaced = concat [cus | Unplaced cus <- placements]
-              whys = [(step, units, own) | (step, own, units, Just "diverged", _) <- states]
-              needs = map NeedStepLine unplaced ++ [NeedWhy step units | (step, units, _) <- whys]
-              skipped = sum [length cus | Unasked cus <- placements] + sum [length own | (_, own, _, _, True) <- states]
-          t <- getMonotonicTime
-          said <- case rgChat rungs of
-            (r, b) : _ | not (null needs), t - start <= budget -> do
-              w <- planWords token timeout b needs
-              t' <- getMonotonicTime
-              modifyIORef' asked (\(ds, cs) -> (ds, (rungName r, t' - t) : cs))
-              pure w
-            _ -> pure (map (const Nothing) needs)
-          stepFps <- forM states $ \(step, own, _, _, _) -> (lnRow step,) <$> case [fp | cu <- own, Just fp <- [cuFingerprint cu]] of
-            fp : _ -> pure (Just fp)
-            [] -> maybe (pure Nothing) (fmap rsFingerprint . resolveAnchor s p) (lnAnchor step)
-          let (stepWords, whyWords) = splitAt (length unplaced) said
-              fpOf step = join (lookup (lnRow step) stepFps)
-              unitOf step own = case [(cuPath cu, cuName cu, fp) | cu <- own, Just fp <- [cuFingerprint cu]] of
-                u : _ -> Just u
-                [] -> (\a fp -> (anPath a, anUnit a, fp)) <$> lnAnchor step <*> fpOf step
-              child step = (T.replicate (lnIndent step + 2) " " <>)
-              after step lines' replace unit = ReconcileBlock (Block (lnRow step) (Just (lnText step)) (map ghost lines')) replace unit
-              also = [after step [child step ("- also " <> anchorOf cu)] False (triple' cu) | Placed step cus <- placements, cu <- cus]
-              stateGhosts =
-                [ after step [t'] True (unitOf step own)
-                | (step, own, _, Just c, _) <- states
-                , Just t' <- [case c of
-                    _ | c `elem` ["done", "still_done"] -> Just (withVerdict (checkbox "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified (fpOf step)))
-                    "reopened" -> Just (withVerdict (checkbox "- [x]" "- [ ]" (lnText step)) NoVerdict)
-                    _ -> Nothing] ]
-              goneGhosts =
-                [ after step [child step ("- ✗ gone: " <> anchorOf cu <> " no longer exists")] False Nothing
-                | (step, cus) <- gone, cu <- take 1 [c | c <- cus, cuChange c == Removed] ]
-              whyGhosts =
-                [ after step [child step ("- ✗ changed: " <> fromMaybe (T.intercalate ", " (map cuName units) <> " changed") w)] False (unitOf step own)
-                | ((step, units, own), w) <- zip whys whyWords ]
-              (atStep, indent) = newStepPlace branch ls
-              newSteps =
-                [ ReconcileBlock (Block (lnRow atStep) (Just (lnText atStep)) [ghost (indent <> "- [ ] " <> fromMaybe (headerWords cu) w <> " " <> anchorOf cu)]) False (triple' cu)
-                | (cu, w) <- zip unplaced stepWords ]
-              title = fromMaybe (lineAt 0) (find (\l -> case lnKind l of Heading _ -> True; _ -> False) ls)
-              more = wsMore ws + skipped
-              summaryGhost n what = ReconcileBlock (Block (lnRow title) (Just (lnText title)) [ghost ("- ? " <> tshow n <> " " <> what)]) False Nothing
-              notes
-                | not canAsk = [summaryGhost (length unaccounted + wsMore ws) "changed units not in the plan" | not (null unaccounted)]
-                | otherwise = [summaryGhost more "more changed units not in the plan" | more > 0]
-              blocks = notes ++ sortOn (blAfterRow . rbBlock) (stateGhosts ++ also ++ goneGhosts ++ whyGhosts) ++ newSteps
-          (decisions, climbs) <- bimap reverse reverse <$> readIORef asked
-          end <- getMonotonicTime
-          let secs = end - start
-              rungNames = nubOrd (map fst climbs)
-              a = answer rid blocks more secs rungNames
-          appendRecord (ssPorts s) root . AReconcile $
-            ReconcileRecord
-              { rcId = rid, rcAt = now, rcPlan = rel, rcBranch = branch, rcBaseline = wsBaseline ws, rcForced = forced
-              , rcChanged = length (wsChanged ws), rcUnaccounted = length (wsUnaccounted ws), rcMore = more, rcFacts = length facts
-              , rcSeconds = secs, rcClimbs = climbs, rcDecisions = decisions, rcBlocks = map rbUnit blocks }
-          appendStepLine (ssPorts s) root ["plan-reconcile", T.pack rel, tshow (length facts) <> " facts", tshow (length blocks) <> " ghosts", T.pack (showFFloat (Just 2) secs "") <> " s", T.intercalate "," rungNames]
-          pure (s {ssReconciled = M.insert path (key, a) (ssReconciled s)}, Right a)
+          -- cancelled: no degraded answer, no record, nothing cached
+          cancelled token >>= \case
+            True -> pure (s, Left "cancelled")
+            False -> do
+              let unplaced = concat [cus | Unplaced cus <- placements]
+                  whys = [(step, units, own) | (step, own, units, Just "diverged", _) <- states]
+                  needs = map NeedStepLine unplaced ++ [NeedWhy step units | (step, units, _) <- whys]
+                  skipped = sum [length cus | Unasked cus <- placements] + sum [length own | (_, own, _, _, True) <- states]
+              t <- getMonotonicTime
+              said <- case rgChat rungs of
+                (r, b) : _ | not (null needs), t - start <= budget -> do
+                  w <- planWords token timeout b needs
+                  t' <- getMonotonicTime
+                  modifyIORef' asked (\(ds, cs) -> (ds, (rungName r, t' - t) : cs))
+                  pure w
+                _ -> pure (map (const Nothing) needs)
+              stepFps <- forM states $ \(step, own, _, _, _) -> (lnRow step,) <$> case [fp | cu <- own, Just fp <- [cuFingerprint cu]] of
+                fp : _ -> pure (Just fp)
+                [] -> maybe (pure Nothing) (fmap rsFingerprint . resolveAnchor s p) (lnAnchor step)
+              let (stepWords, whyWords) = splitAt (length unplaced) said
+                  fpOf step = join (lookup (lnRow step) stepFps)
+                  unitOf step own = case [(cuPath cu, cuName cu, fp) | cu <- own, Just fp <- [cuFingerprint cu]] of
+                    u : _ -> Just u
+                    [] -> (\a fp -> (anPath a, anUnit a, fp)) <$> lnAnchor step <*> fpOf step
+                  child step = (T.replicate (lnIndent step + 2) " " <>)
+                  after step lines' replace unit = ReconcileBlock (Block (lnRow step) (Just (lnText step)) (map ghost lines')) replace unit
+                  also = [after step [child step ("- also " <> anchorOf cu)] False (triple' cu) | Placed step cus <- placements, cu <- cus]
+                  stateGhosts =
+                    [ after step [t'] True (unitOf step own)
+                    | (step, own, _, Just c, _) <- states
+                    , Just t' <- [case c of
+                        _ | c `elem` ["done", "still_done"] -> Just (withVerdict (checkbox "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified (fpOf step)))
+                        "reopened" -> Just (withVerdict (checkbox "- [x]" "- [ ]" (lnText step)) NoVerdict)
+                        _ -> Nothing] ]
+                  goneGhosts =
+                    [ after step [child step ("- ✗ gone: " <> anchorOf cu <> " no longer exists")] False (Just (goneKey cu))
+                    | (step, cu) <- gone ]
+                  whyGhosts =
+                    [ after step [child step ("- ✗ changed: " <> fromMaybe (T.intercalate ", " (map cuName units) <> " changed") w)] False (unitOf step own)
+                    | ((step, units, own), w) <- zip whys whyWords ]
+                  (atStep, indent) = newStepPlace branch ls
+                  newSteps =
+                    [ ReconcileBlock (Block (lnRow atStep) (Just (lnText atStep)) [ghost (indent <> "- [ ] " <> fromMaybe (headerWords cu) w <> " " <> anchorOf cu)]) False (triple' cu)
+                    | (cu, w) <- zip unplaced stepWords ]
+                  title = fromMaybe (lineAt 0) (find (\l -> case lnKind l of Heading _ -> True; _ -> False) ls)
+                  more = wsMore ws + skipped
+                  summaryGhost n what = ReconcileBlock (Block (lnRow title) (Just (lnText title)) [ghost ("- ? " <> tshow n <> " " <> what)]) False Nothing
+                  notes
+                    | not canAsk = [summaryGhost (length unaccounted + wsMore ws) "changed units not in the plan" | not (null unaccounted)]
+                    | otherwise = [summaryGhost more "more changed units not in the plan" | more > 0]
+                  blocks = notes ++ sortOn (blAfterRow . rbBlock) (stateGhosts ++ also ++ goneGhosts ++ whyGhosts) ++ newSteps
+              (decisions, climbs) <- bimap reverse reverse <$> readIORef asked
+              end <- getMonotonicTime
+              let secs = end - start
+                  rungNames = nubOrd (map fst climbs)
+                  a = answer rid blocks more secs rungNames
+              appendRecord (ssPorts s) root . AReconcile $
+                ReconcileRecord
+                  { rcId = rid, rcAt = now, rcPlan = rel, rcBranch = branch, rcBaseline = wsBaseline ws, rcForced = forced
+                  , rcChanged = length (wsChanged ws), rcUnaccounted = length (wsUnaccounted ws), rcMore = more, rcFacts = length facts
+                  , rcSeconds = secs, rcClimbs = climbs, rcDecisions = decisions, rcBlocks = map rbUnit blocks }
+              appendStepLine (ssPorts s) root ["plan-reconcile", T.pack rel, tshow (length facts) <> " facts", tshow (length blocks) <> " ghosts", T.pack (showFFloat (Just 2) secs "") <> " s", T.intercalate "," rungNames]
+              pure (s {ssReconciled = M.insert path (key, a) (ssReconciled s)}, Right a)
   where
     triple cu = (cuPath cu, cuName cu, fromMaybe "" (cuFingerprint cu))
     triple' cu = (cuPath cu, cuName cu,) <$> cuFingerprint cu
+    goneKey cu = (cuPath cu, cuName cu, "")
     anchorOf cu = "@" <> T.pack (cuPath cu) <> ":" <> cuName cu
     ghost t = Ghost t (listToMaybe (parsePlan t) >>= lnAnchor)
     -- a header as a step's words: its first line without the block opener
@@ -493,7 +508,10 @@ newStepPlace branch ls = case (mine, [s | s <- reverse secs, not (null (steps s)
   _ -> (fromMaybe (Line 0 0 Prose "" Nothing NoVerdict) (listToMaybe (reverse ls)), "")
   where
     secs = sections ls
-    steps sec = [l | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec, case lnKind l of Step _ -> True; _ -> False]
+    -- a section's steps at its lowest step indent: never a sub-step
+    steps sec =
+      let all' = [l | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec, case lnKind l of Step _ -> True; _ -> False]
+       in [l | l <- all', lnIndent l == minimum (map lnIndent all')]
     mine = [sec | Just b <- [branch], sec <- secs, secBranch sec == Just b, not (null (steps sec))]
     at step = (fromMaybe step (listToMaybe (reverse (childrenOf ls (lnRow step)))), T.replicate (lnIndent step) " ")
 
@@ -515,7 +533,7 @@ reconcileJson a =
         , "replace" .= rbReplace b
         , "unit" .= fmap (\(path, unit, fp) -> object ["path" .= path, "unit" .= unit, "fp" .= fp]) (rbUnit b) ]
     fpFor unit g = case (unit, ghAnchor g, lnKind <$> listToMaybe (parsePlan (ghText g))) of
-      (Just (path, name, fp), Just an, Just k) | anPath an == path, anUnit an == name, k /= Step False -> Just fp
+      (Just (path, name, fp), Just an, Just k) | not (T.null fp), anPath an == path, anUnit an == name, k /= Step False -> Just fp
       _ -> Nothing
 
 tshow :: Show a => a -> Text
