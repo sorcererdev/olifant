@@ -252,18 +252,19 @@ testFacts :: [Line] -> Int -> [(Text, TestState)] -> Maybe Text -> [Fact]
 testFacts ls row states fp = case drop row ls of
   [] -> []
   (step : _) ->
-    let kids = [c | c <- childrenOf ls row, lnKind c == TestChild]
+    let direct = [c | c <- childrenOf ls row, lnIndent c == lnIndent step + 2]
+        kids = [c | c <- direct, lnKind c == TestChild]
         stateOf c = fromMaybe (testState c) (Just <$> (lnAnchor c >>= \a -> lookup (anUnit a) states))
         rewrites = [Replace (lnRow c) (withTestState (lnText c) s) | c <- kids, Just a <- [lnAnchor c], Just s <- [lookup (anUnit a) states]]
         reds = [anUnit a | c <- kids, Just a <- [lnAnchor c], stateOf c == Just TestRed]
         allGreen = not (null kids) && all ((== Just TestGreen) . stateOf) kids
         open = lnKind step == Step False
-        tick = [Replace row (withVerdict (T.replace "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified fp)) | allGreen, open]
+        tick = [Replace row (withVerdict (checkbox "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified fp)) | allGreen, open]
         pad = T.replicate (lnIndent step + 2) " "
-        noted t = any (\c -> evidenceTag c == Just "red again" && t `T.isInfixOf` lnText c) (childrenOf ls row)
+        noted t = any (\c -> evidenceTag c == Just "red again" && T.strip (lnText c) == "- ✗ " <> t <> " red again") direct
         fresh = [pad <> "- ✗ " <> t <> " red again" | t <- reds, not (noted t)]
         lastRow = maybe row lnRow (listToMaybe (reverse (childrenOf ls row)))
-        untick = [Replace row (withVerdict (T.replace "- [x]" "- [ ]" (lnText step)) NoVerdict) | not (null reds), lnKind step == Step True]
+        untick = [Replace row (withVerdict (checkbox "- [x]" "- [ ]" (lnText step)) NoVerdict) | not (null reds), lnKind step == Step True]
         note = [Insert lastRow fresh | not (null reds), lnKind step == Step True, not (null fresh)]
     in rewrites ++ tick ++ untick ++ note
 
@@ -271,3 +272,9 @@ testFacts ls row states fp = case drop row ls of
 factJson :: Fact -> Value
 factJson (Replace n t) = object ["row" .= n, "text" .= t]
 factJson (Insert n ls) = object ["after" .= n, "lines" .= ls]
+
+-- | Swap the checkbox right after the indent, leaving the rest of the line alone.
+checkbox :: Text -> Text -> Text -> Text
+checkbox from to txt =
+  let (ind, rest) = T.span (== ' ') txt
+  in maybe txt (\r -> ind <> to <> r) (T.stripPrefix from rest)

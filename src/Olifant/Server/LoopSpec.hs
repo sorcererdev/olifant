@@ -186,12 +186,13 @@ factsSpec :: Spec
 factsSpec = describe "Olifant.Server.Loop (facts)" $ do
   let ls = parsePlan "- [ ] s @src/a.py:F\n  - test: it works @tests/t.py:test_it ●\n  - test: new @tests/t.py:test_new"
       done = parsePlan "- [x] s @src/a.py:F ✓ abc1234\n  - test: it works @tests/t.py:test_it ●"
+      step0 = case ls of (l : _) -> l; [] -> error "empty plan"
       cu = ChangedUnit "src/a.py" "F" (Just "abc1234") (Changed "x") "def F" Nothing Nothing
   it "(a) a moved unit is re-anchored wherever it is named" $
     reanchorFacts (parsePlan "- [ ] s @src/a.py:F\n  - also @src/a.py:F ✓ abc1234\n- claim @src/b.py:G ✓ 1111111") [ChangedUnit "src/c.py" "F" (Just "abc1234") (Moved "src/a.py" "F") "def F" Nothing Nothing]
       `shouldBe` [Replace 0 "- [ ] s @src/c.py:F", Replace 1 "  - also @src/c.py:F ✓ abc1234"]
   it "(b) a touched step's green children go pending" $
-    pendingFacts ls [(head ls, cu)] `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ○"]
+    pendingFacts ls [(step0, cu)] `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ○"]
   it "(c) all green ticks the step at its fingerprint" $
     testFacts ls 0 [("test_it", TestGreen), ("test_new", TestGreen)] (Just "abc1234")
       `shouldBe` [ Replace 1 "  - test: it works @tests/t.py:test_it ●", Replace 2 "  - test: new @tests/t.py:test_new ●"
@@ -202,8 +203,17 @@ factsSpec = describe "Olifant.Server.Loop (facts)" $ do
   it "(e) a red test on a done step un-ticks it and says so once" $ do
     let facts = testFacts done 0 [("test_it", TestRed)] (Just "abc1234")
     facts `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ✗", Replace 0 "- [ ] s @src/a.py:F", Insert 1 ["  - ✗ test_it red again"]]
-    let applied = parsePlan "- [ ] s @src/a.py:F\n  - test: it works @tests/t.py:test_it ✗\n  - ✗ test_it red again"
-    testFacts applied 0 [("test_it", TestRed)] Nothing `shouldSatisfy` (null . filter (\f -> case f of Insert _ _ -> True; _ -> False))
+    let applied = parsePlan "- [x] s @src/a.py:F ✓ abc1234\n  - test: it works @tests/t.py:test_it ✗\n  - ✗ test_it red again"
+        inserts = filter (\f -> case f of Insert _ _ -> True; _ -> False)
+    inserts (testFacts applied 0 [("test_it", TestRed)] (Just "abc1234")) `shouldBe` []
+  it "(e2) a note for test_it does not hide test_item's; two reds, one noted, insert only the other" $ do
+    let p = parsePlan "- [x] s @src/a.py:F ✓ abc1234\n  - test: a @tests/t.py:test_it ✗\n  - test: b @tests/t.py:test_item ●\n  - ✗ test_it red again"
+    testFacts p 0 [("test_it", TestRed), ("test_item", TestRed)] Nothing
+      `shouldSatisfy` elem (Insert 3 ["  - ✗ test_item red again"])
+  it "(e3) only direct test children count; a title with a checkbox is kept; a nested step is skipped" $ do
+    let p = parsePlan "- [ ] fix \"- [ ]\" @src/a.py:F\n  - test: a @tests/t.py:test_a ○\n  - [ ] inner @src/a.py:G\n    - test: g @tests/t.py:test_g ○"
+    testFacts p 0 [("test_a", TestGreen), ("test_g", TestRed)] Nothing
+      `shouldBe` [Replace 1 "  - test: a @tests/t.py:test_a ●", Replace 0 "- [x] fix \"- [ ]\" @src/a.py:F"]
   it "(f) no fingerprint ticks without a mark; factJson shapes" $ do
     testFacts ls 0 [("test_it", TestGreen), ("test_new", TestGreen)] Nothing
       `shouldSatisfy` (elem (Replace 0 "- [x] s @src/a.py:F"))
