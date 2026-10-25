@@ -946,6 +946,7 @@ data PausedConjure = PausedConjure
   , pdLandings :: [(Int, Text)]
   , pdRewritten :: [Text]
   , pdSteps :: [ConjureStep]
+  , pdWireWrites :: Map FilePath Text
   }
   deriving stock (Eq, Show)
 

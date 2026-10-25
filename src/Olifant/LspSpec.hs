@@ -1498,6 +1498,26 @@ conjureSpec = describe "olifant/conjure" $ do
     inner "diff" (inner "proposal" (field "paused" proposed)) `shouldSatisfy` \case Just (String d) -> "+    cancel_booking = command(bookings=repository)" `elem` T.lines d; _ -> False
     steps `shouldSatisfy` elem ["conjure-proposal", notFound]
 
+  it "a round is refused for a pyright error the test file gained; one it had at the start stands, and the green says so" $ do
+    -- a re-conjure the person accepted although it was refused leaves BAD in the test file: new
+    (refused, _, _) <- cancelChecked $ \script ask resume -> do
+      _ <- ask []
+      liftIO (BSL.writeFile script "{}")
+      liftIO (fillsBeside script (notFoundBody True))
+      _ <- resume "conjure-1" "reconjure"
+      liftIO (fillsBeside script "return Ok(None)")
+      resume "conjure-1" "accept"
+    inner "kind" (inner "failure" (field "paused" refused)) `shouldBe` Just (String "check")
+    field "green" refused `shouldBe` Nothing
+    -- the same error there from the start is not new: the round is green, and the summary says so
+    (green, _, _, _) <- cancelOnDiskWith lambdaChecker (Just "wire") morningModule morningTest $ \script ask resume -> do
+      _ <- ask []
+      liftIO (BSL.writeFile script "{}")
+      _ <- resume "conjure-1" "reconjure"
+      resume "conjure-1" "accept"
+    field "green" green `shouldBe` Just (Bool True)
+    field "summary" green `shouldBe` Just (String "green in round 2 \183 local \183 bookings wired \183 not_found rewritten \183 cancel_booking__test.py has 1 pyright error")
+
   it "a refused re-conjure leads the pause, keeps its proposal to see, and offers it again" $ do
     ((refused, again, accepted), steps, _) <- cancelChecked $ \script ask resume -> do
       _ <- ask []
@@ -1592,6 +1612,20 @@ conjureSpec = describe "olifant/conjure" $ do
       ask (resumeWith "conjure-1" ["choice" .= ("stop" :: Text), "land" .= True, "arg" .= ("0" :: Text)])
     refused `shouldBe` Left "there is no wire to keep"
     keepSteps `shouldSatisfy` notElem ["conjure-resume", "keep", "0"]
+
+  it "keep 0 after a test fix lands the wire's files only, as the wire left them" $ do
+    (kept, _, _, (diskModule, diskTest)) <- cancelOnDisk (Just "wire") morningModule morningTest $ \_ ask resume -> do
+      _ <- ask []
+      _ <- resume "conjure-1" "reconjure"
+      -- the fix accepted, the script still red: the conjure pauses again, the fix in force
+      accepted <- resume "conjure-1" "accept"
+      let tok = case inner "token" (field "paused" accepted) of Just (String t) -> t; _ -> "conjure-1"
+      ask (resumeWith tok ["choice" .= ("stop" :: Text), "land" .= True, "arg" .= ("0" :: Text)])
+    field "summary" kept `shouldSatisfy` \case Just (String x) -> "kept the wire alone" `T.isPrefixOf` x && not ("rewritten" `T.isInfixOf` x); _ -> False
+    field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
+    field "edits" kept `shouldSatisfy` wroteIn cbTest "bookings: BookingRepository | None = None"
+    field "edits" kept `shouldSatisfy` (not . wroteIn cbTest "command(bookings=repository)")
+    (diskModule, diskTest) `shouldBe` (morningModule, morningTest)
 
   it "a wire resume runs the offered wire; an arg not offered is refused and keeps the token" $ do
     ((paused, refused, wired), steps, asked) <- cancelWith (Just "wire") morningModule thingTest $ \_ ask _ -> do

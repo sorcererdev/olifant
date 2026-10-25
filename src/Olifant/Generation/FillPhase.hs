@@ -96,7 +96,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           -- errors the files had with their placeholders are not the fills'
           -- (python review I1); checked only when something is broken
           already <- if M.null broken0 then pure M.empty else fst <$> checkFiles (with []) [site t | (t, _) <- candidates0]
-          let notAlready = M.filter (not . null) . M.mapWithKey (\p es -> filter (`notElem` M.findWithDefault [] p already) es)
+          let notAlready = M.filter (not . null) . M.mapWithKey (\p es -> if p `elem` toolJudged tools then es else filter (`notElem` M.findWithDefault [] p already) es)
               broken1 = notAlready broken0
           -- Auto-import (no model round): in a file whose every error is a
           -- name not defined, a candidate using that name gets the one import
