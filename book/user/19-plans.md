@@ -65,7 +65,7 @@ In `.olifant/config.toml`, all optional:
 | `timeout` | `300` | seconds before an errand is killed |
 | `do_tools` | `[]` | extra `--allowedTools` entries for `do` (beyond Read, Grep, Glob, Edit, Write and the test command) |
 | `ladder` | `[model] ladder` without Jev | the backends a reconcile climbs when Jev is unsure, in order, each with its `escalate` policy |
-| `budget` | `[model] budget` (180) | seconds of climbing per reconcile; past it, the rest is one ghost `- ? <n> changed units not in the plan` |
+| `budget` | `[model] budget` (180) | seconds per reconcile, counted from its start and checked before each question; past it, the rest is one ghost `- ? <n> more changed units not in the plan` (without the "more" when no model is configured at all) |
 | `prices` | the current models at list price | `[plans.prices."<model id>"]` rows for `plans cost`, below |
 
 An unknown key under `[plans]` is a configuration error.
@@ -92,8 +92,7 @@ written straight into the buffer in one undo step: a tick when the step's tests 
 test states `○ ● ✗`, `○` on the children of a touched step, a re-anchor when a unit only moved.
 Readings are a model's judgement, and arrive as ghosts you accept with `<leader>mpy` or drop with
 `<leader>mpn`: an `also` child placing a unit under a step, a step line ticked or unticked, a
-`✗ changed: <why>` child, a `✗ gone:` child, a new step for work nothing covers. The outcomes
-label the decisions in the record below.
+`✗ changed: <why>` child, a `✗ gone:` child, a new step for work nothing covers.
 
 **Who decides.** Jev (`[decide] model`) answers two questions: `plan-step` (which open step is a
 changed file for, or none; one question per changed file) and `plan-state` (done, in progress or
@@ -101,8 +100,9 @@ diverged; for a done step without tests, still done, reopened or diverged). Belo
 the same question climbs `[plans] ladder`, else `[model] ladder` without Jev, each backend under
 its `escalate` policy: an automatic reconcile climbs `auto` rungs only, `<leader>mpx` also `ask`
 rungs, and `never` is never. Words (a `<why>`, a new step's line) come from the first allowed chat
-rung in one call; with none, the unit's header stands in. A reconcile climbs for at most `[plans]
-budget` seconds.
+rung in one call. Without one (none allowed, the call failing, or the budget spent) a new step's
+line is the unit's header and a `<why>` is "<unit names> changed". A reconcile asks for at most
+`[plans] budget` seconds from its start.
 
 ```toml
 [plans]
@@ -115,16 +115,16 @@ escalate = "auto"     # falling back to local needs no keypress
 escalate = "ask"      # only <leader>mpx climbs here
 ```
 
-(The backends' other keys are as in chapter 12.) The demo's config sets `escalate = "auto"` on its local backend for that reason.
+A backend with no `escalate` key defaults to `ask`, so only `<leader>mpx` climbs to it. (The backends' other keys are as in chapter 12.) The demo's config sets `escalate = "auto"` on its local backend for that reason.
 
-**Tests on a step.** `<leader>ms` on a step stubs a test under it (Python), the step's text as the
+**Tests on a step.** `<leader>ms` on a step stubs a test under it (Python; the step needs an anchor), the step's text as the
 sentence. `<leader>mt` runs the step's tests and ticks it when all are green. A `do` runs the
 step's tests when it finishes.
 
 **The record.** Every reconcile appends a `reconcile` line to `.olifant/state/errands.jsonl`: `id`,
 `at`, `plan`, `branch`, `baseline`, `forced`, `changed`, `unaccounted`, `more`, `facts`, `seconds`,
-`climbs` (rung and seconds), `decisions` and `blocks`. The ghosts' accept and reject outcomes label
-its decisions.
+`climbs` (rung and seconds), `decisions` and `blocks`. A ghost's accept or reject outcome refers to
+the reconcile's `blocks` by index.
 
 ## What errands cost
 
@@ -141,7 +141,7 @@ main                3           5          0.0  2/3 (0 ?)       0.19         2  
 - `errands` counts every errand, however it ended; `errand $` is the runner's own cost (0 for an
   errand that failed before it reported one).
 - `reconciles` counts the branch's `reconcile` records; `reconcile s` is the seconds they spent
-  climbing to model rungs (`--json`: `reconciles`, `reconcile_seconds`).
+  in model calls, Jev's rung and the words call included (`--json`: `reconciles`, `reconcile_seconds`).
 - `accepted` is ghost blocks accepted / blocks decided, and in parentheses the blocks of answered
   errands no one has decided yet.
 - `sessions` counts Claude Code sessions that are not errands: a session whose id is some errand's
