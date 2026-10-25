@@ -306,6 +306,7 @@ test-suite spec
     Olifant.Server.Suggest
     Olifant.Server.Tests
     Olifant.Server.Unit
+    Olifant.Server.UnitSpec
     Olifant.Server.Waive
     Olifant.ServerSpec
     Olifant.Snippet
