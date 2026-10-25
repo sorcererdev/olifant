@@ -1,0 +1,1 @@
+{"sessionId":"S2","gitBranch":"feat","timestamp":"2026-10-25T11:00:00.000Z","requestId":"r4","type":"assistant","message":{"id":"m4","model":"claude-haiku-5-5","role":"assistant","usage":{"input_tokens":1000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}

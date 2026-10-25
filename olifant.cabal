@@ -156,6 +156,7 @@ library
     Olifant.Template.Value
     Olifant.TestName
     Olifant.Toml
+    Olifant.Transcripts
     Olifant.Uncovered
     Olifant.Workspace
     -- olifant:end library-modules
@@ -331,6 +332,8 @@ test-suite spec
     Olifant.TemplateSpec
     Olifant.TestName
     Olifant.Toml
+    Olifant.Transcripts
+    Olifant.TranscriptsSpec
     Olifant.Uncovered
     Olifant.UncoveredSpec
     Olifant.Workspace
