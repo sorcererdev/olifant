@@ -37,7 +37,7 @@ import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
 import Olifant.Server.Errand (Status (..), Tokens (..))
-import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), readRecords)
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), readRecords)
 import Olifant.Server.State qualified as St
 import Olifant.Decide qualified as De
 import Olifant.Rules qualified as Ru
@@ -2142,6 +2142,39 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       ([AnErrand r], 0) <- records dir
       (erStatus r, erSession r, erWhy r) `shouldBe` (Cancelled, Nothing, Just "cancelled")
       lastStatus dir >>= (`shouldBe` "cancelled")
+  let outcomeP = Proxy :: Proxy "olifant/plans/outcome"
+      -- an errand asked, then the given outcome notifications; the debugState
+      -- round trip after them means the server handled them
+      decided outcomes = do
+        v <- errand askP 3 >>= either (fail . T.unpack) pure
+        let Just (String eid) = lookupKey "id" v
+        uri <- getDocUri "plans/t.md"
+        forM_ outcomes $ \fields -> sendNotification (SMethod_CustomMethod outcomeP) (object (("textDocument" .= object ["uri" .= uri]) : fields eid))
+        _ <- debugState
+        pure eid
+  it "olifant/plans/outcome appends an outcome record" $
+    withPlan plan $ \ports dir -> do
+      (eid, _) <- inProcessWith ports dir $ decided
+        [ \eid -> ["id" .= eid, "block" .= (0 :: Int), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (1 :: Int), "outcome" .= ("rejected" :: Text)] ]
+      (rs, 0) <- records dir
+      length rs `shouldBe` 3
+      [(orId o, orBlock o, orOutcome o) | AnOutcome o <- rs] `shouldBe` [(eid, 0, "accepted"), (eid, 1, "rejected")]
+      -- its time to the second, as every record's
+      raw <- TIO.readFile (dir </> ".olifant/state/errands.jsonl")
+      [T.length at | Just (Object o) <- map (Aeson.decodeStrict . TE.encodeUtf8) (T.lines raw), Just (String "outcome") <- [KM.lookup "kind" o], Just (String at) <- [KM.lookup "at" o]]
+        `shouldBe` [20, 20]
+  it "an outcome with a bad verb, block or id is ignored" $
+    withPlan plan $ \ports dir -> do
+      _ <- inProcessWith ports dir $ decided
+        [ \eid -> ["id" .= eid, "block" .= (0 :: Int), "outcome" .= ("maybe" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= ("0" :: Text), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (-1 :: Int), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (0.5 :: Double), "outcome" .= ("accepted" :: Text)]
+        , \_ -> ["id" .= (7 :: Int), "block" .= (0 :: Int), "outcome" .= ("accepted" :: Text)]
+        , \eid -> ["id" .= eid, "block" .= (0 :: Int)] ]
+      (rs, 0) <- records dir
+      length rs `shouldBe` 1
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
