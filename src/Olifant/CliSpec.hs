@@ -1249,9 +1249,9 @@ plansCostSpec = describe "plans cost" $ do
     length (filter ("no price" `T.isInfixOf`) (T.lines err)) `shouldBe` 1
     err `shouldSatisfy` ("skipped 1 unreadable" `T.isInfixOf`)
     err `shouldNotSatisfy` ("synthetic" `T.isInfixOf`)
-    T.words (T.lines out !! 2) `shouldBe` ["main", "0", "0/0", "(0", "?)", "0.00", "2", "0.00", "0.00"]
+    T.words (T.lines out !! 2) `shouldBe` ["main", "0", "0", "0.0", "0/0", "(0", "?)", "0.00", "2", "0.00", "0.00"]
   it "no transcripts dir prints errands only" $ do
     (code, out, err, _) <- run [records base []] ["--transcripts", "/nowhere"]
     code `shouldBe` ExitSuccess
     err `shouldSatisfy` ("no Claude Code transcripts at /nowhere" `T.isInfixOf`)
-    T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "1/2", "(0", "?)", "0.07", "0", "0.00", "0.07"]
+    T.words (T.lines out !! 1) `shouldBe` ["feat", "2", "0", "0.0", "1/2", "(0", "?)", "0.07", "0", "0.00", "0.07"]
