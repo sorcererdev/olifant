@@ -26,7 +26,7 @@ import Olifant.Plans (Anchor (..), Line (..), Section (..), Verdict (..), parseP
 import Olifant.Server.State (ServerState (..))
 import Olifant.Server.Unit (Named (..), fingerprint, unitNamed, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (takeExtension, (</>))
+import System.FilePath (isAbsolute, takeExtension, (</>))
 
 -- | An absolute path under the project's plans folder, ending `.md`.
 isPlanPath :: Project -> FilePath -> Bool
@@ -49,13 +49,25 @@ data Resolved = Resolved
 -- or the unit is missing, the language is unknown, or reading fails.
 resolveAnchor :: ServerState -> Project -> Anchor -> IO Resolved
 resolveAnchor s p a = do
-  text <- safely Nothing (readText (prWorkspace p) rel)
+  text <- maybe (pure Nothing) (safely Nothing . readText (prWorkspace p)) (confined (anPath a))
   unit <- case (text, languageFor (catalogLanguages (prCatalog p)) rel) of
     (Just t, Just lang) -> safely Nothing (either (const Nothing) (unitNamed (anUnit a)) <$> unitsOf (pSyntax (ssPorts s)) lang t)
     _ -> pure Nothing
   pure (Resolved rel (normalisePath (prRoot p </> rel)) unit (fingerprint <$> text <*> fmap namedLines unit) text)
   where
     rel = normalisePath (anPath a)
+
+-- | An anchor's path as one inside the project (normalised, relative), or
+-- Nothing: an absolute path, or one that climbs out of the root, is never
+-- read. The one place anchors are confined (a later allowlist of sibling
+-- roots widens only this).
+confined :: FilePath -> Maybe FilePath
+confined path
+  | isAbsolute path = Nothing
+  | rel == ".." || "../" `isPrefixOf` rel = Nothing
+  | otherwise = Just rel
+  where
+    rel = normalisePath path
 
 -- | IO that cannot fail the caller: an exception (not an async one) is the default.
 safely :: a -> IO a -> IO a
@@ -106,10 +118,10 @@ anchorItems s p upTo = case T.breakOnEnd "@" upTo of
   (_, typed)
     | T.any (== ' ') typed -> pure []
     | (path, unitPrefix) <- T.breakOnEnd ":" typed, not (T.null path) -> do
-        let rel = normalisePath (T.unpack (T.dropEnd 1 path))
-        units <- case languageFor langs rel of
+        units <- case confined (T.unpack (T.dropEnd 1 path)) of
           Nothing -> pure []
-          Just lang -> safely [] $ readText ws rel >>= \case
+          Just rel | Nothing <- languageFor langs rel -> pure []
+          Just rel | Just lang <- languageFor langs rel -> safely [] $ readText ws rel >>= \case
             Nothing -> pure []
             Just t -> either (const []) id <$> unitsOf (pSyntax (ssPorts s)) lang t
         pure [item CompletionItemKind_Function (namedName n) (namedName n) | n <- units, unitPrefix `T.isPrefixOf` namedName n]

@@ -47,6 +47,17 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     (s, proj) <- planServer
     ds <- planDiagnostics s proj "/r1/plans/t.md" "- 𝔸 é @src/a.py:Gone\n"
     map (\d -> (d ^. L.range . L.start . L.character, d ^. L.range . L.end . L.character)) ds `shouldBe` [(7, 21)]
+  it "an anchor outside the root, or absolute, is never read: not found" $ do
+    (s, proj) <- planServer
+    out <- resolveAnchor s proj (Anchor "../a.py" "Foo" 0 0)
+    (rsUnit out, rsText out) `shouldBe` (Nothing, Nothing)
+    abs' <- resolveAnchor s proj (Anchor "/r1/src/a.py" "Foo.bar" 0 0)
+    (rsUnit abs', rsText abs') `shouldBe` (Nothing, Nothing)
+    fmap namedName . rsUnit <$> resolveAnchor s proj (Anchor "src/../src/a.py" "Foo.bar" 0 0) `shouldReturn` Just "Foo.bar"
+    ds <- planDiagnostics s proj "/r1/plans/t.md" "- a @../a.py:Foo\n- b @/r1/src/a.py:Foo.bar\n- c @src/../src/a.py:Foo.bar\n"
+    map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) ds `shouldBe` [("? not found", 0), ("? not found", 1)]
+    map (^. L.label) <$> anchorItems s proj "- x @../a.py:" `shouldReturn` []
+    map (^. L.label) <$> anchorItems s proj "- x @/r1/src/a.py:" `shouldReturn` []
   it "completes paths after @ and units after @path:" $ do
     (s, proj) <- planServer
     map (^. L.label) <$> anchorItems s proj "- x @src/" `shouldReturn` ["src/a.py"]
@@ -70,6 +81,8 @@ planServer = do
         ++ [ ("/r1/.olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")
            , ("/r1/src/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/notes.txt", "x\n")
+           , -- outside the root: there, so a refusal is not a miss
+             ("/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/plans/t.md", "# T\n") ]
   let syntax = querying (\_ _ _ -> pure (Right [Match (a, 0) (z, 0) "" (0, 0) | (a, z) <- [(0, 2), (1, 2)]]))
       ports = Ports disk syntax (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 25) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
