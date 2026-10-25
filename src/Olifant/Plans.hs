@@ -54,7 +54,7 @@ parsePlan t = snd (mapAccumL step False (zip [0 ..] (T.lines t)))
       | inFence = (inFence, prose row txt)
       | otherwise = (inFence, line row txt)
     isFence = ("```" `T.isPrefixOf`) . T.stripStart
-    prose row txt = (line row txt) { lnKind = Prose }
+    prose row txt = (line row txt) { lnKind = Prose, lnAnchor = Nothing, lnVerdict = NoVerdict }
 
 line :: Int -> Text -> Line
 line row txt = Line row ind (kindOf body) txt anc (maybe NoVerdict (verdictAfter txt) anc)
@@ -186,10 +186,10 @@ withTestState txt s
 evidenceTag :: Line -> Maybe Text
 evidenceTag l
   | lnKind l /= Evidence = Nothing
+  | Just _ <- T.stripPrefix "- ✗ " body, "red again" `T.isSuffixOf` T.stripEnd body = Just "red again"
   | Just r <- T.stripPrefix "- ✗ " body
   , let (w, c) = T.breakOn ":" r
   , not (T.null c), not (T.null w), not (T.any isSpace w) = Just w
-  | Just _ <- T.stripPrefix "- ✗ " body, "red again" `T.isSuffixOf` T.stripEnd body = Just "red again"
   | otherwise = Nothing
   where body = T.stripStart (lnText l)
 
