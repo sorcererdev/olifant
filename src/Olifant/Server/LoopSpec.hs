@@ -43,6 +43,15 @@ spec = describe "Olifant.Server.Loop (the work set)" $ do
       git dir ["commit", "-q", "-am", "on the branch"]
       mainSha `shouldNotBe` first
       baseline dir "plans/t.md" `shouldReturn` Just mainSha
+  it "(b2) with only origin's default branch, the merge-base is with origin/<default>" $
+    withLoop "# T\n" [] $ \_ _ dir -> do
+      first <- gitLine dir ["rev-parse", "HEAD"]
+      git dir ["update-ref", "refs/remotes/origin/main", "HEAD"]
+      git dir ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]
+      git dir ["branch", "-q", "-m", "main", "close-table"]
+      write dir table labelEdited
+      git dir ["commit", "-q", "-am", "on the branch"]
+      baseline dir "plans/t.md" `shouldReturn` Just first
   it "(c) a changed, an added and a removed unit, with fingerprints" $
     withLoop "# T\n" [(table, threeWays)] $ \s p _ -> do
       ws <- workSet s p "plans/t.md" (parsePlan "# T\n")
@@ -65,6 +74,21 @@ spec = describe "Olifant.Server.Loop (the work set)" $ do
     withLoop "# T\n" [(table, T.replace helper "" tableText), (slot, slotText <> "\n\n" <> helper)] $ \s p _ -> do
       ws <- workSet s p "plans/t.md" []
       map (\c -> (cuPath c, cuName c, cuChange c)) (wsChanged ws) `shouldBe` [(slot, "helper", Moved table "helper")]
+  it "(d2) a git-mv'd module's units are Moved, and a step at the old path is touched" $ do
+    let plan = "# T\n\n- [ ] keep the helper @" <> T.pack table <> ":helper\n"
+        renamed = "src/bistro/booking/models/tables.py"
+    withLoopPorts plan [] $ \ports dir -> do
+      git dir ["mv", table, renamed]
+      git dir ["commit", "-q", "-m", "a rename"]
+      (s, p) <- loaded ports dir
+      ws <- workSet s p "plans/t.md" (parsePlan plan)
+      map (\c -> (cuPath c, cuChange c)) (wsChanged ws) `shouldSatisfy` all (\(f, c) -> f == renamed && case c of Moved old _ -> old == table; _ -> False)
+      map cuName (wsChanged ws) `shouldSatisfy` (\ns -> all (`elem` ns) ["Table.label", "helper"])
+      map (\(l, c) -> (lnRow l, cuName c)) (wsTouched ws) `shouldBe` [(2, "helper")]
+  it "(d3) a path with non-ASCII characters is not lost" $
+    withLoop "# T\n" [("src/bistro/café.py", "def crème() -> int:\n    return 1\n")] $ \s p _ -> do
+      ws <- workSet s p "plans/t.md" []
+      map (\c -> (cuPath c, cuName c, cuChange c)) (wsChanged ws) `shouldBe` [("src/bistro/café.py", "crème", Added)]
   it "(e) accounted units are left out, across plans" $
     withLoopPorts "# T\n" [(table, labelEdited)] $ \ports dir -> do
       (s0, p0) <- loaded ports dir

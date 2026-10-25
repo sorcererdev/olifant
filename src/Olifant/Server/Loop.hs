@@ -84,10 +84,15 @@ baseline root plan =
       def <- defaultBranch root
       cur <- currentBranch root
       case (def, cur) of
-        (Just d, Just b) | b /= d -> gitOut root ["merge-base", T.unpack d, "HEAD"] <&> fromMaybe h . (>>= listToMaybe)
+        (Just d, Just b) | b /= d -> do
+          local <- mergeBase (T.unpack d)
+          remote <- maybe (mergeBase ("origin/" <> T.unpack d)) (pure . Just) local
+          pure (fromMaybe h remote)
         _ -> gitOut root ["log", "--diff-filter=A", "--follow", "--format=%H", "--", plan] <&> \case
           Just ls@(_ : _) -> last ls
           _ -> h
+    -- the default branch as a local branch, else only as origin's
+    mergeBase d = gitOut root ["merge-base", d, "HEAD"] <&> (>>= listToMaybe)
 
 -- | The default branch: origin's HEAD, else `main`, else `master`, if any.
 defaultBranch :: FilePath -> IO (Maybe Text)
@@ -107,8 +112,10 @@ defaultBranch root =
 -- one `Moved`, on the new path and name.
 changedUnits :: ServerState -> Project -> Text -> IO [ChangedUnit]
 changedUnits s p base = do
-  diffed <- gitOut root ["diff", "--name-only", "--relative", b]
-  untracked <- gitOut root ["ls-files", "--others", "--exclude-standard"]
+  -- no renames: a renamed file's old path keeps its removed units (and its
+  -- moves); paths unquoted, so non-ASCII ones are not lost
+  diffed <- gitOut root ["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "--relative", b]
+  untracked <- gitOut root ["-c", "core.quotePath=false", "ls-files", "--others", "--exclude-standard"]
   let files = filter kept (nubOrd (map normalisePath (concat (catMaybes [diffed, untracked]))))
   folded . concat <$> mapM fileUnits files
   where
