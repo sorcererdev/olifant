@@ -12,7 +12,8 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Char8 qualified as BSL8
-import System.IO (Handle, hFlush)
+import System.IO (Handle, hFlush, hGetLine)
+import Control.Exception (bracket)
 import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, (.=))
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
@@ -62,7 +63,8 @@ import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMiss
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (createPipe)
+import System.Process (CreateProcess (..), StdStream (..), createPipe, createProcess, terminateProcess)
+import Olifant.Server.Unit qualified as Un
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -100,6 +102,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   mutateSpec
   plansSpec
   plansStage1Spec
+  plansLoopSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -1990,6 +1993,85 @@ plansSpec = describe "plans: anchors in the server" $ do
 
 -- | Plan errands (plans, stage 1, Task 7): ask, validate and do run the
 -- runner (the shim here, never claude) and answer ghost blocks.
+plansLoopSpec :: Spec
+plansLoopSpec = describe "plans, stage 2" $ do
+  let table = "src/bistro/booking/models/table.py"
+      plan = "- [ ] s @" <> T.pack table <> ":label\n  - test: t @tests/test_table.py:test_label \9679\n"
+      jev = "\n[decide]\nmodel = \"jev\"\n\n[model.backends.jev]\nkind = \"jev\"\n"
+      docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
+      reconcileP = Proxy :: Proxy "olifant/plans/reconcile"
+      anchorP = Proxy :: Proxy "olifant/plans/anchor"
+      -- the fixture, the plan and an edit of the anchored unit, committed first
+      tableText = T.unlines ["def label(id: str) -> str:", "    return id"]
+      withEdited config act = withPython [("plans/t.md", plan), (table, tableText)] $ \ports dir -> do
+        TIO.appendFile (dir </> ".olifant/config.toml") config
+        let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+        git ["init", "-q", "-b", "main"]
+        git ["add", "."]
+        git ["commit", "-q", "-m", "the fixture"]
+        old <- TIO.readFile (dir </> table)
+        TIO.writeFile (dir </> table) (T.replace "return id" "return \"t-\" + id" old)
+        act ports dir
+      answers :: FilePath -> [(Text, Text)] -> IO [(Key.Key, Value)]
+      answers dir kvs = do
+        let f = dir </> "answers.json"
+        TIO.writeFile f (TE.decodeUtf8 (BSL.toStrict (Aeson.encode (object ["answers" .= object [Key.fromText k .= object ["choice" .= v, "confidence" .= (0.9 :: Double)] | (k, v) <- kvs]]))))
+        pure [("decide_answers", String (T.pack f))]
+      arr = \case
+        Just (Array xs) -> toList xs
+        _ -> []
+  it "(a) reconcile answers facts and blocks for an edited anchored unit" $
+    withEdited jev $ \ports dir -> do
+      cfg <- answers dir [("plan-state", "in_progress")]
+      (answer, _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        blockMove reconcileP (object [docOf p])
+      v <- either (fail . T.unpack) pure answer
+      arr (lookupKey "facts" v) `shouldBe` [object ["row" .= (1 :: Int), "text" .= ("  - test: t @tests/test_table.py:test_label \9675" :: Text)]]
+      arr (lookupKey "blocks" v) `shouldBe` []
+  it "(b) cancel stops it, mid-call" $ do
+    let script = "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen(1)\nprint(s.getsockname()[1],flush=True)\nc,_=s.accept()\nprint('accepted',flush=True)\ntime.sleep(60)\n"
+        hanging act = bracket (createProcess (proc "python3" ["-I", "-c", script]) {std_out = CreatePipe}) (\(_, _, _, h) -> terminateProcess h) $ \case
+          (_, Just out, _, _) -> hGetLine out >>= \port -> act (T.strip (T.pack port)) (timeout 30000000 (hGetLine out))
+          _ -> fail "no server"
+    hanging $ \port accepted -> do
+      let config = jev <> T.unlines ["[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:" <> port <> "/v1\"", "model = \"x\"", "escalate = \"auto\"", "[plans]", "ladder = [\"local\"]"]
+          tidy = "# T\n\n## Tables\n\n- [ ] tidy the helper\n"
+      withPython [("plans/t.md", tidy), (table, tableText)] $ \ports dir -> do
+        TIO.appendFile (dir </> ".olifant/config.toml") config
+        let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+        git ["init", "-q", "-b", "main"]
+        git ["add", "."]
+        git ["commit", "-q", "-m", "the fixture"]
+        old <- TIO.readFile (dir </> table)
+        TIO.writeFile (dir </> table) (T.replace "return id" "return \"t-\" + id" old)
+        cfg <- answers dir [("plan-step", "none")]
+        ((code, took), _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          let method = SMethod_CustomMethod reconcileP
+          rid <- sendRequest method (object [docOf p])
+          -- the words call has reached the server
+          liftIO (accepted >>= (`shouldBe` Just "accepted"))
+          start <- liftIO getCurrentTime
+          sendNotification SMethod_CancelRequest (CancelParams (case rid of IdInt n -> InL n; IdString t -> InR t))
+          let await = responseForId method rid <|> (anyMessage >> await)
+          TResponseMessage _ _ r <- await
+          end <- liftIO getCurrentTime
+          pure (either (Just . (^. L.code)) (const Nothing) r, diffUTCTime end start)
+        code `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
+        took `shouldSatisfy` (< 5)
+  it "(c) plans/anchor answers the fingerprint of the unit's lines" $
+    withEdited "" $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        blockMove anchorP (object [docOf p, "line" .= (0 :: Int)])
+      v <- either (fail . T.unpack) pure answer
+      text <- TIO.readFile (dir </> table)
+      -- label is two lines: its def and its return
+      let Just start = lookupKey "line" v >>= \case Number n -> Just (round n :: Int); _ -> Nothing
+      lookupKey "fp" v `shouldSatisfy` \case Just (String fp) -> T.length fp == 7 && T.all (`elem` ("0123456789abcdef" :: String)) fp; _ -> False
+      lookupKey "fp" v `shouldBe` Just (String (Un.fingerprint text (start, start + 1)))
+
 plansStage1Spec :: Spec
 plansStage1Spec = describe "olifant/plans (stage 1)" $ do
   let table = "src/bistro/booking/models/table.py"

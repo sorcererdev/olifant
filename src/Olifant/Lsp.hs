@@ -45,6 +45,7 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
+import Olifant.Server.Loop (reconcile, reconcileJson)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
@@ -553,6 +554,7 @@ handlers env =
                     , "line" .= maybe 1 namedDef (rsUnit r)
                     , "unit" .= maybe (anUnit a) namedName (rsUnit r)
                     , "found" .= isJust (rsUnit r)
+                    , "fp" .= (rsFingerprint r <* rsUnit r)
                     ]))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/anchor needs a textDocument and a line" Nothing))
     , -- gd on a plan's anchor: its unit's def line; quiet anywhere else
@@ -586,6 +588,18 @@ handlers env =
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
+    , -- a plan against the work: facts to apply, ghost blocks to place
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/reconcile")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/reconcile needs a textDocument" Nothing))
+          Just path -> inBackground env req respond $ \job -> do
+            let forced = case req ^. L.params of Object o -> KM.lookup "forced" o == Just (Bool True); _ -> False
+            answered <- planProgress "reconciling" (\_ -> withSnapshot job (\s -> reconcile (envCancel job) forced path s))
+            stopped <- liftIO (cancelled (envCancel job))
+            case answered of
+              _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right a -> respond (Right (reconcileJson a))
     , -- what the editor did with an errand's ghost block: an outcome record
       -- (anything malformed, or out of a project, is ignored; a record that
       -- cannot be written is dropped: telemetry never reaches the editor)
