@@ -1,10 +1,11 @@
 -- | Errand telemetry: one JSON object per line in
 -- `.olifant/state/errands.jsonl` (ignored by git). An @errand@ record per
 -- plan errand, on every ending; an @outcome@ record per ghost block the
--- plugin accepts or rejects. Appending is best-effort and never throws:
+-- plugin accepts or rejects (an errand's or a reconcile's); a @reconcile@
+-- record per reconcile that asked or answered something. Appending is best-effort and never throws:
 -- telemetry must never fail an errand.
 module Olifant.Server.Telemetry
-  ( ErrandRecord (..), OutcomeRecord (..), Record (..)
+  ( ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Decision (..), Record (..)
   , recordJson, parseRecord, recordsPath, appendRecord, readRecords, errandId
   ) where
 
@@ -42,7 +43,23 @@ data ErrandRecord = ErrandRecord
 data OutcomeRecord = OutcomeRecord {orId :: Text, orBlock :: Int, orAt :: UTCTime, orOutcome :: Text}
   deriving (Eq, Show)
 
-data Record = AnErrand ErrandRecord | AnOutcome OutcomeRecord
+-- | One typed question a reconcile asked: its kind, its options, the option
+-- chosen (none when unsure) with its confidence, and the rung that answered
+-- (or the last one tried).
+data Decision = Decision {dcKind :: Text, dcOptions :: [Text], dcChosen :: Maybe Text, dcConfidence :: Maybe Double, dcRung :: Text}
+  deriving (Eq, Show)
+
+-- | One reconcile of a plan: its work set's sizes, the facts, the seconds,
+-- each model call (rung, seconds), each decision, and per ghost block (in
+-- the answer's order) the unit it is about, which a rejected outcome for
+-- that block marks as read.
+data ReconcileRecord = ReconcileRecord
+  { rcId :: Text, rcAt :: UTCTime, rcPlan :: FilePath, rcBranch :: Maybe Text, rcBaseline :: Maybe Text, rcForced :: Bool
+  , rcChanged :: Int, rcUnaccounted :: Int, rcMore :: Int, rcFacts :: Int, rcSeconds :: Double
+  , rcClimbs :: [(Text, Double)], rcDecisions :: [Decision], rcBlocks :: [Maybe (FilePath, Text, Text)] }
+  deriving (Eq, Show)
+
+data Record = AnErrand ErrandRecord | AnOutcome OutcomeRecord | AReconcile ReconcileRecord
   deriving (Eq, Show)
 
 -- | The record as the spec names its fields; absent Maybe fields are omitted.
@@ -62,7 +79,16 @@ recordJson = \case
           , ("tokens" .=) . object . tokensPairs <$> erTokens e, ("cost" .=) <$> erCost e ]
   AnOutcome o ->
     object ["kind" .= ("outcome" :: Text), "id" .= orId o, "block" .= orBlock o, "at" .= stamp (orAt o), "outcome" .= orOutcome o]
+  AReconcile r ->
+    object $
+      [ "kind" .= ("reconcile" :: Text), "id" .= rcId r, "at" .= stamp (rcAt r), "plan" .= rcPlan r, "forced" .= rcForced r
+      , "changed" .= rcChanged r, "unaccounted" .= rcUnaccounted r, "more" .= rcMore r, "facts" .= rcFacts r
+      , "seconds" .= rcSeconds r, "climbs" .= [object ["rung" .= n, "seconds" .= t] | (n, t) <- rcClimbs r]
+      , "decisions" .= map decisionJson (rcDecisions r)
+      , "blocks" .= [maybe Null (\(path, unit, fp) -> object ["path" .= path, "unit" .= unit, "fp" .= fp]) b | b <- rcBlocks r] ]
+        ++ catMaybes [("branch" .=) <$> rcBranch r, ("baseline" .=) <$> rcBaseline r]
   where
+    decisionJson d = object ["kind" .= dcKind d, "options" .= dcOptions d, "chosen" .= dcChosen d, "confidence" .= dcConfidence d, "rung" .= dcRung d]
     modelsJson ms = object [K.fromText m .= object (tokensPairs (muTokens u) ++ maybe [] (\c -> ["cost" .= c]) (muCost u)) | (m, u) <- ms]
     -- whole seconds, UTC (aeson would add the fraction)
     stamp = T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ"
@@ -78,6 +104,7 @@ parseRecord = parseMaybe $ \case
     o .: "kind" >>= \case
       ("errand" :: Text) -> AnErrand <$> errandP o
       "outcome" -> AnOutcome <$> (OutcomeRecord <$> o .: "id" <*> o .: "block" <*> o .: "at" <*> o .: "outcome")
+      "reconcile" -> AReconcile <$> reconcileP o
       k -> fail ("unknown kind " <> T.unpack k)
   _ -> fail "not an object"
   where
@@ -93,6 +120,14 @@ parseRecord = parseMaybe $ \case
         <*> o .:? "session" <*> o .:? "seconds" <*> o .:? "turns" <*> pure tokens
         <*> o .:? "cost" <*> pure models <*> o .: "prompt_chars" <*> o .: "grounded"
         <*> o .: "blocks" <*> o .: "lines" <*> o .: "dropped" <*> o .: "unresolved" <*> o .: "changed" <*> o .: "denials"
+    reconcileP o = do
+      climbs <- o .: "climbs" >>= traverse (\case Object c -> (,) <$> c .: "rung" <*> c .: "seconds"; _ -> fail "a climb is not an object")
+      decisions <- o .: "decisions" >>= traverse (\case Object d -> Decision <$> d .: "kind" <*> d .: "options" <*> d .:? "chosen" <*> d .:? "confidence" <*> d .: "rung"; _ -> fail "a decision is not an object")
+      blocks <- o .: "blocks" >>= traverse (\case Null -> pure Nothing; Object b -> (\p u f -> Just (p, u, f)) <$> b .: "path" <*> b .: "unit" <*> b .: "fp"; _ -> fail "a block is not an object or null")
+      ReconcileRecord
+        <$> o .: "id" <*> o .: "at" <*> o .: "plan" <*> o .:? "branch" <*> o .:? "baseline" <*> o .: "forced"
+        <*> o .: "changed" <*> o .: "unaccounted" <*> o .: "more" <*> o .: "facts" <*> o .: "seconds"
+        <*> pure climbs <*> pure decisions <*> pure blocks
     modelP = \case
       Object m -> ModelUse <$> tokensP m <*> m .:? "cost"
       _ -> fail "model use is not an object"

@@ -1,15 +1,27 @@
 module Olifant.Server.LoopSpec (spec) where
 
 import Control.Monad (forM_)
-import Data.Aeson (object, (.=))
-import Data.List (find)
+import Data.Aeson (Value (..), encode, object, (.=))
+import Data.Aeson.Key qualified as K
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Lazy qualified as BL
+import Data.List (find, sort)
+import Data.Maybe (fromMaybe)
+import Data.Text.Encoding qualified as TE
+import Data.Time (getCurrentTime)
+import Olifant.Decide (Question (..), Shape (..))
+import Olifant.Process (neverCancel)
+import Olifant.Server.Errand (Block (..), Ghost (..))
+import Olifant.Server.State (ServerConfig (..), ServerState (..))
+import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
+import System.Directory (doesFileExist)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.App (Ports, Project)
 import Olifant.LspSpec (withPython)
 import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
-import Olifant.Server (ServerState, newServerState, projectFor)
+import Olifant.Server (newServerState, projectFor)
 import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
 import System.Directory (createDirectoryIfMissing)
@@ -18,7 +30,7 @@ import System.Process (callProcess, readProcess)
 import Test.Hspec
 
 spec :: Spec
-spec = factsSpec >> workSetSpec
+spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec
 
 workSetSpec :: Spec
 workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
@@ -219,3 +231,204 @@ factsSpec = describe "Olifant.Server.Loop (facts)" $ do
       `shouldSatisfy` (elem (Replace 0 "- [x] s @src/a.py:F"))
     factJson (Replace 2 "t") `shouldBe` object ["row" .= (2 :: Int), "text" .= ("t" :: Text)]
     factJson (Insert 2 ["a"]) `shouldBe` object ["after" .= (2 :: Int), "lines" .= (["a"] :: [Text])]
+
+questionsSpec :: Spec
+questionsSpec = describe "Olifant.Server.Loop (questions)" $ do
+  let ls = parsePlan "# T\n\n## Other\n\n- [ ] elsewhere\n- [x] finished @src/a.py:G ✓ abc1234\n\n## Mine · branch b\n\nWhat this branch does.\n\n- [ ] here @src/a.py:F\n  - test: it works @tests/t.py:test_it ●\n"
+      cu = ChangedUnit "src/a.py" "F" (Just "abc1234") (Changed "x") "def F():" (Just "def F():\n    return 2") (Just "def F():\n    return 1")
+      opts q = case qShape q of Choice os -> map fst os; _ -> []
+      at r = case drop r ls of (l : _) -> l; [] -> error "no row"
+  it "(m) plan-step offers the open steps, the branch's section first, then none" $ do
+    let q = planStepQuestion (Just "b") ls ("src/a.py", [cu])
+    qKind q `shouldBe` "plan-step"
+    opts q `shouldBe` ["s11", "s4", "none"]
+    map fst (qContext q) `shouldBe` ["file", "units", "diff", "sections"]
+    lookup "diff" (qContext q) `shouldSatisfy` maybe False (\d -> T.isInfixOf "-     return 1" d && T.isInfixOf "+     return 2" d)
+    lookup "sections" (qContext q) `shouldSatisfy` maybe False (T.isInfixOf "What this branch does.")
+    opts (planStepQuestion Nothing ls ("src/a.py", [cu])) `shouldBe` ["s4", "s11", "none"]
+  it "(n) plan-state offers done, in progress, diverged for an open step; still done, reopened, diverged for a done one" $ do
+    let q = planStateQuestion (at 11) ls [cu]
+    (qKind q, opts q) `shouldBe` ("plan-state", ["done", "in_progress", "diverged"])
+    map fst (qContext q) `shouldBe` ["step", "children", "diff", "tests"]
+    lookup "tests" (qContext q) `shouldSatisfy` maybe False (T.isInfixOf "green")
+    opts (planStateQuestion (at 5) ls [cu]) `shouldBe` ["still_done", "reopened", "diverged"]
+  it "(l) parseWords reads numbered lines and leaves gaps" $
+    parseWords 3 "1: the table answers label\n3: ok" `shouldBe` [Just "the table answers label", Nothing, Just "ok"]
+  it "(l2) parseWords ignores numbers out of range and blank answers; gate is 0.6" $ do
+    parseWords 2 "0: no\n2:   \n4: no\n1. dotted\n" `shouldBe` [Just "dotted", Nothing]
+    gate `shouldBe` 0.6
+
+reconcileSpec :: Spec
+reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
+  it "(a) nothing changed → no record, empty answer" $
+    withReconcile tidyPlan [] jevConfig (Just (answersOf [("plan-step", "s7")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      (raFacts a, length (raBlocks a)) `shouldBe` ([], 0)
+      reconciles dir `shouldReturn` []
+      asked dir `shouldReturn` []
+  it "(b) a changed unit placed under a step is an also ghost with its unit" $
+    withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      fp <- fpNow dir s "helper"
+      map summary (raBlocks a) `shouldBe` [(7, Just "- [ ] tidy the helper", ["  - also @src/bistro/booking/models/table.py:helper"], False, Just (table, "helper", fp))]
+      asked dir `shouldReturn` ["plan-step", "plan-state"]
+  it "(c) a touched open step answered done is a replacing ticked ghost" $ do
+    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n"
+    withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      fp <- fpNow dir s "helper"
+      map summary (raBlocks a) `shouldBe` [(4, Just "- [ ] tidy the helper @src/bistro/booking/models/table.py:helper", ["- [x] tidy the helper @src/bistro/booking/models/table.py:helper ✓ " <> fp], True, Just (table, "helper", fp))]
+  it "(c2) a diverged step is a changed child, the unit named when no chat rung gives words" $ do
+    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n"
+    withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      map (\(r, _, ls, rep, _) -> (r, ls, rep)) (map summary (raBlocks a)) `shouldBe` [(4, ["  - ✗ changed: helper changed"], False)]
+  it "(d) a touched done step answered reopened is a replacing open line" $
+    withReconcile "# T\n" [] jevConfig (Just (answersOf [("plan-state", "reopened")])) $ \dir s -> do
+      old <- fpNow dir s "helper"
+      let step = "- [x] tidy the helper @src/bistro/booking/models/table.py:helper ✓ " <> old
+      write dir "plans/t.md" ("# T\n\n## S\n\n" <> step <> "\n")
+      write dir table helperEdited
+      (_, a) <- run False dir s
+      map summary (raBlocks a) `shouldSatisfy` \case
+        [(4, Just t, ["- [ ] tidy the helper @src/bistro/booking/models/table.py:helper"], True, Just (_, "helper", _))] -> t == step
+        _ -> False
+  it "(e) a removed anchored unit is a gone ghost without a question" $ do
+    let plan = "# T\n\n## S\n\n- [ ] keep the helper @src/bistro/booking/models/table.py:helper\n"
+    withReconcile plan [(table, T.replace helper "" tableText)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      map summary (raBlocks a) `shouldBe` [(4, Just "- [ ] keep the helper @src/bistro/booking/models/table.py:helper", ["  - ✗ gone: @src/bistro/booking/models/table.py:helper no longer exists"], False, Nothing)]
+      asked dir `shouldReturn` []
+      map (map dcKind . rcDecisions) <$> reconciles dir `shouldReturn` [[]]
+  it "(f) none → a new step after the section's last step, with the unit header when no chat rung" $ do
+    let planned branch = "# T\n\n## Tables" <> branch <> "\n\n- [ ] count the seats\n  - test: counts @tests/test_t.py:test_count ○\n\n## Later\n\n- [ ] later\n"
+        ghost = "- [ ] def spare() -> str @src/bistro/booking/models/table.py:spare"
+    withReconcile (planned " · branch main") [(table, withSpare)] jevConfig (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      fp <- fpNow dir s "spare"
+      map summary (raBlocks a) `shouldBe` [(5, Just "  - test: counts @tests/test_t.py:test_count ○", [ghost], False, Just (table, "spare", fp))]
+    withReconcile (planned "") [(table, withSpare)] jevConfig (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      map (\(r, t, ls, _, _) -> (r, t, ls)) (map summary (raBlocks a)) `shouldBe` [(9, Just "- [ ] later", [ghost])]
+  it "(g) no decider, no ladder → one summary ghost" $
+    withReconcile "# T\n\n- [ ] x\n" [(table, T.replace "return 1" "return 2" withSpare)] "" Nothing $ \dir s -> do
+      (_, a) <- run False dir s
+      map summary (raBlocks a) `shouldBe` [(0, Just "# T", ["- ? 2 changed units not in the plan"], False, Nothing)]
+  it "(h) an unsure Jev climbs an auto rung; ask rungs only when forced" $
+    withReconcile tidyPlan [(table, helperEdited)] (jevConfig <> climbConfig) (Just (answersOf [("plan-step", "unsure")])) $ \dir s -> do
+      _ <- run False dir s
+      _ <- run True dir s
+      climbs <- map (map fst . rcClimbs) <$> reconciles dir
+      case climbs of
+        [auto, forced] -> do
+          take 2 auto `shouldBe` ["jev", "local"]
+          auto `shouldNotContain` ["remote"]
+          take 3 forced `shouldBe` ["jev", "local", "remote"]
+        other -> expectationFailure ("two reconcile records, got " <> show other)
+      map (map dcRung . rcDecisions) <$> reconciles dir `shouldReturn` [["local"], ["remote"]]
+  it "(i) the same situation answers from the cache" $
+    withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
+      (s1, a1) <- run False dir s
+      (_, a2) <- run False dir s1
+      map summary (raBlocks a2) `shouldBe` map summary (raBlocks a1)
+      raId a2 `shouldBe` raId a1
+      length <$> reconciles dir `shouldReturn` 1
+      length <$> asked dir `shouldReturn` 2
+  it "(j) a rejected reading is not proposed again at the same fingerprint" $
+    withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
+      (s1, a1) <- run False dir s
+      length (raBlocks a1) `shouldBe` 1
+      now <- getCurrentTime
+      appendRecord (ssPorts s) dir (AnOutcome (OutcomeRecord (raId a1) 0 now "rejected"))
+      (s2, a2) <- run False dir s1
+      raBlocks a2 `shouldBe` []
+      write dir table (T.replace "return 1" "return 3" tableText)
+      (_, a3) <- run False dir s2
+      map (\(_, _, _, _, u) -> fmap (\(_, n, _) -> n) u) (map summary (raBlocks a3)) `shouldBe` [Just "helper"]
+  it "(k) the record carries decisions and per-block units; the step log has one plan-reconcile line" $
+    withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      rs <- reconciles dir
+      case rs of
+        [r] -> do
+          rcId r `shouldBe` raId a
+          rcBlocks r `shouldBe` map rbUnit (raBlocks a)
+          (rcPlan r, rcForced r, rcChanged r, rcUnaccounted r) `shouldBe` ("plans/t.md", False, 1, 1)
+          [(dcKind d, dcChosen d, dcRung d) | d <- rcDecisions r] `shouldBe` [("plan-step", Just "s7", "jev"), ("plan-state", Just "in_progress", "jev")]
+          map dcOptions (rcDecisions r) `shouldBe` [["s6", "s7", "none"], ["done", "in_progress", "diverged"]]
+        other -> expectationFailure ("one reconcile record, got " <> show (length other))
+      logged <- filter (T.isInfixOf "plan-reconcile") . T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+      map (drop 1 . T.splitOn "\t") logged `shouldSatisfy` \case
+        [["plan-reconcile", "plans/t.md", "0 facts", "1 ghosts", _, "jev"]] -> True
+        _ -> False
+      case reconcileJson a of
+        Object o -> do
+          sort (KM.keys o) `shouldBe` sort ["id", "baseline", "facts", "blocks", "changed", "more", "seconds", "rungs"]
+          case KM.lookup "blocks" o of
+            Just (Array bs) | [Object b] <- foldr (:) [] bs -> do
+              sort (KM.keys b) `shouldBe` sort ["after", "after_text", "lines", "replace", "unit"]
+              KM.lookup "after" b `shouldBe` Just (Number 7)
+            other -> expectationFailure ("one block, got " <> show other)
+        v -> expectationFailure ("not an object: " <> show v)
+
+-- | 'withLoopPorts' with CONFIG appended to the project's config and, when
+-- given, recorded ANSWERS the decider answers from; a fresh state.
+withReconcile :: Text -> [(FilePath, Text)] -> Text -> Maybe Text -> (FilePath -> ServerState -> IO a) -> IO a
+withReconcile plan edits config answers act =
+  withLoopPorts plan edits $ \ports dir -> do
+    old <- TIO.readFile (dir </> ".olifant/config.toml")
+    TIO.writeFile (dir </> ".olifant/config.toml") (old <> "\n" <> config)
+    forM_ answers (TIO.writeFile (answersFile dir))
+    s0 <- newServerState ports
+    act dir s0 {ssConfig = (ssConfig s0) {scDecideAnswers = answersFile dir <$ answers}}
+
+answersFile :: FilePath -> FilePath
+answersFile dir = dir </> ".olifant/answers.json"
+
+-- | Recorded answers by question kind: an option at 0.9, or a bare "unsure".
+answersOf :: [(Text, Text)] -> Text
+answersOf kvs = TE.decodeUtf8 (BL.toStrict (encode (object ["answers" .= object [K.fromText k .= answer v | (k, v) <- kvs]])))
+  where
+    answer "unsure" = String "unsure"
+    answer v = object ["choice" .= v, "confidence" .= (0.9 :: Double)]
+
+-- | The question kinds the recorded decider was asked, in order.
+asked :: FilePath -> IO [Text]
+asked dir = do
+  let f = answersFile dir <> ".asked"
+  there <- doesFileExist f
+  if there then T.lines <$> TIO.readFile f else pure []
+
+reconciles :: FilePath -> IO [ReconcileRecord]
+reconciles dir = do
+  there <- doesFileExist (recordsPath dir)
+  rs <- if there then fst . readRecords <$> TIO.readFile (recordsPath dir) else pure []
+  pure [r | AReconcile r <- rs]
+
+run :: Bool -> FilePath -> ServerState -> IO (ServerState, ReconcileAnswer)
+run forced dir s =
+  reconcile neverCancel forced (dir </> "plans/t.md") s >>= \case
+    (s', Right a) -> pure (s', a)
+    (_, Left e) -> fail (T.unpack e)
+
+-- | A block as (after, after text, lines, replace, unit).
+summary :: ReconcileBlock -> (Int, Maybe Text, [Text], Bool, Maybe (FilePath, Text, Text))
+summary b = (blAfterRow (rbBlock b), blAfterText (rbBlock b), map ghText (blLines (rbBlock b)), rbReplace b, rbUnit b)
+
+-- | The fingerprint of a unit of the table module now.
+fpNow :: FilePath -> ServerState -> Text -> IO Text
+fpNow dir s unit =
+  projectFor (dir </> "plans/t.md") s >>= \case
+    (s', Just (_, p)) -> fromMaybe "" . rsFingerprint <$> resolveAnchor s' p (Anchor table unit 0 0)
+    _ -> fail "no project"
+
+tidyPlan, jevConfig, climbConfig, helperEdited, withSpare :: Text
+tidyPlan = "# T\n\n## Tables\n\nThe tables a bistro seats.\n\n- [ ] count the seats\n- [ ] tidy the helper\n"
+jevConfig = "[decide]\nmodel = \"jev\"\n\n[model.backends.jev]\nkind = \"jev\"\n"
+climbConfig =
+  T.unlines
+    [ "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"x\"", "escalate = \"auto\""
+    , "[model.backends.remote]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:1/v1\"", "model = \"y\"", "escalate = \"ask\""
+    , "[plans]", "ladder = [\"local\", \"remote\"]" ]
+helperEdited = T.replace "return 1" "return 2" tableText
+withSpare = tableText <> "\n\ndef spare() -> str:\n    return \"spare\"\n"

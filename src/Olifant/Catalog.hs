@@ -127,8 +127,10 @@ data Catalog = Catalog
   }
 
 -- | `[plans]`: the plans directory, the runner command, its model, a timeout
--- in seconds, extra `--allowedTools` entries for `do`, and the price table
--- (full model id to list price) that errand cost telemetry uses.
+-- in seconds, extra `--allowedTools` entries for `do`, the price table
+-- (full model id to list price) that errand cost telemetry uses, and the
+-- loop's ladder (backend names) and time budget in seconds, each falling
+-- back to `[model]`'s when absent.
 data PlansConfig = PlansConfig
   { pcDir :: FilePath
   , pcRunner :: FilePath
@@ -136,11 +138,13 @@ data PlansConfig = PlansConfig
   , pcTimeout :: Int
   , pcDoTools :: [Text]
   , pcPrices :: [(Text, Price)]
+  , pcLadder :: Maybe [Text]
+  , pcBudget :: Maybe Int
   }
   deriving (Eq, Show)
 
 defaultPlans :: PlansConfig
-defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices
+defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 [] defaultPrices Nothing Nothing
 
 -- | One model's list price in USD per million tokens: input, output, cache
 -- read, and cache writes with the 5-minute and 1-hour TTLs.
@@ -279,7 +283,8 @@ openProjectCatalogWith loadP root paths = do
         Left err -> Left err
         Right (userM, projectM, rc, named, rec', mig, dec, conj, plns) ->
           let model = fromMaybe defaultModelConfig (maybe userM Just projectM)
-           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj, catalogPlans = fromMaybe defaultPlans plns}))) result
+              plansCfg = fromMaybe defaultPlans plns
+           in either (Left . ConfigInvalid projectConfig) Right (plansLadderIn model plansCfg) >> fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj, catalogPlans = plansCfg}))) result
   where
     recognizeIn top =
       Toml.optional "recognize" Toml.table top >>= \case
@@ -295,11 +300,17 @@ openProjectCatalogWith loadP root paths = do
       Toml.optional "conjure" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "conjure" (Toml.onlyKeys ["wire"] t >> Toml.optional "wire" Toml.text t)
+    -- `[plans] ladder` names backends, as `[model] ladder` does
+    plansLadderIn model cfg = case [n | n <- fromMaybe [] (pcLadder cfg), n `notElem` map fst (mcBackends model)] of
+      [] -> Right ()
+      n : _ -> Left ("`plans`: `ladder`: no such backend `" <> n <> "` (backends: " <> T.intercalate ", " (map fst (mcBackends model)) <> ")")
     plansIn top =
       Toml.optional "plans" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "plans" $ do
-          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools", "prices"] t
+          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools", "prices", "ladder", "budget"] t
+          budget <- fmap fromInteger <$> Toml.optional "budget" Toml.int t
+          if maybe False (< 1) budget then Left "`budget` must be at least 1" else Right ()
           fmap Just $
             PlansConfig
               <$> (maybe (pcDir defaultPlans) T.unpack <$> Toml.optional "dir" Toml.text t)
@@ -308,6 +319,8 @@ openProjectCatalogWith loadP root paths = do
               <*> (maybe (pcTimeout defaultPlans) fromInteger <$> Toml.optional "timeout" Toml.int t)
               <*> (fromMaybe (pcDoTools defaultPlans) <$> Toml.optional "do_tools" (Toml.list Toml.text) t)
               <*> (maybe (pcPrices defaultPlans) (overlayPrices (pcPrices defaultPlans)) <$> (Toml.optional "prices" Toml.table t >>= traverse (Toml.inKey "prices" . pricesIn)))
+              <*> Toml.optional "ladder" (Toml.list Toml.text) t
+              <*> pure budget
     pricesIn ps = traverse (\(m, v) -> Toml.inKey m ((m,) <$> (Toml.table v >>= priceIn))) (M.toList ps)
     priceKeys = ["input", "output", "cache_read", "cache_write_5m", "cache_write_1h"]
     priceIn p = do
