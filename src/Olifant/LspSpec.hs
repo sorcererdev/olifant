@@ -1470,7 +1470,7 @@ conjureSpec = describe "olifant/conjure" $ do
           Just (Array fs) -> all (`elem` [f | String f <- toList fs]) ["src/bistro/booking/ports/booking_repository/booking_repository.py", "src/bistro/booking/ports/booking_repository/in_memory_booking_repository.py"]
           _ -> False
         offerLabels (field "paused" portProposed) `shouldBe` ["accept", "reject"]
-        offerDetails (field "paused" portProposed) `shouldBe` ["find_by_id lands in BookingRepository and its adapters with the conjure; round 3 runs against it", "back to the rows; BookingRepository stands as it was"]
+        offerDetails (field "paused" portProposed) `shouldBe` ["the method lands with the conjure; round 3 runs against it", "back to the rows; the port stands as it was"]
         inner "checker" (field "paused" afterPort) `shouldBe` Just (String "pyright")
         -- the wire entry is the wire's files alone, not the steps after it
         inner "wired" (field "paused" afterPort) `shouldSatisfy` \case

@@ -340,7 +340,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     fixAgain [fixed] (before2 ++ [anew]) notFoundId `shouldBe` Just (Just "AttributeError: 'Mock' object has no attribute 'cancel'")
     fixAgain [fixed] before2 succeedsId `shouldBe` Just Nothing
     let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing True "cancel_booking" [] [(notFoundId, "AttributeError: 'Mock' object has no attribute 'cancel'")])
-    orDetail (row (OfferReconjure notFoundId)) `shouldBe` "fixed already; it fails anew: AttributeError: 'Mock' object has no attribute 'cancel'; re-conjure it, you see its diff"
+    orDetail (row (OfferReconjure notFoundId)) `shouldBe` "fails anew: AttributeError: 'Mock' object has no attribute 'cancel'; you see its diff"
   it "(z) the failing section is the latest round's real failure: a check's refusal, with its lines, leads the diagnosis' others" $ do
     let refusal = LatestCheck 3 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
         checked = RoundRecord 3 "local" "x" Nothing (Just "src/bistro/booking/commands/cancel_booking.py: Cannot access attribute \"find_by_id\" for class \"BookingRepository\"") Nothing 2
@@ -379,7 +379,15 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     offersAt st cause [notFoundId] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
     offersAt st (CauseMethod "BookingRepository" "find_by_id" Nothing) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
     let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True "cancel_booking" [] []) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
-    (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None into the Protocol and its adapters; you see the diff")
+    (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 2")
+    -- every detail under 90 cells (conjure-pause-ux-pass-2.md §5): the window wraps it, never cuts it
+    let facts = OfferFacts 6 "local" (Just "claude") 1 "CancelBooking" (Just notFoundId) True "cancel_booking" [(notFoundId, "hand repository to command(bookings=repository)")] []
+        everyOffer = [OfferContinue, OfferHint, OfferClimb "claude", OfferWire "bookings" "BookingRepository", OfferReconjure notFoundId, OfferStop, OfferKeep 12, OfferAccept, OfferReject, OfferRefused, OfferReconjureAgain notFoundId, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None"]
+    [d | d <- map (orDetail . offerRow facts) everyOffer, T.length d >= 90] `shouldBe` []
+    -- a detail whose facts run long is cut at 89 cells and ends in …
+    let long = orDetail (offerRow facts (OfferPort "BookingRepository" "find_every_booking_between" ", start: datetime, end: datetime, venue: VenueId" "list[Booking]"))
+    T.length long `shouldBe` 89
+    T.takeEnd 1 long `shouldBe` "\8230"
     let refusal = LatestCheck 1 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
         checked = RoundRecord 1 "local" "x" Nothing (Just "pyright") Nothing 1
         facts = cancelPausedFacts {dfHistory = [checked], dfFailure = Just refusal}

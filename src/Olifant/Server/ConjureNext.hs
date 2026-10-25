@@ -729,12 +729,12 @@ data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Te
 -- | An offer in plain words (conjure-pause-ux-design.md §6): the label says what it is, the
 -- detail what it does and what follows.
 offerRow :: OfferFacts -> Offer -> OfferRow
-offerRow o offer = uncurry (OfferRow offer) $ case offer of
+offerRow o offer = uncurry (OfferRow offer) . fmap cappedDetail $ case offer of
   OfferContinue -> ("continue", n (ofGrant o) <> " more rounds with " <> ofRung o <> ", from round " <> next)
   OfferHint -> ("continue with a hint\8230", "your sentence goes to " <> ofRung o <> " with round " <> next)
   OfferClimb r -> ("climb to " <> r, n (ofGrant o) <> " rounds with " <> r <> ", from round " <> next)
   OfferWire p q -> ("wire " <> p <> ": " <> q, "give " <> ofClass o <> " the port the test's fake stands for, then round " <> next)
-  OfferReconjure t | Just f <- lookup t (ofAgain o) -> ("fix the test: " <> short t, "fixed already; it fails anew: " <> f <> "; re-conjure it, you see its diff")
+  OfferReconjure t | Just f <- lookup t (ofAgain o) -> ("fix the test: " <> short t, "fails anew: " <> f <> "; you see its diff")
   OfferReconjure t -> ("fix the test: " <> short t, maybe "re-conjure it from its name and the unit; you see its diff, then the rounds go on over it" (<> "; you see the diff") (lookup t (ofFixes o)))
   OfferStop -> ("stop", if ofWired o then "nothing lands, not the wire either; your text stands" else "nothing lands; your text stands")
   OfferKeep r -> ("keep round " <> n r, "lands the diff on the right, red (unsaved; u undoes it)")
@@ -742,11 +742,18 @@ offerRow o offer = uncurry (OfferRow offer) $ case offer of
   OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
   OfferReconjureAgain t -> ("fix the test: " <> short t <> ", again", "re-conjure it once more; you see its diff")
-  OfferPort q m ps r -> ("add " <> m <> " to " <> q, m <> "(self" <> ps <> ") -> " <> r <> " into the Protocol and its adapters; you see the diff")
+  OfferPort q m ps r -> ("add " <> m <> " to " <> q, m <> "(self" <> ps <> ") -> " <> r <> " in the port and its adapters, then round " <> next)
   where
     n = T.pack . show
     next = n (ofRound o + 1)
     short = shortName (ofStem o)
+
+-- | A row's detail as the window shows it: under 90 cells (conjure-pause-ux-pass-2.md §5),
+-- so the window wraps it whole; one whose facts run longer is cut at 89, ending in @…@.
+cappedDetail :: Text -> Text
+cappedDetail d
+  | T.length d < 90 = d
+  | otherwise = T.stripEnd (T.take 88 d) <> "\8230"
 
 -- | The edit each flagged test gets, once a wire gave the class its port, in words
 -- (@hand repository to command(bookings=repository)@): see 'testFix'.

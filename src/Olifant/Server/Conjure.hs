@@ -477,8 +477,8 @@ conjureWith progress path line selected resuming s0 = do
                   rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
                   -- the rows say what lands: the method, not a test
                   said row = case orOffer row of
-                    OfferAccept -> row {orDetail = m <> " lands in " <> q <> " and its adapters with the conjure; round " <> tshow (paRound plain + 1) <> " runs against it"}
-                    OfferReject -> row {orDetail = "back to the rows; " <> q <> " stands as it was"}
+                    OfferAccept -> row {orDetail = "the method lands with the conjure; round " <> tshow (paRound plain + 1) <> " runs against it"}
+                    OfferReject -> row {orDetail = "back to the rows; the port stands as it was"}
                     _ -> row
                   shown = plain {paOffers = map said (rows [OfferAccept, OfferReject]), paProposal = Just proposal}
               lift . keep s (reToken re) $
