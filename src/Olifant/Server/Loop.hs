@@ -11,9 +11,15 @@ module Olifant.Server.Loop
   , accounted
   , workSet
   , unaccountedCap
+  , Fact (..)
+  , reanchorFacts
+  , pendingFacts
+  , testFacts
+  , factJson
   ) where
 
 import Control.Monad (forM)
+import Data.Aeson (Value, object, (.=))
 import Data.Containers.ListUtils (nubOrd, nubOrdOn)
 import Data.Functor ((<&>))
 import Data.List (delete, isPrefixOf, mapAccumL, stripPrefix)
@@ -26,7 +32,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Language.Adapter (languageFor)
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, testState, withTestState, withVerdict)
 import Olifant.Process (runBytes)
 import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..))
@@ -218,3 +224,50 @@ gitText root args =
   runBytes "git" (["-C", root] ++ args) (Just root) "" <&> \case
     Right (ExitSuccess, out, _) -> Just (TE.decodeUtf8Lenient out)
     _ -> Nothing
+
+-- | A plan edit the engine makes without a model: a row's new text, or
+-- lines inserted after a row (0-based rows of the request's document).
+data Fact = Replace Int Text | Insert Int [Text]
+  deriving stock (Eq, Show)
+
+-- | Every line whose anchor names a moved unit's old (path, name): the
+-- anchor rewritten to the new ones, the verdict kept.
+reanchorFacts :: [Line] -> [ChangedUnit] -> [Fact]
+reanchorFacts ls cus =
+  [ Replace (lnRow l) (T.take (anStart a) (lnText l) <> "@" <> T.pack (cuPath cu) <> ":" <> cuName cu <> T.drop (anEnd a) (lnText l))
+  | l <- ls, Just a <- [lnAnchor l]
+  , cu <- take 1 [c | c@ChangedUnit {cuChange = Moved op on} <- cus, op == anPath a, on == anUnit a] ]
+
+-- | A touched step's test children at green or red go back to pending.
+pendingFacts :: [Line] -> [(Line, ChangedUnit)] -> [Fact]
+pendingFacts ls touched =
+  [ Replace (lnRow c) (withTestState (lnText c) TestPending)
+  | (s, _) <- touched, c <- childrenOf ls (lnRow s), lnKind c == TestChild
+  , testState c `elem` [Just TestGreen, Just TestRed] ]
+
+-- | Test results for a step's children (by test unit name): the children
+-- rewritten; all green ticks the step at FP; a red test on a done step
+-- un-ticks it and notes "red again" once.
+testFacts :: [Line] -> Int -> [(Text, TestState)] -> Maybe Text -> [Fact]
+testFacts ls row states fp = case drop row ls of
+  [] -> []
+  (step : _) ->
+    let kids = [c | c <- childrenOf ls row, lnKind c == TestChild]
+        stateOf c = fromMaybe (testState c) (Just <$> (lnAnchor c >>= \a -> lookup (anUnit a) states))
+        rewrites = [Replace (lnRow c) (withTestState (lnText c) s) | c <- kids, Just a <- [lnAnchor c], Just s <- [lookup (anUnit a) states]]
+        reds = [anUnit a | c <- kids, Just a <- [lnAnchor c], stateOf c == Just TestRed]
+        allGreen = not (null kids) && all ((== Just TestGreen) . stateOf) kids
+        open = lnKind step == Step False
+        tick = [Replace row (withVerdict (T.replace "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified fp)) | allGreen, open]
+        pad = T.replicate (lnIndent step + 2) " "
+        noted t = any (\c -> evidenceTag c == Just "red again" && t `T.isInfixOf` lnText c) (childrenOf ls row)
+        fresh = [pad <> "- ✗ " <> t <> " red again" | t <- reds, not (noted t)]
+        lastRow = maybe row lnRow (listToMaybe (reverse (childrenOf ls row)))
+        untick = [Replace row (withVerdict (T.replace "- [x]" "- [ ]" (lnText step)) NoVerdict) | not (null reds), lnKind step == Step True]
+        note = [Insert lastRow fresh | not (null reds), lnKind step == Step True, not (null fresh)]
+    in rewrites ++ tick ++ untick ++ note
+
+-- | A fact for the wire: {"row", "text"} or {"after", "lines"}.
+factJson :: Fact -> Value
+factJson (Replace n t) = object ["row" .= n, "text" .= t]
+factJson (Insert n ls) = object ["after" .= n, "lines" .= ls]

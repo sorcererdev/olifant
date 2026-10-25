@@ -1,13 +1,14 @@
 module Olifant.Server.LoopSpec (spec) where
 
 import Control.Monad (forM_)
+import Data.Aeson (object, (.=))
 import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.App (Ports, Project)
 import Olifant.LspSpec (withPython)
-import Olifant.Plans (Anchor (..), Line (..), parsePlan)
+import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
 import Olifant.Server (ServerState, newServerState, projectFor)
 import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
@@ -17,7 +18,10 @@ import System.Process (callProcess, readProcess)
 import Test.Hspec
 
 spec :: Spec
-spec = describe "Olifant.Server.Loop (the work set)" $ do
+spec = factsSpec >> workSetSpec
+
+workSetSpec :: Spec
+workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
   it "(a) on main the baseline is the plan's first commit; an uncommitted plan uses HEAD" $
     withPython [(table, tableText)] $ \_ dir -> do
       initRepo dir
@@ -177,3 +181,31 @@ threeWays = T.replace "    def other(self) -> int:\n        return self.seats\n"
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
+
+factsSpec :: Spec
+factsSpec = describe "Olifant.Server.Loop (facts)" $ do
+  let ls = parsePlan "- [ ] s @src/a.py:F\n  - test: it works @tests/t.py:test_it ●\n  - test: new @tests/t.py:test_new"
+      done = parsePlan "- [x] s @src/a.py:F ✓ abc1234\n  - test: it works @tests/t.py:test_it ●"
+      cu = ChangedUnit "src/a.py" "F" (Just "abc1234") (Changed "x") "def F" Nothing Nothing
+  it "(a) a moved unit is re-anchored wherever it is named" $
+    reanchorFacts (parsePlan "- [ ] s @src/a.py:F\n  - also @src/a.py:F ✓ abc1234\n- claim @src/b.py:G ✓ 1111111") [ChangedUnit "src/c.py" "F" (Just "abc1234") (Moved "src/a.py" "F") "def F" Nothing Nothing]
+      `shouldBe` [Replace 0 "- [ ] s @src/c.py:F", Replace 1 "  - also @src/c.py:F ✓ abc1234"]
+  it "(b) a touched step's green children go pending" $
+    pendingFacts ls [(head ls, cu)] `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ○"]
+  it "(c) all green ticks the step at its fingerprint" $
+    testFacts ls 0 [("test_it", TestGreen), ("test_new", TestGreen)] (Just "abc1234")
+      `shouldBe` [ Replace 1 "  - test: it works @tests/t.py:test_it ●", Replace 2 "  - test: new @tests/t.py:test_new ●"
+                 , Replace 0 "- [x] s @src/a.py:F ✓ abc1234" ]
+  it "(d) one unmarked child keeps the step open" $
+    testFacts ls 0 [("test_it", TestGreen)] (Just "abc1234")
+      `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ●"]
+  it "(e) a red test on a done step un-ticks it and says so once" $ do
+    let facts = testFacts done 0 [("test_it", TestRed)] (Just "abc1234")
+    facts `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ✗", Replace 0 "- [ ] s @src/a.py:F", Insert 1 ["  - ✗ test_it red again"]]
+    let applied = parsePlan "- [ ] s @src/a.py:F\n  - test: it works @tests/t.py:test_it ✗\n  - ✗ test_it red again"
+    testFacts applied 0 [("test_it", TestRed)] Nothing `shouldSatisfy` (null . filter (\f -> case f of Insert _ _ -> True; _ -> False))
+  it "(f) no fingerprint ticks without a mark; factJson shapes" $ do
+    testFacts ls 0 [("test_it", TestGreen), ("test_new", TestGreen)] Nothing
+      `shouldSatisfy` (elem (Replace 0 "- [x] s @src/a.py:F"))
+    factJson (Replace 2 "t") `shouldBe` object ["row" .= (2 :: Int), "text" .= ("t" :: Text)]
+    factJson (Insert 2 ["a"]) `shouldBe` object ["after" .= (2 :: Int), "lines" .= (["a"] :: [Text])]
