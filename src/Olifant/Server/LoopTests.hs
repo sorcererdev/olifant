@@ -21,7 +21,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Language (TestRun (..))
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, testState, withTestState, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, withTestState, withVerdict)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), confined, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), projectFor)
@@ -114,7 +114,7 @@ testsRan s0 p ls row = case drop row ls of
   target : _ | Just step <- stepOf target, tests@(_ : _) <- [a | c <- kidsOf step target, Just a <- [lnAnchor c]] -> do
     (s, ran) <- go s0 [] tests
     fp <- maybe (pure Nothing) (fmap rsFingerprint . resolveAnchor s p) (lnAnchor step)
-    let states = [(anUnit a, either (const TestPending) id r) | (a, (r, _)) <- zip tests ran]
+    let states = [((anPath a, anUnit a), either (const TestPending) id r) | (a, (r, _)) <- zip tests ran]
     pure (s, Just (map fst ran, sum (map snd ran), testFacts ls (lnRow step) states fp))
   _ -> pure (s0, Nothing)
   where
@@ -162,28 +162,43 @@ planAt path s0 =
         Nothing -> fromMaybe "" <$> safely Nothing (readText (pFiles (ssPorts s)) path)
       pure (s, Right (p, parsePlan text))
 
--- | Test results for a step's children (by test unit name): the children
--- rewritten; all green ticks the step at FP; a red test on a done step
--- un-ticks it and notes "red again" once.
-testFacts :: [Line] -> Int -> [(Text, TestState)] -> Maybe Text -> [Fact]
+-- | Test results for a step's children (by each test's (path, unit), as
+-- its anchor names it): the children rewritten. Every child reported (green
+-- or red) by this run: the step stamped at FP, the fingerprint its marks were
+-- made at, ticked or not, and ticked when all are green. A red test from
+-- this run on a done step un-ticks it and notes "red again" once. A run of
+-- some children only (one test child) leaves the step's tick and stamp
+-- alone: the others' marks were not refreshed.
+testFacts :: [Line] -> Int -> [((FilePath, Text), TestState)] -> Maybe Text -> [Fact]
 testFacts ls row states fp = case drop row ls of
   [] -> []
   (step : _) ->
     let direct = [c | c <- childrenOf ls row, lnIndent c == lnIndent step + 2]
         kids = [c | c <- direct, lnKind c == TestChild]
-        stateOf c = fromMaybe (testState c) (Just <$> (lnAnchor c >>= \a -> lookup (anUnit a) states))
-        rewrites = [Replace (lnRow c) (withTestState (lnText c) s) | c <- kids, Just a <- [lnAnchor c], Just s <- [lookup (anUnit a) states]]
-        reds = [anUnit a | c <- kids, Just a <- [lnAnchor c], stateOf c == Just TestRed]
-        allGreen = not (null kids) && all ((== Just TestGreen) . stateOf) kids
+        reported c = lnAnchor c >>= \a -> lookup (anPath a, anUnit a) states
+        rewrites = [Replace (lnRow c) (withTestState (lnText c) s) | c <- kids, Just s <- [reported c]]
+        reds = [anUnit a | c <- kids, Just a <- [lnAnchor c], reported c == Just TestRed]
+        complete = not (null kids) && all ((`elem` [Just TestGreen, Just TestRed]) . reported) kids
+        allGreen = complete && all ((== Just TestGreen) . reported) kids
         open = lnKind step == Step False
-        tick = [Replace row (withVerdict (checkbox "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified fp)) | allGreen, open]
+        done = lnKind step == Step True
+        ticked = allGreen && open
+        unticked = not (null reds) && done
+        boxed
+          | ticked = checkbox "- [ ]" "- [x]" (lnText step)
+          | unticked = checkbox "- [x]" "- [ ]" (lnText step)
+          | otherwise = lnText step
+        stamped = case fp of
+          Just f | complete -> withVerdict boxed (Verified f)
+          _ | ticked || unticked -> withVerdict boxed NoVerdict
+          _ -> boxed
+        restep = [Replace row stamped | stamped /= lnText step]
         pad = T.replicate (lnIndent step + 2) " "
         noted t = any (\c -> evidenceTag c == Just "red again" && T.strip (lnText c) == "- ✗ " <> t <> " red again") direct
         fresh = [pad <> "- ✗ " <> t <> " red again" | t <- reds, not (noted t)]
         lastRow = maybe row lnRow (listToMaybe (reverse (childrenOf ls row)))
-        untick = [Replace row (withVerdict (checkbox "- [x]" "- [ ]" (lnText step)) NoVerdict) | not (null reds), lnKind step == Step True]
-        note = [Insert lastRow fresh | not (null reds), lnKind step == Step True, not (null fresh)]
-    in rewrites ++ tick ++ untick ++ note
+        note = [Insert lastRow fresh | unticked, not (null fresh)]
+    in rewrites ++ restep ++ note
 
 -- | Swap the checkbox right after the indent, leaving the rest of the line alone.
 checkbox :: Text -> Text -> Text -> Text

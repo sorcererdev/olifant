@@ -274,12 +274,18 @@ reanchorFacts ls cus =
   | l <- ls, Just a <- [lnAnchor l]
   , cu <- take 1 [c | c@ChangedUnit {cuChange = Moved op on} <- cus, op == anPath a, on == anUnit a] ]
 
--- | A touched step's test children at green or red go back to pending.
+-- | A touched step's test children at green or red go back to pending,
+-- unless the step's fingerprint (the one its marks were made at) is its
+-- unit's now: those marks are of this version.
 pendingFacts :: [Line] -> [(Line, ChangedUnit)] -> [Fact]
 pendingFacts ls touched =
   [ Replace (lnRow c) (withTestState (lnText c) TestPending)
-  | (s, _) <- touched, c <- childrenOf ls (lnRow s), lnKind c == TestChild
+  | (s, cu) <- touched, not (testedAt s cu), c <- childrenOf ls (lnRow s), lnKind c == TestChild
   , testState c `elem` [Just TestGreen, Just TestRed] ]
+
+-- | A step whose tests' marks were made at its touched unit's fingerprint now.
+testedAt :: Line -> ChangedUnit -> Bool
+testedAt step cu = maybe False ((== lnVerdict step) . Verified) (cuFingerprint cu)
 
 -- | A fact for the wire: {"row", "text"} or {"after", "lines"}.
 factJson :: Fact -> Value
@@ -301,7 +307,7 @@ loopFacts s p forced ls ws = do
     pending = applyFacts base ls
     tested =
       if forced
-        then nubOrd [lnRow l | (l, _) <- wsTouched ws, any ((== TestChild) . lnKind) (directChildren pending l)]
+        then nubOrd [lnRow l | (l, cu) <- wsTouched ws, not (testedAt l cu), any ((== TestChild) . lnKind) (directChildren pending l)]
         else []
 
 -- | Replacements by row, the later winning, in row order; inserts after.

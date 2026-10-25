@@ -14,7 +14,7 @@ Prose is ignored. Lines are read by prefix:
 |---|---|
 | claim | `- <text> @path:Unit`, then the verdict: `✓ <7hex>` verified at that fingerprint, `✗ stale · why`, `? not found` |
 | question | `- ? <text>`: what `ask` answers |
-| step | `- [ ] <text> @path:Unit`, or ending `· by hand`; `- [x] <text> @path:Unit ✓ <7hex>` when done, at that fingerprint; a step may nest |
+| step | `- [ ] <text> @path:Unit`, or ending `· by hand`; `- [x] <text> @path:Unit ✓ <7hex>` when done, at that fingerprint (an open step may carry the one its tests last ran at); a step may nest |
 | section branch | `## <title> · branch <name>`: when that branch is checked out, the section's open steps are offered first |
 | test child | `  - test: <sentence> @file:name`, then its state: `○` pending, `●` green, `✗` red |
 | also child | `  - also @path:Unit`: units a `do` touched beyond the anchor |
@@ -89,7 +89,9 @@ situation again replays from a cache. A ghost you rejected does not return until
 
 **Facts land, readings are ghosts.** Facts are what the engine can check alone, and they are
 written straight into the buffer in one undo step: a tick when the step's tests are green, the
-test states `○ ● ✗`, `○` on the children of a touched step, a re-anchor when a unit only moved.
+test states `○ ● ✗` (a run of all a step's tests stamps it `✓ <fp>`, open or done: the fingerprint
+the marks were made at), `○` on the children of a step whose unit changed since that stamp, a
+re-anchor when a unit only moved.
 Readings are a model's judgement, and arrive as ghosts you accept with `<leader>mpy` or drop with
 `<leader>mpn`: an `also` child placing a unit under a step, a step line ticked or unticked, a
 `✗ changed: <why>` child, a `✗ gone:` child, a new step for work nothing covers.

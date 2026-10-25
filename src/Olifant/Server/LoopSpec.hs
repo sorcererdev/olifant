@@ -16,7 +16,7 @@ import Olifant.Server.Edits (FileEdit (..))
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.Stub (StubAnswer (..))
 import Olifant.Server.State (ServerConfig (..), ServerState (..))
-import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
+import Olifant.Server.Telemetry (OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, readRecords, recordsPath)
 import System.Directory (doesFileExist)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -221,37 +221,51 @@ factsSpec = describe "Olifant.Server.Loop (facts)" $ do
       done = parsePlan "- [x] s @src/a.py:F ✓ abc1234\n  - test: it works @tests/t.py:test_it ●"
       step0 = case ls of (l : _) -> l; [] -> error "empty plan"
       cu = ChangedUnit "src/a.py" "F" (Just "abc1234") (Changed "x") "def F" Nothing Nothing
+      st n x = (("tests/t.py", n), x)
   it "(a) a moved unit is re-anchored wherever it is named" $
     reanchorFacts (parsePlan "- [ ] s @src/a.py:F\n  - also @src/a.py:F ✓ abc1234\n- claim @src/b.py:G ✓ 1111111") [ChangedUnit "src/c.py" "F" (Just "abc1234") (Moved "src/a.py" "F") "def F" Nothing Nothing]
       `shouldBe` [Replace 0 "- [ ] s @src/c.py:F", Replace 1 "  - also @src/c.py:F ✓ abc1234"]
   it "(b) a touched step's green children go pending" $
     pendingFacts ls [(step0, cu)] `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ○"]
+  it "(b2) a step whose fingerprint is its unit's now keeps its children's marks, done or open" $ do
+    let at fp box = parsePlan ("- " <> box <> " s @src/a.py:F ✓ " <> fp <> "\n  - test: a @tests/t.py:test_a ●\n  - test: b @tests/t.py:test_b ✗")
+        first l = case l of (x : _) -> x; [] -> error "empty plan"
+    forM_ ["[x]", "[ ]"] $ \box -> pendingFacts (at "abc1234" box) [(first (at "abc1234" box), cu)] `shouldBe` []
+    pendingFacts (at "0000000" "[ ]") [(first (at "0000000" "[ ]"), cu)]
+      `shouldBe` [Replace 1 "  - test: a @tests/t.py:test_a ○", Replace 2 "  - test: b @tests/t.py:test_b ○"]
   it "(c) all green ticks the step at its fingerprint" $
-    testFacts ls 0 [("test_it", TestGreen), ("test_new", TestGreen)] (Just "abc1234")
+    testFacts ls 0 [st "test_it" TestGreen, st "test_new" TestGreen] (Just "abc1234")
       `shouldBe` [ Replace 1 "  - test: it works @tests/t.py:test_it ●", Replace 2 "  - test: new @tests/t.py:test_new ●"
                  , Replace 0 "- [x] s @src/a.py:F ✓ abc1234" ]
   it "(d) one unmarked child keeps the step open" $
-    testFacts ls 0 [("test_it", TestGreen)] (Just "abc1234")
+    testFacts ls 0 [st "test_it" TestGreen] (Just "abc1234")
       `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ●"]
   it "(e) a red test on a done step un-ticks it and says so once" $ do
-    let facts = testFacts done 0 [("test_it", TestRed)] (Just "abc1234")
-    facts `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ✗", Replace 0 "- [ ] s @src/a.py:F", Insert 1 ["  - ✗ test_it red again"]]
+    let facts = testFacts done 0 [st "test_it" TestRed] (Just "abc1234")
+    facts `shouldBe` [Replace 1 "  - test: it works @tests/t.py:test_it ✗", Replace 0 "- [ ] s @src/a.py:F ✓ abc1234", Insert 1 ["  - ✗ test_it red again"]]
     let applied = parsePlan "- [x] s @src/a.py:F ✓ abc1234\n  - test: it works @tests/t.py:test_it ✗\n  - ✗ test_it red again"
         inserts = filter (\f -> case f of Insert _ _ -> True; _ -> False)
-    inserts (testFacts applied 0 [("test_it", TestRed)] (Just "abc1234")) `shouldBe` []
+    inserts (testFacts applied 0 [st "test_it" TestRed] (Just "abc1234")) `shouldBe` []
   it "(e2) a note for test_it does not hide test_item's; two reds, one noted, insert only the other" $ do
     let p = parsePlan "- [x] s @src/a.py:F ✓ abc1234\n  - test: a @tests/t.py:test_it ✗\n  - test: b @tests/t.py:test_item ●\n  - ✗ test_it red again"
-    testFacts p 0 [("test_it", TestRed), ("test_item", TestRed)] Nothing
+    testFacts p 0 [st "test_it" TestRed, st "test_item" TestRed] Nothing
       `shouldSatisfy` elem (Insert 3 ["  - ✗ test_item red again"])
   it "(e3) only direct test children count; a title with a checkbox is kept; a nested step is skipped" $ do
     let p = parsePlan "- [ ] fix \"- [ ]\" @src/a.py:F\n  - test: a @tests/t.py:test_a ○\n  - [ ] inner @src/a.py:G\n    - test: g @tests/t.py:test_g ○"
-    testFacts p 0 [("test_a", TestGreen), ("test_g", TestRed)] Nothing
+    testFacts p 0 [st "test_a" TestGreen, st "test_g" TestRed] Nothing
       `shouldBe` [Replace 1 "  - test: a @tests/t.py:test_a ●", Replace 0 "- [x] fix \"- [ ]\" @src/a.py:F"]
   it "(f) no fingerprint ticks without a mark; factJson shapes" $ do
-    testFacts ls 0 [("test_it", TestGreen), ("test_new", TestGreen)] Nothing
+    testFacts ls 0 [st "test_it" TestGreen, st "test_new" TestGreen] Nothing
       `shouldSatisfy` (elem (Replace 0 "- [x] s @src/a.py:F"))
     factJson (Replace 2 "t") `shouldBe` object ["row" .= (2 :: Int), "text" .= ("t" :: Text)]
     factJson (Insert 2 ["a"]) `shouldBe` object ["after" .= (2 :: Int), "lines" .= (["a"] :: [Text])]
+  it "(g) a run of one of two children rewrites that child only: no tick, no stamp" $ do
+    let two = parsePlan "- [ ] s @src/a.py:F\n  - test: a @tests/t.py:test_a ●\n  - test: b @tests/t.py:test_b ●"
+    testFacts two 0 [st "test_a" TestGreen] (Just "abc1234") `shouldBe` [Replace 1 "  - test: a @tests/t.py:test_a ●"]
+  it "(h) children with one test name in two files get their own states; a red run stamps the open step" $ do
+    let twin = parsePlan "- [ ] s @src/a.py:F\n  - test: a @tests/a.py:test_init ○\n  - test: b @tests/b.py:test_init ○"
+    testFacts twin 0 [(("tests/a.py", "test_init"), TestGreen), (("tests/b.py", "test_init"), TestRed)] (Just "abc1234")
+      `shouldBe` [Replace 1 "  - test: a @tests/a.py:test_init ●", Replace 2 "  - test: b @tests/b.py:test_init ✗", Replace 0 "- [ ] s @src/a.py:F ✓ abc1234"]
 
 questionsSpec :: Spec
 questionsSpec = describe "Olifant.Server.Loop (questions)" $ do
@@ -449,6 +463,22 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       fp <- fpNow dir s "helper"
       raFacts forced `shouldBe` [Replace 4 ("- [x] tidy the helper @src/bistro/booking/models/table.py:helper \10003 " <> fp), Replace 5 ("  - test: it helps @" <> T.pack tableTest <> ":test_helper \9679")]
       raBlocks forced `shouldBe` []
+      -- the tick applied: the next automatic reconcile leaves its marks
+      write dir "plans/t.md" ("# T\n\n## S\n\n- [x] tidy the helper @src/bistro/booking/models/table.py:helper \10003 " <> fp <> "\n  - test: it helps @" <> T.pack tableTest <> ":test_helper \9679\n")
+      (_, again) <- run False dir s1
+      raFacts again `shouldBe` []
+  it "(l3) an open step's marks at its unit now are left; an edit of the unit makes them pending" $ do
+    let child n m = "  - test: " <> n <> " @" <> T.pack tableTest <> ":test_" <> n <> " " <> m
+        planAt fp = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper \10003 " <> fp <> "\n" <> child "a" "\9679" <> "\n" <> child "b" "\10007" <> "\n"
+    withReconcile "# T\n" [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "in_progress")])) $ \dir s -> do
+      fp <- fpNow dir s "helper"
+      write dir "plans/t.md" (planAt fp)
+      (s1, a) <- run False dir s
+      raFacts a `shouldBe` []
+      asked dir `shouldReturn` []
+      write dir table (T.replace "return 1" "return 3" tableText)
+      (_, a2) <- run False dir s1
+      raFacts a2 `shouldBe` [Replace 5 (child "a" "\9675"), Replace 6 (child "b" "\9675")]
   it "(l2) a forced reconcile whose tests do not run leaves them pending and the step alone" $ do
     let child n = "  - test: " <> n <> " @src/bistro/nowhere__test.py:test_" <> n
         plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n" <> child "a" <> " \9679\n" <> child "b" <> " \10007\n"
@@ -609,7 +639,9 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
       ttSeconds t `shouldSatisfy` (> 0)
       (_, r2) <- stepTest (planPath dir) 7 s1
       t2 <- either (fail . T.unpack) pure r2
-      ttFacts t2 `shouldBe` [Replace 7 ("  - test: it is wrong @" <> T.pack tableTest <> ":test_wrong \10007")]
+      other <- fpNow dir s "Table.other"
+      -- the step's only test: its mark, and the step stamped at its unit now
+      ttFacts t2 `shouldBe` [Replace 7 ("  - test: it is wrong @" <> T.pack tableTest <> ":test_wrong \10007"), Replace 6 ("- [ ] the table is wrong @" <> T.pack table <> ":Table.other \10003 " <> other)]
       (ttPassed t2, ttFailed t2) `shouldBe` (0, 1)
       (_, r3) <- stepTest (planPath dir) 8 s1
       either id (const "ran") r3 `shouldBe` "the step has no tests"
