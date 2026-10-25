@@ -12,6 +12,9 @@ module Olifant.Catalog
   , MigrateConfig (..)
   , catalogDecideModel
   , catalogConjureWire
+  , catalogPlans
+  , PlansConfig (..)
+  , defaultPlans
   , catalogPacks
   , catalogPackRoots
   , catalogBroken
@@ -117,7 +120,23 @@ data Catalog = Catalog
     catalogDecideModel :: Maybe Text
   , -- | `[conjure] wire`: the generator id that wires a missing port
     catalogConjureWire :: Maybe Text
+  , -- | `[plans]`: where plans live, and the runner that drafts and does them
+    catalogPlans :: PlansConfig
   }
+
+-- | `[plans]`: the plans directory, the runner command, its model, a timeout
+-- in seconds, and extra `--allowedTools` entries for `do`.
+data PlansConfig = PlansConfig
+  { pcDir :: FilePath
+  , pcRunner :: FilePath
+  , pcModel :: Text
+  , pcTimeout :: Int
+  , pcDoTools :: [Text]
+  }
+  deriving (Eq, Show)
+
+defaultPlans :: PlansConfig
+defaultPlans = PlansConfig "plans" "claude" "sonnet" 300 []
 
 -- | `[recognize] enabled` (default true) and `model` (a [model.backends]
 -- name; none: deterministic only).
@@ -231,14 +250,17 @@ openProjectCatalogWith loadP root paths = do
       conjure <- readText root projectConfig <&> \case
         Nothing -> Right Nothing
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= conjureIn)
+      plans <- readText root projectConfig <&> \case
+        Nothing -> Right Nothing
+        Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= plansIn)
       migrate <- readText root projectConfig <&> \case
         Nothing -> Right Nothing
         Just src -> first (ConfigInvalid projectConfig) (Toml.parseToml src >>= migrateIn)
-      pure $ case (,,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide <*> conjure of
+      pure $ case (,,,,,,,,) <$> userModel <*> projectModel <*> rulesConfig <*> name <*> recognize <*> migrate <*> decide <*> conjure <*> plans of
         Left err -> Left err
-        Right (userM, projectM, rc, named, rec', mig, dec, conj) ->
+        Right (userM, projectM, rc, named, rec', mig, dec, conj, plns) ->
           let model = fromMaybe defaultModelConfig (maybe userM Just projectM)
-           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj}))) result
+           in fmap (\c -> checkFixes (addRules ownRules (addRegions own c {catalogProject = Just project, catalogModel = model, catalogRulesConfig = rc, catalogName = named, catalogRecognize = rec', catalogMigrate = mig, catalogDecideModel = maybe (recModel rec') Just dec, catalogConjureWire = conj, catalogPlans = fromMaybe defaultPlans plns}))) result
   where
     recognizeIn top =
       Toml.optional "recognize" Toml.table top >>= \case
@@ -254,6 +276,18 @@ openProjectCatalogWith loadP root paths = do
       Toml.optional "conjure" Toml.table top >>= \case
         Nothing -> Right Nothing
         Just t -> Toml.inKey "conjure" (Toml.onlyKeys ["wire"] t >> Toml.optional "wire" Toml.text t)
+    plansIn top =
+      Toml.optional "plans" Toml.table top >>= \case
+        Nothing -> Right Nothing
+        Just t -> Toml.inKey "plans" $ do
+          Toml.onlyKeys ["dir", "runner", "model", "timeout", "do_tools"] t
+          fmap Just $
+            PlansConfig
+              <$> (maybe (pcDir defaultPlans) T.unpack <$> Toml.optional "dir" Toml.text t)
+              <*> (maybe (pcRunner defaultPlans) T.unpack <$> Toml.optional "runner" Toml.text t)
+              <*> (fromMaybe (pcModel defaultPlans) <$> Toml.optional "model" Toml.text t)
+              <*> (maybe (pcTimeout defaultPlans) fromInteger <$> Toml.optional "timeout" Toml.int t)
+              <*> (fromMaybe (pcDoTools defaultPlans) <$> Toml.optional "do_tools" (Toml.list Toml.text) t)
     migrateIn top =
       Toml.optional "migrate" Toml.table top >>= \case
         Nothing -> Right Nothing
@@ -308,7 +342,7 @@ openAt root loadP localDir packs = do
   fromPacks <- traverse loadP packs
   let loaded = local ++ concatMap lpEntries fromPacks
       langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),

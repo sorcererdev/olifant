@@ -8,7 +8,7 @@
 module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
@@ -27,7 +27,9 @@ import Data.Text.Encoding qualified as TE
 import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Olifant.Plans (Anchor (..), Line (..), parsePlan)
+import Olifant.Server.Unit (Named (..))
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
@@ -78,6 +80,8 @@ data Env = Env
   , -- | the token of the work this Env was handed to (a job, a request);
     -- the work's snapshots carry it (`ssCancel`)
     envCancel :: Cancel
+  , -- | held while a plan's `do` runs: one edits the tree at a time
+    envDoing :: MVar ()
   }
 
 -- | A suggestion's plan, for the document version it was planned against.
@@ -130,7 +134,7 @@ serverDefinition ports = do
   -- a conjure asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
   modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
-  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel
+  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar ()
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -373,7 +377,11 @@ handlers env =
       requestHandler SMethod_TextDocumentCompletion $ \req respond -> inBackground env req respond $ \job -> do
         items <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (snippetItems job path (req ^. L.params . L.position))
+          Just path -> liftIO $
+            withSnapshot job (projectFor path) >>= \case
+              -- a plan completes its anchors: files after `@`, units after `@path:`
+              Just (_, project) | isPlanPath project path -> anchorCompletions job project path (req ^. L.params . L.position)
+              _ -> snippetItems job path (req ^. L.params . L.position)
         respond (Right (InL items))
     , -- the chosen snippet, planned again with the model filling its holes
       requestHandler SMethod_CompletionItemResolve $ \req respond -> inBackground env req respond $ \job -> do
@@ -527,6 +535,56 @@ handlers env =
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right answer -> respond (Right (testsJson answer))
+    , -- where a plan's anchor on a line points: its unit's file and line
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/anchor")) $ \req respond ->
+        case (documentPath (req ^. L.params), lineOf (req ^. L.params)) of
+          (Just path, Just line) -> do
+            text <- liftIO (documentText env path)
+            case [a | l <- parsePlan text, lnRow l == line, Just a <- [lnAnchor l]] of
+              [] -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no anchor on this line" Nothing))
+              a : _ ->
+                liftIO (withSnapshot env (\s -> projectFor path s >>= \case
+                  (s', Just (_, project)) -> (s',) . Just <$> resolveAnchor s' project a
+                  (s', Nothing) -> pure (s', Nothing))) >>= \case
+                  Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "this plan is in no Olifant project" Nothing))
+                  Just r -> respond (Right (object
+                    [ "file" .= (rsAbs r <$ rsText r)
+                    , "line" .= maybe 1 namedDef (rsUnit r)
+                    , "unit" .= maybe (anUnit a) namedName (rsUnit r)
+                    , "found" .= isJust (rsUnit r)
+                    ]))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/anchor needs a textDocument and a line" Nothing))
+    , -- gd on a plan's anchor: its unit's def line; quiet anywhere else
+      requestHandler SMethod_TextDocumentDefinition $ \req respond -> do
+        let Position l c = req ^. L.params . L.position
+        found <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure Nothing
+          Just path -> liftIO $ withSnapshot env (projectFor path) >>= \case
+            Just (_, project) | isPlanPath project path -> do
+              text <- documentText env path
+              let col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l)))
+              case [a | ln <- parsePlan text, lnRow ln == fromIntegral l, Just a <- [lnAnchor ln], anStart a <= col, col <= anEnd a] of
+                a : _ -> withSnapshot env (\s -> (s,) <$> resolveAnchor s project a) <&> \r -> case (rsUnit r, rsText r) of
+                  (Just u, Just _) -> Just (Location (filePathToUri (rsAbs r)) (Range (Position (fromIntegral (namedDef u) - 1) 0) (Position (fromIntegral (namedDef u) - 1) 0)))
+                  _ -> Nothing
+                [] -> pure Nothing
+            _ -> pure Nothing
+        respond (Right (maybe (InR (InR Null)) (InL . Definition . InL) found))
+    , -- a plan's anchored lines, by section, each with where it points
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/files")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/files needs a textDocument" Nothing))
+          Just path -> do
+            text <- liftIO (documentText env path)
+            items <- liftIO (withSnapshot env (\s -> projectFor path s >>= \case
+              (s', Just (_, project)) -> (s',) <$> planFiles s' project text
+              (s', Nothing) -> pure (s', [])))
+            respond (Right (object ["items" .= [object ["section" .= fiSection i, "row" .= fiRow i, "text" .= fiText i, "file" .= fiAbs i, "line" .= fiLine i] | i <- items]]))
+    , -- a plan's line asked, validated or done by the runner (claude -p):
+      -- ghost blocks to insert, nothing written to the plan
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
+    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
+    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
     , -- a file's other side: a module's test file (which may not exist
       -- yet), or a test file's module; it reads only config and the file list
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/file")) $ \req respond ->
@@ -762,6 +820,12 @@ conjureJson = \case
       ]
   Paused p -> object ["paused" .= pausedJson p]
 
+-- | A request's `line` (0-based), if it has one.
+lineOf :: Value -> Maybe Int
+lineOf = \case
+  Object o | Just (Number l) <- KM.lookup "line" o -> toBoundedInteger l
+  _ -> Nothing
+
 -- | A request's `position` (0-based line and character), if it has one.
 positionOf :: Value -> Maybe (Int, Int)
 positionOf = \case
@@ -976,20 +1040,26 @@ withSnapshotState env work = do
         }
   pure (after, a)
 
--- | A file's findings as diagnostics (with the finding each is).
-diagnosticsOf :: Env -> FilePath -> IO [(Diagnostic, Finding)]
+-- | A file's findings as diagnostics (with the finding each is); a plan's
+-- stale and missing anchors too, which are no finding (they have no fix).
+diagnosticsOf :: Env -> FilePath -> IO [(Diagnostic, Maybe Finding)]
 diagnosticsOf env path = do
   fs <- withSnapshot env (findingsFor path)
   text <- documentText env path
+  plan <- withSnapshot env (\s -> projectFor path s >>= \case
+    (s', Just (_, project)) | isPlanPath project path -> (s',) <$> planDiagnostics s' project path text
+    (s', _) -> pure (s', []))
   let ls = T.splitOn "\n" text
       lineText n = fromMaybe "" (listToMaybe (drop (n - 1) ls))
       position (l, c) = let (l', c') = editorPosition (lineText l) (l, c) in Position (fromIntegral l') (fromIntegral c')
       range f = maybe (Range (Position 0 0) (Position 0 0)) (\(a, b) -> Range (position a) (position b)) (fRange f)
   pure
-    [ (Diagnostic (range f) (Just sev) (Just (InR (fRule f))) Nothing (Just "olifant") (fMessage f) Nothing Nothing Nothing, f)
-    | f <- fs
-    , Just sev <- [severityOf (fSeverity f)]
-    ]
+    ( [ (Diagnostic (range f) (Just sev) (Just (InR (fRule f))) Nothing (Just "olifant") (fMessage f) Nothing Nothing Nothing, Just f)
+      | f <- fs
+      , Just sev <- [severityOf (fSeverity f)]
+      ]
+        ++ map (,Nothing) plan
+    )
   where
     severityOf = \case
       R.Error -> Just DiagnosticSeverity_Error
@@ -1003,7 +1073,7 @@ fixActions :: Env -> FilePath -> Int -> Int -> IO [CodeAction]
 fixActions env path from to = do
   diagnostics <- diagnosticsOf env path
   version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
-  let here = [(d, f, l1) | (d, f) <- diagnostics, let (l1, l2) = maybe (1, 1) (\((a, _), (b, _)) -> (a, b)) (fRange f), l1 <= to, from <= l2]
+  let here = [(d, f, l1) | (d, Just f) <- diagnostics, let (l1, l2) = maybe (1, 1) (\((a, _), (b, _)) -> (a, b)) (fRange f), l1 <= to, from <= l2]
       actions =
         [ CodeAction
             { _title = fromMaybe (foGenerator o) (foLabel o)
@@ -1042,6 +1112,23 @@ cursorActions env path (Position l c) = do
         }
     | (a, snippet) <- acts
     ]
+
+-- | A plan's anchor completions at a cursor: each replaces what was typed
+-- of its path (after `@`) or its unit (after `:`).
+anchorCompletions :: Env -> Project -> FilePath -> Position -> IO [CompletionItem]
+anchorCompletions env project path (Position l c) = do
+  text <- documentText env path
+  let upTo = takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l))
+      typed = T.takeWhileEnd (\ch -> ch /= '@' && ch /= ':') upTo
+      range = Range (Position l (c - fromIntegral (utf16 typed))) (Position l c)
+  items <- withSnapshot env (\s -> (s,) <$> anchorItems s project upTo)
+  pure [i & L.textEdit ?~ InL (TextEdit range (fromMaybe (i ^. L.label) (i ^. L.insertText))) | i <- items]
+
+-- | The start of a line, up to a UTF-16 column.
+takeUtf16 :: Int -> T.Text -> T.Text
+takeUtf16 n t = case T.uncons t of
+  Just (ch, rest) | n > 0 -> T.cons ch (takeUtf16 (n - (if fromEnum ch > 0xFFFF then 2 else 1)) rest)
+  _ -> ""
 
 -- | Completion items for the snippets at a cursor: each replaces the
 -- cursor's line with its body (tab stops), filtered by what the line holds.
@@ -1153,6 +1240,48 @@ inBackground env req respond work = do
         Nothing -> runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
     )
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
+
+-- | `olifant/plans/<verb>` (params: textDocument, line): the errand in the
+-- background under a progress TITLE. A `do` runs alone: a second while one
+-- runs is refused without starting, and the lock is let go however the
+-- first ends (answered, failed, cancelled).
+errandRequest :: Env -> Verb -> T.Text -> TRequestMessage m -> Value -> (Either (TResponseError m) Value -> LspM () ()) -> LspM () ()
+errandRequest env verb title req params respond = case (documentPath params, lineOf params) of
+  (Just path, Just line)
+    | verb == Do ->
+        liftIO (tryTakeMVar (envDoing env)) >>= \case
+          Nothing -> failed "a do is already running"
+          Just () -> do
+            lspEnv <- getLspEnv
+            let release = void (tryPutMVar (envDoing env) ())
+            -- taken here, in the order requests arrive; let go in the work's finally
+            inBackground env req respond (\job -> liftIO (runLspT lspEnv (run job path line) `finally` release))
+    | otherwise -> inBackground env req respond (\job -> run job path line)
+  _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("olifant/plans/" <> name <> " needs a textDocument and a line") Nothing))
+  where
+    name = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
+    failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+    run job path line = do
+      answered <- planProgress title (\_ -> withSnapshot job (runErrand (envCancel job) verb path line))
+      -- an errand the editor cancelled is no result (its runner was stopped)
+      stopped <- liftIO (cancelled (envCancel job))
+      case answered of
+        _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+        Left why -> failed why
+        Right a -> respond (Right (errandJson name a))
+
+-- | What `olifant/plans/<verb>` answers.
+errandJson :: T.Text -> ErrandAnswer -> Value
+errandJson verb a =
+  object
+    [ "verb" .= verb
+    , "blocks" .= [object ["after" .= blAfterRow b, "after_text" .= blAfterText b, "lines" .= [object ["text" .= ghText g, "fp" .= fp] | (g, fp) <- zip (blLines b) fps]] | (b, fps) <- eaBlocks a]
+    , "dropped" .= eaDropped a
+    , "unresolved" .= eaUnresolved a
+    , "seconds" .= eaSeconds a
+    , "cost" .= eaCost a
+    , "changed" .= eaChanged a
+    ]
 
 -- | A request id as `$/cancelRequest` names it.
 requestKey :: LspId m -> T.Text

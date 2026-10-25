@@ -18,3 +18,4 @@
 16. [The language server: `olifant lsp`, projects across roots, what it answers, the project model](16-the-language-server.md)
 17. [Strangling a legacy codebase: `init --migrate`, `only = "new"`, extract and switches, retiring, the report, decisions](17-strangling-a-legacy-codebase.md)
 18. [TDD in the editor: test, stub, conjure, mutate, the step log, `[test]`](18-tdd-in-the-editor.md)
+19. [Plans: markdown that states what you believe and do, `ask`, `validate`, `do`, `[plans]`](19-plans.md)

@@ -83,6 +83,17 @@ spec = describe "catalog" $ do
       case r of
         Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "conjure"
         _ -> expectationFailure "expected ConfigInvalid naming conjure"
+  describe "[plans] (plans, stage 1)" $ do
+    it "defaults when absent" $
+      withCatalog [("/proj/.olifant/config.toml", "")] $ \_ cat -> catalogPlans cat `shouldBe` PlansConfig "plans" "claude" "sonnet" 300 []
+    it "reads every key" $
+      withCatalog [("/proj/.olifant/config.toml", "[plans]\ndir = \"docs/plans\"\nrunner = \"/tmp/shim\"\nmodel = \"opus\"\ntimeout = 900\ndo_tools = [\"Bash(cabal test*)\"]\n")] $ \_ cat ->
+        catalogPlans cat `shouldBe` PlansConfig "docs/plans" "/tmp/shim" "opus" 900 ["Bash(cabal test*)"]
+    it "refuses other keys, naming the section" $ do
+      r <- openWith [("/proj/.olifant/config.toml", "[plans]\nother = 1\n")]
+      case r of
+        Left (ConfigInvalid _ e) -> e `shouldSatisfy` T.isInfixOf "plans"
+        _ -> expectationFailure "expected ConfigInvalid naming plans"
   describe "[migrate] (strangling a legacy codebase)" $ do
     it "reads legacy, base, switches, new_work_lines and count, with defaults" $ do
       withCatalog [("/proj/.olifant/config.toml", "[migrate]\nlegacy = [\"legacy/**\"]\n")] $ \_ cat ->

@@ -99,6 +99,7 @@ library
     Olifant.Naming
     Olifant.Newness
     Olifant.Output
+    Olifant.Plans
     Olifant.Preview
     Olifant.Preview.Fields
     Olifant.Preview.Marks
@@ -124,6 +125,7 @@ library
     Olifant.Server.ConjureNext
     Olifant.Server.ConjureScan
     Olifant.Server.Edits
+    Olifant.Server.Errand
     Olifant.Server.Fixes
     Olifant.Server.Hints
     Olifant.Server.Holes
@@ -131,6 +133,7 @@ library
     Olifant.Server.Model
     Olifant.Server.Mutate
     Olifant.Server.Order
+    Olifant.Server.Plans
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
@@ -251,6 +254,8 @@ test-suite spec
     Olifant.NewnessSpec
     Olifant.Output
     Olifant.OutputSpec
+    Olifant.Plans
+    Olifant.PlansSpec
     Olifant.Preview
     Olifant.Preview.Fields
     Olifant.Preview.Marks
@@ -287,6 +292,8 @@ test-suite spec
     Olifant.Server.ConjureScanSpec
     Olifant.Server.Edits
     Olifant.Server.EditsSpec
+    Olifant.Server.Errand
+    Olifant.Server.ErrandSpec
     Olifant.Server.Fixes
     Olifant.Server.Hints
     Olifant.Server.Holes
@@ -294,6 +301,8 @@ test-suite spec
     Olifant.Server.Model
     Olifant.Server.Mutate
     Olifant.Server.Order
+    Olifant.Server.Plans
+    Olifant.Server.PlansSpec
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
@@ -303,6 +312,7 @@ test-suite spec
     Olifant.Server.Suggest
     Olifant.Server.Tests
     Olifant.Server.Unit
+    Olifant.Server.UnitSpec
     Olifant.Server.Waive
     Olifant.ServerSpec
     Olifant.Snippet

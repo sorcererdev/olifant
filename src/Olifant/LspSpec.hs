@@ -17,7 +17,7 @@ import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, 
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -96,6 +96,8 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   stubSpec
   conjureSpec
   mutateSpec
+  plansSpec
+  plansStage1Spec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -113,6 +115,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
           TResponseMessage _ _ (Right result) -> Just (result ^. L.capabilities)
           _ -> Nothing
       fmap (^. L.semanticTokensProvider) caps `shouldBe` Just Nothing
+      fmap (isJust . (^. L.definitionProvider)) caps `shouldBe` Just True
 
 -- | Rule findings and their fixes (Task 9): pull diagnostics, quickfixes
 -- carrying a fix's open choices, resolved to the fix's plan.
@@ -1920,6 +1923,163 @@ testsRunSpec = describe "olifant/tests/run" $ do
         pure (toTest, toModule)
       toTest `shouldBe` Right (object ["file" .= (dir </> testRel), "kind" .= ("test" :: Text), "exists" .= True])
       toModule `shouldBe` Right (object ["file" .= (dir </> moduleRel), "kind" .= ("module" :: Text), "exists" .= True])
+
+-- | A plan's anchors (plans, stage 1): diagnosed over the editor's text,
+-- jumped to, listed, completed.
+plansSpec :: Spec
+plansSpec = describe "plans: anchors in the server" $ do
+  let schedule = "src/bistro/booking/queries/get_day_schedule.py"
+      planText = T.unlines ["- handles a day @" <> T.pack schedule <> ":GetDaySchedule.handle", "- gone @" <> T.pack schedule <> ":Gone"]
+      docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
+  it "gd on a plan's anchor goes to its unit's def line; elsewhere it stays quiet" $
+    withPython [("plans/t.md", planText), ("src/x.py", "x = 1\n")] $ \ports dir -> do
+      ((on, justAfter, off, gone, code), _) <- inProcessWith ports dir $ do
+        plan <- openDoc "plans/t.md" "markdown"
+        py <- openDoc "src/x.py" "python"
+        let at d l c = getDefinitions d (Position l c)
+            width = fromIntegral (T.length ("- handles a day @" <> T.pack schedule <> ":GetDaySchedule.handle"))
+        on <- at plan 0 30
+        justAfter <- at plan 0 width
+        off <- at plan 0 3
+        gone <- at plan 1 20
+        code <- at py 0 0
+        pure (on, justAfter, off, gone, code)
+      let spots = \case
+            InL (Definition (InL (Location u r))) -> [(uriToFilePath u, r ^. L.start . L.line, r ^. L.start . L.character)]
+            InL (Definition (InR ls)) -> [(uriToFilePath u, r ^. L.start . L.line, r ^. L.start . L.character) | Location u r <- ls]
+            _ -> []
+          expected = [(Just (dir </> schedule), 21, 0)]
+      spots on `shouldBe` expected
+      spots justAfter `shouldBe` expected
+      spots off `shouldBe` []
+      spots gone `shouldBe` []
+      spots code `shouldBe` []
+  it "a plan's missing anchor is a diagnostic; olifant/plans/anchor jumps; olifant/plans/files lists" $
+    withPython [("plans/t.md", planText)] $ \ports dir -> do
+      ((before, jump, missing, bare, files, after), _) <- inProcessWith ports dir $ do
+        plan <- openDoc "plans/t.md" "markdown"
+        before <- pullDiagnostics plan
+        jump <- blockMove (Proxy :: Proxy "olifant/plans/anchor") (object [docOf plan, "line" .= (0 :: Int)])
+        missing <- blockMove (Proxy :: Proxy "olifant/plans/anchor") (object [docOf plan, "line" .= (1 :: Int)])
+        bare <- blockMove (Proxy :: Proxy "olifant/plans/anchor") (object [docOf plan, "line" .= (5 :: Int)])
+        files <- blockMove (Proxy :: Proxy "olifant/plans/files") (object [docOf plan])
+        -- the editor's text, not disk's: line 1 now holds a real anchor, the missing one moves to line 2
+        changeDoc plan [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 1 0) (Position 1 0)) Nothing ("- table @src/bistro/booking/models/table.py:Table\n")))]
+        after <- pullDiagnostics plan
+        pure (before, jump, missing, bare, files, after)
+      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) before `shouldBe` [("? not found", 1)]
+      fmap (lookupKey "found") jump `shouldBe` Right (Just (Bool True))
+      fmap (lookupKey "line") jump `shouldBe` Right (Just (Number 22))
+      fmap (fmap (\case String f -> (T.pack schedule) `T.isSuffixOf` f; _ -> False) . lookupKey "file") jump `shouldBe` Right (Just True)
+      fmap (\v -> (lookupKey "found" v, lookupKey "line" v, lookupKey "file" v)) missing `shouldBe` Right (Just (Bool False), Just (Number 1), Just (String (T.pack (dir </> schedule))))
+      bare `shouldBe` Left "no anchor on this line"
+      fmap (fmap (\case Array xs -> length xs; _ -> 0) . lookupKey "items") files `shouldBe` Right (Just 2)
+      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) after `shouldBe` [("? not found", 2)]
+  it "a plan completes files after @ and units after @path:" $
+    withPython [("plans/t.md", "- x @src/bistro/booking/queries/get_day_schedule.\n- y @" <> T.pack schedule <> ":GetDaySchedule.h\n")] $ \ports dir -> do
+      ((paths, units), _) <- inProcessWith ports dir $ do
+        plan <- openDoc "plans/t.md" "markdown"
+        let complete l c = request SMethod_TextDocumentCompletion (CompletionParams plan (Position l c) Nothing Nothing Nothing) <&> \case
+              TResponseMessage _ _ (Right (InL items)) -> map (^. L.label) items
+              _ -> []
+        (,) <$> complete 0 (fromIntegral (T.length "- x @src/bistro/booking/queries/get_day_schedule.")) <*> complete 1 (fromIntegral (T.length ("- y @" <> T.pack schedule <> ":GetDaySchedule.h")))
+      paths `shouldBe` ["src/bistro/booking/queries/get_day_schedule.py"]
+      units `shouldBe` ["GetDaySchedule.handle"]
+
+-- | Plan errands (plans, stage 1, Task 7): ask, validate and do run the
+-- runner (the shim here, never claude) and answer ghost blocks.
+plansStage1Spec :: Spec
+plansStage1Spec = describe "olifant/plans (stage 1)" $ do
+  let table = "src/bistro/booking/models/table.py"
+      planWith step = T.unlines ["# T", "", "## Hypothesis", "- ? where is the table", "- a claim @" <> T.pack table <> ":Table ", "", "## Plan", step]
+      plan = planWith "- [ ] add a method · by hand"
+      docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
+      -- the fixture app with a plan, its runner the shim
+      withPlan text act = withPython [("plans/t.md", text)] $ \ports dir -> do
+        shim <- canonicalizePath "src/Olifant/Server/testdata/claude-shim.sh"
+        TIO.appendFile (dir </> ".olifant/config.toml") ("\n[plans]\nrunner = \"" <> T.pack shim <> "\"\n")
+        act ports dir
+      askP = Proxy :: Proxy "olifant/plans/ask"
+      validateP = Proxy :: Proxy "olifant/plans/validate"
+      doP = Proxy :: Proxy "olifant/plans/do"
+      errand method line = do
+        p <- openDoc "plans/t.md" "markdown"
+        blockMove method (object [docOf p, "line" .= (line :: Int)])
+      arr = \case
+        Just (Array xs) -> toList xs
+        _ -> []
+      linesOf b = arr (lookupKey "lines" b)
+  it "ask answers ghost blocks with fingerprints for anchors that resolve" $
+    withPlan plan $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      v <- either (fail . T.unpack) pure answer
+      lookupKey "verb" v `shouldBe` Just (String "ask")
+      let blocks = arr (lookupKey "blocks" v)
+          fps = map (lookupKey "fp") (concatMap linesOf blocks)
+      map (lookupKey "after") blocks `shouldBe` [Just (Number 3)]
+      map (\case Just (String fp) -> T.length fp; _ -> 0) fps `shouldBe` [7, 7, 0]
+      last fps `shouldBe` Just Aeson.Null
+      lookupKey "unresolved" v `shouldBe` Just (Number 1)
+      lookupKey "cost" v `shouldBe` Just (Number 0.0123)
+      logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+      fmap (T.drop 1 . T.dropWhile (/= '\t')) (listToMaybe (reverse logged)) `shouldSatisfy` maybe False ("plan-ask\tplans/t.md:3\t" `T.isPrefixOf`)
+  it "ask on a step is refused" $
+    withPlan plan $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 7)
+      either (T.isInfixOf "ask needs a question line") (const False) answer `shouldBe` True
+  it "validate on the heading lands after the matching line" $
+    withPlan plan $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand validateP 2)
+      v <- either (fail . T.unpack) pure answer
+      map (\b -> (lookupKey "after" b, lookupKey "after_text" b)) (arr (lookupKey "blocks" v))
+        `shouldBe` [(Just (Number 4), Just (String ("- a claim @" <> T.pack table <> ":Table")))]
+  it "do edits the tree, reports changed files and refuses a second do" $
+    withPlan (planWith "- [ ] add a method SHIM:SLOW") $ \ports dir -> do
+      let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+      git ["init", "-q", "-b", "main"]
+      git ["add", "."]
+      git ["commit", "-q", "-m", "the fixture"]
+      ((first, second, third), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        let params = object [docOf p, "line" .= (7 :: Int)]
+            method = SMethod_CustomMethod doP
+            await rid = (responseForId method rid <&> \(TResponseMessage _ _ r) -> either (Left . (^. L.message)) Right r) <|> (anyMessage >> await rid)
+        r1 <- sendRequest method params
+        r2 <- sendRequest method params
+        second <- await r2
+        first <- await r1
+        third <- blockMove doP params
+        pure (first, second, third)
+      second `shouldBe` Left "a do is already running"
+      v <- either (fail . T.unpack) pure first
+      lookupKey "changed" v `shouldBe` Just (Array (pure (String (T.pack (dir </> table)))))
+      map (map (lookupKey "text") . linesOf) (arr (lookupKey "blocks" v))
+        `shouldBe` [[Just (String ("- [ ] add a method SHIM:SLOW   @" <> T.pack table <> ":Table.label"))]]
+      either Just (const Nothing) third `shouldBe` Nothing
+  it "a runner failure leaves the plan alone and names the reason" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      either (T.isInfixOf "no credentials") (const False) answer `shouldBe` True
+      TIO.readFile (dir </> "plans/t.md") >>= (`shouldBe` T.replace "where is the table" "where is the table SHIM:FAIL" plan)
+  it "prose only is 'answered nothing in the grammar'" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:PROSE" plan) $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      answer `shouldBe` Left "ask answered nothing in the grammar"
+  it "cancel stops the runner" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:SLEEP" plan) $ \ports dir -> do
+      ((code, took), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        let method = SMethod_CustomMethod askP
+        rid <- sendRequest method (object [docOf p, "line" .= (3 :: Int)])
+        liftIO (threadDelay 300000)
+        start <- liftIO getCurrentTime
+        sendNotification SMethod_CancelRequest (CancelParams (case rid of IdInt n -> InL n; IdString t -> InR t))
+        let await = responseForId method rid <|> (anyMessage >> await)
+        TResponseMessage _ _ r <- await
+        end <- liftIO getCurrentTime
+        pure (either (Just . (^. L.code)) (const Nothing) r, diffUTCTime end start)
+      code `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
+      took `shouldSatisfy` (< 2)
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
