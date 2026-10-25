@@ -5,6 +5,7 @@ import Control.Exception (finally)
 import Data.Text qualified as T
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Process (neverCancel, newCancel)
+import Olifant.Plans (Anchor (..), parsePlan)
 import Olifant.Server.Errand
 import System.Directory (getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
@@ -14,6 +15,11 @@ import Test.Hspec
 spec :: Spec
 spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
   let cfg = defaultPlans
+      plan = "## Day page\n- ? where does the day page decide\n- a claim @src/a.py:Foo\n- [ ] the step\n  - test: it works @tests/t.py:test_it\n## Next\n- later\n"
+      ls = parsePlan plan
+      q = ls !! 1
+      heading = ls !! 0
+      step = ls !! 3
       shimCfg = do
         d <- getCurrentDirectory
         pure cfg {pcRunner = d </> "src/Olifant/Server/testdata/claude-shim.sh"}
@@ -53,3 +59,40 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
     _ <- forkIO (threadDelay 200000 >> trip)
     r <- runClaude tok c Ask [] "/tmp" "SHIM:SLEEP"
     r `shouldBe` Left "cancelled"
+  describe "prompts and answers" $ do
+    it "ask keeps anchored claims and one conclusion, drops prose" $ do
+      let (bs, dropped) = parseAnswer Ask ls q "Sure.\n- the table has no day @src/a.py:Table\n- closure is absent @src/b.py:Repo\n- so a model is needed\n- ? what about x\n"
+      map ghText (concatMap blLines bs) `shouldBe` ["  - the table has no day   @src/a.py:Table", "  - closure is absent   @src/b.py:Repo", "  - so a model is needed"]
+      dropped `shouldBe` 2
+      map blAfterRow bs `shouldBe` [1]
+    it "validate places blocks after the matching line, else at the section's end" $ do
+      let (bs, _) = parseAnswer Validate ls heading "AFTER: - a claim @src/a.py:Foo\n  - ✓ holds @src/a.py:Foo\nAFTER: nowhere\n- ? why\n"
+      map blAfterRow bs `shouldBe` [2, 4]
+      map blAfterText bs `shouldBe` [Just "- a claim @src/a.py:Foo", Just "nowhere"]
+    it "do turns DONE and BLOCKED into the step's report" $ do
+      let (bs, _) = parseAnswer Do ls step "DONE @src/a.py:Foo.bar\nDONE @src/c.py:Baz\nBLOCKED no port\n"
+      map ghText (concatMap blLines bs) `shouldBe` ["- [ ] the step   @src/a.py:Foo.bar", "  - also @src/c.py:Baz", "  - ✗ blocked: no port"]
+      map blAfterRow bs `shouldBe` [3]
+    it "never fails on odd input" $ do
+      parseAnswer Ask ls q "" `shouldBe` ([], 0)
+      fst (parseAnswer Validate ls heading "AFTER:") `shouldBe` []
+      snd (parseAnswer Validate ls heading "AFTER:") `shouldBe` 1
+      parseAnswer Do ls step "DONE\r\nDONE nothing\r\n" `shouldBe` ([], 2)
+      length (fst (parseAnswer Ask ls q "- a @x.py:A\r\n")) `shouldBe` 1
+      parseAnswer Ask ls heading "- a @x.py:A" `shouldBe` ([], 0)
+    it "the prompt carries the plan, the units and the marker" $ do
+      let p = errandPrompt Ask plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
+      p `shouldSatisfy` T.isInfixOf "<doc>\n"
+      p `shouldSatisfy` T.isInfixOf "QUESTION: where does the day page decide"
+      p `shouldSatisfy` T.isInfixOf "@src/a.py:Foo\nclass Foo:"
+      p `shouldSatisfy` T.isInfixOf "relative to the project root"
+    it "validate and do prompts carry the section, step and its test" $ do
+      errandPrompt Validate plan ls heading [] `shouldSatisfy` T.isInfixOf "SECTION: Day page\n## Day page"
+      let d = errandPrompt Do plan ls step []
+      d `shouldSatisfy` T.isInfixOf "STEP: the step\n  - test: it works @tests/t.py:test_it"
+      errandPrompt Do plan ls (ls !! 4) [] `shouldSatisfy` T.isInfixOf "TEST: it works @tests/t.py:test_it"
+    it "cuts a long body at 2000 characters and limits grounding to 20 units" $ do
+      T.length (cutBody (T.replicate 3000 "x")) `shouldBe` 2002
+      T.takeEnd 1 (cutBody (T.replicate 3000 "x")) `shouldBe` "…"
+      cutBody "short" `shouldBe` "short"
+      groundingLimit `shouldBe` 20
