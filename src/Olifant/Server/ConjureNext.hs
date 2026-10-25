@@ -737,7 +737,7 @@ offerRow o offer = uncurry (OfferRow offer) . fmap cappedDetail $ case offer of
   OfferReconjure t | Just f <- lookup t (ofAgain o) -> ("fix the test: " <> short t, "fails anew: " <> f <> "; you see its diff")
   OfferReconjure t -> ("fix the test: " <> short t, maybe "re-conjure it from its name and the unit; you see its diff, then the rounds go on over it" (<> "; you see the diff") (lookup t (ofFixes o)))
   OfferStop -> ("stop", if ofWired o then "nothing lands, not the wire either; your text stands" else "nothing lands; your text stands")
-  OfferKeep r -> ("keep round " <> n r, "lands the diff on the right, red (unsaved; u undoes it)")
+  OfferKeep r -> ("keep round " <> n r, "lands the diff on the right, red (saved; u undoes it)")
   OfferAccept -> ("accept", "the test lands with the conjure; round " <> next <> " runs against it")
   OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")

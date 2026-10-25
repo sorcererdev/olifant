@@ -233,7 +233,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     map (\r -> (orLabel r, orDetail r)) (map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2])
       `shouldBe` [ ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
                  , ("fix the test: not_found, again", "re-conjure it once more; you see its diff")
-                 , ("keep round 2", "lands the diff on the right, red (unsaved; u undoes it)")
+                 , ("keep round 2", "lands the diff on the right, red (saved; u undoes it)")
                  ]
     at ["offers", "0", "choice"] json `shouldBe` Just (String "proposal")
     at ["offers", "1", "choice"] json `shouldBe` Just (String "reconjure")
@@ -265,7 +265,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["offers", "1", "detail"] v `shouldBe` Just (String "your sentence goes to local with round 4")
     at ["offers", "2", "detail"] v `shouldBe` Just (String "re-conjure it from its name and the unit; you see its diff, then the rounds go on over it")
     at ["offers", "4", "detail"] v `shouldBe` Just (String "nothing lands; your text stands")
-    at ["offers", "5", "detail"] v `shouldBe` Just (String "lands the diff on the right, red (unsaved; u undoes it)")
+    at ["offers", "5", "detail"] v `shouldBe` Just (String "lands the diff on the right, red (saved; u undoes it)")
     at ["wired"] v `shouldBe` Just (Array mempty)
     at ["offers", "5", "land"] v `shouldBe` Just (Bool True)
     at ["offers", "4", "land"] v `shouldBe` Just (Bool False)

@@ -50,7 +50,7 @@
     {
       "arg": "2",
       "choice": "stop",
-      "detail": "lands the diff on the right, red (unsaved; u undoes it)",
+      "detail": "lands the diff on the right, red (saved; u undoes it)",
       "hint": null,
       "label": "keep round 2",
       "land": true
