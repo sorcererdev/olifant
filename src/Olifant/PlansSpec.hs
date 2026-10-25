@@ -1,0 +1,54 @@
+{-# LANGUAGE OverloadedStrings #-}
+module Olifant.PlansSpec (spec) where
+
+import Data.Text (Text)
+import qualified Data.Text as T
+import Olifant.Plans
+import Test.Hspec
+
+sample :: Text
+sample = T.unlines
+  [ "# Ticket: slug the titles"
+  , ""
+  , "Make titles safe for URLs."
+  , "## Behaviour"
+  , "What a slug is:"
+  , "- lowercases every letter"
+  , "- replaces spaces with dashes @src/slug.py:slugify"
+  , "- ? what about unicode"
+  , "- empty title gives an empty slug"
+  , "## Steps"
+  , "Work through these in order."
+  , "- [x] write slugify @src/slug.py:slugify ✓ abc1234"
+  , "- [ ] handle dashes @src/slug.py:collapse"
+  , "  - test: dashes collapse @tests/test_slug.py:test_dashes ○"
+  , "  - also @src/slug.py:strip"
+  , "  - ✓ ran green"
+  ]
+
+spec :: Spec
+spec = describe "Olifant.Plans" $ do
+  it "classifies every line kind" $
+    map lnKind (parsePlan sample) `shouldBe`
+      [Heading 1, Prose, Prose, Heading 2, Prose, Claim, Claim, Question, Claim, Heading 2, Prose, Step True, Step False, TestChild, AlsoChild, Evidence]
+  it "takes the last anchor on a line and its columns" $ do
+    let [l] = parsePlan "- see @docs/x.md then @src/a.py:Foo.bar ✓ abc1234"
+    lnAnchor l `shouldBe` Just (Anchor "src/a.py" "Foo.bar" 22 39)
+    lnVerdict l `shouldBe` Verified "abc1234"
+  it "reads ? not found" $
+    lnVerdict (head (parsePlan "- x @src/a.py:Gone ? not found")) `shouldBe` NotFound
+  it "sections cover rows and the preamble is a section" $
+    sections (parsePlan "intro\n## A\n- a\n## B\n") `shouldBe` [Section "" 0 1, Section "A" 1 3, Section "B" 3 4]
+  it "children are the deeper lines right after" $
+    map lnRow (childrenOf (parsePlan "- [ ] s\n  - test: t @f:x ○\n  - [ ] child\n- [ ] next") 0) `shouldBe` [1, 2]
+  it "withVerdict replaces, appends and strips" $ do
+    withVerdict "- x @a.py:F ✓ 1111111" (Verified "2222222") `shouldBe` "- x @a.py:F ✓ 2222222"
+    withVerdict "- x @a.py:F" NotFound `shouldBe` "- x @a.py:F ? not found"
+    withVerdict "- x @a.py:F ? not found" NoVerdict `shouldBe` "- x @a.py:F"
+  it "a hash without a space is prose, and a heading has no anchor" $ do
+    map lnKind (parsePlan "#tag\n####### seven\n###") `shouldBe` [Prose, Prose, Heading 3]
+  it "sectionOf finds the enclosing section; anchorText renders" $ do
+    let ls = parsePlan "intro\n## A\n- a\n## B\n"
+    secTitle (sectionOf ls 2) `shouldBe` "A"
+    secTitle (sectionOf ls 0) `shouldBe` ""
+    anchorText (Anchor "a.py" "F" 0 7) `shouldBe` "@a.py:F"

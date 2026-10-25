@@ -99,6 +99,7 @@ library
     Olifant.Naming
     Olifant.Newness
     Olifant.Output
+    Olifant.Plans
     Olifant.Preview
     Olifant.Preview.Fields
     Olifant.Preview.Marks
@@ -251,6 +252,8 @@ test-suite spec
     Olifant.NewnessSpec
     Olifant.Output
     Olifant.OutputSpec
+    Olifant.Plans
+    Olifant.PlansSpec
     Olifant.Preview
     Olifant.Preview.Fields
     Olifant.Preview.Marks
