@@ -1321,6 +1321,9 @@ conjureSpec = describe "olifant/conjure" $ do
     -- the landing edits every file the wire wrote: the module and the test file's helper
     field "edits" accepted `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
     field "edits" accepted `shouldSatisfy` wroteIn cbTest "bookings: BookingRepository | None = None"
+    -- every step was accepted: the landing asks nothing again (no annotation needing confirmation)
+    inner "changeAnnotations" (field "edits" accepted) `shouldBe` Nothing
+    show (field "edits" accepted) `shouldNotSatisfy` isInfixOf "annotationId"
     field "green" accepted `shouldBe` Just (Bool True)
     field "summary" accepted `shouldBe` Just (String "green in round 2 \183 local \183 bookings wired \183 not_found rewritten")
 
