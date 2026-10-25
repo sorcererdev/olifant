@@ -1,8 +1,9 @@
 -- | The runner for plan errands: one `claude -p` call, its JSON reply read
--- into text, seconds and cost. Nothing here throws; every failure is a Left
--- with a short reason.
+-- into text, seconds, cost, session, turns, tokens, models and denials.
+-- Nothing here throws; every failure is a Left with a status and a short reason.
 module Olifant.Server.Errand
-  ( Verb (..), RunResult (..), runnerArgs, runClaude
+  ( Verb (..), RunResult (..), Tokens (..), ModelUse (..), Status (..), RunFailure (..)
+  , statusName, runnerArgs, runClaude
   , Grounded (..), Ghost (..), Block (..)
   , errandPrompt, parseAnswer, groundingLimit, cutBody
   ) where
@@ -18,13 +19,40 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Catalog (PlansConfig (..))
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), anchorText, childrenOf, parsePlan, sectionOf)
-import Olifant.Process (Cancel, Outcome (..), runBytesCancellable)
+import Olifant.Process (Cancel, runBytesCancellable)
+import Olifant.Process qualified as P
 import System.Exit (ExitCode (..))
 
 data Verb = Ask | Validate | Do deriving (Eq, Show)
 
-data RunResult = RunResult {rrText :: Text, rrSeconds :: Double, rrCost :: Maybe Double}
+-- | Token counts; @tkCacheWrite@ is the runner's @cache_creation_input_tokens@.
+data Tokens = Tokens {tkInput, tkOutput, tkCacheWrite, tkCacheRead :: Int}
   deriving (Eq, Show)
+
+-- | One model's share of a run (the runner's @modelUsage@ entry).
+data ModelUse = ModelUse {muTokens :: Tokens, muCost :: Maybe Double}
+  deriving (Eq, Show)
+
+data RunResult = RunResult
+  { rrText :: Text, rrSeconds :: Double, rrCost :: Maybe Double
+  , rrSession :: Maybe Text, rrTurns :: Maybe Int, rrTokens :: Maybe Tokens
+  , rrModels :: [(Text, ModelUse)], rrDenials :: Int }
+  deriving (Eq, Show)
+
+-- | How an errand ended. 'runClaude' never returns 'Ok' or 'Empty' as a failure;
+-- 'Empty' (answered, nothing in the grammar) is the caller's to set.
+data Status = Ok | Empty | Error | Timeout | Cancelled deriving (Eq, Show)
+
+data RunFailure = RunFailure {rfStatus :: Status, rfWhy :: Text}
+  deriving (Eq, Show)
+
+statusName :: Status -> Text
+statusName = \case
+  Ok -> "ok"
+  Empty -> "empty"
+  Error -> "error"
+  Timeout -> "timeout"
+  Cancelled -> "cancelled"
 
 -- | The flags after the runner's name; @testTools@ are the project's test commands (for 'Do').
 runnerArgs :: PlansConfig -> Verb -> [Text] -> [String]
@@ -33,27 +61,46 @@ runnerArgs cfg verb testTools =
     Do -> ["--permission-mode", "acceptEdits", "--allowedTools", T.unpack (T.intercalate "," (["Read", "Grep", "Glob", "Edit", "Write"] ++ testTools ++ pcDoTools cfg))]
     _ -> ["--allowedTools", "Read,Grep,Glob"]
 
-runClaude :: Cancel -> PlansConfig -> Verb -> [Text] -> FilePath -> Text -> IO (Either Text RunResult)
+runClaude :: Cancel -> PlansConfig -> Verb -> [Text] -> FilePath -> Text -> IO (Either RunFailure RunResult)
 runClaude token cfg verb testTools root prompt =
   runBytesCancellable token (Just (pcTimeout cfg)) "env" (["-u", "CLAUDECODE", pcRunner cfg] ++ runnerArgs cfg verb testTools) (Just root) (TE.encodeUtf8 prompt) >>= \case
-    Left why -> pure (Left why)
-    Right Cancelled -> pure (Left "cancelled")
-    Right TimedOut -> pure (Left ("timed out after " <> T.pack (show (pcTimeout cfg)) <> " s"))
-    Right (Finished (ExitFailure n) out err) ->
-      pure (Left (T.pack (pcRunner cfg) <> " exited " <> T.pack (show n) <> ": " <> first120 out err))
-    Right (Finished ExitSuccess out err) -> pure $ case decodeStrict out of
+    Left why -> pure (Left (RunFailure Error why))
+    Right P.Cancelled -> pure (Left (RunFailure Cancelled "cancelled"))
+    Right P.TimedOut -> pure (Left (RunFailure Timeout ("timed out after " <> T.pack (show (pcTimeout cfg)) <> " s")))
+    Right (P.Finished (ExitFailure n) out err) ->
+      pure (Left (RunFailure Error (T.pack (pcRunner cfg) <> " exited " <> T.pack (show n) <> ": " <> first120 out err)))
+    Right (P.Finished ExitSuccess out err) -> pure $ case decodeStrict out of
       Just (Object o) -> fromObject o
-      _ -> Left (first120 out err)
+      _ -> Left (RunFailure Error (first120 out err))
 
-fromObject :: KM.KeyMap Value -> Either Text RunResult
+fromObject :: KM.KeyMap Value -> Either RunFailure RunResult
 fromObject o = case KM.lookup "result" o of
-  _ | KM.lookup "is_error" o == Just (Bool True) -> Left (T.take 120 (maybe "the runner reported an error" asText (KM.lookup "result" o)))
-  Just (String t) -> Right (RunResult t (maybe 0 (/ 1000) (num "duration_ms")) (num "total_cost_usd"))
-  _ -> Left (T.take 120 (T.pack (show (Object o))))
+  _ | KM.lookup "is_error" o == Just (Bool True) -> Left (RunFailure Error (T.take 120 (maybe "the runner reported an error" asText (KM.lookup "result" o))))
+  Just (String t) ->
+    Right
+      RunResult
+        { rrText = t, rrSeconds = maybe 0 (/ 1000) (num "duration_ms" o), rrCost = num "total_cost_usd" o
+        , rrSession = case KM.lookup "session_id" o of
+            Just (String s) -> Just s
+            _ -> Nothing
+        , rrTurns = round <$> num "num_turns" o
+        , rrTokens = case KM.lookup "usage" o of
+            Just (Object u) -> Just (tokens "input_tokens" "output_tokens" "cache_creation_input_tokens" "cache_read_input_tokens" u)
+            _ -> Nothing
+        , rrModels = case KM.lookup "modelUsage" o of
+            Just (Object m) -> [(K.toText k, modelUse u) | (k, Object u) <- KM.toList m]
+            _ -> []
+        , rrDenials = case KM.lookup "permission_denials" o of
+            Just (Array a) -> length a
+            _ -> 0 }
+  _ -> Left (RunFailure Error (T.take 120 (T.pack (show (Object o)))))
   where
-    num k = case KM.lookup (K.fromText k) o of
-      Just (Number n) -> Just (toRealFloat n)
+    num k m = case KM.lookup (K.fromText k) m of
+      Just (Number n) -> Just (toRealFloat n :: Double)
       _ -> Nothing
+    count k m = maybe 0 round (num k m)
+    tokens i out w r m = Tokens (count i m) (count out m) (count w m) (count r m)
+    modelUse u = ModelUse (tokens "inputTokens" "outputTokens" "cacheCreationInputTokens" "cacheReadInputTokens" u) (num "costUSD" u)
     asText = \case
       String t -> t
       v -> T.pack (show v)

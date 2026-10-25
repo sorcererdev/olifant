@@ -39,26 +39,47 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
   it "reports a failing runner with its first line" $ do
     c <- shimCfg
     r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:FAIL"
-    either (T.isInfixOf "no credentials") (const False) r `shouldBe` True
-    either (T.isInfixOf "exited 2") (const False) r `shouldBe` True
+    either (T.isInfixOf "no credentials" . rfWhy) (const False) r `shouldBe` True
+    either (T.isInfixOf "exited 2" . rfWhy) (const False) r `shouldBe` True
   it "reports printed non-JSON (a login prompt) as Left with the text" $ do
     c <- shimCfg
     r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:LOGIN"
-    either (T.isInfixOf "Please run /login") (const False) r `shouldBe` True
+    either (T.isInfixOf "Please run /login" . rfWhy) (const False) r `shouldBe` True
+    either (Just . rfStatus) (const Nothing) r `shouldBe` Just Error
   it "a JSON reply without cost or duration is zero seconds and no cost" $ do
     c <- shimCfg
     r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:PROSE"
-    r `shouldBe` Right (RunResult "Sure! Here is what I found." 0 Nothing)
+    r `shouldBe` Right (RunResult "Sure! Here is what I found." 0 Nothing Nothing Nothing Nothing [] 0)
   it "times out" $ do
     c <- shimCfg
     r <- runClaude neverCancel c {pcTimeout = 1} Ask [] "/tmp" "SHIM:SLEEP"
-    r `shouldBe` Left "timed out after 1 s"
+    r `shouldBe` Left (RunFailure Timeout "timed out after 1 s")
   it "cancels" $ do
     c <- shimCfg
     (tok, trip) <- newCancel
     _ <- forkIO (threadDelay 200000 >> trip)
     r <- runClaude tok c Ask [] "/tmp" "SHIM:SLEEP"
-    r `shouldBe` Left "cancelled"
+    r `shouldBe` Left (RunFailure Cancelled "cancelled")
+  it "keeps session, turns, tokens, models and denials from the runner's JSON" $ do
+    c <- shimCfg
+    Right rr <- runClaude neverCancel c Ask [] "/tmp" "QUESTION: anything"
+    rrTurns rr `shouldBe` Just 1
+    rrTokens rr `shouldBe` Just (Tokens 2 40 1000 5000)
+    fmap muCost (lookup "claude-sonnet-5-5" (rrModels rr)) `shouldBe` Just (Just 0.0123)
+    fmap muTokens (lookup "claude-sonnet-5-5" (rrModels rr)) `shouldBe` Just (Tokens 2 40 1000 5000)
+    rrDenials rr `shouldBe` 0
+    fmap (T.isPrefixOf "shim-") (rrSession rr) `shouldBe` Just True
+  it "an is_error result is an Error failure with the runner's sentence" $ do
+    c <- shimCfg
+    runClaude neverCancel c Ask [] "/tmp" "SHIM:ERRORJSON" >>= (`shouldBe` Left (RunFailure Error "the runner reported an error"))
+  it "a non-zero exit is an Error failure" $ do
+    c <- shimCfg
+    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c Ask [] "/tmp" "SHIM:FAIL" >>= (`shouldBe` Just Error)
+  it "a timeout is a Timeout failure" $ do
+    c <- shimCfg
+    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c {pcTimeout = 1} Ask [] "/tmp" "SHIM:SLEEP" >>= (`shouldBe` Just Timeout)
+  it "status names" $
+    map statusName [Ok, Empty, Error, Timeout, Cancelled] `shouldBe` ["ok", "empty", "error", "timeout", "cancelled"]
   describe "prompts and answers" $ do
     it "ask keeps anchored claims and one conclusion, drops prose" $ do
       let (bs, dropped) = parseAnswer Ask ls q "Sure.\n- the table has no day @src/a.py:Table\n- closure is absent @src/b.py:Repo\n- so a model is needed\n- ? what about x\n"

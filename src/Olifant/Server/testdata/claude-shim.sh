@@ -10,6 +10,7 @@ case "$prompt" in
   *SHIM:FAIL*) echo "no credentials" >&2; exit 2 ;;
   *SHIM:LOGIN*) echo "Please run /login"; exit 0 ;;
   *SHIM:PROSE*) echo '{"result":"Sure! Here is what I found."}'; exit 0 ;;
+  *SHIM:ERRORJSON*) printf '{"type":"result","is_error":true,"result":"the runner reported an error","session_id":"shim-%s"}\n' "$$"; exit 0 ;;
   *SHIM:SLEEP*) exec sleep 30 ;;
   *SHIM:SLOW*) sleep 2 ;;
 esac
@@ -25,6 +26,10 @@ case "$prompt" in
   *) answer='ok' ;;
 esac
 case " $* " in
-  *" --output-format json "*) printf '{"type":"result","result":"%s","duration_ms":1200,"total_cost_usd":0.0123}\n' "$answer" ;;
+  *" --output-format json "*)
+    printf '{"type":"result","result":"%s","duration_ms":1200,"num_turns":1,"session_id":"shim-%s","total_cost_usd":0.0123,' "$answer" "$$"
+    printf '"usage":{"input_tokens":2,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5000},'
+    printf '"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":40,"cacheCreationInputTokens":1000,"cacheReadInputTokens":5000,"costUSD":0.0123}},'
+    printf '"permission_denials":[]}\n' ;;
   *) printf '%b\n' "$answer" ;;
 esac

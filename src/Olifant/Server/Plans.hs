@@ -22,7 +22,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunResult (..), Verb (..), cutBody, errandPrompt, groundingLimit, parseAnswer, runClaude)
+import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Verb (..), cutBody, errandPrompt, groundingLimit, parseAnswer, runClaude)
 import Olifant.Server.State (appendStepLine, projectFor)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative)
@@ -201,7 +201,7 @@ runErrand token verb path row s0 =
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
           let tools = if verb == Do then testTools p else []
           runClaude token cfg verb tools root (errandPrompt verb text ls target grounded) >>= \case
-            Left why -> pure (Left why)
+            Left f -> pure (Left (rfWhy f))
             Right rr -> case parseAnswer verb ls target (rrText rr) of
               ([], _) -> pure (Left (verbName <> " answered nothing in the grammar"))
               (blocks, dropped) -> do
