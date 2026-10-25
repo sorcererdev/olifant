@@ -38,7 +38,7 @@ spec = describe "Olifant.Plans" $ do
   it "reads ? not found" $
     lnVerdict (head (parsePlan "- x @src/a.py:Gone ? not found")) `shouldBe` NotFound
   it "sections cover rows and the preamble is a section" $
-    sections (parsePlan "intro\n## A\n- a\n## B\n") `shouldBe` [Section "" 0 1, Section "A" 1 3, Section "B" 3 4]
+    sections (parsePlan "intro\n## A\n- a\n## B\n") `shouldBe` [Section "" 0 1 Nothing, Section "A" 1 3 Nothing, Section "B" 3 4 Nothing]
   it "children are the deeper lines right after" $
     map lnRow (childrenOf (parsePlan "- [ ] s\n  - test: t @f:x ○\n  - [ ] child\n- [ ] next") 0) `shouldBe` [1, 2]
   it "withVerdict replaces, appends and strips" $ do
@@ -52,3 +52,20 @@ spec = describe "Olifant.Plans" $ do
     secTitle (sectionOf ls 2) `shouldBe` "A"
     secTitle (sectionOf ls 0) `shouldBe` ""
     anchorText (Anchor "a.py" "F" 0 7) `shouldBe` "@a.py:F"
+  it "ignores lines inside a fence" $ map lnKind (parsePlan "## A\n```\n# not a heading\n- [ ] not a step\n```\n- [ ] a step") `shouldBe` [Heading 2, Prose, Prose, Prose, Prose, Step False]
+  it "fenced lines carry no anchor or verdict" $ do
+    let ls = parsePlan "```\n- x @a.py:F ✓ abc1234\n```"
+    map lnAnchor ls `shouldBe` [Nothing, Nothing, Nothing]
+    map lnVerdict ls `shouldBe` [NoVerdict, NoVerdict, NoVerdict]
+  it "a trailing dot is not part of the unit" $ do
+    let [l] = parsePlan "- the table @src/a.py:Table."
+    anUnit <$> lnAnchor l `shouldBe` Just "Table"
+    anEnd <$> lnAnchor l `shouldBe` Just 27
+  it "a done step carries its fingerprint" $ lnVerdict (head (parsePlan "- [x] done @src/a.py:F ✓ abc1234")) `shouldBe` Verified "abc1234"
+  it "a section may name its branch" $ sections (parsePlan "## Close table · branch close-table\n- x\n## B") `shouldBe` [Section "Close table" 0 2 (Just "close-table"), Section "B" 2 3 Nothing]
+  it "test children carry a state" $ do
+    map testState (parsePlan "  - test: it works @tests/t.py:test_it ○\n  - test: red @tests/t.py:test_red ✗\n  - test: none @tests/t.py:test_n") `shouldBe` [Just TestPending, Just TestRed, Nothing]
+    withTestState "  - test: it works @tests/t.py:test_it ○" TestGreen `shouldBe` "  - test: it works @tests/t.py:test_it ●"
+    withTestState "  - test: none @tests/t.py:test_n" TestPending `shouldBe` "  - test: none @tests/t.py:test_n ○"
+  it "evidence children have a tag" $ map evidenceTag (parsePlan "  - ✗ changed: the port moved\n  - ✗ gone: @a.py:F no longer exists\n  - ✗ test_x red again\n  - ✗ @a.py:F red again\n  - ✓ fine @a.py:F") `shouldBe` [Just "changed", Just "gone", Just "red again", Just "red again", Nothing]
+  it "stepDone is true only for a done step" $ map stepDone (parsePlan "- [x] a\n- [ ] b\n- c") `shouldBe` [True, False, False]

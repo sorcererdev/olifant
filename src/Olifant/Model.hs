@@ -69,6 +69,8 @@ data Rung = Rung {rungName :: Text, rungEscalate :: Escalate}
 -- | 'mcTimeout': seconds a model call may take (default 120). 'mcLadder': the
 -- rungs a steered conjure climbs, local first. 'mcRounds': rounds a conjure may
 -- run (default 6). 'mcBudget': seconds a conjure may run (default 180).
+-- 'mcEscalate': every backend's escalate policy (a ladder named elsewhere,
+-- as `[plans] ladder`, reads its rungs' policies here).
 data ModelConfig = ModelConfig
   { mcDefault :: Maybe Text
   , mcRetries :: Int
@@ -77,11 +79,12 @@ data ModelConfig = ModelConfig
   , mcLadder :: [Rung]
   , mcRounds :: Int
   , mcBudget :: Int
+  , mcEscalate :: [(Text, Escalate)]
   }
   deriving stock (Eq, Show)
 
 defaultModelConfig :: ModelConfig
-defaultModelConfig = ModelConfig Nothing 2 120 [] [] 6 180
+defaultModelConfig = ModelConfig Nothing 2 120 [] [] 6 180 []
 
 backendKinds :: [Text]
 backendKinds = ["openai-compatible", "anthropic", "jev"]
@@ -110,7 +113,7 @@ parseModelConfig top =
       ladder <- case names of
         Nothing -> Right [Rung d (policy d) | Just d <- [def]]
         Just ns -> inKey "ladder" (traverse (rung backends policy) ns)
-      pure (ModelConfig def retries timeout backends ladder rounds budget)
+      pure (ModelConfig def retries timeout backends ladder rounds budget [(k, e) | (k, _, e) <- withEsc])
   where
     rung backends policy n = case lookup n backends of
       Nothing -> Left ("no such backend `" <> n <> "` (backends: " <> T.intercalate ", " (map fst backends) <> ")")

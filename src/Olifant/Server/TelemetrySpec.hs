@@ -38,6 +38,14 @@ spec = describe "Olifant.Server.Telemetry (errand records)" $ do
   it "an errand with every Maybe absent round-trips" $ do
     let r = AnErrand sampleErrand {erBranch = Nothing, erStatus = Cancelled, erWhy = Just "cancelled", erSession = Nothing, erSeconds = Nothing, erTurns = Nothing, erTokens = Nothing, erCost = Nothing, erModels = []}
     parseRecord (recordJson r) `shouldBe` Just r
+  it "a reconcile record round-trips with the spec's names" $ do
+    let r = AReconcile sampleReconcile
+    o <- objectOf (recordJson r)
+    sort (KM.keys o) `shouldBe` sort ["kind", "id", "at", "plan", "branch", "baseline", "forced", "changed", "unaccounted", "more", "facts", "seconds", "climbs", "decisions", "blocks"]
+    KM.lookup "kind" o `shouldBe` Just "reconcile"
+    parseRecord (recordJson r) `shouldBe` Just r
+    let bare = AReconcile sampleReconcile {rcBranch = Nothing, rcBaseline = Nothing, rcClimbs = [], rcDecisions = [], rcBlocks = []}
+    parseRecord (recordJson bare) `shouldBe` Just bare
   it "an outcome record round-trips" $
     parseRecord (recordJson (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))) `shouldBe` Just (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))
   it "a record's at is whole-second ISO-8601 UTC, and parses back" $ do
@@ -89,6 +97,15 @@ sampleErrand =
     , erSession = Just "sess-1", erSeconds = Just 4.25, erTurns = Just 3, erTokens = Just (Tokens 10 20 30 40)
     , erCost = Just 0.054, erModels = [("claude-haiku-5-5", ModelUse (Tokens 1 2 3 4) (Just 0.001)), ("claude-sonnet-5-5", ModelUse (Tokens 9 18 27 36) Nothing)]
     , erPromptChars = 1234, erGrounded = 2, erBlocks = 2, erLines = 7, erDropped = 1, erUnresolved = 0, erChanged = 0, erDenials = 0 }
+
+sampleReconcile :: ReconcileRecord
+sampleReconcile =
+  ReconcileRecord
+    { rcId = "reconcile-plans/x.md:0@2026-10-25T01:00:00Z", rcAt = UTCTime (fromGregorian 2026 10 25) 3600, rcPlan = "plans/x.md"
+    , rcBranch = Just "plans-loop", rcBaseline = Just "abc", rcForced = True, rcChanged = 3, rcUnaccounted = 2, rcMore = 1, rcFacts = 4
+    , rcSeconds = 1.5, rcClimbs = [("jev", 0.25), ("local", 1.0)]
+    , rcDecisions = [Decision "plan-step" ["s7", "none"] (Just "s7") (Just 0.9) "jev", Decision "plan-state" ["done", "in_progress", "diverged"] Nothing Nothing "local"]
+    , rcBlocks = [Just ("src/a.py", "F", "abc1234"), Nothing] }
 
 enc :: Record -> Text
 enc = TE.decodeUtf8 . BL.toStrict . encode . recordJson

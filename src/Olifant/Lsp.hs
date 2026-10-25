@@ -45,6 +45,7 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
+import Olifant.Server.Loop (StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
@@ -553,6 +554,7 @@ handlers env =
                     , "line" .= maybe 1 namedDef (rsUnit r)
                     , "unit" .= maybe (anUnit a) namedName (rsUnit r)
                     , "found" .= isJust (rsUnit r)
+                    , "fp" .= (rsFingerprint r <* rsUnit r)
                     ]))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/anchor needs a textDocument and a line" Nothing))
     , -- gd on a plan's anchor: its unit's def line; quiet anywhere else
@@ -586,6 +588,40 @@ handlers env =
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
+    , -- a plan against the work: facts to apply, ghost blocks to place
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/reconcile")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/reconcile needs a textDocument" Nothing))
+          Just path -> inBackground env req respond $ \job -> do
+            let forced = case req ^. L.params of Object o -> KM.lookup "forced" o == Just (Bool True); _ -> False
+            answered <- planProgress "reconciling" (\_ -> withSnapshot job (\s -> reconcile (envCancel job) forced path s))
+            stopped <- liftIO (cancelled (envCancel job))
+            case answered of
+              _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right a -> respond (Right (reconcileJson a))
+    , -- a step's test stubbed in its unit's test file: the one edit, where
+      -- its name is, and its test child as a fact
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/stub")) $ \req respond -> inBackground env req respond $ \job ->
+        case (documentPath (req ^. L.params), lineOf (req ^. L.params)) of
+          (Just path, Just line) ->
+            liftIO (withSnapshot job (stepStub path line)) >>= \case
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right st ->
+                let a = stAnswer st
+                 in respond (Right (object ["file" .= saFile a, "line" .= saLine a, "name" .= saName a, "edits" .= workspaceEdit [saEdit a], "facts" .= [factJson (stFact st)]]))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/stub needs a textDocument and a line" Nothing))
+    , -- a step's tests (or one test child's) run: the facts they leave
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/test")) $ \req respond -> inBackground env req respond $ \job ->
+        case (documentPath (req ^. L.params), lineOf (req ^. L.params)) of
+          (Just path, Just line) -> do
+            ran <- planProgress "testing" (\_ -> withSnapshot job (stepTest path line))
+            stopped <- liftIO (cancelled (envCancel job))
+            case ran of
+              _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right t -> respond (Right (object ["facts" .= map factJson (ttFacts t), "passed" .= ttPassed t, "failed" .= ttFailed t, "seconds" .= ttSeconds t]))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/test needs a textDocument and a line" Nothing))
     , -- what the editor did with an errand's ghost block: an outcome record
       -- (anything malformed, or out of a project, is ignored; a record that
       -- cannot be written is dropped: telemetry never reaches the editor)
@@ -1046,9 +1082,13 @@ withSnapshotState env work = do
   before <- (\s -> s {ssCancel = envCancel env}) <$> readMVar (envState env)
   (after, a) <- work before
   let loaded = M.filter (> 0) (M.unionWith (-) (ssLoads after) (ssLoads before))
-  modifyMVar_ (envState env) $ \now ->
-    pure
-      now
+  modifyMVar_ (envState env) $ \now -> do
+    -- the reconciles it cached (one that changed wins over the live one);
+    -- forced here, so no thunk holds the two snapshots
+    let reconciled = M.union (M.differenceWith (\x y -> if fst x == fst y then Nothing else Just x) (ssReconciled after) (ssReconciled before)) (ssReconciled now)
+    reconciled `seq`
+      pure
+        now
         { -- projects it loaded stand only if no file changed meanwhile: a
           -- configuration changed under a load is read again when next asked
           ssProjects = M.union (ssProjects now) (if ssFilesStamp now == ssFilesStamp before then ssProjects after else M.empty)
@@ -1058,6 +1098,7 @@ withSnapshotState env work = do
           ssListings = M.union (M.filter ((== ssFilesStamp now) . fst) (ssListings after)) (ssListings now)
         , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
         , ssEstablished = M.union (ssEstablished now) (ssEstablished after)
+        , ssReconciled = reconciled
         , -- a recognition index it built, while no file changed since
           ssRecognition = M.union (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp now) (ssRecognition after)) (ssRecognition now)
         }
@@ -1285,7 +1326,7 @@ errandRequest env verb title req params respond = case (documentPath params, lin
     name = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
     failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
     run job path line = do
-      answered <- planProgress title (\_ -> withSnapshot job (runErrand (envCancel job) verb path line))
+      answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts (envCancel job) verb path line))
       -- an errand the editor cancelled is no result (its runner was stopped)
       stopped <- liftIO (cancelled (envCancel job))
       case answered of
@@ -1305,6 +1346,7 @@ errandJson verb a =
     , "seconds" .= eaSeconds a
     , "cost" .= eaCost a
     , "changed" .= eaChanged a
+    , "facts" .= map factJson (eaFacts a)
     ]
 
 -- | A request id as `$/cancelRequest` names it.

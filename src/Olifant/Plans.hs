@@ -12,9 +12,15 @@ module Olifant.Plans
   , sectionOf
   , childrenOf
   , withVerdict
+  , TestState (..)
+  , testState
+  , withTestState
+  , evidenceTag
+  , stepDone
   , anchorText
   ) where
 
+import Data.List (mapAccumL)
 import Data.Char (isHexDigit, isAlphaNum, isSpace)
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
@@ -35,12 +41,20 @@ data Line = Line
   , lnAnchor :: Maybe Anchor, lnVerdict :: Verdict }
   deriving (Eq, Show)
 
--- | Rows [secRow, secEnd).
-data Section = Section { secTitle :: Text, secRow :: Int, secEnd :: Int }
+-- | Rows [secRow, secEnd). A heading "Title · branch name" names the section's branch.
+data Section = Section { secTitle :: Text, secRow :: Int, secEnd :: Int, secBranch :: Maybe Text }
   deriving (Eq, Show)
 
 parsePlan :: Text -> [Line]
-parsePlan t = zipWith line [0 ..] (T.lines t)
+parsePlan t = snd (mapAccumL step False (zip [0 ..] (T.lines t)))
+  where
+    -- A line opening with three backticks toggles the fence; it and everything inside is Prose.
+    step inFence (row, txt)
+      | isFence txt = (not inFence, prose row txt)
+      | inFence = (inFence, prose row txt)
+      | otherwise = (inFence, line row txt)
+    isFence = ("```" `T.isPrefixOf`) . T.stripStart
+    prose row txt = (line row txt) { lnKind = Prose, lnAnchor = Nothing, lnVerdict = NoVerdict }
 
 line :: Int -> Text -> Line
 line row txt = Line row ind (kindOf body) txt anc (maybe NoVerdict (verdictAfter txt) anc)
@@ -80,7 +94,7 @@ findAnchor txt = listToMaybe (reverse [a | i <- ats, Just a <- [matchAt i]])
           tok = T.takeWhile (not . isSpace) after
           colons = reverse [k | (k, c) <- zip [0 ..] (T.unpack tok), c == ':', k > 0]
           try k =
-            let unit = T.takeWhile isUnitChar (T.drop (k + 1) tok)
+            let unit = T.dropWhileEnd (== '.') (T.takeWhile isUnitChar (T.drop (k + 1) tok))
             in if T.null unit then Nothing
                else Just (Anchor (T.unpack (T.take k tok)) unit i (i + 1 + k + 1 + T.length unit))
       in listToMaybe [a | k <- colons, Just a <- [try k]]
@@ -108,17 +122,20 @@ sections :: [Line] -> [Section]
 sections ls = pre ++ go heads
   where
     n = length ls
-    heads = [(lnRow l, T.strip (T.dropWhile (== '#') (T.strip (lnText l)))) | l <- ls, Heading _ <- [lnKind l]]
+    heads = [(lnRow l, splitBranch (T.strip (T.dropWhile (== '#') (T.strip (lnText l))))) | l <- ls, Heading _ <- [lnKind l]]
+    splitBranch h = case T.breakOn " · branch " h of
+      (t, rest) | not (T.null rest) -> (t, Just (T.strip (T.drop (T.length " · branch ") rest)))
+      _ -> (h, Nothing)
     firstH = case heads of { ((r, _) : _) -> r; [] -> n }
-    pre = [Section "" 0 firstH | firstH > 0]
-    go ((r, t) : rest@((r', _) : _)) = Section t r r' : go rest
-    go [(r, t)] = [Section t r n]
+    pre = [Section "" 0 firstH Nothing | firstH > 0]
+    go ((r, (t, b)) : rest@((r', _) : _)) = Section t r r' b : go rest
+    go [(r, (t, b))] = [Section t r n b]
     go [] = []
 
 sectionOf :: [Line] -> Int -> Section
 sectionOf ls row = case [s | s <- sections ls, secRow s <= row, row < secEnd s] of
   (s : _) -> s
-  [] -> Section "" 0 (length ls)
+  [] -> Section "" 0 (length ls) Nothing
 
 childrenOf :: [Line] -> Int -> [Line]
 childrenOf ls row = case drop row ls of
@@ -141,3 +158,40 @@ withVerdict txt v = case findAnchor txt of
           NotFound -> " ? not found"
           NoVerdict -> ""
     in pre <> mark <> tl
+
+-- | The mark at the end of a test child: not run yet, green, red.
+data TestState = TestPending | TestGreen | TestRed
+  deriving (Eq, Show)
+
+testMark :: TestState -> Text
+testMark TestPending = "○"
+testMark TestGreen = "●"
+testMark TestRed = "✗"
+
+lastTok :: Text -> Text
+lastTok = T.takeWhileEnd (not . isSpace) . T.stripEnd
+
+testState :: Line -> Maybe TestState
+testState l
+  | lnKind l /= TestChild = Nothing
+  | otherwise = lookup (lastTok (lnText l)) [(testMark s, s) | s <- [TestPending, TestGreen, TestRed]]
+
+-- | Replace the trailing mark, or append one.
+withTestState :: Text -> TestState -> Text
+withTestState txt s
+  | lastTok txt `elem` map testMark [TestPending, TestGreen, TestRed] = T.dropWhileEnd isSpace (T.dropEnd 1 (T.stripEnd txt)) <> " " <> testMark s
+  | otherwise = T.stripEnd txt <> " " <> testMark s
+
+-- | "- ✗ changed: …" -> "changed"; "- ✗ test_x red again" -> "red again"; "- ✓ …" -> Nothing.
+evidenceTag :: Line -> Maybe Text
+evidenceTag l
+  | lnKind l /= Evidence = Nothing
+  | Just _ <- T.stripPrefix "- ✗ " body, "red again" `T.isSuffixOf` T.stripEnd body = Just "red again"
+  | Just r <- T.stripPrefix "- ✗ " body
+  , let (w, c) = T.breakOn ":" r
+  , not (T.null c), not (T.null w), not (T.any isSpace w) = Just w
+  | otherwise = Nothing
+  where body = T.stripStart (lnText l)
+
+stepDone :: Line -> Bool
+stepDone l = lnKind l == Step True

@@ -22,14 +22,14 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
           [ "[model]", "default = \"local\"", "retries = 3"
           , "[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://localhost:11434/v1\"", "model = \"qwen3-coder:30b\""
           , "[model.backends.claude]", "kind = \"anthropic\"", "model = \"claude-haiku-4-5-20251001\"", "api_key_env = \"ANTHROPIC_API_KEY\"" ])
-    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcDefault = Just "local", mcRetries = 3, mcBackends = [("claude", Anthropic "claude-haiku-4-5-20251001" "ANTHROPIC_API_KEY"), ("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")], mcLadder = [Rung "local" EscalateAsk]})
+    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcDefault = Just "local", mcRetries = 3, mcBackends = [("claude", Anthropic "claude-haiku-4-5-20251001" "ANTHROPIC_API_KEY"), ("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")], mcLadder = [Rung "local" EscalateAsk], mcEscalate = [("claude", EscalateAsk), ("local", EscalateAsk)]})
   it "refuses an unknown backend kind, naming the kinds" $ do
     let Right top = parseToml "[model.backends.x]\nkind = \"gemini\"\nmodel = \"m\"\n"
     parseModelConfig top `shouldSatisfy` either ("openai-compatible, anthropic" `T.isInfixOf`) (const False)
   it "(a) reads a jev backend: model and key variable default; a stray key is refused" $ do
     let Right top = parseToml "[model.backends.jev]\nkind = \"jev\"\n"
         Right stray = parseToml "[model.backends.jev]\nkind = \"jev\"\nurl = \"http://x\"\n"
-    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcBackends = [("jev", Jev "jev-latest" "JEV_API_KEY")]})
+    parseModelConfig top `shouldBe` Right (defaultModelConfig {mcBackends = [("jev", Jev "jev-latest" "JEV_API_KEY")], mcEscalate = [("jev", EscalateAsk)]})
     parseModelConfig stray `shouldSatisfy` either ("url" `T.isInfixOf`) (const False)
   it "defaults to no backend and 2 retries without [model]" $
     parseModelConfig M.empty `shouldBe` Right defaultModelConfig
@@ -92,6 +92,7 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
     it "(a) reads the ladder in its order, with rounds, budget and each rung's escalate" $ do
       let Right c = parse (["[model]", "default = \"local\"", "ladder = [\"local\", \"claude\"]", "rounds = 4", "budget = 90"] <> backends <> claude ["escalate = \"auto\""])
       mcLadder c `shouldBe` [Rung "local" EscalateAsk, Rung "claude" EscalateAuto]
+      mcEscalate c `shouldBe` [("claude", EscalateAuto), ("local", EscalateAsk)]
       (mcRounds c, mcBudget c) `shouldBe` (4, 90)
     it "(b) defaults: the default backend is the ladder, 6 rounds, 180 seconds" $ do
       let Right c = parse (["[model]", "default = \"local\""] <> backends)

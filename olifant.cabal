@@ -130,6 +130,10 @@ library
     Olifant.Server.Hints
     Olifant.Server.Holes
     Olifant.Server.Jobs
+    Olifant.Server.Loop
+    Olifant.Server.LoopQuestions
+    Olifant.Server.LoopTests
+    Olifant.Server.LoopTypes
     Olifant.Server.Model
     Olifant.Server.Mutate
     Olifant.Server.Order
@@ -300,6 +304,11 @@ test-suite spec
     Olifant.Server.Hints
     Olifant.Server.Holes
     Olifant.Server.Jobs
+    Olifant.Server.Loop
+    Olifant.Server.LoopQuestions
+    Olifant.Server.LoopSpec
+    Olifant.Server.LoopTests
+    Olifant.Server.LoopTypes
     Olifant.Server.Model
     Olifant.Server.Mutate
     Olifant.Server.Order
