@@ -50,7 +50,7 @@ recordJson :: Record -> Value
 recordJson = \case
   AnErrand e ->
     object $
-      [ "kind" .= ("errand" :: Text), "id" .= erId e, "at" .= erAt e, "verb" .= erVerb e
+      [ "kind" .= ("errand" :: Text), "id" .= erId e, "at" .= stamp (erAt e), "verb" .= erVerb e
       , "plan" .= erPlan e, "row" .= erRow e, "section" .= erSection e, "model" .= erModel e
       , "status" .= statusName (erStatus e), "models" .= modelsJson (erModels e)
       , "prompt_chars" .= erPromptChars e, "grounded" .= erGrounded e, "blocks" .= erBlocks e
@@ -61,9 +61,11 @@ recordJson = \case
           , ("seconds" .=) <$> erSeconds e, ("turns" .=) <$> erTurns e
           , ("tokens" .=) . object . tokensPairs <$> erTokens e, ("cost" .=) <$> erCost e ]
   AnOutcome o ->
-    object ["kind" .= ("outcome" :: Text), "id" .= orId o, "block" .= orBlock o, "at" .= orAt o, "outcome" .= orOutcome o]
+    object ["kind" .= ("outcome" :: Text), "id" .= orId o, "block" .= orBlock o, "at" .= stamp (orAt o), "outcome" .= orOutcome o]
   where
     modelsJson ms = object [K.fromText m .= object (tokensPairs (muTokens u) ++ maybe [] (\c -> ["cost" .= c]) (muCost u)) | (m, u) <- ms]
+    -- whole seconds, UTC (aeson would add the fraction)
+    stamp = T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ"
 
 tokensPairs :: Tokens -> [Pair]
 tokensPairs t = ["input" .= tkInput t, "output" .= tkOutput t, "cache_write" .= tkCacheWrite t, "cache_read" .= tkCacheRead t]

@@ -46,7 +46,6 @@ import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
-import Data.Time (UTCTime (..))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, inMenu, listGenerators, migrationFor, showGenerator, subsOf)
@@ -595,8 +594,7 @@ handlers env =
           found <- withSnapshot env (\s -> projectFor path s >>= \(s', p) -> pure (s', (ssPorts s',) . prRoot . snd <$> p))
           forM_ found $ \(ports, root) -> do
             now <- pNow ports
-            let at = now {utctDayTime = fromInteger (floor (utctDayTime now))}
-            appendRecord ports root (AnOutcome (OutcomeRecord {orId = eid, orBlock = block, orAt = at, orOutcome = outcome}))
+            appendRecord ports root (AnOutcome (OutcomeRecord {orId = eid, orBlock = block, orAt = now, orOutcome = outcome}))
     , -- a file's other side: a module's test file (which may not exist
       -- yet), or a test file's module; it reads only config and the file list
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/file")) $ \req respond ->

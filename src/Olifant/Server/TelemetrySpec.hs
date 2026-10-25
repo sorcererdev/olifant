@@ -40,6 +40,12 @@ spec = describe "Olifant.Server.Telemetry (errand records)" $ do
     parseRecord (recordJson r) `shouldBe` Just r
   it "an outcome record round-trips" $
     parseRecord (recordJson (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))) `shouldBe` Just (AnOutcome (OutcomeRecord "s1" 0 t0 "accepted"))
+  it "a record's at is whole-second ISO-8601 UTC, and parses back" $ do
+    let at = UTCTime (fromGregorian 2026 10 25) 3600.25
+    e <- objectOf (recordJson (AnErrand sampleErrand {erAt = at}))
+    o <- objectOf (recordJson (AnOutcome (OutcomeRecord "s1" 0 at "accepted")))
+    (KM.lookup "at" e, KM.lookup "at" o) `shouldBe` (Just "2026-10-25T01:00:00Z", Just "2026-10-25T01:00:00Z")
+    (orAt <$> (parseRecord (Object o) >>= \case AnOutcome r -> Just r; _ -> Nothing)) `shouldBe` Just (UTCTime (fromGregorian 2026 10 25) 3600)
   it "an unknown kind or status does not parse" $ do
     parseRecord (Object (KM.fromList [("kind", "other"), ("id", "x")])) `shouldBe` Nothing
     o <- objectOf (recordJson (AnErrand sampleErrand))
@@ -78,7 +84,7 @@ o2 = OutcomeRecord "s1" 1 t0 "rejected"
 sampleErrand :: ErrandRecord
 sampleErrand =
   ErrandRecord
-    { erId = "sess-1", erAt = UTCTime (fromGregorian 2026 10 25) 3600.25, erVerb = "ask", erPlan = "plans/x.md", erRow = 5
+    { erId = "sess-1", erAt = UTCTime (fromGregorian 2026 10 25) 3600, erVerb = "ask", erPlan = "plans/x.md", erRow = 5
     , erSection = "Steps", erBranch = Just "errand-telemetry", erModel = "sonnet", erStatus = Ok, erWhy = Nothing
     , erSession = Just "sess-1", erSeconds = Just 4.25, erTurns = Just 3, erTokens = Just (Tokens 10 20 30 40)
     , erCost = Just 0.054, erModels = [("claude-haiku-5-5", ModelUse (Tokens 1 2 3 4) (Just 0.001)), ("claude-sonnet-5-5", ModelUse (Tokens 9 18 27 36) Nothing)]
