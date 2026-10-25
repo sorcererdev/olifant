@@ -96,9 +96,17 @@ module Olifant.Server
   , TestsFile (..)
   , testsFile
   , testsFileJson
+  , isPlanPath
+  , Resolved (..)
+  , resolveAnchor
+  , planDiagnostics
+  , anchorItems
+  , FileItem (..)
+  , planFiles
   ) where
 
 import Olifant.Server.Order (orderSurvivors)
+import Olifant.Server.Plans (FileItem (..), Resolved (..), anchorItems, isPlanPath, planDiagnostics, planFiles, resolveAnchor)
 import Olifant.Server.Actions (actionEdits, actionPlan, actionPlanWith, actionsFor, describeProgress, menuActionsFor)
 import Olifant.Server.Holes (Hole (..), fillHoleEdits, fillHolePlan, holeAt, holesFor)
 import Olifant.Server.Regions (regionEdits)

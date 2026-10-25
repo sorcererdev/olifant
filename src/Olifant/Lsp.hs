@@ -27,7 +27,9 @@ import Data.Text.Encoding qualified as TE
 import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Olifant.Plans (Anchor (..), Line (..), parsePlan)
+import Olifant.Server.Unit (Named (..))
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
@@ -373,7 +375,11 @@ handlers env =
       requestHandler SMethod_TextDocumentCompletion $ \req respond -> inBackground env req respond $ \job -> do
         items <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (snippetItems job path (req ^. L.params . L.position))
+          Just path -> liftIO $
+            withSnapshot job (projectFor path) >>= \case
+              -- a plan completes its anchors: files after `@`, units after `@path:`
+              Just (_, project) | isPlanPath project path -> anchorCompletions job project path (req ^. L.params . L.position)
+              _ -> snippetItems job path (req ^. L.params . L.position)
         respond (Right (InL items))
     , -- the chosen snippet, planned again with the model filling its holes
       requestHandler SMethod_CompletionItemResolve $ \req respond -> inBackground env req respond $ \job -> do
@@ -527,6 +533,35 @@ handlers env =
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right answer -> respond (Right (testsJson answer))
+    , -- where a plan's anchor on a line points: its unit's file and line
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/anchor")) $ \req respond ->
+        case (documentPath (req ^. L.params), lineOf (req ^. L.params)) of
+          (Just path, Just line) -> do
+            text <- liftIO (documentText env path)
+            case [a | l <- parsePlan text, lnRow l == line, Just a <- [lnAnchor l]] of
+              [] -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "no anchor on this line" Nothing))
+              a : _ ->
+                liftIO (withSnapshot env (\s -> projectFor path s >>= \case
+                  (s', Just (_, project)) -> (s',) . Just <$> resolveAnchor s' project a
+                  (s', Nothing) -> pure (s', Nothing))) >>= \case
+                  Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "this plan is in no Olifant project" Nothing))
+                  Just r -> respond (Right (object
+                    [ "file" .= (rsAbs r <$ rsText r)
+                    , "line" .= maybe 1 namedDef (rsUnit r)
+                    , "unit" .= maybe (anUnit a) namedName (rsUnit r)
+                    , "found" .= isJust (rsUnit r)
+                    ]))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/anchor needs a textDocument and a line" Nothing))
+    , -- a plan's anchored lines, by section, each with where it points
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/files")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/files needs a textDocument" Nothing))
+          Just path -> do
+            text <- liftIO (documentText env path)
+            items <- liftIO (withSnapshot env (\s -> projectFor path s >>= \case
+              (s', Just (_, project)) -> (s',) <$> planFiles s' project text
+              (s', Nothing) -> pure (s', [])))
+            respond (Right (object ["items" .= [object ["section" .= fiSection i, "row" .= fiRow i, "text" .= fiText i, "file" .= fiAbs i, "line" .= fiLine i] | i <- items]]))
     , -- a file's other side: a module's test file (which may not exist
       -- yet), or a test file's module; it reads only config and the file list
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/file")) $ \req respond ->
@@ -762,6 +797,12 @@ conjureJson = \case
       ]
   Paused p -> object ["paused" .= pausedJson p]
 
+-- | A request's `line` (0-based), if it has one.
+lineOf :: Value -> Maybe Int
+lineOf = \case
+  Object o | Just (Number l) <- KM.lookup "line" o -> toBoundedInteger l
+  _ -> Nothing
+
 -- | A request's `position` (0-based line and character), if it has one.
 positionOf :: Value -> Maybe (Int, Int)
 positionOf = \case
@@ -976,20 +1017,26 @@ withSnapshotState env work = do
         }
   pure (after, a)
 
--- | A file's findings as diagnostics (with the finding each is).
-diagnosticsOf :: Env -> FilePath -> IO [(Diagnostic, Finding)]
+-- | A file's findings as diagnostics (with the finding each is); a plan's
+-- stale and missing anchors too, which are no finding (they have no fix).
+diagnosticsOf :: Env -> FilePath -> IO [(Diagnostic, Maybe Finding)]
 diagnosticsOf env path = do
   fs <- withSnapshot env (findingsFor path)
   text <- documentText env path
+  plan <- withSnapshot env (\s -> projectFor path s >>= \case
+    (s', Just (_, project)) | isPlanPath project path -> (s',) <$> planDiagnostics s' project path text
+    (s', _) -> pure (s', []))
   let ls = T.splitOn "\n" text
       lineText n = fromMaybe "" (listToMaybe (drop (n - 1) ls))
       position (l, c) = let (l', c') = editorPosition (lineText l) (l, c) in Position (fromIntegral l') (fromIntegral c')
       range f = maybe (Range (Position 0 0) (Position 0 0)) (\(a, b) -> Range (position a) (position b)) (fRange f)
   pure
-    [ (Diagnostic (range f) (Just sev) (Just (InR (fRule f))) Nothing (Just "olifant") (fMessage f) Nothing Nothing Nothing, f)
-    | f <- fs
-    , Just sev <- [severityOf (fSeverity f)]
-    ]
+    ( [ (Diagnostic (range f) (Just sev) (Just (InR (fRule f))) Nothing (Just "olifant") (fMessage f) Nothing Nothing Nothing, Just f)
+      | f <- fs
+      , Just sev <- [severityOf (fSeverity f)]
+      ]
+        ++ map (,Nothing) plan
+    )
   where
     severityOf = \case
       R.Error -> Just DiagnosticSeverity_Error
@@ -1003,7 +1050,7 @@ fixActions :: Env -> FilePath -> Int -> Int -> IO [CodeAction]
 fixActions env path from to = do
   diagnostics <- diagnosticsOf env path
   version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
-  let here = [(d, f, l1) | (d, f) <- diagnostics, let (l1, l2) = maybe (1, 1) (\((a, _), (b, _)) -> (a, b)) (fRange f), l1 <= to, from <= l2]
+  let here = [(d, f, l1) | (d, Just f) <- diagnostics, let (l1, l2) = maybe (1, 1) (\((a, _), (b, _)) -> (a, b)) (fRange f), l1 <= to, from <= l2]
       actions =
         [ CodeAction
             { _title = fromMaybe (foGenerator o) (foLabel o)
@@ -1042,6 +1089,22 @@ cursorActions env path (Position l c) = do
         }
     | (a, snippet) <- acts
     ]
+
+-- | A plan's anchor completions at a cursor: each replaces what was typed
+-- of its path (after `@`) or its unit (after `:`).
+anchorCompletions :: Env -> Project -> FilePath -> Position -> IO [CompletionItem]
+anchorCompletions env project path (Position l c) = do
+  text <- documentText env path
+  let upTo = takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l))
+      typed = T.takeWhileEnd (\ch -> ch /= '@' && ch /= ':') upTo
+      range = Range (Position l (c - fromIntegral (utf16 typed))) (Position l c)
+  items <- withSnapshot env (\s -> (s,) <$> anchorItems s project upTo)
+  pure [i & L.textEdit ?~ InL (TextEdit range (fromMaybe (i ^. L.label) (i ^. L.insertText))) | i <- items]
+  where
+    takeUtf16 :: Int -> T.Text -> T.Text
+    takeUtf16 n t = case T.uncons t of
+      Just (ch, rest) | n > 0 -> T.cons ch (takeUtf16 (n - (if fromEnum ch > 0xFFFF then 2 else 1)) rest)
+      _ -> ""
 
 -- | Completion items for the snippets at a cursor: each replaces the
 -- cursor's line with its body (tab stops), filtered by what the line holds.

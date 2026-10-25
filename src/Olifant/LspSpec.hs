@@ -96,6 +96,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   stubSpec
   conjureSpec
   mutateSpec
+  plansSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -1920,6 +1921,45 @@ testsRunSpec = describe "olifant/tests/run" $ do
         pure (toTest, toModule)
       toTest `shouldBe` Right (object ["file" .= (dir </> testRel), "kind" .= ("test" :: Text), "exists" .= True])
       toModule `shouldBe` Right (object ["file" .= (dir </> moduleRel), "kind" .= ("module" :: Text), "exists" .= True])
+
+-- | A plan's anchors (plans, stage 1): diagnosed over the editor's text,
+-- jumped to, listed, completed.
+plansSpec :: Spec
+plansSpec = describe "plans: anchors in the server" $ do
+  let schedule = "src/bistro/booking/queries/get_day_schedule.py"
+      planText = T.unlines ["- handles a day @" <> T.pack schedule <> ":GetDaySchedule.handle", "- gone @" <> T.pack schedule <> ":Gone"]
+      docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
+  it "a plan's missing anchor is a diagnostic; olifant/plans/anchor jumps; olifant/plans/files lists" $
+    withPython [("plans/t.md", planText)] $ \ports dir -> do
+      ((before, jump, missing, bare, files, after), _) <- inProcessWith ports dir $ do
+        plan <- openDoc "plans/t.md" "markdown"
+        before <- pullDiagnostics plan
+        jump <- blockMove (Proxy :: Proxy "olifant/plans/anchor") (object [docOf plan, "line" .= (0 :: Int)])
+        missing <- blockMove (Proxy :: Proxy "olifant/plans/anchor") (object [docOf plan, "line" .= (1 :: Int)])
+        bare <- blockMove (Proxy :: Proxy "olifant/plans/anchor") (object [docOf plan, "line" .= (5 :: Int)])
+        files <- blockMove (Proxy :: Proxy "olifant/plans/files") (object [docOf plan])
+        -- the editor's text, not disk's: line 1 now holds a real anchor, the missing one moves to line 2
+        changeDoc plan [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 1 0) (Position 1 0)) Nothing ("- table @src/bistro/booking/models/table.py:Table\n")))]
+        after <- pullDiagnostics plan
+        pure (before, jump, missing, bare, files, after)
+      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) before `shouldBe` [("? not found", 1)]
+      fmap (lookupKey "found") jump `shouldBe` Right (Just (Bool True))
+      fmap (lookupKey "line") jump `shouldBe` Right (Just (Number 22))
+      fmap (fmap (\case String f -> (T.pack schedule) `T.isSuffixOf` f; _ -> False) . lookupKey "file") jump `shouldBe` Right (Just True)
+      fmap (\v -> (lookupKey "found" v, lookupKey "line" v, lookupKey "file" v)) missing `shouldBe` Right (Just (Bool False), Just (Number 1), Just (String (T.pack (dir </> schedule))))
+      bare `shouldBe` Left "no anchor on this line"
+      fmap (fmap (\case Array xs -> length xs; _ -> 0) . lookupKey "items") files `shouldBe` Right (Just 2)
+      map (\d -> (d ^. L.message, d ^. L.range . L.start . L.line)) after `shouldBe` [("? not found", 2)]
+  it "a plan completes files after @ and units after @path:" $
+    withPython [("plans/t.md", "- x @src/bistro/booking/queries/get_day_schedule.\n- y @" <> T.pack schedule <> ":GetDaySchedule.h\n")] $ \ports dir -> do
+      ((paths, units), _) <- inProcessWith ports dir $ do
+        plan <- openDoc "plans/t.md" "markdown"
+        let complete l c = request SMethod_TextDocumentCompletion (CompletionParams plan (Position l c) Nothing Nothing Nothing) <&> \case
+              TResponseMessage _ _ (Right (InL items)) -> map (^. L.label) items
+              _ -> []
+        (,) <$> complete 0 (fromIntegral (T.length "- x @src/bistro/booking/queries/get_day_schedule.")) <*> complete 1 (fromIntegral (T.length ("- y @" <> T.pack schedule <> ":GetDaySchedule.h")))
+      paths `shouldBe` ["src/bistro/booking/queries/get_day_schedule.py"]
+      units `shouldBe` ["GetDaySchedule.handle"]
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
