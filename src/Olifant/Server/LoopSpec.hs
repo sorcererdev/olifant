@@ -27,7 +27,11 @@ import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
-import System.Process (callProcess, readProcess)
+import Control.Concurrent.Async (async, waitCatch)
+import Control.Exception (bracket, throwIO)
+import System.IO (hGetLine)
+import System.Process (CreateProcess (..), StdStream (..), callProcess, createProcess, proc, readProcess, terminateProcess)
+import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
@@ -283,13 +287,21 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
     let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n"
     withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do
       (_, a) <- run False dir s
-      map (\(r, _, ls, rep, _) -> (r, ls, rep)) (map summary (raBlocks a)) `shouldBe` [(4, ["  - ✗ changed: helper changed"], False)]
-  it "(c3) a step with a changed child already is not asked again" $ do
-    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n  - ✗ changed: helper changed\n"
-    withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do
+      map (\(r, _, ls, rep, _) -> (r, ls, rep)) (map summary (raBlocks a)) `shouldBe` [(4, ["  - ✗ changed: helper changed @src/bistro/booking/models/table.py:helper"], False)]
+      fp <- fpNow dir s "helper"
+      map rbUnit (raBlocks a) `shouldBe` [Just (table, "helper", fp)]
+  it "(c3) an accepted changed child settles the step at the unit's fingerprint, until the unit changes" $ do
+    let step = "- [ ] tidy the helper @src/bistro/booking/models/table.py:helper"
+    withReconcile "# T\n" [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do
+      fp <- fpNow dir s "helper"
+      write dir "plans/t.md" ("# T\n\n## S\n\n" <> step <> "\n  - ✗ changed: helper changed @src/bistro/booking/models/table.py:helper ✓ " <> fp <> "\n")
       (_, a) <- run False dir s
       raBlocks a `shouldBe` []
       asked dir `shouldReturn` []
+      write dir table (T.replace "return 1" "return 3" tableText)
+      (_, a2) <- run False dir s
+      asked dir `shouldReturn` ["plan-state"]
+      map (\(r, _, ls, _, _) -> (r, ls)) (map summary (raBlocks a2)) `shouldBe` [(4, ["  - ✗ changed: helper changed @src/bistro/booking/models/table.py:helper"])]
   it "(d) a touched done step answered reopened is a replacing open line" $
     withReconcile "# T\n" [] jevConfig (Just (answersOf [("plan-state", "reopened")])) $ \dir s -> do
       old <- fpNow dir s "helper"
@@ -319,6 +331,18 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
     withReconcile (T.replace "- [ ] keep" "- [x] keep" plan) [(table, T.replace helper "" tableText)] jevConfig (Just (answersOf [])) $ \dir s -> do
       (_, a) <- run False dir s
       raBlocks a `shouldBe` []
+  it "(e3) with other work to place, a rejected gone ghost is not replayed from the cache" $ do
+    let plan = "# T\n\n## S\n\n- [ ] keep the helper @src/bistro/booking/models/table.py:helper\n"
+        gone b = case blLines (rbBlock b) of [g] -> "gone:" `T.isInfixOf` ghText g; _ -> False
+    withReconcile plan [(table, T.replace helper "" tableText <> "\n\ndef spare() -> str:\n    return \"spare\"\n")] jevConfig (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
+      (s1, a1) <- run False dir s
+      i <- maybe (fail "no gone block") pure (lookup True (zip (map gone (raBlocks a1)) [0 ..]))
+      length (raBlocks a1) `shouldBe` 2
+      now <- getCurrentTime
+      appendRecord (ssPorts s) dir (AnOutcome (OutcomeRecord (raId a1) i now "rejected"))
+      (_, a2) <- run False dir s1
+      map gone (raBlocks a2) `shouldBe` [False]
+      length <$> reconciles dir `shouldReturn` 2
   it "(f) none → a new step after the section's last step, with the unit header when no chat rung" $ do
     let planned branch = "# T\n\n## Tables" <> branch <> "\n\n- [ ] count the seats\n  - test: counts @tests/test_t.py:test_count ○\n\n## Later\n\n- [ ] later\n"
         ghost = "- [ ] def spare() -> str @src/bistro/booking/models/table.py:spare"
@@ -375,6 +399,20 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       either id (const "answered") r `shouldBe` "cancelled"
       reconciles dir `shouldReturn` []
       M.null (ssReconciled s1) `shouldBe` True
+  it "(i4) a reconcile cancelled during the words call answers Left, records nothing, caches nothing" $
+    withHangingServer $ \port wait -> do
+      let config = jevConfig <> T.unlines ["[model.backends.local]", "kind = \"openai-compatible\"", "url = \"http://127.0.0.1:" <> port <> "/v1\"", "model = \"x\"", "escalate = \"auto\"", "[plans]", "ladder = [\"local\"]"]
+      withReconcile tidyPlan [(table, helperEdited)] config (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
+        (token, trip) <- newCancel
+        running <- async (reconcile token False (dir </> "plans/t.md") s)
+        -- the words call has reached the server: trip the token under it
+        wait >>= (`shouldBe` True)
+        trip
+        (s1, r) <- either throwIO pure =<< waitCatch running
+        either id (const "answered") r `shouldBe` "cancelled"
+        reconciles dir `shouldReturn` []
+        M.null (ssReconciled s1) `shouldBe` True
+        asked dir `shouldReturn` ["plan-step"]
   it "(j) a rejected reading is not proposed again at the same fingerprint" $
     withReconcile tidyPlan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-step", "s7"), ("plan-state", "in_progress")])) $ \dir s -> do
       (s1, a1) <- run False dir s
@@ -473,3 +511,14 @@ climbConfig =
     , "[plans]", "ladder = [\"local\", \"remote\"]" ]
 helperEdited = T.replace "return 1" "return 2" tableText
 withSpare = tableText <> "\n\ndef spare() -> str:\n    return \"spare\"\n"
+
+-- | A local server that accepts one connection and never answers: its port,
+-- and an action that waits (30 s at most) for that connection.
+withHangingServer :: (Text -> IO Bool -> IO a) -> IO a
+withHangingServer act = do
+  let script = "import socket,sys,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen(1)\nprint(s.getsockname()[1],flush=True)\nc,_=s.accept()\nprint('accepted',flush=True)\ntime.sleep(60)\n"
+  bracket (createProcess (proc "python3" ["-I", "-c", script]) {std_out = CreatePipe}) (\(_, _, _, h) -> terminateProcess h) $ \case
+    (_, Just out, _, _) -> do
+      port <- T.strip . T.pack <$> hGetLine out
+      act port (maybe False (== "accepted") <$> timeout 30000000 (hGetLine out))
+    _ -> fail "no server"
