@@ -949,7 +949,7 @@ conjureWith progress path line selected resuming s0 = do
                     | onTest = testSummary extra tid (wkBefore wk) after written
                     | isSteered && green = "green in round " <> tshow n <> " \183 " <> T.intercalate " \8594 " rungs
                     | otherwise = functionSummary extra after
-                  staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> " pyright errors" | staying > 0, green]
+                  staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> (if staying == 1 then " pyright error" else " pyright errors") | staying > 0, green]
                   summary = maybe (withExtras headline <> note) keptLine kept <> mconcat staying'
                   tid = T.pack testRel <> "::" <> fromMaybe unit (testAt written (fst (wkSpan wk)))
                   green = isNothing (trBroken after) && null (trFailed after)

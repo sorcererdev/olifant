@@ -1516,7 +1516,7 @@ conjureSpec = describe "olifant/conjure" $ do
       _ <- resume "conjure-1" "reconjure"
       resume "conjure-1" "accept"
     field "green" green `shouldBe` Just (Bool True)
-    field "summary" green `shouldBe` Just (String "green in round 2 \183 local \183 bookings wired \183 not_found rewritten \183 cancel_booking__test.py has 1 pyright errors")
+    field "summary" green `shouldBe` Just (String "green in round 2 \183 local \183 bookings wired \183 not_found rewritten \183 cancel_booking__test.py has 1 pyright error")
 
   it "a refused re-conjure leads the pause, keeps its proposal to see, and offers it again" $ do
     ((refused, again, accepted), steps, _) <- cancelChecked $ \script ask resume -> do
