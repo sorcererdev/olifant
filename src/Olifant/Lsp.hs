@@ -8,7 +8,7 @@
 module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
 import Olifant.Recognize qualified as Recognize
@@ -80,6 +80,8 @@ data Env = Env
   , -- | the token of the work this Env was handed to (a job, a request);
     -- the work's snapshots carry it (`ssCancel`)
     envCancel :: Cancel
+  , -- | held while a plan's `do` runs: one edits the tree at a time
+    envDoing :: MVar ()
   }
 
 -- | A suggestion's plan, for the document version it was planned against.
@@ -132,7 +134,7 @@ serverDefinition ports = do
   -- a conjure asks the document's version as the editor has it now, not as
   -- its snapshot saw it, before its edits land
   modifyMVar_ state (\s -> pure s {ssLiveDoc = Just (\path -> M.lookup path . ssDocs <$> readMVar state)})
-  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel
+  env <- Env ports state <$> newJobs <*> newIORef (0, M.empty) <*> newIORef False <*> newIORef S.empty <*> newIORef M.empty <*> newIORef M.empty <*> pure neverCancel <*> newMVar ()
   pure
     ServerDefinition
       { parseConfig = \_ _ -> Right ()
@@ -562,6 +564,11 @@ handlers env =
               (s', Just (_, project)) -> (s',) <$> planFiles s' project text
               (s', Nothing) -> pure (s', [])))
             respond (Right (object ["items" .= [object ["section" .= fiSection i, "row" .= fiRow i, "text" .= fiText i, "file" .= fiAbs i, "line" .= fiLine i] | i <- items]]))
+    , -- a plan's line asked, validated or done by the runner (claude -p):
+      -- ghost blocks to insert, nothing written to the plan
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
+    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
+    , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
     , -- a file's other side: a module's test file (which may not exist
       -- yet), or a test file's module; it reads only config and the file list
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/tests/file")) $ \req respond ->
@@ -1216,6 +1223,48 @@ inBackground env req respond work = do
         Nothing -> runLspT lspEnv (respond (Left (TResponseError (InR ErrorCodes_InternalError) ("olifant lsp: " <> T.pack (displayException e)) Nothing)))
     )
       `finally` atomicModifyIORef' (envRunning env) (\m -> (M.delete key m, ()))
+
+-- | `olifant/plans/<verb>` (params: textDocument, line): the errand in the
+-- background under a progress TITLE. A `do` runs alone: a second while one
+-- runs is refused without starting, and the lock is let go however the
+-- first ends (answered, failed, cancelled).
+errandRequest :: Env -> Verb -> T.Text -> TRequestMessage m -> Value -> (Either (TResponseError m) Value -> LspM () ()) -> LspM () ()
+errandRequest env verb title req params respond = case (documentPath params, lineOf params) of
+  (Just path, Just line)
+    | verb == Do ->
+        liftIO (tryTakeMVar (envDoing env)) >>= \case
+          Nothing -> failed "a do is already running"
+          Just () -> do
+            lspEnv <- getLspEnv
+            let release = void (tryPutMVar (envDoing env) ())
+            -- taken here, in the order requests arrive; let go in the work's finally
+            inBackground env req respond (\job -> liftIO (runLspT lspEnv (run job path line) `finally` release))
+    | otherwise -> inBackground env req respond (\job -> run job path line)
+  _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("olifant/plans/" <> name <> " needs a textDocument and a line") Nothing))
+  where
+    name = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
+    failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+    run job path line = do
+      answered <- planProgress title (\_ -> withSnapshot job (runErrand (envCancel job) verb path line))
+      -- an errand the editor cancelled is no result (its runner was stopped)
+      stopped <- liftIO (cancelled (envCancel job))
+      case answered of
+        _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+        Left why -> failed why
+        Right a -> respond (Right (errandJson name a))
+
+-- | What `olifant/plans/<verb>` answers.
+errandJson :: T.Text -> ErrandAnswer -> Value
+errandJson verb a =
+  object
+    [ "verb" .= verb
+    , "blocks" .= [object ["after" .= blAfterRow b, "after_text" .= blAfterText b, "lines" .= [object ["text" .= ghText g, "fp" .= fp] | (g, fp) <- zip (blLines b) fps]] | (b, fps) <- eaBlocks a]
+    , "dropped" .= eaDropped a
+    , "unresolved" .= eaUnresolved a
+    , "seconds" .= eaSeconds a
+    , "cost" .= eaCost a
+    , "changed" .= eaChanged a
+    ]
 
 -- | A request id as `$/cancelRequest` names it.
 requestKey :: LspId m -> T.Text

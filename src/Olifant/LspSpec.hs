@@ -97,6 +97,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   conjureSpec
   mutateSpec
   plansSpec
+  plansStage1Spec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
     if built /= ExitSuccess then pendingWith "cabal list-bin olifant failed" else
@@ -1960,6 +1961,101 @@ plansSpec = describe "plans: anchors in the server" $ do
         (,) <$> complete 0 (fromIntegral (T.length "- x @src/bistro/booking/queries/get_day_schedule.")) <*> complete 1 (fromIntegral (T.length ("- y @" <> T.pack schedule <> ":GetDaySchedule.h")))
       paths `shouldBe` ["src/bistro/booking/queries/get_day_schedule.py"]
       units `shouldBe` ["GetDaySchedule.handle"]
+
+-- | Plan errands (plans, stage 1, Task 7): ask, validate and do run the
+-- runner (the shim here, never claude) and answer ghost blocks.
+plansStage1Spec :: Spec
+plansStage1Spec = describe "olifant/plans (stage 1)" $ do
+  let table = "src/bistro/booking/models/table.py"
+      planWith step = T.unlines ["# T", "", "## Hypothesis", "- ? where is the table", "- a claim @" <> T.pack table <> ":Table ", "", "## Plan", step]
+      plan = planWith "- [ ] add a method · by hand"
+      docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
+      -- the fixture app with a plan, its runner the shim
+      withPlan text act = withPython [("plans/t.md", text)] $ \ports dir -> do
+        shim <- canonicalizePath "src/Olifant/Server/testdata/claude-shim.sh"
+        TIO.appendFile (dir </> ".olifant/config.toml") ("\n[plans]\nrunner = \"" <> T.pack shim <> "\"\n")
+        act ports dir
+      askP = Proxy :: Proxy "olifant/plans/ask"
+      validateP = Proxy :: Proxy "olifant/plans/validate"
+      doP = Proxy :: Proxy "olifant/plans/do"
+      errand method line = do
+        p <- openDoc "plans/t.md" "markdown"
+        blockMove method (object [docOf p, "line" .= (line :: Int)])
+      arr = \case
+        Just (Array xs) -> toList xs
+        _ -> []
+      linesOf b = arr (lookupKey "lines" b)
+  it "ask answers ghost blocks with fingerprints for anchors that resolve" $
+    withPlan plan $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      v <- either (fail . T.unpack) pure answer
+      lookupKey "verb" v `shouldBe` Just (String "ask")
+      let blocks = arr (lookupKey "blocks" v)
+          fps = map (lookupKey "fp") (concatMap linesOf blocks)
+      map (lookupKey "after") blocks `shouldBe` [Just (Number 3)]
+      map (\case Just (String fp) -> T.length fp; _ -> 0) fps `shouldBe` [7, 7, 0]
+      last fps `shouldBe` Just Aeson.Null
+      lookupKey "unresolved" v `shouldBe` Just (Number 1)
+      lookupKey "cost" v `shouldBe` Just (Number 0.0123)
+      logged <- T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
+      fmap (T.drop 1 . T.dropWhile (/= '\t')) (listToMaybe (reverse logged)) `shouldSatisfy` maybe False ("plan-ask\tplans/t.md:3\t" `T.isPrefixOf`)
+  it "ask on a step is refused" $
+    withPlan plan $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 7)
+      either (T.isInfixOf "ask needs a question line") (const False) answer `shouldBe` True
+  it "validate on the heading lands after the matching line" $
+    withPlan plan $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand validateP 2)
+      v <- either (fail . T.unpack) pure answer
+      map (\b -> (lookupKey "after" b, lookupKey "after_text" b)) (arr (lookupKey "blocks" v))
+        `shouldBe` [(Just (Number 4), Just (String ("- a claim @" <> T.pack table <> ":Table")))]
+  it "do edits the tree, reports changed files and refuses a second do" $
+    withPlan (planWith "- [ ] add a method SHIM:SLOW") $ \ports dir -> do
+      let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+      git ["init", "-q", "-b", "main"]
+      git ["add", "."]
+      git ["commit", "-q", "-m", "the fixture"]
+      ((first, second, third), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        let params = object [docOf p, "line" .= (7 :: Int)]
+            method = SMethod_CustomMethod doP
+            await rid = (responseForId method rid <&> \(TResponseMessage _ _ r) -> either (Left . (^. L.message)) Right r) <|> (anyMessage >> await rid)
+        r1 <- sendRequest method params
+        r2 <- sendRequest method params
+        second <- await r2
+        first <- await r1
+        third <- blockMove doP params
+        pure (first, second, third)
+      second `shouldBe` Left "a do is already running"
+      v <- either (fail . T.unpack) pure first
+      lookupKey "changed" v `shouldBe` Just (Array (pure (String (T.pack (dir </> table)))))
+      map (map (lookupKey "text") . linesOf) (arr (lookupKey "blocks" v))
+        `shouldBe` [[Just (String ("- [ ] add a method SHIM:SLOW   @" <> T.pack table <> ":Table.label"))]]
+      either Just (const Nothing) third `shouldBe` Nothing
+  it "a runner failure leaves the plan alone and names the reason" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      either (T.isInfixOf "no credentials") (const False) answer `shouldBe` True
+      TIO.readFile (dir </> "plans/t.md") >>= (`shouldBe` T.replace "where is the table" "where is the table SHIM:FAIL" plan)
+  it "prose only is 'answered nothing in the grammar'" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:PROSE" plan) $ \ports dir -> do
+      (answer, _) <- inProcessWith ports dir (errand askP 3)
+      answer `shouldBe` Left "ask answered nothing in the grammar"
+  it "cancel stops the runner" $
+    withPlan (T.replace "where is the table" "where is the table SHIM:SLEEP" plan) $ \ports dir -> do
+      ((code, took), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        let method = SMethod_CustomMethod askP
+        rid <- sendRequest method (object [docOf p, "line" .= (3 :: Int)])
+        liftIO (threadDelay 300000)
+        start <- liftIO getCurrentTime
+        sendNotification SMethod_CancelRequest (CancelParams (case rid of IdInt n -> InL n; IdString t -> InR t))
+        let await = responseForId method rid <|> (anyMessage >> await)
+        TResponseMessage _ _ r <- await
+        end <- liftIO getCurrentTime
+        pure (either (Just . (^. L.code)) (const Nothing) r, diffUTCTime end start)
+      code `shouldBe` Just (InL LSPErrorCodes_RequestCancelled)
+      took `shouldSatisfy` (< 2)
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
