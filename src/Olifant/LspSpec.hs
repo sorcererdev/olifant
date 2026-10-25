@@ -1613,6 +1613,20 @@ conjureSpec = describe "olifant/conjure" $ do
     refused `shouldBe` Left "there is no wire to keep"
     keepSteps `shouldSatisfy` notElem ["conjure-resume", "keep", "0"]
 
+  it "keep 0 after a test fix lands the wire's files only, as the wire left them" $ do
+    (kept, _, _, (diskModule, diskTest)) <- cancelOnDisk (Just "wire") morningModule morningTest $ \_ ask resume -> do
+      _ <- ask []
+      _ <- resume "conjure-1" "reconjure"
+      -- the fix accepted, the script still red: the conjure pauses again, the fix in force
+      accepted <- resume "conjure-1" "accept"
+      let tok = case inner "token" (field "paused" accepted) of Just (String t) -> t; _ -> "conjure-1"
+      ask (resumeWith tok ["choice" .= ("stop" :: Text), "land" .= True, "arg" .= ("0" :: Text)])
+    field "summary" kept `shouldSatisfy` \case Just (String x) -> "kept the wire alone" `T.isPrefixOf` x && not ("rewritten" `T.isInfixOf` x); _ -> False
+    field "edits" kept `shouldSatisfy` wroteIn cbModule "self.bookings = bookings"
+    field "edits" kept `shouldSatisfy` wroteIn cbTest "bookings: BookingRepository | None = None"
+    field "edits" kept `shouldSatisfy` (not . wroteIn cbTest "command(bookings=repository)")
+    (diskModule, diskTest) `shouldBe` (morningModule, morningTest)
+
   it "a wire resume runs the offered wire; an arg not offered is refused and keeps the token" $ do
     ((paused, refused, wired), steps, asked) <- cancelWith (Just "wire") morningModule thingTest $ \_ ask _ -> do
       paused <- ask []

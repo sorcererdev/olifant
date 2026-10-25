@@ -239,10 +239,14 @@ keptLanding re pd = case reArg re of
   Just a -> do
     n <- readMaybe (T.unpack (T.strip a))
     if n == 0
-      then if null (pdWired pd) then Nothing else (0,) <$> unitIn (pdWrites pd)
+      then if null (pdWired pd) then Nothing else (0,) <$> (unitIn (pdWireWrites pd) <|> unitIn (pdWrites pd))
       else (n,) <$> lookup n (pdLandings pd)
   where
     unitIn m = listToMaybe [t | (r, t) <- M.toList m, ("/" <> r) `isSuffixOf` pdFile pd]
+
+-- | Whether a resume keeps nothing but the wire (keep 0).
+keepsWireAlone :: Resume -> Bool
+keepsWireAlone re = reChoice re == ResumeStop && reLand re && fmap T.strip (reArg re) == Just "0"
 
 -- | A pause without what a refused re-conjure added to it: its sentence, its proposal and
 -- the rows to see it and re-conjure again (the plain re-conjure row back).
@@ -827,8 +831,9 @@ conjureWith progress path line selected resuming s0 = do
           latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
           when (latest /= started) (throwE "the file changed while conjuring; your text stands")
           c <- lift (readIORef counters)
-          let wireAlone = False
-              landing' = cWrites c
+          -- keep 0 lands only what the wire step wrote (later steps' writes stay out)
+          let wireAlone = maybe False (keepsWireAlone . fst) resuming
+              landing' = if wireAlone then cWireWrites c else cWrites c
               others = [(r, absOf r, new) | (r, new) <- M.toList landing', r /= rel]
           case outcome of
             Halted landing why -> do
@@ -917,7 +922,7 @@ conjureWith progress path line selected resuming s0 = do
               -- every other file the conjure wrote stands as it read it
               lift (movedSince s (cVersions c) (cBases c) [(r, a) | (r, a, _) <- others]) >>= maybe (pure ()) (throwE . changedWhile)
               -- the after-run: the test file with the conjure in place, over the working files
-              (_, files) <- lift (projectFiles (prWorkspace (wkProject wk)) (M.empty :: Map FilePath Text) lang [testRel])
+              (_, files) <- lift (projectFiles (if wireAlone then overlayMany (cWireWrites c) ws else prWorkspace (wkProject wk)) (M.empty :: Map FilePath Text) lang [testRel])
               start <- lift getMonotonicTime
               after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack testRel] (M.insert rel written files))
               end <- lift getMonotonicTime
@@ -933,7 +938,7 @@ conjureWith progress path line selected resuming s0 = do
                     _ -> Nothing
                   -- the landing in a line (design §8): what came of it, then the wire and the tests rewritten
                   params = [maybe w fst (paramPort w) | w <- cWired c]
-                  extras = [T.intercalate ", " params <> " wired" | not (null params)] ++ [T.intercalate ", " (map (shortName (cStem c)) (cRewritten c)) <> " rewritten" | not (null (cRewritten c))]
+                  extras = [T.intercalate ", " params <> " wired" | not (null params)] ++ [T.intercalate ", " (map (shortName (cStem c)) (cRewritten c)) <> " rewritten" | not (null (cRewritten c)), not wireAlone]
                   withExtras t = T.intercalate " \183 " (t : extras)
                   keptWhat k = if k == 0 then "the wire alone" else "round " <> tshow k
                   keptLine k = withExtras ("kept " <> keptWhat k <> " \183 " <> shortVerdict)
