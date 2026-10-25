@@ -17,7 +17,7 @@ import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, 
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -115,6 +115,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
           TResponseMessage _ _ (Right result) -> Just (result ^. L.capabilities)
           _ -> Nothing
       fmap (^. L.semanticTokensProvider) caps `shouldBe` Just Nothing
+      fmap (isJust . (^. L.definitionProvider)) caps `shouldBe` Just True
 
 -- | Rule findings and their fixes (Task 9): pull diagnostics, quickfixes
 -- carrying a fix's open choices, resolved to the fix's plan.
@@ -1930,6 +1931,29 @@ plansSpec = describe "plans: anchors in the server" $ do
   let schedule = "src/bistro/booking/queries/get_day_schedule.py"
       planText = T.unlines ["- handles a day @" <> T.pack schedule <> ":GetDaySchedule.handle", "- gone @" <> T.pack schedule <> ":Gone"]
       docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
+  it "gd on a plan's anchor goes to its unit's def line; elsewhere it stays quiet" $
+    withPython [("plans/t.md", planText), ("src/x.py", "x = 1\n")] $ \ports dir -> do
+      ((on, justAfter, off, gone, code), _) <- inProcessWith ports dir $ do
+        plan <- openDoc "plans/t.md" "markdown"
+        py <- openDoc "src/x.py" "python"
+        let at d l c = getDefinitions d (Position l c)
+            width = fromIntegral (T.length ("- handles a day @" <> T.pack schedule <> ":GetDaySchedule.handle"))
+        on <- at plan 0 30
+        justAfter <- at plan 0 width
+        off <- at plan 0 3
+        gone <- at plan 1 20
+        code <- at py 0 0
+        pure (on, justAfter, off, gone, code)
+      let spots = \case
+            InL (Definition (InL (Location u r))) -> [(uriToFilePath u, r ^. L.start . L.line, r ^. L.start . L.character)]
+            InL (Definition (InR ls)) -> [(uriToFilePath u, r ^. L.start . L.line, r ^. L.start . L.character) | Location u r <- ls]
+            _ -> []
+          expected = [(Just (dir </> schedule), 21, 0)]
+      spots on `shouldBe` expected
+      spots justAfter `shouldBe` expected
+      spots off `shouldBe` []
+      spots gone `shouldBe` []
+      spots code `shouldBe` []
   it "a plan's missing anchor is a diagnostic; olifant/plans/anchor jumps; olifant/plans/files lists" $
     withPython [("plans/t.md", planText)] $ \ports dir -> do
       ((before, jump, missing, bare, files, after), _) <- inProcessWith ports dir $ do

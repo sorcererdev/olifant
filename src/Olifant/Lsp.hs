@@ -554,6 +554,22 @@ handlers env =
                     , "found" .= isJust (rsUnit r)
                     ]))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/anchor needs a textDocument and a line" Nothing))
+    , -- gd on a plan's anchor: its unit's def line; quiet anywhere else
+      requestHandler SMethod_TextDocumentDefinition $ \req respond -> do
+        let Position l c = req ^. L.params . L.position
+        found <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure Nothing
+          Just path -> liftIO $ withSnapshot env (projectFor path) >>= \case
+            Just (_, project) | isPlanPath project path -> do
+              text <- documentText env path
+              let col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l)))
+              case [a | ln <- parsePlan text, lnRow ln == fromIntegral l, Just a <- [lnAnchor ln], anStart a <= col, col <= anEnd a] of
+                a : _ -> withSnapshot env (\s -> (s,) <$> resolveAnchor s project a) <&> \r -> case (rsUnit r, rsText r) of
+                  (Just u, Just _) -> Just (Location (filePathToUri (rsAbs r)) (Range (Position (fromIntegral (namedDef u) - 1) 0) (Position (fromIntegral (namedDef u) - 1) 0)))
+                  _ -> Nothing
+                [] -> pure Nothing
+            _ -> pure Nothing
+        respond (Right (maybe (InR (InR Null)) (InL . Definition . InL) found))
     , -- a plan's anchored lines, by section, each with where it points
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/files")) $ \req respond ->
         case documentPath (req ^. L.params) of
@@ -1107,11 +1123,12 @@ anchorCompletions env project path (Position l c) = do
       range = Range (Position l (c - fromIntegral (utf16 typed))) (Position l c)
   items <- withSnapshot env (\s -> (s,) <$> anchorItems s project upTo)
   pure [i & L.textEdit ?~ InL (TextEdit range (fromMaybe (i ^. L.label) (i ^. L.insertText))) | i <- items]
-  where
-    takeUtf16 :: Int -> T.Text -> T.Text
-    takeUtf16 n t = case T.uncons t of
-      Just (ch, rest) | n > 0 -> T.cons ch (takeUtf16 (n - (if fromEnum ch > 0xFFFF then 2 else 1)) rest)
-      _ -> ""
+
+-- | The start of a line, up to a UTF-16 column.
+takeUtf16 :: Int -> T.Text -> T.Text
+takeUtf16 n t = case T.uncons t of
+  Just (ch, rest) | n > 0 -> T.cons ch (takeUtf16 (n - (if fromEnum ch > 0xFFFF then 2 else 1)) rest)
+  _ -> ""
 
 -- | Completion items for the snippets at a cursor: each replaces the
 -- cursor's line with its body (tab stops), filtered by what the line holds.
