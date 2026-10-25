@@ -2031,6 +2031,17 @@ plansLoopSpec = describe "plans, stage 2" $ do
       v <- either (fail . T.unpack) pure answer
       arr (lookupKey "facts" v) `shouldBe` [object ["row" .= (1 :: Int), "text" .= ("  - test: t @tests/test_table.py:test_label \9675" :: Text)]]
       arr (lookupKey "blocks" v) `shouldBe` []
+  it "(a2) a second reconcile of the unchanged plan answers from the cache: one record, the same id" $
+    withEdited jev $ \ports dir -> do
+      cfg <- answers dir [("plan-state", "in_progress")]
+      ((first, second), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (,) <$> blockMove reconcileP (object [docOf p]) <*> blockMove reconcileP (object [docOf p])
+      v1 <- either (fail . T.unpack) pure first
+      v2 <- either (fail . T.unpack) pure second
+      lookupKey "id" v2 `shouldBe` lookupKey "id" v1
+      (rs, _) <- readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
+      length [() | AReconcile _ <- rs] `shouldBe` 1
   it "(b) cancel stops it, mid-call" $ do
     let script = "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen(1)\nprint(s.getsockname()[1],flush=True)\nc,_=s.accept()\nprint('accepted',flush=True)\ntime.sleep(60)\n"
         hanging act = bracket (createProcess (proc "python3" ["-I", "-c", script]) {std_out = CreatePipe}) (\(_, _, _, h) -> terminateProcess h) $ \case

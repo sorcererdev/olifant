@@ -1082,9 +1082,13 @@ withSnapshotState env work = do
   before <- (\s -> s {ssCancel = envCancel env}) <$> readMVar (envState env)
   (after, a) <- work before
   let loaded = M.filter (> 0) (M.unionWith (-) (ssLoads after) (ssLoads before))
-  modifyMVar_ (envState env) $ \now ->
-    pure
-      now
+  modifyMVar_ (envState env) $ \now -> do
+    -- the reconciles it cached (one that changed wins over the live one);
+    -- forced here, so no thunk holds the two snapshots
+    let reconciled = M.union (M.differenceWith (\x y -> if fst x == fst y then Nothing else Just x) (ssReconciled after) (ssReconciled before)) (ssReconciled now)
+    reconciled `seq`
+      pure
+        now
         { -- projects it loaded stand only if no file changed meanwhile: a
           -- configuration changed under a load is read again when next asked
           ssProjects = M.union (ssProjects now) (if ssFilesStamp now == ssFilesStamp before then ssProjects after else M.empty)
@@ -1094,6 +1098,7 @@ withSnapshotState env work = do
           ssListings = M.union (M.filter ((== ssFilesStamp now) . fst) (ssListings after)) (ssListings now)
         , ssMemo = M.union (ssMemo now) (M.filter ((== ssGeneration now) . fst) (ssMemo after))
         , ssEstablished = M.union (ssEstablished now) (ssEstablished after)
+        , ssReconciled = reconciled
         , -- a recognition index it built, while no file changed since
           ssRecognition = M.union (M.filter (\(stamp, _, _) -> stamp == ssFilesStamp now) (ssRecognition after)) (ssRecognition now)
         }
