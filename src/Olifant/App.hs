@@ -635,11 +635,13 @@ data PlanOptions = PlanOptions
     poStance :: Stance
   , -- | a steered conjure's hook and seed ('toolSteering'); Nothing elsewhere
     poSteering :: Maybe (Steering IO)
+  , -- | files whose check errors always count (toolJudged)
+    poJudged :: [FilePath]
   }
 
 -- | Plan only, no cursor, no model, no progress.
 planOptions :: PlanOptions
-planOptions = PlanOptions PlanOnly Nothing False Nothing False [] (const (pure ())) Nothing neverCancel FillStance Nothing
+planOptions = PlanOptions PlanOnly Nothing False Nothing False [] (const (pure ())) Nothing neverCancel FillStance Nothing []
 
 -- | Run plan steps (model, fills, regions): the plan, with the snippet at
 -- the cursor and the catalog's load warnings.
@@ -659,6 +661,7 @@ planWith ports project po steps = do
           , toolCancelled = cancelled (poCancel po)
           , toolStance = poStance po
           , toolSteering = poSteering po
+          , toolJudged = poJudged po
           }
   generate (prWorkspace project) (resolver (pFiles ports) (pSyntax ports) cat) tools steps now (poMode po) <&> fmap finish
   where

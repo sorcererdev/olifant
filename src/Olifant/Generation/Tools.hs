@@ -35,6 +35,9 @@ data Tools m = Tools
   , -- | asked after every red round what to do next (a steered conjure),
     -- and where the loop starts; Nothing: the filler's retries rule
     toolSteering :: Maybe (Steering m)
+  , -- | files whose check errors always count, even ones the files had with their
+    -- placeholders (a conjure's test file: only its known errors are tolerated, by the checker)
+    toolJudged :: [FilePath]
   }
 
 
@@ -53,4 +56,4 @@ noTools = basicTools noSyntax noChecker []
 
 -- | Syntax, checker and languages, with no regions and no commands.
 basicTools :: Applicative m => Syntax m -> Checker m -> [Language] -> Tools m
-basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier noRunner (pure False) FillStance Nothing
+basicTools syntax checker langs = Tools syntax checker langs [] noQueries Nothing (const (pure ())) [] noVerifier noRunner (pure False) FillStance Nothing []

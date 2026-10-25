@@ -135,6 +135,7 @@ data Counters = Counters
   , cWiredFor :: Maybe Text
   , cRewritten :: [Text]
   , cSteps :: [ConjureStep]
+  , cWireWrites :: Map FilePath Text
   }
 
 -- | What a fill gave: why its last attempt failed its verify (none: it
@@ -238,8 +239,10 @@ keptLanding re pd = case reArg re of
   Just a -> do
     n <- readMaybe (T.unpack (T.strip a))
     if n == 0
-      then if null (pdWired pd) then Nothing else (0,) <$> listToMaybe [t | (r, t) <- M.toList (pdWrites pd), ("/" <> r) `isSuffixOf` pdFile pd]
+      then if null (pdWired pd) then Nothing else (0,) <$> unitIn (pdWrites pd)
       else (n,) <$> lookup n (pdLandings pd)
+  where
+    unitIn m = listToMaybe [t | (r, t) <- M.toList m, ("/" <> r) `isSuffixOf` pdFile pd]
 
 -- | A pause without what a refused re-conjure added to it: its sentence, its proposal and
 -- the rows to see it and re-conjure again (the plain re-conjure row back).
@@ -265,6 +268,11 @@ checkedOver s ws lang files
 -- | PORTS whose check leaves out the problems KNOWN (the files had them before).
 tolerating :: [(FilePath, Text)] -> Ports -> Ports
 tolerating known ports = ports {pChecker = \c -> let Checker run = pChecker ports c in Checker (\lang files -> fmap (withoutKnown known) <$> run lang files)}
+
+-- | PORTS whose check leaves out the problems in the IORef, read at each check: the test file's
+-- errors as the conjure began (and as its wire left them).
+toleratingIn :: IORef [(FilePath, Text)] -> Ports -> Ports
+toleratingIn ref ports = ports {pChecker = \c -> let Checker run = pChecker ports c in Checker (\lang files -> readIORef ref >>= \known -> fmap (withoutKnown known) <$> run lang files)}
 
 -- | The wire a resume names (@param: Port@), when the pause offers it.
 wireOf :: Resume -> PausedConjure -> Maybe (Text, Text)
@@ -524,7 +532,7 @@ conjureWith progress path line selected resuming s0 = do
                 ws' = prWorkspace (wkProject wk)
             imported <- lift (importedContext ws' lang (testRel : map fst context') (working : map snd context'))
             rounds' <- lift (newIORef 0)
-            fill (worded (fixWords (shortName (paStem plain) tid)) progress) rounds' s' (wkProject wk) testRel working template verify (context' ++ imported) filler (const Nothing)
+            fill [] (worded (fixWords (shortName (paStem plain) tid)) progress) rounds' s' (wkProject wk) testRel working template verify (context' ++ imported) filler (const Nothing)
           stop <- lift (cancelled (ssCancel s))
           when stop (throwE "cancelled")
           now <- lift getMonotonicTime
@@ -606,6 +614,7 @@ conjureWith progress path line selected resuming s0 = do
                     , cWiredFor = Nothing
                     , cRewritten = []
                     , cSteps = []
+                    , cWireWrites = M.empty
                     }
              in case resuming of
                   Nothing -> fresh
@@ -630,7 +639,15 @@ conjureWith progress path line selected resuming s0 = do
                           , cWiredFor = paWiredFor (pdShown pd)
                           , cRewritten = pdRewritten pd
                           , cSteps = pdSteps pd ++ [ConjureStep (paRound (pdShown pd)) (StepHint h) ("hint: " <> h) [] | Just h <- [reHint re]]
+                          , cWireWrites = pdWireWrites pd
                           }
+          -- the test file's pyright errors as the conjure began (with what its wire wrote): a
+          -- round that adds one is refused; these stand, and the green summary says so
+          knownRef <- lift (newIORef [])
+          let refreshKnown wires = unless onTest $ do
+                known <- checkedOver s ws lang (M.insert testRel (M.findWithDefault testText0 testRel wires) wires)
+                writeIORef knownRef [m | (m@(p, _), _) <- known, p == testRel]
+          lift (refreshKnown (maybe M.empty (pdWireWrites . snd) resuming))
           rounds <- lift (newIORef (maybe 0 (seedRound . pdSeed . snd) resuming))
           -- a steered conjure's progress names the round (of the rounds this grant reaches)
           stepped <- lift $ case steered of
@@ -706,11 +723,13 @@ conjureWith progress path line selected resuming s0 = do
                         , cSteps = cSteps c ++ [ConjureStep (maybe 0 rsRound (cState c)) StepWire ("wire " <> p <> ": " <> q) [(r, unifiedDiff r (oldOf r) t) | (r, t) <- M.toList new, oldOf r /= t]]
                         , cWiredFor = cWiredFor c <|> listToMaybe (map fst (cFlagged c))
                         , cWrites = M.union new base
+                        , cWireWrites = M.union (M.filterWithKey (\r t -> oldOf r /= t) new) (cWireWrites c)
                         , cVersions = M.union (cVersions c) (M.fromList [(a', fst <$> M.lookup a' (ssDocs s)) | (a', _) <- read'])
                         , cBases = M.union (cBases c) (M.fromList read')
                         , cTestText = wkTestText wk'
                         , cHeader = if onTest then cHeader c else unitHeader (wkText wk') (fst (wkSpan wk'))
                         }
+                    lift . refreshKnown . cWireWrites =<< lift (readIORef counters)
                     lift (stepLine ("conjure-wire" : gid : [k <> "=" <> v | (k, v) <- sets]))
                     pure (Right wk')
                   Left why -> do
@@ -719,7 +738,7 @@ conjureWith progress path line selected resuming s0 = do
                     pure (Left why)
               -- the fill, and, while it pauses for a wire, the wire and the fill again from the round it paused at
               loop wk f seed = do
-                tried <- lift (runExceptT (fill stepped rounds s (wkProject wk) rel (wkText wk) (wkTemplate wk) (wkVerify wk) (wkContext wk) f (steering seed)))
+                tried <- lift (runExceptT (fill [testRel | not onTest] stepped rounds s {ssPorts = toleratingIn knownRef (ssPorts s)} (wkProject wk) rel (wkText wk) (wkTemplate wk) (wkVerify wk) (wkContext wk) f (steering seed)))
                 c <- lift (readIORef counters)
                 stop <- lift (cancelled (ssCancel s))
                 case (tried, cWire c, wire, steered, cState c) of
@@ -771,7 +790,7 @@ conjureWith progress path line selected resuming s0 = do
                 c <- lift (readIORef counters)
                 let f' = fromMaybe filler (steered >>= \sd -> snd <$> listToMaybe (drop (cRung c) (sdLadder sd)))
                     relabel (k, v) = (if k == rejectedBody then T.unpack ("the test as first written; the helper now takes " <> p <> ": " <> q <> ": pass the test's fake to it") else k, v)
-                fill progress rounds s (wkProject wk') rel (wkText wk') (wkTemplate wk') (wkVerify wk') (map relabel (wkContext wk')) f' (const Nothing)
+                fill [] progress rounds s (wkProject wk') rel (wkText wk') (wkTemplate wk') (wkVerify wk') (map relabel (wkContext wk')) f' (const Nothing)
           (outcome, wk, note) <- case outcome0 of
             Written Nothing written0 _
               | onTest && isNothing selected && not stopping -> do
@@ -808,7 +827,9 @@ conjureWith progress path line selected resuming s0 = do
           latest <- lift (maybe (pure started) (\live -> fmap fst <$> live file) (ssLiveDoc s))
           when (latest /= started) (throwE "the file changed while conjuring; your text stands")
           c <- lift (readIORef counters)
-          let others = [(r, absOf r, new) | (r, new) <- M.toList (cWrites c), r /= rel]
+          let wireAlone = False
+              landing' = cWrites c
+              others = [(r, absOf r, new) | (r, new) <- M.toList landing', r /= rel]
           case outcome of
             Halted landing why -> do
               (view, rs) <- maybe (throwE "the conjure paused before any round") pure ((,) <$> cLast c <*> cState c)
@@ -889,7 +910,7 @@ conjureWith progress path line selected resuming s0 = do
                       , paChecker = checker
                       }
                   pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation (cHistory c) (cBefore c) (cFlagged c) (cCause c) Nothing Nothing
-              token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t) landings (cRewritten c) (cSteps c)) m), t)))
+              token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t) landings (cRewritten c) (cSteps c) (cWireWrites c)) m), t)))
               lift (stepLine ("conjure-pause" : maybe [why] causeWords (cCause c)))
               pure (Paused (shownAs token))
             Written _ written extra -> do
@@ -900,6 +921,12 @@ conjureWith progress path line selected resuming s0 = do
               start <- lift getMonotonicTime
               after <- lift (either (TestRun [] [] . Just) id <$> runTestsIn (pTester (ssPorts s) (ssCancel s)) lang [T.pack testRel] (M.insert rel written files))
               end <- lift getMonotonicTime
+              -- the test file's errors it had at the start and still has: green stands, saying so
+              staying <- lift $ do
+                known <- readIORef knownRef
+                if onTest || null known
+                  then pure 0
+                  else length . filter ((== testRel) . fst . fst) <$> checkedOver s ws lang (M.insert rel written landing')
               n <- lift (readIORef rounds)
               let kept = case resuming of
                     Just (re, pd) | reChoice re == ResumeStop, reLand re -> fst <$> keptLanding re pd
@@ -917,7 +944,8 @@ conjureWith progress path line selected resuming s0 = do
                     | onTest = testSummary extra tid (wkBefore wk) after written
                     | isSteered && green = "green in round " <> tshow n <> " \183 " <> T.intercalate " \8594 " rungs
                     | otherwise = functionSummary extra after
-                  summary = maybe (withExtras headline <> note) keptLine kept
+                  staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> " pyright errors" | staying > 0, green]
+                  summary = maybe (withExtras headline <> note) keptLine kept <> mconcat staying'
                   tid = T.pack testRel <> "::" <> fromMaybe unit (testAt written (fst (wkSpan wk)))
                   green = isNothing (trBroken after) && null (trFailed after)
                   edit = [FileEdit file started False range new | written /= text, let (range, new) = smallestChange text written]
@@ -1338,8 +1366,8 @@ functionSummary extra run = case (trBroken run, trFailed run) of
 -- left undefined; or, steered (STEERING, given how to wrap a climbed
 -- rung's filler), a pause. Left when the model gave no attempt at all, or
 -- the plan could not be made. ROUNDS keeps the highest round asked.
-fill :: (ProgressEvent -> IO ()) -> IORef Int -> ServerState -> Project -> FilePath -> Text -> Template -> [(Text, Verify [Template])] -> [(FilePath, Text)] -> ModelFiller IO -> ((ModelFiller IO -> ModelFiller IO) -> Maybe (Steering IO)) -> ExceptT Text IO Written
-fill progress rounds s project rel text template verify context filler steering = do
+fill :: [FilePath] -> (ProgressEvent -> IO ()) -> IORef Int -> ServerState -> Project -> FilePath -> Text -> Template -> [(Text, Verify [Template])] -> [(FilePath, Text)] -> ModelFiller IO -> ((ModelFiller IO -> ModelFiller IO) -> Maybe (Steering IO)) -> ExceptT Text IO Written
+fill judged progress rounds s project rel text template verify context filler steering = do
   attempts <- lift (newIORef M.empty)
   prior <- lift (newIORef M.empty)
   let record f = f {mfFiller = Filler (\req -> runFill (mfFiller f) req >>= \r -> either (const (pure ())) answered r >> pure r)}
@@ -1352,7 +1380,7 @@ fill progress rounds s project rel text template verify context filler steering 
         WholeFile hole -> readIORef prior >>= \was -> modifyIORef' attempts (M.alter (const (M.lookup hole was)) hole) >> progress e
         _ -> progress e
       gen = (replaceGenerator rel (1, length (T.lines text)) text template) {genVerify = verify}
-      options = planOptions {poFiller = Just (record filler), poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = ConjureStance, poSteering = steering record}
+      options = planOptions {poFiller = Just (record filler), poProgress = progress', poCancel = ssCancel s, poContext = context, poStance = ConjureStance, poSteering = steering record, poJudged = judged}
   plan <- withExceptT describeGenerationError (ExceptT (planWith (ssPorts s) project options [Step gen M.empty]))
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))
   tried <- lift (readIORef attempts)
