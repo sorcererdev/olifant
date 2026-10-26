@@ -25,8 +25,9 @@ Prose is ignored. Lines are read by prefix:
 
 An anchor is `@path:Unit`: a path relative to the project root, and a `Name` or `Class.method`.
 Python and Haskell units resolve. A path that is absolute or leaves the project is never read: it
-is `? not found`. The fingerprint is a short hash of the unit's text; a `✓` whose unit has since
-changed is shown stale. A line inside a code fence is ignored.
+is `? not found`. The fingerprint is a short hash of the unit's text, blind to formatting: indentation, blank
+lines and a formatter's reflow (a call split over lines, a trailing comma it adds, leading commas)
+leave it as it was. A `✓` whose unit has since changed is shown stale. A line inside a code fence is ignored.
 
 ## What the server does
 

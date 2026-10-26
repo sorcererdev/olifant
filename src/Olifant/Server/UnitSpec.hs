@@ -43,3 +43,14 @@ spec = describe "Olifant.Server.Unit (units by name)" $ do
     fingerprint "def f():\n    return 1\n\n" (1, 3) `shouldBe` fingerprint "def f():\n  return 1\n" (1, 2)
     fingerprint "def f():\n    return 1\n" (1, 2) `shouldNotBe` fingerprint "def f():\n    return 2\n" (1, 2)
     T.length (fingerprint "x" (1, 1)) `shouldBe` 7
+  it "fingerprints ignore a formatter's reflow: a call split over lines, a magic trailing comma, leading commas" $ do
+    let one = "def t():\n    r = f(A(x=1, y=2))\n    assert r == Ok(B(id=\"b\", n=2))\n"
+        split = "def t():\n    r = f(\n        A(x=1, y=2)\n    )\n    assert r == Ok(\n        B(id=\"b\", n=2)\n    )\n"
+        exploded = "def t():\n    r = f(\n        A(\n            x=1,\n            y=2,\n        )\n    )\n    assert r == Ok(B(id=\"b\", n=2))\n"
+        lines' t = (1, length (T.lines t))
+    fingerprint split (lines' split) `shouldBe` fingerprint one (lines' one)
+    fingerprint exploded (lines' exploded) `shouldBe` fingerprint one (lines' one)
+    fingerprint "xs = [ a\n     , b\n     ]\n" (1, 3) `shouldBe` fingerprint "xs = [a, b]\n" (1, 1)
+    -- a body with no reflow keeps the fingerprint it had
+    fingerprint "def f():\n    return 1\n" (1, 2) `shouldBe` "aee3e55"
+    fingerprint one (lines' one) `shouldNotBe` fingerprint (T.replace "y=2" "y=3" one) (lines' one)
