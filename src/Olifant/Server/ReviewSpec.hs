@@ -18,7 +18,7 @@ import Test.Hspec
 spec :: Spec
 spec = describe "Olifant.Server.Review (the do review)" $ do
   describe "the tree reference" $ do
-    it "is the change since it: tracked edits, new files, changed untracked files; the plan and the state left out" $
+    it "is the change since it: tracked edits, new files, changed untracked files; the plan, the state and the config left out" $
       inRepo $ \dir -> do
         TIO.writeFile (dir </> "notes.txt") "mine\n"
         TIO.writeFile (dir </> "a.py") "x = 2\n" -- an edit not yet committed is part of the reference
@@ -29,6 +29,7 @@ spec = describe "Olifant.Server.Review (the do review)" $ do
         TIO.writeFile (dir </> "plans/t.md") "- [x] done\n"
         createDirectoryIfMissing True (dir </> ".olifant/state")
         TIO.writeFile (dir </> ".olifant/state/x.log") "noise\n"
+        TIO.writeFile (dir </> ".olifant/config.toml") "[plans]\ndo_tools = [\"Bash(make*)\"]\n"
         cs <- changeSince dir ["plans/t.md"] ref
         [(fcPath c, fcChange c) | c <- cs] `shouldBe` [("a.py", Modified), ("b.py", Added), ("notes.txt", Modified)]
         [(fcBefore c, fcAfter c) | c <- cs] `shouldBe` [(Just "x = 2\n", Just "x = 3\n"), (Nothing, Just "y = 1\n"), (Just "mine\n", Just "theirs\n")]
@@ -131,6 +132,8 @@ inRepo act = withSystemTempDirectory "olifant-review" $ \dir -> do
   TIO.writeFile (dir </> "a.py") "x = 1\n"
   TIO.writeFile (dir </> "plans/t.md") "- [ ] s\n"
   TIO.writeFile (dir </> ".gitignore") ".olifant/state/\n"
+  createDirectoryIfMissing True (dir </> ".olifant")
+  TIO.writeFile (dir </> ".olifant/config.toml") ""
   g ["init", "-q", "-b", "main"]
   g ["add", "."]
   g ["commit", "-q", "-m", "init"]

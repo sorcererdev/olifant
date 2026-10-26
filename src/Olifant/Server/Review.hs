@@ -80,9 +80,10 @@ git root args input =
 zpaths :: BS.ByteString -> [FilePath]
 zpaths = map (T.unpack . TE.decodeUtf8Lenient) . filter (not . BS.null) . BS.split 0
 
--- | Olifant's own state is never part of a change.
+-- | Olifant's own state and the project's config (`p` writes it) are never
+-- part of a change.
 ours :: FilePath -> Bool
-ours f = ".olifant/state/" `T.isPrefixOf` T.pack f
+ours f = ".olifant/state/" `T.isPrefixOf` T.pack f || f == ".olifant/config.toml"
 
 -- | The tree's reference at ROOT; Nothing when it is no repository or has
 -- no commit. Only objects are written (no ref, no index, no file).

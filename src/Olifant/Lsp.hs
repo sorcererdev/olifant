@@ -627,7 +627,7 @@ handlers env =
             answered <- planProgress (if choice == "test" then "testing" else "reviewing") (\_ -> chooseReview job path rid choice)
             case answered of
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right v -> respond (Right v)
+              Right v -> respond (Right v) >> lensesChanged
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/review/choose needs a textDocument, an id and a choice (keep, revert, test or allow)" Nothing))
     , -- a lens on the step of each open review
       requestHandler SMethod_TextDocumentCodeLens $ \req respond -> do
@@ -1403,7 +1403,9 @@ errandRequest env verb title req params respond = case (documentPath params, lin
     run job path line = do
       lspEnv <- getLspEnv
       -- a do's review is ready: the editor opens it (before the answer)
-      let ready rid = runLspT lspEnv (sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review/ready")) (object ["id" .= rid, "kind" .= ("do" :: T.Text), "textDocument" .= object ["uri" .= filePathToUri path]]))
+      let ready rid = runLspT lspEnv $ do
+            sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review/ready")) (object ["id" .= rid, "kind" .= ("do" :: T.Text), "textDocument" .= object ["uri" .= filePathToUri path]])
+            lensesChanged
       answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts ready (envCancel job) verb path line))
       -- an errand the editor cancelled is no result (its runner was stopped)
       stopped <- liftIO (cancelled (envCancel job))
@@ -1427,6 +1429,10 @@ errandJson verb a =
     , "facts" .= map factJson (eaFacts a)
     , "review" .= eaReview a
     ]
+
+-- | The open reviews changed: the editor asks for the lenses again.
+lensesChanged :: LspM () ()
+lensesChanged = void (sendRequest SMethod_WorkspaceCodeLensRefresh Nothing (\_ -> pure ()))
 
 -- | A review request's `id`.
 reviewIdOf :: Value -> Maybe T.Text
