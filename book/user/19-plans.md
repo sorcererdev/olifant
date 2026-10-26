@@ -96,12 +96,15 @@ test states `○ ● ✗` (a run of all a step's tests stamps it `✓ <fp>`, ope
 the marks were made at), `○` on the children of a step whose unit changed since that stamp, a
 re-anchor when a unit only moved.
 Readings are a model's judgement, and arrive as ghosts you accept with `<leader>mpy` or drop with
-`<leader>mpn`: an `also` child placing a unit under a step, a step line ticked or unticked, a
-`✗ changed: <why>` child, a `✗ gone:` child, a new step for work nothing covers.
+`<leader>mpn`: an `also` child placing a unit under a step, a step line ticked (only a step with
+tests: a reading never ticks one without) or unticked, a `✗ changed: <why>` child, a `✗ gone:`
+child, a new step for work nothing covers.
 
 **Who decides.** Jev (`[decide] model`) answers two questions: `plan-step` (which open step is a
 changed file for, or none; one question per changed file) and `plan-state` (done, in progress or
-diverged; for a done step without tests, still done, reopened or diverged). Below the gate (0.6)
+diverged; for a done step without tests, still done, reopened or diverged). A `done` for an open
+step with no test children is taken as in progress: no tick ghost. A step with tests keeps its
+tick ghost, and its tests tick it. Below the gate (0.6)
 the same question climbs `[plans] ladder`, else `[model] ladder` without Jev, each backend under
 its `escalate` policy: an automatic reconcile climbs `auto` rungs only, `<leader>mpx` also `ask`
 rungs, and `never` is never. Words (a `<why>`, a new step's line) come from the first allowed chat

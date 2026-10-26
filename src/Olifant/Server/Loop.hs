@@ -446,12 +446,16 @@ reconcile token forced path s0 = do
                     u : _ -> Just u
                     [] -> (\a fp -> (anPath a, anUnit a, fp)) <$> lnAnchor step <*> fpOf step
                   child step = (T.replicate (lnIndent step + 2) " " <>)
+                  hasTests step = any (\c -> lnKind c == TestChild && lnIndent c == lnIndent step + 2) (childrenOf ls (lnRow step))
                   after step lines' replace unit = ReconcileBlock (Block (lnRow step) (Just (lnText step)) (map ghost lines')) replace unit
                   also = [after step [child step ("- also " <> anchorOf cu)] False (triple' cu) | Placed step cus <- placements, cu <- cus]
                   stateGhosts =
                     [ after step [t'] True (unitOf step own)
                     | (step, own, _, Just c, _) <- states
                     , Just t' <- [case c of
+                        -- a reading never ticks a step with no tests: its
+                        -- done is in progress (its tests tick one with them)
+                        "done" | not (hasTests step) -> Nothing
                         _ | c `elem` ["done", "still_done"] -> Just (withVerdict (checkbox "- [ ]" "- [x]" (lnText step)) (maybe NoVerdict Verified (fpOf step)))
                         "reopened" -> Just (withVerdict (checkbox "- [x]" "- [ ]" (lnText step)) NoVerdict)
                         _ -> Nothing] ]
