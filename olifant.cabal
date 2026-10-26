@@ -141,6 +141,7 @@ library
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
+    Olifant.Server.Review
     Olifant.Server.Site
     Olifant.Server.State
     Olifant.Server.Stub
@@ -317,6 +318,8 @@ test-suite spec
     Olifant.Server.Preview
     Olifant.Server.Recognize
     Olifant.Server.Regions
+    Olifant.Server.Review
+    Olifant.Server.ReviewSpec
     Olifant.Server.Site
     Olifant.Server.State
     Olifant.Server.Stub

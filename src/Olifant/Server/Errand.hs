@@ -3,6 +3,7 @@
 -- Nothing here throws; every failure is a Left with a status and a short reason.
 module Olifant.Server.Errand
   ( Verb (..), RunResult (..), Tokens (..), ModelUse (..), Status (..), RunFailure (..)
+  , Denial (..), denialsIn
   , statusName, runnerArgs, runClaude
   , Grounded (..), Ghost (..), Block (..)
   , errandPrompt, doTestCommand, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
@@ -10,6 +11,9 @@ module Olifant.Server.Errand
 
 import Data.Aeson (Value (..), decodeStrict)
 import Data.ByteString (ByteString)
+import Data.ByteString.Lazy qualified as BL
+import Data.Aeson (encode)
+import Data.Maybe (mapMaybe)
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Scientific (toRealFloat)
@@ -36,7 +40,7 @@ data ModelUse = ModelUse {muTokens :: Tokens, muCost :: Maybe Double}
 data RunResult = RunResult
   { rrText :: Text, rrSeconds :: Double, rrCost :: Maybe Double
   , rrSession :: Maybe Text, rrTurns :: Maybe Int, rrTokens :: Maybe Tokens
-  , rrModels :: [(Text, ModelUse)], rrDenials :: Int }
+  , rrModels :: [(Text, ModelUse)], rrDenials :: Int, rrDenied :: [Denial] }
   deriving (Eq, Show)
 
 -- | How an errand ended. 'runClaude' never returns 'Ok' or 'Empty' as a failure;
@@ -92,7 +96,8 @@ fromObject o = case KM.lookup "result" o of
             _ -> []
         , rrDenials = case KM.lookup "permission_denials" o of
             Just (Array a) -> length a
-            _ -> 0 }
+            _ -> 0
+        , rrDenied = maybe [] denialsIn (KM.lookup "permission_denials" o) }
   _ -> Left (RunFailure Error (T.take 120 (T.pack (show (Object o)))) session)
   where
     session = case KM.lookup "session_id" o of
@@ -107,6 +112,27 @@ fromObject o = case KM.lookup "result" o of
     asText = \case
       String t -> t
       v -> T.pack (show v)
+
+-- | A command the runner refused: its tool and its input in words (the
+-- command, for Bash).
+data Denial = Denial {dnTool :: Text, dnInput :: Text}
+  deriving stock (Eq, Show)
+
+-- | The runner's @permission_denials@ (each @tool_name@ and @tool_input@).
+denialsIn :: Value -> [Denial]
+denialsIn = \case
+  Array xs -> mapMaybe one (foldr (:) [] xs)
+  _ -> []
+  where
+    one = \case
+      Object o | Just (String tool) <- KM.lookup "tool_name" o -> Just (Denial tool (inputOf (KM.lookup "tool_input" o)))
+      _ -> Nothing
+    inputOf = \case
+      Just (Object i) | Just (String c) <- KM.lookup "command" i -> c
+      Just (Object i) | Just (String c) <- KM.lookup "file_path" i -> c
+      Just (Object i) | Just (String c) <- KM.lookup "url" i -> c
+      Just v@(Object _) -> TE.decodeUtf8Lenient (BL.toStrict (encode v))
+      _ -> ""
 
 first120 :: ByteString -> ByteString -> Text
 first120 out err = T.take 120 (T.strip (TE.decodeUtf8Lenient (out <> err)))

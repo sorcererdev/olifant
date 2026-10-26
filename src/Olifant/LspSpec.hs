@@ -102,6 +102,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
   mutateSpec
   plansSpec
   plansStage1Spec
+  doReviewSpec
   plansLoopSpec
   it "is the `olifant lsp` command: the built binary initialises and opens a document" $ do
     (built, out, _) <- readCreateProcessWithExitCode (proc "cabal" ["list-bin", "-v0", "olifant"]) ""
@@ -2353,6 +2354,121 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
         , \eid -> ["id" .= eid, "block" .= (0 :: Int)] ]
       (rs, 0) <- records dir
       length rs `shouldBe` 1
+
+doReviewSpec :: Spec
+doReviewSpec = describe "olifant/plans (the do review)" $ do
+  let table = "src/bistro/booking/models/table.py"
+      planWith step = T.unlines ["# T", "", "## Hypothesis", "- ? where is the table", "- a claim @" <> T.pack table <> ":Table ", "", "## Plan", step]
+      docOf d = "textDocument" .= object ["uri" .= (d ^. L.uri)]
+      -- the fixture app with a plan, committed, its runner the shim
+      withRepo text act = withPython [("plans/t.md", text)] $ \ports dir -> do
+        shim <- canonicalizePath "src/Olifant/Server/testdata/claude-shim.sh"
+        TIO.appendFile (dir </> ".olifant/config.toml") ("\n[plans]\nrunner = \"" <> T.pack shim <> "\"\n")
+        let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+        git ["init", "-q", "-b", "main"]
+        git ["add", "."]
+        git ["commit", "-q", "-m", "the fixture"]
+        act ports dir
+      doP = Proxy :: Proxy "olifant/plans/do"
+      reviewP = Proxy :: Proxy "olifant/plans/review"
+      reviewsP = Proxy :: Proxy "olifant/plans/reviews"
+      chooseP = Proxy :: Proxy "olifant/plans/review/choose"
+      -- a do of the plan's step (row 7): the ready notification's params, then its answer
+      doStep p = do
+        let method = SMethod_CustomMethod doP
+        rid <- sendRequest method (object [docOf p, "line" .= (7 :: Int)])
+        let readyN = (customNotification (Proxy :: Proxy "olifant/plans/review/ready") <&> \case NotMess (TNotificationMessage _ _ v) -> v) <|> (anyMessage >> readyN)
+            answerOf = responseForId method rid <|> (anyMessage >> answerOf)
+        ready <- readyN
+        TResponseMessage _ _ r <- answerOf
+        let Just (String reviewId) = lookupKey "id" ready
+        pure (reviewId, ready, either (Left . (^. L.message)) Right r)
+      choose p rid c = blockMove chooseP (object [docOf p, "id" .= rid, "choice" .= (c :: Text)])
+      at ks v = foldl (\m k -> m >>= lookupKey k) (Just v) ks
+      arr = \case
+        Just (Array xs) -> toList xs
+        _ -> []
+      records dir = readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
+  it "a do leaves a review: ready before its answer, the change a diff, kept on disk until answered" $
+    withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+      ((rid, ready, answer, listed, view), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (rid, ready, answer) <- doStep p
+        listed <- blockMove reviewsP (object [docOf p])
+        view <- blockMove reviewP (object [docOf p, "id" .= rid])
+        pure (rid, ready, answer, listed, view)
+      v <- either (fail . T.unpack) pure answer
+      lookupKey "review" v `shouldBe` Just (String rid)
+      lookupKey "kind" ready `shouldBe` Just (String "do")
+      l <- either (fail . T.unpack) pure listed
+      map (\x -> (lookupKey "id" x, lookupKey "row" x)) (arr (lookupKey "reviews" l)) `shouldBe` [(Just (String rid), Just (Number 7))]
+      w <- either (fail . T.unpack) pure view
+      at ["title", "badge"] w `shouldBe` Just (String "\9670 answered")
+      at ["summary"] w `shouldBe` Just (String "The do changed 1 file.")
+      map (\f -> (lookupKey "file" f, lookupKey "status" f)) (arr (at ["landing", "files"] w)) `shouldBe` [(Just (String (T.pack table)), Just (String "modified"))]
+      at ["landing", "diff"] w `shouldSatisfy` \case Just (String d) -> "+    def label(self) -> str: return self.id" `T.isInfixOf` d; _ -> False
+      at ["landing", "edit", "documentChanges"] w `shouldSatisfy` isJust
+      map (lookupKey "key") (arr (at ["offers"] w)) `shouldBe` map (Just . String) ["a", "r", "t"]
+      listDirectory (dir </> ".olifant/state/reviews/plans/t") >>= (`shouldSatisfy` ((== 1) . length))
+  it "revert restores the tree from the reference; the review goes, a rejected outcome is recorded" $
+    withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+      original <- TIO.readFile (dir </> table)
+      ((rid, chosen, listed), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (rid, _, _) <- doStep p
+        chosen <- choose p rid "revert"
+        listed <- blockMove reviewsP (object [docOf p])
+        pure (rid, chosen, listed)
+      c <- either (fail . T.unpack) pure chosen
+      (lookupKey "done" c, lookupKey "said" c) `shouldBe` (Just (Bool True), Just (String "reverted 1 file"))
+      arr (lookupKey "files" c) `shouldBe` [String (T.pack (dir </> table))]
+      TIO.readFile (dir </> table) >>= (`shouldBe` original)
+      fmap (arr . lookupKey "reviews") listed `shouldBe` Right []
+      (rs, 0) <- records dir
+      [(orId o, orOutcome o) | AnOutcome o <- rs] `shouldBe` [(rid, "rejected")]
+  it "keep lands the plan lines (the anchor the do found) and keeps the tree" $
+    withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+      ((rid, chosen), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (rid, _, _) <- doStep p
+        (rid,) <$> choose p rid "keep"
+      c <- either (fail . T.unpack) pure chosen
+      lookupKey "done" c `shouldBe` Just (Bool True)
+      Aeson.encode (lookupKey "edit" c) `shouldSatisfy` \e -> ("add a method   @" <> TE.encodeUtf8 (T.pack table) <> ":Table.label") `BS.isInfixOf` BSL.toStrict e
+      TIO.readFile (dir </> table) >>= (`shouldSatisfy` T.isInfixOf "def label")
+      (rs, 0) <- records dir
+      [(orId o, orOutcome o) | AnOutcome o <- rs] `shouldBe` [(rid, "accepted")]
+  it "allow writes the denied command into [plans] do_tools and offers it no more" $
+    withRepo (planWith "- [ ] add a method SHIM:DENY") $ \ports dir -> do
+      ((before, chosen), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (rid, _, _) <- doStep p
+        before <- blockMove reviewP (object [docOf p, "id" .= rid])
+        (before,) <$> choose p rid "allow"
+      b <- either (fail . T.unpack) pure before
+      at ["denied"] b `shouldBe` Just (Array (pure (String "tried `python -m pytest t.py` 2 times; not allowed.") <> pure (String "Allowed: `uv run \8230`.")))
+      map (lookupKey "key") (arr (at ["offers"] b)) `shouldBe` map (Just . String) ["a", "r", "t", "p"]
+      c <- either (fail . T.unpack) pure chosen
+      lookupKey "said" c `shouldBe` Just (String "allowed Bash(python -m pytest*) in .olifant/config.toml")
+      map (lookupKey "key") (arr (at ["review", "offers"] c)) `shouldBe` map (Just . String) ["a", "r", "t"]
+      TIO.readFile (dir </> ".olifant/config.toml") >>= (`shouldSatisfy` T.isInfixOf "do_tools = [\"Bash(python -m pytest*)\"]")
+  it "test on a step with no tests says so; the review stays" $
+    withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+      ((chosen, listed), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (rid, _, _) <- doStep p
+        chosen <- choose p rid "test"
+        (chosen,) <$> blockMove reviewsP (object [docOf p])
+      chosen `shouldBe` Left "the step has no tests"
+      fmap (length . arr . lookupKey "reviews") listed `shouldBe` Right 1
+  it "a code lens sits on the step of an open review" $
+    withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+      ((rid, lenses), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (rid, _, _) <- doStep p
+        (rid,) <$> getCodeLenses p
+      [(l ^. L.range . L.start . L.line, fmap (^. L.command) (l ^. L.command), fmap (^. L.arguments) (l ^. L.command)) | l <- lenses]
+        `shouldBe` [(7, Just "olifant.plans.review", Just (Just [String rid, String (getUri (filePathToUri (dir </> "plans/t.md")))]))]
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)

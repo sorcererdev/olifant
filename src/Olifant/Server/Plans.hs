@@ -35,7 +35,8 @@ import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, errandPrompt, testWords, groundingLimit, parseAnswer, runClaude, statusName)
-import Olifant.Server.LoopTypes (Fact)
+import Olifant.Server.LoopTypes (Fact (..))
+import Olifant.Server.Review (Review (..), changeSince, saveReview, takeRef, testsOfFacts)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
@@ -242,6 +243,7 @@ data ErrandAnswer = ErrandAnswer
   , eaCost :: Maybe Double
   , eaChanged :: [FilePath]
   , eaFacts :: [Fact]
+  , eaReview :: Maybe Text
   }
   deriving stock (Eq, Show)
 
@@ -253,9 +255,12 @@ data ErrandAnswer = ErrandAnswer
 -- errand that reaches the runner, however it ends, appends a record to
 -- `.olifant/state/errands.jsonl` and a line to the step log; a line the
 -- verb refuses writes neither. A `do` that answered runs AFTER over the
--- plan's lines and its row (the step's tests) before its record.
-runErrand :: (ServerState -> Project -> [Line] -> Int -> IO [Fact]) -> Cancel -> Verb -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text ErrandAnswer)
-runErrand after token verb path row s0 =
+-- plan's lines and its row (the step's tests) before its record. A `do`
+-- in a git repository takes the tree's reference first; one that answered,
+-- or changed the tree however it ended, leaves a review (its id to
+-- REVIEWED, and in the answer).
+runErrand :: (ServerState -> Project -> [Line] -> Int -> IO [Fact]) -> (Text -> IO ()) -> Cancel -> Verb -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text ErrandAnswer)
+runErrand after reviewed token verb path row s0 =
   projectFor path s0 >>= \case
     (s, Nothing) -> pure (s, Left "this plan is in no Olifant project")
     (s, Just (_, p)) -> (s,) <$> errand s p
@@ -315,16 +320,40 @@ runErrand after token verb path row s0 =
           -- before a do, the disk under each file open in the editor (but
           -- the plan), to tell which ones it wrote
           before <- if verb == Do then mapM (\f -> (f,) <$> onDisk f) [f | f <- M.keys (ssDocs s), f /= normalisePath path, (normalisePath root <> "/") `isPrefixOf` f] else pure []
+          -- a do's tree before it: what its review is the change since
+          ref <- if verb == Do then safely Nothing (takeRef root) else pure Nothing
+          let -- a do's review, when it answered or changed the tree (its id)
+              review rid status why mrr ghosts facts answered = case ref of
+                Just tr | verb == Do -> do
+                  changes <- safely [] (changeSince root [rel] tr)
+                  if null changes && not answered
+                    then pure Nothing
+                    else do
+                      let r = Review
+                            { rvId = rid, rvErrand = rid, rvPlan = rel, rvRow = lnRow target, rvStep = lnText target
+                            , rvAt = now, rvModel = pcModel cfg, rvSeconds = maybe 0 rrSeconds mrr, rvCost = mrr >>= rrCost
+                            , rvStatus = status, rvWhy = why
+                            , rvSaid = [l | Just rr <- [mrr], l <- map T.strip (T.lines (rrText rr)), any (`T.isPrefixOf` l) ["DONE", "BLOCKED", "- ? "]]
+                            , rvLines = map ghText ghosts
+                            , rvFacts = [(n, maybe "" lnText (find ((== n) . lnRow) ls), t) | Replace n t <- facts]
+                            , rvTests = testsOfFacts [t | Replace _ t <- facts]
+                            , rvDenials = maybe [] rrDenied mrr, rvTools = tools ++ pcDoTools cfg, rvAllowed = []
+                            , rvRef = Just tr, rvPrompt = prompt, rvAnswer = maybe "" rrText mrr, rvSession = mrr >>= rrSession }
+                      saved <- safely False (saveReview (ssPorts s) root r >> pure True)
+                      if saved then reviewed rid >> pure (Just rid) else pure Nothing
+                _ -> pure Nothing
           runClaude token cfg verb tools root prompt >>= \case
             Left f -> do
               changed <- if verb == Do then changedFiles root else pure []
-              _ <- record (rfStatus f) (Just (rfWhy f)) (rfSession f) Nothing 0 0 0 0 0 (length changed)
+              rid <- record (rfStatus f) (Just (rfWhy f)) (rfSession f) Nothing 0 0 0 0 0 (length changed)
+              _ <- review rid (statusName (rfStatus f)) (Just (rfWhy f)) Nothing [] [] False
               pure (Left (rfWhy f))
             Right rr -> case parseAnswer verb ls target (rrText rr) of
               ([], dropped) | verb /= Do || not (doAnswered (rrText rr)) -> do
                 changed <- if verb == Do then changedFiles root else pure []
                 let why = verbName <> " answered nothing in the grammar"
-                _ <- record Empty (Just why) (rrSession rr) (Just rr) 0 dropped 0 0 0 (length changed)
+                rid <- record Empty (Just why) (rrSession rr) (Just rr) 0 dropped 0 0 0 (length changed)
+                _ <- review rid "empty" (Just why) (Just rr) [] [] False
                 pure (Left why)
               (blocks, dropped) -> do
                 fps <- mapM (mapM (fpOf s p) . blLines) blocks
@@ -333,8 +362,10 @@ runErrand after token verb path row s0 =
                 let ghosts = concatMap blLines blocks
                     resolved = length (filter isJust (concat fps))
                     unresolved = length (filter (isJust . ghAnchor) ghosts) - resolved
+                    blockedWhy = listToMaybe' [T.strip w | l <- T.lines (rrText rr), Just w <- [T.stripPrefix "BLOCKED" (T.strip l)]]
                 rid <- record Ok Nothing (rrSession rr) (Just rr) (length blocks) dropped (length ghosts) resolved unresolved (length changed)
-                pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed facts))
+                rv <- review rid (maybe "answered" (const "blocked") blockedWhy) blockedWhy (Just rr) ghosts facts True
+                pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed facts rv))
         _ -> pure (Left (verbName <> " needs a " <> kindName <> " line"))
     fits = case verb of
       Ask -> (== Question)

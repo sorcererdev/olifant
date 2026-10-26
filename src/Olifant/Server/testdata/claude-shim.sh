@@ -25,11 +25,15 @@ case "$prompt" in
   *TEST:*) answer='DONE' ;;
   *) answer='ok' ;;
 esac
+denials='[]'
+case "$prompt" in
+  *SHIM:DENY*) denials='[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"python -m pytest t.py"}},{"tool_name":"Bash","tool_use_id":"t2","tool_input":{"command":"python -m pytest t.py"}}]' ;;
+esac
 case " $* " in
   *" --output-format json "*)
     printf '{"type":"result","result":"%s","duration_ms":1200,"num_turns":1,"session_id":"shim-%s","total_cost_usd":0.0123,' "$answer" "$$"
     printf '"usage":{"input_tokens":2,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5000},'
     printf '"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":40,"cacheCreationInputTokens":1000,"cacheReadInputTokens":5000,"costUSD":0.0123}},'
-    printf '"permission_denials":[]}\n' ;;
+    printf '"permission_denials":%s}\n' "$denials" ;;
   *) printf '%b\n' "$answer" ;;
 esac
