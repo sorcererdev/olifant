@@ -64,6 +64,24 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     map (^. L.label) <$> anchorItems s proj "- x @src/a.py:" `shouldReturn` ["Foo", "Foo.bar"]
     map (^. L.label) <$> anchorItems s proj "- x @src/a.py:Foo.b" `shouldReturn` ["Foo.bar"]
     map (^. L.label) <$> anchorItems s proj "- x no anchor" `shouldReturn` []
+  it "completes fuzzily after @: units first, then files, with filterText" $ do
+    (s, proj) <- planServer
+    is <- anchorItems s proj "- x @table"
+    map (^. L.label) is `shouldBe` ["app/models/table.py:Table", "app/models/table.py:Table.x", "app/models/table.py", "docs/table.txt"]
+    map (^. L.insertText) (take 1 is) `shouldBe` [Just "app/models/table.py:Table"]
+    map (^. L.filterText) (take 1 is) `shouldBe` [Just "table.py Table app/models/table.py"]
+    map (^. L.insertText) (drop 2 is) `shouldBe` [Just "app/models/table.py:", Just "docs/table.txt"]
+    map (fmap (^. L.command) . (^. L.command)) (drop 2 is) `shouldBe` [Just "editor.action.triggerSuggest", Nothing]
+    map (^. L.label) <$> anchorItems s proj "- x @tbl" `shouldReturn` ["app/models/table.py:Table", "app/models/table.py:Table.x", "app/models/table.py", "docs/table.txt"]
+    map (^. L.label) <$> anchorItems s proj "- x @zzz" `shouldReturn` []
+  it "bounds the list" $ do
+    (s, proj) <- planServer
+    is <- anchorItems s proj "- x @"
+    length is `shouldSatisfy` (<= 50)
+    "src/a.py" `elem` map (^. L.label) is `shouldBe` True
+  it "offers a new step as a snippet and as plain text" $ do
+    newStepSnippet `shouldBe` "- [ ] ${1:step} @${2:anchor}"
+    newStepText `shouldBe` "- [ ] step @anchor"
   it "lists the plan's anchored lines by section" $ do
     (s, proj) <- planServer
     fs <- planFiles s proj "## A\n- a @src/a.py:Foo.bar\n## B\n- [ ] b @src/a.py:Gone\n"
@@ -81,6 +99,8 @@ planServer = do
         ++ [ ("/r1/.olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")
            , ("/r1/src/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/notes.txt", "x\n")
+           , ("/r1/app/models/table.py", "class Table:\n    def x(self):\n        return 1\n")
+           , ("/r1/docs/table.txt", "t\n")
            , -- outside the root: there, so a refusal is not a miss
              ("/a.py", "class Foo:\n    def bar(self):\n        return 1\n")
            , ("/r1/plans/t.md", "# T\n") ]

@@ -121,6 +121,9 @@ data ServerState = ServerState
     ssPaused :: IORef (Int, Map Text PausedConjure)
   , -- | per plan: the last reconcile's situation (its key) and its answer
     ssReconciled :: Map FilePath (Text, ReconcileAnswer)
+  , -- | per (language, path): the units found in a text, kept while the file's
+    -- text is the same (anchor completion asks for many files per keystroke)
+    ssUnitCache :: IORef (Map (Text, FilePath) (Text, Dynamic))
   }
 
 newServerState :: Ports -> IO ServerState
@@ -130,7 +133,8 @@ newServerState ports = do
   decisions <- newIORef (M.empty, S.empty)
   onDecided <- newIORef (pure ())
   paused <- newIORef (0, M.empty)
-  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty)
+  units <- newIORef M.empty
+  pure (ServerState ports M.empty M.empty cache defaultServerConfig M.empty 0 0 M.empty M.empty neverCancel M.empty M.empty M.empty M.empty bases decisions onDecided Nothing Nothing paused M.empty units)
 
 -- | A file's base text, from the cache while no file changed since.
 cachedBase :: ServerState -> FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))

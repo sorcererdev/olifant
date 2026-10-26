@@ -121,6 +121,7 @@ spec = describe "Olifant.Lsp (olifant lsp over stdio)" $ do
           _ -> Nothing
       fmap (^. L.semanticTokensProvider) caps `shouldBe` Just Nothing
       fmap (isJust . (^. L.definitionProvider)) caps `shouldBe` Just True
+      fmap (\c -> (^. L.triggerCharacters) =<< (c ^. L.completionProvider)) caps `shouldBe` Just (Just ["@", ":"])
 
 -- | Rule findings and their fixes (Task 9): pull diagnostics, quickfixes
 -- carrying a fix's open choices, resolved to the fix's plan.
@@ -396,6 +397,16 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
                 Nothing -> maybe "" id (item ^. L.insertText)
           body `shouldSatisfy` T.isInfixOf "${1:name}"
         [] -> expectationFailure ("no Port method among " <> show (map (^. L.label) items))
+  it "(a2) a typed trigger character (@ or :) in a code file completes nothing" $
+    withPython [] $ \ports dir -> do
+      ((typed, invoked), _) <- inProcessWith ports dir $ do
+        doc <- openDoc port "python"
+        let ask ctx = request SMethod_TextDocumentCompletion (CompletionParams doc inProtocol Nothing Nothing (Just ctx)) <&> \case
+              TResponseMessage _ _ (Right (InL items)) -> map (^. L.label) items
+              _ -> []
+        (,) <$> ask (CompletionContext CompletionTriggerKind_TriggerCharacter (Just "@")) <*> ask (CompletionContext CompletionTriggerKind_Invoked Nothing)
+      typed `shouldBe` []
+      invoked `shouldContain` ["Port method"]
   it "(b) offers the snippet anticipated here as an inline completion: unfilled, a snippet" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir (openDoc port "python" >>= (`inline` inProtocol))
@@ -1985,11 +1996,28 @@ plansSpec = describe "plans: anchors in the server" $ do
       ((paths, units), _) <- inProcessWith ports dir $ do
         plan <- openDoc "plans/t.md" "markdown"
         let complete l c = request SMethod_TextDocumentCompletion (CompletionParams plan (Position l c) Nothing Nothing Nothing) <&> \case
-              TResponseMessage _ _ (Right (InL items)) -> map (^. L.label) items
+              TResponseMessage _ _ (Right (InR (InL (CompletionList True _ items)))) -> map (^. L.label) items
               _ -> []
         (,) <$> complete 0 (fromIntegral (T.length "- x @src/bistro/booking/queries/get_day_schedule.")) <*> complete 1 (fromIntegral (T.length ("- y @" <> T.pack schedule <> ":GetDaySchedule.h")))
-      paths `shouldBe` ["src/bistro/booking/queries/get_day_schedule.py"]
+      paths `shouldBe` ["src/bistro/booking/queries/get_day_schedule.py", "src/bistro/booking/queries/get_day_schedule__test.py"]
       units `shouldBe` ["GetDaySchedule.handle"]
+  it "a plan offers a new step on a blank line (snippet) and as a code action under the cursor's line" $
+    withPython [("plans/t.md", "# P\n- [ ] one @a.py:A\n\n")] $ \ports dir -> do
+      ((snips, titles, edits), _) <- inProcessWith ports dir $ do
+        plan <- openDoc "plans/t.md" "markdown"
+        items <- request SMethod_TextDocumentCompletion (CompletionParams plan (Position 2 0) Nothing Nothing Nothing) <&> \case
+          TResponseMessage _ _ (Right (InR (InL (CompletionList _ _ is)))) -> is
+          _ -> []
+        acts <- getCodeActions plan (Range (Position 1 3) (Position 1 3))
+        let news = [a | InR a <- acts, a ^. L.kind == Just CodeActionKind_Source]
+        pure
+          ( [(i ^. L.insertText, i ^. L.insertTextFormat) | i <- items]
+          , map (^. L.title) news
+          , [concat (M.elems cs) | a <- news, Just (WorkspaceEdit (Just cs) _ _) <- [a ^. L.edit], let _ = a]
+          )
+      snips `shouldBe` [(Just "- [ ] ${1:step} @${2:anchor}", Just InsertTextFormat_Snippet)]
+      titles `shouldBe` ["New step below"]
+      map (map (\e -> (e ^. L.range . L.start, e ^. L.newText))) edits `shouldBe` [[(Position 1 17, "\n- [ ] step @anchor")]]
 
 -- | Plan errands (plans, stage 1, Task 7): ask, validate and do run the
 -- runner (the shim here, never claude) and answer ghost blocks.

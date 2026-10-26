@@ -8,6 +8,8 @@ module Olifant.Server.Plans
   , resolveAnchor
   , planDiagnostics
   , anchorItems
+  , newStepSnippet
+  , newStepText
   , FileItem (..)
   , planFiles
   , ErrandAnswer (..)
@@ -18,9 +20,13 @@ module Olifant.Server.Plans
   , safely
   ) where
 
+import Control.Lens ((&), (?~))
 import Control.Monad (filterM)
+import Language.LSP.Protocol.Lens qualified as L
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Functor ((<&>))
+import Data.Dynamic (fromDynamic, toDyn)
+import Data.IORef (modifyIORef', readIORef)
 import Data.List (find, isPrefixOf, nub)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
@@ -33,7 +39,7 @@ import Olifant.Server.LoopTypes (Fact)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
-import System.FilePath (makeRelative)
+import System.FilePath (makeRelative, splitDirectories, takeFileName)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
@@ -127,29 +133,81 @@ planDiagnostics s p _ text = do
 utf16Length :: Text -> Int
 utf16Length = T.foldl' (\n c -> n + if fromEnum c > 0xFFFF then 2 else 1) 0
 
--- | Completions for a line typed up to the cursor: after `@` or `@prefix`,
--- the project's files of a known language; after `@path:prefix`, the
--- units of that file.
+-- | Completions for a line typed up to the cursor. After `@`, whatever was
+-- typed matches fuzzily (a subsequence, any case) the project's units
+-- (by unit name) and files (by basename or path): units first, files
+-- second, each with a `filterText` (basename, unit, path) so a client can
+-- filter on its own; the list is bounded ('anchorLimit'). A unit inserts
+-- `path:Unit`; a file inserts `path:` and asks the client to complete again.
+-- After `@path:prefix`, the units of that file by prefix.
 anchorItems :: ServerState -> Project -> Text -> IO [CompletionItem]
 anchorItems s p upTo = case T.breakOnEnd "@" upTo of
   ("", _) -> pure []
   (_, typed)
     | T.any (== ' ') typed -> pure []
     | (path, unitPrefix) <- T.breakOnEnd ":" typed, not (T.null path) -> do
-        units <- case confined (T.unpack (T.dropEnd 1 path)) of
-          Nothing -> pure []
-          Just rel | Nothing <- languageFor langs rel -> pure []
-          Just rel | Just lang <- languageFor langs rel -> safely [] $ readText ws rel >>= \case
-            Nothing -> pure []
-            Just t -> either (const []) id <$> unitsOf (pSyntax (ssPorts s)) lang t
+        units <- unitsIn (T.unpack (T.dropEnd 1 path))
         pure [item CompletionItemKind_Function (namedName n) (namedName n) | n <- units, unitPrefix `T.isPrefixOf` namedName n]
     | otherwise -> do
-        files <- safely [] (listFiles ws ".")
-        pure [item CompletionItemKind_File (T.pack f) (T.pack f <> ":") | f <- files, isJust (languageFor langs f), T.unpack typed `isPrefixOf` f]
+        files <- take fileScan . filter (\f -> isJust (confined f) && not (any (\d -> "." `isPrefixOf` d && d /= ".") (splitDirectories f))) <$> safely [] (listFiles ws ".")
+        let fileHits = [f | f <- files, subseq typed (T.pack (takeFileName f)) || subseq typed (T.pack f)]
+        -- units are looked for only once something is typed, and only in files of a known language
+        unitHits <-
+          if T.null typed
+            then pure []
+            else
+              fmap concat . mapM (\f -> map (f,) <$> unitsIn f) $ filter (isJust . languageFor langs) files
+        let units = [unitItem f n | (f, n) <- unitHits, subseq typed (namedName n)]
+            filesItems = [fileItem f | f <- fileHits]
+        pure (take anchorLimit (units ++ filesItems))
   where
     ws = prWorkspace p
     langs = catalogLanguages (prCatalog p)
-    item kind label insert = CompletionItem label Nothing (Just kind) Nothing Nothing Nothing Nothing Nothing Nothing Nothing (Just insert) Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+    unitsIn rel = case confined rel of
+      Nothing -> pure []
+      Just r | Nothing <- languageFor langs r -> pure []
+      Just r | Just lang <- languageFor langs r -> safely [] $ readText ws r >>= \case
+        Nothing -> pure []
+        Just t -> cachedUnits r lang t
+    cachedUnits r lang t = do
+      let k = (langName lang, r)
+      known <- M.lookup k <$> readIORef (ssUnitCache s)
+      case known of
+        Just (t', d) | t' == t, Just us <- fromDynamic d -> pure us
+        _ -> do
+          us <- either (const []) id <$> unitsOf (pSyntax (ssPorts s)) lang t
+          modifyIORef' (ssUnitCache s) (M.insert k (t, toDyn us))
+          pure us
+    subseq needle hay = go (T.unpack (T.toLower needle)) (T.unpack (T.toLower hay))
+      where
+        go [] _ = True
+        go _ [] = False
+        go (x : xs) (y : ys) = if x == y then go xs ys else go (x : xs) ys
+    blank kind label insert = CompletionItem label Nothing (Just kind) Nothing Nothing Nothing Nothing Nothing Nothing Nothing (Just insert) Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+    item = blank
+    unitItem f n =
+      let full = T.pack f <> ":" <> namedName n
+       in blank CompletionItemKind_Function full full & L.filterText ?~ T.unwords [T.pack (takeFileName f), namedName n, T.pack f]
+    fileItem f =
+      -- a file with units inserts `path:` and completes again; one without is just `path`
+      if isJust (languageFor langs f)
+        then
+          blank CompletionItemKind_File (T.pack f) (T.pack f <> ":")
+            & L.filterText ?~ T.unwords [T.pack (takeFileName f), T.pack f]
+            & L.command ?~ Command "complete the unit" "editor.action.triggerSuggest" Nothing
+        else blank CompletionItemKind_File (T.pack f) (T.pack f) & L.filterText ?~ T.unwords [T.pack (takeFileName f), T.pack f]
+
+-- | How many anchor completions at most, and how many files are searched
+-- for units in one request.
+anchorLimit, fileScan :: Int
+anchorLimit = 50
+fileScan = 400
+
+-- | A new step as a snippet (holes: the step, the anchor) and as plain text
+-- (the same line with its holes filled by their placeholders).
+newStepSnippet, newStepText :: Text
+newStepSnippet = "- [ ] ${1:step} @${2:anchor}"
+newStepText = "- [ ] step @anchor"
 
 -- | A plan's anchored line: its section, row (0-based) and text; its file
 -- (absolute) when that exists, and its unit's definition line (1-based)
