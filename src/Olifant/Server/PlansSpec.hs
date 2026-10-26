@@ -70,8 +70,8 @@ spec = describe "Olifant.Server.Plans (anchors in the server)" $ do
     map (^. L.label) is `shouldBe` ["app/models/table.py:Table", "app/models/table.py:Table.x", "app/models/table.py", "docs/table.txt"]
     map (^. L.insertText) (take 1 is) `shouldBe` [Just "app/models/table.py:Table"]
     map (^. L.filterText) (take 1 is) `shouldBe` [Just "table.py Table app/models/table.py"]
-    map (^. L.insertText) (drop 2 is) `shouldBe` [Just "app/models/table.py:", Just "docs/table.txt:"]
-    map (fmap (^. L.command) . (^. L.command)) (drop 2 is) `shouldBe` [Just "editor.action.triggerSuggest", Just "editor.action.triggerSuggest"]
+    map (^. L.insertText) (drop 2 is) `shouldBe` [Just "app/models/table.py:", Just "docs/table.txt"]
+    map (fmap (^. L.command) . (^. L.command)) (drop 2 is) `shouldBe` [Just "editor.action.triggerSuggest", Nothing]
     map (^. L.label) <$> anchorItems s proj "- x @tbl" `shouldReturn` ["app/models/table.py:Table", "app/models/table.py:Table.x", "app/models/table.py", "docs/table.txt"]
     map (^. L.label) <$> anchorItems s proj "- x @zzz" `shouldReturn` []
   it "bounds the list" $ do

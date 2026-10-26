@@ -25,6 +25,8 @@ import Control.Monad (filterM)
 import Language.LSP.Protocol.Lens qualified as L
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Functor ((<&>))
+import Data.Dynamic (fromDynamic, toDyn)
+import Data.IORef (modifyIORef', readIORef)
 import Data.List (find, isPrefixOf, nub)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
@@ -37,7 +39,7 @@ import Olifant.Server.LoopTypes (Fact)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
-import System.FilePath (makeRelative, takeFileName)
+import System.FilePath (makeRelative, splitDirectories, takeFileName)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
@@ -147,7 +149,7 @@ anchorItems s p upTo = case T.breakOnEnd "@" upTo of
         units <- unitsIn (T.unpack (T.dropEnd 1 path))
         pure [item CompletionItemKind_Function (namedName n) (namedName n) | n <- units, unitPrefix `T.isPrefixOf` namedName n]
     | otherwise -> do
-        files <- take fileScan . filter (isJust . confined) <$> safely [] (listFiles ws ".")
+        files <- take fileScan . filter (\f -> isJust (confined f) && not (any (\d -> "." `isPrefixOf` d && d /= ".") (splitDirectories f))) <$> safely [] (listFiles ws ".")
         let fileHits = [f | f <- files, subseq typed (T.pack (takeFileName f)) || subseq typed (T.pack f)]
         -- units are looked for only once something is typed, and only in files of a known language
         unitHits <-
@@ -166,7 +168,16 @@ anchorItems s p upTo = case T.breakOnEnd "@" upTo of
       Just r | Nothing <- languageFor langs r -> pure []
       Just r | Just lang <- languageFor langs r -> safely [] $ readText ws r >>= \case
         Nothing -> pure []
-        Just t -> either (const []) id <$> unitsOf (pSyntax (ssPorts s)) lang t
+        Just t -> cachedUnits r lang t
+    cachedUnits r lang t = do
+      let k = (langName lang, r)
+      known <- M.lookup k <$> readIORef (ssUnitCache s)
+      case known of
+        Just (t', d) | t' == t, Just us <- fromDynamic d -> pure us
+        _ -> do
+          us <- either (const []) id <$> unitsOf (pSyntax (ssPorts s)) lang t
+          modifyIORef' (ssUnitCache s) (M.insert k (t, toDyn us))
+          pure us
     subseq needle hay = go (T.unpack (T.toLower needle)) (T.unpack (T.toLower hay))
       where
         go [] _ = True
@@ -178,9 +189,13 @@ anchorItems s p upTo = case T.breakOnEnd "@" upTo of
       let full = T.pack f <> ":" <> namedName n
        in blank CompletionItemKind_Function full full & L.filterText ?~ T.unwords [T.pack (takeFileName f), namedName n, T.pack f]
     fileItem f =
-      blank CompletionItemKind_File (T.pack f) (T.pack f <> ":")
-        & L.filterText ?~ T.unwords [T.pack (takeFileName f), T.pack f]
-        & L.command ?~ Command "complete the unit" "editor.action.triggerSuggest" Nothing
+      -- a file with units inserts `path:` and completes again; one without is just `path`
+      if isJust (languageFor langs f)
+        then
+          blank CompletionItemKind_File (T.pack f) (T.pack f <> ":")
+            & L.filterText ?~ T.unwords [T.pack (takeFileName f), T.pack f]
+            & L.command ?~ Command "complete the unit" "editor.action.triggerSuggest" Nothing
+        else blank CompletionItemKind_File (T.pack f) (T.pack f) & L.filterText ?~ T.unwords [T.pack (takeFileName f), T.pack f]
 
 -- | How many anchor completions at most, and how many files are searched
 -- for units in one request.

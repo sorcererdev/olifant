@@ -397,6 +397,16 @@ completionSpec = describe "snippets: completion and inline completion (ghosts)" 
                 Nothing -> maybe "" id (item ^. L.insertText)
           body `shouldSatisfy` T.isInfixOf "${1:name}"
         [] -> expectationFailure ("no Port method among " <> show (map (^. L.label) items))
+  it "(a2) a typed trigger character (@ or :) in a code file completes nothing" $
+    withPython [] $ \ports dir -> do
+      ((typed, invoked), _) <- inProcessWith ports dir $ do
+        doc <- openDoc port "python"
+        let ask ctx = request SMethod_TextDocumentCompletion (CompletionParams doc inProtocol Nothing Nothing (Just ctx)) <&> \case
+              TResponseMessage _ _ (Right (InL items)) -> map (^. L.label) items
+              _ -> []
+        (,) <$> ask (CompletionContext CompletionTriggerKind_TriggerCharacter (Just "@")) <*> ask (CompletionContext CompletionTriggerKind_Invoked Nothing)
+      typed `shouldBe` []
+      invoked `shouldContain` ["Port method"]
   it "(b) offers the snippet anticipated here as an inline completion: unfilled, a snippet" $
     withPython [] $ \ports dir -> do
       (v, _) <- inProcessWith ports dir (openDoc port "python" >>= (`inline` inProtocol))

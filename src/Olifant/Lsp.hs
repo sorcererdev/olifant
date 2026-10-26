@@ -378,6 +378,7 @@ handlers env =
         respond (Right (maybe (InR Null) InL hover))
     , -- snippets, each with its body placed at the cursor (tab stops)
       requestHandler SMethod_TextDocumentCompletion $ \req respond -> inBackground env req respond $ \job -> do
+        let typedChar = (req ^. L.params . L.context) >>= \c -> if c ^. L.triggerKind == CompletionTriggerKind_TriggerCharacter then Just () else Nothing
         (incomplete, items) <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure (False, [])
           Just path -> liftIO $
@@ -386,6 +387,8 @@ handlers env =
               -- after `@path:`) and offers a new step on a blank line; the
               -- list is bounded, so the client asks again as more is typed
               Just (_, project) | isPlanPath project path -> (True,) <$> anchorCompletions job project path (req ^. L.params . L.position)
+              -- `@` and `:` trigger completion everywhere, but only plans use them
+              _ | Just () <- typedChar -> pure (False, [])
               _ -> (False,) <$> snippetItems job path (req ^. L.params . L.position)
         respond (Right (if incomplete then InR (InL (CompletionList True Nothing items)) else InL items))
     , -- the chosen snippet, planned again with the model filling its holes
