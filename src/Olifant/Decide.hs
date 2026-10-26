@@ -154,7 +154,7 @@ decisionPrompt q =
       ++ shapeLines
       ++ (if null (qFields q) then [] else ["Also give these fields: " <> T.intercalate ", " [k <> " (" <> t <> ")" | (k, t) <- qFields q]])
       ++ concat [["", "## " <> k, v] | (k, v) <- qContext q]
-      ++ ["", "Answer with one JSON object and nothing else: {\"choice\": " <> answerHint <> ", \"confidence\": <0 to 1>, \"fields\": {…}}"]
+      ++ ["", "Answer with one JSON object and nothing else: {\"choice\": " <> answerHint <> ", \"confidence\": <0 to 1>" <> (if null (qFields q) then "" else ", \"fields\": {…}") <> "}"]
   where
     shapeLines = case qShape q of
       Choice os -> ["Options: " <> T.intercalate " | " (map fst os) <> " | unsure"] ++ [k <> ": " <> m | (k, m) <- os, not (T.null m)]
@@ -165,13 +165,19 @@ decisionPrompt q =
       Noul -> "<true, false, or \"unsure\">"
       Score _ -> "<a level number, or \"unsure\">"
 
--- | A reply read leniently (the first JSON object in it), then validated.
+-- | A reply read leniently (the first JSON object in it, fields the
+-- question did not ask for dropped: a chat model adds a rationale), then
+-- validated.
 decodeAnswer :: Question -> Text -> Answer
 decodeAnswer q reply =
   let body = T.dropWhileEnd (/= '}') (T.dropWhile (/= '{') reply)
    in case eitherDecodeStrict (TE.encodeUtf8 body) of
-        Right v -> validated q (fromValue v)
+        Right v -> validated q (asked (fromValue v))
         Left _ -> Unsure
+  where
+    asked = \case
+      Chosen c fs conf -> Chosen c [f | f@(k, _) <- fs, k `elem` map fst (qFields q)] conf
+      a -> a
 
 -- | A bare string, boolean or number, or an object with a "choice" and
 -- optionally "fields" and a "confidence". Not yet validated.
