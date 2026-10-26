@@ -27,7 +27,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, errandPrompt, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, errandPrompt, testWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, projectFor)
@@ -215,7 +215,7 @@ runErrand after token verb path row s0 =
               anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] [a | l <- around, Just a <- [lnAnchor l]])
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
           let tools = if verb == Do then testTools p else []
-              prompt = errandPrompt verb text ls target grounded
+              prompt = errandPrompt verb (if verb == Do then listToMaybe' (mapMaybe doTestCommand (projectTests p)) else Nothing) text ls target grounded
               rel = makeRelative root (normalisePath path)
           branch <- currentBranch root
           now <- pNow (ssPorts s)
@@ -311,11 +311,11 @@ gitOut root args =
 -- (past an `env` and its assignments), e.g. `Bash(uv run*)`; none without
 -- a `[test]`.
 testTools :: Project -> [Text]
-testTools p = take 1 ["Bash(" <> T.unwords (take 2 (past (testCommand td))) <> "*)" | l <- catalogLanguages (prCatalog p), Just td <- [langTest l], not (null (past (testCommand td)))]
-  where
-    past = \case
-      ("env" : rest) -> dropWhile (\w -> T.isInfixOf "=" w || "-" `T.isPrefixOf` w) rest
-      ws -> ws
+testTools p = take 1 ["Bash(" <> T.unwords (take 2 ws) <> "*)" | ws <- map testWords (projectTests p), not (null ws)]
+
+-- | The project's test commands, the first language's first.
+projectTests :: Project -> [[Text]]
+projectTests p = [testCommand td | l <- catalogLanguages (prCatalog p), Just td <- [langTest l]]
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

@@ -5,7 +5,7 @@ module Olifant.Server.Errand
   ( Verb (..), RunResult (..), Tokens (..), ModelUse (..), Status (..), RunFailure (..)
   , statusName, runnerArgs, runClaude
   , Grounded (..), Ghost (..), Block (..)
-  , errandPrompt, parseAnswer, doAnswered, groundingLimit, cutBody
+  , errandPrompt, doTestCommand, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
   ) where
 
 import Data.Aeson (Value (..), decodeStrict)
@@ -139,8 +139,24 @@ anchorRule =
     <> " <Unit> is a top-level class or function name (Name) or a method (Class.method) defined in that file."
 noProse = "No prose, no explanations, no code fences, no markdown headings, no blank lines."
 
-errandPrompt :: Verb -> Text -> [Line] -> Line -> [Grounded] -> Text
-errandPrompt verb plan ls target grounded =
+-- | A test command's words past a leading `env` and its assignments.
+testWords :: [Text] -> [Text]
+testWords = \case
+  ("env" : rest) -> dropWhile (\w -> T.isInfixOf "=" w || "-" `T.isPrefixOf` w) rest
+  ws -> ws
+
+-- | The project's test command as a `do` may type it (what its allowed
+-- tool admits): past the `env`, the test ids a placeholder. Nothing
+-- without one.
+doTestCommand :: [Text] -> Maybe Text
+doTestCommand cmd = case testWords cmd of
+  [] -> Nothing
+  ws -> Just (T.unwords [if w == "{= tests =}" then "<test file, or file::test>" else w | w <- ws])
+
+-- | The prompt for VERB on TARGET; @testCmd@ is the project's test
+-- command for a 'Do' ('doTestCommand').
+errandPrompt :: Verb -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
+errandPrompt verb testCmd plan ls target grounded =
   T.intercalate "\n" $
     ["<doc>", plan, "</doc>", ""]
       ++ ["<units>"] ++ concatMap unit grounded ++ ["</units>", ""]
@@ -182,8 +198,12 @@ errandPrompt verb plan ls target grounded =
         , "The ✗ and ✓ lines go only after a claim line. At most 6 inserted lines in total."
         , anchorRule, noProse ]
       Do ->
-        [ "Implement it here: edit the code, keep the change minimal, follow this repository's conventions,"
-        , "and run the relevant tests. When you are finished, your final message is only"
+        [ "Implement it here: edit the code, keep the change minimal, follow this repository's conventions."
+        , case testCmd of
+            Just c -> "To run tests, the one command you may run is exactly `" <> c <> "`, from the project root: no pipe, no redirect, no `cd` before it, no other command."
+            Nothing -> "You may not run commands."
+        , "After your change lands, Olifant runs the step's tests itself: tests you could not run are never a reason for BLOCKED."
+        , "When you are finished, your final message is only"
         , "one line per unit you created or changed, exactly"
         , "DONE @<path>:<Unit>"
         , "or, if you cannot do it, one line, exactly"
