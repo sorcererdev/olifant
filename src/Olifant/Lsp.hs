@@ -7,6 +7,7 @@
 -- which holds the projects, the open documents and the jobs.
 module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
+import Data.Char (isSpace)
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
@@ -146,7 +147,7 @@ serverDefinition ports = do
       , doInitialize = \lspEnv req -> configure env (req ^. L.params . L.initializationOptions) >> pure (Right lspEnv)
       , staticHandlers = \_ -> guarded (handlers env)
       , interpretHandler = \lspEnv -> Iso (runLspT lspEnv) liftIO
-      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optExecuteCommandCommands = Just ["olifant.doctor"]}
+      , options = defaultOptions {optTextDocumentSync = Just sync, optServerInfo = Just (ServerInfo "olifant" Nothing), optCompletionTriggerCharacters = Just ['@', ':'], optExecuteCommandCommands = Just ["olifant.doctor"]}
       }
   where
     -- open/close and incremental changes; saves are noticed (regions)
@@ -321,7 +322,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -377,14 +378,16 @@ handlers env =
         respond (Right (maybe (InR Null) InL hover))
     , -- snippets, each with its body placed at the cursor (tab stops)
       requestHandler SMethod_TextDocumentCompletion $ \req respond -> inBackground env req respond $ \job -> do
-        items <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
-          Nothing -> pure []
+        (incomplete, items) <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure (False, [])
           Just path -> liftIO $
             withSnapshot job (projectFor path) >>= \case
-              -- a plan completes its anchors: files after `@`, units after `@path:`
-              Just (_, project) | isPlanPath project path -> anchorCompletions job project path (req ^. L.params . L.position)
-              _ -> snippetItems job path (req ^. L.params . L.position)
-        respond (Right (InL items))
+              -- a plan completes its anchors (units and files after `@`, units
+              -- after `@path:`) and offers a new step on a blank line; the
+              -- list is bounded, so the client asks again as more is typed
+              Just (_, project) | isPlanPath project path -> (True,) <$> anchorCompletions job project path (req ^. L.params . L.position)
+              _ -> (False,) <$> snippetItems job path (req ^. L.params . L.position)
+        respond (Right (if incomplete then InR (InL (CompletionList True Nothing items)) else InL items))
     , -- the chosen snippet, planned again with the model filling its holes
       requestHandler SMethod_CompletionItemResolve $ \req respond -> inBackground env req respond $ \job -> do
         let item = req ^. L.params
@@ -1185,8 +1188,29 @@ anchorCompletions env project path (Position l c) = do
   let upTo = takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l))
       typed = T.takeWhileEnd (\ch -> ch /= '@' && ch /= ':') upTo
       range = Range (Position l (c - fromIntegral (utf16 typed))) (Position l c)
-  items <- withSnapshot env (\s -> (s,) <$> anchorItems s project upTo)
-  pure [i & L.textEdit ?~ InL (TextEdit range (fromMaybe (i ^. L.label) (i ^. L.insertText))) | i <- items]
+  if T.all isSpace upTo
+    then pure [newStepItem (Position l c)]
+    else do
+      items <- withSnapshot env (\s -> (s,) <$> anchorItems s project upTo)
+      pure [i & L.textEdit ?~ InL (TextEdit range (fromMaybe (i ^. L.label) (i ^. L.insertText))) | i <- items]
+
+-- | The new-step snippet, for a blank line of a plan.
+newStepItem :: Position -> CompletionItem
+newStepItem pos =
+  (CompletionItem "- [ ] step @anchor" Nothing (Just CompletionItemKind_Snippet) Nothing (Just "new step") Nothing Nothing Nothing Nothing Nothing (Just newStepSnippet) (Just InsertTextFormat_Snippet) Nothing Nothing Nothing Nothing Nothing Nothing Nothing)
+    & L.textEdit ?~ InL (TextEdit (Range (Position (pos ^. L.line) 0) pos) newStepSnippet)
+
+-- | "New step below" for a plan: the same line as 'newStepItem', as plain
+-- text under the cursor's line.
+newStepAction :: Env -> FilePath -> Position -> IO [CodeAction]
+newStepAction env path (Position l _) =
+  withSnapshot env (projectFor path) >>= \case
+    Just (_, project) | isPlanPath project path -> do
+      text <- documentText env path
+      let end = Position l (fromIntegral (utf16 (lineAt (T.splitOn "\n" text) (fromIntegral l))))
+          edit = WorkspaceEdit (Just (M.singleton (filePathToUri path) [TextEdit (Range end end) ("\n" <> newStepText)])) Nothing Nothing
+      pure [CodeAction "New step below" (Just CodeActionKind_Source) Nothing Nothing Nothing (Just edit) Nothing Nothing]
+    _ -> pure []
 
 -- | The start of a line, up to a UTF-16 column.
 takeUtf16 :: Int -> T.Text -> T.Text
