@@ -38,13 +38,12 @@ module Olifant.Server.Review
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, void, when)
 import Data.Aeson (Value (..), decodeStrict, encode, object, (.:), (.:?), (.=))
-import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (Parser, parseMaybe)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAlphaNum, isAscii)
 import Data.List (find, nub, sortOn)
-import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -53,6 +52,7 @@ import Olifant.App (Ports (..))
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), parsePlan, testState)
 import Olifant.Process (runBytes)
 import Olifant.Server.Edits (unifiedDiff)
+import Olifant.Server.Errand (Denial (..), denialsIn)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
@@ -181,27 +181,6 @@ revertChange root ref changes = do
   pure (if null failed then Right () else Left ("could not restore " <> T.intercalate ", " failed))
   where
     io <&> f = f <$> io
-
--- | A command the runner refused: its tool and its input in words (the
--- command, for Bash).
-data Denial = Denial {dnTool :: Text, dnInput :: Text}
-  deriving stock (Eq, Show)
-
--- | The runner's @permission_denials@ (each @tool_name@ and @tool_input@).
-denialsIn :: Value -> [Denial]
-denialsIn = \case
-  Array xs -> mapMaybe one (foldr (:) [] xs)
-  _ -> []
-  where
-    one = \case
-      Object o | Just (String tool) <- KM.lookup "tool_name" o -> Just (Denial tool (inputOf (KM.lookup "tool_input" o)))
-      _ -> Nothing
-    inputOf = \case
-      Just (Object i) | Just (String c) <- KM.lookup "command" i -> c
-      Just (Object i) | Just (String c) <- KM.lookup "file_path" i -> c
-      Just (Object i) | Just (String c) <- KM.lookup "url" i -> c
-      Just v@(Object _) -> TE.decodeUtf8Lenient (BL.toStrict (encode v))
-      _ -> ""
 
 -- | The denials in words, each distinct command once with how often it was
 -- tried; ALLOWED the commands a `do` may run (Bash patterns), said after.

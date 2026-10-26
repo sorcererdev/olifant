@@ -7,6 +7,7 @@ import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Process (neverCancel, newCancel)
 import Olifant.Plans (Anchor (..), parsePlan)
 import Olifant.Server.Errand
+
 import System.Directory (getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
@@ -49,7 +50,7 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
   it "a JSON reply without cost or duration is zero seconds and no cost" $ do
     c <- shimCfg
     r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:PROSE"
-    r `shouldBe` Right (RunResult "Sure! Here is what I found." 0 Nothing (Just "shim-prose") Nothing Nothing [] 0)
+    r `shouldBe` Right (RunResult "Sure! Here is what I found." 0 Nothing (Just "shim-prose") Nothing Nothing [] 0 [])
   it "times out" $ do
     c <- shimCfg
     r <- runClaude neverCancel c {pcTimeout = 1} Ask [] "/tmp" "SHIM:SLEEP"
@@ -68,6 +69,11 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
     fmap muCost (lookup "claude-sonnet-5-5" (rrModels rr)) `shouldBe` Just (Just 0.0123)
     fmap muTokens (lookup "claude-sonnet-5-5" (rrModels rr)) `shouldBe` Just (Tokens 2 40 1000 5000)
     rrDenials rr `shouldBe` 0
+    rrDenied rr `shouldBe` []
+  it "keeps each denial's tool and command" $ do
+    c <- shimCfg
+    Right rr <- runClaude neverCancel c Ask [] "/tmp" "QUESTION: anything SHIM:DENY"
+    (rrDenials rr, rrDenied rr) `shouldBe` (2, replicate 2 (Denial "Bash" "python -m pytest t.py"))
     fmap (T.isPrefixOf "shim-") (rrSession rr) `shouldBe` Just True
   it "an is_error result is an Error failure with the runner's sentence" $ do
     c <- shimCfg

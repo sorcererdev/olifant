@@ -28,12 +28,12 @@ import Data.Text.Encoding qualified as TE
 import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
-import Olifant.Plans (Anchor (..), Line (..), parsePlan)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), parsePlan)
 import Olifant.Server.Unit (Named (..))
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, nub)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Proxy (Proxy (..))
@@ -48,6 +48,10 @@ import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Server.Loop (StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
+import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, changeSince, dropReview, keepLines, loadReview, loadReviews, locateStep, revertChange, reviewPayload, saveReview, testsOfFacts)
+import Olifant.Server.LoopTypes (Fact (..))
+import Olifant.Server.Plans (isPlanPath)
+import System.FilePath (makeRelative, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, inMenu, listGenerators, migrationFor, showGenerator, subsOf)
@@ -56,7 +60,7 @@ import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
 import Olifant.Rules qualified as R
-import Olifant.Workspace (Workspace (..))
+import Olifant.Workspace (Workspace (..), normalisePath)
 import Olifant.Mutate (Mutant (..))
 import Olifant.Server
 import Olifant.Migration (MigrationReport, migrationJson)
@@ -594,6 +598,50 @@ handlers env =
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
+    , -- a plan's open reviews (a `do` not yet answered), each at its step now
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/reviews")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/reviews needs a textDocument" Nothing))
+          Just path ->
+            liftIO (planContext env path) >>= \case
+              Nothing -> respond (Right (object ["reviews" .= ([] :: [Value])]))
+              Just (p, rel, text) -> do
+                rs <- liftIO (loadReviews (envPorts env) (prRoot p) rel)
+                let ls = parsePlan text
+                respond (Right (object ["reviews" .= [object ["id" .= rvId r, "kind" .= ("do" :: T.Text), "row" .= fmap lnRow (locateStep ls r), "step" .= T.strip (rvStep r), "status" .= rvStatus r] | r <- rs]]))
+    , -- one review, as the window draws it (the change re-derived from its reference now)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review")) $ \req respond ->
+        case (documentPath (req ^. L.params), reviewIdOf (req ^. L.params)) of
+          (Just path, Just rid) ->
+            liftIO (planContext env path) >>= \case
+              Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "this plan is in no Olifant project" Nothing))
+              Just (p, rel, text) ->
+                liftIO (loadReview (envPorts env) (prRoot p) rel rid) >>= \case
+                  Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) ("no open review " <> rid) Nothing))
+                  Just r -> liftIO (reviewView p text r) >>= respond . Right
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/review needs a textDocument and an id" Nothing))
+    , -- a review answered: keep, revert, test (its step's tests now) or allow (its denials)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review/choose")) $ \req respond -> inBackground env req respond $ \job ->
+        case (documentPath (req ^. L.params), reviewIdOf (req ^. L.params), choiceOf (req ^. L.params)) of
+          (Just path, Just rid, Just choice) | choice `elem` ["keep", "revert", "test", "allow"] -> do
+            answered <- planProgress (if choice == "test" then "testing" else "reviewing") (\_ -> chooseReview job path rid choice)
+            case answered of
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right v -> respond (Right v)
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/review/choose needs a textDocument, an id and a choice (keep, revert, test or allow)" Nothing))
+    , -- a lens on the step of each open review
+      requestHandler SMethod_TextDocumentCodeLens $ \req respond -> do
+        let uri = req ^. L.params . L.textDocument . L.uri
+        lenses <- case uriToFilePath uri of
+          Nothing -> pure []
+          Just path -> liftIO (planContext env path) >>= \case
+            Just (p, rel, text) | isPlanPath p path -> do
+              rs <- liftIO (loadReviews (envPorts env) (prRoot p) rel)
+              pure
+                [ CodeLens (Range (Position row 0) (Position row 0)) (Just (Command (lensTitle r) "olifant.plans.review" (Just [String (rvId r), String (getUri uri)]))) Nothing
+                | r <- rs, Just l <- [locateStep (parsePlan text) r], let row = fromIntegral (lnRow l) ]
+            _ -> pure []
+        respond (Right (InL lenses))
     , -- a plan against the work: facts to apply, ghost blocks to place
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/reconcile")) $ \req respond ->
         case documentPath (req ^. L.params) of
@@ -1353,7 +1401,10 @@ errandRequest env verb title req params respond = case (documentPath params, lin
     name = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
     failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
     run job path line = do
-      answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts (envCancel job) verb path line))
+      lspEnv <- getLspEnv
+      -- a do's review is ready: the editor opens it (before the answer)
+      let ready rid = runLspT lspEnv (sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review/ready")) (object ["id" .= rid, "kind" .= ("do" :: T.Text), "textDocument" .= object ["uri" .= filePathToUri path]]))
+      answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts ready (envCancel job) verb path line))
       -- an errand the editor cancelled is no result (its runner was stopped)
       stopped <- liftIO (cancelled (envCancel job))
       case answered of
@@ -1374,7 +1425,130 @@ errandJson verb a =
     , "cost" .= eaCost a
     , "changed" .= eaChanged a
     , "facts" .= map factJson (eaFacts a)
+    , "review" .= eaReview a
     ]
+
+-- | A review request's `id`.
+reviewIdOf :: Value -> Maybe T.Text
+reviewIdOf = \case
+  Object o | Just (String i) <- KM.lookup "id" o, not (T.null i) -> Just i
+  _ -> Nothing
+
+-- | A request's `choice`.
+choiceOf :: Value -> Maybe T.Text
+choiceOf = \case
+  Object o | Just (String c) <- KM.lookup "choice" o -> Just c
+  _ -> Nothing
+
+-- | A review's lens on its step.
+lensTitle :: Review -> T.Text
+lensTitle r = case rvStatus r of
+  "answered" -> "do \9670 to review"
+  s -> "do \10007 " <> s <> " \183 to review"
+
+-- | A plan's project, its root-relative path, and its text now.
+planContext :: Env -> FilePath -> IO (Maybe (Project, FilePath, T.Text))
+planContext env path =
+  withSnapshot env (projectFor path) >>= \case
+    Nothing -> pure Nothing
+    Just (_, p) -> documentText env path <&> \text -> Just (p, makeRelative (prRoot p) (normalisePath path), text)
+
+-- | A review as the window draws it: its step found in the plan's TEXT, the
+-- change since its reference now, as diffs and as one workspace edit (each
+-- file from its text before the `do` to its text now).
+reviewView :: Project -> T.Text -> Review -> IO Value
+reviewView p text r = do
+  let root = prRoot p
+      ls = parsePlan text
+      isStep l = case lnKind l of Step _ -> True; _ -> False
+      step = locateStep ls r <&> \l -> (lnRow l, length [() | x <- ls, lnRow x <= lnRow l, isStep x])
+  changes <- maybe (pure []) (changeSince root [rvPlan r]) (rvRef r)
+  let edit c =
+        let path = normalisePath (root </> fcPath c)
+         in case (fcChange c, fcBefore c, fcAfter c) of
+              (Added, _, Just new) -> Just (FileEdit path Nothing True ((0, 0), (0, 0)) new)
+              (Modified, Just old, Just new) -> let (range, t) = smallestChange old new in Just (FileEdit path Nothing False range t)
+              _ -> Nothing
+  pure (reviewPayload r step changes (toJSON (workspaceEditAsking False (mapMaybe edit changes))))
+
+-- | The plan's text with ROWS' lines replaced (row, text) and LINES inserted
+-- after a row, as one edit of the plan at its version (Nothing: no change).
+planEdit :: Env -> FilePath -> T.Text -> [(Int, T.Text)] -> Maybe (Int, [T.Text]) -> IO (Maybe WorkspaceEdit)
+planEdit env path text reps insert = do
+  version <- versionOf env path
+  let ls = T.splitOn "\n" text
+      replaced = [fromMaybe l (lookup i reps) | (i, l) <- zip [0 :: Int ..] ls]
+      new = T.intercalate "\n" (case insert of
+        Just (after, more) | not (null more) -> let (a, b) = splitAt (after + 1) replaced in a ++ more ++ b
+        _ -> replaced)
+      (range, t) = smallestChange text new
+  pure (if new == text then Nothing else Just (workspaceEditAsking False [FileEdit path version False range t]))
+
+-- | Answer the review RID of the plan at PATH with CHOICE: keep (its plan
+-- lines land, the review goes), revert (the files restored from its
+-- reference, the facts its answer landed put back, the review goes), test
+-- (the step's tests run now; the review stays, with them) or allow (its
+-- denials' patterns added to `[plans] do_tools`; the review stays).
+chooseReview :: Env -> FilePath -> T.Text -> T.Text -> IO (Either T.Text Value)
+chooseReview env path rid choice =
+  planContext env path >>= \case
+    Nothing -> pure (Left "this plan is in no Olifant project")
+    Just (p, rel, text) ->
+      loadReview ports (prRoot p) rel rid >>= \case
+        Nothing -> pure (Left ("no open review " <> rid))
+        Just r -> answer p rel text r
+  where
+    ports = envPorts env
+    answer p rel text r = do
+      let root = prRoot p
+          ls = parsePlan text
+          outcome o = do
+            now <- pNow ports
+            appendRecord ports root (AnOutcome (OutcomeRecord {orId = rvErrand r, orBlock = 0, orAt = now, orOutcome = o}))
+            dropReview ports root r
+          again r' = do
+            saveReview ports root r'
+            text' <- documentText env path
+            reviewView p text' r'
+      case choice of
+        "keep" -> do
+          edit <- case keepLines ls r of
+            Nothing -> pure Nothing
+            Just (step, rep, more) -> planEdit env path text [(lnRow step, t) | Just t <- [rep]] (Just (lnRow step, more))
+          outcome "accepted"
+          pure (Right (object ["done" .= True, "edit" .= edit, "said" .= ("kept" :: T.Text)]))
+        "revert" -> case rvRef r of
+          Nothing -> pure (Left "this do has no tree reference to revert to")
+          Just tr -> do
+            changes <- changeSince root [rel] tr
+            revertChange root tr changes >>= \case
+              Left why -> pure (Left why)
+              Right () -> do
+                let now' = T.splitOn "\n" text
+                    undone = [(n, b) | (n, b, a) <- rvFacts r, listToMaybe (drop n now') == Just a]
+                edit <- planEdit env path text undone Nothing
+                outcome "rejected"
+                let n = length changes
+                pure (Right (object ["done" .= True, "edit" .= edit, "files" .= [normalisePath (root </> fcPath c) | c <- changes], "said" .= ("reverted " <> T.pack (show n) <> (if n == 1 then " file" else " files"))]))
+        "test" -> case locateStep ls r of
+          Nothing -> pure (Left "the step is no longer in the plan")
+          Just step ->
+            withSnapshot env (stepTest path (lnRow step)) >>= \case
+              Left why -> pure (Left why)
+              Right t -> do
+                view <- again r {rvTests = testsOfFacts [x | Replace _ x <- ttFacts t]}
+                pure (Right (object ["done" .= False, "review" .= view, "facts" .= map factJson (ttFacts t), "said" .= (T.pack (show (ttPassed t)) <> " passed \183 " <> T.pack (show (ttFailed t)) <> " failed")]))
+        _ -> do
+          let pats = nub [allowPattern d | d <- rvDenials r, allowPattern d `notElem` rvAllowed r]
+              config = root </> ".olifant/config.toml"
+          if null pats
+            then pure (Left "nothing denied is left to allow")
+            else do
+              old <- fromMaybe "" <$> readText (pFiles ports) config
+              writeText (pFiles ports) config (allowInConfig pats old)
+              modifyMVar_ (envState env) (filesChanged [config])
+              view <- again r {rvAllowed = rvAllowed r ++ pats}
+              pure (Right (object ["done" .= False, "review" .= view, "said" .= ("allowed " <> T.intercalate ", " pats <> " in .olifant/config.toml")]))
 
 -- | A request id as `$/cancelRequest` names it.
 requestKey :: LspId m -> T.Text
