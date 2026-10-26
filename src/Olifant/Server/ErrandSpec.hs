@@ -101,6 +101,15 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       let (bs, _) = parseAnswer Do ls step "DONE @src/a.py:Foo.bar\nDONE @src/c.py:Baz\nBLOCKED no port\n"
       map ghText (concatMap blLines bs) `shouldBe` ["- [ ] the step   @src/a.py:Foo.bar", "  - also @src/c.py:Baz", "  - ✗ blocked: no port"]
       map blAfterRow bs `shouldBe` [3]
+    it "do makes no also child of the step's own anchor (nor a test child's own)" $ do
+      let anchored = parsePlan "## S\n- [ ] the step @src/a.py:Foo.bar\n  - test: it works @tests/t.py:test_it\n"
+          own = parseAnswer Do anchored (anchored !! 1) "DONE @src/a.py:Foo.bar\nDONE @src/c.py:Baz\n"
+          test = parseAnswer Do anchored (anchored !! 2) "DONE @tests/t.py:test_it\nDONE @src/a.py:Foo.bar\n"
+      map ghText (concatMap blLines (fst own)) `shouldBe` ["  - also @src/c.py:Baz"]
+      snd own `shouldBe` 0
+      map ghText (concatMap blLines (fst test)) `shouldBe` []
+      snd test `shouldBe` 0
+      (doAnswered "DONE @tests/t.py:test_it\n", doAnswered "BLOCKED no port", doAnswered "Sure, done.") `shouldBe` (True, True, False)
     it "never fails on odd input" $ do
       parseAnswer Ask ls q "" `shouldBe` ([], 0)
       fst (parseAnswer Validate ls heading "AFTER:") `shouldBe` []
@@ -109,16 +118,27 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       length (fst (parseAnswer Ask ls q "- a @x.py:A\r\n")) `shouldBe` 1
       parseAnswer Ask ls heading "- a @x.py:A" `shouldBe` ([], 0)
     it "the prompt carries the plan, the units and the marker" $ do
-      let p = errandPrompt Ask plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
+      let p = errandPrompt Ask Nothing plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
       p `shouldSatisfy` T.isInfixOf "<doc>\n"
       p `shouldSatisfy` T.isInfixOf "QUESTION: where does the day page decide"
       p `shouldSatisfy` T.isInfixOf "@src/a.py:Foo\nclass Foo:"
       p `shouldSatisfy` T.isInfixOf "relative to the project root"
     it "validate and do prompts carry the section, step and its test" $ do
-      errandPrompt Validate plan ls heading [] `shouldSatisfy` T.isInfixOf "SECTION: Day page\n## Day page"
-      let d = errandPrompt Do plan ls step []
+      errandPrompt Validate Nothing plan ls heading [] `shouldSatisfy` T.isInfixOf "SECTION: Day page\n## Day page"
+      let d = errandPrompt Do Nothing plan ls step []
       d `shouldSatisfy` T.isInfixOf "STEP: the step\n  - test: it works @tests/t.py:test_it"
-      errandPrompt Do plan ls (ls !! 4) [] `shouldSatisfy` T.isInfixOf "TEST: it works @tests/t.py:test_it"
+      errandPrompt Do Nothing plan ls (ls !! 4) [] `shouldSatisfy` T.isInfixOf "TEST: it works @tests/t.py:test_it"
+    it "a do's prompt names the test command exactly, with no pipe or cd, and says the engine runs the tests" $ do
+      let cmd = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "{= tests =}"]
+      doTestCommand cmd `shouldBe` Just "uv run --quiet --frozen pytest -q <test file, or file::test>"
+      doTestCommand [] `shouldBe` Nothing
+      let d = errandPrompt Do (doTestCommand cmd) plan ls step []
+      d `shouldSatisfy` T.isInfixOf "uv run --quiet --frozen pytest -q <test file, or file::test>"
+      d `shouldSatisfy` T.isInfixOf "no pipe"
+      d `shouldSatisfy` T.isInfixOf "no `cd`"
+      d `shouldSatisfy` T.isInfixOf "never a reason for BLOCKED"
+      errandPrompt Do Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "never a reason for BLOCKED"
+      errandPrompt Do Nothing plan ls step [] `shouldSatisfy` (not . T.isInfixOf "run the relevant tests")
     it "cuts a long body at 2000 characters and limits grounding to 20 units" $ do
       T.length (cutBody (T.replicate 3000 "x")) `shouldBe` 2002
       T.takeEnd 1 (cutBody (T.replicate 3000 "x")) `shouldBe` "…"

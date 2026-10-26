@@ -307,12 +307,18 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       fp <- fpNow dir s "helper"
       map summary (raBlocks a) `shouldBe` [(7, Just "- [ ] tidy the helper", ["  - also @src/bistro/booking/models/table.py:helper"], False, Just (table, "helper", fp))]
       asked dir `shouldReturn` ["plan-step", "plan-state"]
-  it "(c) a touched open step answered done is a replacing ticked ghost" $ do
-    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n"
+  it "(c) a touched open step with tests answered done is a replacing ticked ghost" $ do
+    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n  - test: it works @tests/t.py:test_it ○\n"
     withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
       (_, a) <- run False dir s
       fp <- fpNow dir s "helper"
       map summary (raBlocks a) `shouldBe` [(4, Just "- [ ] tidy the helper @src/bistro/booking/models/table.py:helper", ["- [x] tidy the helper @src/bistro/booking/models/table.py:helper ✓ " <> fp], True, Just (table, "helper", fp))]
+  it "(c0) a reading never ticks a step with no tests: done is taken as in progress, no ghost" $ do
+    let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n"
+    withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
+      (_, a) <- run False dir s
+      raBlocks a `shouldBe` []
+      asked dir `shouldReturn` ["plan-state"]
   it "(c2) a diverged step is a changed child, the unit named when no chat rung gives words" $ do
     let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n"
     withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do

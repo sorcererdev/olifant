@@ -2203,6 +2203,17 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
         other -> expectationFailure ("two facts, got " <> show other)
       -- the blocks are the runner's, as before
       length (arr (lookupKey "blocks" v)) `shouldBe` 1
+  it "do runs the step's tests over the files it changed as they are on disk, not the editor's older text" $
+    withPlan (planWith "- [ ] add a method @src/bistro/booking/models/table.py:Table\n  - test: has label @src/bistro/booking/models/table__test.py:test_table_has_label \9675") $ \ports dir -> needsUv $ do
+      TIO.writeFile (dir </> "src/bistro/booking/models/table__test.py") "from bistro.booking.models.table import Table\n\n\ndef test_table_has_label() -> None:\n    assert Table(id=\"t1\", seats=2).label() == \"t1\"\n"
+      (answer, _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir $ do
+        -- the module is open in the editor, as it was before the do
+        _ <- openDoc table "python"
+        errand doP 7
+      v <- either (fail . T.unpack) pure answer
+      map (lookupKey "text") (arr (lookupKey "facts" v)) `shouldSatisfy` \case
+        [Just (String child), Just (String step)] -> T.isSuffixOf "\9679" child && ("- [x] add a method" `T.isPrefixOf` step)
+        _ -> False
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
       (answer, _) <- inProcessWith ports dir (errand askP 3)

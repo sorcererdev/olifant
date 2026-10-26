@@ -18,6 +18,7 @@ module Olifant.Server.Plans
   , safely
   ) where
 
+import Control.Monad (filterM)
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Functor ((<&>))
 import Data.List (find, isPrefixOf, nub)
@@ -27,10 +28,10 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, errandPrompt, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, errandPrompt, testWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
-import Olifant.Server.State (appendStepLine, projectFor)
+import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative)
 import Data.Text (Text)
@@ -215,7 +216,7 @@ runErrand after token verb path row s0 =
               anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] [a | l <- around, Just a <- [lnAnchor l]])
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
           let tools = if verb == Do then testTools p else []
-              prompt = errandPrompt verb text ls target grounded
+              prompt = errandPrompt verb (if verb == Do then listToMaybe' (mapMaybe doTestCommand (projectTests p)) else Nothing) text ls target grounded
               rel = makeRelative root (normalisePath path)
           branch <- currentBranch root
           now <- pNow (ssPorts s)
@@ -243,13 +244,26 @@ runErrand after token verb path row s0 =
                   , statusName status
                   ]
                 pure rid
+          let onDisk f = safely Nothing (readText (pFiles (ssPorts s)) f)
+              -- the state and project over the files as a do left them: the
+              -- editor's text of a file it wrote is older than the disk (the
+              -- editor reloads only after the answer), so it is set aside for
+              -- the step's tests
+              landed before = do
+                wrote <- filterM (\(f, was) -> (/= was) <$> onDisk f) before
+                projectFor path (foldr (closeDoc . fst) s wrote) <&> \case
+                  (s', Just (_, p')) -> (s', p')
+                  (_, Nothing) -> (s, p)
+          -- before a do, the disk under each file open in the editor (but
+          -- the plan), to tell which ones it wrote
+          before <- if verb == Do then mapM (\f -> (f,) <$> onDisk f) [f | f <- M.keys (ssDocs s), f /= normalisePath path, (normalisePath root <> "/") `isPrefixOf` f] else pure []
           runClaude token cfg verb tools root prompt >>= \case
             Left f -> do
               changed <- if verb == Do then changedFiles root else pure []
               _ <- record (rfStatus f) (Just (rfWhy f)) (rfSession f) Nothing 0 0 0 0 0 (length changed)
               pure (Left (rfWhy f))
             Right rr -> case parseAnswer verb ls target (rrText rr) of
-              ([], dropped) -> do
+              ([], dropped) | verb /= Do || not (doAnswered (rrText rr)) -> do
                 changed <- if verb == Do then changedFiles root else pure []
                 let why = verbName <> " answered nothing in the grammar"
                 _ <- record Empty (Just why) (rrSession rr) (Just rr) 0 dropped 0 0 0 (length changed)
@@ -257,7 +271,7 @@ runErrand after token verb path row s0 =
               (blocks, dropped) -> do
                 fps <- mapM (mapM (fpOf s p) . blLines) blocks
                 changed <- if verb == Do then changedFiles root else pure []
-                facts <- if verb == Do then safely [] (after s p ls row) else pure []
+                facts <- if verb == Do then safely [] (landed before >>= \(s', p') -> after s' p' ls row) else pure []
                 let ghosts = concatMap blLines blocks
                     resolved = length (filter isJust (concat fps))
                     unresolved = length (filter (isJust . ghAnchor) ghosts) - resolved
@@ -311,11 +325,11 @@ gitOut root args =
 -- (past an `env` and its assignments), e.g. `Bash(uv run*)`; none without
 -- a `[test]`.
 testTools :: Project -> [Text]
-testTools p = take 1 ["Bash(" <> T.unwords (take 2 (past (testCommand td))) <> "*)" | l <- catalogLanguages (prCatalog p), Just td <- [langTest l], not (null (past (testCommand td)))]
-  where
-    past = \case
-      ("env" : rest) -> dropWhile (\w -> T.isInfixOf "=" w || "-" `T.isPrefixOf` w) rest
-      ws -> ws
+testTools p = take 1 ["Bash(" <> T.unwords (take 2 ws) <> "*)" | ws <- map testWords (projectTests p), not (null ws)]
+
+-- | The project's test commands, the first language's first.
+projectTests :: Project -> [[Text]]
+projectTests p = [testCommand td | l <- catalogLanguages (prCatalog p), Just td <- [langTest l]]
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

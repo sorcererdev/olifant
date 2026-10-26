@@ -28,6 +28,14 @@ spec = describe "Olifant.Decide" $ do
       validated commandOrQuery (Chosen "maybe" [] Unknown) `shouldBe` Unsure
       validated withField (Chosen "booking" [("name", "3x")] Unknown) `shouldBe` Unsure
       validated withField (Chosen "booking" [("other", "x")] Unknown) `shouldBe` Unsure
+  describe "a chat reply (decodeAnswer)" $ do
+    it "(b2) drops fields the question did not ask for, as a chat model adds a rationale" $ do
+      decodeAnswer commandOrQuery "{\"choice\": \"command\", \"confidence\": 0.8, \"fields\": {\"rationale\": \"it writes\"}}" `shouldBe` Chosen "command" [] (Confidence 0.8)
+      decodeAnswer withField "{\"choice\": \"new service\", \"fields\": {\"name\": \"kitchen\", \"why\": \"x\"}}" `shouldBe` Chosen "new service" [("name", "kitchen")] Unknown
+      decodeAnswer withField "{\"choice\": \"new service\", \"fields\": {\"name\": \"3x\"}}" `shouldBe` Unsure
+    it "(b3) a question with no fields asks for none" $ do
+      decisionPrompt commandOrQuery `shouldSatisfy` (not . T.isInfixOf "fields")
+      decisionPrompt withField `shouldSatisfy` T.isInfixOf "\"fields\": {"
   describe "recordedDecider (tests)" $ do
     it "(c) answers by the question's kind; an invalid answer is unsure" $
       withSystemTempDirectory "olifant-decide" $ \dir -> do

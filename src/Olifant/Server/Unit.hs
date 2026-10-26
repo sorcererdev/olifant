@@ -154,10 +154,31 @@ unitNameOf lang line
     nonEmpty t = if T.null t then Nothing else Just t
 
 -- | Seven lowercase hex digits naming the lines (1-based, inclusive) of TEXT:
--- FNV-1a 64 over them trimmed, blanks dropped, joined by newlines.
+-- FNV-1a 64 over them trimmed, blanks dropped, joined by newlines, except
+-- where a formatter reflows ('reflowed'), so formatting never changes it.
 fingerprint :: Text -> (Int, Int) -> Text
 fingerprint text (a, z) = T.pack (take 7 (pad (showHex (BS.foldl' step 14695981039346656037 (encodeUtf8 body)) "")))
   where
-    body = T.intercalate "\n" (filter (not . T.null) (map T.strip (take (z - a + 1) (drop (a - 1) (T.splitOn "\n" text)))))
+    body = reflowed (filter (not . T.null) (map T.strip (take (z - a + 1) (drop (a - 1) (T.splitOn "\n" text)))))
     step h b = (h `xor` fromIntegral b) * 1099511628211 :: Word64
     pad s = replicate (16 - length s) '0' ++ s
+
+-- | Trimmed lines joined as one would be had a formatter not split it:
+-- after an opening bracket and before a closing one with nothing between
+-- (a magic trailing comma dropped), after a comma with one space, before a
+-- leading comma with none; every other break is a newline. Where any break
+-- was joined, a space just inside a bracket goes too (leading-comma style
+-- opens `[ a`). A body with no such break joins as before.
+reflowed :: [Text] -> Text
+reflowed = \case
+  [] -> ""
+  l : ls -> go False l ls
+  where
+    go joined acc [] = if joined then tight acc else acc
+    go joined acc (n : rest)
+      | Just (c, _) <- T.uncons n, c `elem` (")]}" :: String) = go True (fromMaybe acc (T.stripSuffix "," acc) <> n) rest
+      | Just (_, c) <- T.unsnoc acc, c `elem` ("([{" :: String) = go True (acc <> n) rest
+      | "," `T.isSuffixOf` acc = go True (acc <> " " <> n) rest
+      | "," `T.isPrefixOf` n = go True (acc <> n) rest
+      | otherwise = go joined (acc <> "\n" <> n) rest
+    tight t = foldr (\(from, to) -> T.replace from to) t ([(o <> " ", o) | o <- ["(", "[", "{"]] ++ [(" " <> c, c) | c <- [")", "]", "}"]])
