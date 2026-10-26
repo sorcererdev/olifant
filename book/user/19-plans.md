@@ -38,7 +38,9 @@ leave it as it was. A `✓` whose unit has since changed is shown stale. A line 
   - **validate** (on a claim, or a `##` heading for the section): checks claims against the
     units' code and answers verdicts and evidence.
   - **do** (on a step or test child): does the step in the repository, with edit rights and the
-    project's test command. Use a clean git tree: `git diff` shows it, `git stash` undoes it.
+    project's test command, which its prompt names exactly (no pipe, no `cd`). It is told Olifant
+    runs the step's tests after it, so tests it could not run are no reason to answer `BLOCKED`. A
+    `DONE` of the step's own unit is no `also` line. Use a clean git tree: `git diff` shows it, `git stash` undoes it.
   The prompt holds the plan and the bodies of the units it anchors. The answer is read against the
   grammar: lines outside it are dropped, anchors that do not resolve are kept as `? not found`,
   and both are counted in the notification. An answer with nothing in the grammar is an error.
@@ -122,7 +124,8 @@ A backend with no `escalate` key defaults to `ask`, so only `<leader>mpx` climbs
 
 **Tests on a step.** `<leader>ms` on a step stubs a test under it (Python; the step needs an anchor), the step's text as the
 sentence. `<leader>mt` runs the step's tests and ticks it when all are green. A `do` runs the
-step's tests when it finishes.
+step's tests when it finishes, over the files it wrote as they are on disk (the editor reloads
+them only afterwards).
 
 **The record.** Every reconcile appends a `reconcile` line to `.olifant/state/errands.jsonl`: `id`,
 `at`, `plan`, `branch`, `baseline`, `forced`, `changed`, `unaccounted`, `more`, `facts`, `seconds`,

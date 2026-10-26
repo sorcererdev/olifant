@@ -18,6 +18,7 @@ module Olifant.Server.Plans
   , safely
   ) where
 
+import Control.Monad (filterM)
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Functor ((<&>))
 import Data.List (find, isPrefixOf, nub)
@@ -30,7 +31,7 @@ import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, errandPrompt, testWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
-import Olifant.Server.State (appendStepLine, projectFor)
+import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative)
 import Data.Text (Text)
@@ -243,6 +244,19 @@ runErrand after token verb path row s0 =
                   , statusName status
                   ]
                 pure rid
+          let onDisk f = safely Nothing (readText (pFiles (ssPorts s)) f)
+              -- the state and project over the files as a do left them: the
+              -- editor's text of a file it wrote is older than the disk (the
+              -- editor reloads only after the answer), so it is set aside for
+              -- the step's tests
+              landed before = do
+                wrote <- filterM (\(f, was) -> (/= was) <$> onDisk f) before
+                projectFor path (foldr (closeDoc . fst) s wrote) <&> \case
+                  (s', Just (_, p')) -> (s', p')
+                  (_, Nothing) -> (s, p)
+          -- before a do, the disk under each file open in the editor (but
+          -- the plan), to tell which ones it wrote
+          before <- if verb == Do then mapM (\f -> (f,) <$> onDisk f) [f | f <- M.keys (ssDocs s), f /= normalisePath path, (normalisePath root <> "/") `isPrefixOf` f] else pure []
           runClaude token cfg verb tools root prompt >>= \case
             Left f -> do
               changed <- if verb == Do then changedFiles root else pure []
@@ -257,7 +271,7 @@ runErrand after token verb path row s0 =
               (blocks, dropped) -> do
                 fps <- mapM (mapM (fpOf s p) . blLines) blocks
                 changed <- if verb == Do then changedFiles root else pure []
-                facts <- if verb == Do then safely [] (after s p ls row) else pure []
+                facts <- if verb == Do then safely [] (landed before >>= \(s', p') -> after s' p' ls row) else pure []
                 let ghosts = concatMap blLines blocks
                     resolved = length (filter isJust (concat fps))
                     unresolved = length (filter (isJust . ghAnchor) ghosts) - resolved
