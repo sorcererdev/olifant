@@ -2213,6 +2213,9 @@ plansLoopSpec = describe "plans, stage 2" $ do
         p <- openDoc "plans/t.md" "markdown"
         let method = SMethod_CustomMethod testP
         i <- sendRequest method (object [docOf p, "line" .= (0 :: Int)])
+        -- the edit after the server took the plan's version (its progress has begun)
+        let begun = (() <$ message SMethod_WindowWorkDoneProgressCreate) <|> (anyMessage >> begun)
+        begun
         _ <- applyEdit p (TextEdit (Range (Position 2 0) (Position 2 0)) "some words\n")
         let answerOf = responseForId method i <|> (anyMessage >> answerOf)
             applied = (() <$ message SMethod_WorkspaceApplyEdit) <|> (anyMessage >> applied)
