@@ -18,11 +18,13 @@ module Olifant.Plans
   , evidenceTag
   , stepDone
   , anchorText
+  , excerptInfo
+  , excerptSpans
   ) where
 
 import Data.List (mapAccumL)
 import Data.Char (isAlpha, isAlphaNum, isDigit, isHexDigit, isSpace)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -52,14 +54,21 @@ parsePlan t = snd (mapAccumL step Nothing (zip [0 ..] (T.lines t)))
     -- least as long as the opener; it and everything inside is Prose. A blank line inside takes the opener's
     -- indent, so a formatter stripping trailing spaces cannot cut the fence out of a step's children.
     step Nothing (row, txt)
-      | Just n <- ticks txt = (Just (indentOf txt, n), prose row txt)
+      | Just n <- fenceTicks txt = (Just (indentOf txt, n), prose row txt)
       | otherwise = (Nothing, line row txt)
     step (Just (ind, n)) (row, txt)
-      | Just m <- ticks txt, m >= n, T.all (== '`') (T.strip txt) = (Nothing, prose row txt)
+      | closesFence n txt = (Nothing, prose row txt)
       | T.all isSpace txt = (Just (ind, n), (prose row txt) { lnIndent = ind })
       | otherwise = (Just (ind, n), prose row txt)
-    ticks txt = let n = T.length (T.takeWhile (== '`') (T.stripStart txt)) in if n >= 3 then Just n else Nothing
     prose row txt = (line row txt) { lnKind = Prose, lnAnchor = Nothing, lnVerdict = NoVerdict }
+
+-- | The backticks a fence opens with: three or more.
+fenceTicks :: Text -> Maybe Int
+fenceTicks txt = let n = T.length (T.takeWhile (== '`') (T.stripStart txt)) in if n >= 3 then Just n else Nothing
+
+-- | A line of backticks only, at least N.
+closesFence :: Int -> Text -> Bool
+closesFence n txt = maybe False (>= n) (fenceTicks txt) && T.all (== '`') (T.strip txt)
 
 indentOf :: Text -> Int
 indentOf = T.length . T.takeWhile (== ' ')
@@ -165,6 +174,35 @@ childrenOf ls row = case drop row ls of
 
 anchorText :: Anchor -> Text
 anchorText a = "@" <> T.pack (anPath a) <> ":" <> anUnit a
+
+-- | An excerpt's opening line, "```<lang> @<path>:<Unit>" with " · done" when
+-- frozen: its language, its anchor (columns within the anchor alone), whether
+-- it is frozen. Any other info string is not an excerpt's.
+excerptInfo :: Text -> Maybe (Text, Anchor, Bool)
+excerptInfo txt = do
+  _ <- fenceTicks txt
+  let info = T.strip (T.dropWhile (== '`') (T.stripStart txt))
+      (core, done) = maybe (info, False) (,True) (T.stripSuffix " · done" info)
+      (lang, rest) = T.breakOn " " core
+      tok = T.strip rest
+  a <- findAnchor tok
+  if not (T.null lang) && T.all (\c -> c /= '`' && not (isSpace c)) lang && anStart a == 0 && anEnd a == T.length tok && anchorText a == tok
+    then Just (lang, a, done)
+    else Nothing
+
+-- | Each step's excerpts: (step row, opening row, closing row) of every closed
+-- fence among the step's children, opened at the step's indent + 2 with an
+-- excerpt's info string. Fences inside fences, and the user's own, are not.
+excerptSpans :: [Line] -> [(Int, Int, Int)]
+excerptSpans ls = concat [walk s (childrenOf ls (lnRow s)) | s <- ls, isStep s]
+  where
+    isStep s = case lnKind s of Step _ -> True; _ -> False
+    walk s (k : rest)
+      | Just n <- fenceTicks (lnText k) = case break (closesFence n . lnText) rest of
+          (_, c : after) -> [(lnRow s, lnRow k, lnRow c) | lnIndent k == lnIndent s + 2, isJust (excerptInfo (lnText k))] ++ walk s after
+          _ -> []
+      | otherwise = walk s rest
+    walk _ [] = []
 
 withVerdict :: Text -> Verdict -> Text
 withVerdict txt v = case findAnchor txt of

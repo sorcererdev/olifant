@@ -55,7 +55,6 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import GHC.Clock (getMonotonicTime)
 import Numeric (showFFloat)
 import Olifant.App (Ports (..), Project (..))
@@ -64,17 +63,16 @@ import Olifant.Decide (Answer (..), Confidence (..), Question (..), qOptions)
 import Olifant.Language.Adapter (languageFor)
 import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
-import Olifant.Process (Cancel, cancelled, runBytes)
+import Olifant.Process (Cancel, cancelled)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.LoopQuestions
 import Olifant.Server.LoopTests
 import Olifant.Server.LoopTypes
-import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, resolveAnchor, safely)
+import Olifant.Server.Plans (Resolved (..), confined, currentBranch, gitOut, gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Server.Telemetry (Decision (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), appendRecord, errandId, readRecords, recordsPath)
 import Olifant.Server.Unit (Named (..), fingerprint, unitsOf)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, takeExtension, (</>))
 
 -- | What the loop works over: the baseline commit (none without git), every
@@ -259,13 +257,6 @@ workSet s p plan ls =
 -- it does not resolve (a removed unit, a moved one's old path).
 qualified :: ServerState -> Project -> Anchor -> IO Text
 qualified s p a = maybe (anUnit a) namedName . rsUnit <$> resolveAnchor s p a
-
--- | A read-only git command's whole output; Nothing when it fails.
-gitText :: FilePath -> [String] -> IO (Maybe Text)
-gitText root args =
-  runBytes "git" (["-C", root] ++ args) (Just root) "" <&> \case
-    Right (ExitSuccess, out, _) -> Just (TE.decodeUtf8Lenient out)
-    _ -> Nothing
 
 -- | Every line whose anchor names a moved unit's old (path, name): the
 -- anchor rewritten to the new ones, the verdict kept.
