@@ -103,16 +103,19 @@ clip n file base
       | otherwise = reverse (dropWhile (== "…") (reverse (take 59 xs))) ++ ["…"]
 
 -- | The facts that keep LS's excerpts: a ticked step's live excerpt frozen
--- (its opening line alone); an open step's live one rendered again from its
--- anchor (where MOVED takes it, the info string following) when it differs
--- from the text. An anchor that does not RESOLVE (to a language and the
--- clipped code), and a frozen excerpt, are left as they are.
+-- with its final code (rendered from its anchor with " · done", in one
+-- replacement; its opening line alone when the anchor does not resolve); an
+-- open step's live one rendered again from its anchor (where MOVED takes it,
+-- the info string following) when it differs from the text. An open step's
+-- anchor that does not RESOLVE (to a language and the clipped code), and a
+-- frozen excerpt, are left as they are.
 excerptFacts :: [Line] -> (Anchor -> Maybe Anchor) -> (Anchor -> Maybe (Text, [Text])) -> [Fact]
 excerptFacts ls moved resolve = concatMap one (excerptsOf ls)
   where
     rowOf r = ls !! r
     one e
       | exDone e = []
+      | stepDone step, Just (lang, body) <- resolve a = [ReplaceRows (exOpen e) (exClose e) (renderFence (lnIndent step + 2) lang a True body)]
       | stepDone step = [Replace (exOpen e) (T.stripEnd (lnText (rowOf (exOpen e))) <> " · done")]
       | Just (lang, body) <- resolve a
       , let new = renderFence (lnIndent step + 2) lang a False body

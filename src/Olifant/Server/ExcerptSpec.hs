@@ -76,8 +76,10 @@ spec = describe "Olifant.Server.Excerpt" $ do
     let live = ["  ```python @a.py:F", "  x = 1", "  ```"]
         frozen = ["  ```python @a.py:F · done", "  x = 1", "  ```"]
         facts step fence res = excerptFacts (parsePlan (T.unlines ([step] ++ fence ++ ["- [ ] next"]))) (const Nothing) res
-    it "a ticked step's live excerpt is frozen, its code as it was" $
-      facts "- [x] a @a.py:F" live (const (Just ("python", ["x = 2"]))) `shouldBe` [Replace 1 "  ```python @a.py:F · done"]
+    it "a ticked step's live excerpt is frozen with its final code, in one replacement" $
+      facts "- [x] a @a.py:F" live (const (Just ("python", ["x = 2"]))) `shouldBe` [ReplaceRows 1 3 ["  ```python @a.py:F · done", "  x = 2", "  ```"]]
+    it "a ticked step whose unit does not resolve: its opening line alone is frozen" $
+      facts "- [x] a @a.py:F" live (const Nothing) `shouldBe` [Replace 1 "  ```python @a.py:F · done"]
     it "an open step's excerpt with the same code: no fact" $
       facts "- [ ] a @a.py:F" live (const (Just ("python", ["x = 1"]))) `shouldBe` []
     it "trailing spaces stripped by a formatter are no change" $

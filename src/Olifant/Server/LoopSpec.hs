@@ -712,10 +712,15 @@ excerptsSpec = describe "Olifant.Server.Loop (excerpts)" $ do
   it "the same code: no fact" $
     withReconcile (planOf "[ ]" False helperNow) [] jevConfig answers $ \dir s ->
       (raFacts . snd <$> run False dir s) `shouldReturn` []
-  it "ticked: frozen, its code as it was; then never written again, the unit changed or the step open again" $
+  it "ticked with the unit changed in the same pass: frozen with the final code" $
+    withReconcile (planOf "[x]" False helperNow) [(table, helperEdited)] jevConfig answers $ \dir s -> do
+      (_, facts) <- reconcileOnce dir s
+      length facts `shouldBe` 1
+      readPlan dir `shouldReturn` planOf "[x]" True ["def helper() -> int:", "    return 2"]
+  it "ticked: frozen; then never written again, the unit changed or the step open again" $
     withReconcile (planOf "[x]" False helperNow) [] jevConfig answers $ \dir s -> do
       (s1, facts) <- reconcileOnce dir s
-      facts `shouldBe` [Replace 5 "  ```python @src/bistro/booking/models/table.py:helper · done"]
+      facts `shouldBe` [ReplaceRows 5 8 (fence True helperNow)]
       readPlan dir `shouldReturn` planOf "[x]" True helperNow
       (s2, again) <- reconcileOnce dir s1
       again `shouldBe` []
