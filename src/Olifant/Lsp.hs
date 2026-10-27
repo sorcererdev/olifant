@@ -16,7 +16,8 @@ import Olifant.Recognize qualified as Recognize
 import Olifant.Decide qualified as De
 import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
-import Control.Monad (forM_, guard, unless, void)
+import Control.Applicative ((<|>))
+import Control.Monad (forM_, guard, unless, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -29,7 +30,7 @@ import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
@@ -47,16 +48,21 @@ import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
-import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
+import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
-import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, changeSince, dropReview, keepLines, loadReview, loadReviews, locateStep, revertChange, reviewPayload, saveReview, testsOfFacts)
+import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchived, loadReview, loadReviews, locateStep, revertChange, reviewPayload, saveReview, stepKey, testsOfFacts)
+import Olifant.Server.Journal (Entry (..), Event (..), keepEvent, movedEvent, testEvents, withJournal)
+import Olifant.Server.Journal qualified as Journal
+import Olifant.Transcripts (slugOf)
+import Data.Time (getCurrentTimeZone)
+import System.Directory (getHomeDirectory)
 import Olifant.Server.LoopTypes (Fact (..))
-import Olifant.Server.Plans (isPlanPath)
-import System.FilePath (makeRelative, (</>))
+import Olifant.Server.Plans (Reopen (..))
+import System.FilePath (makeRelative, takeFileName, (</>))
 import Olifant.Generation (Plan (..), ProgressEvent)
 import Olifant.Output (doctorJson, fileActionsJson, listJson, planJson, showJson)
 import Olifant.App (Project (..), ShowFailure (..), doctorChecks, inMenu, listGenerators, migrationFor, showGenerator, subsOf)
-import Olifant.Catalog (catalogPackRoots, describeCatalogError)
+import Olifant.Catalog (Catalog (..), PlansConfig (..), catalogPackRoots, describeCatalogError)
 import Olifant.Actions (Action (..), Completion (..), Nearby (..))
 import Olifant.Rules (Finding (..), FixOffer (..))
 import Olifant.Snippet (Snippet (..))
@@ -599,6 +605,27 @@ handlers env =
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/ask")) $ \req respond -> errandRequest env Ask "asking" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/validate")) $ \req respond -> errandRequest env Validate "validating" req (req ^. L.params) respond
     , requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/do")) $ \req respond -> errandRequest env Do "doing" req (req ^. L.params) respond
+    , -- a past do, by id or by the journal line at a row (null: none)
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/errand")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/errand needs a textDocument and an id or a row" Nothing))
+          Just path -> liftIO (errandView env path (req ^. L.params)) >>= \case
+            Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+            Right v -> respond (Right v)
+    , -- a plan's past dos, newest first: a step's (at `row`), or all
+      requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/errands")) $ \req respond ->
+        case documentPath (req ^. L.params) of
+          Nothing -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/errands needs a textDocument" Nothing))
+          Just path ->
+            liftIO (planContext env path) >>= \case
+              Nothing -> respond (Right (object ["errands" .= ([] :: [Value])]))
+              Just (p, rel, text) -> do
+                all' <- liftIO (loadArchive (envPorts env) (prRoot p) rel)
+                let ofStep = case lineParam "row" (req ^. L.params) >>= \row -> listToMaybe (drop row (T.splitOn "\n" text)) of
+                      Just l -> filter ((== stepKey l) . stepKey . rvStep) all'
+                      Nothing -> all'
+                    words' r = fromMaybe (rvStatus r) (listToMaybe [T.strip w | l <- rvSaid r, Just w <- [T.stripPrefix "DONE" l <|> T.stripPrefix "BLOCKED" l]])
+                respond (Right (object ["errands" .= [object ["id" .= rvId r, "at" .= rvAt r, "status" .= rvStatus r, "choice" .= rvChoice r, "words" .= words' r, "model" .= rvModel r] | r <- ofStep]]))
     , -- a plan's open reviews (a `do` not yet answered), each at its step now
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/reviews")) $ \req respond ->
         case documentPath (req ^. L.params) of
@@ -637,7 +664,7 @@ handlers env =
             case answered of
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right v -> respond (Right v) >> lensesChanged
-          (Just path, Just rid, Just choice) | choice `elem` ["keep", "revert", "test", "allow"] -> do
+          (Just path, Just rid, Just choice) | choice `elem` ["keep", "revert", "reopen", "test", "allow"] -> do
             answered <- planProgress (if choice == "test" then "testing" else "reviewing") (\_ -> chooseReview job path rid choice)
             case answered of
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
@@ -652,6 +679,7 @@ handlers env =
             Just (p, rel, text) | isPlanPath p path -> do
               rs <- liftIO (loadReviews (envPorts env) (prRoot p) rel)
               readings <- maybe [] rrReadings <$> liftIO (loadReadings (envPorts env) (prRoot p) rel)
+              past <- liftIO (loadArchive (envPorts env) (prRoot p) rel)
               let ls = parsePlan text
                   lens row title args = CodeLens (Range (Position (fromIntegral row) 0) (Position (fromIntegral row) 0)) (Just (Command title "olifant.plans.review" (Just (map String args ++ [])))) Nothing
                   open = length rs + length readings
@@ -663,7 +691,10 @@ handlers env =
               pure
                 ( [lens titleRow (T.pack (show open) <> " to review") first | open > 0]
                     ++ [lens (lnRow l) (lensTitle r) [rvId r, getUri uri] | r <- rs, Just l <- [locateStep ls r]]
-                    ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just t <- [readingLens r], Just row <- [readingRow ls r]] )
+                    ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just t <- [readingLens r], Just row <- [readingRow ls r]]
+                    ++ [ CodeLens (Range (Position (fromIntegral (lnRow l)) 0) (Position (fromIntegral (lnRow l)) 0)) (Just (Command (T.pack (show n) <> (if n == 1 then " delegation" else " delegations")) "olifant.plans.errand" (Just [String (getUri uri), Number (fromIntegral (lnRow l))]))) Nothing
+                       | l <- ls, case lnKind l of Step _ -> True; _ -> False
+                       , let n = length [() | r <- past, stepKey (rvStep r) == stepKey (lnText l)], n > 0 ] )
             _ -> pure []
         respond (Right (InL lenses))
     , -- a plan against the work: facts to apply, ghost blocks to place
@@ -705,7 +736,14 @@ handlers env =
             case ran of
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right t -> respond (Right (object ["facts" .= map factJson (ttFacts t), "passed" .= ttPassed t, "failed" .= ttFailed t, "seconds" .= ttSeconds t]))
+              Right t -> do
+                facts <- liftIO $ M.lookup path . ssDocs <$> readMVar (envState env) >>= \case
+                  Just (_, text) -> do
+                    journalTests env path text line (ttFacts t)
+                    (jf, land) <- journalOn env path text
+                    withJournal (ttFacts t) jf <$ land
+                  Nothing -> pure (ttFacts t)
+                respond (Right (object ["facts" .= map factJson facts, "passed" .= ttPassed t, "failed" .= ttFailed t, "seconds" .= ttSeconds t]))
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/test needs a textDocument and a line" Nothing))
     , -- what the editor did with an errand's ghost block: an outcome record
       -- (anything malformed, or out of a project, is ignored; a record that
@@ -1416,34 +1454,49 @@ inBackground env req respond work = do
 -- runs is refused without starting, and the lock is let go however the
 -- first ends (answered, failed, cancelled).
 errandRequest :: Env -> Verb -> T.Text -> TRequestMessage m -> Value -> (Either (TResponseError m) Value -> LspM () ()) -> LspM () ()
-errandRequest env verb title req params respond = case (documentPath params, lineOf params) of
-  (Just path, Just line)
+errandRequest env verb title req params respond = case documentPath params of
+  Just path
     | verb == Do ->
-        liftIO (tryTakeMVar (envDoing env)) >>= \case
-          Nothing -> failed "a do is already running"
-          Just () -> do
-            lspEnv <- getLspEnv
-            let release = void (tryPutMVar (envDoing env) ())
-            -- taken here, in the order requests arrive; let go in the work's finally
-            inBackground env req respond (\job -> liftIO (runLspT lspEnv (run job path line) `finally` release))
-    | otherwise -> inBackground env req respond (\job -> run job path line)
-  _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("olifant/plans/" <> name <> " needs a textDocument and a line") Nothing))
+        liftIO (reopenOf env path params) >>= \case
+          Left why -> failed why
+          Right reopen -> case (snd <$> reopen) <|> lineOf params of
+            Nothing -> invalid
+            Just line ->
+              liftIO (tryTakeMVar (envDoing env)) >>= \case
+                Nothing -> failed "a do is already running"
+                Just () -> do
+                  lspEnv <- getLspEnv
+                  let release = void (tryPutMVar (envDoing env) ())
+                  -- taken here, in the order requests arrive; let go in the work's finally
+                  inBackground env req respond (\job -> liftIO (runLspT lspEnv (run job path line (fst <$> reopen)) `finally` release))
+    | Just line <- lineOf params -> inBackground env req respond (\job -> run job path line Nothing)
+  _ -> invalid
   where
+    invalid = respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("olifant/plans/" <> name <> " needs a textDocument and a line") Nothing))
     name = case verb of Ask -> "ask"; Validate -> "validate"; Do -> "do"
     failed why = respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-    run job path line = do
+    run job path line reopen = do
       lspEnv <- getLspEnv
       -- a do's review is ready: the editor opens it (before the answer)
       let ready rid = runLspT lspEnv $ do
             sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review/ready")) (object ["id" .= rid, "kind" .= ("do" :: T.Text), "textDocument" .= object ["uri" .= filePathToUri path]])
             lensesChanged
-      answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts ready Nothing (envCancel job) verb path line))
+      before <- liftIO (versionOf env path)
+      answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts ready reopen (envCancel job) verb path line))
       -- an errand the editor cancelled is no result (its runner was stopped)
       stopped <- liftIO (cancelled (envCancel job))
+      doc <- liftIO (M.lookup path . ssDocs <$> readMVar (envState env))
       case answered of
-        _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
-        Left why -> failed why
-        Right a -> respond (Right (errandJson name a))
+        _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing)) >> flushJournal env path
+        Left why -> failed why >> flushJournal env path
+        -- a do's journal lines ride its facts while the plan is as the do
+        -- read it; else they land by their own edit
+        Right a | verb == Do, Just (v, text) <- doc, before == Just v -> do
+          liftIO (journalTests env path text line (eaFacts a))
+          (jf, land) <- liftIO (journalOn env path text)
+          liftIO land
+          respond (Right (errandJson name a {eaFacts = withJournal (eaFacts a) jf}))
+        Right a -> respond (Right (errandJson name a)) >> when (verb == Do) (flushJournal env path)
 
 -- | What `olifant/plans/<verb>` answers.
 errandJson :: T.Text -> ErrandAnswer -> Value
@@ -1513,10 +1566,116 @@ sendFacts :: Env -> FilePath -> ReconcileAnswer -> LspM () Int
 sendFacts env path a = do
   now <- liftIO (M.lookup path . ssDocs <$> readMVar (envState env))
   case (raVersion a, now) of
-    (Just v, Just (v', text)) | v == v', not (null (raFacts a)) -> do
-      void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: reconcile") (factsEdit path (Just v) text (raFacts a))) (\_ -> pure ()))
+    (Just v, Just (v', text)) | v == v' -> do
+      -- the reconcile's moved anchors are journaled; pending lines ride along
+      at <- liftIO (pNow (envPorts env))
+      let ls = parsePlan text
+          moved = [ movedEvent (lnText l) r at (anchorText' a')
+                  | Replace r t <- raFacts a, l <- take 1 (drop r ls), isStepLine l
+                  , Just old <- [lnAnchor l], a' : _ <- [[x | Just x <- map lnAnchor (take 1 (parsePlan t))]]
+                  , (anPath old, anUnit old) /= (anPath a', anUnit a') ]
+      liftIO (journal env path moved)
+      (jf, land) <- liftIO (journalOn env path text)
+      let facts = withJournal (raFacts a) jf
+      unless (null facts) . void $
+        sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: reconcile") (factsEdit path (Just v) text facts)) (\case
+          Right r | r ^. L.applied -> liftIO land
+          _ -> pure ())
       pure (length (raFacts a))
     _ -> pure 0
+  where
+    isStepLine l = case lnKind l of Step _ -> True; _ -> False
+    anchorText' x = T.pack (anPath x) <> ":" <> anUnit x
+
+-- | Record EVENTS in the journal of the plan at PATH (each once).
+journal :: Env -> FilePath -> [Event] -> IO ()
+journal env path evs = unless (null evs) $
+  planContext env path >>= \case
+    Nothing -> pure ()
+    Just (p, rel, _) -> do
+      zone <- getCurrentTimeZone
+      void (Journal.record (envPorts env) zone (prRoot p) rel evs)
+
+-- | The plan's pending journal lines placed on TEXT (the plan now): their
+-- facts, and what marks them landed (a line whose step is gone is lost).
+journalOn :: Env -> FilePath -> T.Text -> IO ([Fact], IO ())
+journalOn env path text =
+  planContext env path >>= \case
+    Nothing -> pure ([], pure ())
+    Just (p, rel, _) -> do
+      let ports = envPorts env
+      es <- Journal.pendingEntries ports (prRoot p) rel
+      let (facts, keys, lost) = Journal.pendingFacts (parsePlan text) es
+      Journal.markLost ports (prRoot p) rel lost
+      pure (facts, Journal.markLanded ports (prRoot p) rel keys)
+
+-- | The plan's pending journal lines as their own edit of the plan open
+-- now (landed when the editor applied it); nothing when it is not open.
+flushJournal :: Env -> FilePath -> LspM () ()
+flushJournal env path = do
+  doc <- liftIO (M.lookup path . ssDocs <$> readMVar (envState env))
+  forM_ doc $ \(v, text) -> do
+    (facts, land) <- liftIO (journalOn env path text)
+    unless (null facts) . void $
+      sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: journal") (factsEdit path (Just v) text facts)) (\case
+        Right r | r ^. L.applied -> liftIO land
+        _ -> pure ())
+
+-- | A test run's journal events for the step at ROW of the plan's TEXT,
+-- from the FACTS it left (its test children's marks, its tick).
+journalTests :: Env -> FilePath -> T.Text -> Int -> [Fact] -> IO ()
+journalTests env path text row facts = do
+  let ls = parsePlan text
+      states = [((anPath a, anUnit a), st) | Replace _ t <- facts, l <- take 1 (parsePlan t), lnKind l == TestChild, Just a <- [lnAnchor l], Just st <- [testState l]]
+  fp <- case [a | l <- ls, lnRow l == row, Just a <- [lnAnchor l]] of
+    a : _ -> withSnapshot env (\s -> projectFor path s >>= \case
+      (s', Just (_, p)) -> (s',) . rsFingerprint <$> resolveAnchor s' p a
+      (s', Nothing) -> pure (s', Nothing))
+    [] -> pure Nothing
+  now <- pNow (envPorts env)
+  journal env path (testEvents ls row facts states fp now)
+
+-- | A do's `resume` (an archived errand's id) and `text`: the reopen and
+-- the row of its step now; Nothing without `resume`.
+reopenOf :: Env -> FilePath -> Value -> IO (Either T.Text (Maybe (Reopen, Int)))
+reopenOf env path params = case textParam "resume" params of
+  Nothing -> pure (Right Nothing)
+  Just rid -> case T.strip <$> textParam "text" params of
+    Just ask | not (T.null ask) ->
+      planContext env path >>= \case
+        Nothing -> pure (Left "this plan is in no Olifant project")
+        Just (p, rel, text) ->
+          loadArchived (envPorts env) (prRoot p) rel rid <&> \case
+            Nothing -> Left ("no past do " <> rid)
+            Just r -> case (rvSession r, locateStep (parsePlan text) r) of
+              (Nothing, _) -> Left "that do has no session to resume"
+              (_, Nothing) -> Left "the step is gone"
+              (Just sid, Just l) -> Right (Just (Reopen rid sid ask, lnRow l))
+    _ -> pure (Left "say what to change")
+
+-- | A past do as the window draws it: by `id`, or the errand behind the
+-- journal line at `row`; Null when there is none.
+errandView :: Env -> FilePath -> Value -> IO (Either T.Text Value)
+errandView env path params =
+  planContext env path >>= \case
+    Nothing -> pure (Left "this plan is in no Olifant project")
+    Just (p, rel, text) -> do
+      let ports = envPorts env
+          root = prRoot p
+      rid <- case (reviewIdOf params, lineParam "row" params) of
+        (Just i, _) -> pure (Just i)
+        (_, Just row) -> Journal.entries ports root rel <&> \es -> do
+          l <- listToMaybe (drop row (T.splitOn "\n" text))
+          evErrand . enEvent =<< Journal.entryAt es l
+        _ -> pure Nothing
+      found <- maybe (pure Nothing) (loadArchived ports root rel) rid
+      case found of
+        Nothing -> pure (Right Aeson.Null)
+        Just r -> do
+          home <- getHomeDirectory
+          let runner = pcRunner (catalogPlans (prCatalog p))
+              transcript = [home </> ".claude/projects" </> slugOf root </> T.unpack sid <> ".jsonl" | takeFileName runner == "claude", Just sid <- [rvSession r]]
+          pure (Right (errandPayload (listToMaybe transcript) r))
 
 -- | The reconcile review as the window draws it, from the plan's TEXT at
 -- VERSION (each entry's edit derived from it).
@@ -1541,11 +1700,18 @@ chooseReading env path entry name step =
           (_, Nothing) -> pure (Left ("no choice " <> name))
           (Just r, Just choice) -> case readingFacts (parsePlan text) r choice of
             Left why -> pure (Left why)
-            Right facts -> do
+            Right facts0 -> do
               let root = prRoot p
+                  ls = parsePlan text
               now <- pNow ports
               appendRecord ports root (AnOutcome (OutcomeRecord {orId = rrErrand rr, orBlock = rdBlock r, orAt = now, orOutcome = outcomeOf choice}))
-              let rest = answerReading rr (readingKey r)
+              -- the answer is journaled under the step it is about
+              let stepRow = case choice of Place n -> Just n; _ -> readingRow ls r
+              journal env path [e | Just row <- [stepRow], l <- take 1 (drop row ls), Just e <- [readingEvent (readingKey r) r choice l now]]
+              (jf, land) <- journalOn env path text
+              land
+              let facts = withJournal facts0 jf
+                  rest = answerReading rr (readingKey r)
                   after = applyFactsText facts text
               maybe (dropReadings ports root rel) (saveReadings ports root) rest
               pure (Right (object
@@ -1610,13 +1776,10 @@ reviewView p text r = do
 planEdit :: Env -> FilePath -> T.Text -> [(Int, T.Text)] -> Maybe (Int, [T.Text]) -> IO (Maybe WorkspaceEdit)
 planEdit env path text reps insert = do
   version <- versionOf env path
-  let ls = T.splitOn "\n" text
-      replaced = [fromMaybe l (lookup i reps) | (i, l) <- zip [0 :: Int ..] ls]
-      new = T.intercalate "\n" (case insert of
-        Just (after, more) | not (null more) -> let (a, b) = splitAt (after + 1) replaced in a ++ more ++ b
-        _ -> replaced)
-      (range, t) = smallestChange text new
-  pure (if new == text then Nothing else Just (workspaceEditAsking False [FileEdit path version False range t]))
+  -- the plan's pending journal lines land with it
+  (jf, land) <- journalOn env path text
+  let facts = withJournal ([Replace r t | (r, t) <- reps] ++ [Insert after more | Just (after, more) <- [insert], not (null more)]) jf
+  if applyFactsText facts text == text then pure Nothing else Just (factsEdit path version text facts) <$ land
 
 -- | Answer the review RID of the plan at PATH with CHOICE: keep (its plan
 -- lines land, the review goes), revert (the files restored from its
@@ -1640,17 +1803,24 @@ chooseReview env path rid choice =
             now <- pNow ports
             appendRecord ports root (AnOutcome (OutcomeRecord {orId = rvErrand r, orBlock = 0, orAt = now, orOutcome = o}))
             dropReview ports root r
+          -- the answer journaled under its step and kept in the archive
+          answered how = do
+            now <- pNow ports
+            let step = locateStep ls r
+            journal env path [keepEvent (rvId r) (rvErrand r) (maybe (rvStep r) lnText step) (maybe (rvRow r) lnRow step) now how]
+            loadArchived ports root rel (rvId r) >>= mapM_ (\a -> archiveErrand ports root a {rvChoice = Just how})
           again r' = do
             saveReview ports root r'
             text' <- documentText env path
             reviewView p text' r'
       case choice of
-        "keep" -> do
+        _ | choice `elem` ["keep", "reopen"] -> do
+          answered (if choice == "keep" then "kept" else "reopened")
           edit <- case keepLines ls r of
-            Nothing -> pure Nothing
+            Nothing -> planEdit env path text [] Nothing
             Just (step, rep, more) -> planEdit env path text [(lnRow step, t) | Just t <- [rep]] (Just (lnRow step, more))
           outcome "accepted"
-          pure (Right (object ["done" .= True, "edit" .= edit, "said" .= ("kept" :: T.Text)]))
+          pure (Right (object (["done" .= True, "edit" .= edit, "said" .= (if choice == "keep" then "kept" else "kept; say what to change" :: T.Text)] ++ ["reopen" .= object ["id" .= rvId r] | choice == "reopen"])))
         "revert" -> case rvRef r of
           Nothing -> pure (Left "this do has no tree reference to revert to")
           Just tr -> do
@@ -1660,6 +1830,7 @@ chooseReview env path rid choice =
               Right () -> do
                 let now' = T.splitOn "\n" text
                     undone = [(n, b) | (n, b, a) <- rvFacts r, listToMaybe (drop n now') == Just a]
+                answered "reverted"
                 edit <- planEdit env path text undone Nothing
                 outcome "rejected"
                 let n = length changes
@@ -1671,7 +1842,10 @@ chooseReview env path rid choice =
               Left why -> pure (Left why)
               Right t -> do
                 view <- again r {rvTests = testsOfFacts [x | Replace _ x <- ttFacts t]}
-                pure (Right (object ["done" .= False, "review" .= view, "facts" .= map factJson (ttFacts t), "said" .= (T.pack (show (ttPassed t)) <> " passed \183 " <> T.pack (show (ttFailed t)) <> " failed")]))
+                journalTests env path text (lnRow step) (ttFacts t)
+                (jf, land) <- journalOn env path text
+                land
+                pure (Right (object ["done" .= False, "review" .= view, "facts" .= map factJson (withJournal (ttFacts t) jf), "said" .= (T.pack (show (ttPassed t)) <> " passed \183 " <> T.pack (show (ttFailed t)) <> " failed")]))
         _ -> do
           let pats = nub [allowPattern d | d <- rvDenials r, allowPattern d `notElem` rvAllowed r]
               config = root </> ".olifant/config.toml"

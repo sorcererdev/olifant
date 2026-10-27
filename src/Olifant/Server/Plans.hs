@@ -358,7 +358,8 @@ runErrand after reviewed reopen token verb path row s0 =
                           "empty" -> DoEmpty
                           "timeout" -> DoTimeout
                           "cancelled" -> DoCancelled
-                          _ -> DoError (fromMaybe status why)
+                          -- the runner by its name, not its path
+                          _ -> DoError (T.replace (T.pack (pcRunner cfg)) (T.pack (takeFileName (pcRunner cfg))) (fromMaybe status why))
                     safely () (archiveErrand (ssPorts s) root r)
                     zone <- getCurrentTimeZone
                     _ <- safely [] (Journal.record (ssPorts s) zone root rel [doEvent rid (lnText target) (lnRow target) now (isJust reopen) (pcModel cfg) end])
