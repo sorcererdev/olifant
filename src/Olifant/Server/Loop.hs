@@ -454,8 +454,8 @@ reconcile token forced path s0 = do
                   newStep cu w = Block (lnRow atStep) (Just (lnText atStep)) [ghost (indent <> "- [ ] " <> fromMaybe (headerWords cu) w <> " " <> anchorOf cu)]
                   also = [(after Also (Just cu) step [child step ("- also " <> anchorOf cu)] False (triple' cu)) {rbNewStep = Just (newStep cu Nothing)} | Placed step cus <- placements, cu <- cus]
                   stateGhosts =
-                    [ after kind (listToMaybe own) step [t'] True (unitOf step own)
-                    | (step, own, _, Just c, _) <- states
+                    [ after kind (listToMaybe units) step [t'] True (unitOf step own)
+                    | (step, own, units, Just c, _) <- states
                     , let kind = if c == "reopened" then Reopened else Done
                     , Just t' <- [case c of
                         -- a reading never ticks a step with no tests: its

@@ -1531,8 +1531,10 @@ chooseReading :: Env -> FilePath -> Maybe T.Text -> T.Text -> Maybe Int -> IO (E
 chooseReading env path entry name step =
   planContext env path >>= \case
     Nothing -> pure (Left "this plan is in no Olifant project")
-    Just (p, rel, text) ->
-      loadReadings ports (prRoot p) rel >>= \case
+    Just (p, rel, text0) -> do
+     -- the plan's text and its version read together: the edit is of that text
+     (version, text) <- maybe (Nothing, text0) (\(v, t) -> (Just v, t)) . M.lookup path . ssDocs <$> readMVar (envState env)
+     loadReadings ports (prRoot p) rel >>= \case
         Nothing -> pure (Left ("no open review " <> readingsId))
         Just rr -> case (find ((== entry) . Just . readingKey) (rrReadings rr), choiceOf name step) of
           (Nothing, _) -> pure (Left "that reading is no longer open; open the review again")
@@ -1543,7 +1545,6 @@ chooseReading env path entry name step =
               let root = prRoot p
               now <- pNow ports
               appendRecord ports root (AnOutcome (OutcomeRecord {orId = rrErrand rr, orBlock = rdBlock r, orAt = now, orOutcome = outcomeOf choice}))
-              version <- versionOf env path
               let rest = answerReading rr (readingKey r)
                   after = applyFactsText facts text
               maybe (dropReadings ports root rel) (saveReadings ports root) rest

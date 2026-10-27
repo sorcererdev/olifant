@@ -24,7 +24,7 @@ spec = describe "Olifant.Server.ReviewReadings (a reconcile's readings as a revi
   it "makes one entry per reading, each kind with its offers and first sentence" $ do
     let Just rr = readingsReview [] "plans/t.md" answer
         view = readingsPayload rr plan (const Null)
-    map readingKey (rrReadings rr) `shouldBe` ["done|a.py|helper|2222222", "reopened|a.py|count|3333333", "changed|a.py|helper|2222222", "gone|a.py|spare|", "unplaced|a.py|extra|4444444", "unplaced|a.py|other|5555555"]
+    map readingKey (rrReadings rr) `shouldBe` ["done|a.py|helper|2222222|tidy the helper", "reopened|a.py|count|3333333|count seats", "changed|a.py|helper|2222222|tidy the helper", "gone|a.py|spare||keep spare", "unplaced|a.py|extra|4444444", "unplaced|a.py|other|5555555"]
     map (\e -> (str "kind" e, str "summary" e)) (entries view)
       `shouldBe` [ ("done", "Step 1 looks done"), ("reopened", "Step 2 looks open again")
                  , ("changed", "Step 1 looks wrong: helper no longer returns one"), ("gone", "Step 3's unit is gone: spare")
@@ -36,7 +36,7 @@ spec = describe "Olifant.Server.ReviewReadings (a reconcile's readings as a revi
   it "is nothing when there are no readings, or every one is answered" $ do
     readingsReview [] "plans/t.md" answer {raBlocks = []} `shouldBe` Nothing
     readingsReview (map readingKey (rrReadings full)) "plans/t.md" answer `shouldBe` Nothing
-    map readingKey . rrReadings <$> readingsReview ["done|a.py|helper|2222222"] "plans/t.md" answer `shouldBe` Just (drop 1 (map readingKey (rrReadings full)))
+    map readingKey . rrReadings <$> readingsReview ["done|a.py|helper|2222222|tidy the helper"] "plans/t.md" answer `shouldBe` Just (drop 1 (map readingKey (rrReadings full)))
   it "derives each choice's plan edit from the plan now" $ do
     let [done, reopened, changed, gone, also, new] = rrReadings full
         ls = parsePlan plan
@@ -70,7 +70,7 @@ spec = describe "Olifant.Server.ReviewReadings (a reconcile's readings as a revi
       Just r1 <- replaceReadings plainPorts root "plans/t.md" answer
       length (rrReadings r1) `shouldBe` 6
       doesFileExist (root </> ".olifant/state/reviews/plans/t/reconcile.json") `shouldReturn` True
-      let Just r2 = answerReading r1 "done|a.py|helper|2222222"
+      let Just r2 = answerReading r1 "done|a.py|helper|2222222|tidy the helper"
       saveReadings plainPorts root r2
       Just r3 <- replaceReadings plainPorts root "plans/t.md" answer {raId = "second"}
       map readingKey (rrReadings r3) `shouldBe` drop 1 (map readingKey (rrReadings full))
@@ -81,9 +81,17 @@ spec = describe "Olifant.Server.ReviewReadings (a reconcile's readings as a revi
       map rvId <$> loadReviews plainPorts root "plans/t.md" `shouldReturn` ["d1"]
       replaceReadings plainPorts root "plans/t.md" answer {raBlocks = []} `shouldReturn` Nothing
       doesFileExist (root </> ".olifant/state/reviews/plans/t/reconcile.json") `shouldReturn` False
+  it "keeps two steps' readings of one unit apart: each its own id, each its own edit" $ do
+    let twice = "# T\n\n- [ ] tidy the helper @a.py:helper\n- [ ] test the helper @a.py:helper\n"
+        b r t = ReconcileBlock (Block r (Just t) [Ghost (T.replace "- [ ]" "- [x]" t <> " ✓ 2222222") Nothing]) True (Just ("a.py", "helper", "2222222")) Done Nothing Nothing
+        Just rr = readingsReview [] "plans/t.md" answer {raBlocks = [b 2 "- [ ] tidy the helper @a.py:helper", b 3 "- [ ] test the helper @a.py:helper"]}
+        [one, two] = rrReadings rr
+    readingKey one `shouldNotBe` readingKey two
+    readingFacts (parsePlan twice) two Apply `shouldBe` Right [Replace 3 "- [x] test the helper @a.py:helper ✓ 2222222"]
+    map readingKey . rrReadings <$> answerReading rr (readingKey one) `shouldBe` Just [readingKey two]
   it "answering takes the reading out, and the last one ends the review" $ do
     let Just one = readingsReview (drop 1 (map readingKey (rrReadings full))) "plans/t.md" answer
-    answerReading one "done|a.py|helper|2222222" `shouldBe` Nothing
+    answerReading one "done|a.py|helper|2222222|tidy the helper" `shouldBe` Nothing
     answerReading full "nope" `shouldBe` Just full
   where
     full = let Just r = readingsReview [] "plans/t.md" answer in r

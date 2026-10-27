@@ -124,9 +124,14 @@ kindName = \case
 kindNamed :: Text -> Maybe ReadingKind
 kindNamed t = find ((== t) . kindName) [Done, Reopened, Diverged, Gone, Also, NewStep]
 
--- | A reading's key, and its entry's id: "kind|path|unit|fingerprint".
+-- | A reading's key, and its entry's id: "kind|path|unit|fingerprint", and
+-- for a step's reading "|" and the step's words (two steps may read one
+-- unit; a tick or a verdict does not change the words).
 readingKey :: Reading -> Text
-readingKey r = let (p, u, fp) = rdUnit r in T.intercalate "|" [entryKind (rdKind r), T.pack p, u, fp]
+readingKey r =
+  let (p, u, fp) = rdUnit r
+      step = [fst (stepKey (snd (rdAfter r))) | rdKind r `notElem` [Also, NewStep]]
+   in T.intercalate "|" ([entryKind (rdKind r), T.pack p, u, fp] ++ step)
 
 -- | The readings of a reconcile's ANSWER for the plan at PLAN, but those
 -- whose key is ANSWERED; Nothing when none is left.
