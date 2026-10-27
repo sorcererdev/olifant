@@ -130,6 +130,7 @@ library
     Olifant.Server.Hints
     Olifant.Server.Holes
     Olifant.Server.Jobs
+    Olifant.Server.Journal
     Olifant.Server.Loop
     Olifant.Server.LoopQuestions
     Olifant.Server.LoopTests
@@ -306,6 +307,8 @@ test-suite spec
     Olifant.Server.Hints
     Olifant.Server.Holes
     Olifant.Server.Jobs
+    Olifant.Server.Journal
+    Olifant.Server.JournalSpec
     Olifant.Server.Loop
     Olifant.Server.LoopQuestions
     Olifant.Server.LoopSpec

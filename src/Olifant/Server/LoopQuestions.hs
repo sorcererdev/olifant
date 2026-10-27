@@ -74,7 +74,7 @@ planStateQuestion step ls units =
     , ("tests", T.intercalate "\n" [T.strip (lnText c) <> ": " <> stateName (testState c) | c <- kids, lnKind c == TestChild])
     ]
   where
-    kids = childrenOf ls (lnRow step)
+    kids = [c | c <- childrenOf ls (lnRow step), lnKind c /= Journal]
     diverged = ("diverged", "the change departs from what the step says")
     options
       | lnKind step == Step True = [("still_done", "the step is still done after the change"), ("reopened", "the change undoes the step: it is open again"), diverged]
