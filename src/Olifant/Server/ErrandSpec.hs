@@ -136,6 +136,13 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       let d = errandPrompt Do Nothing plan ls step []
       d `shouldSatisfy` T.isInfixOf "STEP: the step\n  - test: it works @tests/t.py:test_it"
       errandPrompt Do Nothing plan ls (ls !! 4) [] `shouldSatisfy` T.isInfixOf "TEST: it works @tests/t.py:test_it"
+    it "a do's prompt for a step with an excerpt leaves the fence out, its other children in" $ do
+      let t = T.unlines ["## S", "- [ ] the step @src/a.py:Foo", "  ```python @src/a.py:Foo", "  class Foo:", "      SECRET = 1", "  ```", "  - test: it works @tests/t.py:test_it"]
+          pls = parsePlan t
+          d = errandPrompt Do Nothing t pls (pls !! 1) []
+      d `shouldSatisfy` (not . T.isInfixOf "SECRET")
+      d `shouldSatisfy` (not . T.isInfixOf "```python @src/a.py:Foo")
+      d `shouldSatisfy` T.isInfixOf "STEP: the step @src/a.py:Foo\n  - test: it works @tests/t.py:test_it"
     it "a do's prompt names the test command exactly, with no pipe or cd, and says the engine runs the tests" $ do
       let cmd = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "{= tests =}"]
       doTestCommand cmd `shouldBe` Just "uv run --quiet --frozen pytest -q <test file, or file::test>"

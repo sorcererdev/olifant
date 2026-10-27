@@ -29,7 +29,7 @@ import Olifant.App (Project (..))
 import Olifant.Catalog (Catalog (..), PlansConfig (..))
 import Olifant.Decide (Answer (..), Decider (..), Question, choice, confident, curlDecider, qOptions)
 import Olifant.Model (Backend (..), Escalate (..), ModelConfig (..), Rung (..), askBackend)
-import Olifant.Plans (Kind (..), Line (..), Section (..), TestState (..), childrenOf, sectionOf, sections, testState)
+import Olifant.Plans (Kind (..), Line (..), Section (..), TestState (..), childrenOf, excerptRows, sectionOf, sections, testState)
 import Olifant.Process (Cancel, cancelled)
 import Olifant.Server.LoopTypes (Change (..), ChangedUnit (..))
 import Olifant.Server.Plans (safely)
@@ -60,7 +60,8 @@ openSteps branch ls = mine ++ rest
 sectionsText :: [Line] -> Text
 sectionsText ls = T.intercalate "\n\n" [T.intercalate "\n" (("## " <> secTitle sec) : prose sec) | sec <- sections ls]
   where
-    prose sec = [T.strip (lnText l) | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec, lnKind l == Prose, not (T.null (T.strip (lnText l)))]
+    prose sec = [T.strip (lnText l) | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec, lnKind l == Prose, not (T.null (T.strip (lnText l))), lnRow l `notElem` excerpts]
+    excerpts = excerptRows ls
 
 -- | What state a step is in after its units changed: an open step done, in
 -- progress or diverged; a done one still done, reopened or diverged. Its
@@ -74,7 +75,7 @@ planStateQuestion step ls units =
     , ("tests", T.intercalate "\n" [T.strip (lnText c) <> ": " <> stateName (testState c) | c <- kids, lnKind c == TestChild])
     ]
   where
-    kids = [c | c <- childrenOf ls (lnRow step), lnKind c /= Journal]
+    kids = [c | c <- childrenOf ls (lnRow step), lnKind c /= Journal, lnRow c `notElem` excerptRows ls]
     diverged = ("diverged", "the change departs from what the step says")
     options
       | lnKind step == Step True = [("still_done", "the step is still done after the change"), ("reopened", "the change undoes the step: it is open again"), diverged]

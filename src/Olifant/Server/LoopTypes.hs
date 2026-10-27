@@ -31,9 +31,10 @@ data ChangedUnit = ChangedUnit
   }
   deriving stock (Eq, Show)
 
--- | A plan edit the engine makes without a model: a row's new text, or
--- lines inserted after a row (0-based rows of the request's document).
-data Fact = Replace Int Text | Insert Int [Text]
+-- | A plan edit the engine makes without a model: a row's new text, lines
+-- inserted after a row, or rows from the first to the last (inclusive) as
+-- new lines (0-based rows of the request's document).
+data Fact = Replace Int Text | Insert Int [Text] | ReplaceRows Int Int [Text]
   deriving stock (Eq, Show)
 
 -- | What a reading says: a step looks done (or still done, at a new

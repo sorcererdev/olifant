@@ -17,6 +17,7 @@ module Olifant.Server.Plans
   , Reopen (..)
   , currentBranch
   , gitOut
+  , gitText
   , confined
   , safely
   ) where
@@ -440,6 +441,13 @@ gitOut root args =
   safely Nothing $ runBytes "git" (["-C", root] ++ args) (Just root) "" >>= \case
     Right (ExitSuccess, out, _) -> pure (Just (map T.unpack (filter (not . T.null) (T.lines (TE.decodeUtf8Lenient out)))))
     _ -> pure Nothing
+
+-- | A read-only git command's whole output; Nothing when it fails.
+gitText :: FilePath -> [String] -> IO (Maybe Text)
+gitText root args =
+  runBytes "git" (["-C", root] ++ args) (Just root) "" <&> \case
+    Right (ExitSuccess, out, _) -> Just (TE.decodeUtf8Lenient out)
+    _ -> Nothing
 
 -- | A `do`'s test tool: the first two words of the project's test command
 -- (past an `env` and its assignments), e.g. `Bash(uv run*)`; none without

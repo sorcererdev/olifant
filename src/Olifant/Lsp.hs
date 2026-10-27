@@ -47,7 +47,8 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
-import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
+import Olifant.Server.Excerpt (Excerpt (..), excerptsOf, renderFence, unitExcerpt, unitHover)
+import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), baseline, factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
 import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchiveIndex, loadArchived, loadReview, loadReviews, locateStep, revertChange, pastDosAt, reopenable, reviewPayload, sameStep, saveReview, testsOfFacts)
@@ -338,7 +339,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -381,16 +382,19 @@ handlers env =
               , let label = "⚡ " <> actLabel first <> (if null rest then "" else " +" <> T.pack (show (length rest)))
               ]
         respond (Right (InL hints))
-    , -- the generators that nearly apply in this file, and why not
+    , -- the generators that nearly apply in this file, and why not; in a
+      -- plan, the code of the unit the anchor under the cursor names
       requestHandler SMethod_TextDocumentHover $ \req respond -> do
-        let Position l _ = req ^. L.params . L.position
+        let Position l c = req ^. L.params . L.position
         hover <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure Nothing
-          Just path -> liftIO $ do
-            (lines', near) <- withSnapshot env (hintsFor path)
-            let here = concat [map fst acts | LineHint line acts <- lines', line == fromIntegral l + 1]
-                text = T.intercalate "\n\n" (["⚡ " <> actLabel a <> " (" <> actGenerator a <> ")" | a <- here] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near])
-            pure (if T.null text then Nothing else Just (Hover (InL (MarkupContent MarkupKind_Markdown text)) Nothing))
+          Just path -> liftIO $ withSnapshot env (projectFor path) >>= \case
+            Just (_, project) | isPlanPath project path -> planHover env project path (Position l c)
+            _ -> do
+              (lines', near) <- withSnapshot env (hintsFor path)
+              let here = concat [map fst acts | LineHint line acts <- lines', line == fromIntegral l + 1]
+                  text = T.intercalate "\n\n" (["⚡ " <> actLabel a <> " (" <> actGenerator a <> ")" | a <- here] ++ ["nearby: " <> nbGenerator n <> " — " <> nbWhy n | n <- near])
+              pure (if T.null text then Nothing else Just (Hover (InL (MarkupContent MarkupKind_Markdown text)) Nothing))
         respond (Right (maybe (InR Null) InL hover))
     , -- snippets, each with its body placed at the cursor (tab stops)
       requestHandler SMethod_TextDocumentCompletion $ \req respond -> inBackground env req respond $ \job -> do
@@ -1343,6 +1347,37 @@ newStepAction env path (Position l _) =
           edit = WorkspaceEdit (Just (M.singleton (filePathToUri path) [TextEdit (Range end end) ("\n" <> newStepText)])) Nothing Nothing
       pure [CodeAction "New step below" (Just CodeActionKind_Source) Nothing Nothing Nothing (Just edit) Nothing Nothing]
     _ -> pure []
+
+-- | "Show the code here" on an open step whose anchor resolves and that has
+-- no excerpt: its unit's code as a fence below the step line, which the
+-- reconcile keeps current until the step is ticked.
+excerptAction :: Env -> FilePath -> Position -> IO [CodeAction]
+excerptAction env path (Position l _) =
+  withSnapshot env (\s -> projectFor path s >>= \case
+    (s', Just (_, project)) | isPlanPath project path -> do
+      text <- documentText env path
+      let ls = parsePlan text
+          row = fromIntegral l
+      case [(ln, a) | ln <- ls, lnRow ln == row, lnKind ln == Step False, Just a <- [lnAnchor ln], row `notElem` map exStep (excerptsOf ls)] of
+        (ln, a) : _ -> do
+          base <- baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
+          unitExcerpt s' project base a <&> \found -> (s', [(ln, renderFence (lnIndent ln + 2) lang a False body) | Just (lang, body) <- [found]])
+        [] -> pure (s', [])
+    (s', _) -> pure (s', [])) <&> \found ->
+    [ CodeAction "Show the code here" (Just CodeActionKind_Source) Nothing Nothing Nothing (Just edit) Nothing Nothing
+    | (ln, fence) <- found
+    , let end = Position l (fromIntegral (utf16 (lnText ln)))
+          edit = WorkspaceEdit (Just (M.singleton (filePathToUri path) [TextEdit (Range end end) (T.concat ["\n" <> f | f <- fence])])) Nothing Nothing ]
+
+-- | A hover over a plan's anchor: its unit's code; none off an anchor, or
+-- when it does not resolve.
+planHover :: Env -> Project -> FilePath -> Position -> IO (Maybe Hover)
+planHover env project path (Position l c) = do
+  text <- documentText env path
+  let col = T.length (takeUtf16 (fromIntegral c) (lineAt (T.splitOn "\n" text) (fromIntegral l)))
+  case [a | ln <- parsePlan text, lnRow ln == fromIntegral l, Just a <- [lnAnchor ln], anStart a <= col, col <= anEnd a] of
+    a : _ -> withSnapshot env (\s -> (s,) <$> unitHover s project a) <&> fmap (\md -> Hover (InL (MarkupContent MarkupKind_Markdown md)) Nothing)
+    [] -> pure Nothing
 
 -- | The start of a line, up to a UTF-16 column.
 takeUtf16 :: Int -> T.Text -> T.Text
