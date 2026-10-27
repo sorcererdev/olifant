@@ -46,20 +46,28 @@ data Section = Section { secTitle :: Text, secRow :: Int, secEnd :: Int, secBran
   deriving (Eq, Show)
 
 parsePlan :: Text -> [Line]
-parsePlan t = snd (mapAccumL step False (zip [0 ..] (T.lines t)))
+parsePlan t = snd (mapAccumL step Nothing (zip [0 ..] (T.lines t)))
   where
-    -- A line opening with three backticks toggles the fence; it and everything inside is Prose.
-    step inFence (row, txt)
-      | isFence txt = (not inFence, prose row txt)
-      | inFence = (inFence, prose row txt)
-      | otherwise = (inFence, line row txt)
-    isFence = ("```" `T.isPrefixOf`) . T.stripStart
+    -- A fence opens with three or more backticks and closes, CommonMark-style, on a line of backticks only, at
+    -- least as long as the opener; it and everything inside is Prose. A blank line inside takes the opener's
+    -- indent, so a formatter stripping trailing spaces cannot cut the fence out of a step's children.
+    step Nothing (row, txt)
+      | Just n <- ticks txt = (Just (indentOf txt, n), prose row txt)
+      | otherwise = (Nothing, line row txt)
+    step (Just (ind, n)) (row, txt)
+      | Just m <- ticks txt, m >= n, T.all (== '`') (T.strip txt) = (Nothing, prose row txt)
+      | T.all isSpace txt = (Just (ind, n), (prose row txt) { lnIndent = ind })
+      | otherwise = (Just (ind, n), prose row txt)
+    ticks txt = let n = T.length (T.takeWhile (== '`') (T.stripStart txt)) in if n >= 3 then Just n else Nothing
     prose row txt = (line row txt) { lnKind = Prose, lnAnchor = Nothing, lnVerdict = NoVerdict }
+
+indentOf :: Text -> Int
+indentOf = T.length . T.takeWhile (== ' ')
 
 line :: Int -> Text -> Line
 line row txt = Line row ind kind txt anc (maybe NoVerdict (verdictAfter txt) anc)
   where
-    ind = T.length (T.takeWhile (== ' ') txt)
+    ind = indentOf txt
     body = T.drop ind txt
     kind = kindOf body
     -- A journal line's words are a record, not a claim: no anchor in them.

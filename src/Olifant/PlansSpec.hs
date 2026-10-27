@@ -57,6 +57,16 @@ spec = describe "Olifant.Plans" $ do
     let ls = parsePlan "```\n- x @a.py:F ✓ abc1234\n```"
     map lnAnchor ls `shouldBe` [Nothing, Nothing, Nothing]
     map lnVerdict ls `shouldBe` [NoVerdict, NoVerdict, NoVerdict]
+  it "a longer fence holding a shorter one stays open until its own length" $
+    map lnKind (parsePlan "````\n```\n- [ ] inside\n````\n- [ ] out") `shouldBe` [Prose, Prose, Prose, Prose, Step False]
+  it "a closing line with text after the backticks does not close" $
+    map lnKind (parsePlan "```\n``` python\n- [ ] inside\n```\n- [ ] out") `shouldBe` [Prose, Prose, Prose, Prose, Step False]
+  it "blank lines inside a fence under a step keep the fence among the step's children" $ do
+    let ls = parsePlan "- [ ] s @a.py:F\n  ```python @a.py:F\n  def f():\n  \n\n      pass\n  ```\n- [ ] next"
+    map lnRow (childrenOf ls 0) `shouldBe` [1, 2, 3, 4, 5, 6]
+    map lnIndent ls `shouldBe` [0, 2, 2, 2, 2, 6, 2, 0]
+  it "an info-string anchor is not an anchor" $
+    map lnAnchor (parsePlan "  ```python @a.py:F\n  x\n  ```") `shouldBe` [Nothing, Nothing, Nothing]
   it "a trailing dot is not part of the unit" $ do
     let [l] = parsePlan "- the table @src/a.py:Table."
     anUnit <$> lnAnchor l `shouldBe` Just "Table"
