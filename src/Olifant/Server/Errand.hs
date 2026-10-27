@@ -61,15 +61,18 @@ statusName = \case
   Cancelled -> "cancelled"
 
 -- | The flags after the runner's name; @testTools@ are the project's test commands (for 'Do').
-runnerArgs :: PlansConfig -> Verb -> [Text] -> [String]
-runnerArgs cfg verb testTools =
-  ["-p", "--output-format", "json", "--model", T.unpack (pcModel cfg)] ++ case verb of
+runnerArgs :: PlansConfig -> Verb -> [Text] -> Maybe Text -> [String]
+runnerArgs cfg verb testTools resume =
+  ["-p", "--output-format", "json", "--model", T.unpack (pcModel cfg)]
+    -- a reopen: the do's thread, in a fork so the run has its own session
+    ++ maybe [] (\sid -> ["--resume", T.unpack sid, "--fork-session"]) resume
+    ++ case verb of
     Do -> ["--permission-mode", "acceptEdits", "--allowedTools", T.unpack (T.intercalate "," (["Read", "Grep", "Glob", "Edit", "Write"] ++ testTools ++ pcDoTools cfg))]
     _ -> ["--allowedTools", "Read,Grep,Glob"]
 
-runClaude :: Cancel -> PlansConfig -> Verb -> [Text] -> FilePath -> Text -> IO (Either RunFailure RunResult)
-runClaude token cfg verb testTools root prompt =
-  runBytesCancellable token (Just (pcTimeout cfg)) "env" (["-u", "CLAUDECODE", pcRunner cfg] ++ runnerArgs cfg verb testTools) (Just root) (TE.encodeUtf8 prompt) >>= \case
+runClaude :: Cancel -> PlansConfig -> Verb -> [Text] -> Maybe Text -> FilePath -> Text -> IO (Either RunFailure RunResult)
+runClaude token cfg verb testTools resume root prompt =
+  runBytesCancellable token (Just (pcTimeout cfg)) "env" (["-u", "CLAUDECODE", pcRunner cfg] ++ runnerArgs cfg verb testTools resume) (Just root) (TE.encodeUtf8 prompt) >>= \case
     Left why -> pure (Left (RunFailure Error why Nothing))
     Right P.Cancelled -> pure (Left (RunFailure Cancelled "cancelled" Nothing))
     Right P.TimedOut -> pure (Left (RunFailure Timeout ("timed out after " <> T.pack (show (pcTimeout cfg)) <> " s") Nothing))

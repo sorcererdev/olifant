@@ -26,6 +26,7 @@ module Olifant.Server.ReviewReadings
   , loadReadings
   , dropReadings
   , replaceReadings
+  , readingEvent
   ) where
 
 import Control.Exception (SomeException, try)
@@ -43,6 +44,8 @@ import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan
 import Olifant.Server.Edits (unifiedDiff)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.LoopTests (checkbox)
+import Data.Time (UTCTime)
+import Olifant.Server.Journal (Event (..))
 import Olifant.Server.LoopTypes
 import Olifant.Server.Review (reviewsDir, stepKey)
 import Olifant.Workspace (Workspace (..))
@@ -361,3 +364,23 @@ parseReadings txt = decodeStrict (TE.encodeUtf8 txt) >>= parseMaybe p
     new = \case
       Object o -> (\a t l -> ((a, t), l)) <$> o .: "after" <*> o .: "after_text" <*> o .: "line"
       _ -> fail "new"
+
+-- | A reconcile reading answered with CHOICE, written under STEP (the step
+-- it lands on); Nothing for choices about no step (new, ignore).
+readingEvent :: Text -> Reading -> Choice -> Line -> UTCTime -> Maybe Event
+readingEvent key r c step at = (\w -> Event ("review|reconcile|" <> key <> "|" <> name) (lnText step) (lnRow step) at w Nothing) <$> words'
+  where
+    (_, unit, _) = rdUnit r
+    name = case c of Apply -> "apply"; Leave -> "leave"; Place n -> "place " <> T.pack (show n); New -> "new"; Ignore -> "ignore"
+    words' = case (c, rdKind r) of
+      (Apply, Done) -> Just "ticked (review: looked done)"
+      (Apply, Reopened) -> Just "unticked (review: looked open again)"
+      (Apply, Diverged) -> Just "marked changed (review)"
+      (Apply, Gone) -> Just "marked gone (review)"
+      (Apply, _) | rdNew r == Nothing -> Just ("placed " <> unit <> " here (review)")
+      (Place _, _) -> Just ("placed " <> unit <> " here (review)")
+      (Leave, Done) -> Just "left open (review: looked done)"
+      (Leave, Reopened) -> Just "left ticked (review: looked open again)"
+      (Leave, Diverged) -> Just "left as is (review: looked wrong)"
+      (Leave, Gone) -> Just "left as is (review: unit gone)"
+      _ -> Nothing

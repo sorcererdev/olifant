@@ -25,45 +25,47 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
         d <- getCurrentDirectory
         pure cfg {pcRunner = d </> "src/Olifant/Server/testdata/claude-shim.sh"}
   it "builds read-only args for ask and validate, edit args for do" $ do
-    runnerArgs cfg Ask [] `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--allowedTools", "Read,Grep,Glob"]
-    runnerArgs cfg Validate [] `shouldBe` runnerArgs cfg Ask []
-    runnerArgs cfg {pcDoTools = ["Bash(cabal test*)"]} Do ["Bash(uv run pytest*)"]
+    runnerArgs cfg Ask [] Nothing `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--allowedTools", "Read,Grep,Glob"]
+    runnerArgs cfg Validate [] Nothing `shouldBe` runnerArgs cfg Ask [] Nothing
+    runnerArgs cfg {pcDoTools = ["Bash(cabal test*)"]} Do ["Bash(uv run pytest*)"] Nothing
       `shouldBe` ["-p", "--output-format", "json", "--model", "sonnet", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(uv run pytest*),Bash(cabal test*)"]
+  it "resumes a do's thread in a fork of its session" $
+    drop 4 (runnerArgs cfg Do [] (Just "s1")) `shouldBe` ["sonnet", "--resume", "s1", "--fork-session", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write"]
   it "runs the shim, parses result, seconds and cost, and unsets CLAUDECODE" $ do
     c <- shimCfg
     old <- lookupEnv "CLAUDECODE"
     let restore = maybe (unsetEnv "CLAUDECODE") (setEnv "CLAUDECODE") old
-    (setEnv "CLAUDECODE" "1" >> runClaude neverCancel c Ask [] "/tmp" "QUESTION: where\n") `finally` restore >>= \r -> do
+    (setEnv "CLAUDECODE" "1" >> runClaude neverCancel c Ask [] Nothing "/tmp" "QUESTION: where\n") `finally` restore >>= \r -> do
       fmap rrCost r `shouldBe` Right (Just 0.0123)
       fmap rrSeconds r `shouldBe` Right 1.2
       fmap (T.isInfixOf "@" . rrText) r `shouldBe` Right True
   it "reports a failing runner with its first line" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:FAIL"
+    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:FAIL"
     either (T.isInfixOf "no credentials" . rfWhy) (const False) r `shouldBe` True
     either (T.isInfixOf "exited 2" . rfWhy) (const False) r `shouldBe` True
   it "reports printed non-JSON (a login prompt) as Left with the text" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:LOGIN"
+    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:LOGIN"
     either (T.isInfixOf "Please run /login" . rfWhy) (const False) r `shouldBe` True
     either (Just . rfStatus) (const Nothing) r `shouldBe` Just Error
   it "a JSON reply without cost or duration is zero seconds and no cost" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:PROSE"
+    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:PROSE"
     r `shouldBe` Right (RunResult "Sure! Here is what I found." 0 Nothing (Just "shim-prose") Nothing Nothing [] 0 [])
   it "times out" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c {pcTimeout = 1} Ask [] "/tmp" "SHIM:SLEEP"
+    r <- runClaude neverCancel c {pcTimeout = 1} Ask [] Nothing "/tmp" "SHIM:SLEEP"
     r `shouldBe` Left (RunFailure Timeout "timed out after 1 s" Nothing)
   it "cancels" $ do
     c <- shimCfg
     (tok, trip) <- newCancel
     _ <- forkIO (threadDelay 200000 >> trip)
-    r <- runClaude tok c Ask [] "/tmp" "SHIM:SLEEP"
+    r <- runClaude tok c Ask [] Nothing "/tmp" "SHIM:SLEEP"
     r `shouldBe` Left (RunFailure Cancelled "cancelled" Nothing)
   it "keeps session, turns, tokens, models and denials from the runner's JSON" $ do
     c <- shimCfg
-    Right rr <- runClaude neverCancel c Ask [] "/tmp" "QUESTION: anything"
+    Right rr <- runClaude neverCancel c Ask [] Nothing "/tmp" "QUESTION: anything"
     rrTurns rr `shouldBe` Just 1
     rrTokens rr `shouldBe` Just (Tokens 2 40 1000 5000)
     fmap muCost (lookup "claude-sonnet-5-5" (rrModels rr)) `shouldBe` Just (Just 0.0123)
@@ -72,25 +74,25 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
     rrDenied rr `shouldBe` []
   it "keeps each denial's tool and command" $ do
     c <- shimCfg
-    Right rr <- runClaude neverCancel c Ask [] "/tmp" "QUESTION: anything SHIM:DENY"
+    Right rr <- runClaude neverCancel c Ask [] Nothing "/tmp" "QUESTION: anything SHIM:DENY"
     (rrDenials rr, rrDenied rr) `shouldBe` (2, replicate 2 (Denial "Bash" "python -m pytest t.py"))
     fmap (T.isPrefixOf "shim-") (rrSession rr) `shouldBe` Just True
   it "an is_error result is an Error failure with the runner's sentence" $ do
     c <- shimCfg
-    r <- runClaude neverCancel c Ask [] "/tmp" "SHIM:ERRORJSON"
+    r <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:ERRORJSON"
     either (\f -> (rfStatus f, rfWhy f)) (const (Ok, "")) r `shouldBe` (Error, "the runner reported an error")
   it "an is_error result keeps the runner's session; a failed exit has none" $ do
     c <- shimCfg
-    answered <- runClaude neverCancel c Ask [] "/tmp" "SHIM:ERRORJSON"
+    answered <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:ERRORJSON"
     either (fmap (T.isPrefixOf "shim-") . rfSession) (const Nothing) answered `shouldBe` Just True
-    exited <- runClaude neverCancel c Ask [] "/tmp" "SHIM:FAIL"
+    exited <- runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:FAIL"
     either rfSession (const (Just "answered")) exited `shouldBe` Nothing
   it "a non-zero exit is an Error failure" $ do
     c <- shimCfg
-    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c Ask [] "/tmp" "SHIM:FAIL" >>= (`shouldBe` Just Error)
+    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c Ask [] Nothing "/tmp" "SHIM:FAIL" >>= (`shouldBe` Just Error)
   it "a timeout is a Timeout failure" $ do
     c <- shimCfg
-    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c {pcTimeout = 1} Ask [] "/tmp" "SHIM:SLEEP" >>= (`shouldBe` Just Timeout)
+    either (Just . rfStatus) (const Nothing) <$> runClaude neverCancel c {pcTimeout = 1} Ask [] Nothing "/tmp" "SHIM:SLEEP" >>= (`shouldBe` Just Timeout)
   it "status names" $
     map statusName [Ok, Empty, Error, Timeout, Cancelled] `shouldBe` ["ok", "empty", "error", "timeout", "cancelled"]
   describe "prompts and answers" $ do

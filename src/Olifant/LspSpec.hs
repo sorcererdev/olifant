@@ -13,7 +13,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Char8 qualified as BSL8
 import System.IO (Handle, hFlush, hGetLine)
-import Control.Exception (bracket)
+import Control.Exception (bracket, finally)
 import Data.Aeson (Value (Array, Bool, Number, Object, String), object, toJSON, (.=))
 import Data.Int (Int32)
 import Data.Map.Strict qualified as M
@@ -38,6 +38,7 @@ import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
 import Olifant.Server.Errand (Status (..), Tokens (..))
+import Olifant.Server.Review (FileChange (..), Review (..), loadArchive, loadArchived)
 import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), readRecords)
 import Olifant.Server.State qualified as St
 import Olifant.Decide qualified as De
@@ -58,7 +59,7 @@ import Olifant.Process (cancelled, newCancel)
 import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
-import System.Environment (lookupEnv)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
 import Olifant.Language.AstGrep (astGrepSyntax)
@@ -2205,6 +2206,25 @@ plansLoopSpec = describe "plans, stage 2" $ do
       lookupKey "name" v `shouldBe` Just (String "test_s")
       lookupKey "file" v `shouldSatisfy` \case Just (String f) -> "src/bistro/booking/models/table__test.py" `T.isSuffixOf` f; _ -> False
       arr (lookupKey "facts" v) `shouldBe` [object ["after" .= (1 :: Int), "lines" .= ["  - test: s @src/bistro/booking/models/table__test.py:test_s \9675" :: Text]]]
+  it "(e2) plans/test on a plan edited while its tests ran: the journal line comes by its own edit, not with the facts" $ do
+    let green = "- [ ] s @" <> T.pack table <> ":Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675\n"
+    withPythonChecked [("plans/t.md", green)] $ \ports dir -> do
+      ((answer, text), _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        let method = SMethod_CustomMethod testP
+        i <- sendRequest method (object [docOf p, "line" .= (0 :: Int)])
+        -- the edit after the server took the plan's version (its progress has begun)
+        let begun = (() <$ message SMethod_WindowWorkDoneProgressCreate) <|> (anyMessage >> begun)
+        begun
+        _ <- applyEdit p (TextEdit (Range (Position 2 0) (Position 2 0)) "some words\n")
+        let answerOf = responseForId method i <|> (anyMessage >> answerOf)
+            applied = (() <$ message SMethod_WorkspaceApplyEdit) <|> (anyMessage >> applied)
+        TResponseMessage _ _ r <- answerOf
+        applied
+        (r,) <$> documentContents p
+      v <- either (fail . show) pure answer
+      [x | f <- arr (lookupKey "facts" (toJSON v)), String x <- arr (lookupKey "lines" f)] `shouldBe` []
+      text `shouldSatisfy` T.isInfixOf "ticked: tests green"
   it "(e) plans/test runs a step's tests: passed, failed, the facts that tick it" $ do
     let green = "- [ ] s @" <> T.pack table <> ":Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675\n"
     withPythonChecked [("plans/t.md", green)] $ \ports dir -> do
@@ -2217,7 +2237,9 @@ plansLoopSpec = describe "plans, stage 2" $ do
         _ -> expectationFailure ("not an object: " <> show v)
       (lookupKey "passed" v, lookupKey "failed" v) `shouldBe` (Just (Number 1), Just (Number 0))
       case arr (lookupKey "facts" v) of
-        [child, step] -> do
+        [child, step, journalled] -> do
+          -- the tick's journal line rides with the facts
+          [x | String x <- arr (lookupKey "lines" journalled)] `shouldSatisfy` \case [l] -> "ticked: tests green" `T.isSuffixOf` l; _ -> False
           child `shouldBe` object ["row" .= (1 :: Int), "text" .= ("  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9679" :: Text)]
           (lookupKey "row" step, lookupKey "text" step) `shouldSatisfy` \case
             (Just (Number 0), Just (String t)) -> ("- [x] s @" <> T.pack table <> ":Table \10003 ") `T.isPrefixOf` t
@@ -2303,7 +2325,11 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       (answer, _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir (errand doP 7)
       v <- either (fail . T.unpack) pure answer
       case arr (lookupKey "facts" v) of
-        [child, step] -> do
+        [child, step, journalled] -> do
+          -- the do's line, then the tick's, ride with the facts
+          map (T.takeWhileEnd (/= '\183')) [x | String x <- arr (lookupKey "lines" journalled)] `shouldSatisfy` \case
+            [d, t] -> "answered: " `T.isInfixOf` d && t == " ticked: tests green"
+            _ -> False
           child `shouldBe` object ["row" .= (8 :: Int), "text" .= ("  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9679" :: Text)]
           (lookupKey "row" step, lookupKey "text" step) `shouldSatisfy` \case
             (Just (Number 7), Just (String t)) -> ("- [x] add a method @" <> T.pack table <> ":Table \10003 ") `T.isPrefixOf` t
@@ -2319,8 +2345,8 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
         _ <- openDoc table "python"
         errand doP 7
       v <- either (fail . T.unpack) pure answer
-      map (lookupKey "text") (arr (lookupKey "facts" v)) `shouldSatisfy` \case
-        [Just (String child), Just (String step)] -> T.isSuffixOf "\9679" child && ("- [x] add a method" `T.isPrefixOf` step)
+      [t | Just t <- map (lookupKey "text") (arr (lookupKey "facts" v))] `shouldSatisfy` \case
+        [String child, String step] -> T.isSuffixOf "\9679" child && ("- [x] add a method" `T.isPrefixOf` step)
         _ -> False
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
@@ -2487,7 +2513,7 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
       map (\f -> (lookupKey "file" f, lookupKey "status" f)) (arr (at ["landing", "files"] w)) `shouldBe` [(Just (String (T.pack table)), Just (String "modified"))]
       at ["landing", "diff"] w `shouldSatisfy` \case Just (String d) -> "+    def label(self) -> str: return self.id" `T.isInfixOf` d; _ -> False
       at ["landing", "edit", "documentChanges"] w `shouldSatisfy` isJust
-      map (lookupKey "key") (arr (at ["offers"] w)) `shouldBe` map (Just . String) ["a", "r", "t"]
+      map (lookupKey "key") (arr (at ["offers"] w)) `shouldBe` map (Just . String) ["a", "r", "o", "t"]
       listDirectory (dir </> ".olifant/state/reviews/plans/t") >>= (`shouldSatisfy` ((== 1) . length))
   it "revert restores the tree from the reference; the review goes, a rejected outcome is recorded" $
     withRepo (planWith "- [ ] add a method") $ \ports dir -> do
@@ -2526,10 +2552,10 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
         (before,) <$> choose p rid "allow"
       b <- either (fail . T.unpack) pure before
       at ["denied"] b `shouldBe` Just (Array (pure (String "tried `python -m pytest t.py` 2 times; not allowed.") <> pure (String "Allowed: `uv run \8230`.")))
-      map (lookupKey "key") (arr (at ["offers"] b)) `shouldBe` map (Just . String) ["a", "r", "t", "p"]
+      map (lookupKey "key") (arr (at ["offers"] b)) `shouldBe` map (Just . String) ["a", "r", "o", "t", "p"]
       c <- either (fail . T.unpack) pure chosen
       lookupKey "said" c `shouldBe` Just (String "allowed Bash(python -m pytest*) in .olifant/config.toml")
-      map (lookupKey "key") (arr (at ["review", "offers"] c)) `shouldBe` map (Just . String) ["a", "r", "t"]
+      map (lookupKey "key") (arr (at ["review", "offers"] c)) `shouldBe` map (Just . String) ["a", "r", "o", "t"]
       TIO.readFile (dir </> ".olifant/config.toml") >>= (`shouldSatisfy` T.isInfixOf "do_tools = [\"Bash(python -m pytest*)\"]")
   it "test on a step with no tests says so; the review stays" $
     withRepo (planWith "- [ ] add a method") $ \ports dir -> do
@@ -2548,7 +2574,8 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
         (rid,) <$> getCodeLenses p
       let args = Just (Just [String rid, String (getUri (filePathToUri (dir </> "plans/t.md")))])
       [(l ^. L.range . L.start . L.line, fmap (^. L.title) (l ^. L.command), fmap (^. L.command) (l ^. L.command), fmap (^. L.arguments) (l ^. L.command)) | l <- lenses]
-        `shouldBe` [(0, Just "1 to review", Just "olifant.plans.review", args), (7, Just "do \9670 to review", Just "olifant.plans.review", args)]
+        `shouldBe` [ (0, Just "1 to review", Just "olifant.plans.review", args), (7, Just "do \9670 to review", Just "olifant.plans.review", args)
+                   , (7, Just "1 delegation", Just "olifant.plans.errand", Just (Just [String (getUri (filePathToUri (dir </> "plans/t.md"))), Number 7])) ]
   it "a do review and the reconcile review open at once: the title counts both and opens the do first" $
     withRepo (planWith "- [ ] add a method") $ \ports dir -> do
       -- the do's new method is in no step: with no one to ask, a new-step reading
@@ -2559,7 +2586,157 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
         (rid,) <$> getCodeLenses p
       let titled = sort [(l ^. L.range . L.start . L.line, fmap (^. L.title) (l ^. L.command), fmap (take 1 . fromMaybe [] . (^. L.arguments)) (l ^. L.command)) | l <- lenses]
       -- a unit in no step counts on the title only
-      titled `shouldBe` [(0, Just "2 to review", Just [String rid]), (7, Just "do \9670 to review", Just [String rid])]
+      titled `shouldBe` [(0, Just "2 to review", Just [String rid]), (7, Just "1 delegation", Just [String (getUri (filePathToUri (dir </> "plans/t.md")))]), (7, Just "do \9670 to review", Just [String rid])]
+  describe "the record: journal lines and past dos" $ do
+    let errandP = Proxy :: Proxy "olifant/plans/errand"
+        errandsP = Proxy :: Proxy "olifant/plans/errands"
+        planLines t = T.splitOn "\n" t
+        journalOf t = [l | l <- planLines t, "  - " `T.isPrefixOf` l, " \183 do " `T.isInfixOf` l || " \183 do again " `T.isInfixOf` l || " \183 kept " `T.isInfixOf` l || " \183 reverted " `T.isInfixOf` l]
+        factLines v = [x | f <- arr (lookupKey "facts" v), String x <- arr (lookupKey "lines" f)]
+    it "(j1) a do's answer carries its journal line under the step" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        ((_, _, answer), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          doStep p
+        v <- either (fail . T.unpack) pure answer
+        [l | l <- factLines v, " \183 do (" `T.isInfixOf` l] `shouldSatisfy` \case
+          [l] -> "  - " `T.isPrefixOf` l && T.isSuffixOf ("answered: @" <> T.pack table <> ":Table.label") l
+          _ -> False
+        [f | f <- arr (lookupKey "facts" v), lookupKey "after" f == Just (Number 7)] `shouldSatisfy` ((== 1) . length)
+    it "(j2) keep's edit carries `kept the do's change`, and the archive says kept" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        ((rid, chosen), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, _) <- doStep p
+          (rid,) <$> choose p rid "keep"
+        c <- either (fail . T.unpack) pure chosen
+        Aeson.encode (lookupKey "edit" c) `shouldSatisfy` \e -> "kept the do's change" `BS.isInfixOf` BSL.toStrict e
+        Just r <- loadArchived ports dir "plans/t.md" rid
+        rvChoice r `shouldBe` Just "kept"
+    it "(j3) a do that fails lands its line by applyEdit, and is archived" $
+      withRepo (planWith "- [ ] add a method SHIM:FAIL") $ \ports dir -> do
+        ((answer, text), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          a <- blockMove doP (object [docOf p, "line" .= (7 :: Int)])
+          _ <- message SMethod_WorkspaceApplyEdit
+          (a,) <$> documentContents p
+        answer `shouldSatisfy` either (T.isInfixOf "no credentials") (const False)
+        journalOf text `shouldSatisfy` \case
+          [l] -> "error: " `T.isInfixOf` l && "no credentials" `T.isInfixOf` l
+          _ -> False
+        loadArchive ports dir "plans/t.md" >>= (`shouldSatisfy` \case [r] -> rvStatus r == "error"; _ -> False)
+    it "(j4) a do on a plan not open lands its line when the plan is opened and reconciled" $
+      withRepo (planWith "- [ ] add a method SHIM:FAIL") $ \ports dir -> do
+        (text, _) <- inProcessWith ports dir $ do
+          let uri = filePathToUri (dir </> "plans/t.md")
+          _ <- blockMove doP (object ["textDocument" .= object ["uri" .= uri], "line" .= (7 :: Int)])
+          p <- openDoc "plans/t.md" "markdown"
+          -- its applyEdit comes before its answer; lsp-test applies it
+          _ <- blockMove (Proxy :: Proxy "olifant/plans/reconcile") (object [docOf p])
+          documentContents p
+        length (journalOf text) `shouldBe` 1
+    it "(j4b) a do on a plan not open lands its line when the plan is opened, with no reconcile" $
+      withRepo (planWith "- [ ] add a method SHIM:FAIL") $ \ports dir -> do
+        (text, _) <- inProcessWith ports dir $ do
+          let uri = filePathToUri (dir </> "plans/t.md")
+          _ <- blockMove doP (object ["textDocument" .= object ["uri" .= uri], "line" .= (7 :: Int)])
+          p <- openDoc "plans/t.md" "markdown"
+          let applied = (() <$ message SMethod_WorkspaceApplyEdit) <|> (anyMessage >> applied)
+          applied
+          documentContents p
+        length (journalOf text) `shouldBe` 1
+    it "(j5) a journal line opens its errand; a step line has none" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        ((rid, onLine, onStep), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, Right v) <- doStep p
+          let [f] = [f | f <- arr (lookupKey "facts" v), any (\case String x -> " \183 do (" `T.isInfixOf` x; _ -> False) (arr (lookupKey "lines" f))]
+              Just (Number after) = lookupKey "after" f
+          applyEdit p (TextEdit (Range (Position (round after + 1) 0) (Position (round after + 1) 0)) (T.unlines [x | String x <- arr (lookupKey "lines" f)]))
+          onLine <- blockMove errandP (object [docOf p, "row" .= (round after + 1 :: Int)])
+          onStep <- blockMove errandP (object [docOf p, "row" .= (7 :: Int)])
+          pure (rid, onLine, onStep)
+        v <- either (fail . T.unpack) pure onLine
+        (lookupKey "kind" v, lookupKey "id" v) `shouldBe` (Just (String "errand"), Just (String rid))
+        at ["landing", "diff"] v `shouldSatisfy` \case Just (String d) -> "def label" `T.isInfixOf` d; _ -> False
+        map (lookupKey "key") (arr (at ["offers"] v)) `shouldBe` [Just (String "o")]
+        onStep `shouldBe` Right Aeson.Null
+    it "(j6) reopen resumes the do's session in a fork, as a new errand with its parent, through a new review" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        let argsFile = dir </> "shim-args"
+        setEnv "SHIM_ARGS" argsFile
+        ((rid, chosen, rid2, listed), _) <- inProcessWith ports dir (do
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, _) <- doStep p
+          chosen <- choose p rid "reopen"
+          let method = SMethod_CustomMethod doP
+          i <- sendRequest method (object [docOf p, "line" .= (7 :: Int), "resume" .= rid, "text" .= ("and a docstring" :: Text)])
+          let readyN = (customNotification (Proxy :: Proxy "olifant/plans/review/ready") <&> \case NotMess (TNotificationMessage _ _ v) -> v) <|> (anyMessage >> readyN)
+              answerOf = responseForId method i <|> (anyMessage >> answerOf)
+          ready <- readyN
+          _ <- answerOf
+          listed <- blockMove errandsP (object [docOf p, "row" .= (7 :: Int)])
+          pure (rid, chosen, lookupKey "id" ready, listed)) `finally` unsetEnv "SHIM_ARGS"
+        c <- either (fail . T.unpack) pure chosen
+        at ["reopen", "id"] c `shouldBe` Just (String rid)
+        lines' <- T.lines <$> TIO.readFile argsFile
+        -- specs that run alongside may add their own runs to the file
+        lines' `shouldSatisfy` any (T.isInfixOf ("--resume " <> rid <> " --fork-session"))
+        rid2 `shouldSatisfy` (/= Just (String rid))
+        (rs, 0) <- records dir
+        [erParent e | AnErrand e <- rs] `shouldBe` [Nothing, Just rid]
+        -- the clock is fixed in tests: the two are at one time, in no order
+        fmap (sort . map (lookupKey "id") . arr . lookupKey "errands") listed `shouldBe` Right (sort [rid2, Just (String rid)])
+    it "(j7) a reopen whose step is gone is refused before it runs" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        (refused, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, _) <- doStep p
+          _ <- choose p rid "keep"
+          applyEdit p (TextEdit (Range (Position 7 0) (Position 8 0)) "- [ ] something else entirely\n")
+          blockMove doP (object [docOf p, "line" .= (7 :: Int), "resume" .= rid, "text" .= ("more" :: Text)])
+        refused `shouldBe` Left "the step is gone"
+    it "(j8) a step with past dos has a delegations lens" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        (lenses, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, _) <- doStep p
+          _ <- choose p rid "keep"
+          getCodeLenses p
+        [(l ^. L.range . L.start . L.line, fmap (^. L.command) (l ^. L.command)) | l <- lenses, fmap (^. L.title) (l ^. L.command) == Just "1 delegation"]
+          `shouldBe` [(7, Just "olifant.plans.errand")]
+    it "(j10) a reconcile right after a do does not send the do's line again (it rode the answer)" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        (text, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          _ <- doStep p
+          _ <- blockMove (Proxy :: Proxy "olifant/plans/reconcile") (object [docOf p])
+          documentContents p
+        -- lsp-test does not apply an answer's facts: the line is in no edit the server sent
+        journalOf text `shouldBe` []
+    it "(j11) revert after git collected the do's reference is refused; the files and the review stay" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        ((chosen, listed), _) <- inProcessWith ports dir $ do
+          -- a tree with an edit of its own: the reference is a stash commit, no branch's
+          liftIO (TIO.appendFile (dir </> "pyproject.toml") "# mine\n")
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, _) <- doStep p
+          liftIO (callProcess "git" ["-C", dir, "prune", "--expire=now"])
+          chosen <- choose p rid "revert"
+          (chosen,) <$> blockMove reviewsP (object [docOf p])
+        chosen `shouldSatisfy` either (T.isInfixOf "reference is gone") (const False)
+        TIO.readFile (dir </> table) >>= (`shouldSatisfy` T.isInfixOf "def label")
+        fmap (length . arr . lookupKey "reviews") listed `shouldBe` Right 1
+    it "(j9) the archive keeps the diff after git has collected the do's reference" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        ((rid, _), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, _) <- doStep p
+          (rid,) <$> choose p rid "revert"
+        callProcess "git" ["-C", dir, "prune", "--expire=now"]
+        Just r <- loadArchived ports dir "plans/t.md" rid
+        map fcPath (rvDiff r) `shouldBe` [table]
+        rvChoice r `shouldBe` Just "reverted"
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)

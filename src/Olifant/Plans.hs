@@ -21,12 +21,12 @@ module Olifant.Plans
   ) where
 
 import Data.List (mapAccumL)
-import Data.Char (isHexDigit, isAlphaNum, isSpace)
+import Data.Char (isAlpha, isAlphaNum, isDigit, isHexDigit, isSpace)
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 
-data Kind = Heading Int | Claim | Question | Step Bool | TestChild | AlsoChild | Evidence | Prose
+data Kind = Heading Int | Claim | Question | Step Bool | TestChild | AlsoChild | Evidence | Journal | Prose
   deriving (Eq, Show)
 
 -- | Columns of "@path:Unit", 0-based, end exclusive.
@@ -57,11 +57,13 @@ parsePlan t = snd (mapAccumL step False (zip [0 ..] (T.lines t)))
     prose row txt = (line row txt) { lnKind = Prose, lnAnchor = Nothing, lnVerdict = NoVerdict }
 
 line :: Int -> Text -> Line
-line row txt = Line row ind (kindOf body) txt anc (maybe NoVerdict (verdictAfter txt) anc)
+line row txt = Line row ind kind txt anc (maybe NoVerdict (verdictAfter txt) anc)
   where
     ind = T.length (T.takeWhile (== ' ') txt)
     body = T.drop ind txt
-    anc = findAnchor txt
+    kind = kindOf body
+    -- A journal line's words are a record, not a claim: no anchor in them.
+    anc = if kind == Journal then Nothing else findAnchor txt
 
 kindOf :: Text -> Kind
 kindOf b
@@ -72,8 +74,19 @@ kindOf b
   | "- ? " `T.isPrefixOf` b = Question
   | "- [ ] " `T.isPrefixOf` b = Step False
   | "- [x] " `T.isPrefixOf` b = Step True
+  | Just r <- T.stripPrefix "- " b, isJournal r = Journal
   | "- " `T.isPrefixOf` b = Claim
   | otherwise = Prose
+
+-- | "25 Oct 21:31 · …": a day of one or two digits, a month, a time, a dot.
+isJournal :: Text -> Bool
+isJournal r = case T.words (T.take 16 r) of
+  (d : m : hm : _) ->
+    T.length d `elem` [1, 2] && T.all isDigit d
+      && T.length m == 3 && T.all isAlpha m
+      && T.length hm == 5 && T.index hm 2 == ':' && T.all isDigit (T.filter (/= ':') hm)
+      && (d <> " " <> m <> " " <> hm <> " · ") `T.isPrefixOf` r
+  _ -> False
 
 headingLevel :: Text -> Maybe Int
 headingLevel b

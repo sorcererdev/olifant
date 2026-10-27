@@ -287,6 +287,10 @@ questionsSpec = describe "Olifant.Server.Loop (questions)" $ do
     map fst (qContext q) `shouldBe` ["step", "children", "diff", "tests"]
     lookup "tests" (qContext q) `shouldSatisfy` maybe False (T.isInfixOf "green")
     opts (planStateQuestion (at 5) ls [cu]) `shouldBe` ["still_done", "reopened", "diverged"]
+  it "(n2) plan-state leaves journal lines out of a step's children" $ do
+    let jls = parsePlan "- [ ] tidy @a.py:helper\n  - test: t @t.py:test_t ●\n  - 25 Oct 21:31 · do (sonnet) · cancelled"
+        q = planStateQuestion (head jls) jls []
+    lookup "children" (qContext q) `shouldBe` Just "- test: t @t.py:test_t ●"
   it "(l) parseWords reads numbered lines and leaves gaps" $
     parseWords 3 "1: the table answers label\n3: ok" `shouldBe` [Just "the table answers label", Nothing, Just "ok"]
   it "(l2) parseWords ignores numbers out of range and blank answers; gate is 0.6" $ do

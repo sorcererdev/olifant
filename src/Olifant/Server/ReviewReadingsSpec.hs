@@ -11,6 +11,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.LspSpec (plainPorts)
 import Olifant.Plans (parsePlan)
 import Olifant.Server.Errand (Block (..), Ghost (..))
+import Olifant.Server.Journal (Event (..))
 import Olifant.Server.LoopTypes
 import Olifant.Server.Review (Review (..), loadReviews, saveReview)
 import Olifant.Server.ReviewReadings
@@ -52,6 +53,18 @@ spec = describe "Olifant.Server.ReviewReadings (a reconcile's readings as a revi
     readingFacts ls new Apply `shouldBe` Right [Insert 5 ["- [ ] def other() @a.py:other"]]
     readingFacts ls new (Place 3) `shouldSatisfy` isLeft -- a done step
     readingFacts ls done Ignore `shouldSatisfy` isLeft -- not an offer of a step's reading
+  it "journals an answer under its step, in words; new and ignore under none" $ do
+    let [done, _, changed, gone, also, _] = rrReadings full
+        [stepLine] = take 1 (drop 2 (parsePlan plan))
+        at0 = UTCTime (fromGregorian 2026 10 26) 0
+        words' r c = evWords <$> readingEvent (readingKey r) r c stepLine at0
+    words' done Apply `shouldBe` Just "ticked (review: looked done)"
+    words' done Leave `shouldBe` Just "left open (review: looked done)"
+    words' changed Apply `shouldBe` Just "marked changed (review)"
+    words' gone Apply `shouldBe` Just "marked gone (review)"
+    words' also (Place 2) `shouldBe` Just "placed extra here (review)"
+    words' also New `shouldBe` Nothing
+    words' also Ignore `shouldBe` Nothing
   it "finds its step again when the plan moved it, and refuses when the step is gone" $ do
     let [done, _, changed, _, _, new] = rrReadings full
         moved = parsePlan ("# T\n\nsome words first\n" <> T.drop 5 plan)
@@ -123,7 +136,7 @@ answer = ReconcileAnswer "r1" (Just "base") [] blocks 6 0 1.0 ["jev"] (Just 3)
       ]
 
 aDo :: Review
-aDo = Review "d1" "e1" "plans/t.md" 2 "- [ ] tidy the helper @a.py:helper" (UTCTime (fromGregorian 2026 10 26) 0) "m" 1 Nothing "answered" Nothing [] [] [] [] [] [] [] Nothing "" "" Nothing
+aDo = Review "d1" "e1" "plans/t.md" 2 "- [ ] tidy the helper @a.py:helper" (UTCTime (fromGregorian 2026 10 26) 0) "m" 1 Nothing "answered" Nothing [] [] [] [] [] [] [] Nothing "" "" Nothing Nothing [] Nothing
 
 entries :: Value -> [Value]
 entries = list "entries"
