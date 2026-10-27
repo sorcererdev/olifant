@@ -28,6 +28,7 @@ import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
 import Olifant.Server (newServerState, projectFor)
 import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
+import Olifant.Server.ReviewReadings (applyFactsText)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
 import Control.Concurrent.Async (async, waitCatch)
@@ -38,7 +39,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
-spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec
+spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> excerptsSpec
 
 workSetSpec :: Spec
 workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
@@ -686,3 +687,46 @@ withHangingServer act = do
       port <- T.strip . T.pack <$> hGetLine out
       act port (maybe False (== "accepted") <$> timeout 30000000 (hGetLine out))
     _ -> fail "no server"
+
+excerptsSpec :: Spec
+excerptsSpec = describe "Olifant.Server.Loop (excerpts)" $ do
+  let step box = "- " <> box <> " tidy the helper @src/bistro/booking/models/table.py:helper"
+      fence done body = ["  ```python @src/bistro/booking/models/table.py:helper" <> (if done then " · done" else "")] ++ map ("  " <>) body ++ ["  ```"]
+      planOf box done body = T.unlines (["# T", "", "## S", "", step box] ++ fence done body ++ ["- [ ] count the seats"])
+      helperNow = ["def helper() -> int:", "    return 1"]
+      readPlan dir = TIO.readFile (dir </> "plans/t.md")
+      reconcileOnce dir s = do
+        (s', a) <- run False dir s
+        text <- readPlan dir
+        TIO.writeFile (dir </> "plans/t.md") (applyFactsText (raFacts a) text)
+        pure (s', raFacts a)
+      answers = Just (answersOf [("plan-state", "in_progress"), ("plan-step", "none")])
+  it "applyFactsText: a range grown and one shrunk, beside an insert below" $
+    applyFactsText [ReplaceRows 1 2 ["B1", "B2", "B3"], ReplaceRows 4 6 ["E"], Insert 6 ["after"], Insert 2 ["below B"]] (T.intercalate "\n" ["a", "b1", "b2", "c", "e1", "e2", "e3", "f"])
+      `shouldBe` T.intercalate "\n" ["a", "B1", "B2", "B3", "below B", "c", "E", "after", "f"]
+  it "the unit changed on disk: the open step's excerpt has the new code" $
+    withReconcile (planOf "[ ]" False helperNow) [(table, helperEdited)] jevConfig answers $ \dir s -> do
+      (_, facts) <- reconcileOnce dir s
+      length [() | ReplaceRows {} <- facts] `shouldBe` 1
+      readPlan dir `shouldReturn` planOf "[ ]" False ["def helper() -> int:", "    return 2"]
+  it "the same code: no fact" $
+    withReconcile (planOf "[ ]" False helperNow) [] jevConfig answers $ \dir s ->
+      (raFacts . snd <$> run False dir s) `shouldReturn` []
+  it "ticked: frozen, its code as it was; then never written again, the unit changed or the step open again" $
+    withReconcile (planOf "[x]" False helperNow) [] jevConfig answers $ \dir s -> do
+      (s1, facts) <- reconcileOnce dir s
+      facts `shouldBe` [Replace 5 "  ```python @src/bistro/booking/models/table.py:helper · done"]
+      readPlan dir `shouldReturn` planOf "[x]" True helperNow
+      (s2, again) <- reconcileOnce dir s1
+      again `shouldBe` []
+      write dir table helperEdited
+      (s3, edited) <- reconcileOnce dir s2
+      [() | ReplaceRows {} <- edited] `shouldBe` []
+      readPlan dir `shouldReturn` planOf "[x]" True helperNow
+      TIO.writeFile (dir </> "plans/t.md") (planOf "[ ]" True helperNow)
+      (_, reopened) <- reconcileOnce dir s3
+      [() | ReplaceRows {} <- reopened] `shouldBe` []
+  it "a unit gone leaves the excerpt as it was" $
+    withReconcile (planOf "[ ]" False helperNow) [(table, T.replace helper "" tableText)] jevConfig answers $ \dir s -> do
+      (_, facts) <- reconcileOnce dir s
+      [() | ReplaceRows {} <- facts] `shouldBe` []

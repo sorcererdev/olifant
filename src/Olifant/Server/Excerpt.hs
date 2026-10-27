@@ -10,9 +10,11 @@ module Olifant.Server.Excerpt
   , excerptFacts
   , unitExcerpt
   , hoverText
+  , unitHover
   ) where
 
 import Data.Char (isSpace)
+import Data.Functor ((<&>))
 import Data.List (nub, sort)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -151,3 +153,11 @@ hoverText rel unit lang n file =
     body = if length us > 60 then take 60 us ++ ["…"] else us
     fence = T.replicate (fenceLength body) "`"
     num = T.pack . show
+
+-- | The hover over anchor A: its unit's code ('hoverText'); Nothing when it
+-- does not resolve.
+unitHover :: ServerState -> Project -> Anchor -> IO (Maybe Text)
+unitHover s p a =
+  resolveAnchor s p a <&> \r -> case (rsUnit r, rsText r, languageFor (catalogLanguages (prCatalog p)) (rsRel r)) of
+    (Just u, Just t, Just lang) -> Just (hoverText (rsRel r) (anUnit a) (langName lang) u (T.splitOn "\n" t))
+    _ -> Nothing

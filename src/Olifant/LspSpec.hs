@@ -2087,6 +2087,70 @@ plansLoopSpec = describe "plans, stage 2" $ do
       lookupKey "id" v2 `shouldBe` lookupKey "id" v1
       (rs, _) <- readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
       length [() | AReconcile _ <- rs] `shouldBe` 1
+  describe "excerpts" $ do
+    let anchorOf = "@" <> T.pack table <> ":label"
+        stepLine box = "- " <> box <> " s " <> anchorOf
+        fenceOf body = ["  ```python " <> anchorOf] ++ map ("  " <>) body ++ ["  ```"]
+        sourceActions p l = getCodeActions p (Range (Position l 3) (Position l 3)) <&> \acts -> [a | InR a <- acts, a ^. L.title == "Show the code here"]
+        editsOf a = [concat (M.elems cs) | Just (WorkspaceEdit (Just cs) _ _) <- [a ^. L.edit]]
+    it "(x1) hover on a step's anchor shows its unit's code; off the anchor, nothing" $
+      withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
+        ((on, off), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (,) <$> getHover p (Position 0 12) <*> getHover p (Position 0 2)
+        case on of
+          Just h | InL (MarkupContent _ text) <- h ^. L.contents ->
+            text `shouldBe` T.intercalate "\n" ["`" <> T.pack table <> ":label` · lines 1–2", "", "```python", "def label(id: str) -> str:", "    return \"t-\" + id", "```"]
+          other -> expectationFailure ("hover: " <> show other)
+        off `shouldBe` Nothing
+    it "(x2) Show the code here on an open anchored step writes the fence below it; not on a done step, nor on one that has one" $
+      withEditedPlan (T.unlines ([stepLine "[ ]", stepLine "[x]", stepLine "[ ]"] ++ fenceOf ["x"])) "" $ \ports dir -> do
+        ((open', done, has), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (,,) <$> sourceActions p 0 <*> sourceActions p 1 <*> sourceActions p 2
+        map (map (map (\e -> (e ^. L.range . L.start, e ^. L.newText))) . editsOf) open'
+          `shouldBe` [[[(Position 0 (fromIntegral (T.length (stepLine "[ ]"))), T.concat ["\n" <> l | l <- fenceOf ["def label(id: str) -> str:", "    return \"t-\" + id"]])]]]
+        (length done, length has) `shouldBe` (0, 0)
+    it "(x3) reconcile after the unit changed: one applyEdit with the new code; a second reconcile, none" $
+      withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["def label(id: str) -> str:", "    return id"])) jev $ \ports dir -> do
+        cfg <- answers dir [("plan-state", "in_progress")]
+        ((text, edits), _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          let edited = message SMethod_WorkspaceApplyEdit <|> (anyMessage >> edited)
+          rid <- sendRequest (SMethod_CustomMethod reconcileP) (object [docOf p])
+          _ <- edited
+          let answerOf = responseForId (SMethod_CustomMethod reconcileP) rid <|> (anyMessage >> answerOf)
+          _ <- answerOf
+          second <- blockMove reconcileP (object [docOf p])
+          (,) <$> documentContents p <*> pure (fmap (lookupKey "landed") second)
+        text `shouldBe` T.unlines ([stepLine "[ ]"] ++ fenceOf ["def label(id: str) -> str:", "    return \"t-\" + id"])
+        edits `shouldBe` Right (Just (Number 0))
+    it "(x4) a moved unit: the excerpt follows, in the same edit as the step's anchor and its journal line" $
+      withPython [("plans/t.md", T.unlines ([stepLine "[ ]"] ++ fenceOf ["def label(id: str) -> str:", "    return id"])), (table, tableText)] $ \ports dir -> do
+        TIO.appendFile (dir </> ".olifant/config.toml") jev
+        let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
+            moved = "src/bistro/booking/models/labels.py"
+        git ["init", "-q", "-b", "main"]
+        git ["add", "."]
+        git ["commit", "-q", "-m", "the fixture"]
+        TIO.writeFile (dir </> table) ""
+        TIO.writeFile (dir </> moved) tableText
+        cfg <- answers dir [("plan-state", "in_progress"), ("plan-step", "none")]
+        ((edit, text), _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          let edited = message SMethod_WorkspaceApplyEdit <|> (anyMessage >> edited)
+          rid <- sendRequest (SMethod_CustomMethod reconcileP) (object [docOf p])
+          TRequestMessage _ _ _ params <- edited
+          let answerOf = responseForId (SMethod_CustomMethod reconcileP) rid <|> (anyMessage >> answerOf)
+          _ <- answerOf
+          (params ^. L.edit,) <$> documentContents p
+        let ls = T.lines text
+            new = "@" <> T.pack moved <> ":label"
+            sent = T.concat [either (^. L.newText) (^. L.newText) (toE t) | Just cs <- [edit ^. L.documentChanges], InL te <- cs, t <- te ^. L.edits]
+        take 2 ls `shouldBe` ["- [ ] s " <> new, "  ```python " <> new]
+        drop 5 ls `shouldSatisfy` \case [j] -> "moved: now " `T.isInfixOf` j; _ -> False
+        -- one edit: the anchor, the excerpt and the journal line
+        sent `shouldSatisfy` \t -> ("```python " <> new) `T.isInfixOf` t && "moved: now " `T.isInfixOf` t
   it "(f) a reading is the reconcile review: listed, drawn, a lens on its step and the title; apply returns the plan edit and answers it" $
     withEdited jev $ \ports dir -> do
       cfg <- answers dir [("plan-state", "done")]

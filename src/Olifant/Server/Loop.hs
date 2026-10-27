@@ -65,6 +65,7 @@ import Olifant.Model (ModelConfig (..), Rung (..))
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), TestState (..), Verdict (..), childrenOf, evidenceTag, parsePlan, sections, stepDone, testState, withTestState, withVerdict)
 import Olifant.Process (Cancel, cancelled)
 import Olifant.Server.Errand (Block (..), Ghost (..))
+import Olifant.Server.Excerpt (Excerpt (..), excerptFacts, excerptsOf, unitExcerpt)
 import Olifant.Server.LoopQuestions
 import Olifant.Server.LoopTests
 import Olifant.Server.LoopTypes
@@ -279,20 +280,29 @@ pendingFacts ls touched =
 testedAt :: Line -> ChangedUnit -> Bool
 testedAt step cu = maybe False ((== lnVerdict step) . Verified) (cuFingerprint cu)
 
--- | A fact for the wire: {"row", "text"} or {"after", "lines"}.
+-- | A fact for the wire: {"row", "text"}, {"after", "lines"} or {"from",
+-- "to", "lines"}.
 factJson :: Fact -> Value
 factJson (Replace n t) = object ["row" .= n, "text" .= t]
 factJson (Insert n ls) = object ["after" .= n, "lines" .= ls]
+factJson (ReplaceRows a z ls) = object ["from" .= a, "to" .= z, "lines" .= ls]
 
 -- | The facts of a work set over lines LS: re-anchors, then the pending
 -- marks over the re-anchored lines, one fact per row (the later wins).
 -- FORCED, a touched step with test children then runs them over the
 -- pending lines: their marks (pending when not reported) and its tick win.
+-- Last, the excerpts over the lines as those leave them: a ticked step's
+-- frozen, an open step's rendered again from its unit (where it moved).
 loopFacts :: ServerState -> Project -> Bool -> [Line] -> WorkSet -> IO [Fact]
 loopFacts s p forced ls ws = do
   ran <- concat <$> mapM (stepTestFacts s p pending) tested
-  pure (mergeFacts (base ++ ran))
+  let now = applyFacts (base ++ ran) ls
+      wanted = nubOrdOn key [fromMaybe a (movedTo a) | e <- excerptsOf now, not (exDone e), Just step <- [listToMaybe (drop (exStep e) now)], not (stepDone step), let a = exAnchor e]
+  units <- forM wanted $ \a -> (key a,) <$> unitExcerpt s p (wsBaseline ws) a
+  pure (mergeFacts (base ++ ran ++ excerptFacts now movedTo (\a -> join (lookup (key a) units))))
   where
+    key a = (anPath a, anUnit a)
+    movedTo a = listToMaybe [Anchor (cuPath cu) (cuName cu) 0 0 | cu@ChangedUnit {cuChange = Moved op on} <- wsChanged ws, op == anPath a, on == anUnit a]
     moved = reanchorFacts ls (wsChanged ws)
     moved' = applyFacts moved ls
     base = moved ++ pendingFacts moved' (wsTouched ws)
@@ -302,11 +312,13 @@ loopFacts s p forced ls ws = do
         then nubOrd [lnRow l | (l, cu) <- wsTouched ws, not (testedAt l cu), any ((== TestChild) . lnKind) (directChildren pending l)]
         else []
 
--- | Replacements by row, the later winning, in row order; inserts after.
+-- | Replacements by row, the later winning, in row order; then the rows
+-- replaced as a range, and inserts.
 mergeFacts :: [Fact] -> [Fact]
-mergeFacts fs = [Replace r t | (r, t) <- M.toList (M.fromList [(r, t) | Replace r t <- fs])] ++ [f | f@(Insert _ _) <- fs]
+mergeFacts fs = [Replace r t | (r, t) <- M.toList (M.fromList [(r, t) | Replace r t <- fs])] ++ [f | f@ReplaceRows {} <- fs] ++ [f | f@(Insert _ _) <- fs]
 
--- | Lines with the replacements applied (rows are kept).
+-- | Lines with the replacements of single rows applied (rows are kept: a
+-- range replaced and an insert are not).
 applyFacts :: [Fact] -> [Line] -> [Line]
 applyFacts fs ls = parsePlan (T.intercalate "\n" [fromMaybe (lnText l) (M.lookup (lnRow l) new) | l <- ls])
   where

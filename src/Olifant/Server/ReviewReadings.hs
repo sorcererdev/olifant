@@ -227,12 +227,16 @@ readingFacts ls r choice = case (rdKind r, choice) of
          in Right [Insert row [stamped r line]]
     lastRow xs = maybe 0 lnRow (listToMaybe (reverse [l | l <- xs, not (T.null (T.strip (lnText l)))]))
 
--- | TEXT with FACTS applied: replacements by row, then each insertion after
--- its row (rows of TEXT).
+-- | TEXT with FACTS applied: replacements by row and of a range of rows (its
+-- first row the new lines, the rest gone), then each insertion after its row
+-- (rows of TEXT).
 applyFactsText :: [Fact] -> Text -> Text
 applyFactsText facts text = T.intercalate "\n" (concat [line i l | (i, l) <- zip [0 ..] (T.splitOn "\n" text)])
   where
-    line i l = fromMaybe l (lookup i [(r, t) | Replace r t <- facts]) : concat [ls | Insert r ls <- facts, r == i]
+    line i l = here i l ++ concat [ls | Insert r ls <- facts, r == i]
+    here i l = case [(a, ls) | ReplaceRows a z ls <- facts, a <= i, i <= z] of
+      (a, ls) : _ -> if i == a then ls else []
+      [] -> [fromMaybe l (lookup i [(r, t) | Replace r t <- facts])]
 
 -- | The review as the window draws it (the pause's shape): a title, a
 -- summary, and an entry per reading with its first sentence, its offers,

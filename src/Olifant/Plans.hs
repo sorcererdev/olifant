@@ -20,6 +20,7 @@ module Olifant.Plans
   , anchorText
   , excerptInfo
   , excerptSpans
+  , excerptRows
   ) where
 
 import Data.List (mapAccumL)
@@ -254,3 +255,7 @@ evidenceTag l
 
 stepDone :: Line -> Bool
 stepDone l = lnKind l == Step True
+
+-- | The rows of LS's excerpts, fence and code (kept out of model prompts).
+excerptRows :: [Line] -> [Int]
+excerptRows ls = concat [[o .. c] | (_, o, c) <- excerptSpans ls]

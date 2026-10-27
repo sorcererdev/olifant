@@ -22,7 +22,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), anchorText, childrenOf, parsePlan, sectionOf)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), anchorText, childrenOf, excerptRows, parsePlan, sectionOf)
 import Olifant.Process (Cancel, runBytesCancellable)
 import Olifant.Process qualified as P
 import System.Exit (ExitCode (..))
@@ -182,12 +182,19 @@ doTestCommand cmd = case testWords cmd of
   [] -> Nothing
   ws -> Just (T.unwords [if w == "{= tests =}" then "<test file, or file::test>" else w | w <- ws])
 
+-- | A plan's TEXT without its excerpts: the model is grounded on the unit
+-- already.
+withoutExcerpts :: Text -> Text
+withoutExcerpts t = T.intercalate "\n" [l | (i, l) <- zip [0 ..] (T.splitOn "\n" t), i `notElem` rows]
+  where
+    rows = excerptRows (parsePlan t)
+
 -- | The prompt for VERB on TARGET; @testCmd@ is the project's test
 -- command for a 'Do' ('doTestCommand').
 errandPrompt :: Verb -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
 errandPrompt verb testCmd plan ls target grounded =
   T.intercalate "\n" $
-    ["<doc>", plan, "</doc>", ""]
+    ["<doc>", withoutExcerpts plan, "</doc>", ""]
       ++ ["<units>"] ++ concatMap unit grounded ++ ["</units>", ""]
       ++ [middle, "", contract, "", "Output only lines in this grammar, nothing else."]
   where
@@ -199,14 +206,14 @@ errandPrompt verb testCmd plan ls target grounded =
         let sec = sectionOf ls (lnRow target)
          in T.intercalate "\n" $
               ["Validate one section of the doc above against this repository: read the code its claims and steps point at, and say what is wrong, missing or not yet asked.", "", "SECTION: " <> secTitle sec]
-                ++ [lnText l | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec]
+                ++ [lnText l | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec, lnRow l `notElem` excerptRows ls]
       (Validate, _) -> "Validate this claim of the doc above against this repository: read the code it points at.\n\nCLAIM: " <> body
       (Do, TestChild) ->
         "Make this TEST of the plan above real in this repository: write its body so it checks the sentence, and make it pass.\n\nTEST: " <> strip1 "- test:" body
       (Do, _) ->
         T.intercalate "\n" $
           ["Do this STEP of the plan above in this repository.", "", "STEP: " <> T.strip (T.drop 5 body)]
-            ++ map lnText (childrenOf ls (lnRow target))
+            ++ [lnText c | c <- childrenOf ls (lnRow target), lnRow c `notElem` excerptRows ls]
       (Ask, _) -> "Answer the question below about this repository; read the code you need.\n\nQUESTION: " <> T.strip (T.drop 1 (T.dropWhile (/= '?') body))
     contract = T.intercalate "\n" $ case verb of
       Ask ->
