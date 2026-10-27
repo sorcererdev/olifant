@@ -32,6 +32,13 @@ spec = describe "Olifant.Server.Telemetry (errand records)" $ do
     KM.lookup "kind" o `shouldBe` Just "errand"
     KM.lookup "tokens" o `shouldBe` Just (Object (KM.fromList [("input", Number 10), ("output", Number 20), ("cache_write", Number 30), ("cache_read", Number 40)]))
     parseRecord (recordJson r) `shouldBe` Just r
+  it "a reopened errand names its parent; one without has no parent key" $ do
+    let r = AnErrand sampleErrand {erParent = Just "s0"}
+    o <- objectOf (recordJson r)
+    KM.lookup "parent" o `shouldBe` Just "s0"
+    parseRecord (recordJson r) `shouldBe` Just r
+    o' <- objectOf (recordJson (AnErrand sampleErrand))
+    KM.lookup "parent" o' `shouldBe` Nothing
   it "a failed errand carries why and no session" $ do
     o <- objectOf (recordJson (AnErrand sampleErrand {erStatus = Timeout, erWhy = Just "timed out after 300 s", erSession = Nothing, erCost = Nothing}))
     (KM.lookup "status" o, KM.lookup "why" o, KM.member "session" o, KM.member "cost" o) `shouldBe` (Just "timeout", Just "timed out after 300 s", False, False)
@@ -96,7 +103,7 @@ sampleErrand =
     , erSection = "Steps", erBranch = Just "errand-telemetry", erModel = "sonnet", erStatus = Ok, erWhy = Nothing
     , erSession = Just "sess-1", erSeconds = Just 4.25, erTurns = Just 3, erTokens = Just (Tokens 10 20 30 40)
     , erCost = Just 0.054, erModels = [("claude-haiku-5-5", ModelUse (Tokens 1 2 3 4) (Just 0.001)), ("claude-sonnet-5-5", ModelUse (Tokens 9 18 27 36) Nothing)]
-    , erPromptChars = 1234, erGrounded = 2, erBlocks = 2, erLines = 7, erDropped = 1, erUnresolved = 0, erChanged = 0, erDenials = 0 }
+    , erPromptChars = 1234, erGrounded = 2, erBlocks = 2, erLines = 7, erDropped = 1, erUnresolved = 0, erChanged = 0, erDenials = 0, erParent = Nothing }
 
 sampleReconcile :: ReconcileRecord
 sampleReconcile =

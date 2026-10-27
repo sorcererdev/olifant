@@ -1437,7 +1437,7 @@ errandRequest env verb title req params respond = case (documentPath params, lin
       let ready rid = runLspT lspEnv $ do
             sendNotification (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review/ready")) (object ["id" .= rid, "kind" .= ("do" :: T.Text), "textDocument" .= object ["uri" .= filePathToUri path]])
             lensesChanged
-      answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts ready (envCancel job) verb path line))
+      answered <- planProgress title (\_ -> withSnapshot job (runErrand stepTestFacts ready Nothing (envCancel job) verb path line))
       -- an errand the editor cancelled is no result (its runner was stopped)
       stopped <- liftIO (cancelled (envCancel job))
       case answered of

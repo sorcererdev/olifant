@@ -14,6 +14,7 @@ module Olifant.Server.Plans
   , planFiles
   , ErrandAnswer (..)
   , runErrand
+  , Reopen (..)
   , currentBranch
   , gitOut
   , confined
@@ -36,7 +37,10 @@ import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, errandPrompt, testWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact (..))
-import Olifant.Server.Review (Review (..), changeSince, saveReview, takeRef, testsOfFacts)
+import Data.Time (getCurrentTimeZone)
+import Olifant.Server.Journal (DoEnd (..), doEvent)
+import Olifant.Server.Journal qualified as Journal
+import Olifant.Server.Review (Review (..), archiveErrand, changeSince, keptDiff, saveReview, takeRef, testsOfFacts)
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
@@ -259,8 +263,13 @@ data ErrandAnswer = ErrandAnswer
 -- in a git repository takes the tree's reference first; one that answered,
 -- or changed the tree however it ended, leaves a review (its id to
 -- REVIEWED, and in the answer).
-runErrand :: (ServerState -> Project -> [Line] -> Int -> IO [Fact]) -> (Text -> IO ()) -> Cancel -> Verb -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text ErrandAnswer)
-runErrand after reviewed token verb path row s0 =
+-- | A do that continues an earlier one's thread: its id, its session, and
+-- what the user asked for.
+data Reopen = Reopen {roParent :: Text, roSession :: Text, roAsk :: Text}
+  deriving stock (Eq, Show)
+
+runErrand :: (ServerState -> Project -> [Line] -> Int -> IO [Fact]) -> (Text -> IO ()) -> Maybe Reopen -> Cancel -> Verb -> FilePath -> Int -> ServerState -> IO (ServerState, Either Text ErrandAnswer)
+runErrand after reviewed reopen token verb path row s0 =
   projectFor path s0 >>= \case
     (s, Nothing) -> pure (s, Left "this plan is in no Olifant project")
     (s, Just (_, p)) -> (s,) <$> errand s p
@@ -279,7 +288,8 @@ runErrand after reviewed token verb path row s0 =
               anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] [a | l <- around, Just a <- [lnAnchor l]])
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
           let tools = if verb == Do then testTools p else []
-              prompt = errandPrompt verb (if verb == Do then listToMaybe' (mapMaybe doTestCommand (projectTests p)) else Nothing) text ls target grounded
+              asked = maybe "" (\ro -> "Further change asked: " <> roAsk ro <> "\n\n") reopen
+              prompt = asked <> errandPrompt verb (if verb == Do then listToMaybe' (mapMaybe doTestCommand (projectTests p)) else Nothing) text ls target grounded
               rel = makeRelative root (normalisePath path)
           branch <- currentBranch root
           now <- pNow (ssPorts s)
@@ -295,7 +305,7 @@ runErrand after reviewed token verb path row s0 =
                     , erTokens = mrr >>= rrTokens, erCost = mrr >>= rrCost, erModels = maybe [] rrModels mrr
                     , erPromptChars = T.length prompt, erGrounded = length grounded
                     , erBlocks = blocks, erLines = ghosts, erDropped = dropped, erUnresolved = unresolved
-                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr }
+                    , erChanged = changed, erDenials = maybe 0 rrDenials mrr, erParent = roParent <$> reopen }
                 appendStepLine (ssPorts s) root
                   [ "plan-" <> verbName
                   , T.pack rel <> ":" <> tshow row
@@ -322,27 +332,42 @@ runErrand after reviewed token verb path row s0 =
           before <- if verb == Do then mapM (\f -> (f,) <$> onDisk f) [f | f <- M.keys (ssDocs s), f /= normalisePath path, (normalisePath root <> "/") `isPrefixOf` f] else pure []
           -- a do's tree before it: what its review is the change since
           ref <- if verb == Do then safely Nothing (takeRef root) else pure Nothing
-          let -- a do's review, when it answered or changed the tree (its id)
-              review rid status why mrr ghosts facts answered = case ref of
-                Just tr | verb == Do -> do
-                  changes <- safely [] (changeSince root [rel] tr)
-                  if null changes && not answered
-                    then pure Nothing
-                    else do
-                      let r = Review
-                            { rvId = rid, rvErrand = rid, rvPlan = rel, rvRow = lnRow target, rvStep = lnText target
-                            , rvAt = now, rvModel = pcModel cfg, rvSeconds = maybe 0 rrSeconds mrr, rvCost = mrr >>= rrCost
-                            , rvStatus = status, rvWhy = why
-                            , rvSaid = [l | Just rr <- [mrr], l <- map T.strip (T.lines (rrText rr)), any (`T.isPrefixOf` l) ["DONE", "BLOCKED", "- ? "]]
-                            , rvLines = map ghText ghosts
-                            , rvFacts = [(n, maybe "" lnText (find ((== n) . lnRow) ls), t) | Replace n t <- facts]
-                            , rvTests = testsOfFacts [t | Replace _ t <- facts]
-                            , rvDenials = maybe [] rrDenied mrr, rvTools = tools ++ pcDoTools cfg, rvAllowed = []
-                            , rvRef = Just tr, rvPrompt = prompt, rvAnswer = maybe "" rrText mrr, rvSession = mrr >>= rrSession }
-                      saved <- safely False (saveReview (ssPorts s) root r >> pure True)
-                      if saved then reviewed rid >> pure (Just rid) else pure Nothing
-                _ -> pure Nothing
-          runClaude token cfg verb tools root prompt >>= \case
+          let -- a do's review, when it answered or changed the tree (its id);
+              -- every do is archived and journaled, however it ended
+              review rid status why mrr ghosts facts answered
+                | verb /= Do = pure Nothing
+                | otherwise = do
+                    changes <- maybe (pure []) (safely [] . changeSince root [rel]) ref
+                    let said = [l | Just rr <- [mrr], l <- map T.strip (T.lines (rrText rr)), any (`T.isPrefixOf` l) ["DONE", "BLOCKED", "- ? "]]
+                        r = Review
+                          { rvId = rid, rvErrand = rid, rvPlan = rel, rvRow = lnRow target, rvStep = lnText target
+                          , rvAt = now, rvModel = pcModel cfg, rvSeconds = maybe 0 rrSeconds mrr, rvCost = mrr >>= rrCost
+                          , rvStatus = status, rvWhy = why
+                          , rvSaid = said
+                          , rvLines = map ghText ghosts
+                          , rvFacts = [(n, maybe "" lnText (find ((== n) . lnRow) ls), t) | Replace n t <- facts]
+                          , rvTests = testsOfFacts [t | Replace _ t <- facts]
+                          , rvDenials = maybe [] rrDenied mrr, rvTools = tools ++ pcDoTools cfg, rvAllowed = []
+                          , rvRef = ref, rvPrompt = prompt, rvAnswer = maybe "" rrText mrr, rvSession = mrr >>= rrSession
+                          , rvParent = roParent <$> reopen, rvDiff = keptDiff changes, rvChoice = Nothing }
+                        end = case status of
+                          "answered" -> DoAnswered (case [T.strip d | l <- said, Just d <- [T.stripPrefix "DONE" l]] of
+                            d : _ | not (T.null d) -> d
+                            _ -> T.pack (show (length changes)) <> (if length changes == 1 then " file changed" else " files changed"))
+                          "blocked" -> DoBlocked (fromMaybe "no reason given" why)
+                          "empty" -> DoEmpty
+                          "timeout" -> DoTimeout
+                          "cancelled" -> DoCancelled
+                          _ -> DoError (fromMaybe status why)
+                    safely () (archiveErrand (ssPorts s) root r)
+                    zone <- getCurrentTimeZone
+                    _ <- safely [] (Journal.record (ssPorts s) zone root rel [doEvent rid (lnText target) (lnRow target) now (isJust reopen) (pcModel cfg) end])
+                    case ref of
+                      Just _ | answered || not (null changes) -> do
+                        saved <- safely False (saveReview (ssPorts s) root r >> pure True)
+                        if saved then reviewed rid >> pure (Just rid) else pure Nothing
+                      _ -> pure Nothing
+          runClaude token cfg verb tools (roSession <$> reopen) root prompt >>= \case
             Left f -> do
               changed <- if verb == Do then changedFiles root else pure []
               rid <- record (rfStatus f) (Just (rfWhy f)) (rfSession f) Nothing 0 0 0 0 0 (length changed)

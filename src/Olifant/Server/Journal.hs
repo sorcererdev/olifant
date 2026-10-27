@@ -23,7 +23,6 @@ module Olifant.Server.Journal
   , doEvent
   , keepEvent
   , testEvents
-  , readingEvent
   , movedEvent
   ) where
 
@@ -39,9 +38,8 @@ import Data.Time (TimeZone, UTCTime, defaultTimeLocale, formatTime, utcToZonedTi
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Olifant.App (Ports (..))
 import Olifant.Plans (Kind (..), Line (..), TestState (..), childrenOf, parsePlan)
-import Olifant.Server.LoopTypes (Fact (..), ReadingKind (..))
+import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Review (stepKey)
-import Olifant.Server.ReviewReadings (Choice (..), Reading (..))
 import Olifant.Workspace (Workspace (..))
 import System.FilePath (dropExtension, takeExtension, (</>))
 
@@ -187,26 +185,6 @@ testEvents ls row facts states fp at = case drop row ls of
   _ -> []
   where
     isStepK = \case Step _ -> True; _ -> False
-
--- | A reconcile reading answered with CHOICE, written under STEP (the step
--- it lands on); Nothing for choices about no step (new, ignore).
-readingEvent :: Text -> Reading -> Choice -> Line -> UTCTime -> Maybe Event
-readingEvent key r c step at = (\w -> Event ("review|reconcile|" <> key <> "|" <> name) (lnText step) (lnRow step) at w Nothing) <$> words'
-  where
-    (_, unit, _) = rdUnit r
-    name = case c of Apply -> "apply"; Leave -> "leave"; Place n -> "place " <> T.pack (show n); New -> "new"; Ignore -> "ignore"
-    words' = case (c, rdKind r) of
-      (Apply, Done) -> Just "ticked (review: looked done)"
-      (Apply, Reopened) -> Just "unticked (review: looked open again)"
-      (Apply, Diverged) -> Just "marked changed (review)"
-      (Apply, Gone) -> Just "marked gone (review)"
-      (Apply, _) | rdNew r == Nothing -> Just ("placed " <> unit <> " here (review)")
-      (Place _, _) -> Just ("placed " <> unit <> " here (review)")
-      (Leave, Done) -> Just "left open (review: looked done)"
-      (Leave, Reopened) -> Just "left ticked (review: looked open again)"
-      (Leave, Diverged) -> Just "left as is (review: looked wrong)"
-      (Leave, Gone) -> Just "left as is (review: unit gone)"
-      _ -> Nothing
 
 -- | A step whose anchor a reconcile moved to NEW (path:Unit).
 movedEvent :: Text -> Int -> UTCTime -> Text -> Event

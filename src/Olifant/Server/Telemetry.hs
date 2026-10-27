@@ -36,7 +36,9 @@ data ErrandRecord = ErrandRecord
   , erBranch :: Maybe Text, erModel :: Text, erStatus :: Status, erWhy :: Maybe Text
   , erSession :: Maybe Text, erSeconds :: Maybe Double, erTurns :: Maybe Int, erTokens :: Maybe Tokens
   , erCost :: Maybe Double, erModels :: [(Text, ModelUse)], erPromptChars :: Int, erGrounded :: Int
-  , erBlocks :: Int, erLines :: Int, erDropped :: Int, erUnresolved :: Int, erChanged :: Int, erDenials :: Int }
+  , erBlocks :: Int, erLines :: Int, erDropped :: Int, erUnresolved :: Int, erChanged :: Int, erDenials :: Int
+  , -- | the errand a reopen continued
+    erParent :: Maybe Text }
   deriving (Eq, Show)
 
 -- | A decision on one ghost block (0-based) of an errand's answer.
@@ -76,7 +78,8 @@ recordJson = \case
         ++ catMaybes
           [ ("branch" .=) <$> erBranch e, ("why" .=) <$> erWhy e, ("session" .=) <$> erSession e
           , ("seconds" .=) <$> erSeconds e, ("turns" .=) <$> erTurns e
-          , ("tokens" .=) . object . tokensPairs <$> erTokens e, ("cost" .=) <$> erCost e ]
+          , ("tokens" .=) . object . tokensPairs <$> erTokens e, ("cost" .=) <$> erCost e
+          , ("parent" .=) <$> erParent e ]
   AnOutcome o ->
     object ["kind" .= ("outcome" :: Text), "id" .= orId o, "block" .= orBlock o, "at" .= stamp (orAt o), "outcome" .= orOutcome o]
   AReconcile r ->
@@ -120,6 +123,7 @@ parseRecord = parseMaybe $ \case
         <*> o .:? "session" <*> o .:? "seconds" <*> o .:? "turns" <*> pure tokens
         <*> o .:? "cost" <*> pure models <*> o .: "prompt_chars" <*> o .: "grounded"
         <*> o .: "blocks" <*> o .: "lines" <*> o .: "dropped" <*> o .: "unresolved" <*> o .: "changed" <*> o .: "denials"
+        <*> o .:? "parent"
     reconcileP o = do
       climbs <- o .: "climbs" >>= traverse (\case Object c -> (,) <$> c .: "rung" <*> c .: "seconds"; _ -> fail "a climb is not an object")
       decisions <- o .: "decisions" >>= traverse (\case Object d -> Decision <$> d .: "kind" <*> d .: "options" <*> d .:? "chosen" <*> d .:? "confidence" <*> d .: "rung"; _ -> fail "a decision is not an object")

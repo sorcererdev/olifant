@@ -33,11 +33,19 @@ module Olifant.Server.Review
   , locateStep
   , keepLines
   , reviewPayload
+  , archiveErrand
+  , loadArchive
+  , loadArchived
+  , archivedFor
+  , keptDiff
+  , errandPayload
   ) where
 
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, void, when)
-import Data.Aeson (Value (..), decodeStrict, encode, object, (.:), (.:?), (.=))
+import Data.Aeson (Value (..), decodeStrict, encode, object, toJSON, (.:), (.:?), (.=))
+import Data.Aeson.KeyMap qualified as KM
+import Data.Ord (Down (..))
 import Data.Aeson.Types (Parser, parseMaybe)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
@@ -283,6 +291,13 @@ data Review = Review
   , rvPrompt :: Text
   , rvAnswer :: Text
   , rvSession :: Maybe Text
+  , -- | the errand a reopen continued
+    rvParent :: Maybe Text
+  , -- | the change as the do left it, kept in the archive (the reference
+    -- may be collected later)
+    rvDiff :: [FileChange]
+  , -- | how the review was answered: kept, reverted, reopened
+    rvChoice :: Maybe Text
   }
   deriving stock (Eq, Show)
 
@@ -329,6 +344,8 @@ reviewRecord r =
     , "tools" .= rvTools r, "allowed" .= rvAllowed r
     , "ref" .= fmap (\t -> object ["commit" .= trCommit t, "untracked" .= [object ["file" .= f, "blob" .= b] | (f, b) <- trUntracked t]]) (rvRef r)
     , "prompt" .= rvPrompt r, "answer" .= rvAnswer r, "session" .= rvSession r
+    , "parent" .= rvParent r, "choice" .= rvChoice r
+    , "diff" .= [object ["file" .= fcPath c, "status" .= changeWord (fcChange c), "diff" .= fcDiff c] | c <- rvDiff r]
     ]
 
 parseReview :: BS.ByteString -> Maybe Review
@@ -343,6 +360,7 @@ parseReview bytes = decodeStrict bytes >>= parseMaybe p
           <*> (mapM fact =<< o .: "facts") <*> (mapM test =<< o .: "tests") <*> (mapM denial =<< o .: "denials")
           <*> o .: "tools" <*> o .: "allowed"
           <*> (traverse ref =<< o .:? "ref") <*> o .: "prompt" <*> o .: "answer" <*> o .:? "session"
+          <*> o .:? "parent" <*> (maybe (pure []) (mapM change) =<< o .:? "diff") <*> o .:? "choice"
       _ -> fail "a review is an object"
     fact = \case
       Object o -> (,,) <$> o .: "row" <*> o .: "before" <*> o .: "after"
@@ -359,6 +377,73 @@ parseReview bytes = decodeStrict bytes >>= parseMaybe p
     untracked = \case
       Object o -> (,) <$> o .: "file" <*> o .: "blob"
       _ -> fail "untracked"
+    change = \case
+      Object o -> do
+        st <- o .: "status"
+        c <- maybe (fail "status") pure (lookup st [(changeWord k, k) | k <- [Modified, Added, Deleted]])
+        (\f d -> FileChange f c Nothing Nothing d) <$> o .: "file" <*> o .: "diff"
+      _ -> fail "change"
+
+changeWord :: Change -> Text
+changeWord = \case Modified -> "modified"; Added -> "added"; Deleted -> "deleted"
+
+-- | Where a plan's past dos are kept, every one however it ended.
+archiveDir :: FilePath -> FilePath -> FilePath
+archiveDir root plan = root </> ".olifant/state/errands" </> (if takeExtension plan == ".md" then dropExtension plan else plan)
+
+archiveErrand :: Ports -> FilePath -> Review -> IO ()
+archiveErrand ports root r = writeText (pFiles ports) (archiveDir root (rvPlan r) </> safeName (rvId r) <> ".json") (TE.decodeUtf8 (BL.toStrict (encode (reviewRecord r))) <> "\n")
+
+-- | A plan's past dos, newest first.
+loadArchive :: Ports -> FilePath -> FilePath -> IO [Review]
+loadArchive ports root plan = do
+  let dir = archiveDir root plan
+  there <- doesDirectoryExist dir
+  names <- if there then filter ((== ".json") . takeExtension) <$> listDirectory dir else pure []
+  found <- forM names $ \n -> (>>= parseReview) . fmap TE.encodeUtf8 <$> readText (pFiles ports) (dir </> n)
+  pure (sortOn (Down . rvAt) [r | Just r <- found])
+
+loadArchived :: Ports -> FilePath -> FilePath -> Text -> IO (Maybe Review)
+loadArchived ports root plan rid = find ((== rid) . rvId) <$> loadArchive ports root plan
+
+-- | The past dos of the step STEP (a line; found by its words and anchor).
+archivedFor :: Ports -> FilePath -> FilePath -> Text -> IO [Review]
+archivedFor ports root plan step = filter ((== stepKey step) . stepKey . rvStep) <$> loadArchive ports root plan
+
+-- | The change as the archive keeps it: the diffs only, 2000 lines in
+-- all, the file that crosses the limit cut with a last line saying so.
+keptDiff :: [FileChange] -> [FileChange]
+keptDiff = go 2000
+  where
+    go _ [] = []
+    go n (c : cs)
+      | n <= 0 = []
+      | length ls <= n = c' (fcDiff c) : go (n - length ls) cs
+      | otherwise = [c' (T.unlines (take n ls ++ ["… (cut)"]))]
+      where
+        ls = T.lines (fcDiff c)
+        c' d = c {fcBefore = Nothing, fcAfter = Nothing, fcDiff = d}
+
+-- | A past do as the window draws it: read-only, its outcome in the badge,
+-- its kept diff, one offer (reopen, when it has a session), and its
+-- TRANSCRIPT's path in the details when the runner keeps one.
+errandPayload :: Maybe FilePath -> Review -> Value
+errandPayload transcript r = case reviewPayload r Nothing (rvDiff r) Null of
+  Object o ->
+    Object
+      . KM.insert "kind" (String "errand")
+      . KM.insert "offers" (toJSON [reopenOffer | isJust (rvSession r)])
+      . adjust (\case Object t -> Object (adjust (\case String b -> String (b <> maybe "" (" · " <>) (rvChoice r)); v -> v) "badge" t); v -> v) "title"
+      . adjust (\case Array ds -> Array (ds <> pure (object ["title" .= ("transcript" :: Text), "text" .= T.pack p]) `onlyIf` transcript); v -> v) "details"
+      $ o
+  v -> v
+  where
+    onlyIf xs = maybe mempty (const xs)
+    adjust f k m = maybe m (\v -> KM.insert k (f v) m) (KM.lookup k m)
+    p = fromMaybe "" transcript
+
+reopenOffer :: Value
+reopenOffer = object ["choice" .= ("reopen" :: Text), "key" .= ("o" :: Text), "label" .= ("reopen: ask for more in the same thread" :: Text), "detail" .= ("a do on the step resumes its thread with what you type" :: Text)]
 
 -- | A step line as a review finds it again: its words past the checkbox and
 -- before its anchor, and the anchor's path and unit (its marks and tick
@@ -439,6 +524,7 @@ reviewPayload r step changes edit =
     offers =
       [offer "keep" "a" "keep the change" (if null (rvLines r) then "the files stay as the do left them" else "the files stay; its plan lines land under the step")]
         ++ [offer "revert" "r" "revert the change" "files restored, new files removed; nothing in the plan" | isJust (rvRef r), not (null changes)]
+        ++ [reopenOffer | isJust (rvSession r)]
         ++ [offer "test" "t" "run the step's tests now" "their marks land in the plan, the tick when all are green"]
         ++ [offer "allow" "p" ("allow " <> T.intercalate ", " (nub (map (\d -> "`" <> allowPattern d <> "`") newDenials))) "in future dos: [plans] do_tools in .olifant/config.toml" | not (null newDenials)]
     offer choice key label detail = object ["choice" .= (choice :: Text), "key" .= (key :: Text), "label" .= (label :: Text), "detail" .= (detail :: Text)]

@@ -5,6 +5,8 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
 import Data.Aeson (encode)
 import Data.Text (Text)
+import Data.Text qualified as T
+import Olifant.LspSpec (plainPorts)
 import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Plans (lnRow, parsePlan)
@@ -92,11 +94,42 @@ spec = describe "Olifant.Server.Review (the do review)" $ do
       at ["tests", "passed"] v `shouldBe` Just (Number 1)
       at ["denied"] v `shouldBe` Just (toArray ["tried `python -m pytest a__test.py`; not allowed.", "Allowed: `uv run …`."])
       at ["landing", "diff"] v `shouldBe` Just (String "--- a/a.py\n+++ b/a.py\n")
-      fmap (map (\o -> lookupKey "key" o)) (arrayAt ["offers"] v) `shouldBe` Just [Just "a", Just "r", Just "t", Just "p"]
+      fmap (map (\o -> lookupKey "key" o)) (arrayAt ["offers"] v) `shouldBe` Just [Just "a", Just "r", Just "o", Just "t", Just "p"]
     it "offers no revert without a reference or a change, and no allow once allowed" $ do
       let v = reviewPayload sample {rvRef = Nothing, rvAllowed = ["Bash(python -m pytest*)"]} Nothing [] Null
-      fmap (map (lookupKey "key")) (arrayAt ["offers"] v) `shouldBe` Just [Just "a", Just "t"]
+      fmap (map (lookupKey "key")) (arrayAt ["offers"] v) `shouldBe` Just [Just "a", Just "o", Just "t"]
       at ["summary"] v `shouldBe` Just (String "The do answered and changed no file.")
+    it "parses a review file from before the archive (no parent, diff or choice)" $ do
+      let old = KM.delete "parent" (KM.delete "diff" (KM.delete "choice" (case reviewRecord sample of Object o -> o; _ -> KM.empty)))
+      parseReview (BL.toStrict (encode (Object old))) `shouldBe` Just sample
+  describe "the errand archive" $ do
+    it "keeps every do of a plan, newest first, and finds a step's by its words" $ withSystemTempDirectory "archive" $ \root -> do
+      let ports = plainPorts
+          later = sample {rvId = "s2", rvAt = UTCTime (fromGregorian 2026 10 26) 0, rvStep = "- [x] add a label @a.py:Table.label ✓ abc1234"}
+          other = sample {rvId = "s3", rvAt = UTCTime (fromGregorian 2026 10 24) 0, rvStep = "- [ ] another @a.py:Table"}
+      mapM_ (archiveErrand ports root) [sample, later, other]
+      map rvId <$> loadArchive ports root "plans/t.md" `shouldReturn` ["s2", "shim-1", "s3"]
+      map rvId <$> archivedFor ports root "plans/t.md" (rvStep sample) `shouldReturn` ["s2", "shim-1"]
+      fmap rvId <$> loadArchived ports root "plans/t.md" "s3" `shouldReturn` Just "s3"
+      loadArchived ports root "plans/t.md" "nope" `shouldReturn` Nothing
+    it "cuts the diff it keeps to 2000 lines in all" $ do
+      let big n f = FileChange f Modified Nothing Nothing (T.unlines (replicate n "+x"))
+          kept = keptDiff [big 1500 "a.py", big 1500 "b.py", big 10 "c.py"]
+      sum (map (length . T.lines . fcDiff) kept) `shouldSatisfy` (<= 2001)
+      map fcPath kept `shouldBe` ["a.py", "b.py"]
+      last (T.lines (fcDiff (last kept))) `shouldBe` "… (cut)"
+    it "is drawn read-only, with its outcome and one offer: reopen, when it has a session" $ do
+      let change = FileChange "a.py" Modified Nothing Nothing "--- a/a.py\n+++ b/a.py\n"
+          v = errandPayload (Just "/h/.claude/projects/x/s1.jsonl") sample {rvDiff = [change], rvChoice = Just "kept"}
+      at ["kind"] v `shouldBe` Just (String "errand")
+      at ["title", "badge"] v `shouldBe` Just (String "◆ answered · kept")
+      at ["landing", "diff"] v `shouldBe` Just (String "--- a/a.py\n+++ b/a.py\n")
+      fmap (map (lookupKey "key")) (arrayAt ["offers"] v) `shouldBe` Just [Just "o"]
+      fmap (map (lookupKey "title")) (arrayAt ["details"] v) `shouldSatisfy` maybe False (elem (Just (String "transcript")))
+      fmap (map (lookupKey "key")) (arrayAt ["offers"] (errandPayload Nothing sample {rvSession = Nothing})) `shouldBe` Just []
+    it "offers reopen on a live do review only when the do has a session" $ do
+      fmap (map (lookupKey "key")) (arrayAt ["offers"] (reviewPayload sample {rvRef = Nothing} Nothing [] Null)) `shouldBe` Just [Just "a", Just "o", Just "t", Just "p"]
+      fmap (map (lookupKey "key")) (arrayAt ["offers"] (reviewPayload sample {rvRef = Nothing, rvSession = Nothing} Nothing [] Null)) `shouldBe` Just [Just "a", Just "t", Just "p"]
     it "reads the tests from the facts' test children" $
       testsOfFacts ["  - test: it labels @a__test.py:test_label ●", "- [x] s @a.py:T ✓ abc1234", "  - test: other @a__test.py:test_other ✗"]
         `shouldBe` [ReviewTest "test_label" "passed", ReviewTest "test_other" "failed"]
@@ -122,6 +155,7 @@ sample =
     , rvTests = [ReviewTest "test_label" "passed"], rvDenials = [Denial "Bash" "python -m pytest a__test.py"]
     , rvTools = ["Bash(uv run*)"], rvAllowed = [], rvRef = Just (TreeRef "abc" [("notes.txt", "def")])
     , rvPrompt = "the prompt", rvAnswer = "DONE @a.py:Table.label", rvSession = Just "shim-1"
+    , rvParent = Nothing, rvDiff = [], rvChoice = Nothing
     }
 
 -- | A repository with one commit: a.py, plans/t.md.
