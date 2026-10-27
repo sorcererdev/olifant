@@ -2218,7 +2218,9 @@ plansLoopSpec = describe "plans, stage 2" $ do
         _ -> expectationFailure ("not an object: " <> show v)
       (lookupKey "passed" v, lookupKey "failed" v) `shouldBe` (Just (Number 1), Just (Number 0))
       case arr (lookupKey "facts" v) of
-        [child, step] -> do
+        [child, step, journalled] -> do
+          -- the tick's journal line rides with the facts
+          [x | String x <- arr (lookupKey "lines" journalled)] `shouldSatisfy` \case [l] -> "ticked: tests green" `T.isSuffixOf` l; _ -> False
           child `shouldBe` object ["row" .= (1 :: Int), "text" .= ("  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9679" :: Text)]
           (lookupKey "row" step, lookupKey "text" step) `shouldSatisfy` \case
             (Just (Number 0), Just (String t)) -> ("- [x] s @" <> T.pack table <> ":Table \10003 ") `T.isPrefixOf` t
@@ -2304,7 +2306,11 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       (answer, _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir (errand doP 7)
       v <- either (fail . T.unpack) pure answer
       case arr (lookupKey "facts" v) of
-        [child, step] -> do
+        [child, step, journalled] -> do
+          -- the do's line, then the tick's, ride with the facts
+          map (T.takeWhileEnd (/= '\183')) [x | String x <- arr (lookupKey "lines" journalled)] `shouldSatisfy` \case
+            [d, t] -> "answered: " `T.isInfixOf` d && t == " ticked: tests green"
+            _ -> False
           child `shouldBe` object ["row" .= (8 :: Int), "text" .= ("  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9679" :: Text)]
           (lookupKey "row" step, lookupKey "text" step) `shouldSatisfy` \case
             (Just (Number 7), Just (String t)) -> ("- [x] add a method @" <> T.pack table <> ":Table \10003 ") `T.isPrefixOf` t
@@ -2320,8 +2326,8 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
         _ <- openDoc table "python"
         errand doP 7
       v <- either (fail . T.unpack) pure answer
-      map (lookupKey "text") (arr (lookupKey "facts" v)) `shouldSatisfy` \case
-        [Just (String child), Just (String step)] -> T.isSuffixOf "\9679" child && ("- [x] add a method" `T.isPrefixOf` step)
+      [t | Just t <- map (lookupKey "text") (arr (lookupKey "facts" v))] `shouldSatisfy` \case
+        [String child, String step] -> T.isSuffixOf "\9679" child && ("- [x] add a method" `T.isPrefixOf` step)
         _ -> False
   it "a runner failure leaves the plan alone and names the reason" $
     withPlan (T.replace "where is the table" "where is the table SHIM:FAIL" plan) $ \ports dir -> do
@@ -2645,7 +2651,8 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
         c <- either (fail . T.unpack) pure chosen
         at ["reopen", "id"] c `shouldBe` Just (String rid)
         lines' <- T.lines <$> TIO.readFile argsFile
-        last lines' `shouldSatisfy` T.isInfixOf ("--resume " <> rid <> " --fork-session")
+        -- specs that run alongside may add their own runs to the file
+        lines' `shouldSatisfy` any (T.isInfixOf ("--resume " <> rid <> " --fork-session"))
         rid2 `shouldSatisfy` (/= Just (String rid))
         (rs, 0) <- records dir
         [erParent e | AnErrand e <- rs] `shouldBe` [Nothing, Just rid]
