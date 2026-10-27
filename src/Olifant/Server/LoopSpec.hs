@@ -306,6 +306,10 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       (_, a) <- run False dir s
       fp <- fpNow dir s "helper"
       map summary (raBlocks a) `shouldBe` [(7, Just "- [ ] tidy the helper", ["  - also @src/bistro/booking/models/table.py:helper"], False, Just (table, "helper", fp))]
+      map rbKind (raBlocks a) `shouldBe` [Also]
+      -- the new step it could be instead, and the unit it is about
+      map (fmap (map ghText . blLines) . rbNewStep) (raBlocks a) `shouldBe` [Just ["- [ ] def helper() -> int @src/bistro/booking/models/table.py:helper"]]
+      map (fmap cuName . rbChange) (raBlocks a) `shouldBe` [Just "helper"]
       asked dir `shouldReturn` ["plan-step", "plan-state"]
   it "(c) a touched open step with tests answered done is a replacing ticked ghost" $ do
     let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n  - test: it works @tests/t.py:test_it ○\n"
@@ -313,6 +317,7 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       (_, a) <- run False dir s
       fp <- fpNow dir s "helper"
       map summary (raBlocks a) `shouldBe` [(4, Just "- [ ] tidy the helper @src/bistro/booking/models/table.py:helper", ["- [x] tidy the helper @src/bistro/booking/models/table.py:helper ✓ " <> fp], True, Just (table, "helper", fp))]
+      map rbKind (raBlocks a) `shouldBe` [Done]
   it "(c0) a reading never ticks a step with no tests: done is taken as in progress, no ghost" $ do
     let plan = "# T\n\n## S\n\n- [ ] tidy the helper @src/bistro/booking/models/table.py:helper\n"
     withReconcile plan [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
@@ -326,6 +331,7 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
       map (\(r, _, ls, rep, _) -> (r, ls, rep)) (map summary (raBlocks a)) `shouldBe` [(4, ["  - ✗ changed: helper changed @src/bistro/booking/models/table.py:helper"], False)]
       fp <- fpNow dir s "helper"
       map rbUnit (raBlocks a) `shouldBe` [Just (table, "helper", fp)]
+      map rbKind (raBlocks a) `shouldBe` [Diverged]
   it "(c3) an accepted changed child settles the step at the unit's fingerprint, until the unit changes" $ do
     let step = "- [ ] tidy the helper @src/bistro/booking/models/table.py:helper"
     withReconcile "# T\n" [(table, helperEdited)] jevConfig (Just (answersOf [("plan-state", "diverged")])) $ \dir s -> do
@@ -353,6 +359,7 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
     withReconcile plan [(table, T.replace helper "" tableText)] jevConfig (Just (answersOf [("plan-state", "done")])) $ \dir s -> do
       (_, a) <- run False dir s
       map summary (raBlocks a) `shouldBe` [(4, Just "- [ ] keep the helper @src/bistro/booking/models/table.py:helper", ["  - ✗ gone: @src/bistro/booking/models/table.py:helper no longer exists"], False, Just (table, "helper", ""))]
+      map rbKind (raBlocks a) `shouldBe` [Gone]
       asked dir `shouldReturn` []
       map (map dcKind . rcDecisions) <$> reconciles dir `shouldReturn` [[]]
   it "(e2) a rejected gone ghost does not return; a done step's gone unit has none" $ do
@@ -389,14 +396,16 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
     withReconcile (planned "") [(table, withSpare)] jevConfig (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
       (_, a) <- run False dir s
       map (\(r, t, ls, _, _) -> (r, t, ls)) (map summary (raBlocks a)) `shouldBe` [(9, Just "- [ ] later", [ghost])]
+      map rbKind (raBlocks a) `shouldBe` [NewStep]
   it "(f2) a new step never lands under a sub-step" $
     withReconcile "# T\n\n## Tables\n\n- [ ] count the seats\n  - [ ] a sub-step\n" [(table, withSpare)] jevConfig (Just (answersOf [("plan-step", "none")])) $ \dir s -> do
       (_, a) <- run False dir s
       map (\(r, t, ls, _, _) -> (r, t, ls)) (map summary (raBlocks a)) `shouldBe` [(5, Just "  - [ ] a sub-step", ["- [ ] def spare() -> str @src/bistro/booking/models/table.py:spare"])]
-  it "(g) no decider, no ladder → one summary ghost" $
+  it "(g) no decider, no ladder → a new-step reading per unit, from its header" $
     withReconcile "# T\n\n- [ ] x\n" [(table, T.replace "return 1" "return 2" withSpare)] "" Nothing $ \dir s -> do
       (_, a) <- run False dir s
-      map summary (raBlocks a) `shouldBe` [(0, Just "# T", ["- ? 2 changed units not in the plan"], False, Nothing)]
+      map rbKind (raBlocks a) `shouldBe` [NewStep, NewStep]
+      map (\(r, _, ls, _, _) -> (r, ls)) (map summary (raBlocks a)) `shouldBe` [(2, ["- [ ] def helper() -> int @src/bistro/booking/models/table.py:helper"]), (2, ["- [ ] def spare() -> str @src/bistro/booking/models/table.py:spare"])]
   it "(h) an unsure Jev climbs an auto rung; ask rungs only when forced" $
     withReconcile tidyPlan [(table, helperEdited)] (jevConfig <> climbConfig) (Just (answersOf [("plan-step", "unsure")])) $ \dir s -> do
       _ <- run False dir s
@@ -505,7 +514,7 @@ reconcileSpec = describe "Olifant.Server.Loop (reconcile)" $ do
         other -> expectationFailure ("one reconcile record, got " <> show (length other))
       logged <- filter (T.isInfixOf "plan-reconcile") . T.lines <$> TIO.readFile (dir </> ".olifant/state/steps.log")
       map (drop 1 . T.splitOn "\t") logged `shouldSatisfy` \case
-        [["plan-reconcile", "plans/t.md", "0 facts", "1 ghosts", _, "jev"]] -> True
+        [["plan-reconcile", "plans/t.md", "0 facts", "1 readings", _, "jev"]] -> True
         _ -> False
       case reconcileJson a of
         Object o -> do

@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Olifant.LspSpec (spec, needsUv, withPython) where
+module Olifant.LspSpec (spec, needsUv, withPython, plainPorts) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
@@ -38,7 +38,7 @@ import Data.Ord (Down (..))
 import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, getCurrentTime)
 import Olifant.Server.Fixes qualified as Fx
 import Olifant.Server.Errand (Status (..), Tokens (..))
-import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), Record (..), readRecords)
+import Olifant.Server.Telemetry (ErrandRecord (..), OutcomeRecord (..), ReconcileRecord (..), Record (..), readRecords)
 import Olifant.Server.State qualified as St
 import Olifant.Decide qualified as De
 import Olifant.Rules qualified as Ru
@@ -2034,7 +2034,8 @@ plansLoopSpec = describe "plans, stage 2" $ do
       testP = Proxy :: Proxy "olifant/plans/test"
       -- the fixture, the plan and an edit of the anchored unit, committed first
       tableText = T.unlines ["def label(id: str) -> str:", "    return id"]
-      withEdited config act = withPython [("plans/t.md", plan), (table, tableText)] $ \ports dir -> do
+      withEdited = withEditedPlan plan
+      withEditedPlan text config act = withPython [("plans/t.md", text), (table, tableText)] $ \ports dir -> do
         TIO.appendFile (dir </> ".olifant/config.toml") config
         let git args = callProcess "git" (["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"] ++ args)
         git ["init", "-q", "-b", "main"]
@@ -2051,15 +2052,29 @@ plansLoopSpec = describe "plans, stage 2" $ do
       arr = \case
         Just (Array xs) -> toList xs
         _ -> []
-  it "(a) reconcile answers facts and blocks for an edited anchored unit" $
+      reviewP = Proxy :: Proxy "olifant/plans/review"
+      reviewsP = Proxy :: Proxy "olifant/plans/reviews"
+      chooseP = Proxy :: Proxy "olifant/plans/review/choose"
+      at ks v = foldl (\m k -> m >>= lookupKey k) (Just v) ks
+      toE = \case InL x -> Left x; InR y -> Right y
+  it "(a) reconcile lands its facts by workspace/applyEdit at the version it read; its answer carries none, and no blocks" $
     withEdited jev $ \ports dir -> do
       cfg <- answers dir [("plan-state", "in_progress")]
-      (answer, _) <- inProcessWithConfig cfg ports dir $ do
+      ((edit, answer), _) <- inProcessWithConfig cfg ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
-        blockMove reconcileP (object [docOf p])
+        let method = SMethod_CustomMethod reconcileP
+        rid <- sendRequest method (object [docOf p])
+        let edited = message SMethod_WorkspaceApplyEdit <|> (anyMessage >> edited)
+            answerOf = responseForId method rid <|> (anyMessage >> answerOf)
+        TRequestMessage _ _ _ params <- edited
+        TResponseMessage _ _ r <- answerOf
+        pure (params ^. L.edit, either (Left . (^. L.message)) Right r)
       v <- either (fail . T.unpack) pure answer
-      arr (lookupKey "facts" v) `shouldBe` [object ["row" .= (1 :: Int), "text" .= ("  - test: t @tests/test_table.py:test_label \9675" :: Text)]]
-      arr (lookupKey "blocks" v) `shouldBe` []
+      arr (lookupKey "facts" v) `shouldBe` []
+      lookupKey "blocks" v `shouldBe` Nothing
+      lookupKey "landed" v `shouldBe` Just (Number 1)
+      [(te ^. L.textDocument . L.version, [either (^. L.newText) (^. L.newText) (toE t) | t <- te ^. L.edits]) | Just cs <- [edit ^. L.documentChanges], InL te <- cs]
+        `shouldSatisfy` \case [(InL 0, texts)] -> any (T.isInfixOf "\9675") texts; _ -> False
   it "(a2) a second reconcile of the unchanged plan answers from the cache: one record, the same id" $
     withEdited jev $ \ports dir -> do
       cfg <- answers dir [("plan-state", "in_progress")]
@@ -2071,6 +2086,70 @@ plansLoopSpec = describe "plans, stage 2" $ do
       lookupKey "id" v2 `shouldBe` lookupKey "id" v1
       (rs, _) <- readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
       length [() | AReconcile _ <- rs] `shouldBe` 1
+  it "(f) a reading is the reconcile review: listed, drawn, a lens on its step and the title; apply returns the plan edit and answers it" $
+    withEdited jev $ \ports dir -> do
+      cfg <- answers dir [("plan-state", "done")]
+      ((listed, view, lenses, chosen, after), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        _ <- blockMove reconcileP (object [docOf p])
+        listed <- blockMove reviewsP (object [docOf p])
+        view <- blockMove reviewP (object [docOf p, "id" .= ("reconcile" :: Text)])
+        lenses <- getCodeLenses p
+        let entry = either (const Aeson.Null) (\w -> fromMaybe Aeson.Null (at ["entries"] w >>= \case Array xs -> lookupKey "id" =<< listToMaybe (toList xs); _ -> Nothing)) view
+        chosen <- blockMove chooseP (object [docOf p, "id" .= ("reconcile" :: Text), "entry" .= entry, "choice" .= ("apply" :: Text)])
+        (listed, view, lenses, chosen,) <$> blockMove reviewsP (object [docOf p])
+      l <- either (fail . T.unpack) pure listed
+      [(lookupKey "id" x, map (\e -> (lookupKey "kind" e, lookupKey "row" e)) (arr (lookupKey "entries" x))) | x <- arr (lookupKey "reviews" l)]
+        `shouldBe` [(Just (String "reconcile"), [(Just (String "done"), Just (Number 0))])]
+      w <- either (fail . T.unpack) pure view
+      [(lookupKey "summary" e, map (lookupKey "key") (arr (lookupKey "offers" e))) | e <- arr (at ["entries"] w)]
+        `shouldBe` [(Just (String "Step 1 looks done"), map (Just . String) ["a", "r"])]
+      sort [(c ^. L.range . L.start . L.line, fmap (^. L.title) (c ^. L.command)) | c <- lenses] `shouldBe` [(0, Just "1 to review"), (0, Just "looks done \183 review")]
+      c <- either (fail . T.unpack) pure chosen
+      lookupKey "done" c `shouldBe` Just (Bool True)
+      Aeson.encode (lookupKey "edit" c) `shouldSatisfy` \e -> ("- [x] s @" <> TE.encodeUtf8 (T.pack table) <> ":label") `BS.isInfixOf` BSL.toStrict e
+      fmap (arr . lookupKey "reviews") after `shouldBe` Right []
+      (rs, _) <- readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
+      [(rcId r == orId o, orBlock o, orOutcome o) | AReconcile r <- rs, AnOutcome o <- rs] `shouldBe` [(True, 0, "accepted")]
+  it "(g) ignore on a unit in no step: the next reconcile does not offer it again" $
+    withEditedPlan "# T\n\n- [ ] s\n" jev $ \ports dir -> do
+      cfg <- answers dir [("plan-step", "none")]
+      ((view, chosen, after), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        _ <- blockMove reconcileP (object [docOf p])
+        view <- blockMove reviewP (object [docOf p, "id" .= ("reconcile" :: Text)])
+        chosen <- blockMove chooseP (object [docOf p, "id" .= ("reconcile" :: Text), "entry" .= ("unplaced|" <> T.pack table <> "|label|" :: Text), "choice" .= ("ignore" :: Text)])
+        _ <- blockMove reconcileP (object [docOf p, "forced" .= True])
+        (view, chosen,) <$> blockMove reviewsP (object [docOf p])
+      w <- either (fail . T.unpack) pure view
+      [(lookupKey "summary" e, map (lookupKey "key") (arr (lookupKey "offers" e))) | e <- arr (at ["entries"] w)]
+        `shouldBe` [(Just (String "Not in any step: `label` in table.py"), map (Just . String) ["a", "1", "n", "i"])]
+      -- the entry's id names the unit at its fingerprint
+      [lookupKey "id" e | e <- arr (at ["entries"] w)] `shouldSatisfy` \case [Just (String k)] -> ("unplaced|" <> T.pack table <> "|label|") `T.isPrefixOf` k; _ -> False
+      chosen `shouldSatisfy` either (const True) (const False) -- not the full key: no such reading
+      fmap (arr . lookupKey "reviews") after `shouldSatisfy` either (const False) (not . null)
+  it "(g2) ignore by the entry's id: answered, and the next reconcile offers nothing" $
+    withEditedPlan "# T\n\n- [ ] s\n" jev $ \ports dir -> do
+      cfg <- answers dir [("plan-step", "none")]
+      ((chosen, after), _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        _ <- blockMove reconcileP (object [docOf p])
+        view <- blockMove reviewP (object [docOf p, "id" .= ("reconcile" :: Text)])
+        let entry = either (const Aeson.Null) (\w -> fromMaybe Aeson.Null (at ["entries"] w >>= \case Array xs -> lookupKey "id" =<< listToMaybe (toList xs); _ -> Nothing)) view
+        chosen <- blockMove chooseP (object [docOf p, "id" .= ("reconcile" :: Text), "entry" .= entry, "choice" .= ("ignore" :: Text)])
+        _ <- blockMove reconcileP (object [docOf p, "forced" .= True])
+        (chosen,) <$> blockMove reviewsP (object [docOf p])
+      c <- either (fail . T.unpack) pure chosen
+      (lookupKey "done" c, lookupKey "edit" c) `shouldBe` (Just (Bool True), Just Aeson.Null)
+      fmap (arr . lookupKey "reviews") after `shouldBe` Right []
+  it "(h) a claim whose anchor resolves to a new fingerprint offers \"Re-fingerprint this claim\"" $
+    withEditedPlan ("# T\n\n- a claim @" <> T.pack table <> ":label \10003 0000000\n") "" $ \ports dir -> do
+      (acts, _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        getCodeActions p (Range (Position 2 3) (Position 2 3))
+      let refp = [a | InR a <- acts, a ^. L.title == "Re-fingerprint this claim"]
+      [T.concat (map (^. L.newText) (concat (M.elems cs))) | a <- refp, Just (WorkspaceEdit (Just cs) _ _) <- [a ^. L.edit]]
+        `shouldSatisfy` \case [t] -> ("@" <> T.pack table <> ":label \10003 ") `T.isInfixOf` t && not ("0000000" `T.isInfixOf` t); _ -> False
   it "(b) cancel stops it, mid-call" $ do
     let script = "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen(1)\nprint(s.getsockname()[1],flush=True)\nc,_=s.accept()\nprint('accepted',flush=True)\ntime.sleep(60)\n"
         hanging act = bracket (createProcess (proc "python3" ["-I", "-c", script]) {std_out = CreatePipe}) (\(_, _, _, h) -> terminateProcess h) $ \case
@@ -2467,8 +2546,20 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
         p <- openDoc "plans/t.md" "markdown"
         (rid, _, _) <- doStep p
         (rid,) <$> getCodeLenses p
-      [(l ^. L.range . L.start . L.line, fmap (^. L.command) (l ^. L.command), fmap (^. L.arguments) (l ^. L.command)) | l <- lenses]
-        `shouldBe` [(7, Just "olifant.plans.review", Just (Just [String rid, String (getUri (filePathToUri (dir </> "plans/t.md")))]))]
+      let args = Just (Just [String rid, String (getUri (filePathToUri (dir </> "plans/t.md")))])
+      [(l ^. L.range . L.start . L.line, fmap (^. L.title) (l ^. L.command), fmap (^. L.command) (l ^. L.command), fmap (^. L.arguments) (l ^. L.command)) | l <- lenses]
+        `shouldBe` [(0, Just "1 to review", Just "olifant.plans.review", args), (7, Just "do \9670 to review", Just "olifant.plans.review", args)]
+  it "a do review and the reconcile review open at once: the title counts both and opens the do first" $
+    withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+      -- the do's new method is in no step: with no one to ask, a new-step reading
+      ((rid, lenses), _) <- inProcessWith ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        (rid, _, _) <- doStep p
+        _ <- blockMove (Proxy :: Proxy "olifant/plans/reconcile") (object [docOf p])
+        (rid,) <$> getCodeLenses p
+      let titled = sort [(l ^. L.range . L.start . L.line, fmap (^. L.title) (l ^. L.command), fmap (take 1 . fromMaybe [] . (^. L.arguments)) (l ^. L.command)) | l <- lenses]
+      -- a unit in no step counts on the title only
+      titled `shouldBe` [(0, Just "2 to review", Just [String rid]), (7, Just "do \9670 to review", Just [String rid])]
 
 -- | A custom request: its answer, or the error's sentence.
 blockMove :: KnownSymbol s => Proxy s -> Value -> Session (Either Text Value)
