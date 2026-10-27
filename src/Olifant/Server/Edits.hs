@@ -10,6 +10,7 @@ module Olifant.Server.Edits
   , smallestChange
   , unifiedDiff
   , editScript
+  , editScriptWithin
   , editorPosition
   , bytePosition
   ) where
@@ -122,9 +123,26 @@ unifiedDiff rel old new
     num = T.pack . show
 
 -- | OLD to NEW line by line, from a longest common subsequence: (' ' kept,
--- '-' removed, '+' added; the line).
+-- '-' removed, '+' added; the line). The common first and last lines are
+-- kept without a table; only the middle is diffed.
 editScript :: [Text] -> [Text] -> [(Char, Text)]
-editScript old new = go 0 0
+editScript old new = fromMaybe [] (editScriptWithin Nothing old new)
+
+-- | 'editScript', or Nothing when the middle (between the common first and
+-- last lines) would need a table of more than CAP cells.
+editScriptWithin :: Maybe Int -> [Text] -> [Text] -> Maybe [(Char, Text)]
+editScriptWithin cap old new
+  | Just c <- cap, length old' * length new' > c = Nothing
+  | otherwise = Just (map (' ',) pre ++ lcsScript old' new' ++ map (' ',) suf)
+  where
+    pre = map fst (takeWhile (uncurry (==)) (zip old new))
+    (o1, n1) = (drop (length pre) old, drop (length pre) new)
+    suf = reverse (map fst (takeWhile (uncurry (==)) (zip (reverse o1) (reverse n1))))
+    old' = take (length o1 - length suf) o1
+    new' = take (length n1 - length suf) n1
+
+lcsScript :: [Text] -> [Text] -> [(Char, Text)]
+lcsScript old new = go 0 0
   where
     os = A.listArray (0, n - 1) old :: A.Array Int Text
     ns = A.listArray (0, m - 1) new :: A.Array Int Text

@@ -3,7 +3,7 @@ module Olifant.Server.ExcerptSpec (spec) where
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Plans (Anchor (..), parsePlan)
-import Olifant.Server.Edits (unifiedDiff)
+import Olifant.Server.Edits (editScript, editScriptWithin, unifiedDiff)
 import Olifant.Server.Excerpt
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Unit (Named (..))
@@ -48,6 +48,13 @@ spec = describe "Olifant.Server.Excerpt" $ do
       length c `shouldBe` 60
       last c `shouldBe` "…"
       take 3 c `shouldBe` ["l1", "l2", "l3"]
+    it "a 3,000-line unit with one line changed: only the lines around it (the common ends are not diffed)" $ do
+      let (u, ls) = unitOf 3000
+          base = [if i == 1500 then "old" else l | (i, l) <- zip [1 :: Int ..] ls]
+      clip u ls (Just base) `shouldBe` ["l1", "…", "l1498", "l1499", "l1500", "l1501", "l1502", "…"]
+    it "past the diff's cap (a 600-line unit wholly rewritten): shown as with no base" $ do
+      let (u, ls) = unitOf 600
+      clip u ls (Just (map ("old " <>) ls)) `shouldBe` take 30 ls ++ ["…"]
     it "takes the unit's lines out of the file" $
       clip (Named "g" (3, 4) 3) ["a", "b", "c", "d", "e"] Nothing `shouldBe` ["c", "d"]
   describe "renderFence" $ do
@@ -96,5 +103,11 @@ spec = describe "Olifant.Server.Excerpt" $ do
           ls = parsePlan (T.unlines (["- [ ] a @a.py:F"] ++ live))
           res a = if a == to then Just ("python", ["x = 1"]) else Nothing
       excerptFacts ls (\a -> if anUnit a == "F" then Just to else Nothing) res `shouldBe` [ReplaceRows 1 3 ["  ```python @b.py:H", "  x = 1", "  ```"]]
+  describe "editScript" $ do
+    it "keeps the common ends and diffs the middle" $
+      editScript ["a", "b", "c", "d"] ["a", "B", "c", "d"] `shouldBe` [(' ', "a"), ('-', "b"), ('+', "B"), (' ', "c"), (' ', "d")]
+    it "within a cap: Nothing when the middle's table is larger, the script otherwise" $ do
+      editScriptWithin (Just 3) ["a", "x", "y", "z"] ["a", "p", "q"] `shouldBe` Nothing
+      editScriptWithin (Just 6) ["a", "x", "y", "z"] ["a", "p", "q"] `shouldBe` Just (editScript ["a", "x", "y", "z"] ["a", "p", "q"])
   it "unifiedDiff keeps its output" $
     unifiedDiff "a.py" "a\nb\nc\n" "a\nB\nc\nd\n" `shouldBe` "--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n"

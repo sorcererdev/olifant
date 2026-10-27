@@ -23,7 +23,7 @@ import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..))
 import Olifant.Language.Adapter (Language (..), languageFor)
 import Olifant.Plans (Anchor (..), Line (..), anchorText, excerptInfo, excerptSpans, stepDone)
-import Olifant.Server.Edits (editScript)
+import Olifant.Server.Edits (editScriptWithin)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..))
@@ -55,6 +55,11 @@ excerptsOf ls =
       | T.all isSpace l = ""
       | otherwise = T.drop (min n (T.length (T.takeWhile (== ' ') l))) l
 
+-- | The most cells 'clip' diffs a unit's changed middle with (500 × 500
+-- lines); a larger one shows as with no base.
+diffCap :: Int
+diffCap = 250000
+
 -- | An excerpt's lines at INDENT: the opening line, the code (a blank line
 -- as the indent alone), the closing line; the fence one backtick longer
 -- than the longest run in the code, at least three.
@@ -73,8 +78,8 @@ fenceLength body = max 3 (1 + maximum (0 : [T.length r | l <- body, r <- T.group
 -- at the baseline: a unit of 30 lines or fewer whole; else its header (its
 -- first line to its definition's) and each line changed since the base with
 -- two lines of context, a "…" at each gap and after the last piece when the
--- unit goes on; with no base, or no change, its first 30 lines and "…". At
--- most 60 lines.
+-- unit goes on; with no base, no change, or a changed middle past
+-- 'diffCap', its first 30 lines and "…". At most 60 lines.
 clip :: Named -> [Text] -> Maybe [Text] -> [Text]
 clip n file base
   | len <= 30 = us
@@ -84,8 +89,9 @@ clip n file base
     us = take (z - a + 1) (drop (a - 1) file)
     len = length us
     marks = maybe [] changed base
-    -- each line added at the base, and where a line was removed
-    changed bs = nub (go 0 (editScript bs us))
+    -- each line added at the base, and where a line was removed; none (as
+    -- with no base) when the changed middle is too large to diff cheaply
+    changed bs = nub (go 0 (fromMaybe [] (editScriptWithin (Just diffCap) bs us)))
       where
         go j ((c, _) : rest) = case c of
           ' ' -> go (j + 1) rest
