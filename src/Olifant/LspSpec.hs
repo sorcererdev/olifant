@@ -2092,7 +2092,7 @@ plansLoopSpec = describe "plans, stage 2" $ do
         stepLine box = "- " <> box <> " s " <> anchorOf
         fenceOf body = ["  ```python " <> anchorOf] ++ map ("  " <>) body ++ ["  ```"]
         sourceActions p l = getCodeActions p (Range (Position l 3) (Position l 3)) <&> \acts -> [a | InR a <- acts, a ^. L.title == "Show the code here"]
-        editsOf a = [concat (M.elems cs) | Just (WorkspaceEdit (Just cs) _ _) <- [a ^. L.edit]]
+        startsAndTexts a = [(t ^. L.range . L.start, t ^. L.newText) | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, InL t <- te ^. L.edits]
     it "(x1) hover on a step's anchor shows its unit's code; off the anchor, nothing" $
       withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
         ((on, off), _) <- inProcessWith ports dir $ do
@@ -2103,14 +2103,42 @@ plansLoopSpec = describe "plans, stage 2" $ do
             text `shouldBe` T.intercalate "\n" ["`" <> T.pack table <> ":label` · lines 1–2", "", "```python", "def label(id: str) -> str:", "    return \"t-\" + id", "```"]
           other -> expectationFailure ("hover: " <> show other)
         off `shouldBe` Nothing
-    it "(x2) Show the code here on an open anchored step writes the fence below it; not on a done step, nor on one that has one" $
+    it "(x2) Show the code here on an open anchored step, resolved, writes the fence below it at the plan's version; not on a done step, nor on one that has one" $
       withEditedPlan (T.unlines ([stepLine "[ ]", stepLine "[x]", stepLine "[ ]"] ++ fenceOf ["x"])) "" $ \ports dir -> do
-        ((open', done, has), _) <- inProcessWith ports dir $ do
+        ((open', resolved, done, has), _) <- inProcessWith ports dir $ do
           p <- openDoc "plans/t.md" "markdown"
-          (,,) <$> sourceActions p 0 <*> sourceActions p 1 <*> sourceActions p 2
-        map (map (map (\e -> (e ^. L.range . L.start, e ^. L.newText))) . editsOf) open'
-          `shouldBe` [[[(Position 0 (fromIntegral (T.length (stepLine "[ ]"))), T.concat ["\n" <> l | l <- fenceOf ["def label(id: str) -> str:", "    return \"t-\" + id"]])]]]
+          open' <- sourceActions p 0
+          resolved <- mapM resolveCodeAction open'
+          (open', resolved,,) <$> sourceActions p 1 <*> sourceActions p 2
+        -- the git calls and the clip wait for the resolve (review M3)
+        map (^. L.edit) open' `shouldBe` [Nothing]
+        map startsAndTexts resolved
+          `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[ ]"))), T.concat ["\n" <> l | l <- fenceOf ["def label(id: str) -> str:", "    return \"t-\" + id"]])]]
+        map editVersions resolved `shouldBe` [[InL 0]]
         (length done, length has) `shouldBe` (0, 0)
+    it "(x2b) not offered on a step whose excerpt lost its closing line (review M6)" $
+      withEditedPlan (T.unlines [stepLine "[ ]", "  ```python " <> anchorOf, "  x", stepLine "[ ]"]) "" $ \ports dir -> do
+        ((broken, next), _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          (,) <$> sourceActions p 0 <*> sourceActions p 3
+        (length broken, length next) `shouldBe` (0, 1)
+    it "(x2c) resolved after the plan changed: refused, not written at the old place (review M4)" $
+      withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
+        (answer, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          acts <- sourceActions p 0
+          changeDoc p [TextDocumentContentChangeEvent (InL (TextDocumentContentChangePartial (Range (Position 0 0) (Position 0 0)) Nothing "# T\n"))]
+          case acts of
+            a : _ -> Just . (^. L.result) <$> request SMethod_CodeActionResolve a
+            [] -> pure Nothing
+        fmap (either (const "refused") (const "written")) answer `shouldBe` Just ("refused" :: Text)
+    it "(x2d) a CRLF plan: inserted before the step's carriage return, its lines ending in CRLF (review M2)" $
+      withEditedPlan (stepLine "[ ]" <> "\r\n") "" $ \ports dir -> do
+        (resolved, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          sourceActions p 0 >>= mapM resolveCodeAction
+        map startsAndTexts resolved
+          `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[ ]"))), T.concat ["\r\n" <> l | l <- fenceOf ["def label(id: str) -> str:", "    return \"t-\" + id"]])]]
     it "(x3) reconcile after the unit changed: one applyEdit with the new code; a second reconcile, none" $
       withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["def label(id: str) -> str:", "    return id"])) jev $ \ports dir -> do
         cfg <- answers dir [("plan-state", "in_progress")]

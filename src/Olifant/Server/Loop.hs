@@ -292,12 +292,13 @@ factJson (ReplaceRows a z ls) = object ["from" .= a, "to" .= z, "lines" .= ls]
 -- FORCED, a touched step with test children then runs them over the
 -- pending lines: their marks (pending when not reported) and its tick win.
 -- Last, the excerpts over the lines as those leave them: a ticked step's
--- frozen, an open step's rendered again from its unit (where it moved).
+-- frozen with its unit's final code, an open step's rendered again from its
+-- unit (where it moved).
 loopFacts :: ServerState -> Project -> Bool -> [Line] -> WorkSet -> IO [Fact]
 loopFacts s p forced ls ws = do
   ran <- concat <$> mapM (stepTestFacts s p pending) tested
   let now = applyFacts (base ++ ran) ls
-      wanted = nubOrdOn key [fromMaybe a (movedTo a) | e <- excerptsOf now, not (exDone e), Just step <- [listToMaybe (drop (exStep e) now)], not (stepDone step), let a = exAnchor e]
+      wanted = nubOrdOn key [fromMaybe a (movedTo a) | e <- excerptsOf now, not (exDone e), let a = exAnchor e]
   units <- forM wanted $ \a -> (key a,) <$> unitExcerpt s p (wsBaseline ws) a
   pure (mergeFacts (base ++ ran ++ excerptFacts now movedTo (\a -> join (lookup (key a) units))))
   where

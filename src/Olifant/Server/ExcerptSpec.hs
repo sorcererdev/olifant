@@ -3,7 +3,7 @@ module Olifant.Server.ExcerptSpec (spec) where
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Plans (Anchor (..), parsePlan)
-import Olifant.Server.Edits (unifiedDiff)
+import Olifant.Server.Edits (editScript, editScriptWithin, unifiedDiff)
 import Olifant.Server.Excerpt
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Unit (Named (..))
@@ -48,6 +48,19 @@ spec = describe "Olifant.Server.Excerpt" $ do
       length c `shouldBe` 60
       last c `shouldBe` "…"
       take 3 c `shouldBe` ["l1", "l2", "l3"]
+    it "a 3,000-line unit with one line changed: only the lines around it (the common ends are not diffed)" $ do
+      let (u, ls) = unitOf 3000
+          base = [if i == 1500 then "old" else l | (i, l) <- zip [1 :: Int ..] ls]
+      clip u ls (Just base) `shouldBe` ["l1", "…", "l1498", "l1499", "l1500", "l1501", "l1502", "…"]
+    it "past the diff's cap (a 600-line unit wholly rewritten): shown as with no base" $ do
+      let (u, ls) = unitOf 600
+      clip u ls (Just (map ("old " <>) ls)) `shouldBe` take 30 ls ++ ["…"]
+    it "a CRLF file's lines and base lose their carriage returns" $ do
+      clip (Named "g" (1, 2) 1) ["def g():\r", "    pass\r", ""] Nothing `shouldBe` ["def g():", "    pass"]
+      let (u, ls) = unitOf 100
+          base = [if i == 50 then "old" else l | (i, l) <- zip [1 :: Int ..] ls]
+      clip u (map (<> "\r") ls) (Just (map (<> "\r") base)) `shouldBe` ["l1", "…", "l48", "l49", "l50", "l51", "l52", "…"]
+      clip u (map (<> "\r") ls) (Just base) `shouldBe` ["l1", "…", "l48", "l49", "l50", "l51", "l52", "…"]
     it "takes the unit's lines out of the file" $
       clip (Named "g" (3, 4) 3) ["a", "b", "c", "d", "e"] Nothing `shouldBe` ["c", "d"]
   describe "renderFence" $ do
@@ -76,8 +89,10 @@ spec = describe "Olifant.Server.Excerpt" $ do
     let live = ["  ```python @a.py:F", "  x = 1", "  ```"]
         frozen = ["  ```python @a.py:F · done", "  x = 1", "  ```"]
         facts step fence res = excerptFacts (parsePlan (T.unlines ([step] ++ fence ++ ["- [ ] next"]))) (const Nothing) res
-    it "a ticked step's live excerpt is frozen, its code as it was" $
-      facts "- [x] a @a.py:F" live (const (Just ("python", ["x = 2"]))) `shouldBe` [Replace 1 "  ```python @a.py:F · done"]
+    it "a ticked step's live excerpt is frozen with its final code, in one replacement" $
+      facts "- [x] a @a.py:F" live (const (Just ("python", ["x = 2"]))) `shouldBe` [ReplaceRows 1 3 ["  ```python @a.py:F · done", "  x = 2", "  ```"]]
+    it "a ticked step whose unit does not resolve: its opening line alone is frozen" $
+      facts "- [x] a @a.py:F" live (const Nothing) `shouldBe` [Replace 1 "  ```python @a.py:F · done"]
     it "an open step's excerpt with the same code: no fact" $
       facts "- [ ] a @a.py:F" live (const (Just ("python", ["x = 1"]))) `shouldBe` []
     it "trailing spaces stripped by a formatter are no change" $
@@ -89,10 +104,24 @@ spec = describe "Olifant.Server.Excerpt" $ do
       facts "- [x] a @a.py:F" frozen (const (Just ("python", ["x = 2"]))) `shouldBe` []
     it "a unit that does not resolve leaves the excerpt" $
       facts "- [ ] a @a.py:F" live (const Nothing) `shouldBe` []
+    it "a CRLF plan keeps its line endings: the freeze and a refresh end each row in a carriage return" $ do
+      let crlf step = parsePlan (T.concat [l <> "\r\n" | l <- [step, "  ```python @a.py:F", "  x = 1", "  ```"]])
+      excerptFacts (crlf "- [x] a @a.py:F") (const Nothing) (const Nothing) `shouldBe` [Replace 1 "  ```python @a.py:F · done\r"]
+      excerptFacts (crlf "- [ ] a @a.py:F") (const Nothing) (const (Just ("python", ["x = 1"]))) `shouldBe` []
+      excerptFacts (crlf "- [ ] a @a.py:F") (const Nothing) (const (Just ("python", ["x = 2"]))) `shouldBe` [ReplaceRows 1 3 ["  ```python @a.py:F\r", "  x = 2\r", "  ```\r"]]
     it "a moved unit: the info string follows" $ do
       let to = Anchor "b.py" "H" 0 7
           ls = parsePlan (T.unlines (["- [ ] a @a.py:F"] ++ live))
           res a = if a == to then Just ("python", ["x = 1"]) else Nothing
       excerptFacts ls (\a -> if anUnit a == "F" then Just to else Nothing) res `shouldBe` [ReplaceRows 1 3 ["  ```python @b.py:H", "  x = 1", "  ```"]]
+  describe "hoverText" $
+    it "a CRLF file's lines lose their carriage returns" $
+      hoverText "a.py" "g" "python" (Named "g" (1, 2) 1) ["def g():\r", "    pass\r"] `shouldBe` "`a.py:g` · lines 1–2\n\n```python\ndef g():\n    pass\n```"
+  describe "editScript" $ do
+    it "keeps the common ends and diffs the middle" $
+      editScript ["a", "b", "c", "d"] ["a", "B", "c", "d"] `shouldBe` [(' ', "a"), ('-', "b"), ('+', "B"), (' ', "c"), (' ', "d")]
+    it "within a cap: Nothing when the middle's table is larger, the script otherwise" $ do
+      editScriptWithin (Just 3) ["a", "x", "y", "z"] ["a", "p", "q"] `shouldBe` Nothing
+      editScriptWithin (Just 6) ["a", "x", "y", "z"] ["a", "p", "q"] `shouldBe` Just (editScript ["a", "x", "y", "z"] ["a", "p", "q"])
   it "unifiedDiff keeps its output" $
     unifiedDiff "a.py" "a\nb\nc\n" "a\nB\nc\nd\n" `shouldBe` "--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n"

@@ -23,7 +23,7 @@ import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (Catalog (..))
 import Olifant.Language.Adapter (Language (..), languageFor)
 import Olifant.Plans (Anchor (..), Line (..), anchorText, excerptInfo, excerptSpans, stepDone)
-import Olifant.Server.Edits (editScript)
+import Olifant.Server.Edits (editScriptWithin)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), gitText, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..))
@@ -55,6 +55,15 @@ excerptsOf ls =
       | T.all isSpace l = ""
       | otherwise = T.drop (min n (T.length (T.takeWhile (== ' ') l))) l
 
+-- | A CRLF file's line without its carriage return.
+unCR :: Text -> Text
+unCR l = fromMaybe l (T.stripSuffix "\r" l)
+
+-- | The most cells 'clip' diffs a unit's changed middle with (500 × 500
+-- lines); a larger one shows as with no base.
+diffCap :: Int
+diffCap = 250000
+
 -- | An excerpt's lines at INDENT: the opening line, the code (a blank line
 -- as the indent alone), the closing line; the fence one backtick longer
 -- than the longest run in the code, at least three.
@@ -73,19 +82,20 @@ fenceLength body = max 3 (1 + maximum (0 : [T.length r | l <- body, r <- T.group
 -- at the baseline: a unit of 30 lines or fewer whole; else its header (its
 -- first line to its definition's) and each line changed since the base with
 -- two lines of context, a "…" at each gap and after the last piece when the
--- unit goes on; with no base, or no change, its first 30 lines and "…". At
--- most 60 lines.
+-- unit goes on; with no base, no change, or a changed middle past
+-- 'diffCap', its first 30 lines and "…". At most 60 lines.
 clip :: Named -> [Text] -> Maybe [Text] -> [Text]
 clip n file base
   | len <= 30 = us
   | otherwise = capped (if null marks then take 30 us ++ ["…"] else pieces)
   where
     (a, z) = namedLines n
-    us = take (z - a + 1) (drop (a - 1) file)
+    us = map unCR (take (z - a + 1) (drop (a - 1) file))
     len = length us
-    marks = maybe [] changed base
-    -- each line added at the base, and where a line was removed
-    changed bs = nub (go 0 (editScript bs us))
+    marks = maybe [] (changed . map unCR) base
+    -- each line added at the base, and where a line was removed; none (as
+    -- with no base) when the changed middle is too large to diff cheaply
+    changed bs = nub (go 0 (fromMaybe [] (editScriptWithin (Just diffCap) bs us)))
       where
         go j ((c, _) : rest) = case c of
           ' ' -> go (j + 1) rest
@@ -103,24 +113,30 @@ clip n file base
       | otherwise = reverse (dropWhile (== "…") (reverse (take 59 xs))) ++ ["…"]
 
 -- | The facts that keep LS's excerpts: a ticked step's live excerpt frozen
--- (its opening line alone); an open step's live one rendered again from its
--- anchor (where MOVED takes it, the info string following) when it differs
--- from the text. An anchor that does not RESOLVE (to a language and the
--- clipped code), and a frozen excerpt, are left as they are.
+-- with its final code (rendered from its anchor with " · done", in one
+-- replacement; its opening line alone when the anchor does not resolve); an
+-- open step's live one rendered again from its anchor (where MOVED takes it,
+-- the info string following) when it differs from the text. An open step's
+-- anchor that does not RESOLVE (to a language and the clipped code), and a
+-- frozen excerpt, are left as they are.
 excerptFacts :: [Line] -> (Anchor -> Maybe Anchor) -> (Anchor -> Maybe (Text, [Text])) -> [Fact]
 excerptFacts ls moved resolve = concatMap one (excerptsOf ls)
   where
     rowOf r = ls !! r
     one e
       | exDone e = []
-      | stepDone step = [Replace (exOpen e) (T.stripEnd (lnText (rowOf (exOpen e))) <> " · done")]
+      | stepDone step, Just (lang, body) <- resolve a = [ReplaceRows (exOpen e) (exClose e) (map (<> cr) (renderFence (lnIndent step + 2) lang a True body))]
+      | stepDone step = [Replace (exOpen e) (T.stripEnd opener <> " · done" <> cr)]
       | Just (lang, body) <- resolve a
       , let new = renderFence (lnIndent step + 2) lang a False body
       , map T.stripEnd new /= map (T.stripEnd . lnText . rowOf) [exOpen e .. exClose e] =
-          [ReplaceRows (exOpen e) (exClose e) new]
+          [ReplaceRows (exOpen e) (exClose e) (map (<> cr) new)]
       | otherwise = []
       where
         step = rowOf (exStep e)
+        opener = lnText (rowOf (exOpen e))
+        -- a CRLF plan's rows keep their carriage return
+        cr = if "\r" `T.isSuffixOf` opener then "\r" else ""
         a = fromMaybe (exAnchor e) (moved (exAnchor e))
 
 -- | The unit an anchor names as an excerpt shows it: its language's name and
@@ -149,7 +165,7 @@ hoverText rel unit lang n file =
   T.intercalate "\n" (["`" <> T.pack rel <> ":" <> unit <> "` · lines " <> num a <> "–" <> num z, "", fence <> lang] ++ body ++ [fence])
   where
     (a, z) = namedLines n
-    us = take (z - a + 1) (drop (a - 1) file)
+    us = map unCR (take (z - a + 1) (drop (a - 1) file))
     body = if length us > 60 then take 60 us ++ ["…"] else us
     fence = T.replicate (fenceLength body) "`"
     num = T.pack . show
