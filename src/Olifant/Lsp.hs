@@ -50,7 +50,7 @@ import Olifant.App (Ports (..))
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
-import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchived, loadReview, loadReviews, locateStep, revertChange, reviewPayload, saveReview, stepKey, testsOfFacts)
+import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchived, loadReview, loadReviews, locateStep, revertChange, reviewPayload, sameStep, saveReview, testsOfFacts)
 import Olifant.Server.Journal (Entry (..), Event (..), keepEvent, movedEvent, testEvents, withJournal)
 import Olifant.Server.Journal qualified as Journal
 import Olifant.Transcripts (slugOf)
@@ -622,7 +622,7 @@ handlers env =
               Just (p, rel, text) -> do
                 all' <- liftIO (loadArchive (envPorts env) (prRoot p) rel)
                 let ofStep = case lineParam "row" (req ^. L.params) >>= \row -> listToMaybe (drop row (T.splitOn "\n" text)) of
-                      Just l -> filter ((== stepKey l) . stepKey . rvStep) all'
+                      Just l -> filter (\r -> sameStep (rvStep r) l) all'
                       Nothing -> all'
                     words' r = fromMaybe (rvStatus r) (listToMaybe [T.strip w | l <- rvSaid r, Just w <- [T.stripPrefix "DONE" l <|> T.stripPrefix "BLOCKED" l]])
                 respond (Right (object ["errands" .= [object ["id" .= rvId r, "at" .= rvAt r, "status" .= rvStatus r, "choice" .= rvChoice r, "words" .= words' r, "model" .= rvModel r] | r <- ofStep]]))
@@ -694,7 +694,7 @@ handlers env =
                     ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just t <- [readingLens r], Just row <- [readingRow ls r]]
                     ++ [ CodeLens (Range (Position (fromIntegral (lnRow l)) 0) (Position (fromIntegral (lnRow l)) 0)) (Just (Command (T.pack (show n) <> (if n == 1 then " delegation" else " delegations")) "olifant.plans.errand" (Just [String (getUri uri), Number (fromIntegral (lnRow l))]))) Nothing
                        | l <- ls, case lnKind l of Step _ -> True; _ -> False
-                       , let n = length [() | r <- past, stepKey (rvStep r) == stepKey (lnText l)], n > 0 ] )
+                       , let n = length [() | r <- past, sameStep (rvStep r) (lnText l)], n > 0 ] )
             _ -> pure []
         respond (Right (InL lenses))
     , -- a plan against the work: facts to apply, ghost blocks to place

@@ -80,6 +80,12 @@ spec = describe "Olifant.Server.Review (the do review)" $ do
       fmap lnRow (locateStep ticked sample) `shouldBe` Just 2
       fmap lnRow (locateStep moved sample) `shouldBe` Just 4
       locateStep (parsePlan "# T\n- [ ] another @a.py:Table\n") sample `shouldBe` Nothing
+    it "finds an unanchored step again after keep gave it an anchor (by its words)" $ do
+      let bare = sample {rvStep = "- [ ] add a label"}
+          kept = parsePlan "# T\n\n- [ ] add a label   @a.py:Table.label\n- [ ] add a label too\n"
+      fmap lnRow (locateStep kept bare) `shouldBe` Just 2
+      sameStep "- [ ] add a label" "- [x] add a label @a.py:T ✓ abc1234" `shouldBe` True
+      sameStep "- [ ] add a label @a.py:U" "- [ ] add a label @a.py:T" `shouldBe` False
     it "keeps the step line it proposes as a replace, the rest as lines after the step" $ do
       let unanchored = sample {rvStep = "- [ ] add a label", rvLines = ["- [ ] add a label   @a.py:Table.label", "  - also @a.py:Table"]}
       fmap (\(l, rep, rest) -> (lnRow l, rep, rest)) (keepLines (parsePlan "# T\n\n- [ ] add a label\n") unanchored)

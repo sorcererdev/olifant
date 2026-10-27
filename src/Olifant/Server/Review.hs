@@ -30,6 +30,7 @@ module Olifant.Server.Review
   , reviewRecord
   , parseReview
   , stepKey
+  , sameStep
   , locateStep
   , keepLines
   , reviewPayload
@@ -408,7 +409,7 @@ loadArchived ports root plan rid = find ((== rid) . rvId) <$> loadArchive ports 
 
 -- | The past dos of the step STEP (a line; found by its words and anchor).
 archivedFor :: Ports -> FilePath -> FilePath -> Text -> IO [Review]
-archivedFor ports root plan step = filter ((== stepKey step) . stepKey . rvStep) <$> loadArchive ports root plan
+archivedFor ports root plan step = filter (\r -> sameStep (rvStep r) step) <$> loadArchive ports root plan
 
 -- | The change as the archive keeps it: the diffs only, 2000 lines in
 -- all, the file that crosses the limit cut with a last line saying so.
@@ -456,13 +457,20 @@ stepKey t = case take 1 (parsePlan t) of
      in (words', (\a -> (anPath a, anUnit a)) <$> lnAnchor l)
   _ -> (T.strip t, Nothing)
 
+-- | Whether the step line NOW is the step recorded as WAS: the same words,
+-- and the same anchor unless WAS had none (keep may have added one).
+sameStep :: Text -> Text -> Bool
+sameStep was now =
+  let (w, a) = stepKey was
+      (w', a') = stepKey now
+   in w == w' && (a == a' || isNothing a)
+
 -- | The review's step in the plan's lines now: at its row when it is still
 -- there, else the first step with its key; Nothing when it is gone.
 locateStep :: [Line] -> Review -> Maybe Line
 locateStep ls r =
-  let want = stepKey (rvStep r)
-      isStep l = case lnKind l of Step _ -> True; TestChild -> True; _ -> False
-      same l = isStep l && stepKey (lnText l) == want
+  let isStep l = case lnKind l of Step _ -> True; TestChild -> True; _ -> False
+      same l = isStep l && sameStep (rvStep r) (lnText l)
    in case [l | l <- ls, lnRow l == rvRow r, same l] of
         l : _ -> Just l
         [] -> find same ls

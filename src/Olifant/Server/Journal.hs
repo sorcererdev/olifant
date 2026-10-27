@@ -39,7 +39,7 @@ import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Olifant.App (Ports (..))
 import Olifant.Plans (Kind (..), Line (..), TestState (..), childrenOf, parsePlan)
 import Olifant.Server.LoopTypes (Fact (..))
-import Olifant.Server.Review (stepKey)
+import Olifant.Server.Review (sameStep, stepKey)
 import Olifant.Workspace (Workspace (..))
 import System.FilePath (dropExtension, takeExtension, (</>))
 
@@ -114,8 +114,7 @@ pendingFacts ls es = (withJournal [] [Insert r xs | (r, xs) <- placed], [k | (k,
       [] -> lnRow s
       kids -> lnRow (last kids)
     stepOf e =
-      let want = stepKey (evStep e)
-          same l = isStep l && stepKey (lnText l) == want
+      let same l = isStep l && sameStep (evStep e) (lnText l)
        in case [l | l <- ls, lnRow l == evRow e, same l] of
             l : _ -> Just l
             [] -> find same ls

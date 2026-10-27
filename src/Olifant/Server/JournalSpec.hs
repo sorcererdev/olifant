@@ -68,6 +68,11 @@ spec = describe "Olifant.Server.Journal (the plan's record of what happened to e
     facts `shouldBe` [Insert 5 ["  - 25 Oct 21:31 · w"]]
     (keys, lost) `shouldBe` (["a"], ["z"])
     landed plan [head es] `shouldBe` T.intercalate "\n" (take 4 (T.splitOn "\n" plan) ++ ["  - 25 Oct 21:31 · w"] ++ drop 4 (T.splitOn "\n" plan))
+  it "lands under an unanchored step that keep has since anchored" $ do
+    let anchored = T.replace "- [ ] count seats @a.py:count" "- [ ] count seats   @a.py:count" plan
+        es = [Entry (ev "a" "- [ ] count seats" 4 "w") Pending "- 25 Oct 21:31 · w"]
+        (facts, _, lost) = pendingFacts (parsePlan anchored) es
+    (facts, lost) `shouldBe` ([Insert 4 ["  - 25 Oct 21:31 · w"]], [])
   it "merges a journal insert into another fact's insert at the same row" $
     withJournal [Replace 2 "x", Insert 3 ["  - ✗ helper red again"]] [Insert 3 ["  - j"], Insert 4 ["  - k"]]
       `shouldBe` [Replace 2 "x", Insert 3 ["  - ✗ helper red again", "  - j"], Insert 4 ["  - k"]]
