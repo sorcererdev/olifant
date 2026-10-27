@@ -116,6 +116,28 @@ spec = describe "Olifant.Server.Journal (the plan's record of what happened to e
       `shouldBe` [("tests|tidy the helper|abc1234|red", "unticked: tests red again")]
     map (\e -> (evKey e, evWords e)) (testEvents done 2 [] green (Just "abc1234") (at 25 21 31))
       `shouldBe` [("tests|tidy the helper|abc1234|green", "tests green")]
+  it "(M1) journals a test child's run under its step" $ do
+    let ls = parsePlan plan
+        green = [(("test_a.py", "test_helper"), TestGreen)]
+    map (\e -> (evRow e, evWords e)) (testEvents ls 3 [Replace 2 "- [x] tidy the helper @a.py:helper ✓ abc1234"] green (Just "abc1234") (at 25 21 31))
+      `shouldBe` [(2, "ticked: tests green")]
+  it "(M2) a step with no fingerprint journals each change of state, not each run" $ do
+    let red = Event "tests|tidy|abc|red" "s" 2 (at 25 21 31) "tests red: t" Nothing
+        noFp c w = Event ("tests|tidy||" <> c) "- [ ] tidy" 2 (at 25 21 31) w Nothing
+        stored k = Entry (Event k "- [ ] tidy" 2 (at 25 20 0) "w" Nothing) Landed "- x"
+    -- a step with a fingerprint keeps its own key
+    transitions [] [red] `shouldBe` [red]
+    -- the first red, then a second red (silent), a green after it (written)
+    map evKey (transitions [] [noFp "red" "tests red: t"]) `shouldBe` ["tests|tidy||red|2026-10-25T21:31:00Z"]
+    transitions [stored "tests|tidy||red|2026-10-25T20:00:00Z"] [noFp "red" "tests red: t"] `shouldBe` []
+    map evKey (transitions [stored "tests|tidy||red|2026-10-25T20:00:00Z"] [noFp "green" "tests green"]) `shouldBe` ["tests|tidy||green|2026-10-25T21:31:00Z"]
+    map evKey (transitions [stored "tests|tidy||red|2026-10-25T19:00:00Z", stored "tests|tidy||green|2026-10-25T20:00:00Z"] [noFp "red" "tests red: t"]) `shouldBe` ["tests|tidy||red|2026-10-25T21:31:00Z"]
+  it "(M7) a sub-step's line goes before its parent's when both follow the same last child" $ do
+    let nested = T.intercalate "\n" ["# T", "- [ ] parent @a.py:helper", "  - [ ] child @a.py:count", "    - test: t @t.py:test_t ○", ""]
+        es = [ Entry (ev "p" "- [ ] parent @a.py:helper" 1 "for the parent") Pending "- 25 Oct 21:31 · for the parent"
+             , Entry (ev "c" "  - [ ] child @a.py:count" 2 "for the child") Pending "- 25 Oct 21:31 · for the child" ]
+        (facts, _, _) = pendingFacts (parsePlan nested) es
+    facts `shouldBe` [Insert 3 ["    - 25 Oct 21:31 · for the child", "  - 25 Oct 21:31 · for the parent"]]
   it "says how a do ended, cut to 80 characters" $ do
     let words' end = evWords (doEvent "s1" "- [ ] tidy the helper @a.py:helper" 2 (at 25 21 31) False "sonnet" end)
     words' (DoAnswered "tidied the helper") `shouldBe` "do (sonnet) · answered: tidied the helper"

@@ -11,7 +11,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Plans (lnRow, parsePlan)
 import Olifant.Server.Review
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (callProcess)
@@ -118,6 +118,24 @@ spec = describe "Olifant.Server.Review (the do review)" $ do
       map rvId <$> archivedFor ports root "plans/t.md" (rvStep sample) `shouldReturn` ["s2", "shim-1"]
       fmap rvId <$> loadArchived ports root "plans/t.md" "s3" `shouldReturn` Just "s3"
       loadArchived ports root "plans/t.md" "nope" `shouldReturn` Nothing
+    it "(M8) counts a past do on one step only: its recorded row when two steps share its words" $ do
+      let ls = parsePlan "# T\n- [ ] write tests @a.py:F\n- [ ] write tests @a.py:G\n"
+          bare = sample {rvStep = "- [ ] write tests", rvRow = 2}
+      map rvId (pastDosAt ls [bare] 2) `shouldBe` ["shim-1"]
+      map rvId (pastDosAt ls [bare] 1) `shouldBe` []
+    it "(M5) reopens only with a runner that is claude (or a claude wrapper)" $ do
+      map reopenable ["claude", "/usr/local/bin/claude", "/x/claude-shim.sh", "/x/codex", "/x/my-runner"] `shouldBe` [True, True, True, False, False]
+    it "(M4) keeps a light index beside the archive: no prompt, answer or diff; updated on each save; rebuilt when missing" $ withSystemTempDirectory "archive" $ \root -> do
+      let ports = plainPorts
+          change = FileChange "a.py" Modified Nothing Nothing "--- a/a.py\n"
+          light r = r {rvPrompt = "", rvAnswer = "", rvDiff = []}
+      archiveErrand ports root sample {rvDiff = [change]}
+      archiveErrand ports root sample {rvDiff = [change], rvChoice = Just "kept"}
+      loadArchiveIndex ports root "plans/t.md" `shouldReturn` [light sample {rvChoice = Just "kept"}]
+      removeFile (root </> ".olifant/state/errands/plans/t/index.jsonl")
+      loadArchiveIndex ports root "plans/t.md" `shouldReturn` [light sample {rvChoice = Just "kept"}]
+      doesFileExist (root </> ".olifant/state/errands/plans/t/index.jsonl") `shouldReturn` True
+      map rvId <$> loadArchive ports root "plans/t.md" `shouldReturn` ["shim-1"]
     it "cuts the diff it keeps to 2000 lines in all" $ do
       let big n f = FileChange f Modified Nothing Nothing (T.unlines (replicate n "+x"))
           kept = keptDiff [big 1500 "a.py", big 1500 "b.py", big 10 "c.py"]

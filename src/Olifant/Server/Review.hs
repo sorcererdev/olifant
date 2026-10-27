@@ -36,14 +36,19 @@ module Olifant.Server.Review
   , reviewPayload
   , archiveErrand
   , loadArchive
+  , loadArchiveIndex
   , loadArchived
   , archivedFor
   , keptDiff
   , errandPayload
+  , pastDosAt
+  , reopenable
   ) where
 
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, void, when)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import System.IO.Unsafe (unsafePerformIO)
 import Data.Aeson (Value (..), decodeStrict, encode, object, toJSON, (.:), (.:?), (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Ord (Down (..))
@@ -66,7 +71,7 @@ import Olifant.Workspace (Workspace (..))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
 import System.Exit (ExitCode (..))
-import System.FilePath (dropExtension, takeExtension, (</>))
+import System.FilePath (dropExtension, takeExtension, takeFileName, (</>))
 
 -- | The tree before a `do`: a commit holding the tracked files as they were
 -- (the index and the working tree; HEAD when nothing differed), and each
@@ -401,7 +406,40 @@ archiveDir :: FilePath -> FilePath -> FilePath
 archiveDir root plan = root </> ".olifant/state/errands" </> (if takeExtension plan == ".md" then dropExtension plan else plan)
 
 archiveErrand :: Ports -> FilePath -> Review -> IO ()
-archiveErrand ports root r = writeText (pFiles ports) (archiveDir root (rvPlan r) </> safeName (rvId r) <> ".json") (TE.decodeUtf8 (BL.toStrict (encode (reviewRecord r))) <> "\n")
+archiveErrand ports root r = withMVar archiveLock $ \() -> do
+  writeText (pFiles ports) (archiveDir root (rvPlan r) </> safeName (rvId r) <> ".json") (TE.decodeUtf8 (BL.toStrict (encode (reviewRecord r))) <> "\n")
+  old <- indexed ports root (rvPlan r)
+  writeIndex ports root (rvPlan r) (light r : filter ((/= rvId r) . rvId) old)
+
+-- | One writer of a plan's archive and its index at a time.
+{-# NOINLINE archiveLock #-}
+archiveLock :: MVar ()
+archiveLock = unsafePerformIO (newMVar ())
+
+-- | The archive's index: each do without its prompt, answer and diff, for
+-- the lenses and lists (the full record is read when one is opened).
+indexPath :: FilePath -> FilePath -> FilePath
+indexPath root plan = archiveDir root plan </> "index.jsonl"
+
+light :: Review -> Review
+light r = r {rvPrompt = "", rvAnswer = "", rvDiff = []}
+
+writeIndex :: Ports -> FilePath -> FilePath -> [Review] -> IO ()
+writeIndex ports root plan rs = writeText (pFiles ports) (indexPath root plan) (T.concat [TE.decodeUtf8 (BL.toStrict (encode (reviewRecord x))) <> "\n" | x <- rs])
+
+-- | The index as it is, or made again from the full records when missing.
+indexed :: Ports -> FilePath -> FilePath -> IO [Review]
+indexed ports root plan =
+  readText (pFiles ports) (indexPath root plan) >>= \case
+    Just t -> pure [r | l <- T.lines t, Just r <- [parseReview (TE.encodeUtf8 l)]]
+    Nothing -> do
+      rs <- map light <$> loadArchive ports root plan
+      rs <$ writeIndex ports root plan rs
+
+-- | A plan's past dos from the index, newest first (light: no prompt,
+-- answer or diff).
+loadArchiveIndex :: Ports -> FilePath -> FilePath -> IO [Review]
+loadArchiveIndex ports root plan = sortOn (Down . rvAt) <$> withMVar archiveLock (\() -> indexed ports root plan)
 
 -- | A plan's past dos, newest first.
 loadArchive :: Ports -> FilePath -> FilePath -> IO [Review]
@@ -418,6 +456,15 @@ loadArchived ports root plan rid = find ((== rid) . rvId) <$> loadArchive ports 
 -- | The past dos of the step STEP (a line; found by its words and anchor).
 archivedFor :: Ports -> FilePath -> FilePath -> Text -> IO [Review]
 archivedFor ports root plan step = filter (\r -> sameStep (rvStep r) step) <$> loadArchive ports root plan
+
+-- | Of PAST, the dos of the step at ROW of LS: each do counts on one step,
+-- the one it finds again (its recorded row first, then the first same step).
+pastDosAt :: [Line] -> [Review] -> Int -> [Review]
+pastDosAt ls past row = [r | r <- past, fmap lnRow (locateStep ls r) == Just row]
+
+-- | Whether RUNNER can resume a do's thread: claude, or a wrapper named for it.
+reopenable :: FilePath -> Bool
+reopenable runner = "claude" `T.isPrefixOf` T.pack (takeFileName runner)
 
 -- | The change as the archive keeps it: the diffs only, 2000 lines in
 -- all, the file that crosses the limit cut with a last line saying so.
