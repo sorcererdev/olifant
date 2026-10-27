@@ -61,6 +61,10 @@ spec = describe "Olifant.Plans" $ do
     map lnKind (parsePlan "````\n```\n- [ ] inside\n````\n- [ ] out") `shouldBe` [Prose, Prose, Prose, Prose, Step False]
   it "a closing line with text after the backticks does not close" $
     map lnKind (parsePlan "```\n``` python\n- [ ] inside\n```\n- [ ] out") `shouldBe` [Prose, Prose, Prose, Prose, Step False]
+  it "a fence never closed is no fence: mis-nested fences do not swallow the steps after them" $
+    map lnKind (parsePlan "```\n```python\nx\n```\n```\n- [ ] after") `shouldBe` [Prose, Prose, Prose, Prose, Prose, Step False]
+  it "a line opening with inline code is not a fence" $
+    map lnKind (parsePlan "```bash``` runs it\n- [ ] one\n```sh``` too\n- [ ] two") `shouldBe` [Prose, Step False, Prose, Step False]
   it "blank lines inside a fence under a step keep the fence among the step's children" $ do
     let ls = parsePlan "- [ ] s @a.py:F\n  ```python @a.py:F\n  def f():\n  \n\n      pass\n  ```\n- [ ] next"
     map lnRow (childrenOf ls 0) `shouldBe` [1, 2, 3, 4, 5, 6]

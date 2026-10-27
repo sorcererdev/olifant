@@ -49,23 +49,34 @@ data Section = Section { secTitle :: Text, secRow :: Int, secEnd :: Int, secBran
   deriving (Eq, Show)
 
 parsePlan :: Text -> [Line]
-parsePlan t = snd (mapAccumL step Nothing (zip [0 ..] (T.lines t)))
+parsePlan t = parseWith []
   where
+    rows = zip [0 ..] (T.lines t)
+    -- A fence never closed is no fence: its opener parses as a line of its own, so a stray or mis-nested
+    -- fence cannot swallow the rest of the plan.
+    parseWith skip = case mapAccumL (step skip) Nothing rows of
+      (Just (_, _, open), _) -> parseWith (open : skip)
+      (Nothing, ls) -> ls
     -- A fence opens with three or more backticks and closes, CommonMark-style, on a line of backticks only, at
     -- least as long as the opener; it and everything inside is Prose. A blank line inside takes the opener's
     -- indent, so a formatter stripping trailing spaces cannot cut the fence out of a step's children.
-    step Nothing (row, txt)
-      | Just n <- fenceTicks txt = (Just (indentOf txt, n), prose row txt)
+    step skip Nothing (row, txt)
+      | row `notElem` skip, Just n <- opensFence txt = (Just (indentOf txt, n, row), prose row txt)
       | otherwise = (Nothing, line row txt)
-    step (Just (ind, n)) (row, txt)
+    step _ (Just (ind, n, open)) (row, txt)
       | closesFence n txt = (Nothing, prose row txt)
-      | T.all isSpace txt = (Just (ind, n), (prose row txt) { lnIndent = ind })
-      | otherwise = (Just (ind, n), prose row txt)
+      | T.all isSpace txt = (Just (ind, n, open), (prose row txt) { lnIndent = ind })
+      | otherwise = (Just (ind, n, open), prose row txt)
     prose row txt = (line row txt) { lnKind = Prose, lnAnchor = Nothing, lnVerdict = NoVerdict }
 
 -- | The backticks a fence opens with: three or more.
 fenceTicks :: Text -> Maybe Int
 fenceTicks txt = let n = T.length (T.takeWhile (== '`') (T.stripStart txt)) in if n >= 3 then Just n else Nothing
+
+-- | A fence's opener: three or more backticks and an info string without one
+-- (CommonMark), so "```bash``` runs it" is inline code, not a fence.
+opensFence :: Text -> Maybe Int
+opensFence txt = fenceTicks txt >>= \n -> if T.any (== '`') (T.drop n (T.stripStart txt)) then Nothing else Just n
 
 -- | A line of backticks only, at least N.
 closesFence :: Int -> Text -> Bool
@@ -181,7 +192,7 @@ anchorText a = "@" <> T.pack (anPath a) <> ":" <> anUnit a
 -- it is frozen. Any other info string is not an excerpt's.
 excerptInfo :: Text -> Maybe (Text, Anchor, Bool)
 excerptInfo txt = do
-  _ <- fenceTicks txt
+  _ <- opensFence txt
   let info = T.strip (T.dropWhile (== '`') (T.stripStart txt))
       (core, done) = maybe (info, False) (,True) (T.stripSuffix " · done" info)
       (lang, rest) = T.breakOn " " core
@@ -199,7 +210,7 @@ excerptSpans ls = concat [walk s (childrenOf ls (lnRow s)) | s <- ls, isStep s]
   where
     isStep s = case lnKind s of Step _ -> True; _ -> False
     walk s (k : rest)
-      | Just n <- fenceTicks (lnText k) = case break (closesFence n . lnText) rest of
+      | Just n <- opensFence (lnText k) = case break (closesFence n . lnText) rest of
           (_, c : after) -> [(lnRow s, lnRow k, lnRow c) | lnIndent k == lnIndent s + 2, isJust (excerptInfo (lnText k))] ++ walk s after
           _ -> []
       | otherwise = walk s rest
