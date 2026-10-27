@@ -28,12 +28,12 @@ import Data.Text.Encoding qualified as TE
 import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), parsePlan)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan, withVerdict)
 import Olifant.Server.Unit (Named (..))
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf, nub)
+import Data.List (find, isInfixOf, nub)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Proxy (Proxy (..))
@@ -46,7 +46,8 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
-import Olifant.Server.Loop (StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
+import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
+import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
 import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, changeSince, dropReview, keepLines, loadReview, loadReviews, locateStep, revertChange, reviewPayload, saveReview, testsOfFacts)
 import Olifant.Server.LoopTypes (Fact (..))
@@ -326,7 +327,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -607,14 +608,22 @@ handlers env =
               Nothing -> respond (Right (object ["reviews" .= ([] :: [Value])]))
               Just (p, rel, text) -> do
                 rs <- liftIO (loadReviews (envPorts env) (prRoot p) rel)
+                readings <- liftIO (loadReadings (envPorts env) (prRoot p) rel)
                 let ls = parsePlan text
-                respond (Right (object ["reviews" .= [object ["id" .= rvId r, "kind" .= ("do" :: T.Text), "row" .= fmap lnRow (locateStep ls r), "step" .= T.strip (rvStep r), "status" .= rvStatus r] | r <- rs]]))
+                respond (Right (object ["reviews" .=
+                  ( [object ["id" .= rvId r, "kind" .= ("do" :: T.Text), "row" .= fmap lnRow (locateStep ls r), "step" .= T.strip (rvStep r), "status" .= rvStatus r] | r <- rs]
+                      ++ [ object ["id" .= readingsId, "kind" .= ("reconcile" :: T.Text), "entries" .= [object ["id" .= readingKey r, "kind" .= entryKind (rdKind r), "row" .= readingRow ls r] | r <- rrReadings rr]]
+                         | Just rr <- [readings] ] )]))
     , -- one review, as the window draws it (the change re-derived from its reference now)
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review")) $ \req respond ->
         case (documentPath (req ^. L.params), reviewIdOf (req ^. L.params)) of
           (Just path, Just rid) ->
             liftIO (planContext env path) >>= \case
               Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "this plan is in no Olifant project" Nothing))
+              Just (p, rel, text) | rid == readingsId ->
+                liftIO (loadReadings (envPorts env) (prRoot p) rel) >>= \case
+                  Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) ("no open review " <> rid) Nothing))
+                  Just rr -> liftIO (versionOf env path) >>= \v -> respond (Right (readingsView path v text rr))
               Just (p, rel, text) ->
                 liftIO (loadReview (envPorts env) (prRoot p) rel rid) >>= \case
                   Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) ("no open review " <> rid) Nothing))
@@ -622,13 +631,18 @@ handlers env =
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/review needs a textDocument and an id" Nothing))
     , -- a review answered: keep, revert, test (its step's tests now) or allow (its denials)
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/review/choose")) $ \req respond -> inBackground env req respond $ \job ->
-        case (documentPath (req ^. L.params), reviewIdOf (req ^. L.params), choiceOf (req ^. L.params)) of
+        case (documentPath (req ^. L.params), reviewIdOf (req ^. L.params), choiceParam (req ^. L.params)) of
+          (Just path, Just rid, Just choice) | rid == readingsId -> do
+            answered <- liftIO (chooseReading env path (textParam "entry" (req ^. L.params)) choice (lineParam "step" (req ^. L.params)))
+            case answered of
+              Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
+              Right v -> respond (Right v) >> lensesChanged
           (Just path, Just rid, Just choice) | choice `elem` ["keep", "revert", "test", "allow"] -> do
             answered <- planProgress (if choice == "test" then "testing" else "reviewing") (\_ -> chooseReview job path rid choice)
             case answered of
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right v -> respond (Right v) >> lensesChanged
-          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/review/choose needs a textDocument, an id and a choice (keep, revert, test or allow)" Nothing))
+          _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/review/choose needs a textDocument, an id and a choice (a do: keep, revert, test or allow; the reconcile: an entry and apply, leave, place with a step, new or ignore)" Nothing))
     , -- a lens on the step of each open review
       requestHandler SMethod_TextDocumentCodeLens $ \req respond -> do
         let uri = req ^. L.params . L.textDocument . L.uri
@@ -637,9 +651,19 @@ handlers env =
           Just path -> liftIO (planContext env path) >>= \case
             Just (p, rel, text) | isPlanPath p path -> do
               rs <- liftIO (loadReviews (envPorts env) (prRoot p) rel)
+              readings <- maybe [] rrReadings <$> liftIO (loadReadings (envPorts env) (prRoot p) rel)
+              let ls = parsePlan text
+                  lens row title args = CodeLens (Range (Position (fromIntegral row) 0) (Position (fromIntegral row) 0)) (Just (Command title "olifant.plans.review" (Just (map String args ++ [])))) Nothing
+                  open = length rs + length readings
+                  -- the title line: the plan's first heading, else its first line
+                  titleRow = maybe 0 lnRow (find (\l -> case lnKind l of Heading _ -> True; _ -> False) ls)
+                  first = case rs of
+                    r : _ -> [rvId r, getUri uri]
+                    [] -> [readingsId, getUri uri]
               pure
-                [ CodeLens (Range (Position row 0) (Position row 0)) (Just (Command (lensTitle r) "olifant.plans.review" (Just [String (rvId r), String (getUri uri)]))) Nothing
-                | r <- rs, Just l <- [locateStep (parsePlan text) r], let row = fromIntegral (lnRow l) ]
+                ( [lens titleRow (T.pack (show open) <> " to review") first | open > 0]
+                    ++ [lens (lnRow l) (lensTitle r) [rvId r, getUri uri] | r <- rs, Just l <- [locateStep ls r]]
+                    ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just t <- [readingLens r], Just row <- [readingRow ls r]] )
             _ -> pure []
         respond (Right (InL lenses))
     , -- a plan against the work: facts to apply, ghost blocks to place
@@ -653,7 +677,14 @@ handlers env =
             case answered of
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
-              Right a -> respond (Right (reconcileJson a))
+              Right a -> do
+                -- the readings replace the plan's reconcile review; the facts land by applyEdit
+                open <- liftIO (planContext env path) >>= \case
+                  Just (p, rel, _) -> maybe 0 (length . rrReadings) <$> liftIO (replaceReadings (envPorts env) (prRoot p) rel a)
+                  Nothing -> pure 0
+                landed <- sendFacts env path a
+                respond (Right (withKeys ["landed" .= landed, "readings" .= open] (reconcileJson a {raFacts = [], raBlocks = []}) `without` "blocks"))
+                lensesChanged
     , -- a step's test stubbed in its unit's test file: the one edit, where
       -- its name is, and its test child as a fact
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/stub")) $ \req respond -> inBackground env req respond $ \job ->
@@ -1441,10 +1472,106 @@ reviewIdOf = \case
   _ -> Nothing
 
 -- | A request's `choice`.
-choiceOf :: Value -> Maybe T.Text
-choiceOf = \case
-  Object o | Just (String c) <- KM.lookup "choice" o -> Just c
+choiceParam :: Value -> Maybe T.Text
+choiceParam = textParam "choice"
+
+-- | A request's text field KEY.
+textParam :: Key.Key -> Value -> Maybe T.Text
+textParam key = \case
+  Object o | Just (String c) <- KM.lookup key o -> Just c
   _ -> Nothing
+
+-- | A request's whole-number field KEY.
+lineParam :: Key.Key -> Value -> Maybe Int
+lineParam key = \case
+  Object o | Just (Number l) <- KM.lookup key o -> toBoundedInteger l
+  _ -> Nothing
+
+-- | An answer object with KVS added (an answer that is no object: as it is).
+withKeys :: [(Key.Key, Value)] -> Value -> Value
+withKeys kvs = \case
+  Object o -> Object (KM.union (KM.fromList kvs) o)
+  v -> v
+
+-- | An answer object without KEY.
+without :: Value -> Key.Key -> Value
+without v key = case v of
+  Object o -> Object (KM.delete key o)
+  _ -> v
+
+-- | FACTS (rows of TEXT, the plan at PATH) as one edit of the plan at
+-- VERSION: the client refuses it when the plan has moved on.
+factsEdit :: FilePath -> Maybe Int -> T.Text -> [Fact] -> WorkspaceEdit
+factsEdit path version text facts =
+  let (range, t) = smallestChange text (applyFactsText facts text)
+   in workspaceEditAsking False [FileEdit path version False range t]
+
+-- | A reconcile's facts sent as `workspace/applyEdit` of the plan at the
+-- version the reconcile read; how many were sent. None when the plan is
+-- not open or has moved on since (the next reconcile finds them again).
+sendFacts :: Env -> FilePath -> ReconcileAnswer -> LspM () Int
+sendFacts env path a = do
+  now <- liftIO (M.lookup path . ssDocs <$> readMVar (envState env))
+  case (raVersion a, now) of
+    (Just v, Just (v', text)) | v == v', not (null (raFacts a)) -> do
+      void (sendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams (Just "Olifant: reconcile") (factsEdit path (Just v) text (raFacts a))) (\_ -> pure ()))
+      pure (length (raFacts a))
+    _ -> pure 0
+
+-- | The reconcile review as the window draws it, from the plan's TEXT at
+-- VERSION (each entry's edit derived from it).
+readingsView :: FilePath -> Maybe Int -> T.Text -> ReadingsReview -> Value
+readingsView path version text rr = readingsPayload rr text (toJSON . factsEdit path version text)
+
+-- | Answer the reading ENTRY of the plan at PATH's reconcile review with
+-- CHOICE (STEP: the open step's row, for `place`): its plan edit (from the
+-- plan now, at its version), the outcome recorded against the reconcile's
+-- record and block, the reading answered; the review after it, or done.
+chooseReading :: Env -> FilePath -> Maybe T.Text -> T.Text -> Maybe Int -> IO (Either T.Text Value)
+chooseReading env path entry name step =
+  planContext env path >>= \case
+    Nothing -> pure (Left "this plan is in no Olifant project")
+    Just (p, rel, text) ->
+      loadReadings ports (prRoot p) rel >>= \case
+        Nothing -> pure (Left ("no open review " <> readingsId))
+        Just rr -> case (find ((== entry) . Just . readingKey) (rrReadings rr), choiceOf name step) of
+          (Nothing, _) -> pure (Left "that reading is no longer open; open the review again")
+          (_, Nothing) -> pure (Left ("no choice " <> name))
+          (Just r, Just choice) -> case readingFacts (parsePlan text) r choice of
+            Left why -> pure (Left why)
+            Right facts -> do
+              let root = prRoot p
+              now <- pNow ports
+              appendRecord ports root (AnOutcome (OutcomeRecord {orId = rrErrand rr, orBlock = rdBlock r, orAt = now, orOutcome = outcomeOf choice}))
+              version <- versionOf env path
+              let rest = answerReading rr (readingKey r)
+                  after = applyFactsText facts text
+              maybe (dropReadings ports root rel) (saveReadings ports root) rest
+              pure (Right (object
+                [ "done" .= isNothing rest
+                , "edit" .= (if null facts then Nothing else Just (factsEdit path version text facts))
+                , "review" .= fmap (readingsView path Nothing after) rest
+                , "said" .= (case choice of Apply -> "applied" :: T.Text; Leave -> "left"; Place _ -> "placed"; New -> "added a step"; Ignore -> "ignored")
+                ]))
+  where
+    ports = envPorts env
+
+-- | "Re-fingerprint this claim" on a plan line that takes a fingerprint (a
+-- claim, evidence, a ticked step) whose anchor resolves to a fingerprint
+-- it does not carry: the line with that one ("I reviewed it").
+refingerprintAction :: Env -> FilePath -> Position -> IO [CodeAction]
+refingerprintAction env path (Position l _) =
+  withSnapshot env (\s -> projectFor path s >>= \case
+    (s', Just (_, project)) | isPlanPath project path -> do
+      text <- documentText env path
+      case [(ln, a) | ln <- parsePlan text, lnRow ln == fromIntegral l, lnKind ln `elem` [Claim, Evidence, Step True], Just a <- [lnAnchor ln]] of
+        (ln, a) : _ -> resolveAnchor s' project a <&> \r -> (s', [(ln, fp) | Just fp <- [rsFingerprint r <* rsUnit r], lnVerdict ln /= Verified fp])
+        [] -> pure (s', [])
+    (s', _) -> pure (s', [])) <&> \found ->
+    [ CodeAction "Re-fingerprint this claim" (Just CodeActionKind_QuickFix) Nothing Nothing Nothing (Just edit) Nothing Nothing
+    | (ln, fp) <- found
+    , let end = Position l (fromIntegral (utf16 (lnText ln)))
+          edit = WorkspaceEdit (Just (M.singleton (filePathToUri path) [TextEdit (Range (Position l 0) end) (withVerdict (lnText ln) (Verified fp))])) Nothing Nothing ]
 
 -- | A review's lens on its step.
 lensTitle :: Review -> T.Text
