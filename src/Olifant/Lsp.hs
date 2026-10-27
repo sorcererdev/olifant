@@ -50,8 +50,8 @@ import Olifant.App (Ports (..))
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
-import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchived, loadReview, loadReviews, locateStep, revertChange, reviewPayload, sameStep, saveReview, testsOfFacts)
-import Olifant.Server.Journal (Entry (..), Event (..), keepEvent, movedEvent, testEvents, withJournal)
+import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchived, loadReview, loadReviews, locateStep, revertChange, pastDosAt, reopenable, reviewPayload, sameStep, saveReview, testsOfFacts)
+import Olifant.Server.Journal (Entry (..), Event (..), keepEvent, movedEvent, withJournal)
 import Olifant.Server.Journal qualified as Journal
 import Olifant.Transcripts (slugOf)
 import Data.Time (getCurrentTimeZone)
@@ -626,9 +626,7 @@ handlers env =
               Nothing -> respond (Right (object ["errands" .= ([] :: [Value])]))
               Just (p, rel, text) -> do
                 all' <- liftIO (loadArchive (envPorts env) (prRoot p) rel)
-                let ofStep = case lineParam "row" (req ^. L.params) >>= \row -> listToMaybe (drop row (T.splitOn "\n" text)) of
-                      Just l -> filter (\r -> sameStep (rvStep r) l) all'
-                      Nothing -> all'
+                let ofStep = maybe all' (pastDosAt (parsePlan text) all') (lineParam "row" (req ^. L.params))
                     words' r = fromMaybe (rvStatus r) (listToMaybe [T.strip w | l <- rvSaid r, Just w <- [T.stripPrefix "DONE" l <|> T.stripPrefix "BLOCKED" l]])
                 respond (Right (object ["errands" .= [object ["id" .= rvId r, "at" .= rvAt r, "status" .= rvStatus r, "choice" .= rvChoice r, "words" .= words' r, "model" .= rvModel r] | r <- ofStep]]))
     , -- a plan's open reviews (a `do` not yet answered), each at its step now
@@ -699,7 +697,7 @@ handlers env =
                     ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just t <- [readingLens r], Just row <- [readingRow ls r]]
                     ++ [ CodeLens (Range (Position (fromIntegral (lnRow l)) 0) (Position (fromIntegral (lnRow l)) 0)) (Just (Command (T.pack (show n) <> (if n == 1 then " delegation" else " delegations")) "olifant.plans.errand" (Just [String (getUri uri), Number (fromIntegral (lnRow l))]))) Nothing
                        | l <- ls, case lnKind l of Step _ -> True; _ -> False
-                       , let n = length [() | r <- past, sameStep (rvStep r) (lnText l)], n > 0 ] )
+                       , let n = length (pastDosAt ls past (lnRow l)), n > 0 ] )
             _ -> pure []
         respond (Right (InL lenses))
     , -- a plan against the work: facts to apply, ghost blocks to place
@@ -1506,7 +1504,6 @@ errandRequest env verb title req params respond = case documentPath params of
         -- a do's journal lines ride its facts while the plan is as the do
         -- read it; else they land by their own edit
         Right a | verb == Do, Just (v, text) <- doc, before == Just v -> do
-          liftIO (journalTests env path text line (eaFacts a))
           (jf, land) <- liftIO (journalOn env path text)
           liftIO land
           respond (Right (errandJson name a {eaFacts = withJournal (eaFacts a) jf}))
@@ -1638,16 +1635,19 @@ flushJournal env path = do
 -- | A test run's journal events for the step at ROW of the plan's TEXT,
 -- from the FACTS it left (its test children's marks, its tick).
 journalTests :: Env -> FilePath -> T.Text -> Int -> [Fact] -> IO ()
-journalTests env path text row facts = do
-  let ls = parsePlan text
-      states = [((anPath a, anUnit a), st) | Replace _ t <- facts, l <- take 1 (parsePlan t), lnKind l == TestChild, Just a <- [lnAnchor l], Just st <- [testState l]]
-  fp <- case [a | l <- ls, lnRow l == row, Just a <- [lnAnchor l]] of
-    a : _ -> withSnapshot env (\s -> projectFor path s >>= \case
-      (s', Just (_, p)) -> (s',) . rsFingerprint <$> resolveAnchor s' p a
-      (s', Nothing) -> pure (s', Nothing))
-    [] -> pure Nothing
-  now <- pNow (envPorts env)
-  journal env path (testEvents ls row facts states fp now)
+journalTests env path text row facts =
+  planContext env path >>= \case
+    Nothing -> pure ()
+    Just (p, rel, _) -> do
+      let ls = parsePlan text
+      fp <- case [a | l <- ls, lnRow l == row, Just a <- [lnAnchor l]] of
+        a : _ -> withSnapshot env (\s -> projectFor path s >>= \case
+          (s', Just (_, p')) -> (s',) . rsFingerprint <$> resolveAnchor s' p' a
+          (s', Nothing) -> pure (s', Nothing))
+        [] -> pure Nothing
+      now <- pNow (envPorts env)
+      zone <- getCurrentTimeZone
+      Journal.recordTests (envPorts env) zone (prRoot p) rel ls row facts fp now
 
 -- | A do's `resume` (an archived errand's id) and `text`: the reopen and
 -- the row of its step now; Nothing without `resume`.
@@ -1662,6 +1662,7 @@ reopenOf env path params = case textParam "resume" params of
           loadArchived (envPorts env) (prRoot p) rel rid <&> \case
             Nothing -> Left ("no past do " <> rid)
             Just r -> case (rvSession r, locateStep (parsePlan text) r) of
+              _ | not (reopenable (pcRunner (catalogPlans (prCatalog p)))) -> Left "this project's runner cannot resume a do's thread"
               (Nothing, _) -> Left "that do has no session to resume"
               (_, Nothing) -> Left "the step is gone"
               (Just sid, Just l) -> Right (Just (Reopen rid sid ask, lnRow l))
@@ -1688,7 +1689,7 @@ errandView env path params =
           home <- getHomeDirectory
           let runner = pcRunner (catalogPlans (prCatalog p))
               transcript = [home </> ".claude/projects" </> slugOf root </> T.unpack sid <> ".jsonl" | takeFileName runner == "claude", Just sid <- [rvSession r]]
-          pure (Right (errandPayload (listToMaybe transcript) r))
+          pure (Right (canReopen p (errandPayload (listToMaybe transcript) r)))
 
 -- | The reconcile review as the window draws it, from the plan's TEXT at
 -- VERSION (each entry's edit derived from it).
@@ -1782,7 +1783,15 @@ reviewView p text r = do
               (Added, _, Just new) -> Just (FileEdit path Nothing True ((0, 0), (0, 0)) new)
               (Modified, Just old, Just new) -> let (range, t) = smallestChange old new in Just (FileEdit path Nothing False range t)
               _ -> Nothing
-  pure (reviewPayload r step changes (toJSON (workspaceEditAsking False (mapMaybe edit changes))))
+  pure (canReopen p (reviewPayload r step changes (toJSON (workspaceEditAsking False (mapMaybe edit changes)))))
+
+-- | A review's payload without its reopen offer when the project's runner
+-- cannot resume a thread.
+canReopen :: Project -> Value -> Value
+canReopen p = \case
+  Object o | not (reopenable (pcRunner (catalogPlans (prCatalog p)))), Just (Aeson.Array offers) <- KM.lookup "offers" o ->
+    Object (KM.insert "offers" (toJSON (filter (\case Object x -> KM.lookup "choice" x /= Just (String "reopen"); _ -> True) (foldr (:) [] offers))) o)
+  v -> v
 
 -- | The plan's text with ROWS' lines replaced (row, text) and LINES inserted
 -- after a row, as one edit of the plan at its version (Nothing: no change).

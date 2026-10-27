@@ -118,6 +118,13 @@ spec = describe "Olifant.Server.Review (the do review)" $ do
       map rvId <$> archivedFor ports root "plans/t.md" (rvStep sample) `shouldReturn` ["s2", "shim-1"]
       fmap rvId <$> loadArchived ports root "plans/t.md" "s3" `shouldReturn` Just "s3"
       loadArchived ports root "plans/t.md" "nope" `shouldReturn` Nothing
+    it "(M8) counts a past do on one step only: its recorded row when two steps share its words" $ do
+      let ls = parsePlan "# T\n- [ ] write tests @a.py:F\n- [ ] write tests @a.py:G\n"
+          bare = sample {rvStep = "- [ ] write tests", rvRow = 2}
+      map rvId (pastDosAt ls [bare] 2) `shouldBe` ["shim-1"]
+      map rvId (pastDosAt ls [bare] 1) `shouldBe` []
+    it "(M5) reopens only with a runner that is claude (or a claude wrapper)" $ do
+      map reopenable ["claude", "/usr/local/bin/claude", "/x/claude-shim.sh", "/x/codex", "/x/my-runner"] `shouldBe` [True, True, True, False, False]
     it "cuts the diff it keeps to 2000 lines in all" $ do
       let big n f = FileChange f Modified Nothing Nothing (T.unlines (replicate n "+x"))
           kept = keptDiff [big 1500 "a.py", big 1500 "b.py", big 10 "c.py"]

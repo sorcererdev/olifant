@@ -23,6 +23,9 @@ module Olifant.Server.Journal
   , doEvent
   , keepEvent
   , testEvents
+  , transitions
+  , testStates
+  , recordTests
   , movedEvent
   ) where
 
@@ -30,15 +33,17 @@ import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Data.Aeson (Value (..), decodeStrict, encode, object, (.:), (.:?), (.=))
 import Data.Aeson.Types (Parser, parseMaybe)
 import Data.ByteString.Lazy qualified as BL
-import Data.List (find)
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.List (find, sortOn)
+import Data.Ord (Down (..))
+import Control.Monad (void)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (TimeZone, UTCTime, defaultTimeLocale, formatTime, utcToZonedTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Olifant.App (Ports (..))
-import Olifant.Plans (Kind (..), Line (..), TestState (..), childrenOf, parsePlan)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), childrenOf, parsePlan, testState)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Review (sameStep, stepKey)
 import Olifant.Workspace (Workspace (..))
@@ -97,8 +102,13 @@ journalLock = unsafePerformIO (newMVar ())
 
 -- | Store EVENTS not seen before (by key) as pending; the new ones.
 record :: Ports -> TimeZone -> FilePath -> FilePath -> [Event] -> IO [Entry]
-record ports zone root plan evs = withMVar journalLock $ \() -> do
+record ports zone root plan evs = recordWith (const id) ports zone root plan evs
+
+-- | 'record', EVENTS first passed through a filter of the store as it is.
+recordWith :: ([Entry] -> [Event] -> [Event]) -> Ports -> TimeZone -> FilePath -> FilePath -> [Event] -> IO [Entry]
+recordWith pick ports zone root plan evs0 = withMVar journalLock $ \() -> do
   old <- readEntries ports root plan
+  let evs = pick old evs0
   let seen = map (evKey . enEvent) old
       fresh = foldl' (\acc e -> if evKey e `elem` seen || any ((== evKey e) . evKey . enEvent) acc then acc else acc ++ [Entry e Pending (journalLine zone e)]) [] evs
   if null fresh then pure [] else fresh <$ save ports root plan (old ++ fresh)
@@ -118,10 +128,11 @@ markLost = markAs Lost
 -- after its last child, lines in event order; the keys placed; the keys
 -- whose step is gone.
 pendingFacts :: [Line] -> [Entry] -> ([Fact], [Text], [Text])
-pendingFacts ls es = (withJournal [] [Insert r xs | (r, xs) <- placed], [k | (k, Just _) <- found], [k | (k, Nothing) <- found])
+pendingFacts ls es = (withJournal [] [Insert r xs | (r, xs, _) <- placed], [k | (k, Just _) <- found], [k | (k, Nothing) <- found])
   where
     found = [(evKey (enEvent e), (\s -> (s, e)) <$> stepOf (enEvent e)) | e <- es, enState e == Pending]
-    placed = [(after s, [T.replicate (lnIndent s + 2) " " <> enLine e]) | (_, Just (s, e)) <- found]
+    -- at one row, a deeper step's lines first (they belong inside it)
+    placed = sortOn (\(r, _, ind) -> (r, Down ind)) [(after s, [T.replicate (lnIndent s + 2) " " <> enLine e], lnIndent s) | (_, Just (s, e)) <- found]
     after s = case childrenOf ls (lnRow s) of
       [] -> lnRow s
       kids -> lnRow (last kids)
@@ -188,7 +199,7 @@ keepEvent rid eid step row at choice = Event ("review|" <> rid <> "||" <> choice
 -- | A test run's line for the step at ROW (LS before FACTS): a tick, an
 -- untick, a first red or a green, once per fingerprint FP.
 testEvents :: [Line] -> Int -> [Fact] -> [((FilePath, Text), TestState)] -> Maybe Text -> UTCTime -> [Event]
-testEvents ls row facts states fp at = case drop row ls of
+testEvents ls row0 facts states fp at = case drop row ls of
   s : _ | isStepK (lnKind s), not (null states) ->
     let key c = "tests|" <> fst (stepKey (lnText s)) <> "|" <> fromMaybe "" fp <> "|" <> c
         to = [k | Replace r t <- facts, r == row, k : _ <- [map lnKind (parsePlan t)]]
@@ -205,6 +216,33 @@ testEvents ls row facts states fp at = case drop row ls of
   _ -> []
   where
     isStepK = \case Step _ -> True; _ -> False
+    -- a test child's run is its step's
+    row = case drop row0 ls of
+      l : _ | lnKind l == TestChild -> maybe row0 lnRow (listToMaybe [s | s <- reverse (take row0 ls), isStepK (lnKind s), lnIndent s < lnIndent l])
+      _ -> row0
+
+-- | The test children's marks in a run's FACTS, by test.
+testStates :: [Fact] -> [((FilePath, Text), TestState)]
+testStates facts = [((anPath a, anUnit a), st) | Replace _ t <- facts, l <- take 1 (parsePlan t), lnKind l == TestChild, Just a <- [lnAnchor l], Just st <- [testState l]]
+
+-- | A test run's lines (the step at ROW of LS, its FACTS, its unit's
+-- fingerprint FP) recorded; with no fingerprint, by change of state.
+recordTests :: Ports -> TimeZone -> FilePath -> FilePath -> [Line] -> Int -> [Fact] -> Maybe Text -> UTCTime -> IO ()
+recordTests ports zone root plan ls row facts fp at =
+  void (recordWith (if isJust fp then const id else transitions) ports zone root plan (testEvents ls row facts (testStates facts) fp at))
+
+-- | A step with no fingerprint keys its tests' lines by change of state:
+-- of EVENTS, a `tests|<step>||<state>` one is dropped when the step's last
+-- such line in ENTRIES has that state, else keyed by its time (written).
+-- Every other event is as it is.
+transitions :: [Entry] -> [Event] -> [Event]
+transitions es = concatMap one
+  where
+    one e = case T.splitOn "|" (evKey e) of
+      ["tests", step, "", st] ->
+        let prior = [p | en <- es, ["tests", s', "", p, _] <- [T.splitOn "|" (evKey (enEvent en))], s' == step]
+         in if listToMaybe (reverse prior) == Just st then [] else [e {evKey = evKey e <> "|" <> T.pack (iso8601Show (evAt e))}]
+      _ -> [e]
 
 -- | A step whose anchor a reconcile moved to NEW (path:Unit).
 movedEvent :: Text -> Int -> UTCTime -> Text -> Event

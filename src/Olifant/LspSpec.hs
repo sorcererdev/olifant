@@ -2320,6 +2320,24 @@ plansStage1Spec = describe "olifant/plans (stage 1)" $ do
       -- the refused second do writes no record
       (rs, 0) <- records dir
       [(erVerb r, erChanged r, erStatus r) | AnErrand r <- rs] `shouldBe` [("do", 1, Ok), ("do", 1, Ok)]
+  it "(M10, M3) a plan edited above the step during a do: the do's line and the tick's land under the step, by its words" $
+    withPlan (planWith "- [ ] add a method SHIM:SLOW @src/bistro/booking/models/table.py:Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675") $ \ports dir -> needsUv $ do
+      (text, _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        let method = SMethod_CustomMethod doP
+        i <- sendRequest method (object [docOf p, "line" .= (7 :: Int)])
+        let begun = (() <$ message SMethod_WindowWorkDoneProgressCreate) <|> (anyMessage >> begun)
+            answerOf = responseForId method i <|> (anyMessage >> answerOf)
+            applied = (() <$ message SMethod_WorkspaceApplyEdit) <|> (anyMessage >> applied)
+        begun
+        _ <- applyEdit p (TextEdit (Range (Position 0 0) (Position 0 0)) "a line above\n")
+        _ <- answerOf
+        applied
+        documentContents p
+      let after = drop 8 (T.lines text)
+      take 1 after `shouldSatisfy` \case [l] -> "- [ ] add a method" `T.isPrefixOf` l; _ -> False
+      map (T.takeWhileEnd (/= '\183')) (filter ("  - " `T.isPrefixOf`) (take 4 (drop 1 after)))
+        `shouldSatisfy` \ws -> any ("answered: " `T.isInfixOf`) ws && " ticked: tests green" `elem` ws
   it "do on a step with a green test child answers the facts that tick it" $
     withPlan (planWith "- [ ] add a method @src/bistro/booking/models/table.py:Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675") $ \ports dir -> needsUv $ do
       (answer, _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir (errand doP 7)

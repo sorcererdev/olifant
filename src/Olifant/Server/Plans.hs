@@ -22,7 +22,7 @@ module Olifant.Server.Plans
   ) where
 
 import Control.Lens ((&), (?~))
-import Control.Monad (filterM)
+import Control.Monad (filterM, when)
 import Language.LSP.Protocol.Lens qualified as L
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Functor ((<&>))
@@ -391,6 +391,11 @@ runErrand after reviewed reopen token verb path row s0 =
                     blockedWhy = listToMaybe' [T.strip w | l <- T.lines (rrText rr), Just w <- [T.stripPrefix "BLOCKED" (T.strip l)]]
                 rid <- record Ok Nothing (rrSession rr) (Just rr) (length blocks) dropped (length ghosts) resolved unresolved (length changed)
                 rv <- review rid (maybe "answered" (const "blocked") blockedWhy) blockedWhy (Just rr) ghosts facts True
+                -- after its own line, the do's tests journaled against the plan as the do read it
+                when (verb == Do && not (null facts)) $ safely () $ do
+                  fp <- maybe (pure Nothing) (fmap rsFingerprint . resolveAnchor s p) (lnAnchor target)
+                  zone <- getCurrentTimeZone
+                  Journal.recordTests (ssPorts s) zone root rel ls row facts fp now
                 pure (Right (ErrandAnswer rid (zip blocks fps) dropped unresolved (rrSeconds rr) (rrCost rr) changed facts rv))
         _ -> pure (Left (verbName <> " needs a " <> kindName <> " line"))
     fits = case verb of

@@ -40,6 +40,8 @@ module Olifant.Server.Review
   , archivedFor
   , keptDiff
   , errandPayload
+  , pastDosAt
+  , reopenable
   ) where
 
 import Control.Exception (SomeException, try)
@@ -66,7 +68,7 @@ import Olifant.Workspace (Workspace (..))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.Directory qualified as Dir
 import System.Exit (ExitCode (..))
-import System.FilePath (dropExtension, takeExtension, (</>))
+import System.FilePath (dropExtension, takeExtension, takeFileName, (</>))
 
 -- | The tree before a `do`: a commit holding the tracked files as they were
 -- (the index and the working tree; HEAD when nothing differed), and each
@@ -418,6 +420,15 @@ loadArchived ports root plan rid = find ((== rid) . rvId) <$> loadArchive ports 
 -- | The past dos of the step STEP (a line; found by its words and anchor).
 archivedFor :: Ports -> FilePath -> FilePath -> Text -> IO [Review]
 archivedFor ports root plan step = filter (\r -> sameStep (rvStep r) step) <$> loadArchive ports root plan
+
+-- | Of PAST, the dos of the step at ROW of LS: each do counts on one step,
+-- the one it finds again (its recorded row first, then the first same step).
+pastDosAt :: [Line] -> [Review] -> Int -> [Review]
+pastDosAt ls past row = [r | r <- past, fmap lnRow (locateStep ls r) == Just row]
+
+-- | Whether RUNNER can resume a do's thread: claude, or a wrapper named for it.
+reopenable :: FilePath -> Bool
+reopenable runner = "claude" `T.isPrefixOf` T.pack (takeFileName runner)
 
 -- | The change as the archive keeps it: the diffs only, 2000 lines in
 -- all, the file that crosses the limit cut with a last line saying so.
