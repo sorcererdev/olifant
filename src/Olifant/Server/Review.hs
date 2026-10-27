@@ -174,7 +174,15 @@ changeSince root excluded ref = do
 -- tree only (the index is left alone), new files removed, untracked ones
 -- written back from their blobs. Left names what could not be restored.
 revertChange :: FilePath -> TreeRef -> [FileChange] -> IO (Either Text ())
-revertChange root ref changes = do
+revertChange root ref changes =
+  -- git may have collected the reference (it is no branch's): nothing is
+  -- touched then, rather than new files removed and edits kept
+  git root ["cat-file", "-e", T.unpack (trCommit ref) <> "^{commit}"] "" >>= \case
+    Nothing -> pure (Left "the do's reference is gone (git collected it): revert its change by hand")
+    Just _ -> revertFrom root ref changes
+
+revertFrom :: FilePath -> TreeRef -> [FileChange] -> IO (Either Text ())
+revertFrom root ref changes = do
   let untracked = trUntracked ref
       isUntracked f = isJust (lookup f untracked)
       tracked = [fcPath c | c <- changes, not (isUntracked (fcPath c)), not (fcChange c == Added && not (inRef c))]

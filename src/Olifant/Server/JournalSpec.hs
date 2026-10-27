@@ -1,6 +1,12 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 module Olifant.Server.JournalSpec (spec) where
 
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, try)
+import Control.Monad (forM)
+import System.Timeout (timeout)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian, utc)
@@ -48,6 +54,20 @@ spec = describe "Olifant.Server.Journal (the plan's record of what happened to e
     map (evKey . enEvent) new1 `shouldBe` ["do|1"]
     map (evKey . enEvent) new2 `shouldBe` ["do|2"]
     map (evKey . enEvent) <$> pendingEntries ports root "plans/t.md" `shouldReturn` ["do|1", "do|2"]
+  it "keeps every event when many threads record and mark at once" $ withSystemTempDirectory "journal" $ \root -> do
+    let ports = plainPorts
+        evs = [ev ("k" <> T.pack (show i)) "- [ ] count seats @a.py:count" 4 "w" | i <- [1 .. 40 :: Int]]
+    _ <- record ports utc root "plans/t.md" [ev "first" "- [ ] count seats @a.py:count" 4 "w"]
+    dones <- forM evs $ \e -> do
+      v <- newEmptyMVar
+      _ <- forkIO (try (record ports utc root "plans/t.md" [e] >> markLanded ports root "plans/t.md" ["first"]) >>= putMVar v)
+      pure v
+    -- each thread says how it ended; none may fail, and none may hang
+    ended <- timeout 20000000 (mapM takeMVar dones)
+    fmap (length . filter (either (\(_ :: SomeException) -> True) (const False))) ended `shouldBe` Just 0
+    es <- entries ports root "plans/t.md"
+    length es `shouldBe` 41
+    map enState (filter ((== "first") . evKey . enEvent) es) `shouldBe` [Landed]
   it "lands pending lines after the step's last child, in order, and never again once landed" $ withSystemTempDirectory "journal" $ \root -> do
     let ports = plainPorts
     _ <- record ports utc root "plans/t.md"
@@ -73,6 +93,13 @@ spec = describe "Olifant.Server.Journal (the plan's record of what happened to e
         es = [Entry (ev "a" "- [ ] count seats" 4 "w") Pending "- 25 Oct 21:31 · w"]
         (facts, _, lost) = pendingFacts (parsePlan anchored) es
     (facts, lost) `shouldBe` ([Insert 4 ["  - 25 Oct 21:31 · w"]], [])
+  it "tells two identical lines apart by the step they sit under" $ do
+    let twice = T.intercalate "\n" ["# T", "- [ ] tidy the helper @a.py:helper", "  - 25 Oct 21:31 · kept the do's change", "- [ ] count seats @a.py:count", "  - 25 Oct 21:31 · kept the do's change"]
+        e step err = Entry ((ev ("review|" <> err) step 0 "kept the do's change") {evErrand = Just err}) Landed "- 25 Oct 21:31 · kept the do's change"
+        es = [e "- [ ] tidy the helper @a.py:helper" "d1", e "- [ ] count seats @a.py:count" "d2"]
+    (evErrand . enEvent =<< entryAt es (parsePlan twice) 4) `shouldBe` Just "d2"
+    (evErrand . enEvent =<< entryAt es (parsePlan twice) 2) `shouldBe` Just "d1"
+    entryAt es (parsePlan twice) 1 `shouldBe` Nothing
   it "merges a journal insert into another fact's insert at the same row" $
     withJournal [Replace 2 "x", Insert 3 ["  - ✗ helper red again"]] [Insert 3 ["  - j"], Insert 4 ["  - k"]]
       `shouldBe` [Replace 2 "x", Insert 3 ["  - ✗ helper red again", "  - j"], Insert 4 ["  - k"]]

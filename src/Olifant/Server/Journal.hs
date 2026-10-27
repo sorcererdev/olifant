@@ -26,11 +26,12 @@ module Olifant.Server.Journal
   , movedEvent
   ) where
 
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Data.Aeson (Value (..), decodeStrict, encode, object, (.:), (.:?), (.=))
 import Data.Aeson.Types (Parser, parseMaybe)
 import Data.ByteString.Lazy qualified as BL
 import Data.List (find)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -41,6 +42,7 @@ import Olifant.Plans (Kind (..), Line (..), TestState (..), childrenOf, parsePla
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Review (sameStep, stepKey)
 import Olifant.Workspace (Workspace (..))
+import System.IO.Unsafe (unsafePerformIO)
 import System.FilePath (dropExtension, takeExtension, (</>))
 
 -- | Something that happened to a step: its key (written once), the step's
@@ -75,7 +77,11 @@ journalPath :: FilePath -> FilePath -> FilePath
 journalPath root plan = root </> ".olifant/state/journal" </> (if takeExtension plan == ".md" then dropExtension plan else plan) <> ".jsonl"
 
 entries :: Ports -> FilePath -> FilePath -> IO [Entry]
-entries ports root plan = maybe [] (mapMaybe parseEntry . T.lines) <$> readText (pFiles ports) (journalPath root plan)
+-- readers take the lock too: a file half rewritten is never read
+entries ports root plan = withMVar journalLock (\() -> readEntries ports root plan)
+
+readEntries :: Ports -> FilePath -> FilePath -> IO [Entry]
+readEntries ports root plan = maybe [] (mapMaybe parseEntry . T.lines) <$> readText (pFiles ports) (journalPath root plan)
 
 pendingEntries :: Ports -> FilePath -> FilePath -> IO [Entry]
 pendingEntries ports root plan = filter ((== Pending) . enState) <$> entries ports root plan
@@ -83,10 +89,16 @@ pendingEntries ports root plan = filter ((== Pending) . enState) <$> entries por
 save :: Ports -> FilePath -> FilePath -> [Entry] -> IO ()
 save ports root plan es = writeText (pFiles ports) (journalPath root plan) (T.concat [entryJson e <> "\n" | e <- es])
 
+-- | One writer at a time: the store is read whole and rewritten, from the
+-- do's, the reconcile's and the tests' threads.
+{-# NOINLINE journalLock #-}
+journalLock :: MVar ()
+journalLock = unsafePerformIO (newMVar ())
+
 -- | Store EVENTS not seen before (by key) as pending; the new ones.
 record :: Ports -> TimeZone -> FilePath -> FilePath -> [Event] -> IO [Entry]
-record ports zone root plan evs = do
-  old <- entries ports root plan
+record ports zone root plan evs = withMVar journalLock $ \() -> do
+  old <- readEntries ports root plan
   let seen = map (evKey . enEvent) old
       fresh = foldl' (\acc e -> if evKey e `elem` seen || any ((== evKey e) . evKey . enEvent) acc then acc else acc ++ [Entry e Pending (journalLine zone e)]) [] evs
   if null fresh then pure [] else fresh <$ save ports root plan (old ++ fresh)
@@ -94,8 +106,8 @@ record ports zone root plan evs = do
 markAs :: EntryState -> Ports -> FilePath -> FilePath -> [Text] -> IO ()
 markAs st ports root plan keys
   | null keys = pure ()
-  | otherwise = do
-      es <- entries ports root plan
+  | otherwise = withMVar journalLock $ \() -> do
+      es <- readEntries ports root plan
       save ports root plan [if evKey (enEvent e) `elem` keys then e {enState = st} else e | e <- es]
 
 markLanded, markLost :: Ports -> FilePath -> FilePath -> [Text] -> IO ()
@@ -132,9 +144,18 @@ withJournal = foldl' add
     add fs f = fs ++ [f]
     isAt r = \case Insert r' _ -> r' == r; _ -> False
 
--- | The entry behind a journal line (its text, indent ignored).
-entryAt :: [Entry] -> Text -> Maybe Entry
-entryAt es t = find ((== T.strip t) . enLine) es
+-- | The entry behind the journal line at ROW of LS: the same text, and of
+-- those, the one recorded for the step the line sits under.
+entryAt :: [Entry] -> [Line] -> Int -> Maybe Entry
+entryAt es ls row = case [l | l <- ls, lnRow l == row, lnKind l == Journal] of
+  l : _ ->
+    let same = [e | e <- es, enLine e == T.strip (lnText l)]
+        owner = listToMaybe [s | s <- reverse (takeWhile ((< row) . lnRow) ls), isStep s, lnIndent s < lnIndent l]
+        mine = [e | Just s <- [owner], e <- same, sameStep (evStep (enEvent e)) (lnText s)]
+     in listToMaybe (mine ++ same)
+  [] -> Nothing
+  where
+    isStep s = case lnKind s of Step _ -> True; _ -> False
 
 cut :: Text -> Text
 cut t =

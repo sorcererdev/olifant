@@ -2206,6 +2206,22 @@ plansLoopSpec = describe "plans, stage 2" $ do
       lookupKey "name" v `shouldBe` Just (String "test_s")
       lookupKey "file" v `shouldSatisfy` \case Just (String f) -> "src/bistro/booking/models/table__test.py" `T.isSuffixOf` f; _ -> False
       arr (lookupKey "facts" v) `shouldBe` [object ["after" .= (1 :: Int), "lines" .= ["  - test: s @src/bistro/booking/models/table__test.py:test_s \9675" :: Text]]]
+  it "(e2) plans/test on a plan edited while its tests ran: the journal line comes by its own edit, not with the facts" $ do
+    let green = "- [ ] s @" <> T.pack table <> ":Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675\n"
+    withPythonChecked [("plans/t.md", green)] $ \ports dir -> do
+      ((answer, text), _) <- inProcessWith ports {pTester = (`processRunner` 120)} dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        let method = SMethod_CustomMethod testP
+        i <- sendRequest method (object [docOf p, "line" .= (0 :: Int)])
+        _ <- applyEdit p (TextEdit (Range (Position 2 0) (Position 2 0)) "some words\n")
+        let answerOf = responseForId method i <|> (anyMessage >> answerOf)
+            applied = (() <$ message SMethod_WorkspaceApplyEdit) <|> (anyMessage >> applied)
+        TResponseMessage _ _ r <- answerOf
+        applied
+        (r,) <$> documentContents p
+      v <- either (fail . show) pure answer
+      [x | f <- arr (lookupKey "facts" (toJSON v)), String x <- arr (lookupKey "lines" f)] `shouldBe` []
+      text `shouldSatisfy` T.isInfixOf "ticked: tests green"
   it "(e) plans/test runs a step's tests: passed, failed, the facts that tick it" $ do
     let green = "- [ ] s @" <> T.pack table <> ":Table\n  - test: imports @src/bistro/main__test.py:test_importing_main_opens_no_database \9675\n"
     withPythonChecked [("plans/t.md", green)] $ \ports dir -> do
@@ -2616,6 +2632,16 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
           _ <- blockMove (Proxy :: Proxy "olifant/plans/reconcile") (object [docOf p])
           documentContents p
         length (journalOf text) `shouldBe` 1
+    it "(j4b) a do on a plan not open lands its line when the plan is opened, with no reconcile" $
+      withRepo (planWith "- [ ] add a method SHIM:FAIL") $ \ports dir -> do
+        (text, _) <- inProcessWith ports dir $ do
+          let uri = filePathToUri (dir </> "plans/t.md")
+          _ <- blockMove doP (object ["textDocument" .= object ["uri" .= uri], "line" .= (7 :: Int)])
+          p <- openDoc "plans/t.md" "markdown"
+          let applied = (() <$ message SMethod_WorkspaceApplyEdit) <|> (anyMessage >> applied)
+          applied
+          documentContents p
+        length (journalOf text) `shouldBe` 1
     it "(j5) a journal line opens its errand; a step line has none" $
       withRepo (planWith "- [ ] add a method") $ \ports dir -> do
         ((rid, onLine, onStep), _) <- inProcessWith ports dir $ do
@@ -2685,6 +2711,19 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
           documentContents p
         -- lsp-test does not apply an answer's facts: the line is in no edit the server sent
         journalOf text `shouldBe` []
+    it "(j11) revert after git collected the do's reference is refused; the files and the review stay" $
+      withRepo (planWith "- [ ] add a method") $ \ports dir -> do
+        ((chosen, listed), _) <- inProcessWith ports dir $ do
+          -- a tree with an edit of its own: the reference is a stash commit, no branch's
+          liftIO (TIO.appendFile (dir </> "pyproject.toml") "# mine\n")
+          p <- openDoc "plans/t.md" "markdown"
+          (rid, _, _) <- doStep p
+          liftIO (callProcess "git" ["-C", dir, "prune", "--expire=now"])
+          chosen <- choose p rid "revert"
+          (chosen,) <$> blockMove reviewsP (object [docOf p])
+        chosen `shouldSatisfy` either (T.isInfixOf "reference is gone") (const False)
+        TIO.readFile (dir </> table) >>= (`shouldSatisfy` T.isInfixOf "def label")
+        fmap (length . arr . lookupKey "reviews") listed `shouldBe` Right 1
     it "(j9) the archive keeps the diff after git has collected the do's reference" $
       withRepo (planWith "- [ ] add a method") $ \ports dir -> do
         ((rid, _), _) <- inProcessWith ports dir $ do

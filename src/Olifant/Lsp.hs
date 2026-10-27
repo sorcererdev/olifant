@@ -244,6 +244,11 @@ handlers env =
           -- workspace folders it had when it registered (review I3, I8)
           found <- liftIO (withSnapshot env (projectFor path))
           watch env [everything r | Just (root, p) <- [found], r <- root : catalogPackRoots (prCatalog p)]
+          -- a plan's journal lines left pending while it was closed land now
+          -- (only when there are any: the edit moves the plan's version)
+          case found of
+            Just (_, p) | isPlanPath p path -> flushJournal env path
+            _ -> pure ()
     , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
         let uri = msg ^. L.params . L.textDocument . L.uri
         getVirtualFile (toNormalizedUri uri) >>= \case
@@ -731,19 +736,28 @@ handlers env =
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/test")) $ \req respond -> inBackground env req respond $ \job ->
         case (documentPath (req ^. L.params), lineOf (req ^. L.params)) of
           (Just path, Just line) -> do
+            before <- liftIO (versionOf env path)
             ran <- planProgress "testing" (\_ -> withSnapshot job (stepTest path line))
             stopped <- liftIO (cancelled (envCancel job))
             case ran of
               _ | stopped -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
               Left why -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) why Nothing))
               Right t -> do
-                facts <- liftIO $ M.lookup path . ssDocs <$> readMVar (envState env) >>= \case
-                  Just (_, text) -> do
+                -- the journal rides the facts only while the plan is as the
+                -- tests read it (the editor drops facts for a plan edited
+                -- since); else it lands by its own edit after the answer
+                doc <- liftIO (M.lookup path . ssDocs <$> readMVar (envState env))
+                facts <- liftIO $ case doc of
+                  Just (v, text) -> do
                     journalTests env path text line (ttFacts t)
-                    (jf, land) <- journalOn env path text
-                    withJournal (ttFacts t) jf <$ land
+                    if before == Just v
+                      then do
+                        (jf, land) <- journalOn env path text
+                        withJournal (ttFacts t) jf <$ land
+                      else pure (ttFacts t)
                   Nothing -> pure (ttFacts t)
                 respond (Right (object ["facts" .= map factJson facts, "passed" .= ttPassed t, "failed" .= ttFailed t, "seconds" .= ttSeconds t]))
+                when (maybe False (\(v, _) -> before /= Just v) doc) (flushJournal env path)
           _ -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) "olifant/plans/test needs a textDocument and a line" Nothing))
     , -- what the editor did with an errand's ghost block: an outcome record
       -- (anything malformed, or out of a project, is ignored; a record that
@@ -1664,9 +1678,8 @@ errandView env path params =
           root = prRoot p
       rid <- case (reviewIdOf params, lineParam "row" params) of
         (Just i, _) -> pure (Just i)
-        (_, Just row) -> Journal.entries ports root rel <&> \es -> do
-          l <- listToMaybe (drop row (T.splitOn "\n" text))
-          evErrand . enEvent =<< Journal.entryAt es l
+        (_, Just row) -> Journal.entries ports root rel <&> \es ->
+          evErrand . enEvent =<< Journal.entryAt es (parsePlan text) row
         _ -> pure Nothing
       found <- maybe (pure Nothing) (loadArchived ports root rel) rid
       case found of
