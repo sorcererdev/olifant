@@ -30,7 +30,7 @@ import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan, testState, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), childrenOf, excerptInfo, parsePlan, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
@@ -47,7 +47,7 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
-import Olifant.Server.Excerpt (Excerpt (..), excerptsOf, renderFence, unitExcerpt, unitHover)
+import Olifant.Server.Excerpt (renderFence, unitExcerpt, unitHover)
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), baseline, factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
@@ -356,6 +356,8 @@ handlers env =
               Left why -> failed why
               -- a snippet's body (tab stops) rides along for editors that expand it
               Right planned@(_, (_, plan)) -> respond (Right (resolved action planned & L.data_ %~ fmap (withSnippet (planSnippet plan))))
+          _ | Just (path, line, version) <- excerptData =<< (action ^. L.data_) ->
+                liftIO (excerptEdit env path line version) >>= either failed (\e -> respond (Right (action & L.edit ?~ e)))
           _ -> case holeData =<< (action ^. L.data_) of
             Just (path, line) ->
               planProgress "Fill with the model" (\progress -> withPlanned job (fillHolePlan progress path line)) >>= \case
@@ -1349,25 +1351,71 @@ newStepAction env path (Position l _) =
     _ -> pure []
 
 -- | "Show the code here" on an open step whose anchor resolves and that has
--- no excerpt: its unit's code as a fence below the step line, which the
--- reconcile keeps current until the step is ticked.
+-- no excerpt (no child opening one, closed or not): resolved later
+-- ('excerptEdit'), so a request on every cursor move runs no git and no clip
+-- (review M3); its data holds the plan's version it was offered at.
 excerptAction :: Env -> FilePath -> Position -> IO [CodeAction]
 excerptAction env path (Position l _) =
   withSnapshot env (\s -> projectFor path s >>= \case
     (s', Just (_, project)) | isPlanPath project path -> do
       text <- documentText env path
-      let ls = parsePlan text
-          row = fromIntegral l
-      case [(ln, a) | ln <- ls, lnRow ln == row, lnKind ln == Step False, Just a <- [lnAnchor ln], row `notElem` map exStep (excerptsOf ls)] of
-        (ln, a) : _ -> do
+      case excerptStep text (fromIntegral l) of
+        Just (_, a) -> resolveAnchor s' project a <&> \r -> (s', [() | isJust (rsUnit r)])
+        Nothing -> pure (s', [])
+    (s', _) -> pure (s', [])) >>= \found -> do
+    version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+    pure
+      [ CodeAction "Show the code here" (Just CodeActionKind_Source) Nothing Nothing Nothing Nothing Nothing
+          (Just (object ["kind" .= ("excerpt" :: T.Text), "path" .= path, "line" .= l, "version" .= version]))
+      | () <- found ]
+
+-- | The open anchored step at ROW of a plan's TEXT with no child opening an
+-- excerpt (closed or not, live or frozen), and its anchor.
+excerptStep :: T.Text -> Int -> Maybe (Line, Anchor)
+excerptStep text row =
+  listToMaybe
+    [ (ln, a)
+    | let ls = parsePlan text
+    , ln <- ls, lnRow ln == row, lnKind ln == Step False, Just a <- [lnAnchor ln]
+    , not (any (isJust . excerptInfo . lnText) (childrenOf ls row)) ]
+
+-- | "Show the code here" resolved: its unit's code as a fence below the step
+-- line at LINE, as an edit of the plan at VERSION, the one it was offered at
+-- (refused when the plan has moved on since, and the editor refuses it if
+-- the plan moves on before it lands, review M4). In a CRLF plan the fence
+-- goes before the step's carriage return, its lines joined by CRLF.
+excerptEdit :: Env -> FilePath -> Int -> Maybe Int -> IO (Either T.Text WorkspaceEdit)
+excerptEdit env path l version =
+  withSnapshot env (\s -> projectFor path s >>= \case
+    (s', Just (_, project)) | isPlanPath project path -> do
+      text <- documentText env path
+      let now = fst <$> M.lookup path (ssDocs s')
+      case excerptStep text l of
+        _ | now /= version -> pure (s', Left "the plan changed since; ask again")
+        Just (ln, a) -> do
           base <- baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
-          unitExcerpt s' project base a <&> \found -> (s', [(ln, renderFence (lnIndent ln + 2) lang a False body) | Just (lang, body) <- [found]])
-        [] -> pure (s', [])
-    (s', _) -> pure (s', [])) <&> \found ->
-    [ CodeAction "Show the code here" (Just CodeActionKind_Source) Nothing Nothing Nothing (Just edit) Nothing Nothing
-    | (ln, fence) <- found
-    , let end = Position l (fromIntegral (utf16 (lnText ln)))
-          edit = WorkspaceEdit (Just (M.singleton (filePathToUri path) [TextEdit (Range end end) (T.concat ["\n" <> f | f <- fence])])) Nothing Nothing ]
+          unitExcerpt s' project base a <&> \case
+            Just (lang, body) -> (s', Right (fenceEdit ln (renderFence (lnIndent ln + 2) lang a False body)))
+            Nothing -> (s', Left "the step's anchor does not resolve")
+        Nothing -> pure (s', Left "no open step without an excerpt here")
+    (s', _) -> pure (s', Left "not a plan"))
+  where
+    fenceEdit ln fence =
+      let (bare, eol) = maybe (lnText ln, "\n") (,"\r\n") (T.stripSuffix "\r" (lnText ln))
+          col = utf16 bare
+       in workspaceEditAsking False [FileEdit path version False ((l, col), (l, col)) (T.concat [eol <> f | f <- fence])]
+
+-- | A "Show the code here" action's data: its plan, step line and version.
+excerptData :: Value -> Maybe (FilePath, Int, Maybe Int)
+excerptData = \case
+  Object o | KM.lookup "kind" o == Just (String "excerpt") -> do
+    String path <- KM.lookup "path" o
+    Number line <- KM.lookup "line" o
+    let version = case KM.lookup "version" o of
+          Just (Number v) -> toBoundedInteger v
+          _ -> Nothing
+    (T.unpack path,,version) <$> toBoundedInteger line
+  _ -> Nothing
 
 -- | A hover over a plan's anchor: its unit's code; none off an anchor, or
 -- when it does not resolve.
