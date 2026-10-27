@@ -357,6 +357,7 @@ test-suite spec
     Olifant.Workspace
     Olifant.WorkspaceSpec
     SpecHook
+    SpecHookSpec
     -- olifant:end test-modules
 
 executable olifant
