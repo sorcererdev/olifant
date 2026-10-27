@@ -50,7 +50,7 @@ import Olifant.App (Ports (..))
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
-import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchived, loadReview, loadReviews, locateStep, revertChange, pastDosAt, reopenable, reviewPayload, sameStep, saveReview, testsOfFacts)
+import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchiveIndex, loadArchived, loadReview, loadReviews, locateStep, revertChange, pastDosAt, reopenable, reviewPayload, sameStep, saveReview, testsOfFacts)
 import Olifant.Server.Journal (Entry (..), Event (..), keepEvent, movedEvent, withJournal)
 import Olifant.Server.Journal qualified as Journal
 import Olifant.Transcripts (slugOf)
@@ -625,7 +625,7 @@ handlers env =
             liftIO (planContext env path) >>= \case
               Nothing -> respond (Right (object ["errands" .= ([] :: [Value])]))
               Just (p, rel, text) -> do
-                all' <- liftIO (loadArchive (envPorts env) (prRoot p) rel)
+                all' <- liftIO (loadArchiveIndex (envPorts env) (prRoot p) rel)
                 let ofStep = maybe all' (pastDosAt (parsePlan text) all') (lineParam "row" (req ^. L.params))
                     words' r = fromMaybe (rvStatus r) (listToMaybe [T.strip w | l <- rvSaid r, Just w <- [T.stripPrefix "DONE" l <|> T.stripPrefix "BLOCKED" l]])
                 respond (Right (object ["errands" .= [object ["id" .= rvId r, "at" .= rvAt r, "status" .= rvStatus r, "choice" .= rvChoice r, "words" .= words' r, "model" .= rvModel r] | r <- ofStep]]))
@@ -682,7 +682,7 @@ handlers env =
             Just (p, rel, text) | isPlanPath p path -> do
               rs <- liftIO (loadReviews (envPorts env) (prRoot p) rel)
               readings <- maybe [] rrReadings <$> liftIO (loadReadings (envPorts env) (prRoot p) rel)
-              past <- liftIO (loadArchive (envPorts env) (prRoot p) rel)
+              past <- liftIO (loadArchiveIndex (envPorts env) (prRoot p) rel)
               let ls = parsePlan text
                   lens row title args = CodeLens (Range (Position (fromIntegral row) 0) (Position (fromIntegral row) 0)) (Just (Command title "olifant.plans.review" (Just (map String args ++ [])))) Nothing
                   open = length rs + length readings

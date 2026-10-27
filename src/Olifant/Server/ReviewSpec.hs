@@ -11,7 +11,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.Plans (lnRow, parsePlan)
 import Olifant.Server.Review
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (callProcess)
@@ -125,6 +125,17 @@ spec = describe "Olifant.Server.Review (the do review)" $ do
       map rvId (pastDosAt ls [bare] 1) `shouldBe` []
     it "(M5) reopens only with a runner that is claude (or a claude wrapper)" $ do
       map reopenable ["claude", "/usr/local/bin/claude", "/x/claude-shim.sh", "/x/codex", "/x/my-runner"] `shouldBe` [True, True, True, False, False]
+    it "(M4) keeps a light index beside the archive: no prompt, answer or diff; updated on each save; rebuilt when missing" $ withSystemTempDirectory "archive" $ \root -> do
+      let ports = plainPorts
+          change = FileChange "a.py" Modified Nothing Nothing "--- a/a.py\n"
+          light r = r {rvPrompt = "", rvAnswer = "", rvDiff = []}
+      archiveErrand ports root sample {rvDiff = [change]}
+      archiveErrand ports root sample {rvDiff = [change], rvChoice = Just "kept"}
+      loadArchiveIndex ports root "plans/t.md" `shouldReturn` [light sample {rvChoice = Just "kept"}]
+      removeFile (root </> ".olifant/state/errands/plans/t/index.jsonl")
+      loadArchiveIndex ports root "plans/t.md" `shouldReturn` [light sample {rvChoice = Just "kept"}]
+      doesFileExist (root </> ".olifant/state/errands/plans/t/index.jsonl") `shouldReturn` True
+      map rvId <$> loadArchive ports root "plans/t.md" `shouldReturn` ["shim-1"]
     it "cuts the diff it keeps to 2000 lines in all" $ do
       let big n f = FileChange f Modified Nothing Nothing (T.unlines (replicate n "+x"))
           kept = keptDiff [big 1500 "a.py", big 1500 "b.py", big 10 "c.py"]
