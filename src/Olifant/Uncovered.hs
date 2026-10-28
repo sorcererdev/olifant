@@ -13,7 +13,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Holes (placeholderize)
 import Olifant.Language (Language (..), languageFor)
-import Olifant.Language.Adapter (CheckDef (..), supportOf)
+import Olifant.Language.Adapter (supportOf)
 import Olifant.Language.Check (Checker (..), checkScope, describeCheckFailure, runCheckIn)
 import Olifant.Language.Diagnostics (CheckReport (..), CompilerSupport (..), MissingPatterns (..))
 import Olifant.Query (QueryFailure (..), Record)
