@@ -92,6 +92,7 @@ library
     Olifant.Language.Syntax
     Olifant.Language.Test
     Olifant.Language.TestFormats
+    Olifant.Language.TestUnits
     Olifant.Lsp
     Olifant.Migration
     Olifant.Model
@@ -253,6 +254,8 @@ test-suite spec
     Olifant.Language.Test
     Olifant.Language.TestFormats
     Olifant.Language.TestFormatsSpec
+    Olifant.Language.TestUnits
+    Olifant.Language.TestUnitsSpec
     Olifant.LanguageSpec
     Olifant.Lsp
     Olifant.LspSpec

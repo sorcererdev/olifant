@@ -22,8 +22,11 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.App (Ports (..), Project)
-import Olifant.Language (processRunner)
-import Olifant.LspSpec (needsUv, withPython)
+import Olifant.Language (processRunner, scriptedRunner)
+import Olifant.Language.AstGrep (astGrepSyntax)
+import System.Directory (canonicalizePath, getTemporaryDirectory)
+import System.IO.Temp (withSystemTempDirectory)
+import Olifant.LspSpec (needsUv, plainPorts, withPython)
 import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
 import Olifant.Server (newServerState, projectFor)
 import Olifant.Server.Loop
@@ -168,6 +171,31 @@ workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
 -- then EDITS written, and the project loaded.
 withLoop :: Text -> [(FilePath, Text)] -> (ServerState -> Project -> FilePath -> IO a) -> IO a
 withLoop plan edits act = withLoopPorts plan edits $ \ports dir -> loaded ports dir >>= \(s, p) -> act s p dir
+
+-- | A Haskell project (olifant-dev's language with an hspec-shaped
+-- [test]) with a plan whose steps test a describe, under the scripted
+-- runner SCRIPT; a fresh state.
+withHaskellLoop :: M.Map Text Value -> (FilePath -> ServerState -> IO ()) -> IO ()
+withHaskellLoop script act = do
+  tmp <- getTemporaryDirectory
+  lang <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+  withSystemTempDirectory "olifant-loop-hs" $ \dir0 -> do
+    dir <- canonicalizePath dir0
+    let test = T.unlines
+          [ "[test]", "command = [\"true\"]", "format = \"olifant-json\"", "tests_for = \"{= dir =}/{= stem =}Spec.hs\""
+          , "file_group = '^module[[:space:]]+([[:alnum:]_.]+)Spec'"
+          , "unit = ['(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\"']" ]
+        files =
+          [ ("pack/languages/haskell.toml", T.unlines (takeWhile (not . ("[test]" `T.isPrefixOf`)) (T.lines lang)) <> test)
+          , (".olifant/config.toml", "[packs]\nhs = { path = \"pack\" }\n")
+          , ("src/Olifant/Plans.hs", "module Olifant.Plans where\n\nparsePlan :: Int -> Int\nparsePlan n = n\n")
+          , ("src/Olifant/PlansSpec.hs", T.unlines ["module Olifant.PlansSpec (spec) where", "spec :: Spec", "spec = describe \"Olifant.Plans\" $ do", "  it \"(a) reads a step\" $", "    1 `shouldBe` 1"])
+          , ("plans/t.md", T.unlines ["# T", "", "## Plans", "", "- [ ] parse a plan @src/Olifant/Plans.hs:parsePlan", "  - test: plans parse @src/Olifant/PlansSpec.hs:Olifant.Plans", "", "- [ ] nope @src/Olifant/Plans.hs:parsePlan", "  - test: nope @src/Olifant/PlansSpec.hs:Nope"])
+          ]
+    forM_ files (uncurry (write dir))
+    initRepo dir
+    s0 <- newServerState plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pTester = const (scriptedRunner script)}
+    act dir s0
 
 -- | 'withLoop' before the project is loaded.
 withLoopPorts :: Text -> [(FilePath, Text)] -> (Ports -> FilePath -> IO a) -> IO a
@@ -665,6 +693,15 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
       (ttPassed t2, ttFailed t2) `shouldBe` (0, 1)
       (_, r3) <- stepTest (planPath dir) 8 s1
       either id (const "ran") r3 `shouldBe` "the step has no tests"
+
+  it "(e) a step's test child can name a Haskell describe: run through [test] unit, green ticks the step" $
+    withHaskellLoop (M.fromList [("src/Olifant/PlansSpec.hs::Olifant.Plans::(a) reads a step", String "pass")]) $ \dir s -> do
+      (_, r) <- stepTest (dir </> "plans/t.md") 4 s
+      t <- either (fail . T.unpack) pure r
+      take 1 (ttFacts t) `shouldBe` [Replace 5 "  - test: plans parse @src/Olifant/PlansSpec.hs:Olifant.Plans \9679"]
+      map (\case Replace 4 l -> "- [x] " `T.isPrefixOf` l; _ -> False) (drop 1 (ttFacts t)) `shouldBe` [True]
+      (_, r2) <- stepTest (dir </> "plans/t.md") 7 s
+      either id (const "ran") r2 `shouldBe` "Nope is not in src/Olifant/PlansSpec.hs"
 
 tidyPlan, jevConfig, climbConfig, helperEdited, withSpare :: Text
 tidyPlan = "# T\n\n## Tables\n\nThe tables a bistro seats.\n\n- [ ] count the seats\n- [ ] tidy the helper\n"

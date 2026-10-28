@@ -29,6 +29,22 @@ is `? not found`. The fingerprint is a short hash of the unit's text, blind to f
 lines and a formatter's reflow (a call split over lines, a trailing comma it adds, leading commas)
 leave it as it was. A `✓` whose unit has since changed is shown stale. A line inside a code fence is ignored.
 
+A test child's anchor names a test by its dotted name. In Python that is the test (`test_x`,
+`TestX.test_y`), as pytest names it. A language whose `[test]` has `unit` patterns
+([chapter 9](09-packs-and-language-adapters.md#test-formats)) names tests and their groups by
+those: in Haskell, an hspec `describe` or `it`, its enclosing `describe`s joined by `.`.
+Anchoring a `describe` runs every test in it, and the child is green when they all pass:
+
+```markdown
+- [ ] parse a plan @src/Olifant/Plans.hs:parsePlan
+  - test: plans parse @src/Olifant/PlansSpec.hs:Olifant.Plans
+```
+
+`Olifant.Plans` is `spec = describe "Olifant.Plans" $ do` in that file. `Olifant.Plans.parsePlan`
+is the `describe "parsePlan"` inside it. A test name with spaces or punctuation
+(`it "(a) reads a step"`) cannot be an anchor's name, so a step anchors the `describe` around
+it. A name the file does not have says so: `Nope is not in src/Olifant/PlansSpec.hs`.
+
 ## What the server does
 
 - Diagnostics: a missing anchor and a stale verdict, on the anchor.

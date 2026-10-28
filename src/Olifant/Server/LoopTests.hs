@@ -20,13 +20,14 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
-import Olifant.Language (TestRun (..), ownedBy)
+import Olifant.Language (TestRun (..), languageFor, ownedBy)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, withTestState, withVerdict)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), confined, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Server.Stub (StubAnswer (..), stubWith)
-import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testLineOf, testsRun)
+import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testLineIn, testLineOf, testsRun)
+import Olifant.Catalog (catalogLanguages)
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, (</>))
@@ -135,7 +136,8 @@ testsRan s0 p ls row = case drop row ls of
       Nothing -> pure (s, (Left (anchorText a <> " is outside the project"), 0))
       Just rel -> do
         text <- safely Nothing (readText (prWorkspace p) rel)
-        case text >>= \t -> testLineOf t (T.replace "." "::" (anUnit a)) of
+        let lang = languageFor (catalogLanguages (prCatalog p)) rel
+        case text >>= \t -> maybe (testLineOf t (T.replace "." "::" (anUnit a))) (\l -> testLineIn l t (anUnit a)) lang of
           Nothing -> pure (s, (Left (anUnit a <> " is not in " <> T.pack rel), 0))
           Just line ->
             testsRun (ScopeAt line) (normalisePath (prRoot p </> rel)) s <&> \case
