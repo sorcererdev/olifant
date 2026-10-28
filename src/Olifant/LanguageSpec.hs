@@ -15,6 +15,8 @@ import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
+import Olifant.Language.Presets (shippedPresets)
+import Olifant.Toml (mergeTables, parseToml)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
 import System.Directory (doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory)
@@ -759,6 +761,49 @@ spec = do
       -- (through the cabal-repl preset)
       let Right hs = parseLanguage "haskell" "packs/olifant-dev" src
       fmap checkCommand (langCheck hs) `shouldSatisfy` maybe False (any ("-fmax-uncovered-patterns=" `T.isInfixOf`))
+  describe "layers (shipped, packs, project; merged by key)" $ do
+    let layer origin dir ls = either (error . T.unpack) (Layer origin dir) (parseToml (T.unlines ls))
+        base = ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""]
+        Right two = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["indent = \"  \"", "keywords = [\"a\", \"b\"]", "[unit]", "kinds = [\"a\"]"]), layer "pack p" (Just "/p") ["[unit]", "join = true"]]
+    it "mergeTables: the right wins; tables merge, lists and scalars are replaced" $ do
+      let Right a = parseToml (T.unlines ["x = 1", "l = [1, 2]", "[t]", "a = 1", "b = 1"])
+          Right b = parseToml (T.unlines ["l = [3]", "[t]", "b = 2"])
+          Right ab = parseToml (T.unlines ["x = 1", "l = [3]", "[t]", "a = 1", "b = 2"])
+      mergeTables a b `shouldBe` ab
+    it "a later layer's key wins and the rest is kept" $ do
+      langIndent two `shouldBe` "  "
+      langUnitKinds two `shouldBe` ["a"]
+      langUnitJoin two `shouldBe` True
+      originOf two "unit.join" `shouldBe` Just "pack p"
+      originOf two "unit.kinds" `shouldBe` Just "shipped"
+      originOf two "indent" `shouldBe` Just "shipped"
+      langLayers two `shouldBe` ["shipped", "pack p"]
+    it "lists replace" $ do
+      let Right l = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["keywords = [\"a\", \"b\"]"]), layer "project" (Just "/q/.olifant") ["keywords = [\"c\"]"]]
+      langKeywords l `shouldBe` ["c"]
+      originOf l "keywords" `shouldBe` Just "project"
+    it "a preset fills after the merge: a later layer's preset swaps it, earlier explicit keys stay (Review Focus 2)" $ do
+      let Right l = languageFromLayers shippedPresets "python" [layer "pack p" (Just "/p") (base ++ ["[test]", "preset = \"pytest\"", "tests_for = \"X\""]), layer "project" (Just "/q/.olifant") ["[test]", "preset = \"hspec\""]]
+      fmap testFormat (langTest l) `shouldBe` Just "lines"
+      fmap testsFor (langTest l) `shouldBe` Just "X"
+      originOf l "test.format" `shouldBe` Just "toolchain hspec"
+      originOf l "test.tests_for" `shouldBe` Just "pack p"
+      originOf l "test.preset" `shouldBe` Just "project"
+    it "a layer inherits what it does not set (Review Focus 1)" $ do
+      let Right l = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"pytest\""]), layer "pack p" (Just "/p") ["indent = \"    \""]]
+      fmap testFormat (langTest l) `shouldBe` Just "pytest"
+      fmap testsFor (langTest l) `shouldBe` Just "{= dir =}/test_{= stem =}.py"
+      originOf l "test" `shouldBe` Just "shipped"
+      originOf l "test.tests_for" `shouldBe` Just "toolchain pytest"
+    it "the grammar follows the layer that set it (Review Focus 3)" $ do
+      let Right l = languageFromLayers shippedPresets "elm" [layer "pack elm" (Just "packs/elm") ["files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = { source = \"grammar/elm\" }"], layer "project" (Just ".olifant") ["indent = \"    \""]]
+      langGrammar l `shouldBe` GrammarSource "packs/elm/languages/grammar/elm"
+    it "a shipped grammar source is an error" $
+      languageFromLayers shippedPresets "x" [layer "shipped" Nothing ["files = [\"*.x\"]", "comment = \"#\"", "grammar = { source = \"g\" }"]]
+        `shouldSatisfy` either ("cannot be shipped" `T.isInfixOf`) (const False)
+    it "parseLanguage is one pack layer" $ do
+      Right l <- parseLanguage "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
+      langLayers l `shouldBe` ["pack python-htmx"]
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"

@@ -11,7 +11,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Library (shippedToolchains)
-import Olifant.Toml (Table, Tree (..), parseToml)
+import Olifant.Toml (Table, Tree (..), mergeTables, parseToml)
 
 -- | The presets known, by (section, name).
 newtype Presets = Presets (Map (Text, Text) Table)
@@ -29,9 +29,9 @@ presetsFrom origin files = Presets . M.fromList <$> traverse one files
         [(section, TTable t)] | section `elem` ["check", "test"] -> Right ((section, name), t)
         _ -> Left (path <> ": expected exactly one of [check] or [test]")
 
--- | Later presets win, key by key within a preset.
+-- | Later presets win, merged key by key within a preset ('mergeTables').
 overPresets :: Presets -> Presets -> Presets
-overPresets (Presets a) (Presets b) = Presets (M.unionWith (flip M.union) a b)
+overPresets (Presets a) (Presets b) = Presets (M.unionWith mergeTables a b)
 
 -- | The presets shipped in the binary.
 shippedPresets :: Presets

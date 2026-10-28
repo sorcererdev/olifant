@@ -12,6 +12,9 @@ module Olifant.Language.Adapter
   , HoleKind (..)
   , ImportMerge (..)
   , parseLanguage
+  , Layer (..)
+  , languageFromLayers
+  , originOf
   , matchesGlob
   , languageFor
   , targetPhrase
@@ -29,7 +32,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
-import Olifant.Language.Presets (applyPreset, shippedPresets)
+import Olifant.Language.Presets (Presets (..), applyPreset, shippedPresets)
 import Olifant.Language.Rule
 import Olifant.Language.Diagnostics (CompilerSupport)
 import Olifant.Language.Generic (ErrorFormat (..), LinesFormat (..))
@@ -38,7 +41,7 @@ import Olifant.Template (Template, describeTemplateError, freeVariables, parseTe
 import Data.Set qualified as S
 import Olifant.Toml
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
-import System.FilePath ((</>))
+import System.FilePath (takeFileName, (</>))
 
 data Language = Language
   { langName :: Text
@@ -79,6 +82,12 @@ data Language = Language
   , langUnitJoin :: Bool
   -- ^ `[unit] join`: units of one name separated only by blank lines are one
   -- (a Haskell signature and its equations)
+  , langLayers :: [Text]
+  -- ^ where the language comes from, first to last: `shipped`, `pack NAME`,
+  -- `project`
+  , langOrigins :: M.Map Text Text
+  -- ^ each key (`indent`, `check`, `check.format`) and the layer that set it
+  -- last, or `toolchain NAME` for a [check] or [test] key its preset filled
   }
   deriving stock (Show)
 
@@ -161,9 +170,54 @@ data TestDef = TestDef
 data Select = Select {selTest :: Text, selFile :: Text}
   deriving stock (Eq, Show)
 
+-- | One layer of a language: where it comes from (`shipped`, `pack NAME`,
+-- `project`), the folder holding its `languages/` (a pack's root, or the
+-- project's `.olifant`; Nothing when shipped), and its table.
+data Layer = Layer {layerOrigin :: Text, layerDir :: Maybe FilePath, layerTable :: Table}
+  deriving stock (Show)
+
+-- | One pack's language file, over nothing, with the shipped presets.
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
+  languageFromLayers shippedPresets name [Layer ("pack " <> T.pack (takeFileName packRoot)) (Just packRoot) top]
+
+-- | A language from its layers, merged by key, later winning
+-- ('mergeTables'); then the one preset the merged [check] or [test] names
+-- fills what is left. A grammar source is found beside the layer that set
+-- `grammar`.
+languageFromLayers :: Presets -> Text -> [Layer] -> Either Text Language
+languageFromLayers presets name layers = do
+  let top = foldl mergeTables M.empty (map layerTable layers)
+      grammarDir = case [layerDir l | l <- layers, M.member "grammar" (layerTable l)] of
+        [] -> Nothing
+        ds -> last ds
+      origins = foldl (\m l -> M.union (keysOf (layerOrigin l) (layerTable l)) m) M.empty layers
+      filled = M.fromList
+        [ (section <> "." <> k, "toolchain " <> p)
+        | section <- ["check", "test"]
+        , Just (TTable t) <- [M.lookup section top]
+        , Just (TText p) <- [M.lookup "preset" t]
+        , let Presets ps = presets
+        , Just pt <- [M.lookup (section, p) ps]
+        , k <- M.keys pt
+        , M.notMember k t
+        ]
+  lang <- languageFrom presets name grammarDir top
+  pure lang {langLayers = map layerOrigin layers, langOrigins = M.union origins filled}
+  where
+    keysOf o t = M.fromList (concat [(k, o) : [(k <> "." <> k2, o) | TTable sub <- [v], k2 <- M.keys sub] | (k, v) <- M.toList t])
+
+-- | Where a key (`check.format`) was set: its own origin, else its parent's.
+originOf :: Language -> Text -> Maybe Text
+originOf lang key = case M.lookup key (langOrigins lang) of
+  Just o -> Just o
+  Nothing
+    | (parent, rest) <- T.breakOn "." key, not (T.null rest) -> M.lookup parent (langOrigins lang)
+    | otherwise -> Nothing
+
+languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
+languageFrom presets name grammarDir top = do
   onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
@@ -185,13 +239,18 @@ parseLanguage name packRoot src = do
   unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
   unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
   unitJoin <- fromMaybe False <$> optional "join" bool unit
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)
-      TTable t -> onlyKeys ["source"] t >> GrammarSource . (\s -> packRoot </> "languages" </> T.unpack s) <$> required "source" text t
+      TTable t -> do
+        onlyKeys ["source"] t
+        src <- required "source" text t
+        case grammarDir of
+          Just dir -> Right (GrammarSource (dir </> "languages" </> T.unpack src))
+          Nothing -> Left "`grammar = { source }` cannot be shipped: a pack or the project carries the grammar"
       other -> Left ("expected a built-in grammar name or { source = \"dir\" }, got " <> describeTree other)
     importMergeFrom t = do
       onlyKeys ["pattern", "write"] t
@@ -220,7 +279,7 @@ parseLanguage name packRoot src = do
         <*> optional "separator" text t
     testFrom t0 = do
       onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install"] t0
-      t <- applyPreset shippedPresets "test" t0
+      t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownTestFormats then Right () else Left ("`format`: unknown test format `" <> format <> "`; expected one of " <> T.intercalate ", " knownTestFormats)
@@ -255,7 +314,7 @@ parseLanguage name packRoot src = do
       Select <$> required "test" text t <*> required "file" text t
     checkFrom t0 = do
       onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert", "install"] t0
-      t <- applyPreset shippedPresets "check" t0
+      t <- applyPreset presets "check" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownFormats
