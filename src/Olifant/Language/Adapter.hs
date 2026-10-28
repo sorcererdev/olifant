@@ -25,6 +25,7 @@ module Olifant.Language.Adapter
   , matchShape
   , regexName
   , defaultUnitNames
+  , defaultUnitWords
   ) where
 
 import Control.Monad ((>=>))
@@ -88,6 +89,9 @@ data Language = Language
   , langUnitJoin :: Bool
   -- ^ `[unit] join`: units of one name separated only by blank lines are one
   -- (a Haskell signature and its equations)
+  , langUnitWords :: Text
+  -- ^ `unit_words`: what a unit is in this language, as prompts say it
+  -- ("a top-level class or function name (Name) or a method (Class.method)")
   , langArmSeparator :: Text
   -- ^ `arm_separator`: appended to the last alternative before a new one,
   -- unless it already ends with it or ends a block (`,` in Rust)
@@ -257,7 +261,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -279,9 +283,10 @@ languageFrom presets name grammarDir top = do
   unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
   unitJoin <- fromMaybe False <$> optional "join" bool unit
   mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
+  unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin armSeparator loneArmSpaced mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
@@ -414,6 +419,11 @@ regexName re = case makeRegexM (T.unpack re) :: Maybe Regex of
     groups <- getAllTextSubmatches <$> (matchM rx (T.unpack txt) :: Maybe (AllTextSubmatches [] String))
     let n = T.strip (T.pack (last groups))
     if T.null n then Nothing else Just n
+
+-- | What a unit is, for a language without `unit_words` (or a project of
+-- several that differ).
+defaultUnitWords :: Text
+defaultUnitWords = "a top-level function or type name (Name), or a method (Type.method)"
 
 -- | A unit's name when the language has no `[unit] name`: its line's first identifier.
 defaultUnitNames :: [Text]

@@ -276,6 +276,7 @@ test-suite spec
     Olifant.MutateSpec
     Olifant.Naming
     Olifant.NamingSpec
+    Olifant.NeutralSpec
     Olifant.Newness
     Olifant.NewnessSpec
     Olifant.Output

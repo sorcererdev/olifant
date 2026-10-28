@@ -16,8 +16,9 @@ spec :: Spec
 spec = do
   it "olifant's own haskell.toml: the six capabilities of milestone 1 present; no mutation" $ do
     hs <- packLanguage "haskell" ".olifant"
-    map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "test selection", "mutation"]
-    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True ++ [False]
+    map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "test selection", "mutation", "stub"]
+    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True ++ [False, False]
+    lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[test] format pytest (stubs in other shapes come with [test] stub)")
     lookup "mutation" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[[mutate]]")
     lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[unit] kinds (ast-grep), named by [unit] name, joined")
     lookup "tests" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] format lines, tests_for {= dir =}/{= stem =}Spec.hs")
@@ -31,8 +32,9 @@ spec = do
                  , Right "built in (pytest shape)"
                  , Right "pytest ids"
                  , Right "[[mutate]] (17 operators)"
+                 , Right "built in (pytest shape)"
                  ]
-  it "a bare language: seven absences, each naming its key" $ do
+  it "a bare language: eight absences, each naming its key" $ do
     let Right bare = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n"
     map capHow (capabilities bare)
       `shouldBe` [ Left "[unit] kinds"
@@ -42,6 +44,7 @@ spec = do
                  , Left "[test] unit"
                  , Left "[test] select (whole files run)"
                  , Left "[[mutate]]"
+                 , Left "[test] format pytest (stubs in other shapes come with [test] stub)"
                  ]
   it "a check through convert says so" $ do
     let Right l = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\nconvert = [\"c\"]\n"

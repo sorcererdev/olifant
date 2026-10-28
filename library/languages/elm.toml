@@ -1,6 +1,8 @@
 # Elm: tree-sitter-elm via ast-grep; checks with `elm make`. The grammar is
 # not shipped: the elm pack carries its sources (grammar = { source }).
 files = ["**/*.elm"]
+# What a unit is, as prompts say it (an anchor @path:Unit).
+unit_words = "a top-level function or type name (Name)"
 comment = "--"
 placeholder = 'Debug.todo "{= message =}"'
 branch = """

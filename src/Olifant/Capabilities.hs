@@ -16,7 +16,7 @@ data Capability = Capability {capName :: Text, capHow :: Either Text Text}
   deriving stock (Eq, Show)
 
 -- | Units, diagnostics, missing cases, tests, test units, test selection,
--- mutation.
+-- mutation, stub.
 capabilities :: Language -> [Capability]
 capabilities lang =
   [ Capability "units" units
@@ -26,6 +26,7 @@ capabilities lang =
   , Capability "test units" testUnits
   , Capability "test selection" selection
   , Capability "mutation" mutation
+  , Capability "stub" stub
   ]
   where
     check = langCheck lang
@@ -48,6 +49,9 @@ capabilities lang =
       | maybe False (not . null . testUnitPatterns) test = Right "[test] unit"
       | pytest = Right "built in (pytest shape)"
       | otherwise = Left "[test] unit"
+    stub
+      | pytest = Right "built in (pytest shape)"
+      | otherwise = Left "[test] format pytest (stubs in other shapes come with [test] stub)"
     mutation = case langMutate lang of
       [] -> Left "[[mutate]]"
       ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")

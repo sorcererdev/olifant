@@ -2,6 +2,8 @@
 # through `cabal repl` (spec §5.6): type-checks the library (-fno-code)
 # without linking, so a clean check exits 0.
 files = ["**/*.hs"]
+# What a unit is, as prompts say it (an anchor @path:Unit).
+unit_words = "a top-level function, type or class name (Name), or a name bound in its where (function.name)"
 comment = "--"
 grammar = "haskell"
 indent = "  "

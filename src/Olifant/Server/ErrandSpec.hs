@@ -6,6 +6,7 @@ import Data.Text qualified as T
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Process (neverCancel, newCancel)
 import Olifant.Plans (Anchor (..), parsePlan)
+import Olifant.Language (shippedLanguage)
 import Olifant.Server.Errand
 
 import System.Directory (getCurrentDirectory)
@@ -125,21 +126,31 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       parseAnswer Do ls step "DONE\r\nDONE nothing\r\n" `shouldBe` ([], 2)
       length (fst (parseAnswer Ask ls q "- a @x.py:A\r\n")) `shouldBe` 1
       parseAnswer Ask ls heading "- a @x.py:A" `shouldBe` ([], 0)
+    it "the anchor rule takes the project's languages' unit words" $ do
+      py <- shippedLanguage "python" []
+      hs <- shippedLanguage "haskell" []
+      rs <- shippedLanguage "rust" []
+      projectUnitWords [py] `shouldBe` pyWords
+      anchorRule pyWords `shouldSatisfy` T.isInfixOf "<Unit> is a top-level class or function name (Name) or a method (Class.method) defined in that file."
+      projectUnitWords [hs] `shouldSatisfy` T.isInfixOf "a name bound in its where (function.name)"
+      projectUnitWords [py, rs] `shouldBe` defaultUnitWords
+      projectUnitWords [] `shouldBe` defaultUnitWords
+      errandPrompt Ask (projectUnitWords [hs]) Nothing plan ls q [] `shouldSatisfy` T.isInfixOf "a name bound in its where"
     it "the prompt carries the plan, the units and the marker" $ do
-      let p = errandPrompt Ask Nothing plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
+      let p = errandPrompt Ask pyWords Nothing plan ls q [Grounded (Anchor "src/a.py" "Foo" 0 0) "class Foo:" "class Foo:\n    pass"]
       p `shouldSatisfy` T.isInfixOf "<doc>\n"
       p `shouldSatisfy` T.isInfixOf "QUESTION: where does the day page decide"
       p `shouldSatisfy` T.isInfixOf "@src/a.py:Foo\nclass Foo:"
       p `shouldSatisfy` T.isInfixOf "relative to the project root"
     it "validate and do prompts carry the section, step and its test" $ do
-      errandPrompt Validate Nothing plan ls heading [] `shouldSatisfy` T.isInfixOf "SECTION: Day page\n## Day page"
-      let d = errandPrompt Do Nothing plan ls step []
+      errandPrompt Validate pyWords Nothing plan ls heading [] `shouldSatisfy` T.isInfixOf "SECTION: Day page\n## Day page"
+      let d = errandPrompt Do pyWords Nothing plan ls step []
       d `shouldSatisfy` T.isInfixOf "STEP: the step\n  - test: it works @tests/t.py:test_it"
-      errandPrompt Do Nothing plan ls (ls !! 4) [] `shouldSatisfy` T.isInfixOf "TEST: it works @tests/t.py:test_it"
+      errandPrompt Do pyWords Nothing plan ls (ls !! 4) [] `shouldSatisfy` T.isInfixOf "TEST: it works @tests/t.py:test_it"
     it "a do's prompt for a step with an excerpt leaves the fence out, its other children in" $ do
       let t = T.unlines ["## S", "- [ ] the step @src/a.py:Foo", "  ```python @src/a.py:Foo", "  class Foo:", "      SECRET = 1", "  ```", "  - test: it works @tests/t.py:test_it"]
           pls = parsePlan t
-          d = errandPrompt Do Nothing t pls (pls !! 1) []
+          d = errandPrompt Do pyWords Nothing t pls (pls !! 1) []
       d `shouldSatisfy` (not . T.isInfixOf "SECRET")
       d `shouldSatisfy` (not . T.isInfixOf "```python @src/a.py:Foo")
       d `shouldSatisfy` T.isInfixOf "STEP: the step @src/a.py:Foo\n  - test: it works @tests/t.py:test_it"
@@ -147,15 +158,18 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       let cmd = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "{= tests =}"]
       doTestCommand cmd `shouldBe` Just "uv run --quiet --frozen pytest -q <test file, or file::test>"
       doTestCommand [] `shouldBe` Nothing
-      let d = errandPrompt Do (doTestCommand cmd) plan ls step []
+      let d = errandPrompt Do pyWords (doTestCommand cmd) plan ls step []
       d `shouldSatisfy` T.isInfixOf "uv run --quiet --frozen pytest -q <test file, or file::test>"
       d `shouldSatisfy` T.isInfixOf "no pipe"
       d `shouldSatisfy` T.isInfixOf "no `cd`"
       d `shouldSatisfy` T.isInfixOf "never a reason for BLOCKED"
-      errandPrompt Do Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "never a reason for BLOCKED"
-      errandPrompt Do Nothing plan ls step [] `shouldSatisfy` (not . T.isInfixOf "run the relevant tests")
+      errandPrompt Do pyWords Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "never a reason for BLOCKED"
+      errandPrompt Do pyWords Nothing plan ls step [] `shouldSatisfy` (not . T.isInfixOf "run the relevant tests")
     it "cuts a long body at 2000 characters and limits grounding to 20 units" $ do
       T.length (cutBody (T.replicate 3000 "x")) `shouldBe` 2002
       T.takeEnd 1 (cutBody (T.replicate 3000 "x")) `shouldBe` "…"
       cutBody "short" `shouldBe` "short"
       groundingLimit `shouldBe` 20
+
+pyWords :: T.Text
+pyWords = "a top-level class or function name (Name) or a method (Class.method)"

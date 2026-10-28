@@ -11,7 +11,8 @@ module Olifant.Server.Stub
   , belowDecorators
   ) where
 
-import Control.Monad (unless, when)
+import Control.Monad (forM_, when)
+import Olifant.Capabilities (Capability (..), capabilities)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Char (isAlphaNum, isDigit, isLower, isUpper, toLower)
@@ -101,7 +102,7 @@ stubWith given path line0 survivor s0 =
           line = belowDecorators moduleText line0
           above = defLineAbove line moduleText
           site = site0 {siteAtCursor = snd <$> above, siteDefLine = fst <$> above}
-      unless (langName lang == "python") (throwE ("stub writes Python tests only, not " <> langName lang <> " yet"))
+      forM_ [why | c <- capabilities lang, capName c == "stub", Left why <- [capHow c]] (\why -> throwE ("no stub for " <> langName lang <> ": " <> why))
       (unit, defLine) <-
         lift (functionAt s site line) >>= \case
           Just (n, d, _) -> pure (n, d)
