@@ -25,7 +25,6 @@ spec = describe "Olifant.Language.Presets" $ do
         adjust (_, name) t =
           let t' = M.delete "install" t
            in case name of
-                "cargo" -> M.adjust (\(TList ws) -> TList (filter (`notElem` [TText "--exclude", TText "diesel-*"]) ws)) "command" t'
                 "pytest" -> M.insert "tests_for" (TText "{= dir =}/test_{= stem =}.py") t'
                 _ -> t'
     M.keys shipped `shouldBe` M.keys legacy

@@ -334,7 +334,7 @@ example = "end of enum RefundInvoiceFailure"
 The `cargo` preset stands for
 
 ```toml
-command   = ["cargo", "check", "--workspace", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]
+command   = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]
 context   = ["**/Cargo.toml", "Cargo.lock"]
 format    = "rustc-json"
 exclusive = true
@@ -352,9 +352,8 @@ root_pick = "outermost"
 - **`root`, `root_pick = "outermost"`.** In a repository holding several Rust projects, a
   check runs in the Cargo workspace around the files it judges: the outermost folder with a
   `Cargo.toml` (a crate's own `Cargo.toml` sits inside the workspace's).
-- **`--exclude diesel-*`** is rust-htmx's, not the preset's: the template's Diesel adapters need
-  libpq and its real `db` crate, so the pack's `rust.toml` writes the preset's `command` with the
-  exclusion; they are left out of every check, and the in-memory adapters are compiled.
+- **`--exclude diesel-*`.** The rust-htmx template's Diesel adapters need libpq and its real
+  `db` crate; they are left out of every check, and the in-memory adapters are compiled.
 - **`rustc-json`** reads cargo's `compiler-message` lines from stdout: error E0004 is a
   `match` missing arms, a site `complete` extends; E0005 (a refutable `let`) is a warning;
   any other error is a broken file. A `complete` edit names its variant `Type::Variant`.
@@ -546,7 +545,7 @@ holding one `[check]` or `[test]` table with the keys it fills in:
 | table | preset | what it runs |
 |---|---|---|
 | `[check]` | `pyright` | `uv run pyright --outputjson` in the project's venv in Olifant's cache; `pyright-json`; rooted at `pyproject.toml` |
-| `[check]` | `cargo` | `cargo check --workspace --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
+| `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
 | `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml`; `tests_for = "{= dir =}/test_{= stem =}.py"` |
 | `[check]` | `cabal-repl` | `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}` with `-fno-code`, GHC's JSON diagnostics and its missing-pattern warning; `ghc-json`; `exclusive`; context `*.cabal`, `cabal.project`, `cabal.project.freeze`. Loads the package's one library |
 | `[test]` | `hspec` | `cabal test -v0 --builddir={= cache =}/dist-test-{= context =} --test-show-details=direct --test-option=--format=checks --test-option=--no-color`, then the selected tests; `format = "lines"` over hspec's tree ([test formats](#test-formats)); one test by `--match=/{= group =}/{= name =}/`, a file by its module (`file_group`); `unit` finds `describe`/`it`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}Spec.hs"` |
