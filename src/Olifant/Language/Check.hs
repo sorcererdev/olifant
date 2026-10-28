@@ -38,7 +38,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Aeson (encode, object, (.=))
 import Data.Functor ((<&>))
 import Data.List (isPrefixOf, nub, sort)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as S
 import Olifant.Workspace (pruned)
 import Data.Map.Strict (Map)
@@ -182,7 +182,7 @@ readTestReport td requested code out err = case testFormat td of
   "lines" -> maybe (broken "[test] format \"lines\" has no [test.lines]") (\lf -> fromReported requested code said (parseLines lf said)) (testLines td)
   "tap" -> either broken (fromReported requested code said) (parseTap said)
   "junit-xml" -> either broken (fromReported requested code said) (parseJunit said)
-  _ -> either broken attributed (parseTestJson out)
+  _ -> either broken refine (parseTestJson out)
   where
     said = TE.decodeUtf8With lenientDecode (out <> err)
     broken why = TestRun [] [] (Just why)
@@ -190,6 +190,11 @@ readTestReport td requested code out err = case testFormat td of
     own i
       | "::" `T.isInfixOf` i = i
       | otherwise = attribute requested (Reported Nothing [i] Nothing)
+    -- a report that says nothing follows the other formats' rules; its own `broken` wins
+    refine run
+      | isJust (trBroken run) = run
+      | null (trPassed run), null (trFailed run) = fromReported requested code said []
+      | otherwise = attributed run
     attributed run = run {trPassed = map own (trPassed run), trFailed = [(own i, f) | (i, f) <- trFailed run]}
 
 noChecker :: Applicative m => Checker m

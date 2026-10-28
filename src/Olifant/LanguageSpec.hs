@@ -252,6 +252,26 @@ spec = do
             ])
       Right run <- runTests (processRunner neverCancel 60) lang ["a_t.x"] (M.fromList [("a_t.x", "")])
       (trPassed run, map fst (trFailed run)) `shouldBe` (["a_t.x::t1"], ["a_t.x::t2"])
+    it "olifant-json: no results and a non-zero exit is broken with the output; with exit 0, no tests ran; a report's own broken wins" $ do
+      let jsonLang cmd = let Right l = parseLanguage "x" "/x" (T.unlines
+                                [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+                                , "[test]", "command = [\"sh\", \"-c\", \"" <> cmd <> "\"]", "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+                                ]) in l
+          run cmd = runTests (processRunner neverCancel 60) (jsonLang cmd) ["a_t.x"] (M.fromList [("a_t.x", "")])
+      Right crashed <- run "echo '{}'; echo runner crashed >&2; exit 1"
+      trBroken crashed `shouldSatisfy` maybe False ("runner crashed" `T.isInfixOf`)
+      Right empty <- run "echo '{}'"
+      trBroken empty `shouldBe` Just "no tests ran"
+      Right own <- run "echo '{\\\"broken\\\":\\\"mine\\\"}'; exit 1"
+      trBroken own `shouldBe` Just "mine"
+    it "olifant-json through convert: an empty converted report follows the same rules" $ do
+      let Right lang = parseLanguage "x" "/x" (T.unlines
+            [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+            , "[test]", "command = [\"sh\", \"-c\", \"echo boom >&2; exit 1\"]", "tests_for = \"{= stem =}_t.x\""
+            , "convert = [\"sh\", \"-c\", \"cat >/dev/null; echo '{}'\"]"
+            ])
+      Right r <- runTests (processRunner neverCancel 60) lang ["a_t.x"] (M.fromList [("a_t.x", "")])
+      trBroken r `shouldSatisfy` maybe False (/= "no tests ran")
     it "a group id owns its tests (keptVerdict)" $ do
       keptVerdict "f::g" [] (TestRun ["f::g::t"] [] Nothing) `shouldBe` Right ()
       keptVerdict "f::g" [] (TestRun [] [("f::g::t", Failure Nothing "x" "")] Nothing) `shouldBe` Left (Nothing, Failure Nothing "x" "")
