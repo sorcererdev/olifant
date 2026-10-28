@@ -14,7 +14,7 @@ import System.FilePath (makeRelative)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Failure (..), Runner (..), Syntax, TestRun (..), parseLanguage, processRunner, runTestsIn)
+import Olifant.Language (Failure (..), Runner (..), Syntax, TestRun (..), parseOverShipped, processRunner, runTestsIn)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Mutate
 import Olifant.Mutate.Python (pythonOperators)
@@ -28,7 +28,7 @@ spec = describe "Olifant.Mutate" $ do
   pythonToml <- runIO (TIO.readFile "packs/python-htmx/languages/python.toml")
   strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
   tmp <- runIO getTemporaryDirectory
-  let Right py = parseLanguage "python" "packs/python-htmx" pythonToml
+  let Right py = parseOverShipped "python" "packs/python-htmx" pythonToml
       body =
         T.unlines
           [ "def handle(self, input):",

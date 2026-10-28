@@ -6,16 +6,16 @@ import Data.Either (isRight)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Capabilities
-import Olifant.Language (Language, parseLanguage)
+import Olifant.Language (Language, parseLanguage, parseOverShipped)
 import Test.Hspec
 
 packLanguage :: T.Text -> FilePath -> IO Language
-packLanguage name pack = either (error . T.unpack) id . parseLanguage name pack <$> TIO.readFile (pack <> "/languages/" <> T.unpack name <> ".toml")
+packLanguage name pack = either (error . T.unpack) id . parseOverShipped name pack <$> TIO.readFile (pack <> "/languages/" <> T.unpack name <> ".toml")
 
 spec :: Spec
 spec = do
   it "olifant's own haskell.toml: all six capabilities present" $ do
-    hs <- packLanguage "haskell" "packs/olifant-dev"
+    hs <- packLanguage "haskell" ".olifant"
     map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "test selection"]
     map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True
     lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[unit] kinds (ast-grep), named by [unit] name, joined")

@@ -1,10 +1,11 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 -- | The libraries shipped inside the binary (design §three layers): the
--- toolchain presets under @library/toolchains@, one TOML file per preset.
+-- languages under @library/languages@ and the toolchain presets under
+-- @library/toolchains@, one TOML file each.
 -- `embedDir` sees a newly added file only once this module recompiles:
 -- touch it after adding one.
-module Olifant.Library (shippedToolchains) where
+module Olifant.Library (shippedLanguages, shippedToolchains) where
 
 import Data.ByteString (ByteString)
 import Data.FileEmbed (embedDir)
@@ -21,3 +22,7 @@ tomlFiles fs = sortOn fst [(T.pack (takeBaseName f), TE.decodeUtf8 b) | (f, b) <
 -- | The shipped toolchain presets: (preset name, TOML source).
 shippedToolchains :: [(Text, Text)]
 shippedToolchains = tomlFiles $(embedDir "library/toolchains")
+
+-- | The shipped languages: (language name, TOML source).
+shippedLanguages :: [(Text, Text)]
+shippedLanguages = tomlFiles $(embedDir "library/languages")

@@ -16,7 +16,7 @@ import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..))
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), render)
-import Olifant.Language (Language (..), Match (..), Syntax (..), querying, noSyntax)
+import Olifant.Language (Language (..), Match (..), Syntax (..), TestDef (..), originOf, querying, noSyntax)
 import Olifant.Region (RegionDefWith (..))
 import Olifant.Workspace
 import Test.Hspec
@@ -144,6 +144,51 @@ spec = describe "catalog" $ do
       either describeCatalogError (const "") bad `shouldSatisfy` T.isInfixOf "typo"
       none <- openWith [("/proj/.olifant/config.toml", "[migrate]\nbase = \"main\"\n")]
       either describeCatalogError (const "") none `shouldSatisfy` T.isInfixOf "legacy"
+  describe "languages: shipped, then packs, then the project (language-neutral m2)" $ do
+    let gen l = "description = \"d\"\nlanguage = \"" <> l <> "\"\n"
+        cfg = ("/proj/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n")
+    it "a generator's language is active, from the shipped file" $ do
+      Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python")]
+      map langName (catalogLanguages cat) `shouldBe` ["python"]
+      map langLayers (catalogLanguages cat) `shouldBe` [["shipped"]]
+    it "the config's languages are active" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n")]
+      map langName (catalogLanguages cat) `shouldBe` ["rust"]
+    it "one language per name, its layers in pack order" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "[packs]\na = { path = \"/packs/a\" }\nb = { path = \"/packs/b\" }\n"), ("/packs/a/languages/python.toml", "indent = \"  \"\n"), ("/packs/b/languages/python.toml", "line_length = 100\n")]
+      map langLayers (catalogLanguages cat) `shouldBe` [["shipped", "pack a", "pack b"]]
+      map langIndent (catalogLanguages cat) `shouldBe` ["  "]
+    it "a project override wins" $ do
+      Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python"), ("/proj/.olifant/languages/python.toml", "indent = \"  \"\n")]
+      let [l] = catalogLanguages cat
+      langIndent l `shouldBe` "  "
+      originOf l "indent" `shouldBe` Just "project"
+      langLayers l `shouldBe` ["shipped", "project"]
+    it "a broken override is set aside with its file and key; the rest load (Review Focus 4)" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/languages/python.toml", "bogus = 1\n")]
+      map langName (catalogLanguages cat) `shouldBe` ["rust"]
+      let [(path, why)] = catalogBrokenLanguages cat
+      path `shouldBe` "/proj/.olifant/languages/python.toml"
+      why `shouldSatisfy` T.isInfixOf "bogus"
+    it "a pack's toolchain overrides the shipped preset" $ do
+      Right cat <- openWith [cfg, ("/packs/p/languages/haskell.toml", ""), ("/packs/p/toolchains/hspec.toml", "[test]\ncommand = [\"x\"]\n")]
+      map (fmap testCommand . langTest) (catalogLanguages cat) `shouldBe` [Just ["x"]]
+    it "elm without its pack is broken, naming the grammar" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"elm\"]\n")]
+      map langName (catalogLanguages cat) `shouldBe` []
+      map snd (catalogBrokenLanguages cat) `shouldSatisfy` any (T.isInfixOf "grammar")
+    it "a generator naming elm without the elm pack: no elm, and nothing broken" $ do
+      Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "elm")]
+      (map langName (catalogLanguages cat), catalogBrokenLanguages cat) `shouldBe` ([], [])
+    it "edits to the project's override and to a pack's toolchain show on the next open (Review Focus 5)" $ do
+      (root, _) <- memoryWorkspace [cfg, ("/packs/p/languages/python.toml", ""), ("/packs/p/toolchains/pytest.toml", "[test]\ncommand = [\"a\"]\n")]
+      cache <- newPackCache
+      let open = openProjectCatalogCached cache root projectOnly
+          seen = either (const []) (map (\l -> (langIndent l, fmap testCommand (langTest l))) . catalogLanguages)
+      seen <$> open `shouldReturn` [("    ", Just ["a"])]
+      writeText root "/proj/.olifant/languages/python.toml" "indent = \"  \"\n"
+      writeText root "/packs/p/toolchains/pytest.toml" "[test]\ncommand = [\"b\"]\n"
+      seen <$> open `shouldReturn` [("  ", Just ["b"])]
   describe "the pack cache (olifant lsp: many projects, packs parsed once)" $ do
     let gen desc = "description = \"" <> desc <> "\"\nlanguage = \"x\"\n[[edits]]\ncreate = \"a.x\"\ntext = \"a\"\n"
         config pack = "[packs]\npython-htmx = { path = \"" <> pack <> "\" }\n"

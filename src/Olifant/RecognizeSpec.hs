@@ -4,7 +4,7 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Language (..), parseLanguage)
+import Olifant.Language (Language (..), parseLanguage, parseOverShipped)
 import Olifant.Recognize
 import Control.Monad (forM, forM_, (>=>))
 import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..), generatorIdText, parseGenerator)
@@ -220,7 +220,7 @@ packProject pack ext lang = do
   paths <- filter (\p -> takeExtension p == ext && not ("/target/" `isInfixOf` p)) <$> walk root
   files <- forM paths $ \p -> (makeRelative root p,) <$> TIO.readFile p
   adapter <- TIO.readFile ("packs/" <> T.unpack pack <> "/languages/" <> T.unpack lang <> ".toml")
-  language <- either (fail . T.unpack) pure (parseLanguage lang ("packs/" <> T.unpack pack) adapter)
+  language <- either (fail . T.unpack) pure (parseOverShipped lang ("packs/" <> T.unpack pack) adapter)
   let mine = [g | g <- gens, genLanguage g == lang]
   pure (mine, files, keywordsFrom (langComment language) [t | g <- mine, Create {editSource = t} <- genEdits g] (langKeywords language))
   where

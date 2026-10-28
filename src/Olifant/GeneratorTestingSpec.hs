@@ -13,7 +13,7 @@ import Data.Map.Strict qualified as M
 import Data.Text.IO qualified as TIO
 import Olifant.Generation.Tools (Verifier (..))
 import Olifant.Language.Check (noVerifier, processVerifierWith)
-import Olifant.Language (HoleKind (..), Language (..), Syntax (..), querying, SyntaxFailure (..), compileClean, noChecker, noRunner, noSyntax, parseLanguage, processChecker, processCheckerWith)
+import Olifant.Language (HoleKind (..), Language (..), Syntax (..), querying, SyntaxFailure (..), compileClean, noChecker, noRunner, noSyntax, parseOverShipped, processChecker, processCheckerWith)
 import Olifant.Template (Value (..), render)
 import Olifant.Workspace (Workspace (..))
 import System.Directory (doesFileExist, findExecutable)
@@ -165,7 +165,7 @@ spec = do
       rulesSrc <- TIO.readFile "packs/rust-htmx/rules.toml"
       langSrc <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
       let Right rules = parseRules rulesSrc
-          Right rust = parseLanguage "rust" "packs/rust-htmx" langSrc
+          Right rust = parseOverShipped "rust" "packs/rust-htmx" langSrc
           path = "billing/billing-service/src/cancel_invoice.rs"
           code = "use std::sync::Arc;\nuse diesel::prelude::*;\n\nfn f() { let x = g().unwrap(); }\n"
       (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [rust] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just code)) [path]
@@ -185,7 +185,7 @@ spec = do
       rulesSrc <- TIO.readFile "packs/python-htmx/rules.toml"
       langSrc <- TIO.readFile "packs/python-htmx/languages/python.toml"
       let Right rules = parseRules rulesSrc
-          Right python = parseLanguage "python" "packs/python-htmx" langSrc
+          Right python = parseOverShipped "python" "packs/python-htmx" langSrc
           check path code = do
             (fs, _) <- checkFiles (astGrepSyntax (tmp </> "olifant-test-cache")) [python] (RulesConfig [] []) [] (\_ -> pure AllNew) rules [path] (\_ -> pure (Just code)) [path]
             pure [(fRule f, fmap (fst . fst) (fRange f), fSeverity f, map foGenerator (fFixes f)) | f <- fs]
@@ -236,7 +236,7 @@ spec = do
     cases <- runIO (discoverCases (diskWorkspace ".") "packs")
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
     elmSrc <- runIO (TIO.readFile "packs/elm/languages/elm.toml")
-    let Right elm = parseLanguage "elm" "packs/elm" elmSrc
+    let Right elm = parseOverShipped "elm" "packs/elm" elmSrc
     forM_ [c | c <- cases, casePack c == "elm"] $ \c ->
       it (T.unpack (caseName c)) $
         findExecutable "elm" >>= \case
@@ -257,7 +257,7 @@ spec = do
     cases <- runIO (discoverCases (diskWorkspace ".") "packs")
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
     pySrc <- runIO (TIO.readFile "packs/python-htmx/languages/python.toml")
-    let Right python = parseLanguage "python" "packs/python-htmx" pySrc
+    let Right python = parseOverShipped "python" "packs/python-htmx" pySrc
         withUv k = findExecutable "uv" >>= \case
           Nothing -> missingTool strict "uv is not installed (brew install uv)"
           Just _ -> k
@@ -471,7 +471,7 @@ spec = do
     cases <- runIO (discoverCases (diskWorkspace ".") "packs")
     strict <- runIO ((== Just "1") <$> lookupEnv "OLIFANT_REQUIRE_TOOLS")
     rustSrc <- runIO (TIO.readFile "packs/rust-htmx/languages/rust.toml")
-    let Right rust = parseLanguage "rust" "packs/rust-htmx" rustSrc
+    let Right rust = parseOverShipped "rust" "packs/rust-htmx" rustSrc
     -- A snippet's case (it has a cursor, `at`) is unfinished by design: the
     -- follow-up it raises completes it (spec §4.9), so it is not compiled alone.
     snippetCases <- runIO (filterM (\c -> T.isInfixOf "\nat = " . ("\n" <>) <$> TIO.readFile (caseDir c </> "inputs.toml")) cases)
@@ -514,7 +514,7 @@ spec = do
                 Right plan <- generate ws resolve tools [Step gen sets] now PlanOnly
                 [() | PlannedHole {phStatus = HoleUnfilled _} <- planHoles plan] `shouldNotBe` []
                 src <- TIO.readFile (casePackRoot c </> "languages" </> (langName' <> ".toml"))
-                let Right lang = parseLanguage (T.pack langName') (casePackRoot c) src
+                let Right lang = parseOverShipped (T.pack langName') (casePackRoot c) src
                 fixture <- readTree (casePackRoot c </> "fixtures" </> "app")
                 compileClean lang (M.unions [planWrites plan, given, fixture]) `shouldReturn` Right ()
   where

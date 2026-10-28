@@ -48,6 +48,7 @@ module Olifant.Catalog
   , packOfEntry
   ) where
 
+import Control.Monad ((>=>))
 import Data.Bifunctor (bimap, first)
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
@@ -67,7 +68,8 @@ import Data.Text qualified as T
 import Olifant.Generator
 import Olifant.Snippet (withHoleSources)
 import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
-import Olifant.Language (Language (..), Match (..), Syntax, languageFor, matchShape, parseLanguage)
+import Olifant.Language (Language (..), Layer (..), Match (..), Syntax, languageFor, languageFromLayers, matchShape, shippedLayer)
+import Olifant.Language.Presets (Presets, overPresets, presetsFrom, shippedPresets)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.ProjectModel (ModelMap, parseModelMap)
 import Olifant.Region (RegionDef, RegionDefWith (..), parseRegions)
@@ -93,7 +95,11 @@ data Catalog = Catalog
   , catalogEntries :: [CatalogEntry]
   , catalogBroken :: [(GeneratorId, FilePath, Text)]
   , catalogPacks :: [Text]
-  , -- | language adapters from every pack's `languages/*.toml` (spec §12), in pack order
+  , -- | the project's languages (spec §12), one per name: each the shipped
+    -- file, then the packs' `languages/<name>.toml` in pack order, then the
+    -- project's `.olifant/languages/<name>.toml`, merged by key. A language is
+    -- the project's when a pack or the project has a file for it, a
+    -- generator names it, or the config's `languages` lists it
     catalogLanguages :: [Language]
   , catalogBrokenLanguages :: [(FilePath, Text)]
   , -- | owned regions (spec §5.8): packs' then the project's; a later one replaces an earlier one of the same name
@@ -253,7 +259,7 @@ openProjectCatalogWith loadP root paths = do
     Left err -> pure (Left err)
     Right (fromUser, fromProject) -> do
       let packRoots = M.toList (M.fromList (fromUser ++ fromProject))
-      result <- openCatalogAt root loadP (Just (project </> ".olifant" </> "generators")) packRoots
+      result <- openCatalogAt root loadP (Just (project </> ".olifant")) packRoots
       own <- regionsIn root (project </> ".olifant")
       ownRules <- rulesIn root (project </> ".olifant")
       rulesConfig <- readText root projectConfig <&> \case
@@ -377,27 +383,86 @@ packsFromConfig src = do
     (\(name, v) -> Toml.inKey "packs" (Toml.inKey name (Toml.table v >>= \t -> Toml.onlyKeys ["path"] t >> (name,) . T.unpack <$> Toml.required "path" Toml.text t)))
     (maybe [] M.toList packs)
 
+-- | The catalog of these packs and, when given, the project's `.olifant`
+-- folder (its generators, languages, toolchains and config's `languages`).
 openCatalogAt :: Monad m => Workspace m -> ((Text, FilePath) -> m LoadedPack) -> Maybe FilePath -> [(Text, FilePath)] -> m (Either CatalogError Catalog)
-openCatalogAt root loadP localDir packs = do
+openCatalogAt root loadP olifantDir packs = do
   states <- traverse (\(name, r) -> (name,r,) <$> inspectPath root r) packs
   case [(name, r) | (name, r, st) <- states, st /= Directory] of
     (name, r) : _ -> pure (Left (PackMissing name r))
-    [] -> Right <$> openAt root loadP localDir packs
+    [] -> Right <$> openAt root loadP olifantDir packs
 
 openAt :: Monad m => Workspace m -> ((Text, FilePath) -> m LoadedPack) -> Maybe FilePath -> [(Text, FilePath)] -> m Catalog
-openAt root loadP localDir packs = do
-  local <- maybe (pure []) (discover root Nothing Nothing) localDir
+openAt root loadP olifantDir packs = do
+  local <- maybe (pure []) (\d -> discover root Nothing Nothing (d </> "generators")) olifantDir
   fromPacks <- traverse loadP packs
+  ownLayers <- maybe (pure []) (\d -> layersIn root "project" d) olifantDir
+  ownToolchains <- maybe (pure (Right (presetsOf []))) (\d -> toolchainsIn root "project" d) olifantDir
+  configured <- maybe (pure (Right [])) (\d -> readText root (d </> "config.toml") <&> maybe (Right []) (first ((d </> "config.toml",)) . (Toml.parseToml >=> \top -> fromMaybe [] <$> Toml.optional "languages" (Toml.list Toml.text) top))) olifantDir
   let loaded = local ++ concatMap lpEntries fromPacks
-      langs = concatMap lpLanguages fromPacks
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) (rights langs) (lefts langs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans
+      layers = concatMap lpLanguages fromPacks ++ ownLayers
+      toolchains = map lpToolchains fromPacks ++ [ownToolchains]
+      presets = foldl overPresets shippedPresets (rights toolchains)
+      layerNames = [n | Right (n, _, _) <- layers]
+      configuredNames = either (const []) id configured
+      named = [(n, True) | n <- layerNames] ++ [(genLanguage (entryDefinition e), False) | e <- rights loaded] ++ [(n, True) | n <- configuredNames]
+      (langs, brokenLangs) = assembleLanguages presets (rights layers) named
+      broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
+  where
+    presetsOf = either (error . T.unpack) id . presetsFrom "project"
+
+-- | One language per name, in order of first naming: its layers (the shipped
+-- file first), merged; a name nothing provides is skipped (a generator's
+-- `toml`), and a language that does not parse is set aside with the path of
+-- its last layer. A name only generators give (False) is skipped too when it
+-- does not parse: shipped elm without the elm pack's grammar is no error in
+-- a project that never asked for elm.
+assembleLanguages :: Presets -> [(Text, FilePath, Layer)] -> [(Text, Bool)] -> ([Language], [(FilePath, Text)])
+assembleLanguages presets layers named = foldr add ([], []) (nubOrd (map fst named))
+  where
+    asked name = or [b | (n, b) <- named, n == name]
+    add name (ok, bad) =
+      let own = [(path, l) | (n, path, l) <- layers, n == name]
+          stack = maybe [] pure (shippedLayer name) ++ map snd own
+          path = maybe ("library/languages/" <> T.unpack name <> ".toml") fst (lastMaybe own)
+       in if null stack then (ok, bad) else either (\why -> if asked name then (ok, (path, why) : bad) else (ok, bad)) (\l -> (l : ok, bad)) (languageFromLayers presets name stack)
+    lastMaybe xs = if null xs then Nothing else Just (last xs)
+    nubOrd = go S.empty
+      where
+        go _ [] = []
+        go seen (x : xs) = if S.member x seen then go seen xs else x : go (S.insert x seen) xs
+
+-- | The language layers in a folder's `languages/*.toml`, from ORIGIN.
+layersIn :: Monad m => Workspace m -> Text -> FilePath -> m [Either (FilePath, Text) (Text, FilePath, Layer)]
+layersIn root origin r = do
+  let dir = r </> "languages"
+  files <- listFiles root dir
+  traverse
+    ( \f -> do
+        let path = dir </> f
+        src <- readText root path
+        pure $ case src of
+          Nothing -> Left (path, "unreadable")
+          Just t -> bimap (path,) (\top -> (T.pack (takeBaseName f), path, Layer origin (Just r) top)) (Toml.parseToml t)
+    )
+    [f | f <- files, takeExtension f == ".toml", length (splitDirectories f) == 1]
+
+-- | The toolchain presets in a folder's `toolchains/*.toml`, from ORIGIN.
+toolchainsIn :: Monad m => Workspace m -> Text -> FilePath -> m (Either (FilePath, Text) Presets)
+toolchainsIn root origin r = do
+  let dir = r </> "toolchains"
+  files <- listFiles root dir
+  texts <- traverse (\f -> (T.pack (takeBaseName f),) . fromMaybe "" <$> readText root (dir </> f)) [f | f <- files, takeExtension f == ".toml", length (splitDirectories f) == 1]
+  pure (first (dir,) (presetsFrom origin texts))
 
 -- | What one pack brings, parsed: its generators (or why each is broken),
--- language adapters, regions and rules.
+-- language layers, toolchain presets, regions and rules.
 data LoadedPack = LoadedPack
   { lpEntries :: [Either (GeneratorId, FilePath, Text) CatalogEntry]
-  , lpLanguages :: [Either (FilePath, Text) Language]
+  , lpLanguages :: [Either (FilePath, Text) (Text, FilePath, Layer)]
+  , lpToolchains :: Either (FilePath, Text) Presets
   , lpRegions :: Either (FilePath, Text) [RegionDef]
   , lpRules :: Either (FilePath, Text) [RuleDef]
   , lpModel :: Maybe (Either (FilePath, Text) ModelMap)
@@ -405,21 +470,9 @@ data LoadedPack = LoadedPack
 
 loadPack :: Monad m => Workspace m -> (Text, FilePath) -> m LoadedPack
 loadPack root (name, r) =
-  LoadedPack <$> discover root (Just name) (Just r) (r </> "generators") <*> languagesIn <*> regionsIn root r <*> rulesIn root r <*> modelIn
+  LoadedPack <$> discover root (Just name) (Just r) (r </> "generators") <*> layersIn root ("pack " <> name) r <*> toolchainsIn root ("pack " <> name) r <*> regionsIn root r <*> rulesIn root r <*> modelIn
   where
     modelIn = readText root (r </> "model.toml") <&> fmap (first (r </> "model.toml",) . parseModelMap)
-    languagesIn = do
-      let dir = r </> "languages"
-      files <- listFiles root dir
-      traverse
-        ( \f -> do
-            let path = dir </> f
-            src <- readText root path
-            pure $ case src of
-              Nothing -> Left (path, "unreadable")
-              Just t -> first (path,) (parseLanguage (T.pack (takeBaseName f)) r t)
-        )
-        [f | f <- files, takeExtension f == ".toml", length (splitDirectories f) == 1]
 
 -- | The generators in a folder (each `NAME/generator.toml`), as a pack's or
 -- the project's own.

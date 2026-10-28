@@ -14,6 +14,8 @@ module Olifant.Language.Adapter
   , parseLanguage
   , Layer (..)
   , languageFromLayers
+  , shippedLayer
+  , parseOverShipped
   , originOf
   , matchesGlob
   , languageFor
@@ -33,6 +35,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.Presets (Presets (..), applyPreset, shippedPresets)
+import Olifant.Library (shippedLanguages)
 import Olifant.Language.Rule
 import Olifant.Language.Diagnostics (CompilerSupport)
 import Olifant.Language.Generic (ErrorFormat (..), LinesFormat (..))
@@ -176,11 +179,22 @@ data Select = Select {selTest :: Text, selFile :: Text}
 data Layer = Layer {layerOrigin :: Text, layerDir :: Maybe FilePath, layerTable :: Table}
   deriving stock (Show)
 
+-- | The shipped language of that name, as a layer (Nothing: none ships).
+shippedLayer :: Text -> Maybe Layer
+shippedLayer name = (\src -> Layer "shipped" Nothing (either (\e -> error (T.unpack ("library/languages/" <> name <> ".toml: " <> e))) id (parseToml src))) <$> lookup name shippedLanguages
+
 -- | One pack's language file, over nothing, with the shipped presets.
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
 parseLanguage name packRoot src = do
   top <- parseToml src
   languageFromLayers shippedPresets name [Layer ("pack " <> T.pack (takeFileName packRoot)) (Just packRoot) top]
+
+-- | One pack's language file over the shipped language of its name: what a
+-- project with only that pack has.
+parseOverShipped :: Text -> FilePath -> Text -> Either Text Language
+parseOverShipped name packRoot src = do
+  top <- parseToml src
+  languageFromLayers shippedPresets name (maybe [] pure (shippedLayer name) ++ [Layer ("pack " <> T.pack (takeFileName packRoot)) (Just packRoot) top])
 
 -- | A language from its layers, merged by key, later winning
 -- ('mergeTables'); then the one preset the merged [check] or [test] names

@@ -403,7 +403,7 @@ It answers what commits cannot: which lines a model conjured, and which you wrot
 A language adapter says how to run its tests and where a module's tests live:
 
 ```toml
-# packs/python-htmx/languages/python.toml
+# library/languages/python.toml, under packs/python-htmx/languages/python.toml
 [test]
 preset    = "pytest"
 tests_for = "{= dir =}/{= stem =}__test.py"

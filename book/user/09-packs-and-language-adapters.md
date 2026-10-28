@@ -16,8 +16,9 @@ packs/elm/
       tests/…
   fixtures/app/          the small app the generators are tested against (and copy from)
   languages/
-    elm.toml             the Elm language adapter
+    elm.toml             over the shipped elm.toml: the grammar below
     grammar/elm/         the tree-sitter grammar it needs, vendored as C source
+  toolchains/            preset overrides, <name>.toml (optional)
   regions.toml           owned regions (optional; olifant-dev and rust-htmx have one)
   rules.toml             rules: conventions as checks (optional; rust-htmx has one)
   model.toml             how the pack's conventions map onto the project model (optional)
@@ -185,14 +186,62 @@ misses (`end of uses` in `billing-service/src/lib.rs`, which only has `pub mod`s
 items to insert beside"). Give `start of file` as the fallback, as
 `command-dependency` does: `at = ["end of uses", "start of file"]`.
 
-Adapters come only from configured packs. In a project that only configures `rust-htmx`,
-`olifant anchors elm` says "no language adapter named `elm`", and `.elm` files get only the
-built-in line and marker targets. A project cannot declare an adapter of its own; put it in
-a pack (a pack can be nothing but a `languages/` directory).
+### Where a language comes from
+
+Olifant ships its languages: `python`, `rust`, `haskell` and `elm` are TOML files inside the
+binary (`library/languages/<name>.toml` in Olifant's source), as are the toolchain presets
+([below](#presets-check-and-test)). A language is the merge of up to three **layers**, each the
+same file format, later winning:
+
+1. the shipped file;
+2. each configured pack's `languages/<name>.toml`, in pack order;
+3. the project's own `.olifant/languages/<name>.toml`.
+
+They merge key by key: a table merges with the table under the same key (so a pack's `[test]
+tests_for` keeps the shipped `[test] preset`), and anything else — a string, a number, a list,
+an array of tables like `[[mutate]]` — is replaced whole. Then the one preset the merged `[check]`
+or `[test]` names fills in the keys still missing. So a project that names a different preset
+swaps the whole preset, while the keys an earlier layer wrote stay. A `grammar = { source = "…" }`
+is found beside the layer that set it (`<pack>/languages/…` or `.olifant/languages/…`); a shipped
+file cannot name one, which is why the elm pack keeps `languages/elm.toml` with only its grammar.
+
+Toolchains layer the same way: a pack's `toolchains/<name>.toml` and the project's
+`.olifant/toolchains/<name>.toml` (one `[check]` or `[test]` table each) override the shipped
+preset of that name.
+
+A shipped language is not on in every project. A language is the project's when a pack or the
+project has a `languages/<name>.toml` for it, when a generator says `language = "<name>"`, or
+when the project's `.olifant/config.toml` lists it:
+
+```toml
+languages = ["rust"]
+```
+
+A language that does not load (an unknown key, a missing `grammar`) is reported with the path of
+its last layer (`olifant doctor`, `olifant list`) and the others load; one that only a generator
+names and that cannot load (elm without the elm pack) is left out quietly. `olifant doctor` says
+which layers each language came from and which layer set each capability's key.
+
+In a project with no Elm, `olifant anchors elm` says "no language adapter named `elm`", and
+`.elm` files get only the built-in line and marker targets.
+
+**Migrating a pack.** A pack's full `languages/<name>.toml` from before keeps working: it is now a
+layer over the shipped file, and every key it sets wins. It can be thinned to what its convention
+changes — python-htmx's is three lines, its `__test.py` test files:
+
+```toml
+# Over the shipped python.toml: only what this pack's convention changes.
+[test]
+tests_for = "{= dir =}/{= stem =}__test.py"
+```
+
+Adding a language to Olifant itself is a file in `library/languages/` (touch
+`src/Olifant/Library.hs` so the embed sees it); adding one to a project is a file in
+`.olifant/languages/`.
 
 ### The keys
 
-From `packs/rust-htmx/languages/rust.toml` and `packs/elm/languages/elm.toml`:
+From `library/languages/rust.toml` and `library/languages/elm.toml`:
 
 ```toml
 files       = ["**/*.rs"]                         # which files this adapter covers
@@ -246,7 +295,7 @@ anchors` on it or a `complete` edit whose `language` names it.
 
 ### A second example: Haskell
 
-`packs/olifant-dev/languages/haskell.toml` uses ast-grep's grammar built in for Haskell,
+`library/languages/haskell.toml` uses ast-grep's grammar built in for Haskell,
 checks with GHC through `cabal repl` instead of `elm make`, and runs its tests with hspec
 through `cabal test`. Both are presets ([below](#presets-check-and-test)):
 
@@ -313,7 +362,7 @@ item by the word after its keyword (`pub(crate) async fn load` → `load`); Elm'
 
 ### A third example: Rust
 
-`packs/rust-htmx/languages/rust.toml` checks the whole cargo workspace:
+`library/languages/rust.toml` checks the whole cargo workspace:
 
 ```toml
 placeholder = 'todo!("{= message|rust_string =}")'
@@ -375,7 +424,7 @@ root_pick = "outermost"
 
 ### A fourth example: Python
 
-`packs/python-htmx/languages/python.toml` is the Python adapter. It uses ast-grep's built-in
+`library/languages/python.toml` is the Python adapter. It uses ast-grep's built-in
 grammar and checks with pyright, in strict mode, through `uv`:
 
 ```toml
@@ -706,7 +755,7 @@ use only the kinds its file's adapter declares. Each kind is a table with two ke
 required:
 
 ```toml
-# packs/rust-htmx/languages/rust.toml
+# library/languages/rust.toml
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.
 [holes.expr]
@@ -723,7 +772,7 @@ wrap = "type __Olifant = {= fill =};"
 ```
 
 ```toml
-# packs/elm/languages/elm.toml
+# library/languages/elm.toml
 [holes.expr]
 placeholder = 'Debug.todo "olifant: {= hole =}: {= instruction|escaped =}"'
 wrap = """
@@ -760,7 +809,7 @@ stops ([chapter 12](12-holes-and-models.md#where-a-holes-value-comes-from-holesn
 and text inside a string:
 
 ```toml
-# packs/rust-htmx/languages/rust.toml
+# library/languages/rust.toml
 # Tab stops in snippets (spec §4.9): a name, or text inside a string.
 [holes.ident]
 placeholder = "{= hole =}"
@@ -776,7 +825,7 @@ pyright, with no import. A `raise` is a statement, so the `expr` placeholder is 
 expression's `throw`:
 
 ```toml
-# packs/python-htmx/languages/python.toml
+# library/languages/python.toml
 # Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
 # result), so it fits any type under pyright strict and needs no import; it
 # raises with the hole's message if it is ever run. Not Never: pyright skips

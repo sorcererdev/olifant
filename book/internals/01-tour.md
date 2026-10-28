@@ -95,7 +95,7 @@ case's `given/` and `snapshot/` laid over it (`M.unions [snapshot, given, fixtur
 **"elm pack output compiles"** (`GeneratorTestingSpec.hs:157`) hands each Elm case's tree to
 `compileClean` (`Language/Check.hs:64`), which runs the Elm adapter's `[check]` command and
 wants exit 0. **"rust pack output compiles"** (`GeneratorTestingSpec.hs:175`) is the same code with the rust-htmx
-adapter: `packs/rust-htmx/languages/rust.toml`'s `[check]` runs `cargo check --workspace
+adapter: `library/languages/rust.toml`'s `[check]` runs `cargo check --workspace
 --exclude diesel-* --message-format=json --target-dir {= cache =}`. `{= cache =}` is expanded
 by `runIn` (`Check.hs:82`) to `getXdgDirectory XdgCache "olifant/check/<language>"`
 (`~/.cache/olifant/check/rust`), so builds are cached across cases and runs. For that the
@@ -958,7 +958,7 @@ phrase with `parsePhrase` (`src/Olifant/Anchor/Phrase.hs:39`) and dispatches on 
   hands it to `itemsOfTarget` (`:191`), a top-level function shared with two other callers:
   a fragment exemplar's `items_of` (`Catalog.loadGenerator`, above) and an `ast` query's
   `items_of` (`Anchor.Items.astQueries`). `itemsOfTarget` matches the target against the Elm
-  adapter's targets (`packs/elm/languages/elm.toml`); the shape `type NAME` fits and binds
+  adapter's targets (`library/languages/elm.toml`); the shape `type NAME` fits and binds
   `NAME = Page`. It renders that target's `container` rule (`{ kind = "type_declaration",
   regex = "^type Page\b" }`) and asks the **Syntax port** for matches (`querySyntax`,
   `:201`). Exactly one match is required. Then it asks for the `items` (`union_variant`)

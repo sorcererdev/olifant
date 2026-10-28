@@ -1,0 +1,83 @@
+# Elm: tree-sitter-elm (vendored, MIT) via ast-grep; checks with `elm make`.
+files = ["**/*.elm"]
+comment = "--"
+grammar = { source = "grammar/elm" }
+placeholder = 'Debug.todo "{= message =}"'
+branch = """
+{= pattern =} ->
+    {= body =}"""
+
+# Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
+# a fill must parse in.
+[holes.expr]
+placeholder = 'Debug.todo "olifant: {= hole =}: {= instruction|escaped =}"'
+wrap = """
+olifantHole =
+    {= fill =}
+"""
+
+[check]
+command = ["elm", "make", "{= files =}", "--report=json", "--output=/dev/null"]
+context = ["elm.json"]
+format = "elm-json"
+# elm make crashes when several run at once under load: one at a time
+concurrent = false
+install = "npm install -g elm (or brew install elm)"
+
+[targets.type]
+phrase = "type NAME"
+container = { kind = "type_declaration", regex = "^type {= NAME =}\\b" }
+items = { kind = "union_variant" }
+example = "end of type Msg"
+
+[targets.record]
+phrase = "record NAME"
+container = { kind = "record_type", inside = { kind = "type_alias_declaration", regex = "^type alias {= NAME =}\\b", stopBy = "end" } }
+items = { kind = "field_type" }
+example = "end of record Model"
+
+[targets.case_in]
+phrase = "case in FUNCTION"
+container = { kind = "case_of_expr", inside = { kind = "value_declaration", regex = "^{= FUNCTION =}\\b", stopBy = "end" }, not = { inside = { kind = "case_of_expr", stopBy = "end" } } }
+items = { kind = "case_of_branch", not = { regex = "^(_|\\(\\s*_\\s*(,\\s*_\\s*)*\\))\\s*->" } }
+example = "end of case in update"
+
+[targets.list_in]
+phrase = "list in FUNCTION"
+container = { kind = "list_expr", inside = { kind = "value_declaration", regex = "^{= FUNCTION =}\\b", stopBy = "end" }, not = { inside = { kind = "list_expr", stopBy = "end" } } }
+# ast-grep needs a kind: every expression kind a list element can be (tree-sitter-elm exprList).
+items = { any = [
+  { kind = "anonymous_function_expr" },
+  { kind = "bin_op_expr" },
+  { kind = "case_of_expr" },
+  { kind = "char_constant_expr" },
+  { kind = "field_access_expr" },
+  { kind = "field_accessor_function_expr" },
+  { kind = "function_call_expr" },
+  { kind = "glsl_code_expr" },
+  { kind = "if_else_expr" },
+  { kind = "let_in_expr" },
+  { kind = "list_expr" },
+  { kind = "negate_expr" },
+  { kind = "number_constant_expr" },
+  { kind = "operator_as_function_expr" },
+  { kind = "parenthesized_expr" },
+  { kind = "record_expr" },
+  { kind = "string_constant_expr" },
+  { kind = "tuple_expr" },
+  { kind = "unit_expr" },
+  { kind = "value_expr" },
+] }
+example = "end of list in parser"
+
+[targets.imports]
+phrase = "imports"
+container = { kind = "file" }
+items = { kind = "import_clause" }
+example = "end of imports"
+
+# The unit: the innermost of these node kinds at the cursor is what `conjure`
+# conjures and `stub` stubs a test for.
+[unit]
+kinds = ["value_declaration", "type_declaration", "type_alias_declaration"]
+name = ["^type[[:space:]]+alias[[:space:]]+([[:alnum:]_]+)", "^type[[:space:]]+([[:alnum:]_]+)", "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]
