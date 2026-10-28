@@ -30,7 +30,7 @@ import Data.Functor ((<&>))
 import System.IO (Handle, BufferMode (NoBuffering), hFlush, hPutStrLn, hSetBinaryMode, hSetBuffering, stderr, stdin, stdout)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), childrenOf, excerptInfo, parsePlan, testState, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), anchorText, childrenOf, excerptInfo, excerptSpans, parsePlan, stepDone, testState, withVerdict)
 import Olifant.Server.Unit (Named (..))
 import Data.Text qualified as T
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
@@ -339,7 +339,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -1350,37 +1350,48 @@ newStepAction env path (Position l _) =
       pure [CodeAction "New step below" (Just CodeActionKind_Source) Nothing Nothing Nothing (Just edit) Nothing Nothing]
     _ -> pure []
 
--- | "Show the code here" on an open step whose anchor resolves and that has
--- no excerpt (no child opening one, closed or not): resolved later
+-- | "Show the code here" on a step whose anchor resolves and that has no
+-- excerpt (no child opening one, closed or not): resolved later
 -- ('excerptEdit'), so a request on every cursor move runs no git and no clip
--- (review M3); its data holds the plan's version it was offered at.
-excerptAction :: Env -> FilePath -> Position -> IO [CodeAction]
-excerptAction env path (Position l _) =
+-- (review M3); its data holds the plan's version it was offered at. On a
+-- ticked step it writes the excerpt frozen. Asked for source actions (ONLY
+-- naming `source`, as the editors' keys ask), elsewhere in a plan it comes
+-- disabled with the reason (LSP 3.16); on a step with an excerpt its data
+-- names the excerpt's opening row (an editor folds it).
+excerptAction :: Env -> FilePath -> Maybe [CodeActionKind] -> Position -> IO [CodeAction]
+excerptAction env path only (Position l _) =
   withSnapshot env (\s -> projectFor path s >>= \case
     (s', Just (_, project)) | isPlanPath project path -> do
       text <- documentText env path
       case excerptStep text (fromIntegral l) of
-        Just (_, a) -> resolveAnchor s' project a <&> \r -> (s', [() | isJust (rsUnit r)])
-        Nothing -> pure (s', [])
+        Right (_, a) -> resolveAnchor s' project a <&> \r -> (s', [if isJust (rsUnit r) then Right () else Left ("the anchor " <> anchorText a <> " does not resolve", Nothing)])
+        Left why -> pure (s', [Left why])
     (s', _) -> pure (s', [])) >>= \found -> do
     version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+    let asked = maybe False (any (`elem` [CodeActionKind_Source])) only
+        offer disabled extra = CodeAction "Show the code here" (Just CodeActionKind_Source) Nothing Nothing disabled Nothing Nothing
+          (Just (object (["kind" .= ("excerpt" :: T.Text), "path" .= path, "line" .= l, "version" .= version] ++ extra)))
     pure
-      [ CodeAction "Show the code here" (Just CodeActionKind_Source) Nothing Nothing Nothing Nothing Nothing
-          (Just (object ["kind" .= ("excerpt" :: T.Text), "path" .= path, "line" .= l, "version" .= version]))
-      | () <- found ]
+      [ either (\(why, open) -> offer (Just (CodeActionDisabled why)) ["open" .= o | Just o <- [open]]) (const (offer Nothing [])) f
+      | f <- found, either (const asked) (const True) f ]
 
--- | The open anchored step at ROW of a plan's TEXT with no child opening an
--- excerpt (closed or not, live or frozen), and its anchor.
-excerptStep :: T.Text -> Int -> Maybe (Line, Anchor)
-excerptStep text row =
-  listToMaybe
-    [ (ln, a)
-    | let ls = parsePlan text
-    , ln <- ls, lnRow ln == row, lnKind ln == Step False, Just a <- [lnAnchor ln]
-    , not (any (isJust . excerptInfo . lnText) (childrenOf ls row)) ]
+-- | The anchored step at ROW of a plan's TEXT with no child opening an
+-- excerpt (closed or not, live or frozen), and its anchor; else why not,
+-- with the opening row of the step's excerpt when it has one.
+excerptStep :: T.Text -> Int -> Either (T.Text, Maybe Int) (Line, Anchor)
+excerptStep text row = case [ln | ln <- ls, lnRow ln == row] of
+  ln : _ | Step _ <- lnKind ln -> case lnAnchor ln of
+    Nothing -> Left ("no anchor on this line", Nothing)
+    Just a
+      | o : _ <- [o | (st, o, _) <- excerptSpans ls, st == row] -> Left ("the step shows its code already", Just o)
+      | any (isJust . excerptInfo . lnText) (childrenOf ls row) -> Left ("the step's excerpt has no closing line", Nothing)
+      | otherwise -> Right (ln, a)
+  _ -> Left ("not on a step", Nothing)
+  where
+    ls = parsePlan text
 
 -- | "Show the code here" resolved: its unit's code as a fence below the step
--- line at LINE, as an edit of the plan at VERSION, the one it was offered at
+-- line at LINE (frozen under a ticked step), as an edit of the plan at VERSION, the one it was offered at
 -- (refused when the plan has moved on since, and the editor refuses it if
 -- the plan moves on before it lands, review M4). In a CRLF plan the fence
 -- goes before the step's carriage return, its lines joined by CRLF.
@@ -1392,12 +1403,12 @@ excerptEdit env path l version =
       let now = fst <$> M.lookup path (ssDocs s')
       case excerptStep text l of
         _ | now /= version -> pure (s', Left "the plan changed since; ask again")
-        Just (ln, a) -> do
+        Right (ln, a) -> do
           base <- baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
           unitExcerpt s' project base a <&> \case
-            Just (lang, body) -> (s', Right (fenceEdit ln (renderFence (lnIndent ln + 2) lang a False body)))
+            Just (lang, body) -> (s', Right (fenceEdit ln (renderFence (lnIndent ln + 2) lang a (stepDone ln) body)))
             Nothing -> (s', Left "the step's anchor does not resolve")
-        Nothing -> pure (s', Left "no open step without an excerpt here")
+        Left (why, _) -> pure (s', Left why)
     (s', _) -> pure (s', Left "not a plan"))
   where
     fenceEdit ln fence =

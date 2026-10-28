@@ -2093,6 +2093,11 @@ plansLoopSpec = describe "plans, stage 2" $ do
         fenceOf body = ["  ```python " <> anchorOf] ++ map ("  " <>) body ++ ["  ```"]
         sourceActions p l = getCodeActions p (Range (Position l 3) (Position l 3)) <&> \acts -> [a | InR a <- acts, a ^. L.title == "Show the code here"]
         startsAndTexts a = [(t ^. L.range . L.start, t ^. L.newText) | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, InL t <- te ^. L.edits]
+        -- the code actions of kind source at line L (as the plugin's keys ask)
+        sourceOnly p l = request SMethod_TextDocumentCodeAction (CodeActionParams Nothing Nothing p (Range (Position l 3) (Position l 3)) (CodeActionContext [] (Just [CodeActionKind_Source]) Nothing))
+          <&> \(TResponseMessage _ _ r) -> [a | Right (InL acts) <- [r], InR a <- acts]
+        titled t = filter ((== t) . (^. L.title))
+        reasons acts = [fmap (^. L.reason) (a ^. L.disabled) | a <- acts]
     it "(x1) hover on a step's anchor shows its unit's code; off the anchor, nothing" $
       withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
         ((on, off), _) <- inProcessWith ports dir $ do
@@ -2103,7 +2108,7 @@ plansLoopSpec = describe "plans, stage 2" $ do
             text `shouldBe` T.intercalate "\n" ["`" <> T.pack table <> ":label` · lines 1–2", "", "```python", "def label(id: str) -> str:", "    return \"t-\" + id", "```"]
           other -> expectationFailure ("hover: " <> show other)
         off `shouldBe` Nothing
-    it "(x2) Show the code here on an open anchored step, resolved, writes the fence below it at the plan's version; not on a done step, nor on one that has one" $
+    it "(x2) Show the code here on an open anchored step, resolved, writes the fence below it at the plan's version; on a done step too (frozen), not on one that has one" $
       withEditedPlan (T.unlines ([stepLine "[ ]", stepLine "[x]", stepLine "[ ]"] ++ fenceOf ["x"])) "" $ \ports dir -> do
         ((open', resolved, done, has), _) <- inProcessWith ports dir $ do
           p <- openDoc "plans/t.md" "markdown"
@@ -2115,7 +2120,28 @@ plansLoopSpec = describe "plans, stage 2" $ do
         map startsAndTexts resolved
           `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[ ]"))), T.concat ["\n" <> l | l <- fenceOf ["def label(id: str) -> str:", "    return \"t-\" + id"]])]]
         map editVersions resolved `shouldBe` [[InL 0]]
-        (length done, length has) `shouldBe` (0, 0)
+        (length done, length has) `shouldBe` (1, 0)
+    it "(x5) asked for source actions, Show the code here says why it cannot: off a step, no anchor, an anchor that does not resolve, an excerpt there already (its opening row in its data), one with no closing line" $
+      withEditedPlan (T.unlines (["# T", "- [ ] no anchor", "- [ ] s @" <> T.pack table <> ":nope", stepLine "[ ]"] ++ fenceOf ["x"] ++ [stepLine "[ ]", "  ```python " <> anchorOf, "  x"])) "" $ \ports dir -> do
+        (acts, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          mapM (fmap (titled "Show the code here") . sourceOnly p) [0, 1, 2, 3, 7]
+        map reasons acts
+          `shouldBe` [ [Just "not on a step"], [Just "no anchor on this line"], [Just ("the anchor @" <> T.pack table <> ":nope does not resolve")]
+                     , [Just "the step shows its code already"], [Just "the step's excerpt has no closing line"] ]
+        [lookupKey "open" =<< (a ^. L.data_) | a <- acts !! 3] `shouldBe` [Just (Number 4)]
+        -- asked for every action (the ⚡ menu), none of them disabled
+        (plain, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          sourceActions p 0
+        length plain `shouldBe` 0
+    it "(x6) Show the code here on a ticked step with no excerpt writes it frozen at once" $
+      withEditedPlan (T.unlines [stepLine "[x]"]) "" $ \ports dir -> do
+        (resolved, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          sourceActions p 0 >>= mapM resolveCodeAction
+        map startsAndTexts resolved
+          `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[x]"))), T.concat ["\n" <> l | l <- ["  ```python " <> anchorOf <> " · done", "  def label(id: str) -> str:", "      return \"t-\" + id", "  ```"]])]]
     it "(x2b) not offered on a step whose excerpt lost its closing line (review M6)" $
       withEditedPlan (T.unlines [stepLine "[ ]", "  ```python " <> anchorOf, "  x", stepLine "[ ]"]) "" $ \ports dir -> do
         ((broken, next), _) <- inProcessWith ports dir $ do
