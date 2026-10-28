@@ -1,0 +1,9 @@
+# pytest through uv, its venv in Olifant's cache as pyright's; a module's
+# tests beside it as test_<module>.py unless the language says otherwise.
+[test]
+command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"]
+format = "pytest"
+context = ["pyproject.toml", "uv.lock"]
+root = ["pyproject.toml"]
+tests_for = "{= dir =}/test_{= stem =}.py"
+install = "brew install uv (pytest comes with the project: `uv sync`)"

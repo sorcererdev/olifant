@@ -1,0 +1,8 @@
+# pyright (strict, from the project's pyproject.toml) through uv, its venv in
+# Olifant's cache: one per project and lockfile ({= context =}).
+[check]
+command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pyright", "--outputjson"]
+format = "pyright-json"
+context = ["pyproject.toml", "uv.lock"]
+root = ["pyproject.toml"]
+install = "brew install uv (pyright comes with the project: `uv sync`)"

@@ -3,6 +3,7 @@ name:               olifant
 version:            0.1.0.0
 synopsis:           Olifant: Durandal's generator engine (prototype)
 build-type:         Simple
+extra-source-files: library/**/*.toml
 
 common shared
   default-language:   GHC2021
@@ -36,6 +37,7 @@ common shared
     , lens                  >=5.2
     , co-log-core           >=0.3
     , xml                   >=1.3
+    , file-embed            >=0.0.15
 
 library
   import:          shared
@@ -94,6 +96,7 @@ library
     Olifant.Language.Test
     Olifant.Language.TestFormats
     Olifant.Language.TestUnits
+    Olifant.Library
     Olifant.Lsp
     Olifant.Migration
     Olifant.Model
@@ -249,6 +252,7 @@ test-suite spec
     Olifant.Language.Ghc
     Olifant.Language.Header
     Olifant.Language.Presets
+    Olifant.Language.PresetsSpec
     Olifant.Language.Pyright
     Olifant.Language.Rule
     Olifant.Language.Rustc
@@ -260,6 +264,7 @@ test-suite spec
     Olifant.Language.TestUnits
     Olifant.Language.TestUnitsSpec
     Olifant.LanguageSpec
+    Olifant.Library
     Olifant.Lsp
     Olifant.LspSpec
     Olifant.Migration

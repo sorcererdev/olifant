@@ -29,7 +29,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
-import Olifant.Language.Presets (applyPreset)
+import Olifant.Language.Presets (applyPreset, shippedPresets)
 import Olifant.Language.Rule
 import Olifant.Language.Diagnostics (CompilerSupport)
 import Olifant.Language.Generic (ErrorFormat (..), LinesFormat (..))
@@ -122,7 +122,8 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- @checkErrorFormat@: `[check.errorformat]`, for `format = "errorformat"`.
 -- @checkConvert@ (key `convert`): a command that turns the check's output
 -- into olifant-json, for a tool Olifant has no format for.
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text]}
+-- @checkInstall@ (key `install`): how to install the tool, doctor's fix.
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text], checkInstall :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | The compiler support that reads a check's report.
@@ -149,6 +150,8 @@ data TestDef = TestDef
   , testLines :: Maybe LinesFormat, testConvert :: [Text], testUnitPatterns :: [Text], testFileGroup :: Maybe Text
   , testSelect :: Maybe Select, testExclusive :: Bool, testTimeout :: Maybe Int
   , testFiles :: [Text]
+  , testInstall :: Maybe Text
+  -- ^ `install`: how to install the runner (doctor's fix when it is missing)
   }
   deriving stock (Eq, Show)
 
@@ -216,8 +219,8 @@ parseLanguage name packRoot src = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files"] t0
-      t <- applyPreset "test" t0
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install"] t0
+      t <- applyPreset shippedPresets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownTestFormats then Right () else Left ("`format`: unknown test format `" <> format <> "`; expected one of " <> T.intercalate ", " knownTestFormats)
@@ -241,6 +244,7 @@ parseLanguage name packRoot src = do
         <*> (fromMaybe False <$> optional "exclusive" bool t)
         <*> optional "timeout" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`timeout`: expected a number of seconds above 0") t
         <*> (fromMaybe [] <$> optional "files" (list text) t)
+        <*> optional "install" text t
     linesFrom t = do
       onlyKeys ["pass", "fail", "nest", "failure", "end", "drop"] t
       let re k = text >=> validRegex ("[test.lines] " <> k)
@@ -250,8 +254,8 @@ parseLanguage name packRoot src = do
       onlyKeys ["test", "file"] t
       Select <$> required "test" text t <*> required "file" text t
     checkFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert"] t0
-      t <- applyPreset "check" t0
+      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert", "install"] t0
+      t <- applyPreset shippedPresets "check" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownFormats
@@ -275,6 +279,7 @@ parseLanguage name packRoot src = do
         <*> (fromMaybe True <$> optional "concurrent" bool t)
         <*> pure errorFormat
         <*> pure convert
+        <*> optional "install" text t
     errorFormatFrom t = do
       onlyKeys ["pattern", "file", "line", "message", "severity", "error"] t
       ErrorFormat

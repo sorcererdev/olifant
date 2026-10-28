@@ -1,0 +1,9 @@
+# `cabal repl` over the package's library, -fno-code, GHC's JSON
+# diagnostics; its builddir kept in Olifant's cache (a slot per check:
+# exclusive). The context is a cabal package's own file and the project's.
+[check]
+command = ["cabal", "repl", "-v0", "--builddir={= cache =}/dist-repl-{= context =}", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns", "--repl-options=-fmax-uncovered-patterns=1000"]
+context = ["*.cabal", "cabal.project", "cabal.project.freeze"]
+format = "ghc-json"
+exclusive = true
+install = "install with ghcup; it lives in ~/.ghcup/bin"

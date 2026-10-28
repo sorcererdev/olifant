@@ -11,6 +11,7 @@ module Olifant.Doctor
   , doctor
   ) where
 
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
@@ -99,14 +100,14 @@ doctor ports di = do
           pure (Check name Bad ("`" <> T.pack exe <> "` is not on this PATH: " <> path) (Just fix))
     languageTools lang =
       (++)
-        <$> maybe (pure []) (commandTool "check tool" lang . checkCommand) (langCheck lang)
+        <$> maybe (pure []) (\c -> commandTool "check tool" lang (checkInstall c) (checkCommand c)) (langCheck lang)
         <*> maybe (pure []) (testRunner lang) (langTest lang)
     -- one line for a command's program, named by what it is for
-    commandTool kind lang command = case checkProgram command of
-      Just exe -> pure <$> tool (kind <> " " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (installHint exe)
+    commandTool kind lang install command = case checkProgram command of
+      Just exe -> pure <$> tool (kind <> " " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (fromMaybe ("install " <> exe <> " and make sure it is on the PATH your editor starts with") install)
       Nothing -> pure []
     testRunner lang td = do
-      cs <- commandTool "test runner" lang (testCommand td)
+      cs <- commandTool "test runner" lang (testInstall td) (testCommand td)
       pure [c {checkDetail = if checkStatus c == Ok then checkDetail c <> "; tests_for = " <> testsFor td else checkDetail c} | c <- cs]
     modelCheck = case (mcDefault (diModel di), mcBackends (diModel di)) of
       (Nothing, []) -> pure (Check "model" Warn "no [model] configured: holes stay placeholders" (Just modelSnippet))
@@ -125,16 +126,6 @@ doctor ports di = do
           dpEnvSet ports keyEnv >>= \case
             True -> pure (Check "model" Warn (m <> " via Jev answers decisions only, not holes; " <> keyEnv <> " is set") (Just "point [model] default at a chat backend and [decide] model at this one"))
             False -> pure (Check "model" Warn (keyEnv <> " is not set: decisions stay unsure") (Just ("export " <> keyEnv <> "=… in the shell that starts olifant (or your editor)")))
-
--- | Where a check tool usually comes from.
-installHint :: Text -> Text
-installHint = \case
-  "cargo" -> "install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)"
-  "elm" -> "npm install -g elm (or brew install elm)"
-  "ghc" -> "install with ghcup; it lives in ~/.ghcup/bin"
-  "cabal" -> "install with ghcup; it lives in ~/.ghcup/bin"
-  "uv" -> "brew install uv (pyright comes with the project: `uv sync`)"
-  exe -> "install " <> exe <> " and make sure it is on the PATH your editor starts with"
 
 modelSnippet :: Text
 modelSnippet =

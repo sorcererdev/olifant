@@ -22,6 +22,7 @@ context = ["elm.json"]
 format = "elm-json"
 # elm make crashes when several run at once under load: one at a time
 concurrent = false
+install = "npm install -g elm (or brew install elm)"
 
 [targets.type]
 phrase = "type NAME"
