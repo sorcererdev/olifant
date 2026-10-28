@@ -804,6 +804,19 @@ spec = do
     it "parseLanguage is one pack layer" $ do
       let Right l = parseLanguage "python" "packs/python-htmx" (T.unlines base)
       langLayers l `shouldBe` ["pack python-htmx"]
+  describe "[[mutate]] (mutation operators)" $ do
+    let x extra = parseLanguage "x" "/x" (T.unlines (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"python\""] ++ extra))
+    it "reads a pattern with a fix, and a rule with the increment transform" $ do
+      let Right l = x ["[[mutate]]", "name = \"boundary\"", "pattern = \"$A < $B\"", "fix = \"$A <= $B\"", "[[mutate]]", "name = \"number\"", "rule = { kind = \"integer\" }", "transform = \"increment\""]
+      map mutName (langMutate l) `shouldBe` ["boundary", "number"]
+      map (either (const Nothing) Just . mutFix) (langMutate l) `shouldBe` [Just "$A <= $B", Nothing]
+    it "one of pattern or rule" $ do
+      x ["[[mutate]]", "name = \"a\"", "pattern = \"p\"", "rule = { kind = \"k\" }", "fix = \"f\""] `shouldSatisfy` either ("one of `pattern` or `rule`" `T.isInfixOf`) (const False)
+      x ["[[mutate]]", "name = \"a\"", "fix = \"f\""] `shouldSatisfy` either ("one of `pattern` or `rule`" `T.isInfixOf`) (const False)
+    it "one of fix or transform" $
+      x ["[[mutate]]", "name = \"a\"", "pattern = \"p\""] `shouldSatisfy` either ("one of `fix` or `transform`" `T.isInfixOf`) (const False)
+    it "the only transform is increment" $
+      x ["[[mutate]]", "name = \"a\"", "pattern = \"p\"", "transform = \"double\""] `shouldSatisfy` either ("\"increment\"" `T.isInfixOf`) (const False)
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"

@@ -7,6 +7,7 @@ module Olifant.Capabilities
 
 import Data.Maybe (isJust)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Olifant.Language (CheckDef (..), Language (..), TestDef (..), defaultUnitNames, supportsMissing)
 
 -- | A capability and how it is provided (Right), or the key that would
@@ -14,7 +15,8 @@ import Olifant.Language (CheckDef (..), Language (..), TestDef (..), defaultUnit
 data Capability = Capability {capName :: Text, capHow :: Either Text Text}
   deriving stock (Eq, Show)
 
--- | Units, diagnostics, missing cases, tests, test units, test selection.
+-- | Units, diagnostics, missing cases, tests, test units, test selection,
+-- mutation.
 capabilities :: Language -> [Capability]
 capabilities lang =
   [ Capability "units" units
@@ -23,6 +25,7 @@ capabilities lang =
   , Capability "tests" tests
   , Capability "test units" testUnits
   , Capability "test selection" selection
+  , Capability "mutation" mutation
   ]
   where
     check = langCheck lang
@@ -45,6 +48,9 @@ capabilities lang =
       | maybe False (not . null . testUnitPatterns) test = Right "[test] unit"
       | pytest = Right "built in (pytest shape)"
       | otherwise = Left "[test] unit"
+    mutation = case langMutate lang of
+      [] -> Left "[[mutate]]"
+      ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")
     selection
       | maybe False (isJust . testSelect) test = Right "[test] select"
       | pytest = Right "pytest ids"

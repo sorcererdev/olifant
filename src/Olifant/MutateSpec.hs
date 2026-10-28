@@ -17,7 +17,6 @@ import Data.Text.IO qualified as TIO
 import Olifant.Language (Failure (..), Runner (..), Syntax, TestRun (..), parseOverShipped, processRunner, runTestsIn)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Mutate
-import Olifant.Mutate.Python (pythonOperators)
 import System.Directory (findExecutable, getTemporaryDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
@@ -48,28 +47,28 @@ spec = describe "Olifant.Mutate" $ do
           Nothing -> if strict then expectationFailure "required tool missing: ast-grep is not installed" else pendingWith "ast-grep is not installed (brew install ast-grep)"
           Just _ -> act (astGrepSyntax (tmp </> "olifant-test-cache"))
   it "(a) boundary: `>` becomes `>=` on its line" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators body allLines
+    Right ms <- mutantsOf sg py (operatorsOf py) body allLines
     [(muLine m, muTo m) | m <- ms, muOperator m == "boundary"] `shouldBe` [(5, ">=")]
     let Just m = find ((== "boundary") . muOperator) ms
     T.lines (muText m) !! 4 `shouldBe` "    if input.party >= table.seats:"
   it "(b) strings become empty; a docstring is not a site" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators (T.unlines ["def f():", "    \"\"\"doc\"\"\"", "    return \"x\""]) (S.fromList [1, 2, 3])
+    Right ms <- mutantsOf sg py (operatorsOf py) (T.unlines ["def f():", "    \"\"\"doc\"\"\"", "    return \"x\""]) (S.fromList [1, 2, 3])
     [(muLine m, muTo m) | m <- ms, muOperator m == "string"] `shouldBe` [(3, "\"\"")]
   it "(c) return value becomes None; `return None` is not a site (same text dropped)" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators (T.unlines ["def f():", "    return None", "def g():", "    return 1"]) (S.fromList [1 .. 4])
+    Right ms <- mutantsOf sg py (operatorsOf py) (T.unlines ["def f():", "    return None", "def g():", "    return 1"]) (S.fromList [1 .. 4])
     [muLine m | m <- ms, muOperator m == "return-none"] `shouldBe` [4]
   it "(d) only lines in scope are sites" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators body (S.fromList [7])
+    Right ms <- mutantsOf sg py (operatorsOf py) body (S.fromList [7])
     map muLine ms `shouldSatisfy` all (== 7)
   it "(e) a call statement is deleted (becomes pass); `is None` is negated; and/or swap" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators (T.unlines ["def f(a, b):", "    log(a)", "    if a is None and b:", "        pass"]) (S.fromList [1 .. 4])
+    Right ms <- mutantsOf sg py (operatorsOf py) (T.unlines ["def f(a, b):", "    log(a)", "    if a is None and b:", "        pass"]) (S.fromList [1 .. 4])
     sort [(muOperator m, muLine m) | m <- ms] `shouldBe` sort [("delete-call", 2), ("negate", 3), ("and-or", 3)]
   it "(f) mutants are in file order and capped" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators body allLines
+    Right ms <- mutantsOf sg py (operatorsOf py) body allLines
     map muLine ms `shouldBe` sort (map muLine ms)
     length (capMutants 2 ms) `shouldBe` 2
   it "(i) the number operator is a transform: 4 becomes 5" $ withSg $ \sg -> do
-    Right ms <- mutantsOf sg py pythonOperators (T.unlines ["def f():", "    return x + 4"]) (S.fromList [1, 2])
+    Right ms <- mutantsOf sg py (operatorsOf py) (T.unlines ["def f():", "    return x + 4"]) (S.fromList [1, 2])
     [(muOperator m, muTo m) | m <- ms, muLine m == 2] `shouldSatisfy` elem ("number", "5")
 
   describe "judge" $ do
@@ -113,7 +112,7 @@ spec = describe "Olifant.Mutate" $ do
           project <- readTree "packs/python-htmx/fixtures/app"
           let Just source = M.lookup (T.unpack file) project
           started <- getCurrentTime
-          Right ms <- mutantsOf (astGrepSyntax (tmp </> "olifant-test-cache")) py pythonOperators source (S.fromList [lo .. hi])
+          Right ms <- mutantsOf (astGrepSyntax (tmp </> "olifant-test-cache")) py (operatorsOf py) source (S.fromList [lo .. hi])
           let testFile = "src/bistro/booking/commands/create_booking__test.py"
           Right baseline <- runTestsIn (processRunner neverCancel 60) py [testFile] project
           Right verdicts <- judge (processRunner neverCancel 60) 4 py (T.unpack file) project testFile (trPassed baseline) (capMutants 20 ms)

@@ -11,6 +11,8 @@ module Olifant.Language.Adapter
   , LinesFormat (..)
   , HoleKind (..)
   , ImportMerge (..)
+  , MutateDef (..)
+  , Transform (..)
   , parseLanguage
   , Layer (..)
   , languageFromLayers
@@ -26,6 +28,7 @@ module Olifant.Language.Adapter
   ) where
 
 import Control.Monad ((>=>))
+import Data.Aeson (Value, object, (.=))
 import Data.Bifunctor (first)
 import Data.Char (isUpper)
 import Data.List (find)
@@ -85,6 +88,9 @@ data Language = Language
   , langUnitJoin :: Bool
   -- ^ `[unit] join`: units of one name separated only by blank lines are one
   -- (a Haskell signature and its equations)
+  , langMutate :: [MutateDef]
+  -- ^ `[[mutate]]`: the mutation operators, ways to break this language's
+  -- code that a test must notice
   , langLayers :: [Text]
   -- ^ where the language comes from, first to last: `shipped`, `pack NAME`,
   -- `project`
@@ -93,6 +99,18 @@ data Language = Language
   -- last, or `toolchain NAME` for a [check] or [test] key its preset filled
   }
   deriving stock (Show)
+
+-- | A mutation operator (`[[mutate]]`): its name, the ast-grep rule of its
+-- sites (`pattern = P` is the rule @{pattern: P}@), and what a site becomes:
+-- a `fix` (ast-grep's, with the rule's metavariables) or a 'Transform' of
+-- the matched text.
+data MutateDef = MutateDef {mutName :: Text, mutRule :: Value, mutFix :: Either Transform Text}
+  deriving stock (Eq, Show)
+
+-- | `transform = "increment"`: an integer literal plus one (none for one
+-- that does not read as an integer).
+data Transform = Increment
+  deriving stock (Eq, Show)
 
 -- | How a hole of one kind is written unfilled ('kindPlaceholder', with
 -- @hole@ and @instruction@; it must compile) and the code a fill must parse
@@ -232,7 +250,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -253,7 +271,8 @@ languageFrom presets name grammarDir top = do
   unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
   unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
   unitJoin <- fromMaybe False <$> optional "join" bool unit
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin [] M.empty)
+  mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
@@ -266,6 +285,19 @@ languageFrom presets name grammarDir top = do
           Just dir -> Right (GrammarSource (dir </> "languages" </> T.unpack src))
           Nothing -> Left "`grammar = { source }` cannot be shipped: a pack or the project carries the grammar"
       other -> Left ("expected a built-in grammar name or { source = \"dir\" }, got " <> describeTree other)
+    mutateFrom t = do
+      onlyKeys ["name", "pattern", "rule", "fix", "transform"] t
+      n <- required "name" text t
+      rule <- inKey n $ case (M.lookup "pattern" t, M.lookup "rule" t) of
+        (Just p, Nothing) -> (\pat -> object ["pattern" .= pat]) <$> text p
+        (Nothing, Just r) -> ruleFromTree r >>= first describeTemplateError . renderRule M.empty
+        _ -> Left ("[[mutate]] `" <> n <> "`: one of `pattern` or `rule`")
+      fix <- case (M.lookup "fix" t, M.lookup "transform" t) of
+        (Just f, Nothing) -> Right <$> text f
+        (Nothing, Just (TText "increment")) -> Right (Left Increment)
+        (Nothing, Just other) -> Left ("[[mutate]] `" <> n <> "`: `transform`: expected \"increment\", got " <> describeTree other)
+        _ -> Left ("[[mutate]] `" <> n <> "`: one of `fix` or `transform`")
+      pure (MutateDef n rule fix)
     importMergeFrom t = do
       onlyKeys ["pattern", "write"] t
       re <- required "pattern" text t

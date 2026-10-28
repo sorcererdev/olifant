@@ -101,7 +101,6 @@ library
     Olifant.Migration
     Olifant.Model
     Olifant.Mutate
-    Olifant.Mutate.Python
     Olifant.Mutate.Run
     Olifant.Mutate.Types
     Olifant.Naming
@@ -272,7 +271,6 @@ test-suite spec
     Olifant.Model
     Olifant.ModelSpec
     Olifant.Mutate
-    Olifant.Mutate.Python
     Olifant.Mutate.Run
     Olifant.Mutate.Types
     Olifant.MutateSpec

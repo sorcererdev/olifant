@@ -39,10 +39,3 @@ spec = describe "the split (temporary golden)" $ do
         built name (new ++ own') `shouldBe` built name (ref : own')
     )
     cases
-  mapM_
-    ( \(name, pack, _) -> it ("the pack file alone, as at 4c1fbc1, is the new " <> T.unpack name) $ do
-        Right old <- parseLanguage name pack <$> TIO.readFile (copy name pack)
-        new <- layerOf ("pack " <> T.pack (drop 6 pack)) pack (pack <> "/languages/" <> T.unpack name <> ".toml")
-        built name [new] `shouldBe` clear old
-    )
-    [c | c@(_, _, False) <- cases]

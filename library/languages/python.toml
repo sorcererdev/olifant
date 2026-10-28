@@ -121,3 +121,82 @@ spaced = false
 # in a file with none, the first goes under the docstring
 when_empty = "after header"
 example = "end of imports"
+
+# Mutation operators (`mutate`): what a test of Python code must notice.
+# Boundaries
+[[mutate]]
+name = "boundary"
+pattern = "$A < $B"
+fix = "$A <= $B"
+[[mutate]]
+name = "boundary"
+pattern = "$A <= $B"
+fix = "$A < $B"
+[[mutate]]
+name = "boundary"
+pattern = "$A > $B"
+fix = "$A >= $B"
+[[mutate]]
+name = "boundary"
+pattern = "$A >= $B"
+fix = "$A > $B"
+# Equality
+[[mutate]]
+name = "equality"
+pattern = "$A == $B"
+fix = "$A != $B"
+[[mutate]]
+name = "equality"
+pattern = "$A != $B"
+fix = "$A == $B"
+# Negation
+[[mutate]]
+name = "negate"
+pattern = "$A is None"
+fix = "$A is not None"
+[[mutate]]
+name = "negate"
+pattern = "$A is not None"
+fix = "$A is None"
+[[mutate]]
+name = "negate"
+pattern = "not $A"
+fix = "$A"
+# and/or
+[[mutate]]
+name = "and-or"
+pattern = "$A and $B"
+fix = "$A or $B"
+[[mutate]]
+name = "and-or"
+pattern = "$A or $B"
+fix = "$A and $B"
+# Arithmetic
+[[mutate]]
+name = "arith"
+pattern = "$A + $B"
+fix = "$A - $B"
+[[mutate]]
+name = "arith"
+pattern = "$A - $B"
+fix = "$A + $B"
+# A return's value
+[[mutate]]
+name = "return-none"
+pattern = "return $X"
+fix = "return None"
+# A call statement
+[[mutate]]
+name = "delete-call"
+rule = { kind = "expression_statement", has = { kind = "call" } }
+fix = "pass"
+# Strings, but not one in a statement of its own (a docstring)
+[[mutate]]
+name = "string"
+rule = { kind = "string", not = { inside = { kind = "expression_statement" } } }
+fix = '""'
+# Integers
+[[mutate]]
+name = "number"
+rule = { kind = "integer" }
+transform = "increment"
