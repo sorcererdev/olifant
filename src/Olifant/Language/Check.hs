@@ -389,13 +389,14 @@ relativeTo dir (Report missingPs broken unplaced ls) =
 -- @paths@: its scope, the judged files' package (the nearest folder holding
 -- one of the check's `root` markers, or the outermost; the project, "",
 -- when there is none or the files sit in different packages), and the
--- language's files and the check's context files under it (globs read from
+-- language's files, the check's context files and the tests' `context` and
+-- `files` under it (globs read from
 -- the scope), as project paths.
 checkScope :: Language -> [FilePath] -> [FilePath] -> (FilePath, [FilePath])
 checkScope lang paths judged = (scope, [p | p <- paths, Just rel <- [inside scope p], not (any (`elem` pruned) (splitDirectories p)), any (`matchesGlob` rel) globs])
   where
     check = langCheck lang
-    globs = langFiles lang ++ maybe [] checkContext check
+    globs = langFiles lang ++ maybe [] checkContext check ++ maybe [] (\t -> testContext t ++ testFiles t) (langTest lang)
     scope = packageScope (maybe [] checkRoot check) (maybe False checkRootOutermost check) paths judged
 
 -- | The package of the judged files: the nearest folder (or the outermost)

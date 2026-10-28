@@ -141,11 +141,14 @@ supportOf c = formatSupport (checkFormat c) (checkErrorFormat c)
 -- expression over a test file's text, its last group the file's outermost
 -- group (hspec's module). @testSelect@: how an id becomes an argument.
 -- @testExclusive@: the runner keeps a build cache, so a run holds a slot.
--- @testTimeout@: seconds, over the caller's.
+-- @testTimeout@: seconds, over the caller's. @testFiles@ (`files`): globs of
+-- files a run's scratch copy holds that are not part of its context key
+-- (fixtures the tests read); the context's files are copied too.
 data TestDef = TestDef
   { testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text
   , testLines :: Maybe LinesFormat, testConvert :: [Text], testUnitPatterns :: [Text], testFileGroup :: Maybe Text
   , testSelect :: Maybe Select, testExclusive :: Bool, testTimeout :: Maybe Int
+  , testFiles :: [Text]
   }
   deriving stock (Eq, Show)
 
@@ -213,7 +216,7 @@ parseLanguage name packRoot src = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files"] t0
       t <- applyPreset "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -237,6 +240,7 @@ parseLanguage name packRoot src = do
         <*> pure fileGroup <*> pure select
         <*> (fromMaybe False <$> optional "exclusive" bool t)
         <*> optional "timeout" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`timeout`: expected a number of seconds above 0") t
+        <*> (fromMaybe [] <$> optional "files" (list text) t)
     linesFrom t = do
       onlyKeys ["pass", "fail", "nest", "failure", "end", "drop"] t
       let re k = text >=> validRegex ("[test.lines] " <> k)

@@ -113,7 +113,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing []) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -272,6 +272,20 @@ spec = do
             ])
       Right r <- runTests (processRunner neverCancel 60) lang ["a_t.x"] (M.fromList [("a_t.x", "")])
       trBroken r `shouldSatisfy` maybe False (/= "no tests ran")
+    it "the files a test run copies include the [test] context and files globs" $ do
+      let Right lang = parseLanguage "x" "/x" (T.unlines
+            [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+            , "[check]", "command = [\"c\"]", "format = \"ghc-json\"", "context = [\"chk.cfg\"]"
+            , "[test]", "command = [\"t\"]", "format = \"pytest\"", "tests_for = \"{= stem =}_t.x\"", "context = [\"lock.cfg\"]", "files = [\"fixtures/**\"]"
+            ])
+          paths = ["a.x", "chk.cfg", "lock.cfg", "fixtures/deep/f.txt", "other.txt"]
+      snd (checkScope lang paths ["a.x"]) `shouldBe` ["a.x", "chk.cfg", "lock.cfg", "fixtures/deep/f.txt"]
+    it "[test] files is read as its own list" $ do
+      let Right lang = parseLanguage "x" "/x" (T.unlines
+            [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+            , "[test]", "command = [\"t\"]", "format = \"pytest\"", "tests_for = \"{= stem =}_t.x\"", "context = [\"lock.cfg\"]", "files = [\"fixtures/**\"]"
+            ])
+      fmap testFiles (langTest lang) `shouldBe` Just ["fixtures/**"]
     it "a group id owns its tests (keptVerdict)" $ do
       keptVerdict "f::g" [] (TestRun ["f::g::t"] [] Nothing) `shouldBe` Right ()
       keptVerdict "f::g" [] (TestRun [] [("f::g::t", Failure Nothing "x" "")] Nothing) `shouldBe` Left (Nothing, Failure Nothing "x" "")

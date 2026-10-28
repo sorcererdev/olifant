@@ -23,6 +23,9 @@ preset = "cabal-repl"
 # describe path (--match), a module's tests beside it as <Module>Spec.hs
 [test]
 preset = "hspec"
+# what the specs read at run time (packs, fixtures); copied, not in the
+# context key, so a fixture edit does not make a fresh builddir
+files = ["packs/**", "**/testdata/**"]
 
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.
