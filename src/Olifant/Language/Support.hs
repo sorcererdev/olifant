@@ -33,4 +33,4 @@ supportsMissing = (`elem` ["ghc-json", "pyright-json", "rustc-json", "elm-json",
 
 -- | The @[test] format@s a test runner can read.
 knownTestFormats :: [Text]
-knownTestFormats = ["pytest"]
+knownTestFormats = ["pytest", "lines", "tap", "junit-xml", "olifant-json"]

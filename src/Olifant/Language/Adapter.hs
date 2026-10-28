@@ -7,6 +7,8 @@ module Olifant.Language.Adapter
   , ErrorFormat (..)
   , supportOf
   , TestDef (..)
+  , Select (..)
+  , LinesFormat (..)
   , HoleKind (..)
   , ImportMerge (..)
   , parseLanguage
@@ -29,7 +31,7 @@ import Olifant.Glob (matchesGlob)
 import Olifant.Language.Presets (applyPreset)
 import Olifant.Language.Rule
 import Olifant.Language.Diagnostics (CompilerSupport)
-import Olifant.Language.Generic (ErrorFormat (..))
+import Olifant.Language.Generic (ErrorFormat (..), LinesFormat (..))
 import Olifant.Language.Support (formatSupport, knownFormats, knownTestFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
@@ -130,7 +132,26 @@ supportOf c = formatSupport (checkFormat c) (checkErrorFormat c)
 -- test files), the context files and package root as in 'CheckDef', the
 -- report format, and where a module's tests live (@tests_for@, a template
 -- over the module's path).
-data TestDef = TestDef {testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text}
+--
+-- @testLines@: `[test.lines]`, for `format = "lines"`. @testConvert@: a
+-- command turning the output into olifant-json, as in 'CheckDef'.
+-- @testUnitPatterns@ (`unit`): expressions whose line starts a test or a
+-- group, its last group the name. @testFileGroup@ (`file_group`): an
+-- expression over a test file's text, its last group the file's outermost
+-- group (hspec's module). @testSelect@: how an id becomes an argument.
+-- @testExclusive@: the runner keeps a build cache, so a run holds a slot.
+-- @testTimeout@: seconds, over the caller's.
+data TestDef = TestDef
+  { testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text
+  , testLines :: Maybe LinesFormat, testConvert :: [Text], testUnitPatterns :: [Text], testFileGroup :: Maybe Text
+  , testSelect :: Maybe Select, testExclusive :: Bool, testTimeout :: Maybe Int
+  }
+  deriving stock (Eq, Show)
+
+-- | `[test.select]`: argument templates over @{= group =}@ (the file's
+-- `file_group`) and @{= name =}@ (the test's segments below its file,
+-- joined by @/@): 'selTest' for a test id, 'selFile' for a file's.
+data Select = Select {selTest :: Text, selFile :: Text}
   deriving stock (Eq, Show)
 
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
@@ -191,12 +212,38 @@ parseLanguage name packRoot src = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout"] t0
       t <- applyPreset "test" t0
-      format <- required "format" text t
+      convert <- fromMaybe [] <$> optional "convert" (list text) t
+      format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownTestFormats then Right () else Left ("`format`: unknown test format `" <> format <> "`; expected one of " <> T.intercalate ", " knownTestFormats)
+      if null convert || format == "olifant-json" then Right () else Left ("`convert` writes olifant-json: with `convert`, `format` must be absent or \"olifant-json\", not `" <> format <> "`")
+      linesFormat <- optional "lines" (table >=> linesFrom) t
+      case (format, linesFormat) of
+        ("lines", Nothing) -> Left "`format = \"lines\"` needs a [test.lines] table (pass, fail)"
+        ("lines", _) -> Right ()
+        (_, Just _) -> Left "[test.lines] is read only with `format = \"lines\"`"
+        _ -> Right ()
+      fileGroup <- optional "file_group" (text >=> validRegex "[test] file_group") t
+      select <- optional "select" (table >=> selectFrom) t
+      case select of
+        Just (Select a b) | any ("{= group =}" `T.isInfixOf`) [a, b], Nothing <- fileGroup -> Left "[test.select] uses {= group =}, which needs `file_group`"
+        _ -> Right ()
       TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
+        <*> pure linesFormat <*> pure convert
+        <*> (fromMaybe [] <$> optional "unit" (list (text >=> validRegex "[test] unit")) t)
+        <*> pure fileGroup <*> pure select
+        <*> (fromMaybe False <$> optional "exclusive" bool t)
+        <*> optional "timeout" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`timeout`: expected a number of seconds above 0") t
+    linesFrom t = do
+      onlyKeys ["pass", "fail", "nest", "failure", "end", "drop"] t
+      let re k = text >=> validRegex ("[test.lines] " <> k)
+      LinesFormat <$> required "pass" (re "pass") t <*> required "fail" (re "fail") t <*> (fromMaybe False <$> optional "nest" bool t)
+        <*> optional "failure" (re "failure") t <*> optional "end" (re "end") t <*> optional "drop" (re "drop") t
+    selectFrom t = do
+      onlyKeys ["test", "file"] t
+      Select <$> required "test" text t <*> required "file" text t
     checkFrom t0 = do
       onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert"] t0
       t <- applyPreset "check" t0

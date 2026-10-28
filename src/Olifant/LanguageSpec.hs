@@ -92,7 +92,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py") "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -166,6 +166,74 @@ spec = do
           run <- runTestsIn (processRunner neverCancel 120) lang [T.pack red] files
           fmap (map fst . trFailed) run `shouldBe` Right [T.pack red <> "::test_red"]
           fmap (map (fLine . snd) . trFailed) run `shouldBe` Right [Just 2]
+  describe "[test] formats and selection" $ do
+    let hsToml extra = T.unlines $
+          [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+          , "[test]"
+          , "format = \"lines\""
+          , "tests_for = \"{= dir =}/{= stem =}Spec.hs\""
+          , "file_group = '^module[[:space:]]+([[:alnum:]_.]+)Spec'"
+          , "unit = ['(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\"']"
+          ] ++ extra ++
+          [ "[test.select]"
+          , "test = \"--test-option=--match=/{= group =}/{= name =}/\""
+          , "file = \"--test-option=--match=/{= group =}/\""
+          , "[test.lines]"
+          , "pass = '^[[:space:]]*(.*[^[:space:]]) \\[✔\\]$'"
+          , "fail = '^[[:space:]]*(.*[^[:space:]]) \\[✘\\]$'"
+          , "nest = true"
+          , "failure = '^  ([^[:space:]].*):([0-9]+):[0-9]+: *$'"
+          , "end = '^  To rerun use|^Randomized with seed|^Finished in'"
+          , "drop = '^  [0-9]+\\) '"
+          ]
+        fake expect = "command = [\"sh\", \"-c\", 'case \"$1\" in \"" <> expect <> "\") cat out.txt;; *) echo \"bad args: $*\"; exit 2;; esac', \"sh\", \"{= tests =}\"]"
+        specFile = "src/Olifant/PlansSpec.hs"
+    it "parses every [test] key" $ do
+      let Right lang = parseLanguage "haskell" "/h" (hsToml ["command = [\"t\", \"{= tests =}\"]", "exclusive = true", "timeout = 900"])
+          Just td = langTest lang
+      (testFormat td, testExclusive td, testTimeout td, testConvert td) `shouldBe` ("lines", True, Just 900, [])
+      testFileGroup td `shouldBe` Just "^module[[:space:]]+([[:alnum:]_.]+)Spec"
+      length (testUnitPatterns td) `shouldBe` 1
+      testSelect td `shouldBe` Just (Select "--test-option=--match=/{= group =}/{= name =}/" "--test-option=--match=/{= group =}/")
+      fmap lfNest (testLines td) `shouldBe` Just True
+    it "refuses lines without [test.lines], and {= group =} without file_group" $ do
+      let base = "files = [\"**/*.hs\"]\ncomment = \"--\"\ngrammar = \"haskell\"\n[test]\ncommand = [\"t\"]\ntests_for = \"x\"\n"
+      either (T.isInfixOf "[test.lines]") (const False) (parseLanguage "h" "/h" (base <> "format = \"lines\"\n")) `shouldBe` True
+      either (T.isInfixOf "file_group") (const False) (parseLanguage "h" "/h" (base <> "format = \"tap\"\n[test.select]\ntest = \"{= group =}\"\nfile = \"x\"\n")) `shouldBe` True
+      fmap (fmap testFormat . langTest) (parseLanguage "h" "/h" (base <> "format = \"junit-xml\"\n")) `shouldBe` Right (Just "junit-xml")
+    it "selects one test by its group and name, and reads hspec's lines" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/hspec/checks-one-failure.txt"
+      let Right lang = parseLanguage "haskell" "/h" (hsToml [fake "--test-option=--match=/Olifant.Plans/parsePlan/reads a test/"])
+          files = M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n"), ("out.txt", out)]
+      Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile <> "::parsePlan::reads a test"] files
+      map fst (trFailed run) `shouldBe` [T.pack specFile <> "::parsePlan::reads a test"]
+      map (fLine . snd) (trFailed run) `shouldBe` [Just 6]
+    it "selects a whole file by its group" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/hspec/checks-one-failure.txt"
+      let Right lang = parseLanguage "haskell" "/h" (hsToml [fake "--test-option=--match=/Olifant.Plans/"])
+          files = M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n"), ("out.txt", out)]
+      Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile] files
+      length (trPassed run) `shouldBe` 2
+    it "a wrong argument is a broken run saying what the command said" $ do
+      let Right lang = parseLanguage "haskell" "/h" (hsToml [fake "nope"])
+          files = M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n"), ("out.txt", "")]
+      Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile] files
+      trBroken run `shouldSatisfy` maybe False ("bad args" `T.isInfixOf`)
+    it "the [test] timeout wins over the caller's" $ do
+      let Right lang = parseLanguage "haskell" "/h" (hsToml ["command = [\"sleep\", \"5\"]", "timeout = 1"])
+      Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile] (M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n")])
+      trBroken run `shouldBe` Just "the tests timed out (1 s)"
+    it "olifant-json through convert: ids without :: are attributed to the requested file" $ do
+      let Right lang = parseLanguage "x" "/x" (T.unlines
+            [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+            , "[test]", "command = [\"sh\", \"-c\", \"echo raw\"]", "tests_for = \"{= stem =}_t.x\""
+            , "convert = [\"sh\", \"-c\", \"cat >/dev/null; echo '{\\\"passed\\\":[\\\"t1\\\"],\\\"failed\\\":[{\\\"id\\\":\\\"a_t.x::t2\\\",\\\"message\\\":\\\"m\\\"}]}'\"]"
+            ])
+      Right run <- runTests (processRunner neverCancel 60) lang ["a_t.x"] (M.fromList [("a_t.x", "")])
+      (trPassed run, map fst (trFailed run)) `shouldBe` (["a_t.x::t1"], ["a_t.x::t2"])
+    it "a group id owns its tests (keptVerdict)" $ do
+      keptVerdict "f::g" [] (TestRun ["f::g::t"] [] Nothing) `shouldBe` Right ()
+      keptVerdict "f::g" [] (TestRun [] [("f::g::t", Failure Nothing "x" "")] Nothing) `shouldBe` Left (Nothing, Failure Nothing "x" "")
   describe "the configuration budget (spec §3)" $ do
     it "(f) no pack TOML names Olifant's cache" $ do
       let walk d = do

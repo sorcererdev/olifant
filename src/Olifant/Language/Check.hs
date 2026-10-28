@@ -47,7 +47,9 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), Language (..), TestDef (..), matchesGlob, supportOf)
+import Olifant.Language.Adapter (CheckDef (..), Language (..), Select (..), TestDef (..), matchesGlob, regexName, supportOf)
+import Olifant.Language.TestFormats (Reported (..), attribute, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
+import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
@@ -81,7 +83,7 @@ processVerifierWith = processVerifierCancellable neverCancel
 -- | 'processVerifierWith', killed when the token is tripped ("cancelled").
 processVerifierCancellable :: Cancel -> Int -> Verifier IO
 processVerifierCancellable token secs = Verifier $ \lang argv files ->
-  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) (const Nothing) files <&> \case
+  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) Nothing [] (const Nothing) files <&> \case
     Left ScratchEmpty -> Left (CheckFailed "empty verify command")
     Left ScratchNoProgram -> Left (CheckFailed "the verify command runs no program")
     Left (ScratchMissing program) -> Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)"))
@@ -94,11 +96,13 @@ processVerifierCancellable token secs = Verifier $ \lang argv files ->
 data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | ScratchFailed Text
 
 -- | A command run in a scratch copy of the files, as a check runs: its
--- program (past a leading @env@) must be installed; @{= cache =}@ and
--- @{= context =}@ (the given key) are expanded in its arguments, and
--- @special@ may replace a whole argument by several. Stopped after @secs@.
-scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
-scratchRun token secs lang prefix command ctx special files = case (command, checkProgram command) of
+-- program (past a leading @env@) must be installed; @{= cache =}@ (the
+-- slot's, when it holds one) and @{= context =}@ (the given key) are
+-- expanded in its arguments, and @special@ may replace a whole argument by
+-- several. Stopped after @secs@. With a @convert@ command, its stdout is
+-- the outcome's stdout (and stderr is empty).
+scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
+scratchRun token secs lang prefix command ctx slot convert special files = case (command, checkProgram command) of
   ([], _) -> pure (Left ScratchEmpty)
   (_, Nothing) -> pure (Left ScratchNoProgram)
   (exe : args, Just program) ->
@@ -111,10 +115,17 @@ scratchRun token secs lang prefix command ctx special files = case (command, che
         forM_ (M.toList files) $ \(p, t) -> do
           createDirectoryIfMissing True (takeDirectory (tmp </> p))
           BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
-        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
+        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
         createDirectoryIfMissing True cache
         let expand a = fromMaybe [T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))] (special (T.strip a))
-        either (Left . ScratchFailed) Right <$> runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) ""
+        runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" >>= \case
+          Left why -> pure (Left (ScratchFailed why))
+          Right (Finished code out err)
+            | not (null convert) ->
+                convertReport convert tmp code out err <&> \case
+                  Left why -> Left (ScratchFailed ("the convert command failed: " <> why))
+                  Right report -> Right (Finished code report "")
+          Right outcome -> pure (Right outcome)
 
 -- | The language's test command over a scratch copy of the files (as a
 -- verify runs, with @{= cache =}@ and @{= context =}@; the one argument
@@ -123,15 +134,63 @@ scratchRun token secs lang prefix command ctx special files = case (command, che
 processRunner :: Cancel -> Int -> Runner IO
 processRunner token secs = Runner $ \lang ids files -> case langTest lang of
   Nothing -> pure (Left (langName lang <> " has no [test] in its adapter"))
-  Just td ->
-    scratchRun token secs lang "olifant-test" (testCommand td) (contextKeyOf (testContext td) files) (\a -> if a == "{= tests =}" then Just (map T.unpack ids) else Nothing) files <&> \case
-      Left ScratchEmpty -> Left "empty test command"
-      Left ScratchNoProgram -> Left "the test command runs no program"
-      Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
-      Left (ScratchFailed why) -> Left why
-      Right Cancelled -> Left "cancelled"
-      Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show secs) <> " s)")))
-      Right (Finished code out err) -> Right (parsePytest code (TE.decodeUtf8With lenientDecode (out <> err)))
+  Just td -> do
+    let limit = fromMaybe secs (testTimeout td)
+        ctx = contextKeyOf (testContext td) files
+        -- a runner with a build cache (cabal's dist): a slot of its own
+        around
+          | testExclusive td = inSlot slotsPerKey (langName lang <> ":test:" <> ctx)
+          | otherwise = ($ Nothing)
+        requested = requestedFiles td ids files
+        args = maybe (map T.unpack ids) (\sel -> map (T.unpack . selected td files sel) ids) (testSelect td)
+    around $ \slot ->
+      scratchRun token limit lang "olifant-test" (testCommand td) ctx slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
+        Left ScratchEmpty -> Left "empty test command"
+        Left ScratchNoProgram -> Left "the test command runs no program"
+        Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
+        Left (ScratchFailed why) -> Left why
+        Right Cancelled -> Left "cancelled"
+        Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show limit) <> " s)")))
+        Right (Finished code out err) -> Right (readTestReport td requested code out err)
+
+-- | The file of a test id (the id itself for a file's).
+fileOfId :: TestId -> FilePath
+fileOfId = T.unpack . fst . T.breakOn "::"
+
+-- | The files a run asks for, each with its `file_group` (from its text).
+requestedFiles :: TestDef -> [TestId] -> Map FilePath Text -> [(FilePath, Maybe Text)]
+requestedFiles td ids files = nubOrd [(f, groupOf f) | f <- map fileOfId ids]
+  where
+    groupOf f = testFileGroup td >>= \re -> M.lookup f files >>= regexName re
+
+-- | One id as the runner's argument by `[test.select]`: a file's by 'selFile',
+-- a test's by 'selTest', with @{= group =}@ the file's group and @{= name =}@
+-- its segments below the file joined by @/@.
+selected :: TestDef -> Map FilePath Text -> Select -> TestId -> Text
+selected td files sel i = T.replace "{= name =}" name (T.replace "{= group =}" grp (if T.null rest then selFile sel else selTest sel))
+  where
+    (_, rest) = T.breakOn "::" i
+    name = T.intercalate "/" (T.splitOn "::" (T.drop 2 rest))
+    grp = fromMaybe "" (lookup (fileOfId i) (requestedFiles td [i] files) >>= id)
+
+-- | A run's report read by the `[test] format`, from stdout then stderr
+-- (olifant-json, and a converted report, from stdout); a report a parser
+-- cannot read is a broken run with its reason.
+readTestReport :: TestDef -> [(FilePath, Maybe Text)] -> ExitCode -> ByteString -> ByteString -> TestRun
+readTestReport td requested code out err = case testFormat td of
+  "pytest" -> parsePytest code said
+  "lines" -> maybe (broken "[test] format \"lines\" has no [test.lines]") (\lf -> fromReported requested code said (parseLines lf said)) (testLines td)
+  "tap" -> either broken (fromReported requested code said) (parseTap said)
+  "junit-xml" -> either broken (fromReported requested code said) (parseJunit said)
+  _ -> either broken attributed (parseTestJson out)
+  where
+    said = TE.decodeUtf8With lenientDecode (out <> err)
+    broken why = TestRun [] [] (Just why)
+    -- an id without a file is a test's name: attributed like a report's
+    own i
+      | "::" `T.isInfixOf` i = i
+      | otherwise = attribute requested (Reported Nothing [i] Nothing)
+    attributed run = run {trPassed = map own (trPassed run), trFailed = [(own i, f) | (i, f) <- trFailed run]}
 
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))

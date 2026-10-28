@@ -227,7 +227,7 @@ example   = "end of struct BillingService"
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
 | `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo), and the generic `sarif`, `errorformat` and `olifant-json`; `convert` runs a command that turns any tool's output into olifant-json ([check formats](#check-formats)). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
-| `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`), `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). See [below](#presets-check-and-test) |
+| `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`, `lines`, `tap`, `junit-xml`, `olifant-json`) or `convert`, `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). `[test.select]`, `file_group`, `unit`, `exclusive` and `timeout` say how one test is run and found. See [presets](#presets-check-and-test) and [test formats](#test-formats) |
 | `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
@@ -613,6 +613,72 @@ clean.
 command = ["mytool", "--all"]
 convert = ["python3", "tools/mytool-to-olifant.py"]
 ```
+
+### Test formats
+
+`[test] format` names who reads a run's output (stdout, then stderr). `pytest` is Python's,
+built in. The others are generic: a framework that prints one of them needs no Olifant code.
+
+**`lines`** — a regex per line, for runners that print one line per test (hspec's
+`--format=checks`, `cargo test`). `[test.lines]`:
+
+| key | |
+|---|---|
+| `pass`, `fail` | a line matching one is a test that passed or failed, named by the last group |
+| `nest` | (default false) a test's name has the names of the lines above it at smaller indentation in front: hspec's `describe` tree. Without it, the line's name is the whole name |
+| `failure` | a line that opens a failure block: group 1 the file, group 2 the line. The block runs to the next one, or to an `end` line; it is the k-th failed test's message, dedented |
+| `end` | where a block (and the tree) ends |
+| `drop` | lines left out of a block's message (hspec's `1) Module.group test`) |
+
+hspec through cabal, as the [`hspec` preset](#presets-check-and-test) reads it:
+
+```toml
+[test.lines]
+pass    = '^[[:space:]]*(.*[^[:space:]]) \[✔\]$'
+fail    = '^[[:space:]]*(.*[^[:space:]]) \[✘\]$'
+nest    = true
+failure = '^  ([^[:space:]].*):([0-9]+):[0-9]+: *$'
+end     = '^  To rerun use|^Randomized with seed|^Finished in'
+drop    = '^  [0-9]+\) '
+```
+
+**`tap`** — `ok N - name` passes, `not ok N - name` fails with its YAML block (between `---`
+and `...`) as the message; a `# SKIP` or `# TODO` is neither; `Bail out!` is a run that
+could not judge, with its reason.
+
+**`junit-xml`** — each `testcase` is a test named by its `name`, in its `file`; a `failure`
+or `error` child fails it (its `message`, its text, its `line`); `skipped` is neither. A
+runner that writes the XML to a file is read through `convert` (`cat report.xml`).
+
+**`olifant-json`** — for `convert` (as in `[check]`: the command gets
+`{"exit": N, "stdout": "…", "stderr": "…"}` on stdin and prints this) or a runner that
+writes it:
+
+```json
+{"passed": ["src/a_test.x::adds"], "failed": [{"id": "src/a_test.x::subtracts", "line": 9, "message": "expected 1", "output": "…"}], "broken": null}
+```
+
+An id with no `::` is a test's name in the requested file. `broken` (a string) is a run
+that could not judge the tests.
+
+**Which file a test is in.** A test id is `path::group::…::name`. A report's test goes to
+the file its report names (hspec's failure line, JUnit's `file`), when that is a file the
+run asked for; else to the file whose `file_group` is its first name (hspec's outermost
+`describe` is the module); else to the only file asked for. That first name is then dropped:
+`Olifant.Plans` / `parsePlan` / `reads a step` in `src/Olifant/PlansSpec.hs` is
+`src/Olifant/PlansSpec.hs::parsePlan::reads a step`. A run with no tests is broken: with a
+non-zero exit, by the first 40 lines it printed (GHC's error when the spec does not
+compile); with exit 0, "no tests ran".
+
+**The other `[test]` keys.**
+
+| key | |
+|---|---|
+| `file_group` | an expression over a test file's text; its last group is the file's outermost group. hspec's: `'^module[[:space:]]+([[:alnum:]_.]+)Spec'` |
+| `[test.select]` | how an id becomes an argument of `{= tests =}`. `test` for a test's id, `file` for a file's. `{= group =}` is the file's `file_group` (it needs that key), `{= name =}` the test's names below its file joined by `/`. hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. Without it, the ids themselves are the arguments |
+| `unit` | expressions whose line starts a test or a group, the last group its name: how a plan step and the editor find a test by name ([chapter 19](19-plans.md)) |
+| `exclusive` | the runner keeps a build cache: each run gets a slot (`{= cache =}` is the slot's), as `[check] exclusive` |
+| `timeout` | seconds a run may take, over the editor's default |
 
 ### Hole kinds: `[holes.KIND]`
 

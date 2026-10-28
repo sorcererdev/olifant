@@ -28,7 +28,7 @@ import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
-import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), failureLine, languageFor, testsForFile)
+import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), failureLine, languageFor, ownedBy, testsForFile)
 import Olifant.Server.Site (appendStepLine, defName, runOver, tshow)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -88,7 +88,7 @@ testsRun scope path s0 =
       start <- lift getMonotonicTime
       run0 <- lift (either (TestRun [] [] . Just) id <$> runOver s ws (plLanguage p) ids)
       end <- lift getMonotonicTime
-      let isOwn tid t = t == tid || (tid <> "[") `T.isPrefixOf` t
+      let isOwn = ownedBy
           run = case one of
             Just tid
               | Nothing <- trBroken run0

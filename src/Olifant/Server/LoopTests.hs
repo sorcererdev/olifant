@@ -20,7 +20,7 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
-import Olifant.Language (TestRun (..))
+import Olifant.Language (TestRun (..), ownedBy)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, withTestState, withVerdict)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), confined, resolveAnchor, safely)
@@ -143,7 +143,7 @@ testsRan s0 p ls row = case drop row ls of
               (s', Right ta) -> (s', (Right (stateOf ta), taSeconds ta))
     stateOf ta =
       let run = taRun ta
-          own t = maybe False (\tid -> t == tid || (tid <> "[") `T.isPrefixOf` t) (taTest ta)
+          own t = maybe False (`ownedBy` t) (taTest ta)
        in case () of
             _
               | Just _ <- trBroken run -> TestRed

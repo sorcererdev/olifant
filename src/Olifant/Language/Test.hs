@@ -55,7 +55,7 @@ keptVerdict own keep run
   | otherwise = Right ()
   where
     failed = trFailed run
-    isOwn t = t == own || (own <> "[") `T.isPrefixOf` t
+    isOwn = ownedBy own
 
 -- | Whether test T is OWN's: OWN itself, one of its parameters
 -- (pytest's @own[…]@), or a test of the group OWN (@own::…@).
