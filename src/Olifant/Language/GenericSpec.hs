@@ -59,10 +59,18 @@ spec = do
       let Right lang = parseLanguage "x" "/x" (T.unlines
             [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
             , "[check]", "command = [\"sh\", \"-c\", \"echo said; exit 3\"]"
-            , "convert = [\"sh\", \"-c\", \"in=$(cat); echo \\\"$in\\\" | grep -q '\\\"exit\\\":3' && echo \\\"$in\\\" | grep -q said && echo {} || { echo nope >&2; exit 1; }\"]"
+            , "convert = [\"sh\", \"-c\", \"in=$(cat); echo \\\"$in\\\" | grep -q '\\\"exit\\\":3' && echo \\\"$in\\\" | grep -q said && echo '{\\\"broken\\\":[{\\\"file\\\":\\\"a.hs\\\",\\\"message\\\":\\\"seen\\\"}]}' || { echo nope >&2; exit 1; }\"]"
             ])
       r <- runCheck processChecker lang (M.fromList [("a.hs", "x = 1\n")])
-      fmap reportBroken r `shouldBe` Right []
+      fmap reportBroken r `shouldBe` Right [("a.hs", "seen")]
+    it "a failing tool whose converted report is empty is a failed check with the tool's stderr" $ do
+      let Right lang = parseLanguage "x" "/x" (T.unlines
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            , "[check]", "command = [\"sh\", \"-c\", \"echo Failed to spawn >&2; exit 2\"]"
+            , "convert = [\"sh\", \"-c\", \"cat >/dev/null; echo '{}'\"]"
+            ])
+      r <- runCheck processChecker lang (M.fromList [("a.hs", "x = 1\n")])
+      either (\f -> all (`T.isInfixOf` describeCheckFailure f) ["without a report", "Failed to spawn"]) (const False) r `shouldBe` True
     it "a convert command that fails is a failed check with what it said" $ do
       let Right lang = parseLanguage "x" "/x" (T.unlines
             [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""

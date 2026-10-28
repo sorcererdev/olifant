@@ -220,9 +220,9 @@ processCheckerWith token = Checker $ \lang files -> case langCheck lang of
           Left why
             | code /= ExitSuccess, not (BS.null err) -> Left (CheckFailed (why <> "; it said: " <> T.strip (T.take 1000 (TE.decodeUtf8With lenientDecode err))))
             | otherwise -> Left (CheckFailed why)
-          -- (with convert, the converted report is the verdict)
+          -- (a converted report is the verdict, but a tool that failed and left nothing is not clean)
           Right (CheckReport [] [] [])
-            | code /= ExitSuccess, null (checkConvert check) -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
+            | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
           Right report -> Right (maybe id ($ files) (supportSpans support) (relativeTo dir report))
 
 -- | The bytes a support parses: an errorformat reads stdout then stderr; a
