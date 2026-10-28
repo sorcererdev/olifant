@@ -1,3 +1,9 @@
 # Olifant uses its own conventions pack on itself.
 [packs]
 olifant-dev = { path = "packs/olifant-dev" }
+
+# Plans on olifant itself: a step's tests build the test suite (minutes when
+# cold), and `do` may build and test.
+[plans]
+timeout = 900
+do_tools = ["Bash(cabal build*)", "Bash(cabal test*)"]

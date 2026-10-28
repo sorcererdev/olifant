@@ -4,7 +4,11 @@ module Olifant.Language.Adapter
   , Grammar (..)
   , TargetDef (..)
   , CheckDef (..)
+  , ErrorFormat (..)
+  , supportOf
   , TestDef (..)
+  , Select (..)
+  , LinesFormat (..)
   , HoleKind (..)
   , ImportMerge (..)
   , parseLanguage
@@ -12,6 +16,8 @@ module Olifant.Language.Adapter
   , languageFor
   , targetPhrase
   , matchShape
+  , regexName
+  , defaultUnitNames
   ) where
 
 import Control.Monad ((>=>))
@@ -25,11 +31,13 @@ import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.Presets (applyPreset)
 import Olifant.Language.Rule
-import Olifant.Language.Support (knownFormats, knownTestFormats)
+import Olifant.Language.Diagnostics (CompilerSupport)
+import Olifant.Language.Generic (ErrorFormat (..), LinesFormat (..))
+import Olifant.Language.Support (formatSupport, knownFormats, knownTestFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
 import Olifant.Toml
-import Text.Regex.TDFA (Regex, makeRegexM)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
 import System.FilePath ((</>))
 
 data Language = Language
@@ -65,6 +73,12 @@ data Language = Language
   , langUnitKinds :: [Text]
   -- ^ `[unit]` kinds: the node kinds of a definition (a function, method or
   -- class); the innermost at the cursor is the unit
+  , langUnitNames :: [Text]
+  -- ^ `[unit] name`: POSIX expressions over a unit's line; the first that
+  -- matches names it by its last group (the whole match when it has none)
+  , langUnitJoin :: Bool
+  -- ^ `[unit] join`: units of one name separated only by blank lines are one
+  -- (a Haskell signature and its equations)
   }
   deriving stock (Show)
 
@@ -105,14 +119,43 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- each check gets a cache no other check uses while it runs (a slot).
 -- @checkConcurrent@ (default true): false for a compiler that cannot run
 -- twice at once (Elm), so its checks run one at a time.
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool}
+-- @checkErrorFormat@: `[check.errorformat]`, for `format = "errorformat"`.
+-- @checkConvert@ (key `convert`): a command that turns the check's output
+-- into olifant-json, for a tool Olifant has no format for.
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text]}
   deriving stock (Eq, Show)
+
+-- | The compiler support that reads a check's report.
+supportOf :: CheckDef -> Maybe CompilerSupport
+supportOf c = formatSupport (checkFormat c) (checkErrorFormat c)
 
 -- | A language's test runner: the command (its @{= tests =}@ stands for the
 -- test files), the context files and package root as in 'CheckDef', the
 -- report format, and where a module's tests live (@tests_for@, a template
 -- over the module's path).
-data TestDef = TestDef {testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text}
+--
+-- @testLines@: `[test.lines]`, for `format = "lines"`. @testConvert@: a
+-- command turning the output into olifant-json, as in 'CheckDef'.
+-- @testUnitPatterns@ (`unit`): expressions whose line starts a test or a
+-- group, its last group the name. @testFileGroup@ (`file_group`): an
+-- expression over a test file's text, its last group the file's outermost
+-- group (hspec's module). @testSelect@: how an id becomes an argument.
+-- @testExclusive@: the runner keeps a build cache, so a run holds a slot.
+-- @testTimeout@: seconds, over the caller's. @testFiles@ (`files`): globs of
+-- files a run's scratch copy holds that are not part of its context key
+-- (fixtures the tests read); the context's files are copied too.
+data TestDef = TestDef
+  { testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text
+  , testLines :: Maybe LinesFormat, testConvert :: [Text], testUnitPatterns :: [Text], testFileGroup :: Maybe Text
+  , testSelect :: Maybe Select, testExclusive :: Bool, testTimeout :: Maybe Int
+  , testFiles :: [Text]
+  }
+  deriving stock (Eq, Show)
+
+-- | `[test.select]`: argument templates over @{= group =}@ (the file's
+-- `file_group`) and @{= name =}@ (the test's segments below its file,
+-- joined by @/@): 'selTest' for a test id, 'selFile' for a file's.
+data Select = Select {selTest :: Text, selFile :: Text}
   deriving stock (Eq, Show)
 
 parseLanguage :: Text -> FilePath -> Text -> Either Text Language
@@ -134,10 +177,15 @@ parseLanguage name packRoot src = do
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
   keywords <- fromMaybe [] <$> optional "keywords" (list text) top
   test <- optional "test" (table >=> testFrom) top
-  unitKinds <- maybe (pure []) (\t -> onlyKeys ["kinds"] t >> (fromMaybe [] <$> optional "kinds" (list text) t)) =<< optional "unit" table top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds)
+  unit <- fromMaybe M.empty <$> optional "unit" table top
+  onlyKeys ["kinds", "name", "join"] unit
+  unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
+  unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
+  unitJoin <- fromMaybe False <$> optional "join" bool unit
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin)
   where
     tmpl = first describeTemplateError . parseTemplate
+    validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)
       TTable t -> onlyKeys ["source"] t >> GrammarSource . (\s -> packRoot </> "languages" </> T.unpack s) <$> required "source" text t
@@ -168,19 +216,54 @@ parseLanguage name packRoot src = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files"] t0
       t <- applyPreset "test" t0
-      format <- required "format" text t
+      convert <- fromMaybe [] <$> optional "convert" (list text) t
+      format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownTestFormats then Right () else Left ("`format`: unknown test format `" <> format <> "`; expected one of " <> T.intercalate ", " knownTestFormats)
+      if null convert || format == "olifant-json" then Right () else Left ("`convert` writes olifant-json: with `convert`, `format` must be absent or \"olifant-json\", not `" <> format <> "`")
+      linesFormat <- optional "lines" (table >=> linesFrom) t
+      case (format, linesFormat) of
+        ("lines", Nothing) -> Left "`format = \"lines\"` needs a [test.lines] table (pass, fail)"
+        ("lines", _) -> Right ()
+        (_, Just _) -> Left "[test.lines] is read only with `format = \"lines\"`"
+        _ -> Right ()
+      fileGroup <- optional "file_group" (text >=> validRegex "[test] file_group") t
+      select <- optional "select" (table >=> selectFrom) t
+      case select of
+        Just (Select a b) | any ("{= group =}" `T.isInfixOf`) [a, b], Nothing <- fileGroup -> Left "[test.select] uses {= group =}, which needs `file_group`"
+        _ -> Right ()
       TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
+        <*> pure linesFormat <*> pure convert
+        <*> (fromMaybe [] <$> optional "unit" (list (text >=> validRegex "[test] unit")) t)
+        <*> pure fileGroup <*> pure select
+        <*> (fromMaybe False <$> optional "exclusive" bool t)
+        <*> optional "timeout" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`timeout`: expected a number of seconds above 0") t
+        <*> (fromMaybe [] <$> optional "files" (list text) t)
+    linesFrom t = do
+      onlyKeys ["pass", "fail", "nest", "failure", "end", "drop"] t
+      let re k = text >=> validRegex ("[test.lines] " <> k)
+      LinesFormat <$> required "pass" (re "pass") t <*> required "fail" (re "fail") t <*> (fromMaybe False <$> optional "nest" bool t)
+        <*> optional "failure" (re "failure") t <*> optional "end" (re "end") t <*> optional "drop" (re "drop") t
+    selectFrom t = do
+      onlyKeys ["test", "file"] t
+      Select <$> required "test" text t <*> required "file" text t
     checkFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert"] t0
       t <- applyPreset "check" t0
-      format <- required "format" text t
+      convert <- fromMaybe [] <$> optional "convert" (list text) t
+      format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownFormats
         then Right ()
         else Left ("`format`: unknown format `" <> format <> "`; expected one of " <> T.intercalate ", " knownFormats)
+      if null convert || format == "olifant-json" then Right () else Left ("`convert` writes olifant-json: with `convert`, `format` must be absent or \"olifant-json\", not `" <> format <> "`")
+      errorFormat <- optional "errorformat" (table >=> errorFormatFrom) t
+      case (format, errorFormat) of
+        ("errorformat", Nothing) -> Left "`format = \"errorformat\"` needs a [check.errorformat] table (pattern, file, line, message)"
+        ("errorformat", _) -> Right ()
+        (_, Just _) -> Left "[check.errorformat] is read only with `format = \"errorformat\"`"
+        _ -> Right ()
       CheckDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t)
         <*> (optional "root_pick" text t >>= \case
@@ -190,6 +273,32 @@ parseLanguage name packRoot src = do
               Just other -> Left ("`root_pick`: expected \"nearest\" or \"outermost\", got `" <> other <> "`"))
         <*> (fromMaybe False <$> optional "exclusive" bool t)
         <*> (fromMaybe True <$> optional "concurrent" bool t)
+        <*> pure errorFormat
+        <*> pure convert
+    errorFormatFrom t = do
+      onlyKeys ["pattern", "file", "line", "message", "severity", "error"] t
+      ErrorFormat
+        <$> required "pattern" (text >=> validRegex "[check.errorformat] pattern") t
+        <*> (fromIntegral <$> required "file" int t)
+        <*> (fromIntegral <$> required "line" int t)
+        <*> (fromIntegral <$> required "message" int t)
+        <*> (fmap fromIntegral <$> optional "severity" int t)
+        <*> optional "error" (text >=> validRegex "[check.errorformat] error") t
+
+-- | What a key's expression names in TEXT: its last group (the whole match
+-- when it has none), stripped; Nothing when it does not match, is not a
+-- valid expression, or names nothing. Partly applied, it compiles once.
+regexName :: Text -> Text -> Maybe Text
+regexName re = case makeRegexM (T.unpack re) :: Maybe Regex of
+  Nothing -> const Nothing
+  Just rx -> \txt -> do
+    groups <- getAllTextSubmatches <$> (matchM rx (T.unpack txt) :: Maybe (AllTextSubmatches [] String))
+    let n = T.strip (T.pack (last groups))
+    if T.null n then Nothing else Just n
+
+-- | A unit's name when the language has no `[unit] name`: its line's first identifier.
+defaultUnitNames :: [Text]
+defaultUnitNames = ["^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]
 
 targetPhrase :: TargetDef -> Text
 targetPhrase = T.unwords . targetShape

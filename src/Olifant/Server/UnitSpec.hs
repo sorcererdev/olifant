@@ -1,26 +1,28 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Olifant.Server.UnitSpec (spec) where
 
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Olifant.Language (Language (..), Match (..), Syntax (..), parseLanguage, querying)
 import Olifant.Server.Unit
 import Test.Hspec
 
-python :: Language
-python = l {langUnitKinds = ["function_definition", "class_definition"]}
-  where
-    Right l = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""])
-
-haskell :: Language
-haskell = l {langUnitKinds = ["function", "data_type"]}
-  where
-    Right l = parseLanguage "haskell" "/h" (T.unlines ["files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""])
+-- | A pack's real language file.
+packLanguage :: T.Text -> FilePath -> IO Language
+packLanguage name pack = either (error . T.unpack) id . parseLanguage name pack <$> TIO.readFile (pack <> "/languages/" <> T.unpack name <> ".toml")
 
 -- | A syntax whose query finds the given 0-based (startLine, endLine) spans.
 spans :: [(Int, Int)] -> Syntax IO
 spans sps = querying (\_ _ _ -> pure (Right [Match (a, 0) (z, 0) "" (0, 0) | (a, z) <- sps]))
 
 spec :: Spec
-spec = describe "Olifant.Server.Unit (units by name)" $ do
+spec = do
+ python <- runIO (packLanguage "python" "packs/python-htmx")
+ haskell <- runIO (packLanguage "haskell" "packs/olifant-dev")
+ rust <- runIO (packLanguage "rust" "packs/rust-htmx")
+ elm <- runIO (packLanguage "elm" "packs/elm")
+ describe "Olifant.Server.Unit (units by name)" $ do
   it "names and qualifies python units" $ do
     r <- unitsOf (spans [(0, 5), (1, 2), (3, 4)]) python "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        pass\n"
     fmap (map namedName) r `shouldBe` Right ["Foo", "Foo.bar", "Foo.baz"]
@@ -36,9 +38,39 @@ spec = describe "Olifant.Server.Unit (units by name)" $ do
     fmap namedLines (unitNamed "f" [Named "f" (5, 6) 5, Named "f" (1, 2) 1]) `shouldBe` Just (1, 2)
     unitNamed "m" [Named "A.m" (2, 3) 2, Named "B.m" (5, 6) 5] `shouldBe` Nothing
   it "names haskell units" $ do
-    unitNameOf haskell "data Catalog = Catalog" `shouldBe` Just "Catalog"
-    unitNameOf haskell "instance Show Foo where" `shouldBe` Just "Show Foo"
-    unitNameOf haskell "conjureIn top =" `shouldBe` Just "conjureIn"
+    unitNameIn haskell "data Catalog = Catalog" `shouldBe` Just "Catalog"
+    unitNameIn haskell "instance Show Foo where" `shouldBe` Just "Show Foo"
+    unitNameIn haskell "conjureIn top =" `shouldBe` Just "conjureIn"
+  it "joins a haskell signature and its equations into one unit" $ do
+    -- signature (0,0), its type's function node (0,0), two equations (1,1), (2,2)
+    r <- unitsOf (spans [(0, 0), (0, 0), (1, 1), (2, 2)]) haskell "go :: Int -> Int\ngo 0 = 1\ngo n = n\n"
+    r `shouldBe` Right [Named "go" (1, 3) 1]
+  it "names haskell operators and multi-line signatures" $ do
+    r <- unitsOf (spans [(0, 0), (1, 1)]) haskell "(<+>) :: A -> A -> A\na <+> b = b\n"
+    fmap (map namedName) r `shouldBe` Right ["(<+>)", "a"] -- an infix equation is named by its first word, as today; not joined
+    r2 <- unitsOf (spans [(0, 2), (3, 3)]) haskell "run\n  :: Int\n  -> Int\nrun = id\n"
+    r2 `shouldBe` Right [Named "run" (1, 4) 1]
+  it "joins across blank lines, not across other code" $ do
+    r <- unitsOf (spans [(0, 0), (2, 2), (3, 3), (4, 4)]) haskell "f :: Int\n\nf = 1\ng = 2\nf' = 3\n"
+    fmap (map namedLines) r `shouldBe` Right [(1, 3), (4, 4), (5, 5)]
+  it "names rust items by the item, and impl blocks by their type" $ do
+    unitNameIn rust "pub(crate) async fn load(x: u8) {" `shouldBe` Just "load"
+    unitNameIn rust "impl<T> Display for Wrapper<T> {" `shouldBe` Just "Wrapper"
+    unitNameIn rust "impl Booking {" `shouldBe` Just "Booking"
+    unitNameIn rust "impl<I: Iterator<Item = u8>> Foo for Bar {" `shouldBe` Just "Bar"
+    unitNameIn rust "impl<T: Into<String>> Wrapper<T> {" `shouldBe` Just "Wrapper"
+  it "names an elm type alias by its name" $
+    unitNameIn elm "type alias Model =" `shouldBe` Just "Model"
+  it "names python defs, async defs and classes; other lines have no name" $ do
+    unitNameIn python "    async def load(self):" `shouldBe` Just "load"
+    unitNameIn python "class Foo(Base):" `shouldBe` Just "Foo"
+    unitNameIn python "@cache" `shouldBe` Nothing
+    unitNameIn python "def crème(x):" `shouldBe` Just "crème"
+    unitNameIn python "def first[T](xs: list[T]) -> T:" `shouldBe` Just "first"
+  it "without [unit] name, a unit is named by its first identifier" $ do
+    let Right bare = parseLanguage "x" "/x" (T.unlines ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "[unit]", "kinds = [\"f\"]"])
+    unitNameIn bare "foo x = 1" `shouldBe` Just "foo"
+    unitNameIn bare "  " `shouldBe` Nothing
   it "fingerprints ignore indentation and blank lines, and change with the body" $ do
     fingerprint "def f():\n    return 1\n\n" (1, 3) `shouldBe` fingerprint "def f():\n  return 1\n" (1, 2)
     fingerprint "def f():\n    return 1\n" (1, 2) `shouldNotBe` fingerprint "def f():\n    return 2\n" (1, 2)

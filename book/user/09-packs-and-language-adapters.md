@@ -226,9 +226,9 @@ example   = "end of struct BillingService"
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
-| `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
-| `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`), `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). See [below](#presets-check-and-test) |
-| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds |
+| `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo), and the generic `sarif`, `errorformat` and `olifant-json`; `convert` runs a command that turns any tool's output into olifant-json ([check formats](#check-formats)). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
+| `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`, `lines`, `tap`, `junit-xml`, `olifant-json`) or `convert`, `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). `[test.select]`, `file_group`, `unit`, `exclusive` and `timeout` say how one test is run and found. See [presets](#presets-check-and-test) and [test formats](#test-formats) |
+| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
@@ -239,15 +239,16 @@ example   = "end of struct BillingService"
 There used to be a `qualify` key (`qualify = "elm"`) for Elm's module rules. It is retired:
 loading an adapter that still has it is now a load error saying the `[check] format`
 decides that instead. An unknown `format` is also a load error, listing the known ones:
-`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json, pyright-json, rustc-json ``. Like any
+`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json, pyright-json, rustc-json, sarif, olifant-json, errorformat ``. Like any
 broken adapter, this keeps the pack's language aside instead of failing the whole command
 (`catalogBrokenLanguages`); it bites only commands that need that language, such as `olifant
 anchors` on it or a `complete` edit whose `language` names it.
 
 ### A second example: Haskell
 
-`packs/olifant-dev/languages/haskell.toml` uses ast-grep's grammar built in for Haskell, and
-checks with GHC through `cabal repl` instead of `elm make`:
+`packs/olifant-dev/languages/haskell.toml` uses ast-grep's grammar built in for Haskell,
+checks with GHC through `cabal repl` instead of `elm make`, and runs its tests with hspec
+through `cabal test`. Both are presets ([below](#presets-check-and-test)):
 
 ```toml
 files       = ["**/*.hs"]
@@ -263,10 +264,19 @@ items     = { kind = "data_constructor" }
 example   = "end of data CatalogError"
 
 [check]
-command = ["cabal", "repl", "-v0", "lib:olifant", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns", "--repl-options=-fmax-uncovered-patterns=1000"]
-context = ["*.cabal", "cabal.project"]
-format  = "ghc-json"
+preset = "cabal-repl"
+
+[test]
+preset = "hspec"
 ```
+
+The `cabal-repl` preset runs `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}
+--repl-options=-fno-code --repl-options=-fdiagnostics-as-json --repl-options=-Wincomplete-patterns
+--repl-options=-fmax-uncovered-patterns=1000` with no target: cabal then loads the package's
+library, so the preset is for a package with one library (a package with several names its
+target in its own `command`). The build directory lives in Olifant's cache, one per slot
+(`exclusive`), so the second check of a scratch copy is incremental although the copy's path is
+new each time.
 
 `repl`, not `build`: with `-fno-code`, `cabal build` always exits 1 at its link step, while
 `repl` exits 0 after type-checking, even when the code has errors (a compile error arrives
@@ -275,6 +285,31 @@ unresolvable dependency, makes it exit non-zero). `-fdiagnostics-as-json` and `-
 warning 62161 is what carries the missing patterns. A `complete` edit for this adapter
 names its constructor `Type.Ctor` rather than Elm's `Module.Ctor` — chapter 4 covers what
 that changes.
+
+Its `[unit]` table makes a function its signature and its equations, so a plan's
+excerpt of `parsePlan` or a step anchored to it reads the whole definition:
+
+```toml
+[unit]
+kinds = ["signature", "function", "bind", "data_type", "newtype", "class", "instance"]
+join = true
+name = [
+  "^(data|newtype|type|class)[[:space:]]+([^[:space:]]+)",          # a type: its second word
+  "^instance[[:space:]]+(.*[^[:space:]])[[:space:]]+where[[:space:]]*$", # an instance: its head
+  "^instance[[:space:]]+(.*[^[:space:]])",
+  "^[[:space:]]*(\\([^)]*\\))",                                     # an operator: (<+>)
+  "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)",                       # else the first word
+]
+```
+
+`parsePlan :: Text -> [Line]` and the equations under it are one unit named `parsePlan`.
+A signature split over lines before `::` is named by its first line. An infix equation
+(`a <+> b = b`) is named by its first word, as before, so it is not joined to its
+signature. Expressions are POSIX as regex-tdfa reads them: `[[:alnum:]]` is ASCII only,
+which is why Python's name is `[^[:space:](:[]+` (a `def crème` keeps its name). Rust's
+names an `impl` block by its type (`impl<T> Display for Wrapper<T>` → `Wrapper`) and an
+item by the word after its keyword (`pub(crate) async fn load` → `load`); Elm's names a
+`type alias` by its alias.
 
 ### A third example: Rust
 
@@ -510,10 +545,12 @@ format). A **preset** says it once, in Olifant, so a pack writes only what is it
 | `[check]` | `pyright` | `uv run pyright --outputjson` in the project's venv in Olifant's cache; `pyright-json`; rooted at `pyproject.toml` |
 | `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
 | `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml` |
+| `[check]` | `cabal-repl` | `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}` with `-fno-code`, GHC's JSON diagnostics and its missing-pattern warning; `ghc-json`; `exclusive`; context `*.cabal`, `cabal.project`, `cabal.project.freeze`. Loads the package's one library |
+| `[test]` | `hspec` | `cabal test -v0 --builddir={= cache =}/dist-test-{= context =} --test-show-details=direct --test-option=--format=checks --test-option=--no-color`, then the selected tests; `format = "lines"` over hspec's tree ([test formats](#test-formats)); one test by `--match=/{= group =}/{= name =}/`, a file by its module (`file_group`); `unit` finds `describe`/`it`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}Spec.hs"` |
 
 Any key you write beside `preset` wins over the preset's: `[check] preset = "pyright"` with your
 own `root = ["apps/web/pyproject.toml"]` keeps the rest. An unknown preset is a load error naming
-the known ones (`` `preset`: unknown test preset `jest`; expected one of pytest ``).
+the known ones (`` `preset`: unknown test preset `jest`; expected one of hspec, pytest ``).
 
 `[test]` also says where a module's tests live: `tests_for`, a template of the module's folder
 (`{= dir =}`) and name without its extension (`{= stem =}`). The editor's commands find a module's test file
@@ -522,6 +559,138 @@ by it, and a test file's module by it backwards.
 Tests run like checks: in a scratch copy of the project's files as the editor has them (nothing
 needs saving), rooted at the package around the tests (`root`). A run that cannot start (a test
 file that does not import, a collection error) is said apart from a red test.
+
+### Check formats
+
+`[check] format` names who reads the check's report. Four belong to one compiler each
+(`elm-json`, `ghc-json`, `pyright-json`, `rustc-json`) and can say which cases a `case` lacks,
+which is what `complete` and `uncovered` need. Three are generic: any tool that writes one of
+them works without Olifant code, though only for broken files (a red file and its line).
+
+**`sarif`** — SARIF 2.1, which most linters and analysers can write. Every
+`runs[].results[]` whose `level` is `"error"` is a broken file: its path is
+`locations[0].physicalLocation.artifactLocation.uri` (a leading `file://` dropped), its line
+`region.startLine`, its text `ruleId: message.text` (just the message without a rule). Other
+levels are ignored; a report with no results is clean.
+
+```toml
+[check]
+command = ["semgrep", "scan", "--sarif", "--quiet", "."]
+format  = "sarif"
+```
+
+**`errorformat`** — a regex over the tool's lines, stdout then stderr. `[check.errorformat]`
+gives the `pattern` and the numbers of its groups holding the `file`, the `line` and the
+`message`; with `severity` (a group) and `error` (an expression), a line counts only when that
+group matches `error`. Without `error` every matching line counts.
+
+```toml
+[check]
+command = ["make", "-k"]
+format  = "errorformat"
+
+[check.errorformat]
+pattern  = '^([^:]+):([0-9]+):[0-9]+: (error|warning): (.*)$'
+file     = 1
+line     = 2
+severity = 3
+message  = 4
+error    = '^error$'
+```
+
+`src/a.c:3:5: error: boom` makes `src/a.c` broken at line 3 with `boom`; the warning line
+after it does not count.
+
+**`olifant-json`** — Olifant's own report, for a `convert` command (below) or a tool that
+writes it directly. Either key may be absent; `{}` is clean. `case` lines are 0-based, as
+GHC's and Elm's are read:
+
+```json
+{
+  "broken":  [{"file": "src/A.hs", "message": "Variable not in scope: nope", "line": 12}],
+  "missing": [{"file": "src/B.hs", "case": [40, 44], "patterns": ["Nothing"], "type": "Maybe Int"}]
+}
+```
+
+**`convert`** — for a tool Olifant has no format for: a command that turns the check's output
+into olifant-json. It runs in the same scratch copy after the check, with
+`{"exit": N, "stdout": "…", "stderr": "…"}` on its stdin and 60 seconds to finish; what it
+prints is the report. A non-zero exit fails the check with what it said on stderr. With
+`convert`, `format` is absent or `"olifant-json"`; anything else is a load error naming both
+keys. The converted report is the verdict: a check that exits non-zero and converts to `{}` is
+clean.
+
+```toml
+[check]
+command = ["mytool", "--all"]
+convert = ["python3", "tools/mytool-to-olifant.py"]
+```
+
+### Test formats
+
+`[test] format` names who reads a run's output (stdout, then stderr). `pytest` is Python's,
+built in. The others are generic: a framework that prints one of them needs no Olifant code.
+
+**`lines`** — a regex per line, for runners that print one line per test (hspec's
+`--format=checks`, `cargo test`). `[test.lines]`:
+
+| key | |
+|---|---|
+| `pass`, `fail` | a line matching one is a test that passed or failed, named by the last group |
+| `nest` | (default false) a test's name has the names of the lines above it at smaller indentation in front: hspec's `describe` tree. Without it, the line's name is the whole name |
+| `failure` | a line that opens a failure block: group 1 the file, group 2 the line. The block runs to the next one, or to an `end` line; it is the k-th failed test's message, dedented |
+| `end` | where a block (and the tree) ends |
+| `drop` | lines left out of a block's message (hspec's `1) Module.group test`) |
+
+hspec through cabal, as the [`hspec` preset](#presets-check-and-test) reads it:
+
+```toml
+[test.lines]
+pass    = '^[[:space:]]*(.*[^[:space:]]) \[✔\]$'
+fail    = '^[[:space:]]*(.*[^[:space:]]) \[✘\]$'
+nest    = true
+failure = '^  ([^[:space:]].*):([0-9]+):[0-9]+: *$'
+end     = '^  To rerun use|^Randomized with seed|^Finished in'
+drop    = '^  [0-9]+\) '
+```
+
+**`tap`** — `ok N - name` passes, `not ok N - name` fails with its YAML block (between `---`
+and `...`) as the message; a `# SKIP` or `# TODO` is neither; `Bail out!` is a run that
+could not judge, with its reason.
+
+**`junit-xml`** — each `testcase` is a test named by its `name`, in its `file`; a `failure`
+or `error` child fails it (its `message`, its text, its `line`); `skipped` is neither. A
+runner that writes the XML to a file is read through `convert` (`cat report.xml`).
+
+**`olifant-json`** — for `convert` (as in `[check]`: the command gets
+`{"exit": N, "stdout": "…", "stderr": "…"}` on stdin and prints this) or a runner that
+writes it:
+
+```json
+{"passed": ["src/a_test.x::adds"], "failed": [{"id": "src/a_test.x::subtracts", "line": 9, "message": "expected 1", "output": "…"}], "broken": null}
+```
+
+An id with no `::` is a test's name in the requested file. `broken` (a string) is a run
+that could not judge the tests.
+
+**Which file a test is in.** A test id is `path::group::…::name`. A report's test goes to
+the file its report names (hspec's failure line, JUnit's `file`), when that is a file the
+run asked for; else to the file whose `file_group` is its first name (hspec's outermost
+`describe` is the module); else to the only file asked for. That first name is then dropped:
+`Olifant.Plans` / `parsePlan` / `reads a step` in `src/Olifant/PlansSpec.hs` is
+`src/Olifant/PlansSpec.hs::parsePlan::reads a step`. A run with no tests is broken: with a
+non-zero exit, by the first 40 lines it printed (GHC's error when the spec does not
+compile); with exit 0, "no tests ran".
+
+**The other `[test]` keys.**
+
+| key | |
+|---|---|
+| `file_group` | an expression over a test file's text; its last group is the file's outermost group. hspec's: `'^module[[:space:]]+([[:alnum:]_.]+)Spec'` |
+| `[test.select]` | how an id becomes an argument of `{= tests =}`. `test` for a test's id, `file` for a file's. `{= group =}` is the file's `file_group` (it needs that key), `{= name =}` the test's names below its file joined by `/`. hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. Without it, the ids themselves are the arguments |
+| `unit` | expressions whose line starts a test or a group, the last group its name: how a plan step and the editor find a test by name ([chapter 19](19-plans.md)) |
+| `exclusive` | the runner keeps a build cache: each run gets a slot (`{= cache =}` is the slot's), as `[check] exclusive` |
+| `timeout` | seconds a run may take, over the editor's default |
 
 ### Hole kinds: `[holes.KIND]`
 

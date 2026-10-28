@@ -79,3 +79,4 @@ example = "end of imports"
 # conjures and `stub` stubs a test for.
 [unit]
 kinds = ["value_declaration", "type_declaration", "type_alias_declaration"]
+name = ["^type[[:space:]]+alias[[:space:]]+([[:alnum:]_]+)", "^type[[:space:]]+([[:alnum:]_]+)", "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]

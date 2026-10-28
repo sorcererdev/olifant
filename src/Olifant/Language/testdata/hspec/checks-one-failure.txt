@@ -1,0 +1,21 @@
+
+Olifant.Plans
+  parsePlan
+    reads a step [✔]
+    reads a test [✘]
+  with spaces, commas/slash
+    x/y, z [✔]
+
+Failures:
+
+  src/Olifant/PlansSpec.hs:6:36: 
+  1) Olifant.Plans.parsePlan reads a test
+       expected: 2
+        but got: 1
+
+  To rerun use: --match "/Olifant.Plans/parsePlan/reads a test/" --seed 1487884203
+
+Randomized with seed 1487884203
+
+Finished in 0.0006 seconds
+3 examples, 1 failure

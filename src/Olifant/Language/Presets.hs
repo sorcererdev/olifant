@@ -16,6 +16,25 @@ uv rest = map TText (["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context
 pyProject :: [(Text, Tree)]
 pyProject = [("context", TList [TText "pyproject.toml", TText "uv.lock"]), ("root", TList [TText "pyproject.toml"])]
 
+-- | A cabal package's context: its own file and the project's.
+cabalContext :: (Text, Tree)
+cabalContext = ("context", TList (map TText ["*.cabal", "cabal.project", "cabal.project.freeze"]))
+
+texts :: [Text] -> Tree
+texts = TList . map TText
+
+-- | hspec's `--format=checks` tree, as `lines` reads it.
+hspecLines :: Table
+hspecLines =
+  M.fromList
+    [ ("pass", TText "^[[:space:]]*(.*[^[:space:]]) \\[✔\\]$")
+    , ("fail", TText "^[[:space:]]*(.*[^[:space:]]) \\[✘\\]$")
+    , ("nest", TBool True)
+    , ("failure", TText "^  ([^[:space:]].*):([0-9]+):[0-9]+: *$")
+    , ("end", TText "^  To rerun use|^Randomized with seed|^Finished in")
+    , ("drop", TText "^  [0-9]+\\) ")
+    ]
+
 presets :: Map (Text, Text) Table
 presets =
   M.fromList
@@ -28,6 +47,28 @@ presets =
           , ("exclusive", TBool True)
           , ("root", TList [TText "Cargo.toml"])
           , ("root_pick", TText "outermost")
+          ]
+      )
+    , ( ("check", "cabal-repl")
+      , M.fromList
+          [ ("command", texts ["cabal", "repl", "-v0", "--builddir={= cache =}/dist-repl-{= context =}", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns", "--repl-options=-fmax-uncovered-patterns=1000"])
+          , cabalContext
+          , ("format", TText "ghc-json")
+          , ("exclusive", TBool True)
+          ]
+      )
+    , ( ("test", "hspec")
+      , M.fromList
+          [ ("command", texts ["cabal", "test", "-v0", "--builddir={= cache =}/dist-test-{= context =}", "--test-show-details=direct", "--test-option=--format=checks", "--test-option=--no-color", "{= tests =}"])
+          , cabalContext
+          , ("format", TText "lines")
+          , ("lines", TTable hspecLines)
+          , ("unit", texts ["(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\""])
+          , ("file_group", TText "^module[[:space:]]+([[:alnum:]_.]+)Spec")
+          , ("select", TTable (M.fromList [("test", TText "--test-option=--match=/{= group =}/{= name =}/"), ("file", TText "--test-option=--match=/{= group =}/")]))
+          , ("exclusive", TBool True)
+          , ("timeout", TInt 900)
+          , ("tests_for", TText "{= dir =}/{= stem =}Spec.hs")
           ]
       )
     , (("test", "pytest"), M.fromList (("command", TList (uv ["pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"])) : ("format", TText "pytest") : pyProject))

@@ -7,6 +7,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor
 import Olifant.Language (Language, parseLanguage)
+import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
 import Test.Hspec
 
@@ -19,7 +20,11 @@ local :: ModelConfig
 local = defaultModelConfig {mcDefault = Just "local", mcBackends = [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]}
 
 input :: ModelConfig -> DoctorInput
-input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing
+input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing defaultPlans
+
+-- | The checks but the capability rows (`<lang>: …`) and the plans runner's.
+core :: [Check] -> [Check]
+core = filter (\c -> not (": " `T.isInfixOf` checkName c) && not ("plans runner" `T.isPrefixOf` checkName c))
 
 -- Ports: these executables exist; the probe answers; these env vars are set.
 ports :: [String] -> Either Text () -> [Text] -> DoctorPorts Identity
@@ -37,7 +42,7 @@ statusOf name cs = lookup name [(checkName c, checkStatus c) | c <- cs]
 spec :: Spec
 spec = describe "olifant doctor (spec §4.7)" $ do
   it "(a) all present: every check ok" $ do
-    let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))
+    let cs = core (runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local)))
     map checkName cs `shouldBe` ["config", "pack rust-htmx", "language rust", "ast-grep", "check tool cargo (rust)", "model"]
     map checkStatus cs `shouldBe` replicate 6 Ok
   it "(b) a missing check tool is an error naming the PATH and where it usually lives" $ do
@@ -63,13 +68,13 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
   it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"env\", \"UV_PROJECT_ENVIRONMENT=/c/venv\", \"uv\", \"run\", \"pyright\"]", "format = \"pyright-json\""])
-        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing))
+        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans))
         [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
     checkStatus c `shouldBe` Bad
     checkFix c `shouldSatisfy` maybe False ("brew install uv" `T.isInfixOf`)
   it "(f) a language with [test] gets a test runner line: the program found, and where its tests live" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
-        run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing))
+        run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans))
         [ok] = [c | c <- run ["ast-grep", "uv"], checkName c == "test runner uv (python)"]
         [bad] = [c | c <- run ["ast-grep"], checkName c == "test runner uv (python)"]
     checkStatus ok `shouldBe` Ok
@@ -80,7 +85,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     [checkName c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local)), "test runner" `T.isPrefixOf` checkName c] `shouldBe` []
   it "reports a broken language adapter or generator as an error" $ do
     let broken = DoctorInput (Just "/proj") ["p"] [] [("p/languages/x.toml", "bad grammar")] [("p/gen", "unknown key")]
-        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing))
+        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing defaultPlans))
     statusOf "language p/languages/x.toml" cs `shouldBe` Just Bad
     statusOf "generator p/gen" cs `shouldBe` Just Bad
   it "(e) checks that the recognition model ([recognize] model) is a configured backend" $ do
@@ -89,4 +94,19 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "recognize model" (run "local") `shouldBe` Just Ok
     statusOf "recognize model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))) `shouldBe` Nothing
   it "outside a project: config is an error" $
-    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local Nothing))) `shouldBe` Just Bad
+    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local Nothing defaultPlans))) `shouldBe` Just Bad
+  it "the plans runner: ok when found, with its timeout and do tools; an error with the fix when not" $ do
+    let plans = defaultPlans {pcTimeout = 900, pcDoTools = ["Bash(cabal test*)"]}
+        run exes = runIdentity (doctor (ports exes (Right ()) []) ((input local) {diPlans = plans}))
+        [ok] = [c | c <- run ["ast-grep", "cargo", "claude"], checkName c == "plans runner claude"]
+        [bad] = [c | c <- run ["ast-grep", "cargo"], checkName c == "plans runner claude"]
+    checkStatus ok `shouldBe` Ok
+    checkDetail ok `shouldSatisfy` (\d -> all (`T.isInfixOf` d) ["/bin/claude", "900 s", "Bash(cabal test*)"])
+    checkStatus bad `shouldBe` Bad
+    checkFix bad `shouldBe` Just "install Claude Code, or set [plans] runner"
+  it "a capability a language lacks is a warning naming the key; one it has is ok" $ do
+    let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))
+        [tests] = [c | c <- cs, checkName c == "rust: tests"]
+        [diag] = [c | c <- cs, checkName c == "rust: diagnostics"]
+    (checkStatus tests, checkDetail tests, checkFix tests) `shouldBe` (Warn, "absent", Just "add [test] to languages/rust.toml")
+    (checkStatus diag, checkDetail diag) `shouldBe` (Ok, "[check] format rustc-json")

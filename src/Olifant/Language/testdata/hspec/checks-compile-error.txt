@@ -1,0 +1,14 @@
+Build profile: -w ghc-9.10.3 -O1
+In order, the following will be built (use -v for more details):
+ - olifant-0.1.0.0 (test:spec) (file src/Olifant/PlansSpec.hs changed)
+Preprocessing test suite 'spec' for olifant-0.1.0.0...
+Building test suite 'spec' for olifant-0.1.0.0...
+[12 of 180] Compiling Olifant.PlansSpec ( src/Olifant/PlansSpec.hs, dist-newstyle/build/aarch64-osx/ghc-9.10.3/olifant-0.1.0.0/t/spec/build/spec/spec-tmp/Olifant/PlansSpec.o )
+
+src/Olifant/PlansSpec.hs:12:5: error: [GHC-88464]
+    Variable not in scope: nope
+   |
+12 |     nope `shouldBe` 1
+   |     ^^^^
+Error: [Cabal-7125]
+Failed to build test:spec from olifant-0.1.0.0.

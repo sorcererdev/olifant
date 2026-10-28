@@ -1,0 +1,100 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
+module Olifant.Language.TestFormatsSpec (spec) where
+
+import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
+import Olifant.Language.Test (Failure (..), TestRun (..), ownedBy)
+import Olifant.Language.TestFormats
+import System.Exit (ExitCode (..))
+import Test.Hspec
+
+hspecLines :: LinesFormat
+hspecLines =
+  LinesFormat
+    { lfPass = "^[[:space:]]*(.*[^[:space:]]) \\[✔\\]$"
+    , lfFail = "^[[:space:]]*(.*[^[:space:]]) \\[✘\\]$"
+    , lfNest = True
+    , lfFailure = Just "^  ([^[:space:]].*):([0-9]+):[0-9]+: *$"
+    , lfEnd = Just "^  To rerun use|^Randomized with seed|^Finished in"
+    , lfDrop = Just "^  [0-9]+\\) "
+    }
+
+files :: [(FilePath, Maybe Text)]
+files = [("src/Olifant/PlansSpec.hs", Just "Olifant.Plans")]
+
+spec :: Spec
+spec = do
+  describe "lines (hspec's checks)" $ do
+    it "reads hspec's checks: ids under the file, the failure's line and message" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/hspec/checks-one-failure.txt"
+      let run = fromReported files (ExitFailure 1) out (parseLines hspecLines out)
+      trPassed run `shouldBe` ["src/Olifant/PlansSpec.hs::parsePlan::reads a step", "src/Olifant/PlansSpec.hs::with spaces, commas/slash::x/y, z"]
+      map fst (trFailed run) `shouldBe` ["src/Olifant/PlansSpec.hs::parsePlan::reads a test"]
+      let [(_, f)] = trFailed run
+      fLine f `shouldBe` Just 6
+      fMessage f `shouldBe` "expected: 2\n but got: 1"
+      trBroken run `shouldBe` Nothing
+    it "a spec that does not compile is broken with GHC's words" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/hspec/checks-compile-error.txt"
+      let run = fromReported files (ExitFailure 1) out (parseLines hspecLines out)
+      trBroken run `shouldSatisfy` maybe False ("Variable not in scope: nope" `T.isInfixOf`)
+      trPassed run `shouldBe` []
+    it "a clean exit with no tests is broken: no tests ran" $
+      trBroken (fromReported files ExitSuccess "" []) `shouldBe` Just "no tests ran"
+    it "more failures than blocks: the rest fail with no line" $ do
+      let out = "G\n  a [✘]\n  b [✘]\n\nFailures:\n\n  src/Olifant/PlansSpec.hs:3:1: \n  1) G a\n       boom\n\n  To rerun use: x\n"
+          rs = parseLines hspecLines out
+      map rpFailure rs `shouldBe` [Just (Failure (Just 3) "boom" "1) G a\n     boom"), Just (Failure Nothing "failed" "")]
+    it "flat lines: a test is named by its line alone" $ do
+      let flat = LinesFormat {lfPass = "^test (.*) \\.\\.\\. ok$", lfFail = "^test (.*) \\.\\.\\. FAILED$", lfNest = False, lfFailure = Nothing, lfEnd = Nothing, lfDrop = Nothing}
+      map rpSegments (parseLines flat "running 2 tests\ntest a::b ... ok\n  test c ... FAILED\n") `shouldBe` [["a::b"]]
+  describe "attribution" $ do
+    it "attributes by group across several files, else the only file, else none" $ do
+      let two = [("a/XSpec.hs", Just "X"), ("b/YSpec.hs", Just "Y")]
+      attribute two (Reported Nothing ["Y", "g", "t"] Nothing) `shouldBe` "b/YSpec.hs::g::t"
+      attribute [("f", Nothing)] (Reported Nothing ["t"] Nothing) `shouldBe` "f::t"
+      attribute [("f", Nothing), ("g", Nothing)] (Reported Nothing ["t"] Nothing) `shouldBe` "t"
+    it "a report's path names the file, made relative and normalised" $ do
+      let two = [("a/XSpec.hs", Just "X"), ("b/YSpec.hs", Just "Y")]
+      attribute two (Reported (Just "./b/YSpec.hs") ["Y", "t"] Nothing) `shouldBe` "b/YSpec.hs::t"
+      attribute two (Reported (Just "/tmp/olifant-test-1/b/YSpec.hs") ["t"] Nothing) `shouldBe` "b/YSpec.hs::t"
+    it "a name with :: or a slash stays one test" $ do
+      attribute files (Reported Nothing ["Olifant.Plans", "a::b/c, d"] Nothing) `shouldBe` "src/Olifant/PlansSpec.hs::a::b/c, d"
+    it "ownedBy: the test, its parameters, a group's tests; not a sibling with a longer name" $ do
+      ownedBy "f::g" "f::g::t" `shouldBe` True
+      ownedBy "f::t" "f::t[1]" `shouldBe` True
+      ownedBy "f::t" "f::t" `shouldBe` True
+      ownedBy "f::t" "f::tt" `shouldBe` False
+  describe "tap" $ do
+    it "ok passes, not ok fails with its YAML block, a SKIP is neither" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/tap/basic.tap"
+      let Right rs = parseTap out
+          run = fromReported [("t/plans.t", Nothing)] (ExitFailure 1) out rs
+      trPassed run `shouldBe` ["t/plans.t::parses a step", "t/plans.t::reads, a comma"]
+      map fst (trFailed run) `shouldBe` ["t/plans.t::parses a test"]
+      let [(_, f)] = trFailed run
+      fMessage f `shouldBe` "message: expected 2, got 1\nseverity: fail"
+    it "Bail out! is no run, with its reason" $
+      parseTap "1..3\nok 1 - a\nBail out! database is down\n" `shouldBe` Left "database is down"
+  describe "junit-xml" $ do
+    it "a testcase passes, fails with its message, text and line, or is skipped" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/junit/basic.xml"
+      let Right rs = parseJunit out
+          run = fromReported [("src/plans.test.ts", Nothing)] (ExitFailure 1) out rs
+      trPassed run `shouldBe` ["src/plans.test.ts::reads a step"]
+      let [(i, f)] = trFailed run
+      i `shouldBe` "src/plans.test.ts::reads a test"
+      (fLine f, fMessage f) `shouldBe` (Just 14, "expected 2, got 1")
+      fOutput f `shouldSatisfy` T.isInfixOf "at src/plans.test.ts:14:5"
+    it "a report with no testsuite is no run" $
+      either (const True) (const False) (parseJunit "error: cannot open report.xml") `shouldBe` True
+  describe "olifant-json" $ do
+    it "reads passed, failed and broken" $
+      parseTestJson "{\"passed\":[\"a.hs::t\"],\"failed\":[{\"id\":\"a.hs::u\",\"line\":3,\"message\":\"m\",\"output\":\"o\"}],\"broken\":null}"
+        `shouldBe` Right (TestRun ["a.hs::t"] [("a.hs::u", Failure (Just 3) "m" "o")] Nothing)
+    it "a broken run says why; absent keys are empty" $
+      parseTestJson "{\"broken\":\"no database\"}" `shouldBe` Right (TestRun [] [] (Just "no database"))
+    it "bad input names the format" $
+      either (T.isInfixOf "olifant-json") (const False) (parseTestJson "[1]") `shouldBe` True

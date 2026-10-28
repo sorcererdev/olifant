@@ -21,6 +21,7 @@ module Olifant.Language.Check
   , checkScope
   , runCheckIn
   , runVerifyIn
+  , convertReport
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -33,9 +34,11 @@ import Data.Word (Word64)
 import Numeric (showHex)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.Aeson (encode, object, (.=))
 import Data.Functor ((<&>))
 import Data.List (isPrefixOf, nub, sort)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as S
 import Olifant.Workspace (pruned)
 import Data.Map.Strict (Map)
@@ -44,9 +47,10 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), Language (..), TestDef (..), matchesGlob)
+import Olifant.Language.Adapter (CheckDef (..), Language (..), Select (..), TestDef (..), matchesGlob, regexName, supportOf)
+import Olifant.Language.TestFormats (Reported (..), attribute, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
+import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
-import Olifant.Language.Support (supportFor)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
 import System.Exit (ExitCode (..))
@@ -79,7 +83,7 @@ processVerifierWith = processVerifierCancellable neverCancel
 -- | 'processVerifierWith', killed when the token is tripped ("cancelled").
 processVerifierCancellable :: Cancel -> Int -> Verifier IO
 processVerifierCancellable token secs = Verifier $ \lang argv files ->
-  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) (const Nothing) files <&> \case
+  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) Nothing [] (const Nothing) files <&> \case
     Left ScratchEmpty -> Left (CheckFailed "empty verify command")
     Left ScratchNoProgram -> Left (CheckFailed "the verify command runs no program")
     Left (ScratchMissing program) -> Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)"))
@@ -92,11 +96,13 @@ processVerifierCancellable token secs = Verifier $ \lang argv files ->
 data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | ScratchFailed Text
 
 -- | A command run in a scratch copy of the files, as a check runs: its
--- program (past a leading @env@) must be installed; @{= cache =}@ and
--- @{= context =}@ (the given key) are expanded in its arguments, and
--- @special@ may replace a whole argument by several. Stopped after @secs@.
-scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
-scratchRun token secs lang prefix command ctx special files = case (command, checkProgram command) of
+-- program (past a leading @env@) must be installed; @{= cache =}@ (the
+-- slot's, when it holds one) and @{= context =}@ (the given key) are
+-- expanded in its arguments, and @special@ may replace a whole argument by
+-- several. Stopped after @secs@. With a @convert@ command, its stdout is
+-- the outcome's stdout (and stderr is empty).
+scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
+scratchRun token secs lang prefix command ctx slot convert special files = case (command, checkProgram command) of
   ([], _) -> pure (Left ScratchEmpty)
   (_, Nothing) -> pure (Left ScratchNoProgram)
   (exe : args, Just program) ->
@@ -109,10 +115,17 @@ scratchRun token secs lang prefix command ctx special files = case (command, che
         forM_ (M.toList files) $ \(p, t) -> do
           createDirectoryIfMissing True (takeDirectory (tmp </> p))
           BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
-        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang))
+        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
         createDirectoryIfMissing True cache
         let expand a = fromMaybe [T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))] (special (T.strip a))
-        either (Left . ScratchFailed) Right <$> runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) ""
+        runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" >>= \case
+          Left why -> pure (Left (ScratchFailed why))
+          Right (Finished code out err)
+            | not (null convert) ->
+                convertReport convert tmp code out err <&> \case
+                  Left why -> Left (ScratchFailed ("the convert command failed: " <> why))
+                  Right report -> Right (Finished code report "")
+          Right outcome -> pure (Right outcome)
 
 -- | The language's test command over a scratch copy of the files (as a
 -- verify runs, with @{= cache =}@ and @{= context =}@; the one argument
@@ -121,15 +134,68 @@ scratchRun token secs lang prefix command ctx special files = case (command, che
 processRunner :: Cancel -> Int -> Runner IO
 processRunner token secs = Runner $ \lang ids files -> case langTest lang of
   Nothing -> pure (Left (langName lang <> " has no [test] in its adapter"))
-  Just td ->
-    scratchRun token secs lang "olifant-test" (testCommand td) (contextKeyOf (testContext td) files) (\a -> if a == "{= tests =}" then Just (map T.unpack ids) else Nothing) files <&> \case
-      Left ScratchEmpty -> Left "empty test command"
-      Left ScratchNoProgram -> Left "the test command runs no program"
-      Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
-      Left (ScratchFailed why) -> Left why
-      Right Cancelled -> Left "cancelled"
-      Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show secs) <> " s)")))
-      Right (Finished code out err) -> Right (parsePytest code (TE.decodeUtf8With lenientDecode (out <> err)))
+  Just td -> do
+    let limit = fromMaybe secs (testTimeout td)
+        ctx = contextKeyOf (testContext td) files
+        -- a runner with a build cache (cabal's dist): a slot of its own
+        around
+          | testExclusive td = inSlot slotsPerKey (langName lang <> ":test:" <> ctx)
+          | otherwise = ($ Nothing)
+        requested = requestedFiles td ids files
+        args = maybe (map T.unpack ids) (\sel -> map (T.unpack . selected td files sel) ids) (testSelect td)
+    around $ \slot ->
+      scratchRun token limit lang "olifant-test" (testCommand td) ctx slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
+        Left ScratchEmpty -> Left "empty test command"
+        Left ScratchNoProgram -> Left "the test command runs no program"
+        Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
+        Left (ScratchFailed why) -> Left why
+        Right Cancelled -> Left "cancelled"
+        Right TimedOut -> Right (TestRun [] [] (Just ("the tests timed out (" <> T.pack (show limit) <> " s)")))
+        Right (Finished code out err) -> Right (readTestReport td requested code out err)
+
+-- | The file of a test id (the id itself for a file's).
+fileOfId :: TestId -> FilePath
+fileOfId = T.unpack . fst . T.breakOn "::"
+
+-- | The files a run asks for, each with its `file_group` (from its text).
+requestedFiles :: TestDef -> [TestId] -> Map FilePath Text -> [(FilePath, Maybe Text)]
+requestedFiles td ids files = nubOrd [(f, groupOf f) | f <- map fileOfId ids]
+  where
+    groupOf f = testFileGroup td >>= \re -> M.lookup f files >>= regexName re
+
+-- | One id as the runner's argument by `[test.select]`: a file's by 'selFile',
+-- a test's by 'selTest', with @{= group =}@ the file's group and @{= name =}@
+-- its segments below the file joined by @/@.
+selected :: TestDef -> Map FilePath Text -> Select -> TestId -> Text
+selected td files sel i = T.replace "{= name =}" name (T.replace "{= group =}" grp (if T.null rest then selFile sel else selTest sel))
+  where
+    (_, rest) = T.breakOn "::" i
+    name = T.intercalate "/" (T.splitOn "::" (T.drop 2 rest))
+    grp = fromMaybe "" (lookup (fileOfId i) (requestedFiles td [i] files) >>= id)
+
+-- | A run's report read by the `[test] format`, from stdout then stderr
+-- (olifant-json, and a converted report, from stdout); a report a parser
+-- cannot read is a broken run with its reason.
+readTestReport :: TestDef -> [(FilePath, Maybe Text)] -> ExitCode -> ByteString -> ByteString -> TestRun
+readTestReport td requested code out err = case testFormat td of
+  "pytest" -> parsePytest code said
+  "lines" -> maybe (broken "[test] format \"lines\" has no [test.lines]") (\lf -> fromReported requested code said (parseLines lf said)) (testLines td)
+  "tap" -> either broken (fromReported requested code said) (parseTap said)
+  "junit-xml" -> either broken (fromReported requested code said) (parseJunit said)
+  _ -> either broken refine (parseTestJson out)
+  where
+    said = TE.decodeUtf8With lenientDecode (out <> err)
+    broken why = TestRun [] [] (Just why)
+    -- an id without a file is a test's name: attributed like a report's
+    own i
+      | "::" `T.isInfixOf` i = i
+      | otherwise = attribute requested (Reported Nothing [i] Nothing)
+    -- a report that says nothing follows the other formats' rules; its own `broken` wins
+    refine run
+      | isJust (trBroken run) = run
+      | null (trPassed run), null (trFailed run) = fromReported requested code said []
+      | otherwise = attributed run
+    attributed run = run {trPassed = map own (trPassed run), trFailed = [(own i, f) | (i, f) <- trFailed run]}
 
 noChecker :: Applicative m => Checker m
 noChecker = Checker (\_ _ -> pure (Left (CheckFailed "no checker is configured")))
@@ -152,16 +218,50 @@ processCheckerWith token = Checker $ \lang files -> case langCheck lang of
   Just check ->
     runIn token lang check files <&> \case
       Left f -> Left f
-      Right (code, out, err, dir) -> case supportFor (checkFormat check) of
+      Right (code, out, err, dir) -> case supportOf check of
         Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
-        Just support -> case supportParse support (if supportReadsStdout support then out else err) of
+        Just support -> case supportParse support (reportInput check support out err) of
           -- what the tool said is the reason (uv offline, no lockfile: python review I4)
           Left why
             | code /= ExitSuccess, not (BS.null err) -> Left (CheckFailed (why <> "; it said: " <> T.strip (T.take 1000 (TE.decodeUtf8With lenientDecode err))))
             | otherwise -> Left (CheckFailed why)
+          -- (a converted report is the verdict, but a tool that failed and left nothing is not clean)
           Right (CheckReport [] [] [])
             | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
           Right report -> Right (maybe id ($ files) (supportSpans support) (relativeTo dir report))
+
+-- | The bytes a support parses: an errorformat reads stdout then stderr; a
+-- converted report is stdout; otherwise the stream the support names.
+reportInput :: CheckDef -> CompilerSupport -> ByteString -> ByteString -> ByteString
+reportInput check support out err
+  | not (null (checkConvert check)) = out
+  | Just _ <- checkErrorFormat check = out <> "\n" <> err
+  | supportReadsStdout support = out
+  | otherwise = err
+
+-- | A `convert` command, run in the scratch directory with
+-- @{"exit": N, "stdout": "…", "stderr": "…"}@ on stdin and a 60 s limit:
+-- what it prints is the report; a non-zero exit is Left with what it said
+-- on stderr.
+convertReport :: [Text] -> FilePath -> ExitCode -> ByteString -> ByteString -> IO (Either Text ByteString)
+convertReport argv dir code out err = case argv of
+  [] -> pure (Left "empty convert command")
+  exe : args ->
+    findExecutable (T.unpack exe) >>= \case
+      Nothing -> pure (Left ("`" <> exe <> "` is not installed (needed to convert the report)"))
+      Just path ->
+        runBytesCancellable neverCancel (Just 60) path (map T.unpack args) (Just dir) (BL.toStrict (encode input)) <&> \case
+          Left why -> Left why
+          Right (Finished ExitSuccess converted _) -> Right converted
+          Right (Finished _ _ said) -> Left (nonEmpty (T.strip (T.take 1000 (TE.decodeUtf8With lenientDecode said))))
+          Right TimedOut -> Left "it timed out (60 s)"
+          Right Cancelled -> Left "cancelled"
+  where
+    input = object ["exit" .= exitNumber code, "stdout" .= TE.decodeUtf8With lenientDecode out, "stderr" .= TE.decodeUtf8With lenientDecode err]
+    exitNumber = \case
+      ExitSuccess -> 0
+      ExitFailure n -> n
+    nonEmpty t = if T.null t then "it exited non-zero and said nothing" else t
 
 -- | @{= context =}@ in a check command: a short hash of the check's context
 -- files (pyproject.toml, uv.lock…), so each project and lockfile gets its own
@@ -197,13 +297,13 @@ compileClean lang files = case langCheck lang of
       Left f -> Left (describeCheckFailure f)
       Right (ExitSuccess, _, _, _) -> Right ()
       -- The support's broken files when it reads any (cargo's JSON), else stderr.
-      Right (ExitFailure _, out, err, _) -> Left $ case supportFor (checkFormat check) of
+      Right (ExitFailure _, out, err, _) -> Left $ case supportOf check of
         Just support
-          | Right report <- supportParse support (if supportReadsStdout support then out else err)
+          | Right report <- supportParse support (reportInput check support out err)
           , not (null (reportBroken report)) ->
               T.unlines [T.pack f <> ": " <> t | (f, t) <- reportBroken report]
           -- only missing cases (pyright reports them as errors): say which
-          | Right report <- supportParse support (if supportReadsStdout support then out else err)
+          | Right report <- supportParse support (reportInput check support out err)
           , not (null (reportMissing report)) ->
               T.unlines [T.pack (missingFile m) <> ":" <> T.pack (show (fst (missingCase m) + 1)) <> ": missing cases " <> T.intercalate ", " (missingPatterns m) | m <- reportMissing report]
         _ -> T.take 2000 (TE.decodeUtf8With lenientDecode err)
@@ -234,10 +334,17 @@ runIn token lang check files = around $ \slot -> case (checkCommand check, check
               | T.strip a == "{= files =}" = sources
               | otherwise = [T.unpack (T.replace "{= context =}" (contextKey check files) (T.replace "{= cache =}" (T.pack cache) a))]
         ran <- runBytesCancellable token Nothing path (concatMap expand args) (Just tmp) ""
-        pure $ case ran of
-          Left why -> Left (CheckFailed why)
-          Right (Finished code out err) -> Right (code, out, err, tmp)
-          Right _ -> Left (CheckFailed "cancelled")
+        case ran of
+          Left why -> pure (Left (CheckFailed why))
+          Right (Finished code out err)
+            | null (checkConvert check) -> pure (Right (code, out, err, tmp))
+            -- the report is what the convert command printed; the tool's
+            -- exit stays for compileClean
+            | otherwise ->
+                convertReport (checkConvert check) tmp code out err <&> \case
+                  Left why -> Left (CheckFailed ("the check's convert command failed: " <> why))
+                  Right report -> Right (code, report, err, tmp)
+          Right _ -> pure (Left (CheckFailed "cancelled"))
 
   where
     -- how a check runs beside others: in a slot of its workspace (a cache of
@@ -282,13 +389,14 @@ relativeTo dir (Report missingPs broken unplaced ls) =
 -- @paths@: its scope, the judged files' package (the nearest folder holding
 -- one of the check's `root` markers, or the outermost; the project, "",
 -- when there is none or the files sit in different packages), and the
--- language's files and the check's context files under it (globs read from
+-- language's files, the check's context files and the tests' `context` and
+-- `files` under it (globs read from
 -- the scope), as project paths.
 checkScope :: Language -> [FilePath] -> [FilePath] -> (FilePath, [FilePath])
 checkScope lang paths judged = (scope, [p | p <- paths, Just rel <- [inside scope p], not (any (`elem` pruned) (splitDirectories p)), any (`matchesGlob` rel) globs])
   where
     check = langCheck lang
-    globs = langFiles lang ++ maybe [] checkContext check
+    globs = langFiles lang ++ maybe [] checkContext check ++ maybe [] (\t -> testContext t ++ testFiles t) (langTest lang)
     scope = packageScope (maybe [] checkRoot check) (maybe False checkRootOutermost check) paths judged
 
 -- | The package of the judged files: the nearest folder (or the outermost)

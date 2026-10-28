@@ -9,6 +9,8 @@ module Olifant.Server.Tests
   , testsRun
   , testAt
   , testLineOf
+  , testAtIn
+  , testLineIn
   , testsJson
   , TestsFile (..)
   , testsFile
@@ -28,7 +30,8 @@ import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
-import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), failureLine, languageFor, testsForFile)
+import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), failureLine, languageFor, ownedBy, testsForFile)
+import Olifant.Language.TestUnits (testAtBy, testLineBy)
 import Olifant.Server.Site (appendStepLine, defName, runOver, tshow)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -81,14 +84,14 @@ testsRun scope path s0 =
               | testShaped (plTest p) rel -> pure rel
               | otherwise -> throwE ("no test file for this module yet: " <> T.pack mapped)
           here <- case scope of
-            ScopeAt n | testRel == rel -> lift (readText ws rel) <&> \t -> t >>= (`testAt` n)
+            ScopeAt n | testRel == rel -> lift (readText ws rel) <&> \t -> t >>= \x -> testAtIn (plLanguage p) x n
             _ -> pure Nothing
           let one' = (\name -> T.pack testRel <> "::" <> name) <$> here
           pure (maybe [T.pack testRel] pure one', normalisePath (plRoot p </> testRel), one')
       start <- lift getMonotonicTime
       run0 <- lift (either (TestRun [] [] . Just) id <$> runOver s ws (plLanguage p) ids)
       end <- lift getMonotonicTime
-      let isOwn tid t = t == tid || (tid <> "[") `T.isPrefixOf` t
+      let isOwn = ownedBy
           run = case one of
             Just tid
               | Nothing <- trBroken run0
@@ -202,6 +205,25 @@ testsJson a =
     , "broken" .= trBroken (taRun a)
     , "seconds" .= taSeconds a
     ]
+
+-- | The test at LINE (1-based) of a test file in LANG, named as its ids
+-- name it after `path::`: by the `[test] unit` patterns when the language
+-- has them; else the built-in pytest shape ('testAt').
+testAtIn :: Language -> Text -> Int -> Maybe Text
+testAtIn lang = case unitPatterns lang of
+  [] -> testAt
+  ps -> testAtBy ps
+
+-- | The first line of the test or group a plan anchor names by its dotted
+-- name (`Olifant.Plans.parsePlan`, `TestX.test_y`): by the `[test] unit`
+-- patterns, else the pytest shape.
+testLineIn :: Language -> Text -> Text -> Maybe Int
+testLineIn lang text name = case unitPatterns lang of
+  [] -> testLineOf text (T.replace "." "::" name)
+  ps -> testLineBy ps text name
+
+unitPatterns :: Language -> [Text]
+unitPatterns = maybe [] testUnitPatterns . langTest
 
 -- | The first line (1-based) of the test NAME (as 'testAt' names it) in
 -- a Python test file: its def's, or its first decorator's.
