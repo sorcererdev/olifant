@@ -57,6 +57,8 @@ spec = do
     unitNameIn rust "pub(crate) async fn load(x: u8) {" `shouldBe` Just "load"
     unitNameIn rust "impl<T> Display for Wrapper<T> {" `shouldBe` Just "Wrapper"
     unitNameIn rust "impl Booking {" `shouldBe` Just "Booking"
+    unitNameIn rust "impl<I: Iterator<Item = u8>> Foo for Bar {" `shouldBe` Just "Bar"
+    unitNameIn rust "impl<T: Into<String>> Wrapper<T> {" `shouldBe` Just "Wrapper"
   it "names an elm type alias by its name" $
     unitNameIn elm "type alias Model =" `shouldBe` Just "Model"
   it "names python defs, async defs and classes; other lines have no name" $ do

@@ -120,7 +120,7 @@ kinds = ["function_item", "impl_item", "struct_item", "enum_item", "trait_item"]
 # The name: an impl block's type (after `for` when it implements a trait),
 # else the item's name after its keyword.
 name = [
-  '^[[:space:]]*impl(<[^>]*>)?[[:space:]]+[^{]*[[:space:]]for[[:space:]]+([[:alnum:]_]+)',
-  '^[[:space:]]*impl(<[^>]*>)?[[:space:]]+([[:alnum:]_]+)',
+  '^[[:space:]]*impl(<.*>)?[[:space:]]+[^{]*[[:space:]]for[[:space:]]+([[:alnum:]_]+)',
+  '^[[:space:]]*impl(<.*>)?[[:space:]]+([[:alnum:]_]+)',
   '^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?((async|const|unsafe|extern)[[:space:]]+)*(fn|struct|enum|trait|mod)[[:space:]]+([[:alnum:]_]+)',
 ]
