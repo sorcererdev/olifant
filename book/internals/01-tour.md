@@ -179,7 +179,7 @@ From the bottom up:
 | **Rules** | Rules (spec §5.9): parse `rules.toml` and the project's `[rules]`, check files against them, honour and report the exceptions, fingerprint findings for the baseline | `Rules.hs`: `RuleDef`, `RuleCheck`, `Severity`, `RulesConfig`, `Finding`, `Exception`, `parseRules`, `parseRulesConfig`, `parseSeverity`, `checkFiles`, `fingerprint` | Actions (`matchPathSlots`), Glob, Language, Template, Toml |
 | **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): Myers' O(ND) diff over lines (cost follows the edits, not the file; past 1,000 edits lines pair by text), common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `lcsPairs`, `wholeNew`, `newCount` | none |
 | **Migration** | The strangler's report and its pure parts: the switch registry, `olifant:switch` markers, what a PR extracted and added, big changes, whether a function reads or writes, the tables its SQL names, a switched function's text | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `readsOrWrites`, `tablesTouched`, `functionText` | Newness |
-| **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, and the judge that runs each mutant in its own shadow, N at a time. `Mutate/Python` holds Python's operators | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `judge`, `Verdict`; `Mutate/Python`'s `pythonOperators`. Internal: `Mutate/Run`, `Mutate/Types` | Language |
+| **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, and the judge that runs each mutant in its own shadow, N at a time. the operators themselves are `[[mutate]]` entries in the language's TOML (Python's are in `library/languages/python.toml`) | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `judge`, `Verdict`; `operatorsOf`, which turns a language's `[[mutate]]` entries into operators. Internal: `Mutate/Run`, `Mutate/Types` | Language |
 | **TestName** | The names a new test gets: a survivor's stub named from its mutant (a string's words, else the operator and the mutated line's names), a name unique in its test file; and the sentence an instruction gains in a test file with the pack's helper | `TestName.hs`: `stubNameFor`, `uniqueTestName`, `helpedIn`, `helperSentenceFor` | Mutate |
 | **Decide** | Typed decisions, progressively (Jev-shaped; today `curlDecider` asks any chat backend named by `[decide] model`, no Jev backend exists): a `Question` of a kind with its options, a `Decider` that answers one or is `Unsure`; validated, so an answer outside the options is `Unsure`. Nothing depends on an answer arriving | `Decide.hs`: `Question`, `Answer`, `Decider`, `noDecider`, `validated`, `decisionPrompt`, `decodeAnswer`, `curlDecider`, `recordedDecider` | Model, Process |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
@@ -1084,8 +1084,7 @@ other error is a broken file. `rustcSupport` (`:21`) strips the `&`/`&mut ` rust
 reference scrutinee (`supportPattern`), checks visibility by type name (`supportVisible`:
 the qualifier of `Type::Variant` or `Type.Variant`, `qualifier`, `:92`, must be one of
 `typeNames` of the reported type), names the enclosing function with `rustFunctionAt`
-(`:98`, the nearest `fn NAME` above), and sets `supportArmSeparator = ","` and
-`supportReadsStdout = True`. `typeNames` lives in `Language/Diagnostics.hs` (`:77`) now that
+(`:98`, the nearest `fn NAME` above), and sets `supportReadsStdout = True`; the `,` arm separator is the language's own `arm_separator` key (`langArmSeparator`, in shipped `rust.toml`). `typeNames` lives in `Language/Diagnostics.hs` (`:77`) now that
 GHC and rustc both use it.
 
 `Language/Pyright.hs` reads `pyright --outputjson`: one JSON object whose
@@ -1102,7 +1101,7 @@ pattern as the site writes its others (`qualifyLike`, `:76`: the qualifier of th
 `case q.Class` arm, so `Cancelled()` becomes `create_booking.Cancelled()` or
 `cb.Cancelled()`), has no visibility rule (`supportVisible` is always `True`: sites come
 from pyright's own report), names the enclosing function with `pythonFunctionAt` (`:89`, the
-nearest `def` or `async def` above), and sets `supportArmSeparator = ""`.
+nearest `def` or `async def` above), and sets no arm separator (the language's `arm_separator` key, `langArmSeparator`, defaults to none).
 
 pyright gives only the `match` line, and the loop needs the site's last line to place an
 arm after it. That is the one thing a report can't say, so `CompilerSupport` has an
@@ -1146,7 +1145,7 @@ like its other alternatives, and copies their *spacing*: a blank line before the
 only if one already separates the case's last two alternatives (Elm's usual style), none if
 they sit flush against each other (ordinary Haskell). With only one alternative there is
 nothing to copy: a blank line when the language has no arm separator (Elm), none when it has
-one (Rust's arms sit together). Its first argument is the support's `supportArmSeparator`,
+one (Rust's arms sit together). Its first argument is the language's `langArmSeparator` (`arm_separator`), and `langLoneArmSpaced` (`lone_arm_spaced`) says whether a lone arm gets a blank line;
 which `applyBranches` passes down (`:87`): before inserting, `separated` (`:193`) gives the
 last arm the separator unless the line already ends with it, or with `}` or `{` (a block
 arm). Elm and GHC pass `""`, which leaves the text alone. `insertBranch` is exported so
@@ -1891,8 +1890,7 @@ with `Status` one of `Ok`, `Warn`, `Bad`, in this order:
   where `EXE` is the program its `command` runs, by `checkProgram` (`checkTool`, `:68`: the
   first word, or the word after a leading `env` and its settings, so Python's is `uv`):
   `tool` asks `dpFind`; when it is missing, the detail shows `dpPath`'s `PATH` and the fix is
-  `installHint` (`:86`), which knows where `cargo`, `elm`, `ghc` and `cabal` usually live, and
-  that `uv` comes from `brew install uv` (pyright then comes with the project, `uv sync`).
+  the tool's `install` text (`checkInstall`/`testInstall`, from its toolchain preset's `install` key in `library/toolchains/`), else a generic sentence.
 - **`model`**: no `[model]` is `Warn` with `modelSnippet` (`:94`) as the fix; backends with
   no `default` is `Warn`; a `default` with no such backend is `Bad`. An `OpenAICompatible`
   default is probed with `dpProbe`, and a failure is `Warn` with the reason. An `Anthropic`
