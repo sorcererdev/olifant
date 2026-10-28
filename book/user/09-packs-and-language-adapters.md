@@ -16,8 +16,9 @@ packs/elm/
       tests/…
   fixtures/app/          the small app the generators are tested against (and copy from)
   languages/
-    elm.toml             the Elm language adapter
+    elm.toml             over the shipped elm.toml: the grammar below
     grammar/elm/         the tree-sitter grammar it needs, vendored as C source
+  toolchains/            preset overrides, <name>.toml (optional)
   regions.toml           owned regions (optional; olifant-dev and rust-htmx have one)
   rules.toml             rules: conventions as checks (optional; rust-htmx has one)
   model.toml             how the pack's conventions map onto the project model (optional)
@@ -185,14 +186,66 @@ misses (`end of uses` in `billing-service/src/lib.rs`, which only has `pub mod`s
 items to insert beside"). Give `start of file` as the fallback, as
 `command-dependency` does: `at = ["end of uses", "start of file"]`.
 
-Adapters come only from configured packs. In a project that only configures `rust-htmx`,
-`olifant anchors elm` says "no language adapter named `elm`", and `.elm` files get only the
-built-in line and marker targets. A project cannot declare an adapter of its own; put it in
-a pack (a pack can be nothing but a `languages/` directory).
+### Where a language comes from
+
+Olifant ships its languages: `python`, `rust`, `haskell` and `elm` are TOML files inside the
+binary (`library/languages/<name>.toml` in Olifant's source), as are the toolchain presets
+([below](#presets-check-and-test)). A language is the merge of up to three **layers**, each the
+same file format, later winning:
+
+1. the shipped file;
+2. each configured pack's `languages/<name>.toml`, in pack order;
+3. the project's own `.olifant/languages/<name>.toml`.
+
+They merge key by key: a table merges with the table under the same key (so a pack's `[test]
+tests_for` keeps the shipped `[test] preset`), and anything else — a string, a number, a list,
+an array of tables like `[[mutate]]` — is replaced whole. Then the one preset the merged `[check]`
+or `[test]` names fills in the keys still missing. So a project that names a different preset
+swaps the whole preset, while the keys an earlier layer wrote stay. A `grammar = { source = "…" }`
+is found beside the layer that set it (`<pack>/languages/…` or `.olifant/languages/…`); a shipped
+file cannot name one, which is why the elm pack keeps `languages/elm.toml` with only its grammar.
+
+Toolchains layer the same way: a pack's `toolchains/<name>.toml` and the project's
+`.olifant/toolchains/<name>.toml` (one `[check]` or `[test]` table each) override the shipped
+preset of that name.
+
+A shipped language is not on in every project. A language is the project's when a pack or the
+project has a `languages/<name>.toml` for it, when a generator says `language = "<name>"`, or
+when the project's `.olifant/config.toml` lists it:
+
+```toml
+languages = ["rust"]
+```
+
+A language that does not load (an unknown key, a missing `grammar`) is reported with the path of
+the layer that is at fault (`olifant doctor`, `olifant list`) and the others load; a layer that is not
+valid TOML sets its whole language aside the same way; one that only a generator
+names and that cannot load (elm without the elm pack) is left out quietly. `olifant doctor` says
+which layers each language came from and which layer set each capability's key.
+
+In a project with no Elm, `olifant anchors elm` says "no language adapter named `elm`", and
+`.elm` files get only the built-in line and marker targets.
+
+**Migrating a pack.** A pack's full `languages/<name>.toml` from before keeps working: it is now a
+layer over the shipped file, and every key it sets wins. One rule keeps an old file whole: a
+`[check]` or `[test]` that sets `command` or `convert` and no `preset` stops inheriting the shipped
+`preset`, so the shipped preset's other keys (hspec's `select`, pytest's `root`) are not added to a
+runner of its own. Write `preset` again in that section to get them. It can be thinned to what its convention
+changes — python-htmx's is three lines, its `__test.py` test files:
+
+```toml
+# Over the shipped python.toml: only what this pack's convention changes.
+[test]
+tests_for = "{= dir =}/{= stem =}__test.py"
+```
+
+Adding a language to Olifant itself is a file in `library/languages/` (touch
+`src/Olifant/Library.hs` so the embed sees it); adding one to a project is a file in
+`.olifant/languages/`.
 
 ### The keys
 
-From `packs/rust-htmx/languages/rust.toml` and `packs/elm/languages/elm.toml`:
+From `library/languages/rust.toml` and `library/languages/elm.toml`:
 
 ```toml
 files       = ["**/*.rs"]                         # which files this adapter covers
@@ -225,9 +278,12 @@ example   = "end of struct BillingService"
 | `comment` | region fences in this language's files (chapter 5) |
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
-| `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
+| `arm_separator`, `lone_arm_spaced` | how `complete` joins a new arm to the others: `arm_separator` (default none) is appended to the last arm first, unless it already ends with it or ends a block (Rust's `","`); `lone_arm_spaced = true` puts a blank line before the new arm when the match has only one (Elm's and Haskell's style; default false). With two or more arms, the existing spacing is copied |
+| `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). the shipped Haskell file sets two spaces |
 | `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo), and the generic `sarif`, `errorformat` and `olifant-json`; `convert` runs a command that turns any tool's output into olifant-json ([check formats](#check-formats)). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`, `lines`, `tap`, `junit-xml`, `olifant-json`) or `convert`, `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). `[test.select]`, `file_group`, `unit`, `exclusive` and `timeout` say how one test is run and found. See [presets](#presets-check-and-test) and [test formats](#test-formats) |
+| `[[mutate]]` | mutation operators, for `mutate` ([chapter 18](18-tdd-in-the-editor.md)): each a `name`, a `pattern` or ast-grep `rule`, and a `fix` or `transform = "increment"`. Python ships seventeen |
+| `unit_words` | what a unit is in this language, as the plan prompts say it: "<Unit> is <unit_words> defined in that file". Python's is "a top-level class or function name (Name) or a method (Class.method)"; a project whose languages disagree, or one without the key, gets "a top-level function or type name (Name), or a method (Type.method)" |
 | `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
@@ -246,7 +302,7 @@ anchors` on it or a `complete` edit whose `language` names it.
 
 ### A second example: Haskell
 
-`packs/olifant-dev/languages/haskell.toml` uses ast-grep's grammar built in for Haskell,
+`library/languages/haskell.toml` uses ast-grep's grammar built in for Haskell,
 checks with GHC through `cabal repl` instead of `elm make`, and runs its tests with hspec
 through `cabal test`. Both are presets ([below](#presets-check-and-test)):
 
@@ -313,7 +369,7 @@ item by the word after its keyword (`pub(crate) async fn load` → `load`); Elm'
 
 ### A third example: Rust
 
-`packs/rust-htmx/languages/rust.toml` checks the whole cargo workspace:
+`library/languages/rust.toml` checks the whole cargo workspace:
 
 ```toml
 placeholder = 'todo!("{= message|rust_string =}")'
@@ -375,7 +431,7 @@ root_pick = "outermost"
 
 ### A fourth example: Python
 
-`packs/python-htmx/languages/python.toml` is the Python adapter. It uses ast-grep's built-in
+`library/languages/python.toml` is the Python adapter. It uses ast-grep's built-in
 grammar and checks with pyright, in strict mode, through `uv`:
 
 ```toml
@@ -538,19 +594,26 @@ generators, chained in an editor, in [chapter 14](14-editors-and-actions.md#the-
 ### Presets: `[check]` and `[test]`
 
 A check or a test run needs Olifant's plumbing (its cache, a venv kept there, the tool's output
-format). A **preset** says it once, in Olifant, so a pack writes only what is its own:
+format). A **preset** says it once, in Olifant, so a pack writes only what is its own. The presets
+ship inside the binary as TOML files, `library/toolchains/<name>.toml` in Olifant's source, each
+holding one `[check]` or `[test]` table with the keys it fills in:
 
 | table | preset | what it runs |
 |---|---|---|
 | `[check]` | `pyright` | `uv run pyright --outputjson` in the project's venv in Olifant's cache; `pyright-json`; rooted at `pyproject.toml` |
 | `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
-| `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml` |
+| `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml`; `tests_for = "{= dir =}/test_{= stem =}.py"` |
 | `[check]` | `cabal-repl` | `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}` with `-fno-code`, GHC's JSON diagnostics and its missing-pattern warning; `ghc-json`; `exclusive`; context `*.cabal`, `cabal.project`, `cabal.project.freeze`. Loads the package's one library |
 | `[test]` | `hspec` | `cabal test -v0 --builddir={= cache =}/dist-test-{= context =} --test-show-details=direct --test-option=--format=checks --test-option=--no-color`, then the selected tests; `format = "lines"` over hspec's tree ([test formats](#test-formats)); one test by `--match=/{= group =}/{= name =}/`, a file by its module (`file_group`); `unit` finds `describe`/`it`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}Spec.hs"` |
 
 Any key you write beside `preset` wins over the preset's: `[check] preset = "pyright"` with your
 own `root = ["apps/web/pyproject.toml"]` keeps the rest. An unknown preset is a load error naming
 the known ones (`` `preset`: unknown test preset `jest`; expected one of hspec, pytest ``).
+
+A `[check]` or `[test]` may say how to install its tool, `install = "…"` (a sentence): `olifant
+doctor` gives it as the fix when the tool is not on the PATH. Every shipped preset carries one;
+without it doctor says "install <program> and make sure it is on the PATH your editor starts
+with".
 
 `[test]` also says where a module's tests live: `tests_for`, a template of the module's folder
 (`{= dir =}`) and name without its extension (`{= stem =}`). The editor's commands find a module's test file
@@ -699,7 +762,7 @@ use only the kinds its file's adapter declares. Each kind is a table with two ke
 required:
 
 ```toml
-# packs/rust-htmx/languages/rust.toml
+# library/languages/rust.toml
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.
 [holes.expr]
@@ -716,7 +779,7 @@ wrap = "type __Olifant = {= fill =};"
 ```
 
 ```toml
-# packs/elm/languages/elm.toml
+# library/languages/elm.toml
 [holes.expr]
 placeholder = 'Debug.todo "olifant: {= hole =}: {= instruction|escaped =}"'
 wrap = """
@@ -753,7 +816,7 @@ stops ([chapter 12](12-holes-and-models.md#where-a-holes-value-comes-from-holesn
 and text inside a string:
 
 ```toml
-# packs/rust-htmx/languages/rust.toml
+# library/languages/rust.toml
 # Tab stops in snippets (spec §4.9): a name, or text inside a string.
 [holes.ident]
 placeholder = "{= hole =}"
@@ -769,7 +832,7 @@ pyright, with no import. A `raise` is a statement, so the `expr` placeholder is 
 expression's `throw`:
 
 ```toml
-# packs/python-htmx/languages/python.toml
+# library/languages/python.toml
 # Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
 # result), so it fits any type under pyright strict and needs no import; it
 # raises with the hole's message if it is ever run. Not Never: pyright skips

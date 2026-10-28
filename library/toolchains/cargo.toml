@@ -1,0 +1,11 @@
+# `cargo check` over the whole workspace, one target dir per context in
+# Olifant's cache (a slot per check: exclusive). The diesel-* crates are left
+# out (rust-htmx's adapters need libpq); cargo only warns where none exist.
+[check]
+command = ["cargo", "check", "--workspace", "--exclude", "diesel-*", "--message-format=json", "--target-dir", "{= cache =}/target-{= context =}"]
+context = ["**/Cargo.toml", "Cargo.lock"]
+format = "rustc-json"
+exclusive = true
+root = ["Cargo.toml"]
+root_pick = "outermost"
+install = "install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)"

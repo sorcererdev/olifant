@@ -4,13 +4,13 @@ module Olifant.Server.UnitSpec (spec) where
 
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Language (..), Match (..), Syntax (..), parseLanguage, querying)
+import Olifant.Language (Language (..), Match (..), Syntax (..), parseLanguage, parseOverShipped, querying)
 import Olifant.Server.Unit
 import Test.Hspec
 
 -- | A pack's real language file.
 packLanguage :: T.Text -> FilePath -> IO Language
-packLanguage name pack = either (error . T.unpack) id . parseLanguage name pack <$> TIO.readFile (pack <> "/languages/" <> T.unpack name <> ".toml")
+packLanguage name pack = either (error . T.unpack) id . parseOverShipped name pack <$> TIO.readFile (pack <> "/languages/" <> T.unpack name <> ".toml")
 
 -- | A syntax whose query finds the given 0-based (startLine, endLine) spans.
 spans :: [(Int, Int)] -> Syntax IO
@@ -19,7 +19,7 @@ spans sps = querying (\_ _ _ -> pure (Right [Match (a, 0) (z, 0) "" (0, 0) | (a,
 spec :: Spec
 spec = do
  python <- runIO (packLanguage "python" "packs/python-htmx")
- haskell <- runIO (packLanguage "haskell" "packs/olifant-dev")
+ haskell <- runIO (packLanguage "haskell" ".olifant")
  rust <- runIO (packLanguage "rust" "packs/rust-htmx")
  elm <- runIO (packLanguage "elm" "packs/elm")
  describe "Olifant.Server.Unit (units by name)" $ do

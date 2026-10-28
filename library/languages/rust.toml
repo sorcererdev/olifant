@@ -1,0 +1,130 @@
+# Rust: ast-grep's built-in grammar.
+files = ["**/*.rs"]
+# What a unit is, as prompts say it (an anchor @path:Unit).
+unit_words = "a top-level function, struct, enum or trait name (Name), or a method (Type.method)"
+# Reserved words: recognition keeps them as they are (names become their case shape)
+keywords = ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "Arc", "String", "Result", "Option", "Vec", "Box"]
+comment = "//"
+grammar = "rust"
+# Items in brackets are followed by a comma; rustfmt's width is 100.
+separator = ","
+# A match arm ends with a comma before a new one.
+arm_separator = ","
+line_length = 100
+placeholder = 'todo!("{= message|rust_string =}")'
+branch = "{= pattern =} => {= body =},"
+
+# cargo, over the whole workspace (spec §5.6, §9). Diesel adapters need libpq
+# and the template's real db crate, so they are left out of the build. One
+# target dir per workspace shape (its Cargo.toml files and lock): checks of
+# different workspaces at once (two projects, the server's threads) would
+# otherwise build each other's crates of the same name.
+[check]
+preset = "cargo"
+# (the preset: `cargo check --workspace`, diesel adapters excluded, one target
+# dir per workspace shape; an exclusive check, its cache its slot's, since
+# cargo's build cache is not safe to share between checks running at once; run
+# in the judged file's outermost Cargo workspace)
+
+# Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
+# a fill must parse in.
+[holes.expr]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
+wrap = "fn __olifant() {\n    let _ = {= fill =}\n    ;\n}"
+
+[holes.block]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}")'
+# The fill on its own lines: a trailing `// comment` can't swallow the brace.
+wrap = "fn __olifant() {\n{= fill =}\n}"
+
+# A whole statement (a rule's fix rewriting one): the placeholder ends with
+# `;` so the code after it still compiles.
+[holes.stmt]
+placeholder = 'todo!("olifant: {= hole =}: {= instruction|rust_string =}");'
+wrap = "fn __olifant() {\n{= fill =}\n}"
+
+[holes.type]
+placeholder = "() /* olifant: {= hole =} */"
+wrap = "type __Olifant = {= fill =};"
+
+[targets.struct]
+phrase = "struct NAME"
+container = { kind = "field_declaration_list", inside = { kind = "struct_item", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { kind = "field_declaration" }
+example = "end of struct BillingService"
+
+[targets.enum]
+phrase = "enum NAME"
+container = { kind = "enum_variant_list", inside = { kind = "enum_item", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { kind = "enum_variant" }
+example = "end of enum RefundInvoiceFailure"
+
+[targets.impl]
+phrase = "impl NAME"
+container = { kind = "declaration_list", inside = { kind = "impl_item", has = { field = "type", regex = "^{= NAME =}$" } } }
+items = { kind = "function_item" }
+example = "end of impl BillingService"
+
+[targets.literal_in]
+phrase = "literal in FUNCTION"
+container = { kind = "field_initializer_list", inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" }, not = { inside = { kind = "field_initializer_list", stopBy = "end" } } }
+items = { any = [{ kind = "field_initializer" }, { kind = "shorthand_field_initializer" }] }
+example = "end of literal in new"
+
+[targets.crate_imports]
+phrase = "crate imports"
+container = { kind = "use_list", inside = { kind = "use_declaration", regex = "^use crate::", stopBy = "end" }, not = { inside = { kind = "use_list", stopBy = "end" } } }
+# ast-grep needs a kind: everything a use list can hold.
+items = { any = [{ kind = "scoped_use_list" }, { kind = "scoped_identifier" }, { kind = "identifier" }, { kind = "use_as_clause" }, { kind = "use_wildcard" }, { kind = "self" }] }
+example = "end of crate imports"
+
+# A file's top-level `use` declarations: `end of uses` goes after the last
+# one, whole (a multi-line `use crate::{ … };` included). A file with none is
+# not opened: give `start of file` as the fallback.
+[targets.uses]
+phrase = "uses"
+container = { kind = "source_file" }
+items = { kind = "use_declaration" }
+example = "end of uses"
+
+# Wiring dependencies (spec §7.1): a function's parameters, a struct literal
+# by name, a call's arguments. Empty ones are opened (`()`, `{}`).
+[targets.parameters_in]
+phrase = "parameters in FUNCTION"
+container = { kind = "parameters", inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" } } }
+items = { any = [{ kind = "parameter" }, { kind = "self_parameter" }] }
+example = "end of parameters in new"
+
+[targets.literal_named_in]
+phrase = "literal NAME in FUNCTION"
+container = { kind = "field_initializer_list", inside = { kind = "struct_expression", has = { field = "name", regex = "^{= NAME =}$" }, inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
+items = { any = [{ kind = "field_initializer" }, { kind = "shorthand_field_initializer" }] }
+example = "end of literal RefundInvoice in new"
+
+[targets.call_in]
+phrase = "call NAME in FUNCTION"
+container = { kind = "arguments", inside = { kind = "call_expression", has = { field = "function", regex = "^{= NAME =}$" }, inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
+# ast-grep needs a kind: the expressions an argument can be.
+items = { any = [{ kind = "call_expression" }, { kind = "identifier" }, { kind = "field_expression" }, { kind = "reference_expression" }, { kind = "macro_invocation" }, { kind = "string_literal" }, { kind = "integer_literal" }, { kind = "struct_expression" }, { kind = "scoped_identifier" }, { kind = "closure_expression" }] }
+example = "end of call BillingService::new in main"
+
+# Tab stops in snippets (spec §4.9): a name, or text inside a string.
+[holes.ident]
+placeholder = "{= hole =}"
+wrap = "struct {= fill =};"
+
+[holes.text]
+placeholder = "{= hole =}"
+wrap = "const _: &str = \"{= fill =}\";"
+
+# The unit: the innermost of these node kinds at the cursor is what `conjure`
+# conjures and `stub` stubs a test for.
+[unit]
+kinds = ["function_item", "impl_item", "struct_item", "enum_item", "trait_item"]
+# The name: an impl block's type (after `for` when it implements a trait),
+# else the item's name after its keyword.
+name = [
+  '^[[:space:]]*impl(<.*>)?[[:space:]]+[^{]*[[:space:]]for[[:space:]]+([[:alnum:]_]+)',
+  '^[[:space:]]*impl(<.*>)?[[:space:]]+([[:alnum:]_]+)',
+  '^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?((async|const|unsafe|extern)[[:space:]]+)*(fn|struct|enum|trait|mod)[[:space:]]+([[:alnum:]_]+)',
+]

@@ -1747,7 +1747,7 @@ durandal: olifant lsp ~
 durandal: olifant doctor in /tmp/demo ~
 - ✅ OK config — project at /tmp/demo
 - ✅ OK pack rust-htmx — loaded
-- ✅ OK language rust — loaded
+- ✅ OK language rust — loaded (shipped, pack rust-htmx)
 - ✅ OK ast-grep — /opt/homebrew/bin/ast-grep
 - ❌ ERROR check tool cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
   - ADVICE:

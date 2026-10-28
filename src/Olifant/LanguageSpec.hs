@@ -15,6 +15,8 @@ import Data.Text.IO qualified as TIO
 import Olifant.Language.Elm (parseElmReport, qualifyPattern, visibleAt)
 import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locIndent, locLine, locOpen, locSpacing, insertLines, presentAt, resolveLayers)
 import Olifant.Language
+import Olifant.Language.Presets (shippedPresets)
+import Olifant.Toml (mergeTables, parseToml)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
 import System.Directory (doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory)
@@ -73,8 +75,10 @@ spec = do
     it "(c) an unknown preset names the ones that exist" $
       py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"jest\"", "tests_for = \"x\""]
         `shouldSatisfy` either (\e -> "pytest" `T.isInfixOf` e && "jest" `T.isInfixOf` e) (const False)
-    it "(d) [test] needs tests_for" $
-      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""] `shouldSatisfy` either ("tests_for" `T.isInfixOf`) (const False)
+    it "(d) [test] needs tests_for, which the pytest preset gives" $ do
+      py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "command = [\"pytest\"]", "format = \"pytest\""] `shouldSatisfy` either ("tests_for" `T.isInfixOf`) (const False)
+      let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\""]
+      fmap testsFor (langTest lang) `shouldBe` Just "{= dir =}/test_{= stem =}.py"
     it "(e) [check] preset = \"pyright\" is the old table" $ do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""]
       fmap checkFormat (langCheck lang) `shouldBe` Just "pyright-json"
@@ -113,7 +117,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing []) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -181,7 +185,7 @@ spec = do
         Just _ -> do
           fixture <- readFixtureTree "packs/python-htmx/fixtures/app"
           toml <- TIO.readFile "packs/python-htmx/languages/python.toml"
-          let Right lang = parseLanguage "python" "packs/python-htmx" toml
+          let Right lang = parseOverShipped "python" "packs/python-htmx" toml
               red = "src/bistro/booking/commands/red__test.py"
               files = M.insert red "def test_red() -> None:\n    assert 1 == 2\n" fixture
           run <- runTestsIn (processRunner neverCancel 120) lang [T.pack red] files
@@ -393,7 +397,7 @@ spec = do
     let at syn lang file p = fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
         lineOf needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines pythonModule))
     it "[unit] kinds: the adapter's definition kinds, none when it has no [unit]" $ do
-      py <- either (error . T.unpack) id . parseLanguage "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
+      py <- either (error . T.unpack) id . parseOverShipped "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
       langUnitKinds py `shouldBe` ["function_definition", "class_definition", "decorated_definition"]
       fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
     it "[check] convert: format absent or olifant-json; [check.errorformat] needs a pattern" $ do
@@ -501,7 +505,7 @@ spec = do
       fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call notifications_service::service::NotificationsService::new in main"] file) >>= (`shouldSatisfy` either (const False) isJust)
     it "anchors lines up every target's example, however long the phrase" $ do
       src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
-      let Right lang = parseLanguage "rust" "packs/rust-htmx" src
+      let Right lang = parseOverShipped "rust" "packs/rust-htmx" src
           rows = [l | l <- T.lines (anchorsHuman lang), "e.g. " `T.isInfixOf` l]
       rows `shouldSatisfy` all (\l -> "  e.g. " `T.isInfixOf` l)
       length (nub [T.length (fst (T.breakOn "e.g. " l)) | l <- rows]) `shouldBe` 1
@@ -601,7 +605,7 @@ spec = do
       fmap (fmap checkExclusive . langCheck) (parsed ["exclusive = true"]) `shouldBe` Right (Just True)
       fmap (fmap checkExclusive . langCheck) (parsed []) `shouldBe` Right (Just False)
       rust <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
-      fmap (fmap checkExclusive . langCheck) (parseLanguage "rust" "packs/rust-htmx" rust) `shouldBe` Right (Just True)
+      fmap (fmap checkExclusive . langCheck) (parseOverShipped "rust" "packs/rust-htmx" rust) `shouldBe` Right (Just True)
     it "runs exclusive checks of a workspace in parallel, never two in one cache at once" $
       withSystemTempDirectory "olifant-exclusive" $ \dir -> do
         let log' = dir </> "log"
@@ -620,7 +624,7 @@ spec = do
       fmap (fmap checkConcurrent . langCheck) (parsed ["concurrent = false"]) `shouldBe` Right (Just False)
       fmap (fmap checkConcurrent . langCheck) (parsed []) `shouldBe` Right (Just True)
       elm <- TIO.readFile "packs/elm/languages/elm.toml"
-      fmap (fmap checkConcurrent . langCheck) (parseLanguage "elm" "packs/elm" elm) `shouldBe` Right (Just False)
+      fmap (fmap checkConcurrent . langCheck) (parseOverShipped "elm" "packs/elm" elm) `shouldBe` Right (Just False)
     it "runs a non-concurrent check one at a time: two at once never overlap" $
       withSystemTempDirectory "olifant-one-at-a-time" $ \dir -> do
         let log' = dir </> "log"
@@ -706,8 +710,16 @@ spec = do
       supportVisible rustcSupport d "" "Failure.D" `shouldBe` True
     it "names the enclosing fn" $
       rustFunctionAt "pub fn one(f: &Failure) -> u16 {\n    match f {\n" 1 `shouldBe` "one"
-    it "appends a comma to the last arm before a new one" $
-      supportArmSeparator rustcSupport `shouldBe` ","
+    it "appends a comma to the last arm before a new one (rust.toml's arm_separator)" $ do
+      rust <- shippedLanguage "rust" []
+      langArmSeparator rust `shouldBe` ","
+      langLoneArmSpaced rust `shouldBe` False
+    it "a lone arm's new neighbour goes after a blank line in Haskell and Elm, not in Python" $ do
+      hs <- shippedLanguage "haskell" []
+      elm <- shippedLanguage "elm" [("pack elm", "packs/elm")]
+      py <- shippedLanguage "python" []
+      map langLoneArmSpaced [hs, elm, py] `shouldBe` [True, True, False]
+      map langArmSeparator [hs, elm, py] `shouldBe` ["", "", ""]
   describe "check commands" $
     it "expands {= cache =} to an existing per-language cache directory" $ do
       let Right lang = parseLanguage "cachey" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"--\"", "grammar = \"x\"", "[check]", "command = [\"sh\", \"-c\", \"test -d \\\"$0\\\"\", \"{= cache =}\"]", "format = \"rustc-json\""])
@@ -753,10 +765,76 @@ spec = do
       supportVisible g (at "RegionError") "" "SampleLocked" `shouldBe` True
       supportPattern g (missing "a.hs" (0, 0) []) "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
     it "asks GHC not to truncate pattern lists (review M2)" $ do
-      src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+      src <- TIO.readFile ".olifant/languages/haskell.toml"
       -- (through the cabal-repl preset)
-      let Right hs = parseLanguage "haskell" "packs/olifant-dev" src
+      let Right hs = parseOverShipped "haskell" ".olifant" src
       fmap checkCommand (langCheck hs) `shouldSatisfy` maybe False (any ("-fmax-uncovered-patterns=" `T.isInfixOf`))
+  describe "layers (shipped, packs, project; merged by key)" $ do
+    let layer origin dir ls = either (error . T.unpack) (Layer origin dir) (parseToml (T.unlines ls))
+        base = ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""]
+        Right two = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["indent = \"  \"", "keywords = [\"a\", \"b\"]", "[unit]", "kinds = [\"a\"]"]), layer "pack p" (Just "/p") ["[unit]", "join = true"]]
+    it "mergeTables: the right wins; tables merge, lists and scalars are replaced" $ do
+      let Right a = parseToml (T.unlines ["x = 1", "l = [1, 2]", "[t]", "a = 1", "b = 1"])
+          Right b = parseToml (T.unlines ["l = [3]", "[t]", "b = 2"])
+          Right ab = parseToml (T.unlines ["x = 1", "l = [3]", "[t]", "a = 1", "b = 2"])
+      mergeTables a b `shouldBe` ab
+    it "a later layer's key wins and the rest is kept" $ do
+      langIndent two `shouldBe` "  "
+      langUnitKinds two `shouldBe` ["a"]
+      langUnitJoin two `shouldBe` True
+      originOf two "unit.join" `shouldBe` Just "pack p"
+      originOf two "unit.kinds" `shouldBe` Just "shipped"
+      originOf two "indent" `shouldBe` Just "shipped"
+      langLayers two `shouldBe` ["shipped", "pack p"]
+    it "lists replace" $ do
+      let Right l = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["keywords = [\"a\", \"b\"]"]), layer "project" (Just "/q/.olifant") ["keywords = [\"c\"]"]]
+      langKeywords l `shouldBe` ["c"]
+      originOf l "keywords" `shouldBe` Just "project"
+    it "a preset fills after the merge: a later layer's preset swaps it, earlier explicit keys stay (Review Focus 2)" $ do
+      let Right l = languageFromLayers shippedPresets "python" [layer "pack p" (Just "/p") (base ++ ["[test]", "preset = \"pytest\"", "tests_for = \"X\""]), layer "project" (Just "/q/.olifant") ["[test]", "preset = \"hspec\""]]
+      fmap testFormat (langTest l) `shouldBe` Just "lines"
+      fmap testsFor (langTest l) `shouldBe` Just "X"
+      originOf l "test.format" `shouldBe` Just "toolchain hspec"
+      originOf l "test.tests_for" `shouldBe` Just "pack p"
+      originOf l "test.preset" `shouldBe` Just "project"
+    it "a layer inherits what it does not set (Review Focus 1)" $ do
+      let Right l = languageFromLayers shippedPresets "python" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"pytest\""]), layer "pack p" (Just "/p") ["indent = \"    \""]]
+      fmap testFormat (langTest l) `shouldBe` Just "pytest"
+      fmap testsFor (langTest l) `shouldBe` Just "{= dir =}/test_{= stem =}.py"
+      originOf l "test" `shouldBe` Just "shipped"
+      originOf l "test.tests_for" `shouldBe` Just "toolchain pytest"
+    it "a layer that sets command or convert and no preset drops the inherited preset" $ do
+      let Right l = languageFromLayers shippedPresets "haskell" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"hspec\""]), layer "pack p" (Just "/p") ["[test]", "command = [\"my-runner\"]", "format = \"junit-xml\"", "tests_for = \"x\""]]
+          Just td = langTest l
+      testCommand td `shouldBe` ["my-runner"]
+      testFormat td `shouldBe` "junit-xml"
+      testSelect td `shouldBe` Nothing
+    it "a layer that sets neither command nor convert keeps the inherited preset" $ do
+      let Right l = languageFromLayers shippedPresets "haskell" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"hspec\""]), layer "pack p" (Just "/p") ["[test]", "tests_for = \"X\""]]
+      fmap testFormat (langTest l) `shouldBe` Just "lines"
+      fmap testsFor (langTest l) `shouldBe` Just "X"
+    it "the grammar follows the layer that set it (Review Focus 3)" $ do
+      let Right l = languageFromLayers shippedPresets "elm" [layer "pack elm" (Just "packs/elm") ["files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = { source = \"grammar/elm\" }"], layer "project" (Just ".olifant") ["indent = \"    \""]]
+      langGrammar l `shouldBe` GrammarSource "packs/elm/languages/grammar/elm"
+    it "a shipped grammar source is an error" $
+      languageFromLayers shippedPresets "x" [layer "shipped" Nothing ["files = [\"*.x\"]", "comment = \"#\"", "grammar = { source = \"g\" }"]]
+        `shouldSatisfy` either ("cannot be shipped" `T.isInfixOf`) (const False)
+    it "parseLanguage is one pack layer" $ do
+      let Right l = parseLanguage "python" "packs/python-htmx" (T.unlines base)
+      langLayers l `shouldBe` ["pack python-htmx"]
+  describe "[[mutate]] (mutation operators)" $ do
+    let x extra = parseLanguage "x" "/x" (T.unlines (["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"python\""] ++ extra))
+    it "reads a pattern with a fix, and a rule with the increment transform" $ do
+      let Right l = x ["[[mutate]]", "name = \"boundary\"", "pattern = \"$A < $B\"", "fix = \"$A <= $B\"", "[[mutate]]", "name = \"number\"", "rule = { kind = \"integer\" }", "transform = \"increment\""]
+      map mutName (langMutate l) `shouldBe` ["boundary", "number"]
+      map (either (const Nothing) Just . mutFix) (langMutate l) `shouldBe` [Just "$A <= $B", Nothing]
+    it "one of pattern or rule" $ do
+      x ["[[mutate]]", "name = \"a\"", "pattern = \"p\"", "rule = { kind = \"k\" }", "fix = \"f\""] `shouldSatisfy` either ("one of `pattern` or `rule`" `T.isInfixOf`) (const False)
+      x ["[[mutate]]", "name = \"a\"", "fix = \"f\""] `shouldSatisfy` either ("one of `pattern` or `rule`" `T.isInfixOf`) (const False)
+    it "one of fix or transform" $
+      x ["[[mutate]]", "name = \"a\"", "pattern = \"p\""] `shouldSatisfy` either ("one of `fix` or `transform`" `T.isInfixOf`) (const False)
+    it "the only transform is increment" $
+      x ["[[mutate]]", "name = \"a\"", "pattern = \"p\"", "transform = \"double\""] `shouldSatisfy` either ("\"increment\"" `T.isInfixOf`) (const False)
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"
@@ -804,7 +882,7 @@ spec = do
         Nothing -> pendingWith "elm is not installed"
         Just _ -> do
           src <- TIO.readFile "packs/elm/languages/elm.toml"
-          let Right elm = parseLanguage "elm" "packs/elm" src
+          let Right elm = parseOverShipped "elm" "packs/elm" src
           files <- traverse (\p -> (p,) <$> TIO.readFile ("packs/elm/fixtures/app" </> p)) ["elm.json", "src/Main.elm", "src/Route.elm", "src/Page/Home.elm", "src/Page/SamplePage.elm"]
           let withReset = [(p, if p == "src/Page/SamplePage.elm" then T.replace "    = NoOp\n" "    = NoOp\n    | Reset\n" t else t) | (p, t) <- files]
           r <- runCheck processChecker elm (M.fromList withReset)
@@ -814,7 +892,7 @@ spec = do
         Nothing -> pendingWith "elm is not installed"
         Just _ -> do
           src <- TIO.readFile "packs/elm/languages/elm.toml"
-          let Right elm = parseLanguage "elm" "packs/elm" src
+          let Right elm = parseOverShipped "elm" "packs/elm" src
           files <- traverse (\p -> (p,) <$> TIO.readFile ("packs/elm/fixtures/app" </> p)) ["elm.json", "src/Main.elm", "src/Route.elm", "src/Page/Home.elm", "src/Page/SamplePage.elm"]
           let typo = [(p, if p == "src/Page/Home.elm" then T.replace "Cmd.none" "Cmd.nonee" t else t) | (p, t) <- files]
           r <- runCheck processChecker elm (M.fromList typo)
@@ -829,7 +907,7 @@ withRust k =
     Just _ -> do
       src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
       tmp <- getTemporaryDirectory
-      let Right lang = parseLanguage "rust" "packs/rust-htmx" src
+      let Right lang = parseOverShipped "rust" "packs/rust-htmx" src
       file <- TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
@@ -839,9 +917,9 @@ withHaskell k =
   findExecutable "ast-grep" >>= \case
     Nothing -> pendingWith "ast-grep is not installed (brew install ast-grep)"
     Just _ -> do
-      src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+      src <- TIO.readFile ".olifant/languages/haskell.toml"
       tmp <- getTemporaryDirectory
-      let Right lang = parseLanguage "haskell" "packs/olifant-dev" src
+      let Right lang = parseOverShipped "haskell" ".olifant" src
       file <- TIO.readFile "packs/olifant-dev/fixtures/app/src/Olifant/SampleErrors.hs"
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
@@ -903,7 +981,7 @@ withPython k =
     Just _ -> do
       src <- TIO.readFile "packs/python-htmx/languages/python.toml"
       tmp <- getTemporaryDirectory
-      let Right lang = parseLanguage "python" "packs/python-htmx" src
+      let Right lang = parseOverShipped "python" "packs/python-htmx" src
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang pythonModule
 
 withRustFile :: FilePath -> (Syntax IO -> Language -> Text -> Expectation) -> Expectation
@@ -913,7 +991,7 @@ withRustFile rel k =
     Just _ -> do
       src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
       tmp <- getTemporaryDirectory
-      let Right lang = parseLanguage "rust" "packs/rust-htmx" src
+      let Right lang = parseOverShipped "rust" "packs/rust-htmx" src
       file <- TIO.readFile ("packs/rust-htmx/fixtures/app" </> rel)
       k (astGrepSyntax (tmp </> "olifant-test-cache")) lang file
 
@@ -927,7 +1005,7 @@ withAstGrepOn fixtureFile k =
     Just _ -> do
       src <- TIO.readFile "packs/elm/languages/elm.toml"
       tmp <- getTemporaryDirectory
-      let Right elm = parseLanguage "elm" "packs/elm" src
+      let Right elm = parseOverShipped "elm" "packs/elm" src
       file <- TIO.readFile ("packs/elm/fixtures/app" </> fixtureFile)
       k (astGrepSyntax (tmp </> "olifant-test-cache")) elm file
 

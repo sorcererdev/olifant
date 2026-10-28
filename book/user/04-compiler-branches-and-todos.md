@@ -285,8 +285,8 @@ help: ensure that all possible cases are being handled by adding a match arm wit
   as `RefundInvoiceFailure` or `&RefundInvoiceFailure`, never a `match` on another enum with
   an `AlreadyRefunded` of its own.
 - **Commas.** Arms are separated by commas, and the last arm of a `match` may leave its
-  comma out. Before adding an arm, Olifant gives the last one its comma, unless it has one
-  or ends a block (`}`). A one-arm `match` gets no blank line before the new arm (Elm's
+  comma out. Before adding an arm, Olifant gives the last one its comma (rust.toml's
+  `arm_separator = ","`), unless it has one or ends a block (`}`). A one-arm `match` gets no blank line before the new arm (Elm's
   rule would add one; Rust's arms sit together).
 - **Three at a time.** rustc names at most three missing patterns ("`A`, `B`, `C` and 2
   more not covered"). Olifant places those, checks again, and the next round names the

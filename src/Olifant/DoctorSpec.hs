@@ -6,7 +6,7 @@ import Data.Functor.Identity (Identity (..), runIdentity)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor
-import Olifant.Language (Language, parseLanguage)
+import Olifant.Language (Language, parseLanguage, shippedLanguage)
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
 import Test.Hspec
@@ -14,7 +14,7 @@ import Test.Hspec
 rust :: Language
 rust = l
   where
-    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "command = [\"cargo\", \"check\"]", "format = \"rustc-json\""])
+    Right l = parseLanguage "rust" "/p" (T.unlines ["files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\"", "[check]", "preset = \"cargo\""])
 
 local :: ModelConfig
 local = defaultModelConfig {mcDefault = Just "local", mcBackends = [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]}
@@ -51,6 +51,11 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkStatus c `shouldBe` Bad
     checkDetail c `shouldSatisfy` T.isInfixOf "/usr/bin:/bin"
     checkFix c `shouldSatisfy` maybe False (\f -> "/opt/homebrew/opt/rustup/bin" `T.isInfixOf` f && "~/.cargo/bin" `T.isInfixOf` f)
+  it "(b2) a check tool with no install hint gets the generic one" $ do
+    let Right bare = parseLanguage "x" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"rust\"", "[check]", "command = [\"xc\"]", "format = \"sarif\""])
+        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) ((input local) {diLanguages = [bare]}))
+        [c] = [c' | c' <- cs, checkName c' == "check tool xc (x)"]
+    checkFix c `shouldBe` Just "install xc and make sure it is on the PATH your editor starts with"
   it "(c) a model that does not answer is a warning with the reason, not an error (Review Focus 4)" $ do
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "timed out after 3 s") []) (input local))
         [c] = [c' | c' <- cs, checkName c' == "model"]
@@ -67,7 +72,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "model" (runIdentity (doctor probeFails (input claude))) `shouldBe` Just Warn
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
   it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
-    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "command = [\"env\", \"UV_PROJECT_ENVIRONMENT=/c/venv\", \"uv\", \"run\", \"pyright\"]", "format = \"pyright-json\""])
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""])
         cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans))
         [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
     checkStatus c `shouldBe` Bad
@@ -108,5 +113,14 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))
         [tests] = [c | c <- cs, checkName c == "rust: tests"]
         [diag] = [c | c <- cs, checkName c == "rust: diagnostics"]
-    (checkStatus tests, checkDetail tests, checkFix tests) `shouldBe` (Warn, "absent", Just "add [test] to languages/rust.toml")
-    (checkStatus diag, checkDetail diag) `shouldBe` (Ok, "[check] format rustc-json")
+    (checkStatus tests, checkDetail tests, checkFix tests) `shouldBe` (Warn, "absent", Just "add [test] to .olifant/languages/rust.toml")
+    (checkStatus diag, checkDetail diag) `shouldBe` (Ok, "[check] format rustc-json · from toolchain cargo")
+  it "shows each language's layers and where each capability's key came from" $ do
+    hs <- shippedLanguage "haskell" [("project", ".olifant")]
+    let cs = runIdentity (doctor (ports ["ast-grep", "cabal"] (Right ()) []) ((input local) {diLanguages = [hs]}))
+        row n = head [c | c <- cs, checkName c == n]
+    checkDetail (row "language haskell") `shouldBe` "loaded (shipped, project)"
+    checkDetail (row "haskell: tests") `shouldSatisfy` T.isSuffixOf " · from toolchain hspec"
+    checkDetail (row "haskell: units") `shouldSatisfy` T.isSuffixOf " · from shipped"
+    checkFix (row "haskell: mutation") `shouldBe` Just "add [[mutate]] to .olifant/languages/haskell.toml"
+    checkFix (row "haskell: stub") `shouldBe` Just "stubs for other test formats come with [test] stub"

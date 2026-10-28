@@ -57,14 +57,8 @@ data CompilerSupport = CompilerSupport
   -- phase imports it when exactly one project file does)
   , supportFunction :: Text -> Int -> Text
   -- ^ site source, 0-based line: the enclosing top-level declaration
-  , supportArmSeparator :: Text
-  -- ^ appended to the last alternative before a new one, unless it already
-  -- ends with it or ends a block (`,` in Rust; nothing in Elm and Haskell)
   , supportReadsStdout :: Bool
   -- ^ the report is on stdout (cargo), not stderr (elm, GHC)
-  , supportLoneArmSpaced :: Bool
-  -- ^ after a match's only arm, a new one goes after a blank line (Elm's
-  -- style); with two or more, the existing spacing is copied
   , supportSpans :: Maybe (Map FilePath Text -> CheckReport -> CheckReport)
   -- ^ sites' extents from the checked files, when the report gives only
   -- where they start (pyright: the `match` line)

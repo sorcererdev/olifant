@@ -30,9 +30,7 @@ rustcSupport =
         (Just ty, Just t) -> ty `elem` typeNames t
     , supportUndefined = const Nothing
     , supportFunction = rustFunctionAt
-    , supportArmSeparator = ","
     , supportReadsStdout = True
-    , supportLoneArmSpaced = False
     , supportSpans = Nothing
     }
 

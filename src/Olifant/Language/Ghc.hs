@@ -27,9 +27,7 @@ ghcSupport =
         ((withDot, _), Just ty) -> snd (T.breakOnEnd "." (T.dropEnd 1 withDot)) `elem` typeNames ty
     , supportUndefined = const Nothing
     , supportFunction = declarationAt
-    , supportArmSeparator = ""
     , supportReadsStdout = False
-    , supportLoneArmSpaced = True
     , supportSpans = Nothing
     }
 

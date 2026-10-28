@@ -178,7 +178,7 @@ withLoop plan edits act = withLoopPorts plan edits $ \ports dir -> loaded ports 
 withHaskellLoop :: M.Map Text Value -> (FilePath -> ServerState -> IO ()) -> IO ()
 withHaskellLoop script act = do
   tmp <- getTemporaryDirectory
-  lang <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
+  lang <- TIO.readFile ".olifant/languages/haskell.toml"
   withSystemTempDirectory "olifant-loop-hs" $ \dir0 -> do
     dir <- canonicalizePath dir0
     -- olifant's own adapter: its [test] (the hspec preset) gives unit,

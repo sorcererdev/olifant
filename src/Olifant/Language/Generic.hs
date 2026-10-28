@@ -51,9 +51,7 @@ generic name parse =
     , supportVisible = \_ _ _ -> True
     , supportUndefined = const Nothing
     , supportFunction = declarationAt
-    , supportArmSeparator = ""
     , supportReadsStdout = True
-    , supportLoneArmSpaced = False
     , supportSpans = Nothing
     }
 

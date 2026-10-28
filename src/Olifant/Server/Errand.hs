@@ -6,7 +6,7 @@ module Olifant.Server.Errand
   , Denial (..), denialsIn
   , statusName, runnerArgs, runClaude
   , Grounded (..), Ghost (..), Block (..)
-  , errandPrompt, doTestCommand, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
+  , errandPrompt, anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
   ) where
 
 import Data.Aeson (Value (..), decodeStrict)
@@ -17,11 +17,12 @@ import Data.Maybe (mapMaybe)
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Scientific (toRealFloat)
-import Data.List (find)
+import Data.List (find, nub)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Catalog (PlansConfig (..))
+import Olifant.Language (Language (..), defaultUnitWords)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), anchorText, childrenOf, excerptRows, parsePlan, sectionOf)
 import Olifant.Process (Cancel, runBytesCancellable)
 import Olifant.Process qualified as P
@@ -162,10 +163,19 @@ cutBody b
   | T.length b > 2000 = T.take 2000 b <> "\n…"
   | otherwise = b
 
-anchorRule, noProse :: Text
-anchorRule =
+-- | How an anchor is written, its unit in the project's words ('projectUnitWords').
+anchorRule :: Text -> Text
+anchorRule unitWords =
   "An anchor is @<path>:<Unit>. <path> is relative to the project root and names a file of this repository;"
-    <> " <Unit> is a top-level class or function name (Name) or a method (Class.method) defined in that file."
+    <> " <Unit> is " <> unitWords <> " defined in that file."
+
+-- | The languages' `unit_words` when they all say the same, else the generic words.
+projectUnitWords :: [Language] -> Text
+projectUnitWords langs = case nub (map langUnitWords langs) of
+  [w] -> w
+  _ -> defaultUnitWords
+
+noProse :: Text
 noProse = "No prose, no explanations, no code fences, no markdown headings, no blank lines."
 
 -- | A test command's words past a leading `env` and its assignments.
@@ -189,10 +199,11 @@ withoutExcerpts t = T.intercalate "\n" [l | (i, l) <- zip [0 ..] (T.splitOn "\n"
   where
     rows = excerptRows (parsePlan t)
 
--- | The prompt for VERB on TARGET; @testCmd@ is the project's test
--- command for a 'Do' ('doTestCommand').
-errandPrompt :: Verb -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
-errandPrompt verb testCmd plan ls target grounded =
+-- | The prompt for VERB on TARGET; @unitWords@ say what a unit is
+-- ('projectUnitWords'); @testCmd@ is the project's test command for a 'Do'
+-- ('doTestCommand').
+errandPrompt :: Verb -> Text -> Maybe Text -> Text -> [Line] -> Line -> [Grounded] -> Text
+errandPrompt verb unitWords testCmd plan ls target grounded =
   T.intercalate "\n" $
     ["<doc>", withoutExcerpts plan, "</doc>", ""]
       ++ ["<units>"] ++ concatMap unit grounded ++ ["</units>", ""]
@@ -222,7 +233,7 @@ errandPrompt verb testCmd plan ls target grounded =
         , "using the anchor of the code that supports the claim; a claim may omit the anchor only if no code supports it."
         , "Then optionally one last line, exactly:"
         , "  - <the conclusion, one short sentence>"
-        , anchorRule, noProse ]
+        , anchorRule unitWords, noProse ]
       Validate ->
         [ "Output one or more blocks. A block is one line"
         , "AFTER: <a line of that section, copied verbatim>"
@@ -232,7 +243,7 @@ errandPrompt verb testCmd plan ls target grounded =
         , "  - ✗ <why the claim above is wrong or incomplete>"
         , "  - ✓ <a confirmation, with its evidence> @<path>:<Unit>"
         , "The ✗ and ✓ lines go only after a claim line. At most 6 inserted lines in total."
-        , anchorRule, noProse ]
+        , anchorRule unitWords, noProse ]
       Do ->
         [ "Implement it here: edit the code, keep the change minimal, follow this repository's conventions."
         , case testCmd of
@@ -244,7 +255,7 @@ errandPrompt verb testCmd plan ls target grounded =
         , "DONE @<path>:<Unit>"
         , "or, if you cannot do it, one line, exactly"
         , "BLOCKED <why, one sentence>"
-        , anchorRule, noProse ]
+        , anchorRule unitWords, noProse ]
 
 -- | Blocks and the count of dropped (out-of-grammar) lines. Total: never fails.
 parseAnswer :: Verb -> [Line] -> Line -> Text -> ([Block], Int)

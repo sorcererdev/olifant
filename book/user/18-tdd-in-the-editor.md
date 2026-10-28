@@ -270,12 +270,31 @@ not_found rewritten` (the round, the rungs, then what was wired and rewritten).
 the cursor against its module's test file, and lists the survivors. The test file runs first, as
 the editor has it (unsaved text is what is mutated and run): the tests that pass there are the
 judges. A mutant one of them fails is **killed**; one they all pass **survives**. The unit's lines
-only are mutated, at most 20 mutants, in file order. Nothing is stored or gated. Only Python has
-mutation operators; another language answers `no mutation operators for <language>`.
+only are mutated, at most 20 mutants, in file order. Nothing is stored or gated. The operators
+are the language's `[[mutate]]` tables; a language without any answers `no [[mutate]] operators
+for <language>: add them to .olifant/languages/<language>.toml`.
 
-Python's operators: `boundary` (`<` ↔ `<=`, `>` ↔ `>=`), `equality` (`==` ↔ `!=`), `negate` (a
-condition), `and-or`, `arith` (an arithmetic swap), `number` (±1), `string` (→ `""`),
-`return-none` (`return x` → `return None`), `delete-call` (a call statement removed).
+Each operator is a name, the ast-grep `pattern` (or a whole `rule`) of the code it breaks, and
+what that code becomes: a `fix` (ast-grep's, using the pattern's metavariables) or
+`transform = "increment"` (an integer plus one):
+
+```toml
+[[mutate]]
+name = "boundary"
+pattern = "$A < $B"
+fix = "$A <= $B"
+
+[[mutate]]
+name = "number"
+rule = { kind = "integer" }
+transform = "increment"
+```
+
+Python ships seventeen (in `library/languages/python.toml`): `boundary` (`<` ↔ `<=`, `>` ↔
+`>=`), `equality` (`==` ↔ `!=`), `negate` (a condition), `and-or`, `arith` (an arithmetic swap),
+`number` (+1), `string` (→ `""`, not a docstring), `return-none` (`return x` → `return None`),
+`delete-call` (a call statement → `pass`). A project adds its own, or replaces the list, in
+`.olifant/languages/python.toml`; a later layer's `[[mutate]]` replaces the earlier one's whole.
 
 Mutants never touch your file. Each runs in a **shadow**: the project's files as the editor has
 them, the mutated file over its own, the test runner rooted there; four at a time. A mutant
@@ -403,7 +422,7 @@ It answers what commits cannot: which lines a model conjured, and which you wrot
 A language adapter says how to run its tests and where a module's tests live:
 
 ```toml
-# packs/python-htmx/languages/python.toml
+# library/languages/python.toml, under packs/python-htmx/languages/python.toml
 [test]
 preset    = "pytest"
 tests_for = "{= dir =}/{= stem =}__test.py"
@@ -422,8 +441,8 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 
 ## Limits
 
-- **Mutation is Python only.** The operators are Python's; another language with a `[test]`
-  table runs its tests and conjures, and `mutate` says `no mutation operators for <language>`.
+- **Mutation ships for Python only.** Another language mutates once its `[[mutate]]` operators
+  are written; until then `mutate` says `no [[mutate]] operators for <language>`.
 - **A stub's import is Python's, and only the unit's** (or its class's): a name your assertion
   uses beyond it you import yourself. A file importing it already (on one line or several, in
   brackets) gains nothing; one importing from its module gains the name there.

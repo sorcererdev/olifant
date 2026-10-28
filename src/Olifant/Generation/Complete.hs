@@ -88,7 +88,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
                       case sequence built of
                         Left why -> pure (reverse acc, [CompleteFailed step why False], [], current)
                         Right branches -> do
-                          let (edits, files') = applyBranches (supportArmSeparator support) (supportLoneArmSpaced support) n branches files
+                          let (edits, files') = applyBranches (langArmSeparator lang) (langLoneArmSpaced lang) n branches files
                               current' = foldr (\(p, t) -> M.insert p (Just t)) current [(p, t) | (p, t) <- M.toList files', M.lookup p files /= Just t]
                           loop lang scope support step mine disk (rnd + 1) (S.union seen (S.fromList (map key wanted))) (n + length edits) files' current' (reverse edits ++ acc)
 

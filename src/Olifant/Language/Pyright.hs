@@ -26,9 +26,7 @@ pyrightSupport =
     , supportVisible = \_ _ _ -> True
     , supportUndefined = undefinedName
     , supportFunction = pythonFunctionAt
-    , supportArmSeparator = ""
     , supportReadsStdout = True
-    , supportLoneArmSpaced = False
     , -- pyright points at the `match` line; the arms are the block under it
       supportSpans = Just extendSites
     }

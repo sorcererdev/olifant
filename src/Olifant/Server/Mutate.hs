@@ -18,8 +18,7 @@ import GHC.Clock (getMonotonicTime)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Language (Language (..), TestRun (..), describeSyntaxFailure, runTestsIn)
 import Olifant.Generation.FillPhase (projectFiles)
-import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf)
-import Olifant.Mutate.Python (pythonOperators)
+import Olifant.Mutate (Mutant (..), Verdict (..), capMutants, judge, judgeTimeout, mutantsOf, operatorsOf)
 import Olifant.Process (cancelled)
 import Olifant.Server.Site (Site (..), appendStepLine, siteAt, tshow)
 import Olifant.Server.Order (orderSurvivors)
@@ -58,7 +57,7 @@ mutateAt path line s0 =
           moduleText = siteModuleText site
           testRel = siteTestRel site
       when (siteOnTest site) (throwE "on a test: mutate a function or class, from its module")
-      unless (langName lang == "python") (throwE ("no mutation operators for " <> langName lang))
+      when (null (langMutate lang)) (throwE ("no [[mutate]] operators for " <> langName lang <> ": add them to .olifant/languages/" <> langName lang <> ".toml"))
       unit <- lift (unitAt (pSyntax (ssPorts s)) lang moduleText line) >>= either (\why -> throwE (why <> ": put the cursor in one to mutate it")) pure
       testText <- maybe (throwE ("no test file for this module yet: " <> T.pack testRel <> "; stub one first (:Durandal stub)")) pure (siteTestText site)
       let (l1, l2) = unitLines unit
@@ -67,7 +66,7 @@ mutateAt path line s0 =
           done killed waived survivors summary = do
             lift (appendStepLine (ssPorts s) (siteRoot site) ["mutate", "person", T.pack rel <> "::" <> unitName unit, summary])
             pure (MutateAnswer file (unitName unit) (l1, l2) killed waived survivors summary)
-      mutants <- lift (mutantsOf (pSyntax (ssPorts s)) lang pythonOperators moduleText scope) >>= either (throwE . describeSyntaxFailure) pure
+      mutants <- lift (mutantsOf (pSyntax (ssPorts s)) lang (operatorsOf lang) moduleText scope) >>= either (throwE . describeSyntaxFailure) pure
       case mutants of
         [] -> done 0 0 [] ("nothing to mutate in " <> unitName unit)
         ms -> do

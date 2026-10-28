@@ -4,6 +4,7 @@ module Olifant.Toml
   ( Tree (..)
   , Table
   , parseToml
+  , mergeTables
   , keyOrder
   , required
   , optional
@@ -33,6 +34,15 @@ data Tree = TText Text | TInt Integer | TDouble Double | TBool Bool | TList [Tre
   deriving stock (Eq, Show)
 
 type Table = Map Text Tree
+
+-- | Two tables as one, the right one winning: where both hold a table under
+-- a key, the two merge the same way; any other value is replaced whole
+-- (lists too, arrays of tables among them).
+mergeTables :: Table -> Table -> Table
+mergeTables = M.unionWith (flip merge)
+  where
+    merge (TTable new) (TTable old) = TTable (mergeTables old new)
+    merge new _ = new
 
 parseToml :: Text -> Either Text Table
 parseToml src = case Toml.parse src of

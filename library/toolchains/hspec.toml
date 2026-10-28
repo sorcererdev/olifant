@@ -1,0 +1,25 @@
+# hspec through `cabal test --format=checks`, read by `lines`; one test by its
+# describe path (--match); a module's tests beside it as <Module>Spec.hs.
+[test]
+command = ["cabal", "test", "-v0", "--builddir={= cache =}/dist-test-{= context =}", "--test-show-details=direct", "--test-option=--format=checks", "--test-option=--no-color", "{= tests =}"]
+context = ["*.cabal", "cabal.project", "cabal.project.freeze"]
+format = "lines"
+unit = ["(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\""]
+file_group = "^module[[:space:]]+([[:alnum:]_.]+)Spec"
+exclusive = true
+timeout = 900
+tests_for = "{= dir =}/{= stem =}Spec.hs"
+install = "install with ghcup; it lives in ~/.ghcup/bin"
+
+# hspec's `--format=checks` tree
+[test.lines]
+pass = "^[[:space:]]*(.*[^[:space:]]) \\[✔\\]$"
+fail = "^[[:space:]]*(.*[^[:space:]]) \\[✘\\]$"
+nest = true
+failure = "^  ([^[:space:]].*):([0-9]+):[0-9]+: *$"
+end = "^  To rerun use|^Randomized with seed|^Finished in"
+drop = "^  [0-9]+\\) "
+
+[test.select]
+test = "--test-option=--match=/{= group =}/{= name =}/"
+file = "--test-option=--match=/{= group =}/"

@@ -563,7 +563,7 @@ elmLang = l
   where
     Right l = parseLanguage "elm" "/p" $ T.unlines
       [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
-      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\"", "lone_arm_spaced = true"
       , "[check]", "command = [\"true\"]", "format = \"elm-json\"" ]
 
 holeLang :: Language
@@ -571,7 +571,7 @@ holeLang = l
   where
     Right l = parseLanguage "elm" "/p" $ T.unlines
       [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
-      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\"", "lone_arm_spaced = true"
       , "[check]", "command = [\"true\"]", "format = \"elm-json\""
       , "[holes.expr]", "placeholder = 'Debug.todo \"olifant: {= hole =}\"'", "wrap = \"h = {= fill =}\"" ]
 
@@ -1199,7 +1199,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     (M.lookup "src/c.py" <$> snap) `shouldReturn` Just "\"\"\"Use it like:\n\nfrom c import X\n\"\"\"\n\nimport os\n\nX = os.sep\n"
   it "(m6) the pack's import patterns: aliases and parenthesised imports (pack-opens)" $ do
     src <- TIO.readFile "packs/python-htmx/languages/python.toml"
-    let Right packPy = parseLanguage "python" "packs/python-htmx" src
+    let Right packPy = parseOverShipped "python" "packs/python-htmx" src
         gen = generatorFrom . T.unlines $
           [ "description = \"d\"", "language = \"python\""
           , "[[edits]]", "create = \"src/c.py\"", "text = \"from x import c\\n\\nA = {= ? a: expr | a =}\\nB = {= ? b: expr | b =}\\n\"" ]

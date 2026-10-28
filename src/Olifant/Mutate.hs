@@ -1,7 +1,7 @@
 -- | Mutation testing's makings: operators (an ast-grep pattern and its fix,
 -- or a Haskell transform of the matched text), the sites they fire on within
 -- the lines in scope. Running the mutants is `Olifant.Mutate.Run`'s judge.
-module Olifant.Mutate (Mutant (..), Verdict (..), judge, judgeTimeout, Operator (..), mutantsOf, capMutants) where
+module Olifant.Mutate (Mutant (..), Verdict (..), judge, judgeTimeout, Operator (..), operatorsOf, mutantsOf, capMutants) where
 
 import Data.Aeson (Value)
 import Data.ByteString qualified as BS
@@ -12,7 +12,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language (Language (..), Match (..), Rewrite (..), Syntax (..), SyntaxFailure)
+import Olifant.Language (Language (..), Match (..), MutateDef (..), Rewrite (..), Syntax (..), SyntaxFailure, Transform (..))
+import Text.Read (readMaybe)
 import Olifant.Mutate.Run (Verdict (..), judge, judgeTimeout)
 import Olifant.Mutate.Types (Mutant (..))
 
@@ -21,6 +22,14 @@ import Olifant.Mutate.Types (Mutant (..))
 data Operator
   = Rewriting {opName :: Text, opRule :: Value, opFix :: Text}
   | Transforming {opName :: Text, opRule :: Value, opTransform :: Text -> Maybe Text}
+
+-- | A language's `[[mutate]]` operators, in its order.
+operatorsOf :: Language -> [Operator]
+operatorsOf lang = map operator (langMutate lang)
+  where
+    operator d = case mutFix d of
+      Right fix -> Rewriting (mutName d) (mutRule d) fix
+      Left Increment -> Transforming (mutName d) (mutRule d) (\t -> T.pack . show . (+ (1 :: Integer)) <$> readMaybe (T.unpack t))
 
 -- | The file's text and the lines in scope (1-based) → one mutant per (site,
 -- operator), in file order. A rewrite that changes nothing is no mutant.

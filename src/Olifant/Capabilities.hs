@@ -7,22 +7,29 @@ module Olifant.Capabilities
 
 import Data.Maybe (isJust)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Olifant.Language (CheckDef (..), Language (..), TestDef (..), defaultUnitNames, supportsMissing)
 
--- | A capability and how it is provided (Right), or the key that would
--- enable it (Left).
-data Capability = Capability {capName :: Text, capHow :: Either Text Text}
+-- | A capability, how it is provided (Right) or the key that would enable
+-- it (Left), and the dotted key its presence depends on (whose layer
+-- doctor names: 'Olifant.Language.originOf'). A capability no key of the
+-- language enables carries its own fix text, which doctor shows in place of
+-- "add KEY to …".
+data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKey :: Text, capFix :: Maybe Text}
   deriving stock (Eq, Show)
 
--- | Units, diagnostics, missing cases, tests, test units, test selection.
+-- | Units, diagnostics, missing cases, tests, test units, test selection,
+-- mutation, stub.
 capabilities :: Language -> [Capability]
 capabilities lang =
-  [ Capability "units" units
-  , Capability "diagnostics" diagnostics
-  , Capability "missing cases" missingCases
-  , Capability "tests" tests
-  , Capability "test units" testUnits
-  , Capability "test selection" selection
+  [ Capability "units" units "unit.kinds" Nothing
+  , Capability "diagnostics" diagnostics "check.format" Nothing
+  , Capability "missing cases" missingCases "check.format" Nothing
+  , Capability "tests" tests "test.format" Nothing
+  , Capability "test units" testUnits "test.unit" Nothing
+  , Capability "test selection" selection "test.select" Nothing
+  , Capability "mutation" mutation "mutate" Nothing
+  , Capability "stub" stub "test.format" (either Just (const Nothing) stub)
   ]
   where
     check = langCheck lang
@@ -45,6 +52,12 @@ capabilities lang =
       | maybe False (not . null . testUnitPatterns) test = Right "[test] unit"
       | pytest = Right "built in (pytest shape)"
       | otherwise = Left "[test] unit"
+    stub
+      | pytest = Right "built in (pytest shape)"
+      | otherwise = Left "stubs for other test formats come with [test] stub"
+    mutation = case langMutate lang of
+      [] -> Left "[[mutate]]"
+      ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")
     selection
       | maybe False (isJust . testSelect) test = Right "[test] select"
       | pytest = Right "pytest ids"
