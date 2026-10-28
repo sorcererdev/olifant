@@ -81,7 +81,8 @@ a step's unit is gone, or a done step's tests are red again). The engine finds o
 reconciling, request `olifant/plans/reconcile`.
 
 **When it runs.** On entering a plan buffer, and after any tool landing while a plan is open (a
-test run, a stub, a conjure, a `do`, an accepted ghost). `<leader>mpx` forces one, and runs the
+test run, a stub, a conjure, a `do`, an accepted ghost), and one second after a save of any other
+file (each plan shown in a window; the files as saved). `<leader>mpc` forces one, and runs the
 tests of the steps it finds touched. An automatic reconcile runs no tests.
 
 **What it compares.** The units changed since the baseline (the merge-base with the default
@@ -106,7 +107,7 @@ diverged; for a done step without tests, still done, reopened or diverged). A `d
 step with no test children is taken as in progress: no tick ghost. A step with tests keeps its
 tick ghost, and its tests tick it. Below the gate (0.6)
 the same question climbs `[plans] ladder`, else `[model] ladder` without Jev, each backend under
-its `escalate` policy: an automatic reconcile climbs `auto` rungs only, `<leader>mpx` also `ask`
+its `escalate` policy: an automatic reconcile climbs `auto` rungs only, `<leader>mpc` also `ask`
 rungs, and `never` is never. Words (a `<why>`, a new step's line) come from the first allowed chat
 rung in one call. Without one (none allowed, the call failing, or the budget spent) a new step's
 line is the unit's header and a `<why>` is "<unit names> changed". A reconcile asks for at most
@@ -120,10 +121,10 @@ budget = 120
 [model.backends.local]
 escalate = "auto"     # falling back to local needs no keypress
 [model.backends.sonnet]
-escalate = "ask"      # only <leader>mpx climbs here
+escalate = "ask"      # only <leader>mpc climbs here
 ```
 
-A backend with no `escalate` key defaults to `ask`, so only `<leader>mpx` climbs to it. (The backends' other keys are as in chapter 12.) The demo's config sets `escalate = "auto"` on its local backend for that reason.
+A backend with no `escalate` key defaults to `ask`, so only `<leader>mpc` climbs to it. (The backends' other keys are as in chapter 12.) The demo's config sets `escalate = "auto"` on its local backend for that reason.
 
 **Tests on a step.** `<leader>ms` on a step stubs a test under it (Python; the step needs an anchor), the step's text as the
 sentence. `<leader>mt` runs the step's tests and ticks it when all are green. A `do` runs the
@@ -186,7 +187,9 @@ The fair comparison is a head-to-head: the same change made both ways.
 | `<leader>mpv` | validate, on a claim or a `##` heading |
 | `<leader>mpd` | do, on a step or test child |
 | `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line (an accepted verified claim gains its `✓ <fp>`) |
-| `<leader>mpx` | force a reconcile (and run the touched steps' tests) |
+| `<leader>mpc` | force a reconcile (and run the touched steps' tests) |
+| `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
+| `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`) |
 | `<leader>ms` / `<leader>mt` | on a step: stub a test under it / run its tests and tick it |
 | `<leader>mpf` | the plan's files, in the location list |
 | `gd` | on an anchor: go to its unit |
