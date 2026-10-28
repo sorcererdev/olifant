@@ -483,6 +483,16 @@ $ olifant doctor
 ✗ check tool cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
   fix: install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)
 ✓ model — qwen3-coder:30b answers at http://localhost:11434/v1
+✓ rust: units — [unit] kinds (ast-grep), named by [unit] name
+✓ rust: diagnostics — [check] format rustc-json
+✓ rust: missing cases — [check] format rustc-json
+! rust: tests — absent
+  fix: add [test] to languages/rust.toml
+! rust: test units — absent
+  fix: add [test] unit to languages/rust.toml
+! rust: test selection — absent
+  fix: add [test] select to languages/rust.toml (whole files run)
+✓ plans runner claude — /opt/homebrew/bin/claude; timeout 300 s
 $ echo $?
 1
 ```
@@ -493,6 +503,8 @@ $ echo $?
 | `pack NAME`, `language NAME` | each pack and language adapter that loaded; an adapter or generator that failed to load is an `error`, with why |
 | `ast-grep` | `ast-grep` on this process's `PATH` |
 | `check tool EXE (LANGUAGE)` | the first word of each adapter's `[check] command` (`cargo`, `elm`, `cabal`) on this process's `PATH`, which is printed when it is missing |
+| `LANGUAGE: CAPABILITY` | what each language can do, and the key that would enable what it cannot (a `warn`, never an error): **units** (`[unit] kinds`, and `name`, `join`), **diagnostics** (`[check]`, its format, and `convert`), **missing cases** (a `[check] format` that reads them: `ghc-json`, `pyright-json`, `rustc-json`, `elm-json`, `olifant-json`), **tests** (`[test]`, its format and `tests_for`), **test units** (`[test] unit`; built in for `pytest`), **test selection** (`[test] select`; pytest ids for `pytest`; without it a run is whole files). [Chapter 9](09-packs-and-language-adapters.md) has the keys |
+| `plans runner RUNNER` | `[plans] runner` ([chapter 19](19-plans.md#plans)), `claude` by default, on this process's `PATH`, with the errand timeout and `do_tools` when set; missing is an `error`: install Claude Code, or set `[plans] runner` |
 | `model` | `[model]` ([chapter 12](12-holes-and-models.md#configuring-a-model)): none is a `warn`, with the snippet to add; a `default` with no such backend is an `error`. An `openai-compatible` default must list its model at `URL/models` within 3 seconds (else `warn`: `curl: (7) Failed to connect …`, or `` the server answers but has no model `NAME` ``); for `anthropic`, only that the key's environment variable is set, never its value and never a request |
 
 `✓` is ok, `!` a warning, `✗` an error, each followed by `fix:` when there is one. The exit

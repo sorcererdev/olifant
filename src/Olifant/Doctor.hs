@@ -1,6 +1,8 @@
 -- | `olifant doctor` (spec §4.7): what generators need in this project — the
 -- config, packs, language adapters, ast-grep, each adapter's check tool on
--- this process's PATH, and the model — and how to fix what is missing.
+-- this process's PATH, the model, what each language can do (and the key
+-- that would enable what it cannot), and the plans runner — and how to fix
+-- what is missing.
 module Olifant.Doctor
   ( Status (..)
   , Check (..)
@@ -11,6 +13,8 @@ module Olifant.Doctor
 
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Capabilities (Capability (..), capabilities)
+import Olifant.Catalog (PlansConfig (..))
 import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram)
 import Olifant.Model (Backend (..), ModelConfig (..))
 
@@ -31,6 +35,8 @@ data DoctorInput = DoctorInput
   , diModel :: ModelConfig
   , -- | `[recognize] model`: the backend recognition asks when unsure
     diRecognizeModel :: Maybe Text
+  , -- | `[plans]`: the runner errands start, its timeout and `do` tools
+    diPlans :: PlansConfig
   }
 
 -- | The outside world the doctor looks at.
@@ -50,8 +56,28 @@ doctor ports di = do
   astGrep <- tool "ast-grep" "ast-grep" "brew install ast-grep (or cargo install ast-grep)"
   tools <- traverse languageTools (diLanguages di)
   model <- modelCheck
-  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck)
+  runner <- plansRunner
+  pure ([config] ++ packs ++ languages ++ broken ++ [astGrep] ++ concat tools ++ [model] ++ recognizeCheck ++ concatMap capabilityRows (diLanguages di) ++ [runner])
   where
+    -- what each language can do; an absent capability names its key
+    capabilityRows lang =
+      [ case capHow c of
+          Right how -> Check name Ok how Nothing
+          Left key ->
+            let (k, note) = T.breakOn " (" key
+             in Check name Warn "absent" (Just ("add " <> k <> " to languages/" <> langName lang <> ".toml" <> note))
+      | c <- capabilities lang
+      , let name = langName lang <> ": " <> capName c
+      ]
+    plansRunner = do
+      let plans = diPlans di
+          runner = T.pack (pcRunner plans)
+          detail at = T.intercalate "; " ([T.pack at, "timeout " <> T.pack (show (pcTimeout plans)) <> " s"] ++ ["do tools " <> T.intercalate ", " (pcDoTools plans) | not (null (pcDoTools plans))])
+      dpFind ports (pcRunner plans) >>= \case
+        Just at -> pure (Check ("plans runner " <> runner) Ok (detail at) Nothing)
+        Nothing -> do
+          path <- dpPath ports
+          pure (Check ("plans runner " <> runner) Bad ("`" <> runner <> "` is not on this PATH: " <> path) (Just "install Claude Code, or set [plans] runner"))
     recognizeCheck = case diRecognizeModel di of
       Nothing -> []
       Just name

@@ -17,6 +17,7 @@ module Olifant.Language.Adapter
   , targetPhrase
   , matchShape
   , regexName
+  , defaultUnitNames
   ) where
 
 import Control.Monad ((>=>))

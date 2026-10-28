@@ -242,6 +242,7 @@ doctorChecks ports project =
       [(generatorIdText g, why) | (g, _, why) <- catalogBroken cat]
       (catalogModel cat)
       (catalogDecideModel cat)
+      (catalogPlans cat)
   where
     cat = prCatalog project
 
