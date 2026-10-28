@@ -41,7 +41,7 @@ completeEdits tools ws specs firstNumber current0 = foldM perLanguage ([], [], [
       [] -> pure (edits, conflicts, warnings, current)
       mine@((step, _) : _) -> case find (\l -> langName l == name && isJust (langCheck l)) (toolLanguages tools) of
         Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("no language adapter with a [check] for `" <> name <> "`") False], warnings, current)
-        Just lang -> case langCheck lang >>= supportFor . checkFormat of
+        Just lang -> case langCheck lang >>= supportOf of
           Nothing -> pure (edits, conflicts ++ [CompleteFailed step ("the " <> name <> " adapter's check format has no compiler support") False], warnings, current)
           Just support -> do
             (scope, disk, files) <- gather lang current

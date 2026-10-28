@@ -4,6 +4,8 @@ module Olifant.Language.Adapter
   , Grammar (..)
   , TargetDef (..)
   , CheckDef (..)
+  , ErrorFormat (..)
+  , supportOf
   , TestDef (..)
   , HoleKind (..)
   , ImportMerge (..)
@@ -26,7 +28,9 @@ import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
 import Olifant.Language.Presets (applyPreset)
 import Olifant.Language.Rule
-import Olifant.Language.Support (knownFormats, knownTestFormats)
+import Olifant.Language.Diagnostics (CompilerSupport)
+import Olifant.Language.Generic (ErrorFormat (..))
+import Olifant.Language.Support (formatSupport, knownFormats, knownTestFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
 import Olifant.Toml
@@ -112,8 +116,15 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- each check gets a cache no other check uses while it runs (a slot).
 -- @checkConcurrent@ (default true): false for a compiler that cannot run
 -- twice at once (Elm), so its checks run one at a time.
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool}
+-- @checkErrorFormat@: `[check.errorformat]`, for `format = "errorformat"`.
+-- @checkConvert@ (key `convert`): a command that turns the check's output
+-- into olifant-json, for a tool Olifant has no format for.
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text]}
   deriving stock (Eq, Show)
+
+-- | The compiler support that reads a check's report.
+supportOf :: CheckDef -> Maybe CompilerSupport
+supportOf c = formatSupport (checkFormat c) (checkErrorFormat c)
 
 -- | A language's test runner: the command (its @{= tests =}@ stands for the
 -- test files), the context files and package root as in 'CheckDef', the
@@ -187,12 +198,20 @@ parseLanguage name packRoot src = do
       TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
     checkFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert"] t0
       t <- applyPreset "check" t0
-      format <- required "format" text t
+      convert <- fromMaybe [] <$> optional "convert" (list text) t
+      format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
       if format `elem` knownFormats
         then Right ()
         else Left ("`format`: unknown format `" <> format <> "`; expected one of " <> T.intercalate ", " knownFormats)
+      if null convert || format == "olifant-json" then Right () else Left ("`convert` writes olifant-json: with `convert`, `format` must be absent or \"olifant-json\", not `" <> format <> "`")
+      errorFormat <- optional "errorformat" (table >=> errorFormatFrom) t
+      case (format, errorFormat) of
+        ("errorformat", Nothing) -> Left "`format = \"errorformat\"` needs a [check.errorformat] table (pattern, file, line, message)"
+        ("errorformat", _) -> Right ()
+        (_, Just _) -> Left "[check.errorformat] is read only with `format = \"errorformat\"`"
+        _ -> Right ()
       CheckDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t)
         <*> (optional "root_pick" text t >>= \case
@@ -202,6 +221,17 @@ parseLanguage name packRoot src = do
               Just other -> Left ("`root_pick`: expected \"nearest\" or \"outermost\", got `" <> other <> "`"))
         <*> (fromMaybe False <$> optional "exclusive" bool t)
         <*> (fromMaybe True <$> optional "concurrent" bool t)
+        <*> pure errorFormat
+        <*> pure convert
+    errorFormatFrom t = do
+      onlyKeys ["pattern", "file", "line", "message", "severity", "error"] t
+      ErrorFormat
+        <$> required "pattern" (text >=> validRegex "[check.errorformat] pattern") t
+        <*> (fromIntegral <$> required "file" int t)
+        <*> (fromIntegral <$> required "line" int t)
+        <*> (fromIntegral <$> required "message" int t)
+        <*> (fmap fromIntegral <$> optional "severity" int t)
+        <*> optional "error" (text >=> validRegex "[check.errorformat] error") t
 
 -- | What a key's expression names in TEXT: its last group (the whole match
 -- when it has none), stripped; Nothing when it does not match, is not a

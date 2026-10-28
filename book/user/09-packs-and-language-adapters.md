@@ -226,7 +226,7 @@ example   = "end of struct BillingService"
 | `grammar` | a built-in ast-grep language name (`rust`, `typescript`, …), or `{ source = "dir" }` relative to `languages/` holding `parser.c` (and `scanner.c` if the grammar has one) |
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
-| `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
+| `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo), and the generic `sarif`, `errorformat` and `olifant-json`; `convert` runs a command that turns any tool's output into olifant-json ([check formats](#check-formats)). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`), `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). See [below](#presets-check-and-test) |
 | `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
@@ -239,7 +239,7 @@ example   = "end of struct BillingService"
 There used to be a `qualify` key (`qualify = "elm"`) for Elm's module rules. It is retired:
 loading an adapter that still has it is now a load error saying the `[check] format`
 decides that instead. An unknown `format` is also a load error, listing the known ones:
-`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json, pyright-json, rustc-json ``. Like any
+`` `format`: unknown format `cobol-json`; expected one of elm-json, ghc-json, pyright-json, rustc-json, sarif, olifant-json, errorformat ``. Like any
 broken adapter, this keeps the pack's language aside instead of failing the whole command
 (`catalogBrokenLanguages`); it bites only commands that need that language, such as `olifant
 anchors` on it or a `complete` edit whose `language` names it.
@@ -547,6 +547,72 @@ by it, and a test file's module by it backwards.
 Tests run like checks: in a scratch copy of the project's files as the editor has them (nothing
 needs saving), rooted at the package around the tests (`root`). A run that cannot start (a test
 file that does not import, a collection error) is said apart from a red test.
+
+### Check formats
+
+`[check] format` names who reads the check's report. Four belong to one compiler each
+(`elm-json`, `ghc-json`, `pyright-json`, `rustc-json`) and can say which cases a `case` lacks,
+which is what `complete` and `uncovered` need. Three are generic: any tool that writes one of
+them works without Olifant code, though only for broken files (a red file and its line).
+
+**`sarif`** — SARIF 2.1, which most linters and analysers can write. Every
+`runs[].results[]` whose `level` is `"error"` is a broken file: its path is
+`locations[0].physicalLocation.artifactLocation.uri` (a leading `file://` dropped), its line
+`region.startLine`, its text `ruleId: message.text` (just the message without a rule). Other
+levels are ignored; a report with no results is clean.
+
+```toml
+[check]
+command = ["semgrep", "scan", "--sarif", "--quiet", "."]
+format  = "sarif"
+```
+
+**`errorformat`** — a regex over the tool's lines, stdout then stderr. `[check.errorformat]`
+gives the `pattern` and the numbers of its groups holding the `file`, the `line` and the
+`message`; with `severity` (a group) and `error` (an expression), a line counts only when that
+group matches `error`. Without `error` every matching line counts.
+
+```toml
+[check]
+command = ["make", "-k"]
+format  = "errorformat"
+
+[check.errorformat]
+pattern  = '^([^:]+):([0-9]+):[0-9]+: (error|warning): (.*)$'
+file     = 1
+line     = 2
+severity = 3
+message  = 4
+error    = '^error$'
+```
+
+`src/a.c:3:5: error: boom` makes `src/a.c` broken at line 3 with `boom`; the warning line
+after it does not count.
+
+**`olifant-json`** — Olifant's own report, for a `convert` command (below) or a tool that
+writes it directly. Either key may be absent; `{}` is clean. `case` lines are 0-based, as
+GHC's and Elm's are read:
+
+```json
+{
+  "broken":  [{"file": "src/A.hs", "message": "Variable not in scope: nope", "line": 12}],
+  "missing": [{"file": "src/B.hs", "case": [40, 44], "patterns": ["Nothing"], "type": "Maybe Int"}]
+}
+```
+
+**`convert`** — for a tool Olifant has no format for: a command that turns the check's output
+into olifant-json. It runs in the same scratch copy after the check, with
+`{"exit": N, "stdout": "…", "stderr": "…"}` on its stdin and 60 seconds to finish; what it
+prints is the report. A non-zero exit fails the check with what it said on stderr. With
+`convert`, `format` is absent or `"olifant-json"`; anything else is a load error naming both
+keys. The converted report is the verdict: a check that exits non-zero and converts to `{}` is
+clean.
+
+```toml
+[check]
+command = ["mytool", "--all"]
+convert = ["python3", "tools/mytool-to-olifant.py"]
+```
 
 ### Hole kinds: `[holes.KIND]`
 

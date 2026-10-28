@@ -21,6 +21,7 @@ module Olifant.Language.Check
   , checkScope
   , runCheckIn
   , runVerifyIn
+  , convertReport
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -33,6 +34,8 @@ import Data.Word (Word64)
 import Numeric (showHex)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.Aeson (encode, object, (.=))
 import Data.Functor ((<&>))
 import Data.List (isPrefixOf, nub, sort)
 import Data.Maybe (fromMaybe)
@@ -44,9 +47,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), Language (..), TestDef (..), matchesGlob)
+import Olifant.Language.Adapter (CheckDef (..), Language (..), TestDef (..), matchesGlob, supportOf)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
-import Olifant.Language.Support (supportFor)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
 import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
 import System.Exit (ExitCode (..))
@@ -152,16 +154,50 @@ processCheckerWith token = Checker $ \lang files -> case langCheck lang of
   Just check ->
     runIn token lang check files <&> \case
       Left f -> Left f
-      Right (code, out, err, dir) -> case supportFor (checkFormat check) of
+      Right (code, out, err, dir) -> case supportOf check of
         Nothing -> Left (CheckFailed ("unknown check format `" <> checkFormat check <> "`"))
-        Just support -> case supportParse support (if supportReadsStdout support then out else err) of
+        Just support -> case supportParse support (reportInput check support out err) of
           -- what the tool said is the reason (uv offline, no lockfile: python review I4)
           Left why
             | code /= ExitSuccess, not (BS.null err) -> Left (CheckFailed (why <> "; it said: " <> T.strip (T.take 1000 (TE.decodeUtf8With lenientDecode err))))
             | otherwise -> Left (CheckFailed why)
+          -- (with convert, the converted report is the verdict)
           Right (CheckReport [] [] [])
-            | code /= ExitSuccess -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
+            | code /= ExitSuccess, null (checkConvert check) -> Left (CheckFailed ("the check failed without a report: " <> T.take 500 (TE.decodeUtf8With lenientDecode err)))
           Right report -> Right (maybe id ($ files) (supportSpans support) (relativeTo dir report))
+
+-- | The bytes a support parses: an errorformat reads stdout then stderr; a
+-- converted report is stdout; otherwise the stream the support names.
+reportInput :: CheckDef -> CompilerSupport -> ByteString -> ByteString -> ByteString
+reportInput check support out err
+  | not (null (checkConvert check)) = out
+  | Just _ <- checkErrorFormat check = out <> "\n" <> err
+  | supportReadsStdout support = out
+  | otherwise = err
+
+-- | A `convert` command, run in the scratch directory with
+-- @{"exit": N, "stdout": "…", "stderr": "…"}@ on stdin and a 60 s limit:
+-- what it prints is the report; a non-zero exit is Left with what it said
+-- on stderr.
+convertReport :: [Text] -> FilePath -> ExitCode -> ByteString -> ByteString -> IO (Either Text ByteString)
+convertReport argv dir code out err = case argv of
+  [] -> pure (Left "empty convert command")
+  exe : args ->
+    findExecutable (T.unpack exe) >>= \case
+      Nothing -> pure (Left ("`" <> exe <> "` is not installed (needed to convert the report)"))
+      Just path ->
+        runBytesCancellable neverCancel (Just 60) path (map T.unpack args) (Just dir) (BL.toStrict (encode input)) <&> \case
+          Left why -> Left why
+          Right (Finished ExitSuccess converted _) -> Right converted
+          Right (Finished _ _ said) -> Left (nonEmpty (T.strip (T.take 1000 (TE.decodeUtf8With lenientDecode said))))
+          Right TimedOut -> Left "it timed out (60 s)"
+          Right Cancelled -> Left "cancelled"
+  where
+    input = object ["exit" .= exitNumber code, "stdout" .= TE.decodeUtf8With lenientDecode out, "stderr" .= TE.decodeUtf8With lenientDecode err]
+    exitNumber = \case
+      ExitSuccess -> 0
+      ExitFailure n -> n
+    nonEmpty t = if T.null t then "it exited non-zero and said nothing" else t
 
 -- | @{= context =}@ in a check command: a short hash of the check's context
 -- files (pyproject.toml, uv.lock…), so each project and lockfile gets its own
@@ -197,13 +233,13 @@ compileClean lang files = case langCheck lang of
       Left f -> Left (describeCheckFailure f)
       Right (ExitSuccess, _, _, _) -> Right ()
       -- The support's broken files when it reads any (cargo's JSON), else stderr.
-      Right (ExitFailure _, out, err, _) -> Left $ case supportFor (checkFormat check) of
+      Right (ExitFailure _, out, err, _) -> Left $ case supportOf check of
         Just support
-          | Right report <- supportParse support (if supportReadsStdout support then out else err)
+          | Right report <- supportParse support (reportInput check support out err)
           , not (null (reportBroken report)) ->
               T.unlines [T.pack f <> ": " <> t | (f, t) <- reportBroken report]
           -- only missing cases (pyright reports them as errors): say which
-          | Right report <- supportParse support (if supportReadsStdout support then out else err)
+          | Right report <- supportParse support (reportInput check support out err)
           , not (null (reportMissing report)) ->
               T.unlines [T.pack (missingFile m) <> ":" <> T.pack (show (fst (missingCase m) + 1)) <> ": missing cases " <> T.intercalate ", " (missingPatterns m) | m <- reportMissing report]
         _ -> T.take 2000 (TE.decodeUtf8With lenientDecode err)
@@ -234,10 +270,17 @@ runIn token lang check files = around $ \slot -> case (checkCommand check, check
               | T.strip a == "{= files =}" = sources
               | otherwise = [T.unpack (T.replace "{= context =}" (contextKey check files) (T.replace "{= cache =}" (T.pack cache) a))]
         ran <- runBytesCancellable token Nothing path (concatMap expand args) (Just tmp) ""
-        pure $ case ran of
-          Left why -> Left (CheckFailed why)
-          Right (Finished code out err) -> Right (code, out, err, tmp)
-          Right _ -> Left (CheckFailed "cancelled")
+        case ran of
+          Left why -> pure (Left (CheckFailed why))
+          Right (Finished code out err)
+            | null (checkConvert check) -> pure (Right (code, out, err, tmp))
+            -- the report is what the convert command printed; the tool's
+            -- exit stays for compileClean
+            | otherwise ->
+                convertReport (checkConvert check) tmp code out err <&> \case
+                  Left why -> Left (CheckFailed ("the check's convert command failed: " <> why))
+                  Right report -> Right (code, report, err, tmp)
+          Right _ -> pure (Left (CheckFailed "cancelled"))
 
   where
     -- how a check runs beside others: in a slot of its workspace (a cache of

@@ -273,6 +273,14 @@ spec = do
       py <- either (error . T.unpack) id . parseLanguage "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
       langUnitKinds py `shouldBe` ["function_definition", "class_definition", "decorated_definition"]
       fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
+    it "[check] convert: format absent or olifant-json; [check.errorformat] needs a pattern" $ do
+      let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\n"
+      fmap (fmap (\c -> (checkFormat c, checkConvert c)) . langCheck) (parseLanguage "x" "/x" (base <> "convert = [\"c\"]\n")) `shouldBe` Right (Just ("olifant-json", ["c"]))
+      either (\e -> all (`T.isInfixOf` e) ["convert", "format"]) (const False) (parseLanguage "x" "/x" (base <> "convert = [\"c\"]\nformat = \"ghc-json\"\n")) `shouldBe` True
+      either (T.isInfixOf "pattern") (const False) (parseLanguage "x" "/x" (base <> "format = \"errorformat\"\n[check.errorformat]\nfile = 1\nline = 2\nmessage = 3\n")) `shouldBe` True
+      either (T.isInfixOf "errorformat") (const False) (parseLanguage "x" "/x" (base <> "format = \"errorformat\"\n")) `shouldBe` True
+      fmap (fmap checkErrorFormat . langCheck) (parseLanguage "x" "/x" (base <> "format = \"errorformat\"\n[check.errorformat]\npattern = '^(.*):([0-9]+): (.*)$'\nfile = 1\nline = 2\nmessage = 3\n"))
+        `shouldBe` Right (Just (Just (ErrorFormat "^(.*):([0-9]+): (.*)$" 1 2 3 Nothing Nothing)))
     it "[unit] name is a list of valid expressions and join a bool" $ do
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[unit]\nkinds = [\"f\"]\n"
       fmap (\l -> (langUnitNames l, langUnitJoin l)) (parseLanguage "x" "/x" (base <> "name = ['^(a)']\njoin = true\n")) `shouldBe` Right (["^(a)"], True)

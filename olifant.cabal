@@ -80,6 +80,7 @@ library
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
+    Olifant.Language.Generic
     Olifant.Language.Ghc
     Olifant.Language.Header
     Olifant.Language.Presets
@@ -237,6 +238,8 @@ test-suite spec
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
+    Olifant.Language.Generic
+    Olifant.Language.GenericSpec
     Olifant.Language.Ghc
     Olifant.Language.Header
     Olifant.Language.Presets

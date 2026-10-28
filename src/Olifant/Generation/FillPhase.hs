@@ -271,7 +271,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     -- the re-check judges (other errors are often the cascade: pyright
     -- strict's "Type of … is unknown", review I1).
     autoImport broken cs = do
-      let undefinedIn p = case supportFor . checkFormat =<< langCheck =<< langOf p of
+      let undefinedIn p = case supportOf =<< langCheck =<< langOf p of
             Nothing -> []
             Just support -> [n | m <- M.findWithDefault [] p broken, Just n <- [supportUndefined support (T.drop (length p + 2) m)]]
           wanted = nub [(p, n) | p <- M.keys broken, n <- undefinedIn p]

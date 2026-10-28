@@ -12,9 +12,8 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Holes (placeholderize)
-import Olifant.Language.Support (supportFor)
 import Olifant.Language (Language (..), languageFor)
-import Olifant.Language.Adapter (CheckDef (..))
+import Olifant.Language.Adapter (CheckDef (..), supportOf)
 import Olifant.Language.Check (Checker (..), checkScope, describeCheckFailure, runCheckIn)
 import Olifant.Language.Diagnostics (CheckReport (..), CompilerSupport (..), MissingPatterns (..))
 import Olifant.Query (QueryFailure (..), Record)
@@ -61,5 +60,5 @@ uncoveredQuery checker langs ws file line re = case languageFor langs file of
           let lineAt n = case drop (n - 1) ls of
                 l : _ | n >= 1 -> l
                 _ -> ""
-              write d source p = maybe p (\s -> supportPattern s d source p p) (supportFor (checkFormat check))
+              write d source p = maybe p (\s -> supportPattern s d source p p) (supportOf check)
           pure (Right [M.fromList [("name", VText p)] | p <- uncoveredAt write re file line lineAt report])
