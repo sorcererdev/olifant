@@ -6,7 +6,7 @@ import Data.Functor.Identity (Identity (..), runIdentity)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor
-import Olifant.Language (Language, parseLanguage)
+import Olifant.Language (Language, parseLanguage, shippedLanguage)
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
 import Test.Hspec
@@ -113,5 +113,13 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))
         [tests] = [c | c <- cs, checkName c == "rust: tests"]
         [diag] = [c | c <- cs, checkName c == "rust: diagnostics"]
-    (checkStatus tests, checkDetail tests, checkFix tests) `shouldBe` (Warn, "absent", Just "add [test] to languages/rust.toml")
-    (checkStatus diag, checkDetail diag) `shouldBe` (Ok, "[check] format rustc-json")
+    (checkStatus tests, checkDetail tests, checkFix tests) `shouldBe` (Warn, "absent", Just "add [test] to .olifant/languages/rust.toml")
+    (checkStatus diag, checkDetail diag) `shouldBe` (Ok, "[check] format rustc-json · from toolchain cargo")
+  it "shows each language's layers and where each capability's key came from" $ do
+    hs <- shippedLanguage "haskell" [("project", ".olifant")]
+    let cs = runIdentity (doctor (ports ["ast-grep", "cabal"] (Right ()) []) ((input local) {diLanguages = [hs]}))
+        row n = head [c | c <- cs, checkName c == n]
+    checkDetail (row "language haskell") `shouldBe` "loaded (shipped, project)"
+    checkDetail (row "haskell: tests") `shouldSatisfy` T.isSuffixOf " · from toolchain hspec"
+    checkDetail (row "haskell: units") `shouldSatisfy` T.isSuffixOf " · from shipped"
+    checkFix (row "haskell: mutation") `shouldBe` Just "add [[mutate]] to .olifant/languages/haskell.toml"

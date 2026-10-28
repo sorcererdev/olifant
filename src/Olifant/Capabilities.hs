@@ -10,23 +10,24 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (CheckDef (..), Language (..), TestDef (..), defaultUnitNames, supportsMissing)
 
--- | A capability and how it is provided (Right), or the key that would
--- enable it (Left).
-data Capability = Capability {capName :: Text, capHow :: Either Text Text}
+-- | A capability, how it is provided (Right) or the key that would enable
+-- it (Left), and the dotted key its presence depends on (whose layer
+-- doctor names: 'Olifant.Language.originOf').
+data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKey :: Text}
   deriving stock (Eq, Show)
 
 -- | Units, diagnostics, missing cases, tests, test units, test selection,
 -- mutation, stub.
 capabilities :: Language -> [Capability]
 capabilities lang =
-  [ Capability "units" units
-  , Capability "diagnostics" diagnostics
-  , Capability "missing cases" missingCases
-  , Capability "tests" tests
-  , Capability "test units" testUnits
-  , Capability "test selection" selection
-  , Capability "mutation" mutation
-  , Capability "stub" stub
+  [ Capability "units" units "unit.kinds"
+  , Capability "diagnostics" diagnostics "check.format"
+  , Capability "missing cases" missingCases "check.format"
+  , Capability "tests" tests "test.format"
+  , Capability "test units" testUnits "test.unit"
+  , Capability "test selection" selection "test.select"
+  , Capability "mutation" mutation "mutate"
+  , Capability "stub" stub "test.format"
   ]
   where
     check = langCheck lang

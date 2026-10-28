@@ -478,24 +478,31 @@ and says how to fix what is missing:
 $ olifant doctor
 ✓ config — project at /tmp/demo
 ✓ pack rust-htmx — loaded
-✓ language rust — loaded
+✓ language rust — loaded (shipped, pack rust-htmx)
 ✓ ast-grep — /opt/homebrew/bin/ast-grep
 ✗ check tool cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
   fix: install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)
 ✓ model — qwen3-coder:30b answers at http://localhost:11434/v1
-✓ rust: units — [unit] kinds (ast-grep), named by [unit] name
-✓ rust: diagnostics — [check] format rustc-json
-✓ rust: missing cases — [check] format rustc-json
+✓ rust: units — [unit] kinds (ast-grep), named by [unit] name · from shipped
+✓ rust: diagnostics — [check] format rustc-json · from toolchain cargo
+✓ rust: missing cases — [check] format rustc-json · from toolchain cargo
 ! rust: tests — absent
-  fix: add [test] to languages/rust.toml
+  fix: add [test] to .olifant/languages/rust.toml
 ! rust: test units — absent
-  fix: add [test] unit to languages/rust.toml
+  fix: add [test] unit to .olifant/languages/rust.toml
 ! rust: test selection — absent
-  fix: add [test] select to languages/rust.toml (whole files run)
+  fix: add [test] select to .olifant/languages/rust.toml (whole files run)
+! rust: mutation — absent
+  fix: add [[mutate]] to .olifant/languages/rust.toml
+! rust: stub — absent
+  fix: add [test] format pytest to .olifant/languages/rust.toml (stubs in other shapes come with [test] stub)
 ✓ plans runner claude — /opt/homebrew/bin/claude; timeout 300 s
 $ echo $?
 1
 ```
+
+A language row names the layers it came from ([chapter 9](09-packs-and-language-adapters.md#where-a-language-comes-from)),
+and each capability the layer that set its key (`toolchain cargo`: the preset filled it in).
 
 | check | what it looks at |
 |---|---|

@@ -16,7 +16,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram)
+import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, originOf)
 import Olifant.Model (Backend (..), ModelConfig (..))
 
 data Status = Ok | Warn | Bad
@@ -63,10 +63,10 @@ doctor ports di = do
     -- what each language can do; an absent capability names its key
     capabilityRows lang =
       [ case capHow c of
-          Right how -> Check name Ok how Nothing
+          Right how -> Check name Ok (how <> maybe "" (" · from " <>) (originOf lang (capKey c))) Nothing
           Left key ->
             let (k, note) = T.breakOn " (" key
-             in Check name Warn "absent" (Just ("add " <> k <> " to languages/" <> langName lang <> ".toml" <> note))
+             in Check name Warn "absent" (Just ("add " <> k <> " to .olifant/languages/" <> langName lang <> ".toml" <> note))
       | c <- capabilities lang
       , let name = langName lang <> ": " <> capName c
       ]
@@ -88,7 +88,7 @@ doctor ports di = do
       Just root -> Check "config" Ok ("project at " <> T.pack root) Nothing
       Nothing -> Check "config" Bad "no .olifant/ here or above" (Just "run olifant in a project, or create .olifant/config.toml")
     packs = [Check ("pack " <> p) Ok "loaded" Nothing | p <- diPacks di]
-    languages = [Check ("language " <> langName l) Ok "loaded" Nothing | l <- diLanguages di]
+    languages = [Check ("language " <> langName l) Ok ("loaded" <> (if null (langLayers l) then "" else " (" <> T.intercalate ", " (langLayers l) <> ")")) Nothing | l <- diLanguages di]
     broken =
       [Check ("language " <> p) Bad why (Just "fix the adapter file") | (p, why) <- diBrokenLanguages di]
         ++ [Check ("generator " <> g) Bad why (Just "fix its generator.toml") | (g, why) <- diBrokenGenerators di]
