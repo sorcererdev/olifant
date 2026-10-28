@@ -2142,6 +2142,21 @@ plansLoopSpec = describe "plans, stage 2" $ do
           sourceActions p 0 >>= mapM resolveCodeAction
         map startsAndTexts resolved
           `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[x]"))), T.concat ["\n" <> l | l <- ["  ```python " <> anchorOf <> " · done", "  def label(id: str) -> str:", "      return \"t-\" + id", "  ```"]])]]
+    it "(x7) foldingRange: one range per excerpt, opening row to closing row; none for the user's own fence" $
+      withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["a", "b"] ++ [stepLine "[x]", "  ```python " <> anchorOf <> " · done", "  c", "  ```", "  ```sh", "  ls", "  ```"])) "" $ \ports dir -> do
+        (ranges, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          request SMethod_TextDocumentFoldingRange (FoldingRangeParams Nothing Nothing p) <&> \(TResponseMessage _ _ r) -> r
+        fmap (\case InL rs -> [(r ^. L.startLine, r ^. L.endLine) | r <- rs]; InR _ -> []) ranges `shouldBe` Right [(1, 4), (6, 8)]
+    it "(x8) a lens on each excerpt's opening line: live · from its file · read-only, or frozen at tick; its command folds it" $
+      withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["a"] ++ [stepLine "[x]", "  ```python " <> anchorOf <> " · done", "  c", "  ```"])) "" $ \ports dir -> do
+        (lenses, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          getCodeLenses p
+        let uri = String (getUri (filePathToUri (dir </> "plans/t.md")))
+        sort [(c ^. L.range . L.start . L.line, fmap (^. L.title) (c ^. L.command), fmap (^. L.command) (c ^. L.command), (^. L.arguments) =<< c ^. L.command) | c <- lenses]
+          `shouldBe` [ (1, Just ("live \183 from " <> T.pack table <> " \183 read-only"), Just "olifant.plans.excerpt", Just [uri, Number 1, Number 3, Bool True, String anchorOf])
+                     , (5, Just "frozen at tick", Just "olifant.plans.excerpt", Just [uri, Number 5, Number 7, Bool False, String anchorOf]) ]
     it "(x2b) not offered on a step whose excerpt lost its closing line (review M6)" $
       withEditedPlan (T.unlines [stepLine "[ ]", "  ```python " <> anchorOf, "  x", stepLine "[ ]"]) "" $ \ports dir -> do
         ((broken, next), _) <- inProcessWith ports dir $ do

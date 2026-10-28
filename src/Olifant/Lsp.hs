@@ -47,7 +47,7 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
-import Olifant.Server.Excerpt (renderFence, unitExcerpt, unitHover)
+import Olifant.Server.Excerpt (Excerpt (..), excerptsOf, renderFence, unitExcerpt, unitHover)
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), baseline, factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
@@ -703,9 +703,18 @@ handlers env =
                     ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just t <- [readingLens r], Just row <- [readingRow ls r]]
                     ++ [ CodeLens (Range (Position (fromIntegral (lnRow l)) 0) (Position (fromIntegral (lnRow l)) 0)) (Just (Command (T.pack (show n) <> (if n == 1 then " delegation" else " delegations")) "olifant.plans.errand" (Just [String (getUri uri), Number (fromIntegral (lnRow l))]))) Nothing
                        | l <- ls, case lnKind l of Step _ -> True; _ -> False
-                       , let n = length (pastDosAt ls past (lnRow l)), n > 0 ] )
+                       , let n = length (pastDosAt ls past (lnRow l)), n > 0 ]
+                    ++ excerptLenses uri ls )
             _ -> pure []
         respond (Right (InL lenses))
+    , -- a plan's excerpts fold: opening row to closing row
+      requestHandler SMethod_TextDocumentFoldingRange $ \req respond -> do
+        ranges <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
+          Nothing -> pure []
+          Just path -> liftIO (planContext env path) <&> \case
+            Just (p, _, text) | isPlanPath p path -> [FoldingRange (fromIntegral o) Nothing (fromIntegral c) Nothing Nothing Nothing | (_, o, c) <- excerptSpans (parsePlan text)]
+            _ -> []
+        respond (Right (InL ranges))
     , -- a plan against the work: facts to apply, ghost blocks to place
       requestHandler (SMethod_CustomMethod (Proxy :: Proxy "olifant/plans/reconcile")) $ \req respond ->
         case documentPath (req ^. L.params) of
@@ -1847,6 +1856,16 @@ refingerprintAction env path (Position l _) =
     | (ln, fp) <- found
     , let end = Position l (fromIntegral (utf16 (lnText ln)))
           edit = WorkspaceEdit (Just (M.singleton (filePathToUri path) [TextEdit (Range (Position l 0) end) (withVerdict (lnText ln) (Verified fp))])) Nothing Nothing ]
+
+-- | The lens on each excerpt's opening line: "live · from <file> ·
+-- read-only" (the reconcile rewrites it) or "frozen at tick"; its command
+-- (`olifant.plans.excerpt`: the plan, the opening and closing rows, live,
+-- the anchor) folds it.
+excerptLenses :: Uri -> [Line] -> [CodeLens]
+excerptLenses uri ls =
+  [ CodeLens (Range (Position (fromIntegral (exOpen e)) 0) (Position (fromIntegral (exOpen e)) 0)) (Just (Command title "olifant.plans.excerpt" (Just [String (getUri uri), Number (fromIntegral (exOpen e)), Number (fromIntegral (exClose e)), Bool (not (exDone e)), String (anchorText (exAnchor e))]))) Nothing
+  | e <- excerptsOf ls
+  , let title = if exDone e then "frozen at tick" else "live \183 from " <> T.pack (anPath (exAnchor e)) <> " \183 read-only" ]
 
 -- | A review's lens on its step.
 lensTitle :: Review -> T.Text
