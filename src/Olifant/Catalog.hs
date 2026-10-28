@@ -406,7 +406,7 @@ openAt root loadP olifantDir packs = do
       layerNames = [n | Right (n, _, _) <- layers]
       configuredNames = either (const []) id configured
       named = [(n, True) | n <- layerNames] ++ [(genLanguage (entryDefinition e), False) | e <- rights loaded] ++ [(n, True) | n <- configuredNames]
-      (langs, brokenLangs) = assembleLanguages presets (rights layers) named
+      (langs, brokenLangs) = assembleLanguages presets (rights layers) [T.pack (takeBaseName p) | Left (p, _) <- layers] named
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured
       base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans
   pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
@@ -416,19 +416,24 @@ openAt root loadP olifantDir packs = do
 -- | One language per name, in order of first naming: its layers (the shipped
 -- file first), merged; a name nothing provides is skipped (a generator's
 -- `toml`), and a language that does not parse is set aside with the path of
--- its last layer. A name only generators give (False) is skipped too when it
+-- the first layer of its stack that fails (a layer that is not valid TOML
+-- sets the whole language aside, already reported under its own path). A name only generators give (False) is skipped too when it
 -- does not parse: shipped elm without the elm pack's grammar is no error in
 -- a project that never asked for elm.
-assembleLanguages :: Presets -> [(Text, FilePath, Layer)] -> [(Text, Bool)] -> ([Language], [(FilePath, Text)])
-assembleLanguages presets layers named = foldr add ([], []) (nubOrd (map fst named))
+assembleLanguages :: Presets -> [(Text, FilePath, Layer)] -> [Text] -> [(Text, Bool)] -> ([Language], [(FilePath, Text)])
+assembleLanguages presets layers unparsed named = foldr add ([], []) (nubOrd (map fst named))
   where
     asked name = or [b | (n, b) <- named, n == name]
     add name (ok, bad) =
       let own = [(path, l) | (n, path, l) <- layers, n == name]
-          stack = maybe [] pure (shippedLayer name) ++ map snd own
-          path = maybe ("library/languages/" <> T.unpack name <> ".toml") fst (lastMaybe own)
-       in if null stack then (ok, bad) else either (\why -> if asked name then (ok, (path, why) : bad) else (ok, bad)) (\l -> (l : ok, bad)) (languageFromLayers presets name stack)
-    lastMaybe xs = if null xs then Nothing else Just (last xs)
+          shipped = maybe [] (\l -> [("library/languages/" <> T.unpack name <> ".toml", l)]) (shippedLayer name)
+          stack = shipped ++ own
+          blamed why = case [path | k <- [1 .. length stack], Left _ <- [languageFromLayers presets name (map snd (take k stack))], let path = fst (stack !! (k - 1))] of
+            path : _ -> (path, why)
+            [] -> (fst (last stack), why)
+       in if null stack || name `elem` unparsed
+            then (ok, bad)
+            else either (\why -> if asked name then (ok, blamed why : bad) else (ok, bad)) (\l -> (l : ok, bad)) (languageFromLayers presets name (map snd stack))
     nubOrd = go S.empty
       where
         go _ [] = []

@@ -218,7 +218,8 @@ languages = ["rust"]
 ```
 
 A language that does not load (an unknown key, a missing `grammar`) is reported with the path of
-its last layer (`olifant doctor`, `olifant list`) and the others load; one that only a generator
+the layer that is at fault (`olifant doctor`, `olifant list`) and the others load; a layer that is not
+valid TOML sets its whole language aside the same way; one that only a generator
 names and that cannot load (elm without the elm pack) is left out quietly. `olifant doctor` says
 which layers each language came from and which layer set each capability's key.
 

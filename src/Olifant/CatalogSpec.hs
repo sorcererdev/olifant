@@ -170,6 +170,16 @@ spec = describe "catalog" $ do
       let [(path, why)] = catalogBrokenLanguages cat
       path `shouldBe` "/proj/.olifant/languages/python.toml"
       why `shouldSatisfy` T.isInfixOf "bogus"
+    it "a broken key is blamed on the layer that holds it, not the last layer" $ do
+      Right cat <- openWith [cfg, ("/packs/p/languages/python.toml", "bogus = 1\n"), ("/proj/.olifant/languages/python.toml", "indent = \"  \"\n")]
+      map langName (catalogLanguages cat) `shouldBe` []
+      let [(path, why)] = catalogBrokenLanguages cat
+      path `shouldBe` "/packs/p/languages/python.toml"
+      why `shouldSatisfy` T.isInfixOf "bogus"
+    it "a layer that is not valid TOML sets the whole language aside, with that layer's path" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"python\", \"rust\"]\n[packs]\np = { path = \"/packs/p\" }\n"), ("/packs/p/languages/python.toml", "tests_for = \"x\n")]
+      map langName (catalogLanguages cat) `shouldBe` ["rust"]
+      map fst (catalogBrokenLanguages cat) `shouldBe` ["/packs/p/languages/python.toml"]
     it "a pack's toolchain overrides the shipped preset" $ do
       Right cat <- openWith [cfg, ("/packs/p/languages/haskell.toml", ""), ("/packs/p/toolchains/hspec.toml", "[test]\ncommand = [\"x\"]\n")]
       map (fmap testCommand . langTest) (catalogLanguages cat) `shouldBe` [Just ["x"]]
