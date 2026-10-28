@@ -4,6 +4,7 @@
 -- only olifant-json can also say which cases a `case` lacks.
 module Olifant.Language.Generic
   ( ErrorFormat (..)
+  , LinesFormat (..)
   , sarifSupport
   , errorFormatSupport
   , olifantJsonSupport
@@ -26,6 +27,16 @@ import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, match
 -- 'efSeverity' and 'efError', it counts only when that group matches
 -- 'efError'; without 'efError', every match counts.
 data ErrorFormat = ErrorFormat {efPattern :: Text, efFile :: Int, efLine :: Int, efMessage :: Int, efSeverity :: Maybe Int, efError :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | `[test.lines]`: a test report read line by line (hspec's checks, cargo
+-- test). A line matching 'lfPass' or 'lfFail' is a test named by its last
+-- group; with 'lfNest', under the lines above it at smaller indentation.
+-- Each 'lfFailure' match (group 1 a path, group 2 a line) opens a failure
+-- block, which runs to the next one or to an 'lfEnd' match, without lines
+-- matching 'lfDrop'. (Here, not in "Olifant.Language.TestFormats", so the
+-- adapter can hold it without an import cycle.)
+data LinesFormat = LinesFormat {lfPass :: Text, lfFail :: Text, lfNest :: Bool, lfFailure :: Maybe Text, lfEnd :: Maybe Text, lfDrop :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | A support whose only knowledge is its parser: patterns are written as

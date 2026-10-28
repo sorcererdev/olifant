@@ -15,6 +15,7 @@ module Olifant.Language.Test
   , gotExpected
   , testsForFile
   , keptVerdict
+  , ownedBy
   , ranIn
   ) where
 
@@ -55,6 +56,11 @@ keptVerdict own keep run
   where
     failed = trFailed run
     isOwn t = t == own || (own <> "[") `T.isPrefixOf` t
+
+-- | Whether test T is OWN's: OWN itself, one of its parameters
+-- (pytest's @own[…]@), or a test of the group OWN (@own::…@).
+ownedBy :: TestId -> TestId -> Bool
+ownedBy own t = t == own || (own <> "[") `T.isPrefixOf` t || (own <> "::") `T.isPrefixOf` t
 
 -- | Whether a run has a test (passed or failed).
 ranIn :: TestRun -> TestId -> Bool

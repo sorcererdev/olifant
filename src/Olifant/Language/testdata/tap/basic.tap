@@ -1,0 +1,10 @@
+TAP version 13
+1..4
+ok 1 - parses a step
+not ok 2 - parses a test
+  ---
+  message: expected 2, got 1
+  severity: fail
+  ...
+ok 3 - reads, a comma
+ok 4 - not yet # SKIP waiting on the parser

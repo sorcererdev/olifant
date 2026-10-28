@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="plans" tests="3" failures="1" skipped="1">
+    <testcase name="reads a step" classname="plans" file="src/plans.test.ts" time="0.01"/>
+    <testcase name="reads a test" classname="plans" file="src/plans.test.ts" line="14" time="0.02">
+      <failure message="expected 2, got 1" type="AssertionError">AssertionError: expected 2, got 1
+    at src/plans.test.ts:14:5</failure>
+    </testcase>
+    <testcase name="later" classname="plans" file="src/plans.test.ts">
+      <skipped/>
+    </testcase>
+  </testsuite>
+</testsuites>
