@@ -8,7 +8,7 @@ module Olifant.Server.Unit
   , Named (..)
   , unitsOf
   , unitNamed
-  , unitNameOf
+  , unitNameIn
   , fingerprint
   ) where
 
@@ -26,7 +26,7 @@ import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (Language (..), Match (..), Syntax (..), describeSyntaxFailure)
+import Olifant.Language (Language (..), Match (..), Syntax (..), describeSyntaxFailure, regexName)
 import Olifant.Server.Site (defName, tshow)
 
 -- | A unit (1-based lines): its name, its header line, its node's lines,
@@ -99,28 +99,40 @@ unitHeader text line = case ([c | c <- cands, isHead "class " (snd c)], [d | d <
 data Named = Named {namedName :: Text, namedLines :: (Int, Int), namedDef :: Int}
   deriving stock (Eq, Show)
 
--- | Every unit of TEXT (each match of the language's `[unit]` kinds), named.
--- A match with another's span, or with the name and end of the match around it
--- (a decorated def), is the same unit.
+-- | Every unit of TEXT (each match of the language's `[unit]` kinds), named
+-- by 'unitNameIn' on the first line of its span that has a name. A match
+-- with another's span, or with the name and end of the match around it (a
+-- decorated def), is the same unit. With `[unit] join`, units of one name at
+-- one indentation separated only by blank lines (or touching) are one: a
+-- Haskell signature and its equations.
 unitsOf :: Syntax IO -> Language -> Text -> IO (Either Text [Named])
 unitsOf syntax lang text
   | null (langUnitKinds lang) = pure (Left (langName lang <> " has no [unit] kinds: Olifant cannot find a function or class in it"))
   | otherwise =
       querySyntax syntax lang rule text <&> \case
         Left f -> Left (describeSyntaxFailure f)
-        Right ms -> Right (qualify (dedupe (concatMap named (sortOn (\(a, z) -> (a, Down z)) [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms])))) 
+        Right ms -> Right (qualify (joined (dedupe (concatMap named (sortOn (\(a, z) -> (a, Down z)) [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms])))))
   where
     rule = object ["any" .= [object ["kind" .= k] | k <- langUnitKinds lang]]
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+    nameOf = unitNameIn lang
     -- (span, def line, bare name)
-    named (a, z) = [((a, z), d, n) | (d, n) <- take 1 [(i, n) | i <- [a .. z], Just n <- [unitNameOf lang (lineAt i)], python || i == a]]
-    python = langName lang == "python"
+    named (a, z) = [((a, z), d, n) | (d, n) <- take 1 [(i, n) | i <- [a .. z], Just n <- [nameOf (lineAt i)]]]
     dedupe = foldl keep []
     keep acc u@(sp@(_, z), _, n) = case [() | (sp'@(_, z'), _, n') <- acc, sp' == sp || (n' == n && z' == z && contains sp' sp)] of
       [] -> acc ++ [u]
       _ -> acc
     contains (a, z) (b, y) = a <= b && y <= z
+    joined us
+      | langUnitJoin lang = dedupe (foldl join [] us)
+      | otherwise = us
+    -- a unit joins the latest earlier one of its name and indentation that ends
+    -- before it with only blank lines between
+    join acc u@((a, z), _, n) = case [i | (i, ((_, e), d', n')) <- reverse (zip [0 :: Int ..] acc), n' == n, e < a, indentAt d' == indentAt a, all (T.null . T.strip . lineAt) [e + 1 .. a - 1]] of
+      i : _ -> [if j == i then ((a', z), d', n') else x | (j, x@((a', _), d', n')) <- zip [0 ..] acc]
+      [] -> acc ++ [u]
+    indentAt i = T.length (T.takeWhile (== ' ') (lineAt i))
     qualify us =
       [ Named (maybe n (<> "." <> n) (parentOf sp)) sp d
       | (sp, d, n) <- us
@@ -136,22 +148,13 @@ unitNamed name ns = case sortOn namedLines [n | n <- ns, namedName n == name] of
     [n] -> Just n
     _ -> Nothing
 
--- | The name on a unit's first line: Python's `def`/`async def`/`class`; for
--- other languages a type's second word, an instance's head, or a bind's first word.
-unitNameOf :: Language -> Text -> Maybe Text
-unitNameOf lang line
-  | langName lang == "python" = do
-      rest <- listToMaybe (mapMaybe (`T.stripPrefix` stripped) ["def ", "async def ", "class "])
-      nonEmpty (T.takeWhile (\c -> isAlphaNum c || c == '_') (T.stripStart rest))
-  | otherwise = case T.words stripped of
-      [] -> Nothing
-      w : rest
-        | w `elem` ["data", "newtype", "type", "class"] -> listToMaybe rest
-        | w == "instance" -> nonEmpty (T.strip (fst (T.breakOn " where" (T.drop (T.length w) stripped))))
-        | otherwise -> Just w
+-- | The name on a unit's line by the language's `[unit] name` expressions:
+-- the first that matches gives its last group (the whole match when it has
+-- none), stripped; Nothing when none matches or the name is empty.
+unitNameIn :: Language -> Text -> Maybe Text
+unitNameIn lang = \line -> listToMaybe (mapMaybe ($ line) namers)
   where
-    stripped = T.strip line
-    nonEmpty t = if T.null t then Nothing else Just t
+    namers = map regexName (langUnitNames lang)
 
 -- | Seven lowercase hex digits naming the lines (1-based, inclusive) of TEXT:
 -- FNV-1a 64 over them trimmed, blanks dropped, joined by newlines, except

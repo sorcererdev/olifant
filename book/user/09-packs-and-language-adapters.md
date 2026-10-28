@@ -228,7 +228,7 @@ example   = "end of struct BillingService"
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). `olifant-dev`'s Haskell adapter sets two spaces |
 | `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
 | `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`), `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). See [below](#presets-check-and-test) |
-| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds |
+| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
@@ -275,6 +275,31 @@ unresolvable dependency, makes it exit non-zero). `-fdiagnostics-as-json` and `-
 warning 62161 is what carries the missing patterns. A `complete` edit for this adapter
 names its constructor `Type.Ctor` rather than Elm's `Module.Ctor` — chapter 4 covers what
 that changes.
+
+Its `[unit]` table makes a function its signature and its equations, so a plan's
+excerpt of `parsePlan` or a step anchored to it reads the whole definition:
+
+```toml
+[unit]
+kinds = ["signature", "function", "bind", "data_type", "newtype", "class", "instance"]
+join = true
+name = [
+  "^(data|newtype|type|class)[[:space:]]+([^[:space:]]+)",          # a type: its second word
+  "^instance[[:space:]]+(.*[^[:space:]])[[:space:]]+where[[:space:]]*$", # an instance: its head
+  "^instance[[:space:]]+(.*[^[:space:]])",
+  "^[[:space:]]*(\\([^)]*\\))",                                     # an operator: (<+>)
+  "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)",                       # else the first word
+]
+```
+
+`parsePlan :: Text -> [Line]` and the equations under it are one unit named `parsePlan`.
+A signature split over lines before `::` is named by its first line. An infix equation
+(`a <+> b = b`) is named by its first word, as before, so it is not joined to its
+signature. Expressions are POSIX as regex-tdfa reads them: `[[:alnum:]]` is ASCII only,
+which is why Python's name is `[^[:space:](:[]+` (a `def crème` keeps its name). Rust's
+names an `impl` block by its type (`impl<T> Display for Wrapper<T>` → `Wrapper`) and an
+item by the word after its keyword (`pub(crate) async fn load` → `load`); Elm's names a
+`type alias` by its alias.
 
 ### A third example: Rust
 

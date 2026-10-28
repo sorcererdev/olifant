@@ -12,6 +12,7 @@ module Olifant.Language.Adapter
   , languageFor
   , targetPhrase
   , matchShape
+  , regexName
   ) where
 
 import Control.Monad ((>=>))
@@ -29,7 +30,7 @@ import Olifant.Language.Support (knownFormats, knownTestFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
 import Olifant.Toml
-import Text.Regex.TDFA (Regex, makeRegexM)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
 import System.FilePath ((</>))
 
 data Language = Language
@@ -65,6 +66,12 @@ data Language = Language
   , langUnitKinds :: [Text]
   -- ^ `[unit]` kinds: the node kinds of a definition (a function, method or
   -- class); the innermost at the cursor is the unit
+  , langUnitNames :: [Text]
+  -- ^ `[unit] name`: POSIX expressions over a unit's line; the first that
+  -- matches names it by its last group (the whole match when it has none)
+  , langUnitJoin :: Bool
+  -- ^ `[unit] join`: units of one name separated only by blank lines are one
+  -- (a Haskell signature and its equations)
   }
   deriving stock (Show)
 
@@ -134,10 +141,15 @@ parseLanguage name packRoot src = do
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
   keywords <- fromMaybe [] <$> optional "keywords" (list text) top
   test <- optional "test" (table >=> testFrom) top
-  unitKinds <- maybe (pure []) (\t -> onlyKeys ["kinds"] t >> (fromMaybe [] <$> optional "kinds" (list text) t)) =<< optional "unit" table top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds)
+  unit <- fromMaybe M.empty <$> optional "unit" table top
+  onlyKeys ["kinds", "name", "join"] unit
+  unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
+  unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
+  unitJoin <- fromMaybe False <$> optional "join" bool unit
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin)
   where
     tmpl = first describeTemplateError . parseTemplate
+    validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)
       TTable t -> onlyKeys ["source"] t >> GrammarSource . (\s -> packRoot </> "languages" </> T.unpack s) <$> required "source" text t
@@ -190,6 +202,21 @@ parseLanguage name packRoot src = do
               Just other -> Left ("`root_pick`: expected \"nearest\" or \"outermost\", got `" <> other <> "`"))
         <*> (fromMaybe False <$> optional "exclusive" bool t)
         <*> (fromMaybe True <$> optional "concurrent" bool t)
+
+-- | What a key's expression names in TEXT: its last group (the whole match
+-- when it has none), stripped; Nothing when it does not match, is not a
+-- valid expression, or names nothing. Partly applied, it compiles once.
+regexName :: Text -> Text -> Maybe Text
+regexName re = case makeRegexM (T.unpack re) :: Maybe Regex of
+  Nothing -> const Nothing
+  Just rx -> \txt -> do
+    groups <- getAllTextSubmatches <$> (matchM rx (T.unpack txt) :: Maybe (AllTextSubmatches [] String))
+    let n = T.strip (T.pack (last groups))
+    if T.null n then Nothing else Just n
+
+-- | A unit's name when the language has no `[unit] name`: its line's first identifier.
+defaultUnitNames :: [Text]
+defaultUnitNames = ["^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"]
 
 targetPhrase :: TargetDef -> Text
 targetPhrase = T.unwords . targetShape

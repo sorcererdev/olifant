@@ -273,6 +273,12 @@ spec = do
       py <- either (error . T.unpack) id . parseLanguage "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
       langUnitKinds py `shouldBe` ["function_definition", "class_definition", "decorated_definition"]
       fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
+    it "[unit] name is a list of valid expressions and join a bool" $ do
+      let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[unit]\nkinds = [\"f\"]\n"
+      fmap (\l -> (langUnitNames l, langUnitJoin l)) (parseLanguage "x" "/x" (base <> "name = ['^(a)']\njoin = true\n")) `shouldBe` Right (["^(a)"], True)
+      fmap (\l -> (langUnitNames l, langUnitJoin l)) (parseLanguage "x" "/x" base) `shouldBe` Right (["^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)"], False)
+      either (T.isInfixOf "[unit] name") (const False) (parseLanguage "x" "/x" (base <> "name = ['(']\n")) `shouldBe` True
+      either (const True) (const False) (parseLanguage "x" "/x" (base <> "join = \"yes\"\n")) `shouldBe` True
     it "the unit at a line, by the adapter's [unit] kinds (real ast-grep)" $ withPython $ \syn py _ -> do
       let src = T.unlines ["import functools", "", "", "class Table:", "    @functools.cache", "    def seats(self) -> int:", "        return 4", "", "    def free(self) -> bool:", "        return True"]
       fmap unitName <$> unitAt syn py src 7 `shouldReturn` Right "seats"

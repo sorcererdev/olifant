@@ -33,4 +33,16 @@ wrap = "olifantHole = \"{= fill =}\""
 # The unit: the innermost of these node kinds at the cursor is what `conjure`
 # conjures and `stub` stubs a test for.
 [unit]
-kinds = ["function", "bind", "data_type", "newtype", "class", "instance"]
+kinds = ["signature", "function", "bind", "data_type", "newtype", "class", "instance"]
+# A function is its signature and its equations: units of one name, at one
+# indentation, with only blank lines between, are one.
+join = true
+# The name: a type's or class's second word, an instance's head, an
+# operator in brackets, else the first word.
+name = [
+  "^(data|newtype|type|class)[[:space:]]+([^[:space:]]+)",
+  "^instance[[:space:]]+(.*[^[:space:]])[[:space:]]+where[[:space:]]*$",
+  "^instance[[:space:]]+(.*[^[:space:]])",
+  "^[[:space:]]*(\\([^)]*\\))",
+  "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)",
+]
