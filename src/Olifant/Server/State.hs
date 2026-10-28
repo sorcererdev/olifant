@@ -63,10 +63,12 @@ import System.FilePath (takeDirectory, (</>))
 -- use @scFills@).
 -- @scTestScript@: a file of scripted test verdicts, which the server's
 -- test runner answers from instead of running anything (tests).
-data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath}
+-- @scKeys@: the editor's keys by name (`plan_review`: "<leader>mpr"), which
+-- the lenses that offer them name.
+data ServerConfig = ServerConfig {scDebounceMs :: Int, scModel :: Maybe Text, scFills :: Maybe FilePath, scDecideAnswers :: Maybe FilePath, scTestScript :: Maybe FilePath, scKeys :: [(Text, Text)]}
 
 defaultServerConfig :: ServerConfig
-defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing
+defaultServerConfig = ServerConfig 300 Nothing Nothing Nothing Nothing []
 
 -- | A project as loaded: its catalog, or why it no longer loads (with the
 -- last good one, still served).

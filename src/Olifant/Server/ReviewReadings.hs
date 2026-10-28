@@ -40,7 +40,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.App (Ports (..))
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan, withVerdict)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), Verdict (..), parsePlan, stepDone, withVerdict)
 import Olifant.Server.Edits (unifiedDiff)
 import Olifant.Server.Errand (Block (..), Ghost (..))
 import Olifant.Server.LoopTests (checkbox)
@@ -173,16 +173,22 @@ readingRow ls r
   | rdKind r == NewStep = Nothing
   | otherwise = lnRow <$> locate ls (rdAfter r)
 
--- | The lens a reading puts on its step (a new step's: none; the plan's
--- title counts it).
-readingLens :: Reading -> Maybe Text
-readingLens r = case rdKind r of
-  Done -> Just "looks done \183 review"
+-- | The lens a reading puts on its STEP (a new step's: none; the plan's
+-- title counts it), a done one saying what it offers: on a ticked step to
+-- record its ✓, on an open one to tick it, with KEY (the editor's review
+-- key) when given.
+readingLens :: Maybe Text -> Maybe Line -> Reading -> Maybe Text
+readingLens key step r = case rdKind r of
+  Done
+    | maybe False stepDone step -> Just ("ticked \183 record \10003?" <> keyed)
+    | otherwise -> Just ("looks done \183 tick?" <> keyed)
   Reopened -> Just "looks open \183 review"
   Diverged -> Just "looks wrong \183 review"
   Gone -> Just "gone \183 review"
   Also -> Just "not in the plan \183 review"
   NewStep -> Nothing
+  where
+    keyed = maybe "" (" " <>) key
 
 -- | A line written under STEP: indented one level in, stamped with the
 -- reading's fingerprint when it anchors the reading's unit and is no open

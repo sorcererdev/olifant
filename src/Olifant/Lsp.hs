@@ -17,7 +17,7 @@ import Olifant.Decide qualified as De
 import Olifant.Generator (GeneratorId (..))
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Control.Applicative ((<|>))
-import Control.Monad (forM_, guard, unless, void, when)
+import Control.Monad (forM_, guard, join, unless, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value (Bool, Number, Object, String), object, toJSON, (.=))
 import Colog.Core qualified as L
@@ -47,7 +47,8 @@ import Language.LSP.Server hiding (ServerConfig (..))
 import Language.LSP.Server qualified as Lsp
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Olifant.App (Ports (..))
-import Olifant.Server.Excerpt (Excerpt (..), excerptsOf, renderFence, unitExcerpt, unitHover)
+import Olifant.Server.Excerpt (Excerpt (..), excerptFacts, excerptsOf, renderFence, unitExcerpt, unitHover)
+import Olifant.Server.LoopTests (checkbox)
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), baseline, factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
@@ -165,7 +166,8 @@ serverDefinition ports = do
     -- open/close and incremental changes; saves are noticed (regions)
     sync = TextDocumentSyncOptions (Just True) (Just TextDocumentSyncKind_Incremental) (Just False) (Just True) (Just (InR (SaveOptions (Just False))))
 
--- | `initializationOptions`: `debounce_ms`, `model`, and `debug` (tests).
+-- | `initializationOptions`: `debounce_ms`, `model`, `keys` (the editor's
+-- keys by name, which lenses name), and `debug` (tests).
 configure :: Env -> Maybe Value -> IO ()
 configure env = \case
   Just (Object o) -> do
@@ -184,6 +186,9 @@ configure env = \case
                     (_, Just (String f)) -> Just (T.unpack f)
                     _ -> scDecideAnswers (ssConfig s)
                 , scTestScript = script s
+                , scKeys = case KM.lookup "keys" o of
+                    Just (Object ks) -> [(Key.toText k, v) | (k, String v) <- KM.toList ks]
+                    _ -> scKeys (ssConfig s)
                 }
           , -- (tests) scripted verdicts stand in for the test runner
             ssPorts = maybe (ssPorts s) (\f -> (ssPorts s) {pTester = const (scriptFileRunner f), pTesterWithin = \_ _ -> scriptFileRunner f}) (script s)
@@ -339,7 +344,7 @@ handlers env =
         let Range (Position from _) (Position to _) = req ^. L.params . L.range
         actions <- case uriToFilePath (req ^. L.params . L.textDocument . L.uri) of
           Nothing -> pure []
-          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
+          Just path -> liftIO (concat <$> sequence [fixActions env path (fromIntegral from + 1) (fromIntegral to + 1), holeActions env path (fromIntegral from + 1), cursorActions env path (req ^. L.params . L.range . L.start), newStepAction env path (req ^. L.params . L.range . L.start), excerptAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), toggleAction env path (req ^. L.params . L.context . L.only) (req ^. L.params . L.range . L.start), refingerprintAction env path (req ^. L.params . L.range . L.start)])
         respond (Right (InL (map InR actions)))
     , -- planned on its own thread: a model fill or a test run takes seconds,
       -- and the server reads on meanwhile (other requests, progress)
@@ -358,6 +363,8 @@ handlers env =
               Right planned@(_, (_, plan)) -> respond (Right (resolved action planned & L.data_ %~ fmap (withSnippet (planSnippet plan))))
           _ | Just (path, line, version) <- excerptData =<< (action ^. L.data_) ->
                 liftIO (excerptEdit env path line version) >>= either failed (\e -> respond (Right (action & L.edit ?~ e)))
+          _ | Just (path, line, version) <- toggleData =<< (action ^. L.data_) ->
+                liftIO (toggleEdit env path line version) >>= either failed (\e -> respond (Right (action & L.edit ?~ e)))
           _ -> case holeData =<< (action ^. L.data_) of
             Just (path, line) ->
               planProgress "Fill with the model" (\progress -> withPlanned job (fillHolePlan progress path line)) >>= \case
@@ -689,7 +696,9 @@ handlers env =
               rs <- liftIO (loadReviews (envPorts env) (prRoot p) rel)
               readings <- maybe [] rrReadings <$> liftIO (loadReadings (envPorts env) (prRoot p) rel)
               past <- liftIO (loadArchiveIndex (envPorts env) (prRoot p) rel)
+              reviewKey <- liftIO (lookup "plan_review" . scKeys . ssConfig <$> readMVar (envState env))
               let ls = parsePlan text
+                  keyed t = maybe t (\k -> t <> " \183 " <> k) reviewKey
                   lens row title args = CodeLens (Range (Position (fromIntegral row) 0) (Position (fromIntegral row) 0)) (Just (Command title "olifant.plans.review" (Just (map String args ++ [])))) Nothing
                   open = length rs + length readings
                   -- the title line: the plan's first heading, else its first line
@@ -697,10 +706,14 @@ handlers env =
                   first = case rs of
                     r : _ -> [rvId r, getUri uri]
                     [] -> [readingsId, getUri uri]
+                  -- readings only: "N readings to review"
+                  counted
+                    | null rs = T.pack (show open) <> (if open == 1 then " reading" else " readings") <> " to review"
+                    | otherwise = T.pack (show open) <> " to review"
               pure
-                ( [lens titleRow (T.pack (show open) <> " to review") first | open > 0]
+                ( [lens titleRow (keyed counted) first | open > 0]
                     ++ [lens (lnRow l) (lensTitle r) [rvId r, getUri uri] | r <- rs, Just l <- [locateStep ls r]]
-                    ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just t <- [readingLens r], Just row <- [readingRow ls r]]
+                    ++ [lens row t [readingsId, getUri uri, readingKey r] | r <- readings, Just row <- [readingRow ls r], Just t <- [readingLens reviewKey (listToMaybe (drop row ls)) r]]
                     ++ [ CodeLens (Range (Position (fromIntegral (lnRow l)) 0) (Position (fromIntegral (lnRow l)) 0)) (Just (Command (T.pack (show n) <> (if n == 1 then " delegation" else " delegations")) "olifant.plans.errand" (Just [String (getUri uri), Number (fromIntegral (lnRow l))]))) Nothing
                        | l <- ls, case lnKind l of Step _ -> True; _ -> False
                        , let n = length (pastDosAt ls past (lnRow l)), n > 0 ]
@@ -1378,10 +1391,10 @@ excerptAction env path only (Position l _) =
     (s', _) -> pure (s', [])) >>= \found -> do
     version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
     let asked = maybe False (any (`elem` [CodeActionKind_Source])) only
-        offer disabled extra = CodeAction "Show the code here" (Just CodeActionKind_Source) Nothing Nothing disabled Nothing Nothing
+        showing disabled extra = CodeAction "Show the code here" (Just CodeActionKind_Source) Nothing Nothing disabled Nothing Nothing
           (Just (object (["kind" .= ("excerpt" :: T.Text), "path" .= path, "line" .= l, "version" .= version] ++ extra)))
     pure
-      [ either (\(why, open) -> offer (Just (CodeActionDisabled why)) ["open" .= o | Just o <- [open]]) (const (offer Nothing [])) f
+      [ either (\(why, open) -> showing (Just (CodeActionDisabled why)) ["open" .= o | Just o <- [open]]) (const (showing Nothing [])) f
       | f <- found, either (const asked) (const True) f ]
 
 -- | The anchored step at ROW of a plan's TEXT with no child opening an
@@ -1425,10 +1438,77 @@ excerptEdit env path l version =
           col = utf16 bare
        in workspaceEditAsking False [FileEdit path version False ((l, col), (l, col)) (T.concat [eol <> f | f <- fence])]
 
+-- | "Mark done" on an open step, "Reopen step" on a ticked one, at its line
+-- or a line under it (kind `source`): resolved later ('toggleEdit'), its
+-- data the step's row and the plan's version. Asked for source actions, off
+-- a step it comes disabled ("not on a step").
+toggleAction :: Env -> FilePath -> Maybe [CodeActionKind] -> Position -> IO [CodeAction]
+toggleAction env path only (Position l _) =
+  withSnapshot env (\s -> projectFor path s <&> \(s', p) -> (s', fmap snd p)) >>= \case
+    Just project | isPlanPath project path -> do
+      text <- documentText env path
+      version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)
+      let asked = maybe False (elem CodeActionKind_Source) only
+          toggling title disabled row = CodeAction title (Just CodeActionKind_Source) Nothing Nothing disabled Nothing Nothing
+            (Just (object ["kind" .= ("toggle" :: T.Text), "path" .= path, "line" .= row, "version" .= version]))
+      pure $ case stepOf (parsePlan text) (fromIntegral l) of
+        Just st -> [toggling (if stepDone st then "Reopen step" else "Mark done") Nothing (lnRow st)]
+        Nothing -> [toggling "Mark done" (Just (CodeActionDisabled "not on a step")) (fromIntegral l :: Int) | asked]
+    _ -> pure []
+
+-- | The step at ROW of LS, or the nearest one ROW is a line under.
+stepOf :: [Line] -> Int -> Maybe Line
+stepOf ls row =
+  listToMaybe
+    [ st
+    | st <- reverse (take (row + 1) ls)
+    , case lnKind st of Step _ -> True; _ -> False
+    , lnRow st == row || row `elem` map lnRow (childrenOf ls (lnRow st)) ]
+
+-- | "Mark done" or "Reopen step" resolved, as an edit of the plan at
+-- VERSION (refused when it has moved on): ticked, with ✓ its unit's
+-- fingerprint now when its anchor resolves (an explicit claim: no reading
+-- offers it again) and its live excerpts frozen with the code now; or
+-- unticked with its verdict dropped, a frozen excerpt left as it is.
+toggleEdit :: Env -> FilePath -> Int -> Maybe Int -> IO (Either T.Text WorkspaceEdit)
+toggleEdit env path row version =
+  withSnapshot env (\s -> projectFor path s >>= \case
+    (s', Just (_, project)) | isPlanPath project path -> do
+      text <- documentText env path
+      let now = fst <$> M.lookup path (ssDocs s')
+          ls = parsePlan text
+      case listToMaybe [st | st <- ls, lnRow st == row, case lnKind st of Step _ -> True; _ -> False] of
+        _ | now /= version -> pure (s', Left "the plan changed since; ask again")
+        Nothing -> pure (s', Left "not on a step")
+        Just st | stepDone st -> pure (s', Right (factsEdit path version text [Replace row (withVerdict (checkbox "- [x]" "- [ ]" (lnText st)) NoVerdict)]))
+        Just st -> do
+          fp <- maybe (pure Nothing) (\a -> resolveAnchor s' project a <&> \r -> rsFingerprint r <* rsUnit r) (lnAnchor st)
+          let ticked = maybe id (\f t -> withVerdict t (Verified f)) fp (checkbox "- [ ]" "- [x]" (lnText st))
+              after = parsePlan (applyFactsText [Replace row ticked] text)
+              mine = [e | e <- excerptsOf after, exStep e == row, not (exDone e)]
+          base <- if null mine then pure Nothing else baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
+          codes <- mapM (\e -> (exAnchor e,) <$> unitExcerpt s' project base (exAnchor e)) mine
+          let freeze = [f | f <- excerptFacts after (const Nothing) (\a -> join (lookup a codes)), factRow f `elem` map exOpen mine]
+          pure (s', Right (factsEdit path version text (Replace row ticked : freeze)))
+    (s', _) -> pure (s', Left "not a plan"))
+  where
+    factRow = \case
+      Replace r _ -> r
+      ReplaceRows r _ _ -> r
+      Insert r _ -> r
+
+-- | A "Mark done" or "Reopen step" action's data: its plan, step row and version.
+toggleData :: Value -> Maybe (FilePath, Int, Maybe Int)
+toggleData = kindData "toggle"
+
 -- | A "Show the code here" action's data: its plan, step line and version.
 excerptData :: Value -> Maybe (FilePath, Int, Maybe Int)
-excerptData = \case
-  Object o | KM.lookup "kind" o == Just (String "excerpt") -> do
+excerptData = kindData "excerpt"
+
+-- | An action's data of KIND: its plan, line and version.
+kindData :: T.Text -> Value -> Maybe (FilePath, Int, Maybe Int)
+kindData kind = \case
+  Object o | KM.lookup "kind" o == Just (String kind) -> do
     String path <- KM.lookup "path" o
     Number line <- KM.lookup "line" o
     let version = case KM.lookup "version" o of
