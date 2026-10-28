@@ -7,6 +7,8 @@ grammar = "haskell"
 indent = "  "
 placeholder = 'error "{= message =}"'
 branch = "{= pattern =} -> {= body =}"
+# After a case's only alternative, a new one goes after a blank line.
+lone_arm_spaced = true
 
 [targets.data]
 phrase = "data NAME"

@@ -6,6 +6,8 @@ comment = "//"
 grammar = "rust"
 # Items in brackets are followed by a comma; rustfmt's width is 100.
 separator = ","
+# A match arm ends with a comma before a new one.
+arm_separator = ","
 line_length = 100
 placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"

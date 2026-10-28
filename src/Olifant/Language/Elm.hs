@@ -74,9 +74,7 @@ elmSupport =
     , supportVisible = \_ site constructor -> visibleAt site constructor
     , supportUndefined = const Nothing
     , supportFunction = declarationAt
-    , supportArmSeparator = ""
     , supportReadsStdout = False
-    , supportLoneArmSpaced = True
     , supportSpans = Nothing
     }
 

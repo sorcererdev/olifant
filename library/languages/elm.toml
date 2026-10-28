@@ -6,6 +6,8 @@ placeholder = 'Debug.todo "{= message =}"'
 branch = """
 {= pattern =} ->
     {= body =}"""
+# After a case's only branch, a new one goes after a blank line (elm-format's).
+lone_arm_spaced = true
 
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.

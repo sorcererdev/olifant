@@ -88,6 +88,13 @@ data Language = Language
   , langUnitJoin :: Bool
   -- ^ `[unit] join`: units of one name separated only by blank lines are one
   -- (a Haskell signature and its equations)
+  , langArmSeparator :: Text
+  -- ^ `arm_separator`: appended to the last alternative before a new one,
+  -- unless it already ends with it or ends a block (`,` in Rust)
+  , langLoneArmSpaced :: Bool
+  -- ^ `lone_arm_spaced`: after a match's only arm, a new one goes after a
+  -- blank line (Elm's and Haskell's style); with two or more, the existing
+  -- spacing is copied
   , langMutate :: [MutateDef]
   -- ^ `[[mutate]]`: the mutation operators, ways to break this language's
   -- code that a test must notice
@@ -250,7 +257,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -272,7 +279,9 @@ languageFrom presets name grammarDir top = do
   unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
   unitJoin <- fromMaybe False <$> optional "join" bool unit
   mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin mutate [] M.empty)
+  armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
+  loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin armSeparator loneArmSpaced mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))

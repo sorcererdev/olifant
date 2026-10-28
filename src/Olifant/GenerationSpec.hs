@@ -563,7 +563,7 @@ elmLang = l
   where
     Right l = parseLanguage "elm" "/p" $ T.unlines
       [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
-      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\"", "lone_arm_spaced = true"
       , "[check]", "command = [\"true\"]", "format = \"elm-json\"" ]
 
 holeLang :: Language
@@ -571,7 +571,7 @@ holeLang = l
   where
     Right l = parseLanguage "elm" "/p" $ T.unlines
       [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
-      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\""
+      , "placeholder = 'Debug.todo \"{= message =}\"'", "branch = \"{= pattern =} ->\\n    {= body =}\"", "lone_arm_spaced = true"
       , "[check]", "command = [\"true\"]", "format = \"elm-json\""
       , "[holes.expr]", "placeholder = 'Debug.todo \"olifant: {= hole =}\"'", "wrap = \"h = {= fill =}\"" ]
 

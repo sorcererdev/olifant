@@ -710,8 +710,16 @@ spec = do
       supportVisible rustcSupport d "" "Failure.D" `shouldBe` True
     it "names the enclosing fn" $
       rustFunctionAt "pub fn one(f: &Failure) -> u16 {\n    match f {\n" 1 `shouldBe` "one"
-    it "appends a comma to the last arm before a new one" $
-      supportArmSeparator rustcSupport `shouldBe` ","
+    it "appends a comma to the last arm before a new one (rust.toml's arm_separator)" $ do
+      rust <- shippedLanguage "rust" []
+      langArmSeparator rust `shouldBe` ","
+      langLoneArmSpaced rust `shouldBe` False
+    it "a lone arm's new neighbour goes after a blank line in Haskell and Elm, not in Python" $ do
+      hs <- shippedLanguage "haskell" []
+      elm <- shippedLanguage "elm" [("pack elm", "packs/elm")]
+      py <- shippedLanguage "python" []
+      map langLoneArmSpaced [hs, elm, py] `shouldBe` [True, True, False]
+      map langArmSeparator [hs, elm, py] `shouldBe` ["", "", ""]
   describe "check commands" $
     it "expands {= cache =} to an existing per-language cache directory" $ do
       let Right lang = parseLanguage "cachey" "/p" (T.unlines ["files = [\"**/*.x\"]", "comment = \"--\"", "grammar = \"x\"", "[check]", "command = [\"sh\", \"-c\", \"test -d \\\"$0\\\"\", \"{= cache =}\"]", "format = \"rustc-json\""])
