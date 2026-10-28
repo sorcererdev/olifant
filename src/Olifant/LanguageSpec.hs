@@ -803,6 +803,16 @@ spec = do
       fmap testsFor (langTest l) `shouldBe` Just "{= dir =}/test_{= stem =}.py"
       originOf l "test" `shouldBe` Just "shipped"
       originOf l "test.tests_for" `shouldBe` Just "toolchain pytest"
+    it "a layer that sets command or convert and no preset drops the inherited preset" $ do
+      let Right l = languageFromLayers shippedPresets "haskell" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"hspec\""]), layer "pack p" (Just "/p") ["[test]", "command = [\"my-runner\"]", "format = \"junit-xml\"", "tests_for = \"x\""]]
+          Just td = langTest l
+      testCommand td `shouldBe` ["my-runner"]
+      testFormat td `shouldBe` "junit-xml"
+      testSelect td `shouldBe` Nothing
+    it "a layer that sets neither command nor convert keeps the inherited preset" $ do
+      let Right l = languageFromLayers shippedPresets "haskell" [layer "shipped" Nothing (base ++ ["[test]", "preset = \"hspec\""]), layer "pack p" (Just "/p") ["[test]", "tests_for = \"X\""]]
+      fmap testFormat (langTest l) `shouldBe` Just "lines"
+      fmap testsFor (langTest l) `shouldBe` Just "X"
     it "the grammar follows the layer that set it (Review Focus 3)" $ do
       let Right l = languageFromLayers shippedPresets "elm" [layer "pack elm" (Just "packs/elm") ["files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = { source = \"grammar/elm\" }"], layer "project" (Just ".olifant") ["indent = \"    \""]]
       langGrammar l `shouldBe` GrammarSource "packs/elm/languages/grammar/elm"

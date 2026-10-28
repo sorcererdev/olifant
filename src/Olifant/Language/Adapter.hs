@@ -231,7 +231,7 @@ parseOverShipped name packRoot src = do
 -- `grammar`.
 languageFromLayers :: Presets -> Text -> [Layer] -> Either Text Language
 languageFromLayers presets name layers = do
-  let top = foldl mergeTables M.empty (map layerTable layers)
+  let top = foldl (\acc l -> mergeTables (dropPresets acc (layerTable l)) (layerTable l)) M.empty layers
       grammarDir = case [layerDir l | l <- layers, M.member "grammar" (layerTable l)] of
         [] -> Nothing
         ds -> last ds
@@ -249,6 +249,13 @@ languageFromLayers presets name layers = do
   lang <- languageFrom presets name grammarDir top
   pure lang {langLayers = map layerOrigin layers, langOrigins = M.union origins filled}
   where
+    -- a layer that writes its own command or convert, and no preset, stops
+    -- inheriting the preset of the layers before it
+    dropPresets acc t = foldr (\sec -> M.adjust (dropIn sec) sec) acc ["check", "test"]
+      where
+        dropIn sec = \case
+          TTable a | Just (TTable own) <- M.lookup sec t, M.notMember "preset" own, any (`M.member` own) ["command", "convert"] -> TTable (M.delete "preset" a)
+          v -> v
     keysOf o t = M.fromList (concat [(k, o) : [(k <> "." <> k2, o) | TTable sub <- [v], k2 <- M.keys sub] | (k, v) <- M.toList t])
 
 -- | Where a key (`check.format`) was set: its own origin, else its parent's.
