@@ -172,8 +172,8 @@ workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
 withLoop :: Text -> [(FilePath, Text)] -> (ServerState -> Project -> FilePath -> IO a) -> IO a
 withLoop plan edits act = withLoopPorts plan edits $ \ports dir -> loaded ports dir >>= \(s, p) -> act s p dir
 
--- | A Haskell project (olifant-dev's language with an hspec-shaped
--- [test]) with a plan whose steps test a describe, under the scripted
+-- | A Haskell project (olifant-dev's language, its [test] the hspec preset)
+-- with a plan whose steps test a describe, under the scripted
 -- runner SCRIPT; a fresh state.
 withHaskellLoop :: M.Map Text Value -> (FilePath -> ServerState -> IO ()) -> IO ()
 withHaskellLoop script act = do
@@ -181,12 +181,10 @@ withHaskellLoop script act = do
   lang <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
   withSystemTempDirectory "olifant-loop-hs" $ \dir0 -> do
     dir <- canonicalizePath dir0
-    let test = T.unlines
-          [ "[test]", "command = [\"true\"]", "format = \"olifant-json\"", "tests_for = \"{= dir =}/{= stem =}Spec.hs\""
-          , "file_group = '^module[[:space:]]+([[:alnum:]_.]+)Spec'"
-          , "unit = ['(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\"']" ]
-        files =
-          [ ("pack/languages/haskell.toml", T.unlines (takeWhile (not . ("[test]" `T.isPrefixOf`)) (T.lines lang)) <> test)
+    -- olifant's own adapter: its [test] (the hspec preset) gives unit,
+    -- file_group and tests_for; the scripted runner stands for cabal
+    let files =
+          [ ("pack/languages/haskell.toml", lang)
           , (".olifant/config.toml", "[packs]\nhs = { path = \"pack\" }\n")
           , ("src/Olifant/Plans.hs", "module Olifant.Plans where\n\nparsePlan :: Int -> Int\nparsePlan n = n\n")
           , ("src/Olifant/PlansSpec.hs", T.unlines ["module Olifant.PlansSpec (spec) where", "spec :: Spec", "spec = describe \"Olifant.Plans\" $ do", "  it \"(a) reads a step\" $", "    1 `shouldBe` 1"])

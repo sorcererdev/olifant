@@ -246,8 +246,9 @@ anchors` on it or a `complete` edit whose `language` names it.
 
 ### A second example: Haskell
 
-`packs/olifant-dev/languages/haskell.toml` uses ast-grep's grammar built in for Haskell, and
-checks with GHC through `cabal repl` instead of `elm make`:
+`packs/olifant-dev/languages/haskell.toml` uses ast-grep's grammar built in for Haskell,
+checks with GHC through `cabal repl` instead of `elm make`, and runs its tests with hspec
+through `cabal test`. Both are presets ([below](#presets-check-and-test)):
 
 ```toml
 files       = ["**/*.hs"]
@@ -263,10 +264,19 @@ items     = { kind = "data_constructor" }
 example   = "end of data CatalogError"
 
 [check]
-command = ["cabal", "repl", "-v0", "lib:olifant", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns", "--repl-options=-fmax-uncovered-patterns=1000"]
-context = ["*.cabal", "cabal.project"]
-format  = "ghc-json"
+preset = "cabal-repl"
+
+[test]
+preset = "hspec"
 ```
+
+The `cabal-repl` preset runs `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}
+--repl-options=-fno-code --repl-options=-fdiagnostics-as-json --repl-options=-Wincomplete-patterns
+--repl-options=-fmax-uncovered-patterns=1000` with no target: cabal then loads the package's
+library, so the preset is for a package with one library (a package with several names its
+target in its own `command`). The build directory lives in Olifant's cache, one per slot
+(`exclusive`), so the second check of a scratch copy is incremental although the copy's path is
+new each time.
 
 `repl`, not `build`: with `-fno-code`, `cabal build` always exits 1 at its link step, while
 `repl` exits 0 after type-checking, even when the code has errors (a compile error arrives
@@ -535,10 +545,12 @@ format). A **preset** says it once, in Olifant, so a pack writes only what is it
 | `[check]` | `pyright` | `uv run pyright --outputjson` in the project's venv in Olifant's cache; `pyright-json`; rooted at `pyproject.toml` |
 | `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
 | `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml` |
+| `[check]` | `cabal-repl` | `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}` with `-fno-code`, GHC's JSON diagnostics and its missing-pattern warning; `ghc-json`; `exclusive`; context `*.cabal`, `cabal.project`, `cabal.project.freeze`. Loads the package's one library |
+| `[test]` | `hspec` | `cabal test -v0 --builddir={= cache =}/dist-test-{= context =} --test-show-details=direct --test-option=--format=checks --test-option=--no-color`, then the selected tests; `format = "lines"` over hspec's tree ([test formats](#test-formats)); one test by `--match=/{= group =}/{= name =}/`, a file by its module (`file_group`); `unit` finds `describe`/`it`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}Spec.hs"` |
 
 Any key you write beside `preset` wins over the preset's: `[check] preset = "pyright"` with your
 own `root = ["apps/web/pyproject.toml"]` keeps the rest. An unknown preset is a load error naming
-the known ones (`` `preset`: unknown test preset `jest`; expected one of pytest ``).
+the known ones (`` `preset`: unknown test preset `jest`; expected one of hspec, pytest ``).
 
 `[test]` also says where a module's tests live: `tests_for`, a template of the module's folder
 (`{= dir =}`) and name without its extension (`{= stem =}`). The editor's commands find a module's test file

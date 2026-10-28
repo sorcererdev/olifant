@@ -15,9 +15,14 @@ items = { kind = "data_constructor" }
 example = "end of data CatalogError"
 
 [check]
-command = ["cabal", "repl", "-v0", "lib:olifant", "--repl-options=-fno-code", "--repl-options=-fdiagnostics-as-json", "--repl-options=-Wincomplete-patterns", "--repl-options=-fmax-uncovered-patterns=1000"]
-context = ["*.cabal", "cabal.project"]
-format = "ghc-json"
+# `cabal repl` over the package's library, -fno-code, its builddir kept in
+# Olifant's cache (a slot per check: exclusive)
+preset = "cabal-repl"
+
+# Tests: hspec through `cabal test --format=checks`; one test by its
+# describe path (--match), a module's tests beside it as <Module>Spec.hs
+[test]
+preset = "hspec"
 
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.

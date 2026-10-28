@@ -79,6 +79,27 @@ spec = do
       let Right lang = py ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""]
       fmap checkFormat (langCheck lang) `shouldBe` Just "pyright-json"
       fmap checkRoot (langCheck lang) `shouldBe` Just ["pyproject.toml"]
+    let hs = parseLanguage "haskell" "/pack" . T.unlines . (["files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""] ++)
+    it "(f) [test] preset = \"hspec\" alone: lines, exclusive, 900 s, tests_for, select and unit" $ do
+      let Right lang = hs ["[test]", "preset = \"hspec\""]
+          Just t = langTest lang
+      (testFormat t, testExclusive t, testTimeout t, testsFor t) `shouldBe` ("lines", True, Just 900, "{= dir =}/{= stem =}Spec.hs")
+      fmap lfNest (testLines t) `shouldBe` Just True
+      testSelect t `shouldBe` Just (Select "--test-option=--match=/{= group =}/{= name =}/" "--test-option=--match=/{= group =}/")
+      testFileGroup t `shouldBe` Just "^module[[:space:]]+([[:alnum:]_.]+)Spec"
+      testUnitPatterns t `shouldBe` ["(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\""]
+      take 3 (testCommand t) `shouldBe` ["cabal", "test", "-v0"]
+      last (testCommand t) `shouldBe` "{= tests =}"
+    it "(g) a pack's own tests_for wins over hspec's" $
+      fmap (fmap testsFor . langTest) (hs ["[test]", "preset = \"hspec\"", "tests_for = \"test/{= stem =}Spec.hs\""]) `shouldBe` Right (Just "test/{= stem =}Spec.hs")
+    it "(h) [check] preset = \"cabal-repl\" alone: ghc-json, exclusive, a builddir in the cache" $ do
+      let Right lang = hs ["[check]", "preset = \"cabal-repl\""]
+          Just c = langCheck lang
+      (checkFormat c, checkExclusive c) `shouldBe` ("ghc-json", True)
+      checkCommand c `shouldSatisfy` elem "--builddir={= cache =}/dist-repl-{= context =}"
+    it "(i) an unknown preset names the new ones" $ do
+      hs ["[check]", "preset = \"stack\""] `shouldSatisfy` either ("cabal-repl" `T.isInfixOf`) (const False)
+      hs ["[test]", "preset = \"tasty\"", "tests_for = \"x\""] `shouldSatisfy` either ("hspec" `T.isInfixOf`) (const False)
   describe "Olifant.Language.Test" $ do
     it "(a) parsePytest: one failed, four passed, the failing line" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/one-failed.txt"
@@ -699,7 +720,9 @@ spec = do
       supportPattern g (missing "a.hs" (0, 0) []) "" "CatalogError.PackLocked" "PackLocked _" `shouldBe` "PackLocked _"
     it "asks GHC not to truncate pattern lists (review M2)" $ do
       src <- TIO.readFile "packs/olifant-dev/languages/haskell.toml"
-      src `shouldSatisfy` T.isInfixOf "-fmax-uncovered-patterns="
+      -- (through the cabal-repl preset)
+      let Right hs = parseLanguage "haskell" "packs/olifant-dev" src
+      fmap checkCommand (langCheck hs) `shouldSatisfy` maybe False (any ("-fmax-uncovered-patterns=" `T.isInfixOf`))
   describe "parseElmReport" $ do
     it "reads each MISSING PATTERNS problem: file, 0-based case lines, patterns" $ do
       report <- BS.readFile "src/Olifant/Language/testdata/elm-missing-patterns.json"
