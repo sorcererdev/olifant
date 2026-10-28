@@ -359,7 +359,6 @@ test-suite spec
     Olifant.ServerSpec
     Olifant.Snippet
     Olifant.SnippetSpec
-    Olifant.SplitSpec
     Olifant.Suggest
     Olifant.Template
     Olifant.Template.Error
