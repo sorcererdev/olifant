@@ -495,7 +495,7 @@ $ olifant doctor
 ! rust: mutation — absent
   fix: add [[mutate]] to .olifant/languages/rust.toml
 ! rust: stub — absent
-  fix: add [test] format pytest to .olifant/languages/rust.toml (stubs in other shapes come with [test] stub)
+  fix: stubs for other test formats come with [test] stub
 ✓ plans runner claude — /opt/homebrew/bin/claude; timeout 300 s
 $ echo $?
 1

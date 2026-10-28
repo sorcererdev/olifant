@@ -123,3 +123,4 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkDetail (row "haskell: tests") `shouldSatisfy` T.isSuffixOf " · from toolchain hspec"
     checkDetail (row "haskell: units") `shouldSatisfy` T.isSuffixOf " · from shipped"
     checkFix (row "haskell: mutation") `shouldBe` Just "add [[mutate]] to .olifant/languages/haskell.toml"
+    checkFix (row "haskell: stub") `shouldBe` Just "stubs for other test formats come with [test] stub"

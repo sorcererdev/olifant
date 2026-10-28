@@ -66,7 +66,7 @@ doctor ports di = do
           Right how -> Check name Ok (how <> maybe "" (" · from " <>) (originOf lang (capKey c))) Nothing
           Left key ->
             let (k, note) = T.breakOn " (" key
-             in Check name Warn "absent" (Just ("add " <> k <> " to .olifant/languages/" <> langName lang <> ".toml" <> note))
+             in Check name Warn "absent" (Just (fromMaybe ("add " <> k <> " to .olifant/languages/" <> langName lang <> ".toml" <> note) (capFix c)))
       | c <- capabilities lang
       , let name = langName lang <> ": " <> capName c
       ]
