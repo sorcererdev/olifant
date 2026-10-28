@@ -2018,7 +2018,7 @@ plansSpec = describe "plans: anchors in the server" $ do
           , [concat (M.elems cs) | a <- news, Just (WorkspaceEdit (Just cs) _ _) <- [a ^. L.edit], let _ = a]
           )
       snips `shouldBe` [(Just "- [ ] ${1:step} @${2:anchor}", Just InsertTextFormat_Snippet)]
-      titles `shouldBe` ["New step below"]
+      titles `shouldBe` ["New step below", "Mark done"]
       map (map (\e -> (e ^. L.range . L.start, e ^. L.newText))) edits `shouldBe` [[(Position 1 17, "\n- [ ] step @anchor")]]
 
 -- | Plan errands (plans, stage 1, Task 7): ask, validate and do run the
@@ -2093,6 +2093,11 @@ plansLoopSpec = describe "plans, stage 2" $ do
         fenceOf body = ["  ```python " <> anchorOf] ++ map ("  " <>) body ++ ["  ```"]
         sourceActions p l = getCodeActions p (Range (Position l 3) (Position l 3)) <&> \acts -> [a | InR a <- acts, a ^. L.title == "Show the code here"]
         startsAndTexts a = [(t ^. L.range . L.start, t ^. L.newText) | Just e <- [a ^. L.edit], Just changes <- [e ^. L.documentChanges], InL te <- changes, InL t <- te ^. L.edits]
+        -- the code actions of kind source at line L (as the plugin's keys ask)
+        sourceOnly p l = request SMethod_TextDocumentCodeAction (CodeActionParams Nothing Nothing p (Range (Position l 3) (Position l 3)) (CodeActionContext [] (Just [CodeActionKind_Source]) Nothing))
+          <&> \(TResponseMessage _ _ r) -> [a | Right (InL acts) <- [r], InR a <- acts]
+        titled t = filter ((== t) . (^. L.title))
+        reasons acts = [fmap (^. L.reason) (a ^. L.disabled) | a <- acts]
     it "(x1) hover on a step's anchor shows its unit's code; off the anchor, nothing" $
       withEditedPlan (T.unlines [stepLine "[ ]"]) "" $ \ports dir -> do
         ((on, off), _) <- inProcessWith ports dir $ do
@@ -2103,7 +2108,7 @@ plansLoopSpec = describe "plans, stage 2" $ do
             text `shouldBe` T.intercalate "\n" ["`" <> T.pack table <> ":label` · lines 1–2", "", "```python", "def label(id: str) -> str:", "    return \"t-\" + id", "```"]
           other -> expectationFailure ("hover: " <> show other)
         off `shouldBe` Nothing
-    it "(x2) Show the code here on an open anchored step, resolved, writes the fence below it at the plan's version; not on a done step, nor on one that has one" $
+    it "(x2) Show the code here on an open anchored step, resolved, writes the fence below it at the plan's version; on a done step too (frozen), not on one that has one" $
       withEditedPlan (T.unlines ([stepLine "[ ]", stepLine "[x]", stepLine "[ ]"] ++ fenceOf ["x"])) "" $ \ports dir -> do
         ((open', resolved, done, has), _) <- inProcessWith ports dir $ do
           p <- openDoc "plans/t.md" "markdown"
@@ -2115,7 +2120,71 @@ plansLoopSpec = describe "plans, stage 2" $ do
         map startsAndTexts resolved
           `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[ ]"))), T.concat ["\n" <> l | l <- fenceOf ["def label(id: str) -> str:", "    return \"t-\" + id"]])]]
         map editVersions resolved `shouldBe` [[InL 0]]
-        (length done, length has) `shouldBe` (0, 0)
+        (length done, length has) `shouldBe` (1, 0)
+    it "(x5) asked for source actions, Show the code here says why it cannot: off a step, no anchor, an anchor that does not resolve, an excerpt there already (its opening row in its data), one with no closing line" $
+      withEditedPlan (T.unlines (["# T", "- [ ] no anchor", "- [ ] s @" <> T.pack table <> ":nope", stepLine "[ ]"] ++ fenceOf ["x"] ++ [stepLine "[ ]", "  ```python " <> anchorOf, "  x"])) "" $ \ports dir -> do
+        (acts, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          mapM (fmap (titled "Show the code here") . sourceOnly p) [0, 1, 2, 3, 7]
+        map reasons acts
+          `shouldBe` [ [Just "not on a step"], [Just "no anchor on this line"], [Just ("the anchor @" <> T.pack table <> ":nope does not resolve")]
+                     , [Just "the step shows its code already"], [Just "the step's excerpt has no closing line"] ]
+        [lookupKey "open" =<< (a ^. L.data_) | a <- acts !! 3] `shouldBe` [Just (Number 4)]
+        -- asked for every action (the ⚡ menu), none of them disabled
+        (plain, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          sourceActions p 0
+        length plain `shouldBe` 0
+    it "(x6) Show the code here on a ticked step with no excerpt writes it frozen at once" $
+      withEditedPlan (T.unlines [stepLine "[x]"]) "" $ \ports dir -> do
+        (resolved, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          sourceActions p 0 >>= mapM resolveCodeAction
+        map startsAndTexts resolved
+          `shouldBe` [[(Position 0 (fromIntegral (T.length (stepLine "[x]"))), T.concat ["\n" <> l | l <- ["  ```python " <> anchorOf <> " · done", "  def label(id: str) -> str:", "      return \"t-\" + id", "  ```"]])]]
+    it "(x7) foldingRange: one range per excerpt, opening row to closing row; none for the user's own fence" $
+      withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["a", "b"] ++ [stepLine "[x]", "  ```python " <> anchorOf <> " · done", "  c", "  ```", "  ```sh", "  ls", "  ```"])) "" $ \ports dir -> do
+        (ranges, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          request SMethod_TextDocumentFoldingRange (FoldingRangeParams Nothing Nothing p) <&> \(TResponseMessage _ _ r) -> r
+        fmap (\case InL rs -> [(r ^. L.startLine, r ^. L.endLine) | r <- rs]; InR _ -> []) ranges `shouldBe` Right [(1, 4), (6, 8)]
+    it "(x8) a lens on each excerpt's opening line: live · from its file · read-only, or frozen at tick; its command folds it" $
+      withEditedPlan (T.unlines ([stepLine "[ ]"] ++ fenceOf ["a"] ++ [stepLine "[x]", "  ```python " <> anchorOf <> " · done", "  c", "  ```"])) "" $ \ports dir -> do
+        (lenses, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          getCodeLenses p
+        let uri = String (getUri (filePathToUri (dir </> "plans/t.md")))
+        sort [(c ^. L.range . L.start . L.line, fmap (^. L.title) (c ^. L.command), fmap (^. L.command) (c ^. L.command), (^. L.arguments) =<< c ^. L.command) | c <- lenses]
+          `shouldBe` [ (1, Just ("live \183 from " <> T.pack table <> " \183 read-only"), Just "olifant.plans.excerpt", Just [uri, Number 1, Number 3, Bool True, String anchorOf])
+                     , (5, Just "frozen at tick", Just "olifant.plans.excerpt", Just [uri, Number 5, Number 7, Bool False, String anchorOf]) ]
+    it "(x9) Mark done on a step (or a line under it): ticked, ✓ its fingerprint now, its live excerpt frozen with the code now, in one edit; no reading follows" $
+      withEditedPlan (T.unlines ([stepLine "[ ]", "  - a note"] ++ fenceOf ["def label(id: str) -> str:", "    return id"] ++ ["notes"])) jev $ \ports dir -> do
+        cfg <- answers dir [("plan-state", "still_done")]
+        ((onStep, onChild, offStep, after, readings), _) <- inProcessWithConfig cfg ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          onStep <- titled "Mark done" <$> sourceOnly p 0
+          onChild <- titled "Mark done" <$> sourceOnly p 3
+          offStep <- sourceOnly p 6
+          resolved <- mapM resolveCodeAction onChild
+          forM_ [t | a <- resolved, Just e <- [a ^. L.edit], Just cs <- [e ^. L.documentChanges], InL te <- cs, InL t <- te ^. L.edits] (applyEdit p)
+          after <- documentContents p
+          r <- blockMove reconcileP (object [docOf p, "forced" .= True])
+          pure (onStep, onChild, offStep, after, fmap (lookupKey "readings") r)
+        (map (^. L.kind) onStep, length onChild) `shouldBe` ([Just CodeActionKind_Source], 1)
+        [(a ^. L.title, reasons [a]) | a <- offStep, a ^. L.title `elem` ["Mark done", "Reopen step"]] `shouldBe` [("Mark done", [Just "not on a step"])]
+        let ls = T.lines after
+        take 1 ls `shouldSatisfy` \xs -> length xs == 1 && all (maybe False ((== 7) . T.length) . T.stripPrefix ("- [x] s " <> anchorOf <> " \10003 ")) xs
+        drop 1 ls `shouldBe` ["  - a note", "  ```python " <> anchorOf <> " · done", "  def label(id: str) -> str:", "      return \"t-\" + id", "  ```", "notes"]
+        readings `shouldBe` Right (Just (Number 0))
+    it "(x10) Reopen step on a ticked step: unticked, its verdict dropped; its frozen excerpt stays" $
+      withEditedPlan (T.unlines ([stepLine "[x]" <> " \10003 abc1234", "  ```python " <> anchorOf <> " · done", "  x", "  ```"])) "" $ \ports dir -> do
+        (after, _) <- inProcessWith ports dir $ do
+          p <- openDoc "plans/t.md" "markdown"
+          acts <- titled "Reopen step" <$> sourceOnly p 0
+          resolved <- mapM resolveCodeAction acts
+          forM_ [t | a <- resolved, Just e <- [a ^. L.edit], Just cs <- [e ^. L.documentChanges], InL te <- cs, InL t <- te ^. L.edits] (applyEdit p)
+          documentContents p
+        T.lines after `shouldBe` [stepLine "[ ]", "  ```python " <> anchorOf <> " · done", "  x", "  ```"]
     it "(x2b) not offered on a step whose excerpt lost its closing line (review M6)" $
       withEditedPlan (T.unlines [stepLine "[ ]", "  ```python " <> anchorOf, "  x", stepLine "[ ]"]) "" $ \ports dir -> do
         ((broken, next), _) <- inProcessWith ports dir $ do
@@ -2182,7 +2251,7 @@ plansLoopSpec = describe "plans, stage 2" $ do
   it "(f) a reading is the reconcile review: listed, drawn, a lens on its step and the title; apply returns the plan edit and answers it" $
     withEdited jev $ \ports dir -> do
       cfg <- answers dir [("plan-state", "done")]
-      ((listed, view, lenses, chosen, after), _) <- inProcessWithConfig cfg ports dir $ do
+      ((listed, view, lenses, chosen, after), _) <- inProcessWithConfig (("keys", object ["plan_review" .= ("<leader>mpr" :: Text)]) : cfg) ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
         _ <- blockMove reconcileP (object [docOf p])
         listed <- blockMove reviewsP (object [docOf p])
@@ -2197,13 +2266,21 @@ plansLoopSpec = describe "plans, stage 2" $ do
       w <- either (fail . T.unpack) pure view
       [(lookupKey "summary" e, map (lookupKey "key") (arr (lookupKey "offers" e))) | e <- arr (at ["entries"] w)]
         `shouldBe` [(Just (String "Step 1 looks done"), map (Just . String) ["a", "r"])]
-      sort [(c ^. L.range . L.start . L.line, fmap (^. L.title) (c ^. L.command)) | c <- lenses] `shouldBe` [(0, Just "1 to review"), (0, Just "looks done \183 review")]
+      sort [(c ^. L.range . L.start . L.line, fmap (^. L.title) (c ^. L.command)) | c <- lenses] `shouldBe` [(0, Just "1 reading to review \183 <leader>mpr"), (0, Just "looks done \183 tick? <leader>mpr")]
       c <- either (fail . T.unpack) pure chosen
       lookupKey "done" c `shouldBe` Just (Bool True)
       Aeson.encode (lookupKey "edit" c) `shouldSatisfy` \e -> ("- [x] s @" <> TE.encodeUtf8 (T.pack table) <> ":label") `BS.isInfixOf` BSL.toStrict e
       fmap (arr . lookupKey "reviews") after `shouldBe` Right []
       (rs, _) <- readRecords . fromMaybe "" <$> readText (diskWorkspace dir) (dir </> ".olifant/state/errands.jsonl")
       [(rcId r == orId o, orBlock o, orOutcome o) | AReconcile r <- rs, AnOutcome o <- rs] `shouldBe` [(True, 0, "accepted")]
+  it "(f2) a hand-ticked step's done reading offers to record its ✓; with no key given, the lenses name none" $
+    withEditedPlan ("- [x] s @" <> T.pack table <> ":label\n") jev $ \ports dir -> do
+      cfg <- answers dir [("plan-state", "still_done")]
+      (lenses, _) <- inProcessWithConfig cfg ports dir $ do
+        p <- openDoc "plans/t.md" "markdown"
+        _ <- blockMove reconcileP (object [docOf p])
+        getCodeLenses p
+      sort [(c ^. L.range . L.start . L.line, fmap (^. L.title) (c ^. L.command)) | c <- lenses] `shouldBe` [(0, Just "1 reading to review"), (0, Just "ticked \183 record \10003?")]
   it "(g) ignore on a unit in no step: the next reconcile does not offer it again" $
     withEditedPlan "# T\n\n- [ ] s\n" jev $ \ports dir -> do
       cfg <- answers dir [("plan-step", "none")]
