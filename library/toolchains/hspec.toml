@@ -34,6 +34,7 @@ test = """
 {= indent =}it "{= name|escaped =}" $ do
 {= note =}{= indent =}{= indent =}expectationFailure "write this test"
 """
+at = "end of do in spec"
 file = """
 module {= module =}Spec (spec) where
 

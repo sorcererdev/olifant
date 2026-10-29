@@ -123,7 +123,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkDetail (row "haskell: tests") `shouldSatisfy` T.isSuffixOf " · from toolchain hspec"
     checkDetail (row "haskell: units") `shouldSatisfy` T.isSuffixOf " · from shipped"
     checkFix (row "haskell: mutation") `shouldBe` Just "add [[mutate]] to .olifant/languages/haskell.toml"
-    checkDetail (row "haskell: stub") `shouldBe` "[test] stub · from toolchain hspec"
+    checkDetail (row "haskell: stub") `shouldBe` "[test] stub at end of do in spec · from toolchain hspec"
   it "rust: its tests, test units, selection and stub, from cargo-test and the shipped language" $ do
     rust <- shippedLanguage "rust" []
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust]}))

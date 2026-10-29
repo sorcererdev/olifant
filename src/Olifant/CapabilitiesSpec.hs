@@ -18,7 +18,7 @@ spec = do
     hs <- packLanguage "haskell" ".olifant"
     map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "test selection", "mutation", "stub"]
     map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True ++ [False, True]
-    lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] stub")
+    lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] stub at end of do in spec")
     lookup "mutation" [(capName c, capFix c) | c <- capabilities hs] `shouldBe` Just Nothing
     lookup "mutation" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[[mutate]]")
     lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[unit] kinds (ast-grep), named by [unit] name, joined")
