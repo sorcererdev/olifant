@@ -7,3 +7,10 @@ context = ["pyproject.toml", "uv.lock"]
 root = ["pyproject.toml"]
 tests_for = "{= dir =}/test_{= stem =}.py"
 install = "brew install uv (pytest comes with the project: `uv sync`)"
+# Tests by rule: a `test…` function (async too) and a `Test…` class, whose
+# methods it names `TestX::test_y`; decorators belong to the def below.
+unit = [
+  '^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+(test[[:alnum:]_]*)[[:space:]]*\(',
+  '^[[:space:]]*class[[:space:]]+(Test[[:alnum:]_]*)',
+]
+above = '^[[:space:]]*@'

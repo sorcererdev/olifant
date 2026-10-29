@@ -49,8 +49,7 @@ capabilities lang =
       Nothing -> Left "[test]"
       Just td -> Right ("[test] format " <> testFormat td <> ", tests_for " <> testsFor td)
     testUnits
-      | maybe False (not . null . testUnitPatterns) test = Right "[test] unit"
-      | pytest = Right "built in (pytest shape)"
+      | maybe False (not . null . testUnitRules) test = Right ("[test] unit" <> (if maybe False (isJust . testAbove) test then ", above" else ""))
       | otherwise = Left "[test] unit"
     stub
       | pytest = Right "built in (pytest shape)"

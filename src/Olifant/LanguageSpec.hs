@@ -91,7 +91,7 @@ spec = do
       fmap lfNest (testLines t) `shouldBe` Just True
       testSelect t `shouldBe` Just (Select "--test-option=--match=/{= group =}/{= name =}/" "--test-option=--match=/{= group =}/")
       testFileGroup t `shouldBe` Just "^module[[:space:]]+([[:alnum:]_.]+)Spec"
-      testUnitPatterns t `shouldBe` ["(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\""]
+      testUnitRules t `shouldBe` [UnitRule "(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"(([^\"\\\\]|\\\\.)*)\"" Nothing (Just 3)]
       take 3 (testCommand t) `shouldBe` ["cabal", "test", "-v0"]
       last (testCommand t) `shouldBe` "{= tests =}"
     it "(g) a pack's own tests_for wins over hspec's" $
@@ -117,7 +117,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -218,7 +218,7 @@ spec = do
           Just td = langTest lang
       (testFormat td, testExclusive td, testTimeout td, testConvert td) `shouldBe` ("lines", True, Just 900, [])
       testFileGroup td `shouldBe` Just "^module[[:space:]]+([[:alnum:]_.]+)Spec"
-      length (testUnitPatterns td) `shouldBe` 1
+      length (testUnitRules td) `shouldBe` 1
       testSelect td `shouldBe` Just (Select "--test-option=--match=/{= group =}/{= name =}/" "--test-option=--match=/{= group =}/")
       fmap lfNest (testLines td) `shouldBe` Just True
     it "refuses lines without [test.lines], and {= group =} without file_group" $ do
@@ -714,6 +714,11 @@ spec = do
       rust <- shippedLanguage "rust" []
       langArmSeparator rust `shouldBe` ","
       langLoneArmSpaced rust `shouldBe` False
+    it "the shipped python language finds its tests by pytest's rules" $ do
+      py <- shippedLanguage "python" []
+      fmap (null . testUnitRules) (langTest py) `shouldBe` Just False
+      originOf py "test.unit" `shouldBe` Just "toolchain pytest"
+      originOf py "test.above" `shouldBe` Just "toolchain pytest"
     it "a lone arm's new neighbour goes after a blank line in Haskell and Elm, not in Python" $ do
       hs <- shippedLanguage "haskell" []
       elm <- shippedLanguage "elm" [("pack elm", "packs/elm")]

@@ -7,6 +7,7 @@ module Olifant.Language.Adapter
   , ErrorFormat (..)
   , supportOf
   , TestDef (..)
+  , UnitRule (..)
   , Select (..)
   , LinesFormat (..)
   , HoleKind (..)
@@ -178,8 +179,10 @@ supportOf c = formatSupport (checkFormat c) (checkErrorFormat c)
 --
 -- @testLines@: `[test.lines]`, for `format = "lines"`. @testConvert@: a
 -- command turning the output into olifant-json, as in 'CheckDef'.
--- @testUnitPatterns@ (`unit`): expressions whose line starts a test or a
--- group, its last group the name. @testFileGroup@ (`file_group`): an
+-- @testUnitRules@ (`unit`): rules whose line starts a test or a group, its
+-- last group the name ('UnitRule'). @testAbove@ (`above`): an expression
+-- for the lines that belong to the unit below them (decorators,
+-- attributes). @testFileGroup@ (`file_group`): an
 -- expression over a test file's text, its last group the file's outermost
 -- group (hspec's module). @testSelect@: how an id becomes an argument.
 -- @testExclusive@: the runner keeps a build cache, so a run holds a slot.
@@ -188,12 +191,22 @@ supportOf c = formatSupport (checkFormat c) (checkErrorFormat c)
 -- (fixtures the tests read); the context's files are copied too.
 data TestDef = TestDef
   { testCommand :: [Text], testContext :: [Text], testFormat :: Text, testRoot :: [Text], testsFor :: Text
-  , testLines :: Maybe LinesFormat, testConvert :: [Text], testUnitPatterns :: [Text], testFileGroup :: Maybe Text
+  , testLines :: Maybe LinesFormat, testConvert :: [Text], testUnitRules :: [UnitRule], testFileGroup :: Maybe Text
   , testSelect :: Maybe Select, testExclusive :: Bool, testTimeout :: Maybe Int
   , testFiles :: [Text]
   , testInstall :: Maybe Text
   -- ^ `install`: how to install the runner (doctor's fix when it is missing)
+  , testAbove :: Maybe Text
   }
+  deriving stock (Eq, Show)
+
+-- | One `[test] unit` entry: an expression whose line starts a test or a
+-- group (its last group the name), and `after`, an expression a line above
+-- it must match (looking past `above` lines): Rust's `#[test]`; `name`, the
+-- group holding the name when it is not the last (a name inside a string
+-- with escapes, whose own group is not the last). A string entry is a rule
+-- with neither.
+data UnitRule = UnitRule {urPattern :: Text, urAfter :: Maybe Text, urName :: Maybe Int}
   deriving stock (Eq, Show)
 
 -- | `[test.select]`: argument templates over @{= group =}@ (the file's
@@ -345,7 +358,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above"] t0
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -365,12 +378,20 @@ languageFrom presets name grammarDir top = do
       TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
         <*> pure linesFormat <*> pure convert
-        <*> (fromMaybe [] <$> optional "unit" (list (text >=> validRegex "[test] unit")) t)
+        <*> (fromMaybe [] <$> optional "unit" (list unitRuleFrom) t)
         <*> pure fileGroup <*> pure select
         <*> (fromMaybe False <$> optional "exclusive" bool t)
         <*> optional "timeout" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`timeout`: expected a number of seconds above 0") t
         <*> (fromMaybe [] <$> optional "files" (list text) t)
         <*> optional "install" text t
+        <*> optional "above" (text >=> validRegex "[test] above") t
+    unitRuleFrom = \case
+      TText re -> (\r -> UnitRule r Nothing Nothing) <$> validRegex "[test] unit" re
+      TTable u -> do
+        onlyKeys ["pattern", "after", "name"] u
+        UnitRule <$> required "pattern" (text >=> validRegex "[test] unit") u <*> optional "after" (text >=> validRegex "[test] unit after") u
+          <*> optional "name" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`[test] unit` `name`: expected a group number above 0") u
+      other -> Left ("`[test] unit`: expected an expression or { pattern, after, name }, got " <> describeTree other)
     linesFrom t = do
       onlyKeys ["pass", "fail", "nest", "failure", "end", "drop"] t
       let re k = text >=> validRegex ("[test.lines] " <> k)

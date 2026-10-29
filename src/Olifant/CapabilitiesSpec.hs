@@ -24,14 +24,14 @@ spec = do
     lookup "mutation" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[[mutate]]")
     lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[unit] kinds (ast-grep), named by [unit] name, joined")
     lookup "tests" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] format lines, tests_for {= dir =}/{= stem =}Spec.hs")
-  it "python.toml: present, its test units and selection built in" $ do
+  it "python.toml: present, its test units pytest.toml's rules, its selection built in" $ do
     py <- packLanguage "python" "packs/python-htmx"
     map capHow (capabilities py)
       `shouldBe` [ Right "[unit] kinds (ast-grep), named by [unit] name"
                  , Right "[check] format pyright-json"
                  , Right "[check] format pyright-json"
                  , Right "[test] format pytest, tests_for {= dir =}/{= stem =}__test.py"
-                 , Right "built in (pytest shape)"
+                 , Right "[test] unit, above"
                  , Right "pytest ids"
                  , Right "[[mutate]] (17 operators)"
                  , Right "built in (pytest shape)"

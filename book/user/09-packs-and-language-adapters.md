@@ -602,7 +602,7 @@ holding one `[check]` or `[test]` table with the keys it fills in:
 |---|---|---|
 | `[check]` | `pyright` | `uv run pyright --outputjson` in the project's venv in Olifant's cache; `pyright-json`; rooted at `pyproject.toml` |
 | `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
-| `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml`; `tests_for = "{= dir =}/test_{= stem =}.py"` |
+| `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml`; `tests_for = "{= dir =}/test_{= stem =}.py"`; `unit` finds `def test…` and `class Test…`, `above` its decorators |
 | `[check]` | `cabal-repl` | `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}` with `-fno-code`, GHC's JSON diagnostics and its missing-pattern warning; `ghc-json`; `exclusive`; context `*.cabal`, `cabal.project`, `cabal.project.freeze`. Loads the package's one library |
 | `[test]` | `hspec` | `cabal test -v0 --builddir={= cache =}/dist-test-{= context =} --test-show-details=direct --test-option=--format=checks --test-option=--no-color`, then the selected tests; `format = "lines"` over hspec's tree ([test formats](#test-formats)); one test by `--match=/{= group =}/{= name =}/`, a file by its module (`file_group`); `unit` finds `describe`/`it`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}Spec.hs"` |
 
@@ -751,7 +751,19 @@ compile); with exit 0, "no tests ran".
 |---|---|
 | `file_group` | an expression over a test file's text; its last group is the file's outermost group. hspec's: `'^module[[:space:]]+([[:alnum:]_.]+)Spec'` |
 | `[test.select]` | how an id becomes an argument of `{= tests =}`. `test` for a test's id, `file` for a file's. `{= group =}` is the file's `file_group` (it needs that key), `{= name =}` the test's names below its file joined by `/`. hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. Without it, the ids themselves are the arguments |
-| `unit` | expressions whose line starts a test or a group, the last group its name: how a plan step and the editor find a test by name ([chapter 19](19-plans.md)) |
+| `unit` | rules whose line starts a test or a group: how the editor finds the test at the cursor, and a plan step a test by name ([chapter 19](19-plans.md)). An entry is an expression (its last group the name) or a table `{ pattern, after, name }`: `after` is an expression a line above must match, looking past `above` lines (Rust's `{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '#\[test\]' }`: a `fn` is a test only under `#[test]`, with `#[should_panic]` between allowed); `name` is the group holding the name when it is not the last (hspec's string with escapes: group 3; `\"` in it reads `"`). A unit runs from its line to the line before the next non-blank line at its indentation or less, so a nested unit's path is its parents' names, then its own: pytest's `class TestX` / `def test_y` is `TestX::test_y`. pytest's rules are `pytest.toml`'s (`def test…`, async too, and `class Test…`); hspec's find `describe`/`context`/`it`/`specify`/`prop`. A language with no `unit` has no test at a line: a cursor runs the whole file, and a plan step's test cannot be found |
+| `above` | an expression for lines that belong to the unit below them: decorators (pytest's `'^[[:space:]]*@'`), attributes (Rust's `'^[[:space:]]*#\['`). A cursor on one is in that unit, and the unit's first line is the topmost of them (with a decorator's continuation lines) |
+
+**Anchor names.** A plan anchor names a test by its path joined by `.`, each run of characters
+outside `[A-Za-z0-9_.]` written as one `_`: `it "parses \"x\" twice"` under `describe
+"Olifant.Plans"` is `@src/Olifant/PlansSpec.hs:Olifant.Plans.parses_x_twice`, and pytest's
+`TestX::test_y` is `TestX.test_y`. Two tests with the same anchor name: the first is found.
+
+**Known limits of rules.** Test units are line rules, not syntax trees, so: a pattern inside a
+string or a comment counts as a test; a unit ends at an outdent, not at its closing brace, so
+Rust relies on rustfmt's layout; and a signature split over several lines (attributes, then a
+`fn` whose name is on another line) is missed. These are the reasons a syntax-tree provider
+(ast-grep, Rust first) may replace them later.
 | `exclusive` | the runner keeps a build cache: each run gets a slot (`{= cache =}` is the slot's), as `[check] exclusive` |
 | `timeout` | seconds a run may take, over the editor's default |
 

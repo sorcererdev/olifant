@@ -207,23 +207,20 @@ testsJson a =
     ]
 
 -- | The test at LINE (1-based) of a test file in LANG, named as its ids
--- name it after `path::`: by the `[test] unit` patterns when the language
--- has them; else the built-in pytest shape ('testAt').
+-- name it after `path::`: by the `[test] unit` rules (and `above`). A
+-- language with no rules has no test at any line.
 testAtIn :: Language -> Text -> Int -> Maybe Text
-testAtIn lang = case unitPatterns lang of
-  [] -> testAt
-  ps -> testAtBy ps
+testAtIn lang = case langTest lang of
+  Just td | not (null (testUnitRules td)) -> testAtBy (testUnitRules td) (testAbove td)
+  _ -> \_ _ -> Nothing
 
 -- | The first line of the test or group a plan anchor names by its dotted
--- name (`Olifant.Plans.parsePlan`, `TestX.test_y`): by the `[test] unit`
--- patterns, else the pytest shape.
+-- name (`Olifant.Plans.parsePlan`, `TestX.test_y`; 'anchorName'), by the
+-- `[test] unit` rules; Nothing with none.
 testLineIn :: Language -> Text -> Text -> Maybe Int
-testLineIn lang text name = case unitPatterns lang of
-  [] -> testLineOf text (T.replace "." "::" name)
-  ps -> testLineBy ps text name
-
-unitPatterns :: Language -> [Text]
-unitPatterns = maybe [] testUnitPatterns . langTest
+testLineIn lang = case langTest lang of
+  Just td | not (null (testUnitRules td)) -> testLineBy (testUnitRules td) (testAbove td)
+  _ -> \_ _ -> Nothing
 
 -- | The first line (1-based) of the test NAME (as 'testAt' names it) in
 -- a Python test file: its def's, or its first decorator's.

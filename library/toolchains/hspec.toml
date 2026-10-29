@@ -4,7 +4,8 @@
 command = ["cabal", "test", "-v0", "--builddir={= cache =}/dist-test-{= context =}", "--test-show-details=direct", "--test-option=--format=checks", "--test-option=--no-color", "{= tests =}"]
 context = ["*.cabal", "cabal.project", "cabal.project.freeze"]
 format = "lines"
-unit = ["(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\""]
+# a describe or an it: its name is the string's (group 3), escapes and all
+unit = [{ pattern = '(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+"(([^"\\]|\\.)*)"', name = 3 }]
 file_group = "^module[[:space:]]+([[:alnum:]_.]+)Spec"
 exclusive = true
 timeout = 900
