@@ -15,7 +15,6 @@ module Olifant.Server.ConjureScan
   , initParams
   , deriveParam
   , takesPort
-  , testSource
   , conjurePortQuestion
   , conjurePortGate
   , portFrom
@@ -34,24 +33,15 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
 
--- | A test's source (it lives here, not in Site, which would import ConjureNext in a cycle): its def line and its body, trailing blank lines dropped.
-testSource :: Text -> Text -> Maybe Text
-testSource name text = case dropWhile (not . isDef) (T.lines text) of
-  [] -> Nothing
-  d : rest -> Just (T.intercalate "\n" (d : reverse (dropWhile (T.null . T.strip) (reverse (takeWhile (\l -> T.null (T.strip l) || indentOf l > indentOf d) rest)))))
-  where
-    isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
-    indentOf = T.length . T.takeWhile (== ' ')
-
 -- | A fake a test builds: the name it is bound to and the class (or @Mock@) called.
 data Fake = Fake {fkVariable :: Text, fkClass :: Text}
   deriving stock (Eq, Show)
 
--- | The first fake bound in the test NAME's body (in TEXT, a test file) that is never an
--- argument of a call in that body (positional or keyword); none when every fake is passed.
-unpassedFake :: Text -> Text -> Maybe Fake
-unpassedFake text name = do
-  src <- testSource name text
+-- | The first fake bound in a test's body (SRC, its source: its own line, then its body)
+-- that is never an argument of a call in that body (positional or keyword); none when every
+-- fake is passed.
+unpassedFake :: Text -> Maybe Fake
+unpassedFake src = do
   let body = T.intercalate "\n" (drop 1 (T.lines src))
   listToMaybe [f | f <- mapMaybe bound (T.lines body), not (passedIn body (fkVariable f))]
 
@@ -133,21 +123,16 @@ helperOf method src = listToMaybe [callee | (i, l) <- zip [0 :: Int ..] ls, Just
       let (callee, r3) = T.span isIdent (T.stripStart r2)
       if T.null x || T.null callee || not ("(" `T.isPrefixOf` r3) then Nothing else Just (x, callee)
 
--- | The test NAME in TEXT (a test file) with its fake VAR handed to its first call of HELPER
--- as PARAM: @command()@ becomes @command(bookings=repository)@, @command(x)@ becomes
--- @command(x, bookings=repository)@; none when that test has no such call on one line, or
--- the call already has the fake.
-handFake :: Text -> Text -> Text -> Text -> Text -> Maybe Text
-handFake name helper param var text = do
-  d <- listToMaybe [i | (i, l) <- numbered, ("def " <> name <> "(") `T.isPrefixOf` T.strip l]
-  let indent = indentOf (ls !! d)
-      body = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l > indent) (drop (d + 1) numbered)
-  (i, l') <- listToMaybe [(i, l') | (i, l) <- body, Just l' <- [handIn l]]
+-- | A test's source SRC (its own line, then its body) with its fake VAR handed to its first
+-- call of HELPER as PARAM: @command()@ becomes @command(bookings=repository)@, @command(x)@
+-- becomes @command(x, bookings=repository)@; none when its body has no such call on one line,
+-- or the call already has the fake.
+handFake :: Text -> Text -> Text -> Text -> Maybe Text
+handFake helper param var src = do
+  (i, l') <- listToMaybe [(i, l') | (i, l) <- drop 1 numbered, Just l' <- [handIn l]]
   pure (T.intercalate "\n" [if j == i then l' else l | (j, l) <- numbered])
   where
-    ls = T.splitOn "\n" text
-    numbered = zip [0 :: Int ..] ls
-    indentOf = T.length . T.takeWhile (== ' ')
+    numbered = zip [0 :: Int ..] (T.splitOn "\n" src)
     handIn l =
       listToMaybe
         [ b <> helper <> "(" <> (if T.null (T.strip inner) then "" else inner <> ", ") <> param <> "=" <> var <> ")" <> T.drop (T.length args) r

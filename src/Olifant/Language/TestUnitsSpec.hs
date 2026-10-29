@@ -7,7 +7,12 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.Language (UnitRule (..), shippedLanguage)
 import Olifant.Language.TestUnits
-import Olifant.Server.Tests (testAt, testAtIn, testLineIn)
+import Control.Applicative ((<|>))
+import Control.Monad (guard)
+import Data.Char (isAlphaNum)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Olifant.Server.Tests (testAtIn, testLineIn)
+import Olifant.Server.Stub (testWordsIn)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath ((</>))
 import Test.Hspec
@@ -113,7 +118,7 @@ spec = do
       length files `shouldSatisfy` (> 10)
       forM_ files $ \f -> do
         text <- TIO.readFile f
-        let diffs = [(f, i, testAtIn py text i, testAt text i) | i <- [0 .. length (T.lines text) + 1], testAtIn py text i /= testAt text i]
+        let diffs = [(f, i, testCaseAtIn py text i, testAt text i) | i <- [0 .. length (T.lines text) + 1], testCaseAtIn py text i /= testAt text i]
         diffs `shouldBe` []
     it "a decorated method in a test class, its decorator, a nested def, an async test" $ do
       py <- shippedLanguage "python" []
@@ -136,3 +141,92 @@ spec = do
               ]
       forM_ [5 .. 14] $ \i -> (i, testAtIn py t i) `shouldBe` (i, testAt t i)
       map (testAtIn py t) [5, 8, 13] `shouldBe` [Just "TestSeats::test_two", Just "TestSeats::test_two", Just "test_later"]
+  describe "conjure's test lookups (by the language's rules)" $ do
+    let pyFile =
+          T.unlines
+            [ "from shop.close_table import CloseTable"   -- 1
+            , ""                                          -- 2
+            , ""                                          -- 3
+            , "def make_table() -> CloseTable:"           -- 4
+            , "    return CloseTable()"                   -- 5
+            , ""                                          -- 6
+            , ""                                          -- 7
+            , "@pytest.mark.parametrize(\"n\", [1, 2])"   -- 8
+            , "def test_closes(n: int) -> None:"          -- 9
+            , "    table = make_table()"                  -- 10
+            , ""                                          -- 11
+            , "    assert table.handle(n) == 1"           -- 12
+            , ""                                          -- 13
+            , ""                                          -- 14
+            , "class TestSeats:"                          -- 15
+            , "    def test_two(self) -> None:"           -- 16
+            , "        assert make_table().handle(2) == 0" -- 17
+            ]
+        hsFile =
+          T.unlines
+            [ "spec :: Spec"
+            , "spec = describe \"Olifant.Plans\" $ do"
+            , "  it \"parses an empty plan\" $ do"
+            , "    let ps = parsePlan \"\""
+            , "    length ps `shouldBe` 0"
+            , ""
+            ]
+    it "a test case at a line: a test, never a group (a class or describe line is none)" $ do
+      py <- shippedLanguage "python" []
+      hs <- shippedLanguage "haskell" []
+      map (testCaseAtIn py pyFile) [1, 5, 8, 9, 10, 11, 15, 17, 99]
+        `shouldBe` [Nothing, Nothing, Just "test_closes", Just "test_closes", Just "test_closes", Just "test_closes", Nothing, Just "TestSeats::test_two", Nothing]
+      map (testCaseAtIn hs hsFile) [2, 3, 5] `shouldBe` [Nothing, Just "Olifant.Plans::parses an empty plan", Just "Olifant.Plans::parses an empty plan"]
+    it "a test case's first line by its name (decorators included)" $ do
+      py <- shippedLanguage "python" []
+      map (testCaseLineIn py pyFile) ["test_closes", "TestSeats::test_two", "make_table"] `shouldBe` [Just 8, Just 16, Nothing]
+    it "a test's source by its short name: from its own line (no decorators), trailing blanks dropped" $ do
+      py <- shippedLanguage "python" []
+      hs <- shippedLanguage "haskell" []
+      testSourceIn py "test_closes" pyFile `shouldBe` Just "def test_closes(n: int) -> None:\n    table = make_table()\n\n    assert table.handle(n) == 1"
+      testSourceIn py "test_two" pyFile `shouldBe` Just "    def test_two(self) -> None:\n        assert make_table().handle(2) == 0"
+      testSourceIn hs "parses an empty plan" hsFile `shouldBe` Just "  it \"parses an empty plan\" $ do\n    let ps = parsePlan \"\"\n    length ps `shouldBe` 0"
+      testSourceIn py "test_nothing" pyFile `shouldBe` Nothing
+    it "a source's last assertion, by [test] assertion" $ do
+      py <- shippedLanguage "python" []
+      hs <- shippedLanguage "haskell" []
+      lastAssertionIn py pyFile `shouldBe` Just "assert make_table().handle(2) == 0"
+      lastAssertionIn hs hsFile `shouldBe` Just "length ps `shouldBe` 0"
+    it "a test name's words, past the [test] name template's prefix" $ do
+      py <- shippedLanguage "python" []
+      hs <- shippedLanguage "haskell" []
+      testWordsIn py "test_cancel_booking" `shouldBe` "cancel booking"
+      testWordsIn py "cancel_booking" `shouldBe` "cancel booking"
+      testWordsIn hs "parses an empty plan" `shouldBe` "parses an empty plan"
+
+-- | The built-in pytest shape conjure read before the rules (milestone 3's
+-- golden): the test enclosing LINE, `TestX::test_y` for a method of a test
+-- class, a decorator line its def's.
+testAt :: Text -> Int -> Maybe Text
+testAt text line
+  | line < 1 || line > length ls = Nothing
+  | otherwise = listToMaybe [qualified d dl | (d, dl) <- candidates, encloses d dl]
+  where
+    ls = zip [1 :: Int ..] (T.lines text)
+    indentOf = T.length . T.takeWhile (== ' ')
+    blank = T.null . T.strip
+    target = case drop (line - 1) ls of
+      (_, l) : rest | "@" `T.isPrefixOf` T.strip l -> maybe line fst (listToMaybe [x | x@(_, l') <- rest, isJust (defName l')])
+      _ -> line
+    candidates = [(i, l) | (i, l) <- reverse (take target ls), Just n <- [defName l], "test" `T.isPrefixOf` n]
+    encloses d dl = all (\(_, l) -> blank l || indentOf l > indentOf dl) [x | x@(i, _) <- ls, i > d, i <= target]
+    qualified d dl = maybe name (\c -> c <> "::" <> name) owner
+      where
+        name = fromMaybe "" (defName dl)
+        owner = do
+          guard (indentOf dl > 0)
+          (_, l) <- listToMaybe [x | x@(i, l) <- reverse ls, i < d, not (blank l), indentOf l < indentOf dl]
+          className l
+    className l = do
+      rest <- T.stripPrefix "class " (T.strip l)
+      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
+      if T.null n then Nothing else Just n
+    defName l = do
+      r <- T.stripPrefix "def " (T.strip l) <|> T.stripPrefix "async def " (T.strip l)
+      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') r
+      if T.null n || not ("(" `T.isPrefixOf` T.drop (T.length n) r) then Nothing else Just n

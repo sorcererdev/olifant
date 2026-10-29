@@ -14,7 +14,6 @@ module Olifant.Server.Site
   , importedModules
   , appendStepLine
   , runOver
-  , testBody
   , defLineAbove
   , defName
   , ident
@@ -189,15 +188,6 @@ runOver :: ServerState -> Workspace IO -> Language -> [TestId] -> IO (Either Tex
 runOver s ws lang ids = do
   (_, files) <- projectFiles ws (M.empty :: Map FilePath Text) lang (map (T.unpack . fileOf) ids)
   runTestsIn (pTester (ssPorts s) (ssCancel s)) lang ids files
-
--- | A test's lines: its def to the next line at or left of the def's indentation.
-testBody :: Text -> Text -> [Text]
-testBody name text = case dropWhile (not . isDef) (T.lines text) of
-  [] -> []
-  d : rest -> takeWhile (\l -> T.null (T.strip l) || indentOf l > indentOf d) rest
-  where
-    isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
-    indentOf = T.length . T.takeWhile (== ' ')
 
 -- | The def at or above a line (1-based): its line and name.
 defLineAbove :: Int -> Text -> Maybe (Int, Text)

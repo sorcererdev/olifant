@@ -39,7 +39,8 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (ImportsDef (..), Language (..), noChecker, noRunner, noSyntax, parseLanguage, shippedLanguage)
+import Olifant.Language (ImportsDef (..), Language (..), noChecker, noRunner, noSyntax, parseLanguage, shippedLanguage, shippedLanguageNow)
+import Olifant.Language.TestUnits (testCaseAtIn)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
@@ -766,7 +767,7 @@ mutateSpecs = describe "a mutate (olifant/mutate)" $ do
 -- | `olifant/tests/run`: a file's tests, run whole over the editor's text.
 testsSpecs :: Spec
 testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
-  describe "the test at a line (testAt)" $ do
+  describe "the test at a line (testCaseAtIn)" $ do
     let file = T.unlines
           [ "from shop.close_table import CloseTable"   -- 1
           , ""                                          -- 2
@@ -786,15 +787,15 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
           , "    def test_two(self) -> None:"           -- 16
           , "        assert make_table().handle(2) == 0" -- 17
           ]
-    it "a line in a test's body is that test" $ testAt file 10 `shouldBe` Just "test_closes"
-    it "a blank line inside the body is still that test" $ testAt file 11 `shouldBe` Just "test_closes"
-    it "the def line is that test" $ testAt file 9 `shouldBe` Just "test_closes"
-    it "a decorator line is its def's test" $ testAt file 8 `shouldBe` Just "test_closes"
-    it "a method of a test class is Class::method" $ testAt file 17 `shouldBe` Just "TestSeats::test_two"
-    it "outside any test, nothing: imports" $ testAt file 1 `shouldBe` Nothing
-    it "outside any test, nothing: a helper that is not a test" $ testAt file 5 `shouldBe` Nothing
-    it "the class line itself is no test" $ testAt file 15 `shouldBe` Nothing
-    it "a line past the file's end is nothing" $ testAt file 99 `shouldBe` Nothing
+    it "a line in a test's body is that test" $ testCaseAtIn pyNow file 10 `shouldBe` Just "test_closes"
+    it "a blank line inside the body is still that test" $ testCaseAtIn pyNow file 11 `shouldBe` Just "test_closes"
+    it "the def line is that test" $ testCaseAtIn pyNow file 9 `shouldBe` Just "test_closes"
+    it "a decorator line is its def's test" $ testCaseAtIn pyNow file 8 `shouldBe` Just "test_closes"
+    it "a method of a test class is Class::method" $ testCaseAtIn pyNow file 17 `shouldBe` Just "TestSeats::test_two"
+    it "outside any test, nothing: imports" $ testCaseAtIn pyNow file 1 `shouldBe` Nothing
+    it "outside any test, nothing: a helper that is not a test" $ testCaseAtIn pyNow file 5 `shouldBe` Nothing
+    it "the class line itself is no test" $ testCaseAtIn pyNow file 15 `shouldBe` Nothing
+    it "a line past the file's end is nothing" $ testCaseAtIn pyNow file 99 `shouldBe` Nothing
   let recording verdict = blocksRun blockSyntax (pure ()) (const verdict)
       passing _ = Right (TestRun [testId] [] Nothing)
       -- a language of the pack's with no [test] table
@@ -966,12 +967,12 @@ orderSpecs = describe "the decision model's order" $ do
           ("mutant-equivalent", _) -> De.No De.Unknown
           ("mutant-matters", Just m) | ">=" `T.isInfixOf` m -> De.Level 2 2 De.Unknown
           _ -> De.Unsure
-    orderSurvivors s Nothing (root </> moduleRel) stubbed testText (pure ()) ms >>= (`shouldBe` ms)
+    orderSurvivors s Nothing pyNow (root </> moduleRel) stubbed testText (pure ()) ms >>= (`shouldBe` ms)
     answered <- newIORef (0 :: Int)
-    first' <- orderSurvivors s (Just jev) (root </> moduleRel) stubbed testText (atomicModifyIORef' answered (\n -> (n + 1, ()))) ms
+    first' <- orderSurvivors s (Just jev) pyNow (root </> moduleRel) stubbed testText (atomicModifyIORef' answered (\n -> (n + 1, ()))) ms
     first' `shouldBe` ms -- nothing known yet: as given
     waitUntil ((>= 6) <$> readIORef answered)
-    ordered <- orderSurvivors s (Just jev) (root </> moduleRel) stubbed testText (pure ()) ms
+    ordered <- orderSurvivors s (Just jev) pyNow (root </> moduleRel) stubbed testText (pure ()) ms
     map (\m -> (muLine m, muDim m)) ordered `shouldBe` [(10, False), (3, False), (6, True)]
   it "(k2) Jev asks about two mutants of one operator on one line once each, not without end" $ do
     (s, _) <- blocks redOnStub []
@@ -980,7 +981,7 @@ orderSpecs = describe "the decision model's order" $ do
         ms = [twin "a > b" "a >= b" "    return a >= b and c > d", twin "c > d" "c >= d" "    return a > b and c >= d"]
         counting = De.decider $ \_ -> atomicModifyIORef' asked (\n -> (n + 1, ())) >> pure De.Unsure
         -- as the server does: each answer orders again
-        again = void (orderSurvivors s (Just counting) (root </> moduleRel) stubbed testText again ms)
+        again = void (orderSurvivors s (Just counting) pyNow (root </> moduleRel) stubbed testText again ms)
     again
     -- the four questions answered and none in flight: nothing more is asked
     waitUntil (settled s 4)
@@ -1231,3 +1232,7 @@ applyChange ((l1, c1), (l2, c2)) replacement text = before <> replacement <> aft
     offset (l, c) = sum [T.length x + 1 | x <- take l (T.splitOn "\n" text)] + c
     before = T.take (offset (l1, c1)) text
     after = T.drop (offset (l2, c2)) text
+
+-- | The shipped Python.
+pyNow :: Language
+pyNow = shippedLanguageNow "python"

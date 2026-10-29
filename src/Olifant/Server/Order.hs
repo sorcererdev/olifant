@@ -10,18 +10,22 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Decider, noul, score)
+import Olifant.Language (Language (..))
 import Olifant.Mutate (Mutant (..))
 import Olifant.Server.State (ServerState, decision)
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
--- | The survivors of the module FILE in the decision model's order, given the module's text and its
--- test file's; ON_DONE runs as each answer lands (the caller orders again).
-orderSurvivors :: ServerState -> Maybe (Decider IO) -> FilePath -> Text -> Text -> IO () -> [Mutant] -> IO [Mutant]
-orderSurvivors _ Nothing _ _ _ _ ms = pure ms
-orderSurvivors s (Just decider) file moduleText testText onDone ms = do
+-- | The survivors of the module FILE (in LANG) in the decision model's order, given the module's
+-- text and its test file's; ON_DONE runs as each answer lands (the caller orders again).
+orderSurvivors :: ServerState -> Maybe (Decider IO) -> Language -> FilePath -> Text -> Text -> IO () -> [Mutant] -> IO [Mutant]
+orderSurvivors _ Nothing _ _ _ _ _ ms = pure ms
+orderSurvivors s (Just decider) lang file moduleText testText onDone ms = do
   judged <- mapM weigh ms
   pure (map fst (sortOn (\(m, matters) -> (muDim m, Down matters, muLine m)) judged))
   where
-    asserts = T.intercalate "\n" [T.strip l | l <- T.lines testText, "assert" `T.isPrefixOf` T.strip l]
+    -- the test file's assertion lines, by the language's `[test] assertion`
+    asserts = T.intercalate "\n" [T.strip l | l <- T.lines testText, any (`matchesLine` l) (langAssertion lang)]
+    matchesLine re l = maybe False (`matchTest` T.unpack l) (makeRegexM (T.unpack re) :: Maybe Regex)
     lineOf n text = maybe "" T.strip (lookup n (zip [1 ..] (T.lines text)))
     weigh m = do
       let mutated = lineOf (muLine m) (muText m)

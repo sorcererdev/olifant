@@ -71,7 +71,6 @@ module Olifant.Server
   , orderSurvivors
   , TestsAnswer (..)
   , testsRun
-  , testAt
   , unitAround
   , Named (..)
   , StubAnswer (..)
@@ -133,4 +132,4 @@ import Olifant.Server.Unit (Named (..), Unit (..), unitAround, unitAt)
 import Olifant.Server.Conjure (ConjureAnswer (..), ConjureOutcome (..), PausedAnswer (..), Proposal (..), pausedJson, Resume (..), ResumeChoice (..), conjureAt, resumeConjure)
 import Olifant.Server.Mutate (MutateAnswer (..), mutateAt)
 import Olifant.Server.Waive (waiveAt)
-import Olifant.Server.Tests (TestsAnswer (..), TestsFile (..), testsFile, testsFileJson, testsJson, testsRun, testAt, TestsScope (..))
+import Olifant.Server.Tests (TestsAnswer (..), TestsFile (..), testsFile, testsFileJson, testsJson, testsRun, TestsScope (..))

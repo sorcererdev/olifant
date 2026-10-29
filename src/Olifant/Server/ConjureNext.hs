@@ -3,7 +3,6 @@
 module Olifant.Server.ConjureNext
   ( RoundView (..)
   , RoundContext (..)
-  , testSource
   , roundView
   , Decided (..)
   , RoundRecord (..)
@@ -80,13 +79,13 @@ import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
-import Olifant.Server.ConjureScan (Fake (..), actCall, handFake, helperOf, initParams, testSource)
+import Olifant.Server.ConjureScan (Fake (..), actCall, handFake, helperOf, initParams)
 import Text.Printf (printf)
 import Olifant.Generation.Steer
 import Olifant.Generation.Tools (ProgressEvent (..))
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
-import Text.Regex.TDFA ((=~))
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest, (=~))
 
 data RoundView = RoundView
   { rvRound :: Int
@@ -280,7 +279,7 @@ firstLine = firstLines 1
 
 -- | What the round's view needs beyond the round: the test file's text, the unit's header,
 -- what is wired, and whether a wire may still run.
-data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool, rcHistory :: [RoundRecord], rcBefore :: TestRun, rcStem :: Text}
+data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool, rcHistory :: [RoundRecord], rcBefore :: TestRun, rcStem :: Text, rcSources :: [(Text, Text)]}
   deriving stock (Eq, Show)
 
 -- | The previous view, the round; built from the first hole. A passing delta needs a test
@@ -296,7 +295,7 @@ roundView ctx prev rs =
     , rvPassingDelta = delta
     , rvCheck = check
     , rvRepeat = isRepeat history
-    , rvTests = [(i, fromMaybe "(source not found)" (testSource (snd (T.breakOnEnd "::" i)) (rcTestText ctx))) | i <- map tsTest tests]
+    , rvTests = [(i, fromMaybe "(source not found)" (lookup (snd (T.breakOnEnd "::" i)) (rcSources ctx))) | i <- map tsTest tests]
     , rvUnit = rcUnit ctx
     , rvWired = rcWired ctx
     , rvAttempts = [attemptText r | r <- roundRows (rcStem ctx) history]
@@ -495,6 +494,10 @@ data DiagnosisFacts = DiagnosisFacts
   , dfSeconds :: Int
   , dfWireFailed :: Maybe Text
   , dfFailure :: Maybe LatestFailure
+  , dfSources :: [(Text, Text)]
+  -- ^ the test file's tests by their own names, each its source ('testSourcesIn')
+  , dfAssertion :: [Text]
+  -- ^ the language's `[test] assertion` expressions
   }
   deriving stock (Eq, Show)
 
@@ -509,7 +512,7 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
     trade = isTrade (dfBefore df) (dfHistory df)
     rounds = dfHistory df
     lastRound = maybe 0 rrRound (lastOf rounds)
-    calls = [c | t <- statuses, Just src <- [testSource (snd (T.breakOnEnd "::" (tsTest t))) (dfTestText df)], Just c <- [actCall (dfMethod df) src]]
+    calls = [c | t <- statuses, Just src <- [lookup (snd (T.breakOnEnd "::" (tsTest t))) (dfSources df)], Just c <- [actCall (dfMethod df) src]]
     sameCall = [c | (i, c) <- zip [0 :: Int ..] calls, c `elem` drop (i + 1) calls]
     failingSets = [maybe [] (map fst . trFailed) (rrRun r) | r <- rounds]
     noProgress = not trade && case reverse failingSets of
@@ -553,7 +556,7 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
       Just f ->
         "No body can pass " <> shortName (dfStem df) t <> ": it builds " <> built f <> " and never hands it to " <> helperCall t <> ", so " <> dfMethod df <> " never sees it." <> takes t
     built f = fkVariable f <> " = " <> fkClass f <> "()"
-    helperName t = testSource (snd (T.breakOnEnd "::" t)) (dfTestText df) >>= helperOf (dfMethod df)
+    helperName t = lookup (snd (T.breakOnEnd "::" t)) (dfSources df) >>= helperOf (dfMethod df)
     helperCall t = maybe "the helper" (<> "()") (helperName t)
     takes t = case (dfWired df, initParams (dfHeader df)) of
       (w : _, _) | Just (p, q) <- paramPort w -> " " <> className <> " takes " <> p <> ": " <> q <> " since the wire; the test should pass its fake as " <> maybe ("the helper (" <> p <> "=\8230)") (\h -> h <> "(" <> p <> "=\8230)") (helperName t) <> "."
@@ -697,9 +700,9 @@ testEntries df = [entry t | t <- involved (dfBefore df) (dfHistory df)]
     entry t =
       let tid = tsTest t
           name = snd (T.breakOnEnd "::" tid)
-          src = fromMaybe "" (testSource name (dfTestText df))
+          src = fromMaybe "" (lookup name (dfSources df))
           lastFailure = listToMaybe [f | r <- runs, Just f <- [lookup tid (trFailed r)]]
-          lastAssert = listToMaybe (reverse [T.strip l | l <- T.lines src, "assert" `T.isPrefixOf` T.strip l])
+          lastAssert = listToMaybe (reverse [T.strip l | l <- T.lines src, any (`matchesLine` l) (dfAssertion df)])
           assertion = if tsFailing t then (lastFailure >>= assertionLine name) <|> lastAssert else lastAssert
        in TestEntry t src assertion (testNote df tid)
 
@@ -708,7 +711,7 @@ testNote :: DiagnosisFacts -> Text -> Maybe Text
 testNote df tid = do
   f <- lookup tid (dfFlagged df)
   let name = snd (T.breakOnEnd "::" tid)
-      helper = testSource name (dfTestText df) >>= helperOf (dfMethod df)
+      helper = lookup name (dfSources df) >>= helperOf (dfMethod df)
       className = if T.null (dfClass df) then dfMethod df else dfClass df
       takes = case (dfWired df, initParams (dfHeader df)) of
         (w : _, _) -> className <> " takes " <> w <> " since the wire"
@@ -758,21 +761,22 @@ cappedDetail d
 -- | The edit each flagged test gets, once a wire gave the class its port, in words
 -- (@hand repository to command(bookings=repository)@): see 'testFix'.
 fixMoves :: DiagnosisFacts -> [(Text, Text)]
-fixMoves df = [(t, w) | (t, _) <- dfFlagged df, Just (w, _) <- [testFix (dfMethod df) (dfFlagged df) (dfWired df) (dfTestText df) t]]
+fixMoves df = [(t, w) | (t, _) <- dfFlagged df, Just (w, _) <- [testFix (dfMethod df) (dfFlagged df) (dfWired df) (dfTestText df) (dfSources df) t]]
 
--- | The fix of the flagged test TID in the test file's TEXT once the first of WIRED gave the
+-- | The fix of the flagged test TID in the test file's TEXT (its tests' SOURCES by name) once the first of WIRED gave the
 -- unit its param: the test's fake handed to its helper's call (the helper is what the test
 -- calls METHOD on) as that param. Its words and the file's new text; none when the test is
 -- not flagged, nothing is wired, or the test has no helper call to edit.
-testFix :: Text -> [(Text, Fake)] -> [Text] -> Text -> Text -> Maybe (Text, Text)
-testFix method flagged wired text tid = do
+testFix :: Text -> [(Text, Fake)] -> [Text] -> Text -> [(Text, Text)] -> Text -> Maybe (Text, Text)
+testFix method flagged wired text sources tid = do
   f <- lookup tid flagged
   (p, _) <- listToMaybe wired >>= paramPort
   let name = snd (T.breakOnEnd "::" tid)
       var = fkVariable f
-  helper <- testSource name text >>= helperOf method
-  fixed <- handFake name helper p var text
-  pure ("hand " <> var <> " to " <> helper <> "(" <> p <> "=" <> var <> ")", fixed)
+  src <- lookup name sources
+  helper <- helperOf method src
+  src' <- handFake helper p var src
+  pure ("hand " <> var <> " to " <> helper <> "(" <> p <> "=" <> var <> ")", T.replace src src' text)
 
 -- | Why the test TID is wrong, as the re-conjure is told: its note when the scan flagged it,
 -- else the pause's first sentence.
@@ -991,3 +995,7 @@ pruned :: Double -> Map FilePath (Int, Text) -> Map Text PausedConjure -> Map Te
 pruned now docs = M.filter good
   where
     good pd = now - pdAt pd <= pausedLifetime && (fst <$> M.lookup (pdFile pd) docs) == pdVersion pd
+
+-- | Whether the expression RE matches LINE (an invalid one matches nothing).
+matchesLine :: Text -> Text -> Bool
+matchesLine re l = maybe False (`matchTest` T.unpack l) (makeRegexM (T.unpack re) :: Maybe Regex)
