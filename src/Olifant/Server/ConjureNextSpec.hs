@@ -234,7 +234,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
   it "(v) a refused re-conjure: the sentence, its rows, and the keep row's round" $ do
     refusedSentence "not_found" (addsReason "\"BAD\" is not defined" (Just 26)) `shouldBe` "Your re-conjure of not_found was refused: it adds `\"BAD\" is not defined` at line 26."
     addsReason "x" Nothing `shouldBe` "it adds `x`"
-    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False "cancel_booking" [] [])
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False "cancel_booking" [] [] pyMethod)
         json = pausedJson cancelPaused {paOffers = map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2]}
     map (\r -> (orLabel r, orDetail r)) (map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2])
       `shouldBe` [ ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
@@ -345,7 +345,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     fixAgain [fixed] (before2 ++ [same]) notFoundId `shouldBe` Nothing
     fixAgain [fixed] (before2 ++ [anew]) notFoundId `shouldBe` Just (Just "AttributeError: 'Mock' object has no attribute 'cancel'")
     fixAgain [fixed] before2 succeedsId `shouldBe` Just Nothing
-    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing True "cancel_booking" [] [(notFoundId, "AttributeError: 'Mock' object has no attribute 'cancel'")])
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing True "cancel_booking" [] [(notFoundId, "AttributeError: 'Mock' object has no attribute 'cancel'")] pyMethod)
     orDetail (row (OfferReconjure notFoundId)) `shouldBe` "fails anew: AttributeError: 'Mock' object has no attribute 'cancel'; you see its diff"
   it "(z) the failing section is the latest round's real failure: a check's refusal, with its lines, leads the diagnosis' others" $ do
     let refusal = LatestCheck 3 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
@@ -384,10 +384,10 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     let st = Standing 6 180 Nothing Nothing False
     offersAt st cause [notFoundId] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
     offersAt st (CauseMethod "BookingRepository" "find_by_id" Nothing) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
-    let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True "cancel_booking" [] []) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
+    let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True "cancel_booking" [] [] pyMethod) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
     (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 2")
     -- every detail under 90 cells (conjure-pause-ux-pass-2.md §5): the window wraps it, never cuts it
-    let facts = OfferFacts 6 "local" (Just "claude") 1 "CancelBooking" (Just notFoundId) True "cancel_booking" [(notFoundId, "hand repository to command(bookings=repository)")] []
+    let facts = OfferFacts 6 "local" (Just "claude") 1 "CancelBooking" (Just notFoundId) True "cancel_booking" [(notFoundId, "hand repository to command(bookings=repository)")] [] pyMethod
         everyOffer = [OfferContinue, OfferHint, OfferClimb "claude", OfferWire "bookings" "BookingRepository", OfferReconjure notFoundId, OfferStop, OfferKeep 12, OfferAccept, OfferReject, OfferRefused, OfferReconjureAgain notFoundId, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None"]
     [d | d <- map (orDetail . offerRow facts) everyOffer, T.length d >= 90] `shouldBe` []
     -- a detail whose facts run long is cut at 89 cells and ends in …
@@ -524,7 +524,7 @@ cancelPaused =
     , paPorts = []
     , paLanding = unifiedDiff rel cancelModule landing
     , paWired = []
-    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False "cancel_booking" (fixMoves cancelPausedFacts) [])) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False "cancel_booking" (fixMoves cancelPausedFacts) [] pyMethod)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
     , paExpires = 600
     , paStem = "cancel_booking"
     , paProposal = Nothing
@@ -573,7 +573,7 @@ cancelWiredPaused =
     , paPorts = ["bookings: BookingRepository"]
     , paLanding = unifiedDiff rel cancelModule landing
     , paWired = [("bookings: BookingRepository", [(rel, unifiedDiff rel cancelModule wiredModule), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)])]
-    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True "cancel_booking" (fixMoves facts) [])) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True "cancel_booking" (fixMoves facts) [] pyMethod)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
     , paExpires = 600
     , paStem = "cancel_booking"
     , paProposal = Nothing
@@ -686,3 +686,7 @@ pyNow = pyHtmx
 pyHtmx :: Language
 pyHtmx = unsafePerformIO (shippedLanguage "python" [("pack python-htmx", "packs/python-htmx")])
 {-# NOINLINE pyHtmx #-}
+
+-- | Python's method signature template (`[types] method`).
+pyMethod :: Maybe Text
+pyMethod = langTypes pyNow >>= tyMethod

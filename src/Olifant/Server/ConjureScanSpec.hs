@@ -5,7 +5,7 @@ module Olifant.Server.ConjureScanSpec (spec) where
 import Data.Maybe (fromJust)
 import Data.Text qualified as T
 import Olifant.Decide
-import Olifant.Language (ConjureDef (..), Language (..), PortShape (..))
+import Olifant.Language (ConjureDef (..), Language (..), PortShape (..), shippedLanguageNow)
 import Olifant.Language.TestUnits (testSourceIn)
 import Olifant.Server.ConjureNextSpec (cancelTestText, pyHtmx)
 import Olifant.Server.ConjureScan
@@ -84,11 +84,11 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     let port = Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ...", "def booking_at(self, table_id: str, slot: Slot) -> Booking | None: ...", "def bookings_on(self, day: date) -> list[Booking]: ..."]
         body = "booking = self.bookings.find_by_id(input.id)\nif booking is None:\n    return NotFound(\"Booking not found\")\nreturn Ok(None)"
         moduleText = "@dataclass(frozen=True)\nclass CancelBookingInput:\n    id: str\n\n\nclass CancelBooking:\n    def handle(self, input: CancelBookingInput) -> CancelBookingOutput:\n        return Ok(None)\n"
-    methodSignature "find_by_id" port body moduleText cancelTestText `shouldBe` Just (", id: str", "Booking | None")
+    methodSignature py "find_by_id" port body moduleText cancelTestText `shouldBe` Just (", id: str", "Booking | None")
     -- the call as a statement returns nothing
-    methodSignature "cancel" port "self.bookings.cancel(input.id)\nreturn Ok(None)" moduleText "" `shouldBe` Just (", id: str", "None")
+    methodSignature py "cancel" port "self.bookings.cancel(input.id)\nreturn Ok(None)" moduleText "" `shouldBe` Just (", id: str", "None")
     -- an argument whose type is not known: none
-    methodSignature "find_by_id" port "booking = self.bookings.find_by_id(thing)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
+    methodSignature py "find_by_id" port "booking = self.bookings.find_by_id(thing)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
   it "(k) where a method goes in a port's file: the line after its Protocol's last" $ do
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def table(self) -> None: ...\n\n    def save(self) -> None: ...\n" `shouldBe` Just 5
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n\n\nclass Other:\n    pass\n" `shouldBe` Just 3
@@ -99,3 +99,14 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
       `shouldBe` [Port "InvoiceRepository" ["async fn get_invoice(&self, id: String) -> Result<Invoice, RepositoryFailure>;"]]
     fakeIn Nothing "def test_d():\n    m = MagicMock()\n" `shouldBe` Nothing
     ctorParamsIn Nothing "class C:\n    def __init__(self, a: A) -> None:\n" `shouldBe` []
+  it "(o) a signature's facts are the language's: a Rust call, an Option from is_none, a field's type through its struct" $ do
+    let rust = shippedLanguageNow "rust"
+        port = Port "TableRepository" ["fn get(&self, id: &str) -> Option<Table>;"]
+        moduleText = "pub struct Input {\n    pub table_id: String,\n}\n\nimpl CloseTable {\n    fn handle(&self, input: Input) -> Out {\n    }\n}\n"
+    methodSignature rust "table" port "let t = self.tables.table(input.table_id);\nif t.is_none() {\n    return NotFound;\n}" moduleText ""
+      `shouldBe` Just (", table_id: String", "Option<Table>")
+    methodSignature rust "table" port "self.tables.table(input.table_id);" moduleText "" `shouldBe` Just (", table_id: String", "()")
+  it "(p) an argument a.f whose T's field f has a default: the field's type alone" $ do
+    let port = Port "BookingRepository" ["def booking_at(self, table_id: str) -> Booking | None: ..."]
+        moduleText = "class Query:\n    seats: int = 0\n\n\nclass Count:\n    def handle(self, query: Query) -> int:\n        return 0\n"
+    methodSignature py "count_seats" port "self.bookings.count_seats(query.seats)\nreturn 0" moduleText "" `shouldBe` Just (", seats: int", "None")

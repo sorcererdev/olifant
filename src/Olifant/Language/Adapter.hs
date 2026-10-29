@@ -15,6 +15,7 @@ module Olifant.Language.Adapter
   , ImportMerge (..)
   , ImportsDef (..)
   , ConjureDef (..)
+  , TypesDef (..)
   , PortShape (..)
   , FakeShape (..)
   , CtorShape (..)
@@ -126,6 +127,8 @@ data Language = Language
   -- starts (Python's `assert`, Rust's `assert_eq!`, hspec's `shouldBe`)
   , langStubLines :: [Text]
   , langConjure :: Maybe ConjureDef
+  , langTypes :: Maybe TypesDef
+  -- ^ `[types]`: what a new method's signature is made of
   -- ^ `[conjure]`: a pack's architecture as conjure reads it (ports, fakes,
   -- constructors); absent, conjure works at the floor (the test and its fill)
   -- ^ `stub_lines`: expressions over a stripped line of a body that is still
@@ -182,6 +185,24 @@ data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleO
 -- module's path starts with (binding the wire's sets); the port, fake and
 -- constructor shapes, each absent when the pack declares none.
 data ConjureDef = ConjureDef {cjService :: Maybe Text, cjPort :: Maybe PortShape, cjFake :: Maybe FakeShape, cjConstructor :: Maybe CtorShape}
+  deriving stock (Eq, Show)
+
+-- | `[types]`: the facts a new method's signature is made of, in the language's own words.
+-- 'tyString' (`string`) and 'tyInteger' (`integer`), the types of a string and a number
+-- literal; 'tyNothing' (`nothing`), what a call whose result is unused returns;
+-- 'tyOptional' (`optional`), a template over @{= type =}@ for a result that may be absent;
+-- 'tyParam' (`param`), a template over @{= name =}@ and @{= type =}@ writing one parameter;
+-- 'tyAnnotation' (`annotation`), an expression over @{= name =}@ whose last group is that
+-- name's declared type; 'tyReturns' (`returns`), an expression over a method's line, group 1
+-- what it returns; 'tyAssigned' (`assigned`), an expression over a line assigning a call's
+-- result, its last group the variable; 'tyChecksNone' (`checks_none`), expressions over
+-- @{= name =}@ testing a result for absence; 'tyRecord' (`record`), an expression over
+-- @{= name =}@ starting a type with fields; 'tyMethod' (`method`), a template over @{= name =}@,
+-- @{= params =}@ (each @, @ and `param`) and @{= returns =}@ writing a method's signature.
+data TypesDef = TypesDef
+  { tyString, tyInteger, tyNothing, tyOptional, tyParam, tyAnnotation, tyReturns, tyAssigned, tyRecord, tyMethod :: Maybe Text
+  , tyChecksNone :: [Text]
+  }
   deriving stock (Eq, Show)
 
 -- | `[conjure.port]`: 'psFiles' (`files`), globs under the service where
@@ -406,7 +427,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -433,6 +454,7 @@ languageFrom presets name grammarDir top = do
   emptyStatement <- optional "empty_statement" text top
   stubLines <- fromMaybe [] <$> optional "stub_lines" (list (text >=> validRegex "stub_lines")) top
   conjure <- optional "conjure" (table >=> conjureFrom) top
+  types <- optional "types" (table >=> typesFrom) top
   unit <- fromMaybe M.empty <$> optional "unit" table top
   onlyKeys ["kinds", "name", "join"] unit
   unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
@@ -442,7 +464,7 @@ languageFrom presets name grammarDir top = do
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
@@ -486,6 +508,11 @@ languageFrom presets name grammarDir top = do
         paths <- fromMaybe [] <$> optional "paths" (list (text >=> \p -> tmpl p >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["path"] then Right p else Left "`[imports] paths` may use only {= path =}")) t
         pure (line, Just (ImportsDef write mo resolve paths))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
+    typesFrom t = do
+      onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t
+      let o k = optional k text t
+      TypesDef <$> o "string" <*> o "integer" <*> o "nothing" <*> o "optional" <*> o "param" <*> o "annotation" <*> optional "returns" (text >=> validRegex "[types] returns") t <*> optional "assigned" (text >=> validRegex "[types] assigned") t <*> o "record" <*> o "method"
+        <*> (fromMaybe [] <$> optional "checks_none" (list text) t)
     conjureFrom t = do
       onlyKeys ["service", "port", "fake", "constructor"] t
       let re k = text >=> validRegex ("[conjure] " <> k)

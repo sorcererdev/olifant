@@ -26,6 +26,7 @@ module Olifant.Server.ConjureScan
   , portCandidates
   , missingMethod
   , methodSignature
+  , methodText
   , portEnd
   ) where
 
@@ -37,7 +38,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
-import Olifant.Language (ConjureDef (..), CtorShape (..), FakeShape (..), PortShape (..))
+import Olifant.Language (ConjureDef (..), CtorShape (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), regexName)
 import Data.Array qualified
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchAll, matchM, matchTest)
 
@@ -279,52 +280,65 @@ missingMethod ports why = listToMaybe [(q, m) | (_, r) <- T.breakOnAll "Cannot a
       if T.null m || T.null q || T.null r3 then Nothing else Just (m, q)
 
 -- | The signature of the method M a BODY calls on a port (@x = self.p.M(args)@, or the call
--- alone), as the port-method snippet takes it: its parameters after @self@ (@, id: str@) and
--- what it returns. The names: the test file's fake (@.M = lambda id: None@), else the
--- arguments'; their types: an argument @a.f@ where the unit's MODULE has @a: T@ and @T@'s
--- field @f: ty@, a string or a number; what it returns: @None@ for the call alone, else the
--- port's own entity (a type its methods return whose name starts the port's) with @| None@
--- when the body tests the result against @None@ or the fake returns it. None when any of
--- that is not known.
-methodSignature :: Text -> Port -> Text -> Text -> Text -> Maybe (Text, Text)
-methodSignature m port body moduleText testText = do
-  (result, args) <- listToMaybe [(assignedTo l, as) | l <- T.lines body, (_, a) <- T.breakOnAll ("." <> m <> "(") l, Just r <- [balanced (T.drop (T.length m + 2) a)], let as = splitArgs (T.dropEnd 1 r)]
-  types <- traverse argType args
-  let fakeParams = listToMaybe [(splitArgs ps, T.strip res) | (_, a) <- T.breakOnAll ("." <> m <> " = lambda") testText, let r = T.drop (T.length m + 10) a, let (ps, res0) = T.breakOn ":" (T.takeWhile (/= '\n') r), not (T.null res0), let res = T.drop 1 res0]
+-- alone), in LANG's words (`[types]`), as the port-method snippet takes it: its parameters
+-- (each @, @ and `param`: @, id: str@) and what it returns. The names: the test file's fake
+-- (by the pack's `[conjure.fake] stub`: @.M = lambda id: None@), else the arguments'; their
+-- types: an argument @a.f@ where the unit's MODULE declares @a@ (`annotation`, on a unit's
+-- header line) of a type whose fields (`record`) declare @f@, a string or a number literal;
+-- what it returns: `nothing` for the call alone, else the port's own entity (a type its
+-- methods return, by `returns`, whose name starts the port's), `optional` when the body
+-- tests the result for absence (`checks_none`) or the fake returns `nothing`. None when any
+-- of that is not known.
+methodSignature :: Language -> Text -> Port -> Text -> Text -> Text -> Maybe (Text, Text)
+methodSignature lang m port body moduleText testText = do
+  ty <- langTypes lang
+  (result, args) <- listToMaybe [(assignedTo ty l, as) | l <- T.lines body, (_, a) <- T.breakOnAll ("." <> m <> "(") l, Just r <- [balanced (T.drop (T.length m + 2) a)], let as = splitArgs (T.dropEnd 1 r)]
+  types <- traverse (argType ty) args
+  let fakeParams = do
+        stub <- langConjure lang >>= cjFake >>= fsStub
+        listToMaybe [(splitArgs ps, T.strip res) | l <- T.lines testText, Just (_ : ps : res : _) <- [groups (fill "method" (escaped m) stub) l]]
       names = case fakeParams of
         Just (ns, _) | length ns == length args -> ns
         _ -> map argName args
-      fakeNone = maybe False ((== "None") . snd) fakeParams
+      fakeNone = maybe False ((\r -> Just r == tyNothing ty) . snd) fakeParams
   if any T.null names then Nothing else Just ()
+  param <- tyParam ty
   returns <- case result of
-    Nothing -> Just "None"
+    Nothing -> tyNothing ty
     Just v -> do
-      e <- entity
-      let optional = fakeNone || any (\l -> (v <> " is None") `T.isInfixOf` l || (v <> " is not None") `T.isInfixOf` l) (T.lines body)
-      Just (if optional then e <> " | None" else e)
-  pure (T.concat [", " <> n <> ": " <> t | (n, t) <- zip names types], returns)
+      e <- entity ty
+      let optional = fakeNone || any (\l -> any (\c -> matches (fill "name" v c) l) (tyChecksNone ty)) (T.lines body)
+      if optional then (\o -> fill "type" e o) <$> tyOptional ty else Just e
+  pure (T.concat [", " <> fill "type" t (fill "name" n param) | (n, t) <- zip names types], returns)
   where
-    assignedTo l =
-      let (v, r) = T.span isIdent (T.stripStart l)
-       in if not (T.null v) && "=" `T.isPrefixOf` T.stripStart r && not ("==" `T.isPrefixOf` T.stripStart r) then Just v else Nothing
+    fill k v = T.replace ("{= " <> k <> " =}") v
+    escaped = T.concatMap (\c -> if isAlphaNum c || c == '_' then T.singleton c else "\\" <> T.singleton c)
+    matches re l = maybe False (`matchTest` T.unpack l) (makeRegexM (T.unpack re) :: Maybe Regex)
+    lastGroup re l = groups re l >>= \gs -> listToMaybe (reverse (filter (not . T.null) (drop 1 gs)))
+    assignedTo ty l = tyAssigned ty >>= \re -> lastGroup re l
     splitArgs t = filter (not . T.null) (map T.strip (T.splitOn "," t))
     argName a = case T.breakOnEnd "." a of
       ("", n) -> if T.all isIdent n then n else ""
       (_, n) -> if T.all isIdent n then n else ""
-    argType a
-      | Just _ <- T.stripPrefix "\"" a = Just "str"
-      | T.all (`elem` ['0' .. '9']) a, not (T.null a) = Just "int"
+    argType ty a
+      | Just _ <- T.stripPrefix "\"" a = tyString ty
+      | T.all (`elem` ['0' .. '9']) a, not (T.null a) = tyInteger ty
       | (o, f) <- T.breakOn "." a, not (T.null f) = do
-          ty <- paramType o
-          fieldType ty (T.drop 1 f)
+          t <- paramType ty o
+          fieldType ty t (T.drop 1 f)
       | otherwise = Nothing
-    -- @o: T@ in a def line of the module
-    paramType o = listToMaybe [T.strip (T.takeWhile (\ch -> ch /= ',' && ch /= ')') r) | l <- T.lines moduleText, "def " `T.isPrefixOf` T.strip l, (_, r0) <- T.breakOnAll ("(" <> o <> ": ") l <> T.breakOnAll (" " <> o <> ": ") l, let r = T.drop (T.length o + 3) r0]
-    -- @f: ty@ in class T's body
-    fieldType ty f = case dropWhile (not . (("class " <> ty) `T.isPrefixOf`)) (T.lines moduleText) of
-      _ : rest -> listToMaybe [T.strip t | l <- takeWhile (\l -> T.null l || isSpace (T.head l)) rest, Just t <- [T.stripPrefix (f <> ":") (T.strip l)]]
-      [] -> Nothing
-    entity = listToMaybe [e | d <- ptMethods port, let ret = snd (T.breakOnEnd "->" d), e <- idents ret, e /= ptName port, e `T.isPrefixOf` ptName port]
+    -- NAME's declared type on a line, by `annotation`, not inside a longer name
+    declared ty name l = tyAnnotation ty >>= \re -> T.strip <$> lastGroup ("(^|[^[:alnum:]_])" <> fill "name" name re) l
+    -- @o: T@ on a unit's header line of the module
+    paramType ty o = listToMaybe [t | l <- T.lines moduleText, isJust (unitNameOf l), Just t <- [declared ty o l]]
+    unitNameOf l = listToMaybe (mapMaybe (`regexName` l) (langUnitNames lang))
+    -- @f: ty@ in the fields of the type T (`record`)
+    fieldType ty t f = do
+      re <- tyRecord ty
+      case dropWhile (not . matches (fill "name" t re)) (T.lines moduleText) of
+        _ : rest -> listToMaybe [x | l <- takeWhile (\l -> T.null l || isSpace (T.head l)) rest, Just x <- [declared ty f (T.strip l)]]
+        [] -> Nothing
+    entity ty = listToMaybe [e | d <- ptMethods port, Just ret <- [tyReturns ty >>= \re -> groups re d >>= listToMaybe . drop 1], e <- idents ret, e /= ptName port, e `T.isPrefixOf` ptName port]
     idents t = [w | w <- T.split (not . isIdent) t, not (T.null w), isUpper (T.head w)]
 
 -- | The line (1-based) a method goes in the file TEXT to end the port Q (by the shape's
@@ -361,3 +375,8 @@ ctorParamsIn cj text = maybe [] (`ctorParams` text) (cj >>= cjConstructor)
 -- | 'takesPort' by a pack's `[conjure.constructor]`; never without one.
 takesPortIn :: Maybe ConjureDef -> Text -> Text -> Bool
 takesPortIn cj header port = port `elem` map snd (ctorParamsIn cj header)
+
+-- | A method's signature in the language's words: `[types] method` over its NAME, PARAMS
+-- (each @, @ and a parameter) and what it RETURNS; the name alone without one.
+methodText :: Maybe Text -> Text -> Text -> Text -> Text
+methodText template name params returns = maybe name (T.replace "{= name =}" name . T.replace "{= params =}" params . T.replace "{= returns =}" returns) template

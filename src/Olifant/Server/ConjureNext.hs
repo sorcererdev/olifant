@@ -79,7 +79,7 @@ import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
-import Olifant.Server.ConjureScan (Fake (..), actCall, ctorParamsIn, handFakeIn, helperOf)
+import Olifant.Server.ConjureScan (Fake (..), actCall, ctorParamsIn, handFakeIn, helperOf, methodText)
 import Text.Printf (printf)
 import Olifant.Generation.Steer
 import Olifant.Generation.Tools (ProgressEvent (..))
@@ -729,7 +729,7 @@ data OfferRow = OfferRow {orOffer :: Offer, orLabel :: Text, orDetail :: Text}
 -- | What an offer's detail is written from: the rounds a grant gives, the rung, the one
 -- above, the round paused at, the class, the suspect test, whether a wire ran, the module's
 -- stem (the tests' short names), and each flagged test's fix ('fixMoves').
-data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool, ofStem :: Text, ofFixes :: [(Text, Text)], ofAgain :: [(Text, Text)]}
+data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool, ofStem :: Text, ofFixes :: [(Text, Text)], ofAgain :: [(Text, Text)], ofMethod :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | An offer in plain words (conjure-pause-ux-design.md §6): the label says what it is, the
@@ -748,7 +748,7 @@ offerRow o offer = uncurry (OfferRow offer) . fmap cappedDetail $ case offer of
   OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
   OfferReconjureAgain t -> ("fix the test: " <> short t <> ", again", "re-conjure it once more; you see its diff")
-  OfferPort q m ps r -> ("add " <> m <> " to " <> q, m <> "(self" <> ps <> ") -> " <> r <> " in the port and its adapters, then round " <> next)
+  OfferPort q m ps r -> ("add " <> m <> " to " <> q, methodText (ofMethod o) m ps r <> " in the port and its adapters, then round " <> next)
   where
     n = T.pack . show
     next = n (ofRound o + 1)

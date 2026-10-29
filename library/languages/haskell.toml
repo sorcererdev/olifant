@@ -77,3 +77,15 @@ name = [
   "^[[:space:]]*(\\([^)]*\\))",
   "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)",
 ]
+
+# What a new method's signature is made of (conjure adding one a test
+# calls): literal types, declarations, a result that may be absent.
+[types]
+string = "Text"
+integer = "Int"
+nothing = "()"
+optional = "Maybe {= type =}"
+param = "{= name =} :: {= type =}"
+annotation = '{= name =}[[:space:]]*::[[:space:]]*([^,}]+)'
+checks_none = ['{= name =} `shouldBe` Nothing', 'isNothing {= name =}']
+record = '^data {= name =}([^[:alnum:]_]|$)'

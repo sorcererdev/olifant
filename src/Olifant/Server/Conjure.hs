@@ -43,14 +43,14 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn, testsForFile)
+import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TypesDef (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn, testsForFile)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
 import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
-import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, missingMethod, portCandidates, portEnd, portFrom, portsIn, takesPortIn)
+import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMethod, portCandidates, portEnd, portFrom, portsIn, takesPortIn)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -460,7 +460,7 @@ conjureWith progress path line selected resuming s0 = do
               let plain = plainPause (pdShown pd)
                   testAbs = absOf testRel
                   proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (langImports lang) (shortName (paStem plain) tid) before after) "test" []
-                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
+                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] [] (langTypes lang >>= tyMethod)))
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift . keep s (reToken re) $
                 pd
@@ -490,7 +490,7 @@ conjureWith progress path line selected resuming s0 = do
                   others = [x | x@(f, _, _) <- files, f /= protoRel]
                   diff = T.concat [unifiedDiff f b a | (f, b, a) <- files]
                   proposal = Proposal protoRel (q <> "." <> m) pb pa diff Nothing ("port method: " <> q <> "." <> m <> "(" <> T.drop 2 ps <> ") -> " <> r) "port" others
-                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
+                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] [] (langTypes lang >>= tyMethod)))
                   -- the rows say what lands: the method, not a test
                   said row = case orOffer row of
                     OfferAccept -> row {orDetail = "the method lands with the conjure; round " <> tshow (paRound plain + 1) <> " runs against it"}
@@ -555,7 +555,7 @@ conjureWith progress path line selected resuming s0 = do
                   , pdBases = M.insertWith (\_ old -> old) testAbs (Just testText0) (pdBases pd)
                   , pdVersions = M.insertWith (\_ old -> old) testAbs (fst <$> M.lookup testAbs (ssDocs s)) (pdVersions pd)
                   }
-              rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
+              rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] [] (langTypes lang >>= tyMethod)))
           case attempt of
             Right (Written Nothing after _) | after /= testText0 -> do
               let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (langImports lang) (shortName (paStem plain) tid) testText0 after) "test" []
@@ -674,7 +674,7 @@ conjureWith progress path line selected resuming s0 = do
                   Just (q, m) -> do
                     sf <- service
                     let moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) (cWrites c)
-                        sig = listToMaybe [p | p <- sfPorts sf, ptName p == q] >>= \p -> methodSignature m p attempt moduleText (cTestText c)
+                        sig = listToMaybe [p | p <- sfPorts sf, ptName p == q] >>= \p -> methodSignature lang m p attempt moduleText (cTestText c)
                     pure (Just (q, m, sig))
               decider = deciderUnder (ssCancel s) s project
               -- the service the wire's inputs come from (read once)
@@ -873,7 +873,7 @@ conjureWith progress path line selected resuming s0 = do
                   lastDecided = rrDecided =<< listToMaybe (reverse (cHistory c))
                   suspects = suspectFirst (cFlagged c) (involved (cBefore c) (cHistory c))
                   again = [(t, f) | t <- suspects, Just (Just f) <- [fixAgain (cSteps c) (cHistory c) t]]
-                  rows = map (offerRow (OfferFacts grant (rsRung rs) next (rsRound rs) owner (listToMaybe suspects) (not (null (cWired c))) (cStem c) (fixMoves facts) again)) (cOffers c)
+                  rows = map (offerRow (OfferFacts grant (rsRung rs) next (rsRound rs) owner (listToMaybe suspects) (not (null (cWired c))) (cStem c) (fixMoves facts) again (langTypes lang >>= tyMethod))) (cOffers c)
                   -- what each written file is against what the conjure read (the unit's file: the buffer)
                   baseOf r = if r == rel then text else fromMaybe "" (M.findWithDefault Nothing (absOf r) (cBases c))
                   wiredFiles = [(r, unifiedDiff r (baseOf r) new) | (r, new) <- M.toList (cWrites c), baseOf r /= new]
@@ -1077,7 +1077,7 @@ portMethodPlan s lang project progress filler writes sets q m ps r = runExceptT 
   protoAfter <- T.concat <$> traverse (either (\mk -> maybe (throwE ("port-method has a hole `" <> markerName mk <> "` the signature does not fill")) pure (lookup (markerName mk) values)) pure) (splitMarkers marked)
   adapters <- load "port-method-adapters"
   let folder = takeFileName (takeDirectory protoRel)
-      inputs = [("app", app), ("service", service), ("port", T.pack folder), ("name", m), ("signature", m <> "(self" <> ps <> ") -> " <> r)]
+      inputs = [("app", app), ("service", service), ("port", T.pack folder), ("name", m), ("signature", methodText (langTypes lang >>= tyMethod) m ps r)]
       ws' = overlayMany (M.singleton protoRel protoAfter) ws
   plan <- lift (planWith ports project {prWorkspace = ws'} planOptions {poFiller = Just filler, poProgress = progress, poCancel = ssCancel s} [Step adapters (M.fromList inputs)]) >>= either (throwE . describeGenerationError) pure
   unless (null (planConflicts plan)) (throwE (T.intercalate "; " (map describeConflict (planConflicts plan))))

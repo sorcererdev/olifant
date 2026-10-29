@@ -159,3 +159,18 @@ name = [
   '^[[:space:]]*impl(<.*>)?[[:space:]]+([[:alnum:]_]+)',
   '^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?((async|const|unsafe|extern)[[:space:]]+)*(fn|struct|enum|trait|mod)[[:space:]]+([[:alnum:]_]+)',
 ]
+
+# What a new port method's signature is made of (conjure adding a method a
+# test calls): literal types, declarations, a result that may be absent.
+[types]
+string = "&str"
+integer = "i64"
+nothing = "()"
+optional = "Option<{= type =}>"
+param = "{= name =}: {= type =}"
+annotation = '{= name =}:[[:space:]]*([^,)=]+)'
+returns = '->(.*)$'
+assigned = '^[[:space:]]*let[[:space:]]+(mut[[:space:]]+)?([[:alnum:]_]+)[[:space:]]*=[^=]'
+checks_none = ['{= name =}\.is_none\(\)', '{= name =}\.is_some\(\)']
+record = '^(pub[[:space:]]+)?struct {= name =}([^[:alnum:]_]|$)'
+method = "{= name =}(&self{= params =}) -> {= returns =}"
