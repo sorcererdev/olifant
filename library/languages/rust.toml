@@ -15,6 +15,8 @@ placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"
 # A block opens at a line ending in `{`.
 opens_block = '[{][[:space:]]*$'
+# A body still a stub: each stripped line one of these (a comment and a hole's line count too).
+stub_lines = ['^todo!\(', '^unimplemented!\(']
 
 # Tests: cargo test, in the file itself (its `mod tests`). A test is a fn
 # under #[test] (or #[tokio::test]), looking past other attributes; an

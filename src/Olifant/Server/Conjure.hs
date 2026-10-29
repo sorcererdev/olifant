@@ -55,7 +55,7 @@ import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
 import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..))
 import Olifant.Language.TestUnits (testCaseAtIn, testCaseLineIn, testSourceIn, testSourcesIn)
 import Olifant.Server.Stub (testWordsIn)
-import Olifant.Server.Unit (Unit (..), unitAt, unitHeader)
+import Olifant.Server.Unit (isStubIn, Unit (..), unitAt, unitHeader)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
 import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
@@ -457,7 +457,7 @@ conjureWith progress path line selected resuming s0 = do
               now <- lift getMonotonicTime
               let plain = plainPause (pdShown pd)
                   testAbs = absOf testRel
-                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (shortName (paStem plain) tid) before after) "test" []
+                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (langImports lang) (shortName (paStem plain) tid) before after) "test" []
                   rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift . keep s (reToken re) $
@@ -556,7 +556,7 @@ conjureWith progress path line selected resuming s0 = do
               rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] []))
           case attempt of
             Right (Written Nothing after _) | after /= testText0 -> do
-              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (shortName (paStem plain) tid) testText0 after) "test" []
+              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (langImports lang) (shortName (paStem plain) tid) testText0 after) "test" []
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift (keep s (reToken re) (proposing proposal plain) {pdShown = shown})
               lift (stepLine ["conjure-proposal", tid])
@@ -575,7 +575,7 @@ conjureWith progress path line selected resuming s0 = do
               let reason = case [(m, l) | ((p, m), l) <- added, p == testRel] of
                     (m, l) : _ -> addsReason m l
                     [] -> T.dropWhileEnd (== '.') (firstLine why)
-                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason) (proposalStep (shortName (paStem plain) tid) testText0 l) "test" []) <$> written'
+                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason) (proposalStep (langImports lang) (shortName (paStem plain) tid) testText0 l) "test" []) <$> written'
                   again r = case r of
                     OfferRow (OfferReconjure t) _ _ | t == tid -> rows ([OfferRefused | isJust refusal] ++ [OfferReconjureAgain t])
                     _ -> [r]
@@ -1269,7 +1269,7 @@ functionConjure lang text (l1, l2) unit testRel testText before = do
         [(testRel, testText)]
           ++ [("failing now (make these pass)", failing) | not (null failed)]
           ++ [("passing now (keep these passing)", T.intercalate "\n" (trPassed before)) | not (null (trPassed before))]
-          ++ [(rejectedBody, T.intercalate "\n" (dedent body)) | not (isStub body)]
+          ++ [(rejectedBody, T.intercalate "\n" (dedent body)) | not (isStubIn lang body)]
   template <- holeOver ls (l1, l2) instruction
   pure (template, [("body", VerifyTests)], context)
 
@@ -1291,7 +1291,7 @@ testConjure lang text (l1, l2) tid moduleRel moduleText = do
       context =
         [(moduleRel, moduleText)]
           ++ [("notes in the test's body", T.intercalate "\n" notes) | not (null notes)]
-          ++ [(rejectedBody, T.intercalate "\n" (dedent body)) | not (isStub body)]
+          ++ [(rejectedBody, T.intercalate "\n" (dedent body)) | not (isStubIn lang body)]
   template <- holeOver ls (l1, l2) instruction
   pure (template, [("body", VerifyRedAt tid l1 True)], context)
 
@@ -1323,13 +1323,6 @@ holeOver ls (l1, l2) instruction =
   either (Left . describeTemplateError) Right (parseTemplate (T.intercalate "\n" (take (l1 - 1) ls ++ [indent <> "{= ? body: block | " <> instruction <> " =}"] ++ drop l2 ls)))
   where
     indent = T.takeWhile (`elem` [' ', '\t']) (maybe "" id (listToMaybe (drop (l1 - 1) ls)))
-
--- | A body that is only a stub: no line but `...`, `pass`, `assert ...`,
--- a `raise NotImplementedError…`, an Olifant placeholder, or a comment.
-isStub :: [Text] -> Bool
-isStub = all stubLine . filter (not . T.null) . map T.strip
-  where
-    stubLine l = l `elem` ["...", "pass", "assert ..."] || "raise NotImplementedError" `T.isPrefixOf` l || "olifant:" `T.isInfixOf` l || "#" `T.isPrefixOf` l
 
 -- | Lines less their common indentation.
 dedent :: [Text] -> [Text]

@@ -127,12 +127,13 @@ data StepKind = StepWire | StepTest Text (Maybe Text) | StepHint Text | StepPort
   deriving stock (Eq, Show)
 
 -- | The words of a test fix's step for the test SHORT, from the test file BEFORE and AFTER:
--- the first line it changed (no import), less what that line assigns to.
-proposalStep :: Text -> Text -> Text -> Text
-proposalStep short before after = "test fixed: " <> short <> maybe "" (\l -> " (" <> l <> ")") changed
+-- the first line it changed (none matching IMPORTS, the language's import line), less what
+-- that line assigns to.
+proposalStep :: Maybe Text -> Text -> Text -> Text -> Text
+proposalStep imports short before after = "test fixed: " <> short <> maybe "" (\l -> " (" <> l <> ")") changed
   where
     olds = map T.strip (T.lines before)
-    changed = listToMaybe [rhs l | l <- map T.strip (T.lines after), not (T.null l), l `notElem` olds, not ("import " `T.isPrefixOf` l), not ("from " `T.isPrefixOf` l)]
+    changed = listToMaybe [rhs l | l <- map T.strip (T.lines after), not (T.null l), l `notElem` olds, not (maybe False (`matchesLine` l) imports)]
     rhs l = case T.breakOn " = " l of
       (lhs, r) | not (T.null r), T.all (\ch -> ch == '_' || ch == '.' || ch == ' ' || ch `elem` ['a' .. 'z'] || ch `elem` ['A' .. 'Z'] || ch `elem` ['0' .. '9']) lhs -> T.drop 3 r
       _ -> l

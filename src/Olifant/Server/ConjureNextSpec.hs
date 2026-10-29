@@ -331,7 +331,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["steps", "1", "files", "0", "file"] v `shouldBe` Just (String cb)
     at ["steps", "0", "kind"] v `shouldBe` Just (String "wire")
     -- the step's words: the line it changed, less what it assigns to
-    proposalStep "not_found" cancelTestText (T.replace "    cancel_booking = command()\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" "    cancel_booking = command(bookings=repository)\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" cancelTestText)
+    proposalStep (langImports pyNow) "not_found" cancelTestText (T.replace "    cancel_booking = command()\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" "    cancel_booking = command(bookings=repository)\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" cancelTestText)
       `shouldBe` "test fixed: not_found (command(bookings=repository))"
     -- no run since the fix: not offered; a run failing the same way: not offered; failing anew: offered, saying so
     let checked = RoundRecord 3 "local" "x" Nothing (Just "pyright") Nothing 2

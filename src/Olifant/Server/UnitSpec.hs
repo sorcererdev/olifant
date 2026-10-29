@@ -22,6 +22,21 @@ spec = do
  haskell <- runIO (packLanguage "haskell" ".olifant")
  rust <- runIO (packLanguage "rust" "packs/rust-htmx")
  elm <- runIO (packLanguage "elm" "packs/elm")
+ describe "the unit at a line, by the language (unitAt)" $ do
+  it "names a Haskell function by [unit] name; its body after the line that opens a block" $ do
+    r <- unitAt (spans [(0, 2)]) haskell "foo :: Int\nfoo =\n  1\n" 3
+    fmap (\u -> (unitName u, unitDef u, unitBody u)) r `shouldBe` Right ("foo", 1, Just (3, 3))
+  it "names a Rust fn; its body after its brace" $ do
+    r <- unitAt (spans [(0, 2)]) rust "fn add(a: i32) -> i32 {\n    a\n}\n" 2
+    fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("add", Just (2, 3))
+ describe "a body that is still a stub (isStubIn)" $ do
+  it "a hspec stub is a stub, a shouldBe is not" $ do
+    isStubIn haskell ["  expectationFailure \"write this test\""] `shouldBe` True
+    isStubIn haskell ["  1 `shouldBe` 1"] `shouldBe` False
+  it "a Rust todo!() body is a stub; Python's ..., pass, assert ..., a comment and a hole are" $ do
+    isStubIn rust ["    todo!(\"write this test\");"] `shouldBe` True
+    isStubIn python ["    ...", "    pass", "    assert ...", "    # kills: x", "    raise NotImplementedError(\"olifant: h\")"] `shouldBe` True
+    isStubIn python ["    assert x == 1"] `shouldBe` False
  describe "Olifant.Server.Unit (units by name)" $ do
   it "names and qualifies python units" $ do
     r <- unitsOf (spans [(0, 5), (1, 2), (3, 4)]) python "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        pass\n"

@@ -1001,7 +1001,7 @@ siteSpecs :: Spec
 siteSpecs = describe "a conjure's imported modules" $ do
   it "reads Python's absolute imports: aliases, several names, brackets, a star and relative imports" $ do
     pythonResolve <- maybe [] imResolve . langImportsDef <$> shippedLanguage "python" []
-    importedModules pythonResolve "import a.b as c, d\nfrom .x import y\nfrom p.q import (\n    r,\n)\nfrom m import n as k, *  # c\n" `shouldBe` ["a.b", "d", "p.q", "m", "m.n"]
+    importedModules pyNow pythonResolve "import a.b as c, d\nfrom .x import y\nfrom p.q import (\n    r,\n)\nfrom m import n as k, *  # c\n" `shouldBe` ["a.b", "d", "p.q", "m", "m.n"]
   it "importOf writes [imports] write over the module and the unit's owner" $ do
     py <- shippedLanguage "python" []
     hs <- shippedLanguage "haskell" []

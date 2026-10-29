@@ -120,6 +120,10 @@ data Language = Language
   , langAssertion :: [Text]
   -- ^ `[test] assertion`: expressions over a line where a test's assertion
   -- starts (Python's `assert`, Rust's `assert_eq!`, hspec's `shouldBe`)
+  , langStubLines :: [Text]
+  -- ^ `stub_lines`: expressions over a stripped line of a body that is still
+  -- a stub (Python's `...`, Rust's `todo!(`); a comment and a hole's line
+  -- count in every language
   , langMutate :: [MutateDef]
   -- ^ `[[mutate]]`: the mutation operators, ways to break this language's
   -- code that a test must notice
@@ -359,7 +363,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -384,6 +388,7 @@ languageFrom presets name grammarDir top = do
     _ -> Right Nothing
   opensBlock <- optional "opens_block" (text >=> validRegex "opens_block") top
   emptyStatement <- optional "empty_statement" text top
+  stubLines <- fromMaybe [] <$> optional "stub_lines" (list (text >=> validRegex "stub_lines")) top
   unit <- fromMaybe M.empty <$> optional "unit" table top
   onlyKeys ["kinds", "name", "join"] unit
   unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
@@ -393,7 +398,7 @@ languageFrom presets name grammarDir top = do
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))

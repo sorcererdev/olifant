@@ -5,6 +5,7 @@ module Olifant.Server.Unit
   ( Unit (..)
   , unitAt
   , unitHeader
+  , isStubIn
   , Named (..)
   , unitsOf
   , unitAround
@@ -28,7 +29,8 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (Language (..), Match (..), Syntax (..), describeSyntaxFailure, regexName)
-import Olifant.Server.Site (defName, tshow)
+import Olifant.Server.Site (tshow)
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 -- | A unit (1-based lines): its name, its header line, its node's lines,
 -- and its body's (the lines after the header; Nothing for a one-line def).
@@ -41,7 +43,9 @@ data Unit = Unit
   deriving stock (Eq, Show)
 
 -- | The unit enclosing LINE (1-based) of TEXT: the innermost node of the
--- language's `[unit]` kinds there; a decorator's is the def it decorates.
+-- language's `[unit]` kinds there, named by `[unit] name` on its first line
+-- that has one (a decorator's is the def below it); its body starts after
+-- the first line that opens a block (`opens_block`, its comment cut).
 -- Left is one sentence on why there is none.
 unitAt :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Unit)
 unitAt syntax lang text line
@@ -57,15 +61,13 @@ unitAt syntax lang text line
     -- the innermost around the line: the latest start, then the earliest end
     pick spans = listToMaybe (sortOn (\(a, z) -> (Down a, z)) [sp | sp@(a, z) <- spans, a <= line, line <= z]) >>= unitOf
     unitOf (a, z) = do
-      (d, n) <- listToMaybe [(i, n) | i <- [a .. z], Just n <- [headerName (lineAt i)]]
-      let colon = listToMaybe [i | i <- [d .. z], ":" `T.isSuffixOf` T.stripEnd (fst (T.breakOn " #" (lineAt i)))]
-          body = colon >>= \c -> if c + 1 <= z then Just (c + 1, z) else Nothing
+      (d, n) <- listToMaybe [(i, n) | i <- [a .. z], Just n <- [unitNameIn lang (lineAt i)]]
+      let opener = listToMaybe [i | i <- [d .. z], opens (fst (T.breakOn (" " <> langComment lang) (lineAt i)))]
+          body = opener >>= \c -> if c + 1 <= z then Just (c + 1, z) else Nothing
       pure (Unit n d (a, z) body)
-    headerName l = defName l <|> className l
-    className l = do
-      rest <- T.stripPrefix "class " (T.strip l)
-      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
-      if T.null n then Nothing else Just n
+    opens = case langOpensBlock lang >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex of
+      Just rx -> matchTest rx . T.unpack . T.stripEnd
+      Nothing -> const True
 
 -- | The header of the unit at LINE (1-based) of a Python module: for a method, its
 -- class line and the class's `__init__` def line (through its closing `:`); for a free
@@ -197,3 +199,12 @@ reflowed = \case
       | "," `T.isPrefixOf` n = go True (acc <> n) rest
       | otherwise = go joined (acc <> "\n" <> n) rest
     tight t = foldr (\(from, to) -> T.replace from to) t ([(o <> " ", o) | o <- ["(", "[", "{"]] ++ [(" " <> c, c) | c <- [")", "]", "}"]])
+
+-- | Whether a body's LINES are only a stub in LANG: each non-blank line,
+-- stripped, matches one of its `stub_lines`, is a comment, or holds a hole
+-- (@olifant:@).
+isStubIn :: Language -> [Text] -> Bool
+isStubIn lang = all stubLine . filter (not . T.null) . map T.strip
+  where
+    stubs = [rx | re <- langStubLines lang, Just rx <- [makeRegexM (T.unpack re) :: Maybe Regex]]
+    stubLine l = any (`matchTest` T.unpack l) stubs || "olifant:" `T.isInfixOf` l || langComment lang `T.isPrefixOf` l

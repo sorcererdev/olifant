@@ -10,6 +10,8 @@ indent = "  "
 # A block opens after `do`, `=` or `$` at a line's end; `pure ()` does nothing.
 opens_block = "((^|[^[:alnum:]_'])do|=|[$])[[:space:]]*$"
 empty_statement = "pure ()"
+# A body still a stub: each stripped line one of these (a comment and a hole's line count too).
+stub_lines = ['^expectationFailure "write this test"$', '^error "', '^pure \(\)$']
 placeholder = 'error "{= message =}"'
 branch = "{= pattern =} -> {= body =}"
 # After a case's only alternative, a new one goes after a blank line.
