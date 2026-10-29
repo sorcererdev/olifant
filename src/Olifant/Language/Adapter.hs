@@ -108,6 +108,16 @@ data Language = Language
   -- ^ `lone_arm_spaced`: after a match's only arm, a new one goes after a
   -- blank line (Elm's and Haskell's style); with two or more, the existing
   -- spacing is copied
+  , langOpensBlock :: Maybe Text
+  -- ^ `opens_block`: an expression over a line (its comment cut) that opens
+  -- a block (Python's `:`, Rust's `{`, Haskell's `do` or `=`): what a fill
+  -- that repeats the file is cut back to
+  , langEmptyStatement :: Maybe Text
+  -- ^ `empty_statement`: a statement that does nothing (Python's `pass`),
+  -- for an arrangement left with no lines; without it, the side is empty
+  , langAssertion :: [Text]
+  -- ^ `[test] assertion`: expressions over a line where a test's assertion
+  -- starts (Python's `assert`, Rust's `assert_eq!`, hspec's `shouldBe`)
   , langMutate :: [MutateDef]
   -- ^ `[[mutate]]`: the mutation operators, ways to break this language's
   -- code that a test must notice
@@ -327,7 +337,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -342,7 +352,15 @@ languageFrom presets name grammarDir top = do
   separator <- optional "separator" text top
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
   keywords <- fromMaybe [] <$> optional "keywords" (list text) top
-  test <- optional "test" (table >=> testFrom) top
+  -- [test]'s shape keys are the language's; the rest is a runner, absent
+  -- when the table holds only shapes
+  testTable <- optional "test" table top
+  assertion <- maybe (Right []) (\t -> fromMaybe [] <$> optional "assertion" (list (text >=> validRegex "[test] assertion")) t) testTable
+  test <- case testTable of
+    Just t | not (M.null (foldr M.delete t testShapeKeys)) -> Just <$> testFrom t
+    _ -> Right Nothing
+  opensBlock <- optional "opens_block" (text >=> validRegex "opens_block") top
+  emptyStatement <- optional "empty_statement" text top
   unit <- fromMaybe M.empty <$> optional "unit" table top
   onlyKeys ["kinds", "name", "join"] unit
   unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
@@ -352,7 +370,7 @@ languageFrom presets name grammarDir top = do
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
@@ -422,7 +440,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -500,6 +518,10 @@ languageFrom presets name grammarDir top = do
         <*> (fromIntegral <$> required "message" int t)
         <*> (fmap fromIntegral <$> optional "severity" int t)
         <*> optional "error" (text >=> validRegex "[check.errorformat] error") t
+
+-- | The keys of `[test]` that are the language's shapes, not its runner's.
+testShapeKeys :: [Text]
+testShapeKeys = ["assertion"]
 
 -- | What a key's expression names in TEXT: its last group (the whole match
 -- when it has none), stripped; Nothing when it does not match, is not a

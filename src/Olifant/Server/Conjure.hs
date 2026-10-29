@@ -946,7 +946,7 @@ conjureWith progress path line selected resuming s0 = do
                     (Nothing, fs@(_ : _)) | null (concatMap (undefinedNames . fMessage . snd) fs ++ extra) -> "red: " <> T.intercalate ", " (map (shortName (cStem c) . fst) fs)
                     _ -> functionSummary extra after
                   headline
-                    | onTest = testSummary extra tid (wkBefore wk) after written
+                    | onTest = testSummary lang extra tid (wkBefore wk) after written
                     | isSteered && green = "green in round " <> tshow n <> " \183 " <> T.intercalate " \8594 " rungs
                     | otherwise = functionSummary extra after
                   staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> (if staying == 1 then " pyright error" else " pyright errors") | staying > 0, green]
@@ -1295,8 +1295,8 @@ testConjure text (l1, l2) tid moduleRel moduleText = do
 -- before it, passing, not run), then each sibling that passed before and
 -- fails now; then the names EXTRA (left undefined by the last attempt) that
 -- it does not already name.
-testSummary :: [Text] -> Text -> TestRun -> TestRun -> Text -> Text
-testSummary extra tid before after written = base <> (if null missing then "" else " \183 NameError " <> T.intercalate ", " missing)
+testSummary :: Language -> [Text] -> Text -> TestRun -> TestRun -> Text -> Text
+testSummary lang extra tid before after written = base <> (if null missing then "" else " \183 NameError " <> T.intercalate ", " missing)
   where
     base = own <> T.concat ["; red: " <> short t <> " no longer passes" | t <- broke]
     missing = [n | n <- nub extra, not (n `T.isInfixOf` base)]
@@ -1306,7 +1306,7 @@ testSummary extra tid before after written = base <> (if null missing then "" el
     own = case (trBroken after, [f | (t, f) <- trFailed after, isOwn t]) of
       (Just why, _) -> "red: could not run \183 " <> firstLine why
       (_, f : _)
-        | Just l <- fLine f, Just (a, z) <- assertionSpan (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> failureLine f
+        | Just l <- fLine f, Just (a, z) <- assertionSpan lang (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> failureLine f
         | otherwise -> "red: error before the assertion \183 " <> failureLine f
       _
         | any isOwn (trPassed after) -> "green: already passes"

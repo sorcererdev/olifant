@@ -2,11 +2,11 @@
 -- fill parsed as its kind (the adapter's `wrap`) and compile-checked (its
 -- `[check]`), failing holes retried with the reason, and any still failing
 -- left as their placeholder. Holes never block a generation.
-module Olifant.Generation.FillPhase (fillPhase, applyFills, fillLines, splitImports, addImports, isImportLine, projectFiles, reindented, cutToHole, looksLikeFile, markerOnly, wholeFile, wholeFileReason, cutSentence, testsFailed, passesAgainstRaise, assertionSpan) where
+module Olifant.Generation.FillPhase (fillPhase, applyFills, fillLines, splitImports, addImports, isImportLine, projectFiles, reindented, cutToHole, looksLikeFile, topLevelNames, markerOnly, wholeFile, wholeFileReason, cutSentence, testsFailed, passesAgainstRaise, assertionSpan) where
 
 import Control.Monad (foldM, forM, forM_)
 import Data.Aeson (object, (.=))
-import Data.List (nub)
+import Data.List (isSuffixOf, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Set qualified as S
@@ -22,6 +22,7 @@ import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Ste
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..), dedented)
 import Olifant.Language.Header (headerEnd)
+import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
 import Olifant.Template (Value (..), render)
@@ -35,16 +36,32 @@ fillPhase :: Monad m => Workspace m -> Tools m -> Map Text (Verify [Text]) -> [(
 fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   Nothing -> pure (base, holes, [])
   Just _ | null holes -> pure (base, holes, [])
-  Just mf -> case toolSteering tools of
-    Nothing -> loop mf 1 M.empty [] [] [Try h 0 [] | h <- holes]
-    -- a steered loop starts after its seed's rounds, each hole with its
-    -- previous attempts
-    Just st -> let Seed done previous = stSeed st in loop mf (done + 1) M.empty [] [] [Try h 0 (M.findWithDefault [] (holeName (phSite h)) previous) | h <- holes]
+  Just mf -> do
+    -- each file's top-level unit names, once, for the files with a hole of
+    -- lines (what tells a whole-file answer)
+    tops <- fmap M.fromList . forM (nub [holeFile (phSite h) | h <- holes, linesKind (phSite h)]) $ \p ->
+      (p,) <$> maybe (pure []) (\l -> topNames l (M.findWithDefault "" p base)) (langOf p)
+    case toolSteering tools of
+      Nothing -> loop tops mf 1 M.empty [] [] [Try h 0 [] | h <- holes]
+      -- a steered loop starts after its seed's rounds, each hole with its
+      -- previous attempts
+      Just st -> let Seed done previous = stSeed st in loop tops mf (done + 1) M.empty [] [] [Try h 0 (M.findWithDefault [] (holeName (phSite h)) previous) | h <- holes]
   where
+    -- by the language's [unit] query (spans at column 0), else its
+    -- [unit] name over the lines at column 0
+    topNames l text
+      | null (langUnitKinds l) = pure (topLevelNames l text)
+      | otherwise =
+          querySyntax (toolSyntax tools) l (object ["any" .= [object ["kind" .= k] | k <- langUnitKinds l]]) text <&> \case
+            Left _ -> topLevelNames l text
+            Right ms ->
+              let ls = T.splitOn "\n" text
+                  nameIn a z = listToMaybe [n | i <- [a .. z], Just n <- [unitNameOf l (fromMaybe "" (listToMaybe (drop i ls)))]]
+               in nub [n | Match (a, c) (z, _) _ _ <- ms, c == 0, Just n <- [nameIn a z]]
     -- accepted: hole name -> (site, fill, attempts, filler); notes: why a check could not run
     -- @stuck@: holes given up on for a reason no retry can change (their
     -- tests could not run at all: review I3)
-    loop mf r accepted notes stuck pending = toolCancelled tools >>= \case
+    loop tops mf r accepted notes stuck pending = toolCancelled tools >>= \case
      True -> pure (finish accepted notes (unfilled (stuck ++ [(t, "cancelled") | t <- pending])))
      False -> do
       toolProgress tools (Filling [name t | t <- pending] r (mfName mf))
@@ -60,12 +77,12 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
                 -- says again, climb or pause; the filler's retries do not count
                 forM_ newlyStuck (\(t, why) -> toolProgress tools (Unfilled (name t) why))
                 stSteer st (RoundState r (mfName mf) [RoundHole (name t) why (tryPrevious t) run | (t, why, run) <- failed]) >>= \case
-                  Again -> loop mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
-                  Climb mf' -> loop mf' (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
+                  Again -> loop tops mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
+                  Climb mf' -> loop tops mf' (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
                   Pause why -> pure (finish accepted' notes' (unfilled (stuck ++ newlyStuck) ++ [(t, HolePaused why) | (t, _) <- failed']))
             | otherwise = do
                 forM_ newlyStuck (\(t, why) -> toolProgress tools (Unfilled (name t) why))
-                loop mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
+                loop tops mf (r + 1) accepted' notes' (stuck ++ newlyStuck) (map fst failed')
             where
               unsteered = isNothing (toolSteering tools)
               unrunnable (_, why, _) = "the tests could not run" `T.isPrefixOf` why
@@ -83,9 +100,9 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           cut <- forM [(t, f) | t <- tried, Just f <- [M.lookup (name t) fills]] $ \(t, f) -> case cutFill (site t) f of
             Just (f', n) -> toolProgress tools (CutToHole (name t) n f') >> pure (t, f')
             Nothing -> pure (t, f)
-          let wholeFiles = [(t, f, wholeFile) | (t, f) <- cut, answersAFile (site t) f]
+          let wholeFiles = [(t, f, wholeFile) | (t, f) <- cut, answersAFile tops (site t) f]
           forM_ wholeFiles (\(t, _, _) -> toolProgress tools (WholeFile (name t)))
-          let offered = [(t, f) | (t, f) <- cut, not (answersAFile (site t) f)]
+          let offered = [(t, f) | (t, f) <- cut, not (answersAFile tops (site t) f)]
               escaped = wholeFiles ++ [(t, f, why) | (t, f) <- offered, Just why <- [escapes f]]
           parsed <- forM [(t, f) | (t, f) <- offered, Nothing <- [escapes f]] $ \(t, f) -> (t,f,) <$> parses (site t) (snd (splitImports (importsOf (holeFile (site t))) f))
           let badParse = escaped ++ [(t, f, "does not parse as " <> holeKind (site t)) | (t, f, False) <- parsed]
@@ -238,8 +255,8 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           | passing -> Right (True, "", Just run)
           | otherwise -> Right (False, passesAgainstRaise, Just run)
       where
-        (file, test) = (T.unpack (fst (T.breakOn "::" tid)), snd (T.breakOnEnd "::" tid))
-        (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan test)
+        (file, test) = (T.unpack (fst (T.breakOn "::" tid)), T.drop 2 (snd (T.breakOn "::" tid)))
+        (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan lang test)
         inside l = l >= from && l <= to
 
     -- A kill: the tests that passed before and the new ones (KEEP) pass on
@@ -317,13 +334,13 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     siblings s = [holePlaceholder (phSite h) | h <- holes, holeFile (phSite h) == holeFile s, holeName (phSite h) /= holeName s]
 
     cutFill s f
-      | linesKind s = cutToHole (importsOf (holeFile s)) (siblings s) (M.findWithDefault "" (holeFile s) base) (holeLine s) f
+      | linesKind s, Just l <- langOf (holeFile s) = cutToHole l (importsOf (holeFile s)) (siblings s) (M.findWithDefault "" (holeFile s) base) (holeLine s) f
       | otherwise = Nothing
 
-    -- A Python fill of lines that, its leading imports aside, still holds
-    -- a test, or a def or class the file defines, at its own top level
-    -- ('looksLikeFile'): a file, not the hole's lines.
-    answersAFile s f = linesKind s && fmap langName (langOf (holeFile s)) == Just "python" && looksLikeFile (M.findWithDefault "" (holeFile s) base) (snd (splitImports (importsOf (holeFile s)) f))
+    -- A fill of lines that, its leading imports aside, still holds a test,
+    -- or a unit the file defines, at its own top level ('looksLikeFile'):
+    -- a file, not the hole's lines.
+    answersAFile tops s f = linesKind s && maybe False (\l -> looksLikeFile l (M.findWithDefault [] (holeFile s) tops) (snd (splitImports (importsOf (holeFile s)) f))) (langOf (holeFile s))
 
     langOf = languageFor (toolLanguages tools)
     importsOf p = langImports =<< langOf p
@@ -563,8 +580,9 @@ cutSentence n = "cut to the hole (" <> T.pack (show n) <> " lines dropped)"
 -- the file lacks are kept, first (IMPORTS, the language's). The fill as
 -- cut and how many of its lines were dropped; Nothing when nothing is cut
 -- (no anchor, or one held twice), or nothing would be left.
-cutToHole :: Maybe Text -> [Text] -> Text -> Int -> Text -> Maybe (Text, Int)
-cutToHole imports siblings text line f = do
+cutToHole :: Language -> Maybe Text -> [Text] -> Text -> Int -> Text -> Maybe (Text, Int)
+cutToHole lang imports siblings text line f = do
+  opens <- langOpensBlock lang
   let fl = T.splitOn "\n" f
       ls = T.splitOn "\n" text
       hole = fromMaybe "" (listToMaybe (drop (line - 1) ls))
@@ -575,7 +593,7 @@ cutToHole imports siblings text line f = do
       next = listToMaybe . filter (not . blank)
       siblingAbove = maybe False sibling (next above)
       siblingBelow = maybe False sibling (next below)
-  opener <- listToMaybe [l | l <- above, not (blank l), indentOf l < indentOf hole, ":" `T.isSuffixOf` T.stripEnd (uncommented l)]
+  opener <- listToMaybe [l | l <- above, not (blank l), indentOf l < indentOf hole, matches opens (T.stripEnd (uncommented l))]
   -- the opener, held once: all before it, and after its block
   i <- case [i | (i, l) <- zip [0 :: Int ..] fl, norm l == norm opener] of
     [i] | i < length fl - 1 -> Just i
@@ -591,41 +609,55 @@ cutToHole imports siblings text line f = do
       beforeBelow = case saying below of
         Just b | k : _ <- [k | (k, l) <- zip [0 :: Int ..] inBlock, k > 0, indentOf l == base, norm l == norm b] -> take k inBlock
         _ -> inBlock
-      -- beside another hole: this side of the first assert
-      asserting l = let st = T.strip l in st == "assert" || any (`T.isPrefixOf` st) ["assert ", "assert("]
+      -- beside another hole: this side of the first assertion
+      asserting l = any (`matches` l) (langAssertion lang)
       body = trimmed beforeBelow
       firstAssert = listToMaybe [k | (k, l) <- zip [0 :: Int ..] body, asserting l]
       split
         | siblingBelow = case firstAssert of
             Just k | k > 0 -> take k body
-            _ -> [T.replicate base " " <> "pass"]
+            _ -> [T.replicate base " " <> e | Just e <- [langEmptyStatement lang]]
         | siblingAbove = maybe body (`drop` body) firstAssert
         | otherwise = body
       kept = trimmed split
       whole = trimmed fl
       result = brought ++ ["" | not (null brought)] ++ kept
-  if null kept || kept == whole then Nothing else Just (T.intercalate "\n" result, length whole - length kept - length brought)
+      -- an arrangement with nothing before the assertion, in a language
+      -- with no empty statement: an empty side
+      emptySide = siblingBelow && null kept
+  if (null kept && not emptySide) || kept == whole then Nothing else Just (T.intercalate "\n" result, length whole - length kept - length brought)
   where
     blank = T.null . T.strip
     norm = T.filter (not . isSpace)
     indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
     trimmed = reverse . dropWhile blank . reverse . dropWhile blank
-    uncommented l = fst (T.breakOn "#" l)
+    uncommented l = if T.null (langComment lang) then l else fst (T.breakOn (langComment lang) l)
 
--- | Whether code for a hole of lines (in the file TEXT) is a file: at its
--- own top level (dedented), a test's def, or a def or class of a name the
--- file defines at its own top level. An import alone is no file (a local
--- import is code; leading ones join the file's).
-looksLikeFile :: Text -> Text -> Bool
-looksLikeFile text code = any defines tops
+-- | Whether code for a hole of lines is a file, in LANG, given the file's
+-- top-level unit names NAMES: at its own top level (dedented), a test (by
+-- the `[test] unit` rules), or a unit (named by `[unit] name`) of a name
+-- the file defines at its own top level. An import alone is no file (a
+-- local import is code; leading ones join the file's).
+looksLikeFile :: Language -> [Text] -> Text -> Bool
+looksLikeFile lang names code = any defines tops || any (atTop . fst . tuLines) tests
   where
-    tops = [l | l <- dedented code, not (" " `T.isPrefixOf` l), not ("\t" `T.isPrefixOf` l)]
-    defined = [n | l <- T.splitOn "\n" text, not (" " `T.isPrefixOf` l), not ("\t" `T.isPrefixOf` l), Just n <- [defined' l]]
-    defined' l = do
-      rest <- listToMaybe (mapMaybe (`T.stripPrefix` T.strip l) ["def ", "async def ", "class "])
-      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
-      if T.null n then Nothing else Just n
-    defines l = maybe False (\n -> "test" `T.isPrefixOf` n || n `elem` defined) (defined' l)
+    ls = dedented code
+    top l = not (" " `T.isPrefixOf` l) && not ("\t" `T.isPrefixOf` l)
+    tops = filter top ls
+    defines l = maybe False (`elem` names) (unitNameOf lang l)
+    tests = maybe [] (\td -> testUnitsIn (testUnitRules td) (testAbove td) (T.intercalate "\n" ls)) (langTest lang)
+    atTop i = maybe False (\l -> top l && not (T.null (T.strip l))) (listToMaybe (drop (i - 1) ls))
+
+-- | The names of TEXT's units at column 0 by the language's `[unit] name`
+-- (when its `[unit]` query cannot run).
+topLevelNames :: Language -> Text -> [Text]
+topLevelNames lang text = nub [n | l <- T.splitOn "\n" text, not (" " `T.isPrefixOf` l), not ("\t" `T.isPrefixOf` l), Just n <- [unitNameOf lang l]]
+
+-- | A unit's name on its line, by the language's `[unit] name`.
+unitNameOf :: Language -> Text -> Maybe Text
+unitNameOf lang = \l -> listToMaybe (mapMaybe ($ l) namers)
+  where
+    namers = map regexName (langUnitNames lang)
 
 -- | What a fill whose tests failed is unfilled for begins with (each
 -- failing test's id and message follow, the last 40 lines kept).
@@ -638,21 +670,16 @@ passesAgainstRaise :: Text
 passesAgainstRaise = "this test passes against a body that raises: it asserts nothing about the function"
 
 -- | The lines (1-based) where a test's assertion may fail in a test file:
--- its first assert statement's line (`assert …`, not a name beginning
--- with it) to its last line (its def's body, the lines below
--- it deeper than the def or blank); none without a def of NAME or an
--- assert in it.
-assertionSpan :: Text -> Text -> Maybe (Int, Int)
-assertionSpan name text = case dropWhile (not . isDef . snd) numbered of
-  (_, d) : rest ->
-    let body = takeWhile (\(_, l) -> T.null (T.strip l) || indentOf l > indentOf d) rest
-        filled = [i | (i, l) <- body, not (T.null (T.strip l))]
-        isAssert l = let st = T.strip l in st == "assert" || any (`T.isPrefixOf` st) ["assert ", "assert("]
-     in case [i | (i, l) <- body, isAssert l] of
-          a : _ -> Just (a, maximum (a : filled))
-          [] -> Nothing
-  [] -> Nothing
-  where
-    numbered = zip [1 :: Int ..] (T.splitOn "\n" text)
-    indentOf = T.length . T.takeWhile (`elem` [' ', '\t'])
-    isDef l = let st = T.strip l in any (\p -> (p <> name <> "(") `T.isPrefixOf` st) ["def ", "async def "]
+-- the first line of the test NAME (its path below the file, joined by
+-- @::@; the test whose path ends so, by the `[test] unit` rules) that
+-- matches the language's `[test] assertion`, to the test's last line;
+-- none without such a test or an assertion in it.
+assertionSpan :: Language -> Text -> Text -> Maybe (Int, Int)
+assertionSpan lang name text = do
+  td <- langTest lang
+  let want = T.splitOn "::" name
+      ls = T.splitOn "\n" text
+  u <- listToMaybe [u | u <- testUnitsIn (testUnitRules td) (testAbove td) text, want `isSuffixOf` tuPath u]
+  let (a0, z) = tuLines u
+  a <- listToMaybe [i | i <- [a0 + 1 .. z], Just l <- [listToMaybe (drop (i - 1) ls)], any (`matches` l) (langAssertion lang)]
+  pure (a, z)

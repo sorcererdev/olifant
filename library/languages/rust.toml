@@ -13,6 +13,12 @@ arm_separator = ","
 line_length = 100
 placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"
+# A block opens at a line ending in `{`.
+opens_block = '[{][[:space:]]*$'
+
+# A test's assertion starts at its first assert!, assert_eq! or assert_ne!.
+[test]
+assertion = ['^[[:space:]]*(debug_)?assert(_eq|_ne)?!']
 
 # A path's module: what follows the crate's `src/`, joined by `::`; `lib`,
 # `main` and `mod` name their folder (`src/lib.rs` is the crate root). Tests

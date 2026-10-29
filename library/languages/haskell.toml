@@ -7,6 +7,9 @@ unit_words = "a top-level function, type or class name (Name), or a name bound i
 comment = "--"
 grammar = "haskell"
 indent = "  "
+# A block opens after `do`, `=` or `$` at a line's end; `pure ()` does nothing.
+opens_block = "((^|[^[:alnum:]_'])do|=|[$])[[:space:]]*$"
+empty_statement = "pure ()"
 placeholder = 'error "{= message =}"'
 branch = "{= pattern =} -> {= body =}"
 # After a case's only alternative, a new one goes after a blank line.
@@ -33,6 +36,8 @@ preset = "cabal-repl"
 # describe path (--match), a module's tests beside it as <Module>Spec.hs
 [test]
 preset = "hspec"
+# an expectation: `shouldBe` and its kin, or expectationFailure
+assertion = ['`should[A-Z][A-Za-z]*`', '(^|[^[:alnum:]_])expectationFailure([^[:alnum:]_]|$)']
 
 # Hole kinds (spec §6.3): the unfilled placeholder (must compile) and the code
 # a fill must parse in.

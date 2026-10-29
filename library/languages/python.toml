@@ -12,6 +12,9 @@ unit = { kinds = ["function_definition", "class_definition", "decorated_definiti
 comment = "#"
 grammar = "python"
 indent = "    "
+# A block opens at a line ending in `:`; `pass` is the statement that does nothing.
+opens_block = ':[[:space:]]*(#.*)?$'
+empty_statement = "pass"
 # Items in brackets end with a comma; an item joins a one-line container inline
 # while the line stays within 88 (Black's and Ruff's), else one item per line.
 separator = ","
@@ -48,9 +51,11 @@ write   = "from {= module =} import {= names =}"
 [check]
 preset = "pyright"
 # Tests: pytest through uv (a module's tests beside it as test_NAME.py,
-# unless a pack or the project says otherwise).
+# unless a pack or the project says otherwise). A test's assertion starts
+# at its first `assert` statement.
 [test]
 preset = "pytest"
+assertion = ['^[[:space:]]*assert([[:space:]]|\(|$)']
 
 # Hole kinds (spec §6.3). An expression placeholder is typed Any (getattr's
 # result), so it fits any type under pyright strict and needs no import; it

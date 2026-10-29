@@ -16,10 +16,7 @@ import Text.Regex.TDFA ((=~))
 -- | Lines that still branch on a language, each with the milestone that
 -- removes it.
 allowed :: [(FilePath, Text)]
-allowed =
-  [ -- milestone 3: [test] shapes (a fill that answers a whole file)
-    ("src/Olifant/Generation/FillPhase.hs", "answersAFile s f = linesKind s && fmap langName (langOf (holeFile s)) == Just \"python\" && looksLikeFile (M.findWithDefault \"\" (holeFile s) base) (snd (splitImports (importsOf (holeFile s)) f))")
-  ]
+allowed = []
 
 branches :: Text -> Bool
 branches l = T.unpack l =~ ("langName[^\n]*(==|/=)[[:space:]]*(Just[[:space:]]+)?\"" :: String) || T.unpack l =~ ("python[[:space:]]*\\|\\|" :: String)
