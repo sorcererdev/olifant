@@ -28,6 +28,14 @@ container = { kind = "data_constructors", inside = { kind = "data_type", regex =
 items = { kind = "data_constructor" }
 example = "end of data CatalogError"
 
+# A function's outermost do block; its items are its statements (`end of
+# do in spec`: where an hspec stub's it goes, before any helper after spec).
+[targets.do_in]
+phrase = "do in FUNCTION"
+container = { kind = "do", inside = { any = [{ kind = "bind" }, { kind = "function" }], has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" }, not = { inside = { kind = "do", stopBy = "end" } } }
+items = { any = [{ kind = "exp" }, { kind = "bind" }, { kind = "let" }] }
+example = "end of do in spec"
+
 [check]
 # `cabal repl` over the package's library, -fno-code, its builddir kept in
 # Olifant's cache (a slot per check: exclusive)

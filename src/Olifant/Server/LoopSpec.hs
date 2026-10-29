@@ -247,6 +247,17 @@ haskellStubSpec = describe "a Haskell test's stub (hspec)" $ do
           [ "module Olifant.Foo.BarSpec (spec) where", "", "import Test.Hspec", "import Olifant.Foo.Bar", "", "spec :: Spec", "spec = describe \"Olifant.Foo.Bar\" $ do", "  it \"other\" $ do", "    1 `shouldBe` 1"
           , "", "  it \"baz\" $ do", "    expectationFailure \"write this test\"" ]
       (saLine a, saName a) `shouldBe` (11, "Olifant.Foo.Bar.baz")
+  it "a Spec that ends with a helper: the it at the end of spec's do, not inside the helper" $ do
+    let helped = existing <> "\nhelper :: IO ()\nhelper = do\n  pure ()\n"
+    withHaskellProject [(bar, barText), (barSpec, helped)] $ \dir s -> do
+      (_, r) <- stubbedIn dir s
+      a <- either (fail . T.unpack) pure r
+      applyEdit (saEdit a) helped
+        `shouldBe` T.unlines
+          [ "module Olifant.Foo.BarSpec (spec) where", "", "import Test.Hspec", "import Olifant.Foo.Bar", "", "spec :: Spec", "spec = describe \"Olifant.Foo.Bar\" $ do", "  it \"other\" $ do", "    1 `shouldBe` 1"
+          , "", "  it \"baz\" $ do", "    expectationFailure \"write this test\""
+          , "", "helper :: IO ()", "helper = do", "  pure ()" ]
+      (saLine a, saName a) `shouldBe` (11, "Olifant.Foo.Bar.baz")
   it "a name the Spec has already: baz_2" $
     withHaskellProject [(bar, barText), (barSpec, existing <> "\n  it \"baz\" $ do\n    pure ()\n")] $ \dir s -> do
       (_, r) <- stubbedIn dir s
