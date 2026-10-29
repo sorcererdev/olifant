@@ -14,12 +14,11 @@ packLanguage name pack = either (error . T.unpack) id . parseOverShipped name pa
 
 spec :: Spec
 spec = do
-  it "olifant's own haskell.toml: the six capabilities of milestone 1 present; no mutation" $ do
+  it "olifant's own haskell.toml: the six capabilities of milestone 1 and the stub present; no mutation" $ do
     hs <- packLanguage "haskell" ".olifant"
     map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "test selection", "mutation", "stub"]
-    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True ++ [False, False]
-    lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "stubs for other test formats come with [test] stub")
-    lookup "stub" [(capName c, capFix c) | c <- capabilities hs] `shouldBe` Just (Just "stubs for other test formats come with [test] stub")
+    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True ++ [False, True]
+    lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] stub")
     lookup "mutation" [(capName c, capFix c) | c <- capabilities hs] `shouldBe` Just Nothing
     lookup "mutation" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[[mutate]]")
     lookup "units" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[unit] kinds (ast-grep), named by [unit] name, joined")
@@ -34,7 +33,7 @@ spec = do
                  , Right "[test] unit, above"
                  , Right "pytest ids"
                  , Right "[[mutate]] (17 operators)"
-                 , Right "built in (pytest shape)"
+                 , Right "[test] stub"
                  ]
   it "a bare language: eight absences, each naming its key" $ do
     let Right bare = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n"
@@ -46,7 +45,7 @@ spec = do
                  , Left "[test] unit"
                  , Left "[test] select (whole files run)"
                  , Left "[[mutate]]"
-                 , Left "stubs for other test formats come with [test] stub"
+                 , Left "[test] stub"
                  ]
   it "a check through convert says so" $ do
     let Right l = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\nconvert = [\"c\"]\n"

@@ -77,14 +77,24 @@ function with `<leader>ms`.
 ## Stubbing a test
 
 `:Durandal stub` (`<leader>ms`) with the cursor in a function, a method or a class (a decorator
-line counts as its def) appends a new test to the end of its test file: `test_<name>`, the unit's
-name in snake case (`CloseTable` is `test_close_table`; `_2`, `_3` when the file already has it),
-with the unit's import (a test file that does not exist yet is created, starting with it; a file
-without it gains it among its imports), a body of `...` and an `assert ...`. The test file opens
-with the cursor on the name. Nothing is conjured. On the wire this is `olifant/stub` with
-`{textDocument, position}`, answering `{file, line, name, edits}`. It is refused in one sentence:
-in a test file (stub writes a test from its module), or outside any function or class. Each stub
-is a line in the step log (`stub person <module>::<unit> stubbed <name>`).
+line counts as its def; the innermost unit of the language's `[unit] kinds` is the one) adds a new
+test to its test file, as the language's `[test.stub]` writes it
+([chapter 9](09-packs-and-language-adapters.md#test-formats)). Its name is `[test] name`
+over the unit's name in words: pytest's `test_<name>` in snake case (`CloseTable` is
+`test_close_table`), hspec's `it "<name>"`, Rust's `fn <name>`; `_2`, `_3` when the file already
+has a test of that name. The unit's import (`[imports] write`) joins the file's imports; a test
+file that does not exist yet is created from the stub's `file` head (Python: the import; Haskell:
+`module …Spec (spec) where`, the import, `import Test.Hspec`, `spec = describe "<Module>" $ do`).
+The body is red where the language allows it: Python's `...` and `assert ...`, hspec's
+`expectationFailure "write this test"`, Rust's `todo!("write this test")`. Rust's test goes at the
+end of the file's own `mod tests` (opened when there is none). The test file opens with the cursor
+on the test. Nothing is conjured. On the wire this is `olifant/stub` with `{textDocument,
+position}`, answering `{file, line, name, edits}` (`name` as a plan anchor names the test: its
+path joined by `.`, `Olifant.Foo.Bar.baz` for hspec). It is refused in one sentence: in a test file
+(stub writes a test from its module), outside any function or class, or in a language with no
+`[test.stub]` ("no `[test] stub` for …"). A new Haskell Spec module is not in the cabal file's
+module list until `olifant sync` adds it. Each stub is a line in the step log (`stub person
+<module>::<unit> stubbed <name>`).
 
 A survivor of `mutate` has its own stub ([below](#mutating)): named from the mutant, the mutant as
 a comment in its body.
@@ -443,8 +453,8 @@ say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-hol
 
 - **Mutation ships for Python only.** Another language mutates once its `[[mutate]]` operators
   are written; until then `mutate` says `no [[mutate]] operators for <language>`.
-- **A stub's import is Python's, and only the unit's** (or its class's): a name your assertion
-  uses beyond it you import yourself. A file importing it already (on one line or several, in
+- **A stub's import is only the unit's** (or its class's), by `[imports] write`: a name your
+  assertion uses beyond it you import yourself. A file importing it already (on one line or several, in
   brackets) gains nothing; one importing from its module gains the name there.
 - **A conjure sees** the test file (a test's conjure, the module), the project modules either one
   imports, and what those import (ports, models; at most 8 files, 120 lines each).

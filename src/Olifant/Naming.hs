@@ -3,6 +3,7 @@ module Olifant.Naming
   ( Name
   , nameWords
   , parseName
+  , wordsName
   , Case (..)
   , allCases
   , caseName
@@ -42,6 +43,11 @@ caseName = \case
 
 caseFromText :: Text -> Maybe Case
 caseFromText t = lookup t [(caseName c, c) | c <- allCases]
+
+-- | A name of these words as they are, lowercased (no parsing: a word may
+-- start with a digit). Empty words are kept (`a__b` joins back as it was).
+wordsName :: [Text] -> Name
+wordsName = Name . map T.toLower
 
 -- | Parse an identifier written in any supported case.
 parseName :: Text -> Either Text Name

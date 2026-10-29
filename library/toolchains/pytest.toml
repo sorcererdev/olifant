@@ -14,3 +14,12 @@ unit = [
   '^[[:space:]]*class[[:space:]]+(Test[[:alnum:]_]*)',
 ]
 above = '^[[:space:]]*@'
+# A new test: `test_` and its words in snake case; its body `...` and
+# `assert ...`, two blank lines before it; a new file starts with the unit's
+# import.
+name = "test_{= words|snake =}"
+
+[test.stub]
+test = "def {= name =}() -> None:\n{= note =}{= indent =}...\n{= indent =}assert ...\n"
+file = "{= import =}\n\n\n"
+gap = 2

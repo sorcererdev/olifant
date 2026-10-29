@@ -18,6 +18,7 @@ lone_arm_spaced = true
 # Imports: a Spec imports its module whole (`import Olifant.Plans`); a
 # path's module is its folders and name, less `src/` or `test/`, dotted.
 [imports]
+line = "^import[[:space:]]+(qualified[[:space:]]+)?[A-Z][A-Za-z0-9_.']*"
 write = "import {= module =}"
 module_of = { strip = ["^src/", "^test/"], separator = "." }
 

@@ -22,13 +22,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Olifant.App (Ports (..), Project)
-import Olifant.Language (processRunner, scriptedRunner)
+import Olifant.Language (processRunner, scriptedRunner, shippedLanguage)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (canonicalizePath, getTemporaryDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import Olifant.LspSpec (needsUv, plainPorts, withPython)
 import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
-import Olifant.Server (newServerState, projectFor)
+import Olifant.Server (newServerState, projectFor, stubAt)
 import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
 import Olifant.Server.ReviewReadings (applyFactsText)
@@ -42,7 +42,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
-spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> excerptsSpec
+spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> haskellStubSpec >> excerptsSpec
 
 workSetSpec :: Spec
 workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
@@ -194,6 +194,78 @@ withHaskellLoop script act = do
     initRepo dir
     s0 <- newServerState plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache"), pTester = const (scriptedRunner script)}
     act dir s0
+
+-- | A project of the shipped haskell language (hspec's stub, ast-grep's
+-- syntax) holding FILES; a fresh state.
+withHaskellProject :: [(FilePath, Text)] -> (FilePath -> ServerState -> IO ()) -> IO ()
+withHaskellProject files act = do
+  tmp <- getTemporaryDirectory
+  withSystemTempDirectory "olifant-stub-hs" $ \dir0 -> do
+    dir <- canonicalizePath dir0
+    forM_ ((".olifant/config.toml", "languages = [\"haskell\"]\n") : files) (uncurry (write dir))
+    initRepo dir
+    s0 <- newServerState plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")}
+    act dir s0
+
+barText :: Text
+barText = T.unlines ["module Olifant.Foo.Bar (baz) where", "", "baz :: Int -> Int", "baz n = n + 1"]
+
+-- | A Haskell stub (hspec's [test.stub]): a new Spec module, an existing one
+-- without the import, a duplicate name, and a plan step's test.
+haskellStubSpec :: Spec
+haskellStubSpec = describe "a Haskell test's stub (hspec)" $ do
+  let bar = "src/Olifant/Foo/Bar.hs"
+      barSpec = "src/Olifant/Foo/BarSpec.hs"
+      stubbedIn dir s = stubAt (dir </> bar) 4 Nothing s
+  it "a module with no Spec yet: the Spec module, its import, its describe and the it" $
+    withHaskellProject [(bar, barText)] $ \dir s -> do
+      (_, r) <- stubbedIn dir s
+      a <- either (fail . T.unpack) pure r
+      (saFile a, saLine a, saName a) `shouldBe` (dir </> barSpec, 8, "Olifant.Foo.Bar.baz")
+      feCreate (saEdit a) `shouldBe` True
+      feText (saEdit a)
+        `shouldBe` T.unlines
+          [ "module Olifant.Foo.BarSpec (spec) where"
+          , ""
+          , "import Olifant.Foo.Bar"
+          , "import Test.Hspec"
+          , ""
+          , "spec :: Spec"
+          , "spec = describe \"Olifant.Foo.Bar\" $ do"
+          , "  it \"baz\" $ do"
+          , "    expectationFailure \"write this test\""
+          ]
+  let existing = T.unlines ["module Olifant.Foo.BarSpec (spec) where", "", "import Test.Hspec", "", "spec :: Spec", "spec = describe \"Olifant.Foo.Bar\" $ do", "  it \"other\" $ do", "    1 `shouldBe` 1"]
+  it "a Spec without the module's import: the import joins its imports, the it after its last line, a blank line before" $
+    withHaskellProject [(bar, barText), (barSpec, existing)] $ \dir s -> do
+      (_, r) <- stubbedIn dir s
+      a <- either (fail . T.unpack) pure r
+      feCreate (saEdit a) `shouldBe` False
+      let edited = applyEdit (saEdit a) existing
+      edited
+        `shouldBe` T.unlines
+          [ "module Olifant.Foo.BarSpec (spec) where", "", "import Test.Hspec", "import Olifant.Foo.Bar", "", "spec :: Spec", "spec = describe \"Olifant.Foo.Bar\" $ do", "  it \"other\" $ do", "    1 `shouldBe` 1"
+          , "", "  it \"baz\" $ do", "    expectationFailure \"write this test\"" ]
+      (saLine a, saName a) `shouldBe` (11, "Olifant.Foo.Bar.baz")
+  it "a name the Spec has already: baz_2" $
+    withHaskellProject [(bar, barText), (barSpec, existing <> "\n  it \"baz\" $ do\n    pure ()\n")] $ \dir s -> do
+      (_, r) <- stubbedIn dir s
+      a <- either (fail . T.unpack) pure r
+      saName a `shouldBe` "Olifant.Foo.Bar.baz_2"
+      applyEdit (saEdit a) (existing <> "\n  it \"baz\" $ do\n    pure ()\n") `shouldSatisfy` T.isSuffixOf "\n\n  it \"baz_2\" $ do\n    expectationFailure \"write this test\"\n"
+  it "a step's test on Haskell: named by its words, its child anchored at the describe path" $
+    withHaskellProject [(bar, barText), (barSpec, existing), ("plans/t.md", "# T\n\n## S\n\n- [ ] answers zero @src/Olifant/Foo/Bar.hs:baz\n")] $ \dir s -> do
+      (_, r) <- stepStub (dir </> "plans/t.md") 4 s
+      st <- either (fail . T.unpack) pure r
+      stChild st `shouldBe` "  - test: answers zero @src/Olifant/Foo/BarSpec.hs:Olifant.Foo.Bar.answers_zero \9675"
+      applyEdit (saEdit (stAnswer st)) existing `shouldSatisfy` T.isInfixOf "  it \"answers zero\" $ do"
+
+-- | A file edit applied to TEXT (its span replaced; ASCII columns).
+applyEdit :: FileEdit -> Text -> Text
+applyEdit e text = T.take (offset l1 c1) text <> feText e <> T.drop (offset l2 c2) text
+  where
+    ((l1, c1), (l2, c2)) = feRange e
+    offset l c = sum [T.length x + 1 | x <- take l (T.splitOn "\n" text)] + c
 
 -- | 'withLoop' before the project is loaded.
 withLoopPorts :: Text -> [(FilePath, Text)] -> (Ports -> FilePath -> IO a) -> IO a
@@ -647,10 +719,11 @@ stepTestsSpec = describe "Olifant.Server.Loop (a step's tests)" $ do
         , "- [ ] no anchor here", "- [ ] gone @" <> T.pack table <> ":Nope" ]
       planPath dir = dir </> "plans/t.md"
   it "(a) testNameFor: the step's words in snake case, past its anchor and marks" $ do
-    testNameFor "the repository answers closed_on" `shouldBe` "test_the_repository_answers_closed_on"
-    testNameFor "- [ ] Count the seats!  @src/a.py:F \10003 abc1234" `shouldBe` "test_count_the_seats"
-    testNameFor "close -- the   table" `shouldBe` "test_close_the_table"
-    testNameFor "- [ ] mail user@host about it @src/a.py:F" `shouldBe` "test_mail_user_host_about_it"
+    py <- shippedLanguage "python" []
+    testNameFor py "the repository answers closed_on" `shouldBe` "test_the_repository_answers_closed_on"
+    testNameFor py "- [ ] Count the seats!  @src/a.py:F \10003 abc1234" `shouldBe` "test_count_the_seats"
+    testNameFor py "close -- the   table" `shouldBe` "test_close_the_table"
+    testNameFor py "- [ ] mail user@host about it @src/a.py:F" `shouldBe` "test_mail_user_host_about_it"
   it "(b) stepStub: a test named for the step in the unit's test file, and its child line" $
     withLoop plan [] $ \s _ dir -> do
       (s1, r) <- stepStub (planPath dir) 4 s

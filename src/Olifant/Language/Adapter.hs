@@ -8,6 +8,7 @@ module Olifant.Language.Adapter
   , supportOf
   , TestDef (..)
   , UnitRule (..)
+  , StubDef (..)
   , Select (..)
   , LinesFormat (..)
   , HoleKind (..)
@@ -253,7 +254,22 @@ data TestDef = TestDef
   , testInstall :: Maybe Text
   -- ^ `install`: how to install the runner (doctor's fix when it is missing)
   , testAbove :: Maybe Text
+  , testStub :: Maybe StubDef
+  -- ^ `[test.stub]`: what a new test looks like and where it goes
+  , testNaming :: Maybe Text
+  -- ^ `name`: a new test's name, a template over @{= words =}@
   }
+  deriving stock (Eq, Show)
+
+-- | `[test.stub]`: a new test. 'sdTest' (`test`), its text, a template
+-- over @{= name =}@, @{= unit =}@, @{= module =}@, @{= indent =}@ and
+-- @{= note =}@ (a survivor's line, or empty); 'sdFile' (`file`), a new test
+-- file's head, over the same and @{= import =}@; 'sdGap' (`gap`), the blank
+-- lines before a new test in a file that has some; 'sdAt' (`at`), a target
+-- phrase (`end of mod tests`) the test goes at instead of the file's end;
+-- 'sdOpen' (`open`), the text appended at the file's end when `at` finds no
+-- target, the test inside it.
+data StubDef = StubDef {sdTest :: Text, sdFile :: Maybe Text, sdGap :: Int, sdAt :: Maybe Text, sdOpen :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | One `[test] unit` entry: an expression whose line starts a test or a
@@ -440,7 +456,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above"] (foldr M.delete t0 testShapeKeys)
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -467,6 +483,19 @@ languageFrom presets name grammarDir top = do
         <*> (fromMaybe [] <$> optional "files" (list text) t)
         <*> optional "install" text t
         <*> optional "above" (text >=> validRegex "[test] above") t
+        <*> optional "stub" (table >=> stubFrom) t
+        <*> optional "name" (text >=> templateOver "[test] name" ["words"]) t
+    templateOver key vars src = do
+      tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
+      if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
+    stubFrom t = do
+      onlyKeys ["test", "file", "gap", "at", "open"] t
+      let vars = ["name", "unit", "module", "indent", "note"]
+      StubDef <$> required "test" (text >=> templateOver "[test.stub] test" vars) t
+        <*> optional "file" (text >=> templateOver "[test.stub] file" ("import" : vars)) t
+        <*> (maybe 1 fromIntegral <$> optional "gap" (int >=> \n -> if n >= 0 then Right n else Left "`[test.stub] gap`: expected a number of blank lines, 0 or more") t)
+        <*> optional "at" text t
+        <*> optional "open" text t
     unitRuleFrom = \case
       TText re -> (\r -> UnitRule r Nothing Nothing) <$> validRegex "[test] unit" re
       TTable u -> do
