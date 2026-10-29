@@ -14,7 +14,7 @@ spec = describe "Olifant.Language.Presets" $ do
   it "every shipped toolchain parses" $ do
     fmap (const ()) (presetsFrom "shipped" shippedToolchains) `shouldBe` Right ()
     presetNames shippedPresets "check" `shouldBe` ["cabal-repl", "cargo", "pyright"]
-    presetNames shippedPresets "test" `shouldBe` ["hspec", "pytest"]
+    presetNames shippedPresets "test" `shouldBe` ["cargo-test", "hspec", "pytest"]
   it "a toolchain file has one table" $ do
     let Left why = presetsFrom "pack p" [("x", T.unlines ["[check]", "format = 'sarif'", "[test]", "format = 'tap'"])]
     why `shouldSatisfy` T.isInfixOf "toolchains/x.toml"

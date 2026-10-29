@@ -1,0 +1,25 @@
+
+running 3 tests
+test rates::tests::adds ... ok
+test tests::it_works ... ok
+test rates::tests::fails ... FAILED
+
+failures:
+
+---- rates::tests::fails stdout ----
+
+thread 'rates::tests::fails' (158928034) panicked at src/rates.rs:16:9:
+assertion `left == right` failed
+  left: 6
+ right: 7
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    rates::tests::fails
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+     Running unittests src/lib.rs (target/debug/deps/money-71aa31e1c20ab543)
+error: test failed, to rerun pass `--lib`

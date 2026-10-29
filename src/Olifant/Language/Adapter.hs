@@ -44,6 +44,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
+import Olifant.Anchor.Phrase (parsePhrase)
 import Olifant.Language.Presets (Presets (..), applyPreset, shippedPresets)
 import Olifant.Library (shippedLanguages)
 import Olifant.Language.Rule
@@ -268,8 +269,11 @@ data TestDef = TestDef
 -- lines before a new test in a file that has some; 'sdAt' (`at`), a target
 -- phrase (`end of mod tests`) the test goes at instead of the file's end;
 -- 'sdOpen' (`open`), the text appended at the file's end when `at` finds no
--- target, the test inside it.
-data StubDef = StubDef {sdTest :: Text, sdFile :: Maybe Text, sdGap :: Int, sdAt :: Maybe Text, sdOpen :: Maybe Text}
+-- target, over the same and @{= test =}@ (the test, inside it);
+-- 'sdElsewhere' (`elsewhere`), an expression for a line saying the tests
+-- live in another file (Rust's `mod tests;`), its last group that file's
+-- name: the stub then refuses, naming it.
+data StubDef = StubDef {sdTest :: Text, sdFile :: Maybe Text, sdGap :: Int, sdAt :: Maybe Text, sdOpen :: Maybe Text, sdElsewhere :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | One `[test] unit` entry: an expression whose line starts a test or a
@@ -282,9 +286,11 @@ data UnitRule = UnitRule {urPattern :: Text, urAfter :: Maybe Text, urName :: Ma
   deriving stock (Eq, Show)
 
 -- | `[test.select]`: argument templates over @{= group =}@ (the file's
--- `file_group`) and @{= name =}@ (the test's segments below its file,
--- joined by @/@): 'selTest' for a test id, 'selFile' for a file's.
-data Select = Select {selTest :: Text, selFile :: Text}
+-- `file_group`, else its module by `[imports] module_of`) and @{= name =}@
+-- (the test's segments below its file, joined by 'selJoin', key `join`,
+-- default @/@): 'selTest' for a test id, 'selFile' for a file's. Each is
+-- one argument (a string) or several (a list: `["--exact", "…"]`).
+data Select = Select {selTest :: [Text], selFile :: [Text], selJoin :: Text}
   deriving stock (Eq, Show)
 
 -- | One layer of a language: where it comes from (`shipped`, `pack NAME`,
@@ -372,8 +378,9 @@ languageFrom presets name grammarDir top = do
   -- when the table holds only shapes
   testTable <- optional "test" table top
   assertion <- maybe (Right []) (\t -> fromMaybe [] <$> optional "assertion" (list (text >=> validRegex "[test] assertion")) t) testTable
+  let hasModuleOf = maybe False (\im -> imModuleOf im /= Nothing) importsDef
   test <- case testTable of
-    Just t | not (M.null (foldr M.delete t testShapeKeys)) -> Just <$> testFrom t
+    Just t | not (M.null (foldr M.delete t testShapeKeys)) -> Just <$> testFrom hasModuleOf t
     _ -> Right Nothing
   opensBlock <- optional "opens_block" (text >=> validRegex "opens_block") top
   emptyStatement <- optional "empty_statement" text top
@@ -455,7 +462,7 @@ languageFrom presets name grammarDir top = do
         <*> (fromMaybe True <$> optional "spaced" bool t)
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
-    testFrom t0 = do
+    testFrom hasModuleOf t0 = do
       onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
@@ -471,7 +478,7 @@ languageFrom presets name grammarDir top = do
       fileGroup <- optional "file_group" (text >=> validRegex "[test] file_group") t
       select <- optional "select" (table >=> selectFrom) t
       case select of
-        Just (Select a b) | any ("{= group =}" `T.isInfixOf`) [a, b], Nothing <- fileGroup -> Left "[test.select] uses {= group =}, which needs `file_group`"
+        Just (Select a b _) | any ("{= group =}" `T.isInfixOf`) (a ++ b), Nothing <- fileGroup, not hasModuleOf -> Left "[test.select] uses {= group =}, which needs `file_group` (or [imports] module_of)"
         _ -> Right ()
       TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
@@ -489,13 +496,14 @@ languageFrom presets name grammarDir top = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
     stubFrom t = do
-      onlyKeys ["test", "file", "gap", "at", "open"] t
+      onlyKeys ["test", "file", "gap", "at", "open", "elsewhere"] t
       let vars = ["name", "unit", "module", "indent", "note"]
       StubDef <$> required "test" (text >=> templateOver "[test.stub] test" vars) t
         <*> optional "file" (text >=> templateOver "[test.stub] file" ("import" : vars)) t
         <*> (maybe 1 fromIntegral <$> optional "gap" (int >=> \n -> if n >= 0 then Right n else Left "`[test.stub] gap`: expected a number of blank lines, 0 or more") t)
-        <*> optional "at" text t
-        <*> optional "open" text t
+        <*> optional "at" (text >=> \a -> first (\e -> "`[test.stub] at`: " <> e) (parsePhrase a) >> Right a) t
+        <*> optional "open" (text >=> templateOver "[test.stub] open" ("test" : vars)) t
+        <*> optional "elsewhere" (text >=> validRegex "[test.stub] elsewhere") t
     unitRuleFrom = \case
       TText re -> (\r -> UnitRule r Nothing Nothing) <$> validRegex "[test] unit" re
       TTable u -> do
@@ -504,13 +512,17 @@ languageFrom presets name grammarDir top = do
           <*> optional "name" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`[test] unit` `name`: expected a group number above 0") u
       other -> Left ("`[test] unit`: expected an expression or { pattern, after, name }, got " <> describeTree other)
     linesFrom t = do
-      onlyKeys ["pass", "fail", "nest", "failure", "end", "drop"] t
+      onlyKeys ["pass", "fail", "nest", "failure", "end", "drop", "split"] t
       let re k = text >=> validRegex ("[test.lines] " <> k)
       LinesFormat <$> required "pass" (re "pass") t <*> required "fail" (re "fail") t <*> (fromMaybe False <$> optional "nest" bool t)
         <*> optional "failure" (re "failure") t <*> optional "end" (re "end") t <*> optional "drop" (re "drop") t
+        <*> optional "split" (text >=> \x -> if T.null x then Left "`[test.lines] split`: expected a separator, not empty" else Right x) t
     selectFrom t = do
-      onlyKeys ["test", "file"] t
-      Select <$> required "test" text t <*> required "file" text t
+      onlyKeys ["test", "file", "join"] t
+      let args = \case
+            TText a -> Right [a]
+            v -> list text v
+      Select <$> required "test" args t <*> required "file" args t <*> (fromMaybe "/" <$> optional "join" text t)
     checkFrom t0 = do
       onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert", "install"] t0
       t <- applyPreset presets "check" t0

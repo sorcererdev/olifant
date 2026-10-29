@@ -608,6 +608,7 @@ holding one `[check]` or `[test]` table with the keys it fills in:
 | `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
 | `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml`; `tests_for = "{= dir =}/test_{= stem =}.py"`; `unit` finds `def test…` and `class Test…`, `above` its decorators |
 | `[check]` | `cabal-repl` | `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}` with `-fno-code`, GHC's JSON diagnostics and its missing-pattern warning; `ghc-json`; `exclusive`; context `*.cabal`, `cabal.project`, `cabal.project.freeze`. Loads the package's one library |
+| `[test]` | `cargo-test` | `cargo test --target-dir {= cache =}/test-target-{= context =} --`, then the selected tests, in the file's crate (`root = ["Cargo.toml"]`); `format = "lines"` over libtest's lines ([test formats](#test-formats)); one test by `--exact <module>::tests::<name>`, a file by `<module>::`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}.rs"`: tests live in the source file. Its stub writes a `#[test] fn` with `todo!("write this test")` at `end of mod tests`, opening `#[cfg(test)] mod tests { use super::*; … }` at the file's end when there is none, and refuses (`elsewhere`) when the file says `mod tests;` |
 | `[test]` | `hspec` | `cabal test -v0 --builddir={= cache =}/dist-test-{= context =} --test-show-details=direct --test-option=--format=checks --test-option=--no-color`, then the selected tests; `format = "lines"` over hspec's tree ([test formats](#test-formats)); one test by `--match=/{= group =}/{= name =}/`, a file by its module (`file_group`); `unit` finds `describe`/`it`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}Spec.hs"` |
 
 Any key you write beside `preset` wins over the preset's: `[check] preset = "pyright"` with your
@@ -708,6 +709,7 @@ built in. The others are generic: a framework that prints one of them needs no O
 | `failure` | a line that opens a failure block: group 1 the file, group 2 the line. The block runs to the next one, or to an `end` line; it is the k-th failed test's message, dedented |
 | `end` | where a block (and the tree) ends |
 | `drop` | lines left out of a block's message (hspec's `1) Module.group test`) |
+| `split` | a separator splitting a line's name into segments: cargo's `rates::tests::adds` with `split = "::"` is `rates` / `tests` / `adds`, so its module can be its file's group |
 
 hspec through cabal, as the [`hspec` preset](#presets-check-and-test) reads it:
 
@@ -719,6 +721,18 @@ nest    = true
 failure = '^  ([^[:space:]].*):([0-9]+):[0-9]+: *$'
 end     = '^  To rerun use|^Randomized with seed|^Finished in'
 drop    = '^  [0-9]+\) '
+```
+
+`cargo test` (libtest), as the [`cargo-test` preset](#presets-check-and-test) reads it:
+
+```toml
+[test.lines]
+pass    = '^test (.+) \.\.\. ok$'
+fail    = '^test (.+) \.\.\. FAILED$'
+split   = "::"
+failure = 'panicked at ([^ ]+):([0-9]+):[0-9]+:$'
+end     = '^failures:$'
+drop    = '^---- .* stdout ----$|^note: run with'
 ```
 
 **`tap`** — `ok N - name` passes, `not ok N - name` fails with its YAML block (between `---`
@@ -742,8 +756,10 @@ that could not judge the tests.
 
 **Which file a test is in.** A test id is `path::group::…::name`. A report's test goes to
 the file its report names (hspec's failure line, JUnit's `file`), when that is a file the
-run asked for; else to the file whose `file_group` is its first name (hspec's outermost
-`describe` is the module); else to the only file asked for. That first name is then dropped:
+run asked for; else to the file whose group leads its names (hspec's outermost `describe`
+is the module, its `file_group`; a Rust file's module, `money::rates`, by `[imports]
+module_of` when there is no `file_group`); else to the only file asked for. The group is then
+dropped, so `rates::tests::adds` in `src/rates.rs` is `src/rates.rs::tests::adds`:
 `Olifant.Plans` / `parsePlan` / `reads a step` in `src/Olifant/PlansSpec.hs` is
 `src/Olifant/PlansSpec.hs::parsePlan::reads a step`. A run with no tests is broken: with a
 non-zero exit, by the first 40 lines it printed (GHC's error when the spec does not
@@ -754,11 +770,11 @@ compile); with exit 0, "no tests ran".
 | key | |
 |---|---|
 | `file_group` | an expression over a test file's text; its last group is the file's outermost group. hspec's: `'^module[[:space:]]+([[:alnum:]_.]+)Spec'` |
-| `[test.select]` | how an id becomes an argument of `{= tests =}`. `test` for a test's id, `file` for a file's. `{= group =}` is the file's `file_group` (it needs that key), `{= name =}` the test's names below its file joined by `/`. hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. Without it, the ids themselves are the arguments |
+| `[test.select]` | how an id becomes arguments of `{= tests =}`. `test` for a test's id, `file` for a file's: each a template, or a list of them (several arguments; one repeated by several ids is given once). `{= group =}` is the file's group (its `file_group`, else its module by `[imports] module_of`; empty for a Rust crate's root), `{= name =}` the test's names below its file joined by `join` (default `/`). hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. cargo-test's: `test = ["--exact", "{= if group =}{= group =}::{= end =}{= name =}"]`, `file = "{= if group =}{= group =}::{= end =}"`, `join = "::"`. Without it, the ids themselves are the arguments |
 | `unit` | rules whose line starts a test or a group: how the editor finds the test at the cursor, and a plan step a test by name ([chapter 19](19-plans.md)). An entry is an expression (its last group the name) or a table `{ pattern, after, name }`: `after` is an expression a line above must match, looking past `above` lines (Rust's `{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '#\[test\]' }`: a `fn` is a test only under `#[test]`, with `#[should_panic]` between allowed); `name` is the group holding the name when it is not the last (hspec's string with escapes: group 3; `\"` in it reads `"`). A unit runs from its line to the line before the next non-blank line at its indentation or less, so a nested unit's path is its parents' names, then its own: pytest's `class TestX` / `def test_y` is `TestX::test_y`. pytest's rules are `pytest.toml`'s (`def test…`, async too, and `class Test…`); hspec's find `describe`/`context`/`it`/`specify`/`prop`. A language with no `unit` has no test at a line: a cursor runs the whole file, and a plan step's test cannot be found |
 | `assertion` | expressions over a line where a test's assertion starts: Python's `'^[[:space:]]*assert([[:space:]]|\(|$)'`, Rust's `assert!`/`assert_eq!`/`assert_ne!`, hspec's `` `shouldBe` `` and its kin or `expectationFailure`. A key of the language, not of the runner (presets do not fill it); a `[test]` table holding only it is no runner. It says where a new test must fail (red at its assertion, not before), and where a fill of a test's two holes (arrangement, assertion) is split |
 | `name` | a new test's name (a stub's, a plan step's test), a template over `{= words =}`: the step's words, or the unit's name split into words (`CloseTable` is `close table`). pytest's `test_{= words|snake =}`, hspec's `{= words|lower_words =}`, cargo-test's `{= words|snake =}`. Without it, the words joined by `_` |
-| `[test.stub]` | what a new test looks like (`:Durandal stub`, a plan step's test; [chapter 18](18-tdd-in-the-editor.md#stubbing-a-test)). `test`: its text, a template over `{= name =}`, `{= unit =}`, `{= module =}` (the unit's module, by `[imports] module_of`), `{= indent =}` (one level) and `{= note =}` (a survivor's line, its comment the language's, or empty). `file`: a new test file's head, over the same and `{= import =}` (the unit's import, by `[imports] write`); the test follows it directly. `gap` (default 1): blank lines before a test added to a file that has some. `at` (optional): a target phrase (`end of mod tests`) the test goes at instead of the file's end, and `open`: the text appended at the file's end when that target is not there, the test inside it. pytest's writes `def test_x() -> None:` with `...` and `assert ...`, two blank lines before; hspec's an `it` at one indent, its body `expectationFailure "write this test"`, one blank line before, and a new Spec module's head. A runner without it has no stub: "no `[test] stub` for …" |
+| `[test.stub]` | what a new test looks like (`:Durandal stub`, a plan step's test; [chapter 18](18-tdd-in-the-editor.md#stubbing-a-test)). `test`: its text, a template over `{= name =}`, `{= unit =}`, `{= module =}` (the unit's module, by `[imports] module_of`), `{= indent =}` (one level) and `{= note =}` (a survivor's line, its comment the language's, or empty). `file`: a new test file's head, over the same and `{= import =}` (the unit's import, by `[imports] write`); the test follows it directly. `gap` (default 1): blank lines before a test added to a file that has some. `at` (optional): a target phrase (`end of mod tests`) the test goes at instead of the file's end, and `open`: the text appended at the file's end when that target is not there, a template over the same and `{= test =}` (the test, inside it). `elsewhere` (optional): an expression for a line that says the tests live in another file, its last group that file's name (cargo-test's `mod tests;`): the stub refuses, "tests live in another file: tests.rs". pytest's writes `def test_x() -> None:` with `...` and `assert ...`, two blank lines before; hspec's an `it` at one indent, its body `expectationFailure "write this test"`, one blank line before, and a new Spec module's head. A runner without it has no stub: "no `[test] stub` for …" |
 | `above` | an expression for lines that belong to the unit below them: decorators (pytest's `'^[[:space:]]*@'`), attributes (Rust's `'^[[:space:]]*#\['`). A cursor on one is in that unit, and the unit's first line is the topmost of them (with a decorator's continuation lines) |
 
 **Anchor names.** A plan anchor names a test by its path joined by `.`, each run of characters

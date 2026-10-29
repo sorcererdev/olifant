@@ -18,7 +18,7 @@ import Control.Applicative ((<|>))
 import Data.Aeson (Value, eitherDecodeStrict, withObject, (.!=), (.:), (.:?))
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
-import Data.List (find, isSuffixOf)
+import Data.List (find, isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -83,7 +83,7 @@ parseLines lf out = attach blocks tests
         go bound ((_, p) : rest)
           | T.null (T.strip p) || isJust (testAt p) || indentOf p >= bound = go bound rest
           | otherwise = go (indentOf p) rest ++ [T.strip p]
-    segmentsOf i l n = (if lfNest lf then parents i l else []) ++ [n]
+    segmentsOf i l n = (if lfNest lf then parents i l else []) ++ maybe [n] (\sep -> filter (not . T.null) (T.splitOn sep n)) (lfSplit lf)
     -- (path, line, block lines) per failure match
     blocks = case failureRx of
       Nothing -> []
@@ -178,16 +178,17 @@ attribute files r = case file of
     samePath p f
       | isAbsolute p = splitDirectories f `isSuffixOf` splitDirectories p
       | otherwise = splitDirectories p == splitDirectories f
-    byGroup = case rpSegments r of
-      s : _ -> find (\(_, g) -> g == Just s) files
-      [] -> Nothing
+    -- a group of several segments (a Rust module, `money::rates`) leads them all
+    groupSegs = T.splitOn "::"
+    leads g ss = let gs = groupSegs g in not (null ss) && gs `isPrefixOf` ss
+    byGroup = find (\(_, g) -> maybe False (`leads` rpSegments r) g) files
     only = case files of
       [one] -> Just one
       _ -> Nothing
     file = byPath <|> byGroup <|> only
-    dropGroup g = \case
-      s : rest | Just s == g, not (null rest) -> rest
-      ss -> ss
+    dropGroup g ss = case g of
+      Just g' | leads g' ss, rest@(_ : _) <- drop (length (groupSegs g')) ss -> rest
+      _ -> ss
 
 -- | A run from what a report said: each test attributed to the requested
 -- files. No tests with a non-zero exit is broken, with the first 40

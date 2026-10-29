@@ -19,8 +19,10 @@ import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Anchor (Located (..), RenderedAnchor (..), Spacing (..), insertLines, resolveLayers)
 import Olifant.Generation.FillPhase (addImports)
-import Olifant.Language (ImportsDef (..), Language (..), ModuleOf (..), StubDef (..), TestDef (..), moduleOf)
+import Olifant.Language (ImportsDef (..), Language (..), ModuleOf (..), StubDef (..), TestDef (..), moduleOf, regexName)
+import System.FilePath (takeExtension)
 import Olifant.Language.TestUnits (TestUnit (..), anchorName, testUnitsIn)
 import Olifant.Mutate (Mutant (..))
 import Olifant.Naming (wordsName)
@@ -97,12 +99,31 @@ stubWith given path line0 survivor s0 =
             let hd' = if T.null (T.strip hd) then "" else hd
             pure (hd' <> test, length (T.lines hd') + 1)
           else do
+            -- the tests in another file (`mod tests;`): refused, naming it
+            case sdElsewhere sd >>= \re -> listToMaybe [n | l <- T.lines base, Just n <- [regexName re l]] of
+              Just other -> throwE ("tests live in another file: " <> other <> T.pack (takeExtension (siteTestRel site)))
+              Nothing -> pure ()
             let joined = case imported of
                   Just i -> addImports lang [i] base
                   Nothing -> base
                 kept = T.stripEnd joined
                 gap = T.replicate (sdGap sd + 1) "\n"
-            pure (kept <> gap <> test, length (T.splitOn "\n" kept) + sdGap sd + 1)
+                atEnd t = (kept <> gap <> t, length (T.splitOn "\n" kept) + sdGap sd + 1)
+            placed <- case sdAt sd of
+              Nothing -> pure Nothing
+              Just phrase -> Just <$> lift (resolveLayers (pSyntax (ssPorts s)) (Just lang) [PhraseAnchor phrase] joined)
+            case (placed, sdAt sd, sdOpen sd) of
+              -- at its target (`end of mod tests`), after the gap
+              (Just (Right loc), _, _) ->
+                let (first, t) = insertLines loc {locSpacing = NoSpacing} (T.replicate (sdGap sd) "\n" <> test) joined
+                 in pure (t, first + sdGap sd)
+              -- no target: opened at the file's end, the test inside
+              (_, Just _, Just o) -> do
+                opened <- either (const (throwE "the language's [test.stub] open does not render")) pure (parseTemplate o >>= render (env [("test", VText test)]))
+                let (new, at0) = atEnd opened
+                    inside = length (T.lines (fst (T.breakOn test opened)))
+                pure (new, at0 + inside)
+              _ -> pure (atEnd test)
       let edit = case testText0 of
             Nothing -> FileEdit testFile Nothing True ((0, 0), (0, 0)) new
             Just _ -> let (range, t) = smallestChange base new in FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range t

@@ -89,7 +89,7 @@ spec = do
           Just t = langTest lang
       (testFormat t, testExclusive t, testTimeout t, testsFor t) `shouldBe` ("lines", True, Just 900, "{= dir =}/{= stem =}Spec.hs")
       fmap lfNest (testLines t) `shouldBe` Just True
-      testSelect t `shouldBe` Just (Select "--test-option=--match=/{= group =}/{= name =}/" "--test-option=--match=/{= group =}/")
+      testSelect t `shouldBe` Just (Select ["--test-option=--match=/{= group =}/{= name =}/"] ["--test-option=--match=/{= group =}/"] "/")
       testFileGroup t `shouldBe` Just "^module[[:space:]]+([[:alnum:]_.]+)Spec"
       testUnitRules t `shouldBe` [UnitRule "(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"(([^\"\\\\]|\\\\.)*)\"" Nothing (Just 3)]
       take 3 (testCommand t) `shouldBe` ["cabal", "test", "-v0"]
@@ -213,13 +213,15 @@ spec = do
           ]
         fake expect = "command = [\"sh\", \"-c\", 'case \"$1\" in \"" <> expect <> "\") cat out.txt;; *) echo \"bad args: $*\"; exit 2;; esac', \"sh\", \"{= tests =}\"]"
         specFile = "src/Olifant/PlansSpec.hs"
+        -- the shipped rust under a pack's [test] that keeps cargo-test and runs a fake
+        rustOver ls = either (error . T.unpack) id (parseOverShipped "rust" "/r" (T.unlines (["[test]", "preset = \"cargo-test\""] ++ ls)))
     it "parses every [test] key" $ do
       let Right lang = parseLanguage "haskell" "/h" (hsToml ["command = [\"t\", \"{= tests =}\"]", "exclusive = true", "timeout = 900"])
           Just td = langTest lang
       (testFormat td, testExclusive td, testTimeout td, testConvert td) `shouldBe` ("lines", True, Just 900, [])
       testFileGroup td `shouldBe` Just "^module[[:space:]]+([[:alnum:]_.]+)Spec"
       length (testUnitRules td) `shouldBe` 1
-      testSelect td `shouldBe` Just (Select "--test-option=--match=/{= group =}/{= name =}/" "--test-option=--match=/{= group =}/")
+      testSelect td `shouldBe` Just (Select ["--test-option=--match=/{= group =}/{= name =}/"] ["--test-option=--match=/{= group =}/"] "/")
       fmap lfNest (testLines td) `shouldBe` Just True
     it "refuses lines without [test.lines], and {= group =} without file_group" $ do
       let base = "files = [\"**/*.hs\"]\ncomment = \"--\"\ngrammar = \"haskell\"\n[test]\ncommand = [\"t\"]\ntests_for = \"x\"\n"
@@ -233,6 +235,21 @@ spec = do
       Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile <> "::parsePlan::reads a test"] files
       map fst (trFailed run) `shouldBe` [T.pack specFile <> "::parsePlan::reads a test"]
       map (fLine . snd) (trFailed run) `shouldBe` [Just 6]
+    it "cargo-test: one test by --exact and its module path, read from libtest's lines" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/cargo-test/all-passed.txt"
+      let rust = rustOver ["command = [\"sh\", \"-c\", 'case \"$1 $2\" in \"--exact rates::tests::adds\") cat out.txt;; *) echo \"bad args: $*\"; exit 2;; esac', \"sh\", \"{= tests =}\"]"]
+      Right run <- runTests (processRunner neverCancel 60) rust ["src/rates.rs::tests::adds"] (M.fromList [("src/rates.rs", ""), ("out.txt", out)])
+      run `shouldBe` TestRun ["src/rates.rs::tests::adds"] [] Nothing
+    it "cargo-test: a file's tests by its module; a failure's line and message from its panic" $ do
+      out <- TIO.readFile "src/Olifant/Language/testdata/cargo-test/one-failed.txt"
+      let rust = rustOver ["command = [\"sh\", \"-c\", 'case \"$1\" in \"rates::\") cat out.txt; exit 101;; *) echo \"bad args: $*\"; exit 2;; esac', \"sh\", \"{= tests =}\"]"]
+      Right run <- runTests (processRunner neverCancel 60) rust ["src/rates.rs"] (M.fromList [("src/rates.rs", ""), ("out.txt", out)])
+      trPassed run `shouldBe` ["src/rates.rs::tests::adds", "src/rates.rs::tests::it_works"]
+      [(i, fLine f, failureLine f) | (i, f) <- trFailed run] `shouldBe` [("src/rates.rs::tests::fails", Just 16, "assertion `left == right` failed")]
+    it "cargo-test: a crate root's test (src/lib.rs) has no module before it" $ do
+      let rust = rustOver ["command = [\"sh\", \"-c\", 'case \"$1 $2\" in \"--exact tests::it_works\") echo \"test tests::it_works ... ok\";; *) echo \"bad args: $*\"; exit 2;; esac', \"sh\", \"{= tests =}\"]"]
+      Right run <- runTests (processRunner neverCancel 60) rust ["src/lib.rs::tests::it_works"] (M.fromList [("src/lib.rs", "")])
+      trPassed run `shouldBe` ["src/lib.rs::tests::it_works"]
     it "selects a whole file by its group" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/hspec/checks-one-failure.txt"
       let Right lang = parseLanguage "haskell" "/h" (hsToml [fake "--test-option=--match=/Olifant.Plans/"])

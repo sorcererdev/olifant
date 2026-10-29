@@ -28,7 +28,7 @@ import System.Directory (canonicalizePath, getTemporaryDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import Olifant.LspSpec (needsUv, plainPorts, withPython)
 import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
-import Olifant.Server (newServerState, projectFor, stubAt)
+import Olifant.Server (TestsFile (..), newServerState, projectFor, stubAt, testsFile)
 import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
 import Olifant.Server.ReviewReadings (applyFactsText)
@@ -42,7 +42,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
-spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> haskellStubSpec >> excerptsSpec
+spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> haskellStubSpec >> rustStubSpec >> excerptsSpec
 
 workSetSpec :: Spec
 workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
@@ -259,6 +259,66 @@ haskellStubSpec = describe "a Haskell test's stub (hspec)" $ do
       st <- either (fail . T.unpack) pure r
       stChild st `shouldBe` "  - test: answers zero @src/Olifant/Foo/BarSpec.hs:Olifant.Foo.Bar.answers_zero \9675"
       applyEdit (saEdit (stAnswer st)) existing `shouldSatisfy` T.isInfixOf "  it \"answers zero\" $ do"
+
+-- | A project of the shipped rust language (cargo-test's stub, ast-grep's
+-- syntax) holding FILES; a fresh state.
+withRustProject :: [(FilePath, Text)] -> (FilePath -> ServerState -> IO ()) -> IO ()
+withRustProject files act = do
+  tmp <- getTemporaryDirectory
+  withSystemTempDirectory "olifant-stub-rs" $ \dir0 -> do
+    dir <- canonicalizePath dir0
+    forM_ ((".olifant/config.toml", "languages = [\"rust\"]\n") : ("Cargo.toml", "[package]\nname = \"money\"\nversion = \"0.1.0\"\nedition = \"2021\"\n") : files) (uncurry (write dir))
+    initRepo dir
+    s0 <- newServerState plainPorts {pSyntax = astGrepSyntax (tmp </> "olifant-test-cache")}
+    act dir s0
+
+ratesText :: Text
+ratesText = T.unlines ["pub fn convert(amount: i64, rate: i64) -> i64 {", "    amount * rate", "}"]
+
+-- | A Rust test's stub (cargo-test): into the file's own `mod tests`,
+-- opened when there is none; refused when the tests live in tests.rs.
+rustStubSpec :: Spec
+rustStubSpec = describe "a Rust test's stub (cargo-test, tests in the source file)" $ do
+  let rates = "src/rates.rs"
+  it "no mod tests: one is opened at the file's end, the test in it" $
+    withRustProject [(rates, ratesText)] $ \dir s -> do
+      (_, r) <- stubAt (dir </> rates) 2 Nothing s
+      a <- either (fail . T.unpack) pure r
+      (saFile a, saName a) `shouldBe` (dir </> rates, "tests.convert")
+      let edited = applyEdit (saEdit a) ratesText
+      edited `shouldBe` ratesText <> "\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn convert() {\n        todo!(\"write this test\");\n    }\n}\n"
+      T.lines edited !! (saLine a - 1) `shouldBe` "    #[test]"
+  it "a mod tests in the middle of the file: the test at its end, a blank line before" $ do
+    let middle = T.unlines
+          [ "pub fn convert(amount: i64, rate: i64) -> i64 {", "    amount * rate", "}", ""
+          , "#[cfg(test)]", "mod tests {", "    use super::*;", ""
+          , "    #[test]", "    fn doubles() {", "        assert_eq!(convert(2, 2), 4);", "    }", "}", ""
+          , "pub fn later() -> i64 {", "    1", "}" ]
+    withRustProject [(rates, middle)] $ \dir s -> do
+      (_, r) <- stubAt (dir </> rates) 1 Nothing s
+      a <- either (fail . T.unpack) pure r
+      saName a `shouldBe` "tests.convert"
+      applyEdit (saEdit a) middle
+        `shouldBe` T.unlines
+          [ "pub fn convert(amount: i64, rate: i64) -> i64 {", "    amount * rate", "}", ""
+          , "#[cfg(test)]", "mod tests {", "    use super::*;", ""
+          , "    #[test]", "    fn doubles() {", "        assert_eq!(convert(2, 2), 4);", "    }", ""
+          , "    #[test]", "    fn convert() {", "        todo!(\"write this test\");", "    }", "}", ""
+          , "pub fn later() -> i64 {", "    1", "}" ]
+      saLine a `shouldBe` 14
+  it "mod tests; (tests in another file): refused, naming it" $
+    withRustProject [(rates, ratesText <> "\n#[cfg(test)]\nmod tests;\n")] $ \dir s -> do
+      (_, r) <- stubAt (dir </> rates) 2 Nothing s
+      either id (const "stubbed") r `shouldBe` "tests live in another file: tests.rs"
+  it "tests_for both ways: a Rust file is its own test file; a Haskell module and its Spec name each other" $ do
+    withRustProject [(rates, ratesText)] $ \dir s -> do
+      (_, r) <- testsFile (dir </> rates) s
+      either id (const "a file") r `shouldBe` "src/rates.rs is its own test file (rust's tests_for): no other file to jump to"
+    withHaskellProject [("src/Olifant/Plans.hs", "module Olifant.Plans where\n"), ("src/Olifant/PlansSpec.hs", "module Olifant.PlansSpec (spec) where\n")] $ \dir s -> do
+      (s1, r1) <- testsFile (dir </> "src/Olifant/PlansSpec.hs") s
+      fmap (\f -> (tfFile f, tfIsTest f)) r1 `shouldBe` Right (dir </> "src/Olifant/Plans.hs", False)
+      (_, r2) <- testsFile (dir </> "src/Olifant/Plans.hs") s1
+      fmap (\f -> (tfFile f, tfIsTest f, tfExists f)) r2 `shouldBe` Right (dir </> "src/Olifant/PlansSpec.hs", True, True)
 
 -- | A file edit applied to TEXT (its span replaced; ASCII columns).
 applyEdit :: FileEdit -> Text -> Text

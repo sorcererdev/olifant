@@ -16,8 +16,18 @@ branch = "{= pattern =} => {= body =},"
 # A block opens at a line ending in `{`.
 opens_block = '[{][[:space:]]*$'
 
-# A test's assertion starts at its first assert!, assert_eq! or assert_ne!.
+# Tests: cargo test, in the file itself (its `mod tests`). A test is a fn
+# under #[test] (or #[tokio::test]), looking past other attributes; an
+# inline `mod` is a group. A test's assertion starts at its first assert!,
+# assert_eq! or assert_ne!.
 [test]
+preset = "cargo-test"
+tests_for = "{= dir =}/{= stem =}.rs"
+unit = [
+  '^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?mod[[:space:]]+([[:alnum:]_]+)[[:space:]]*[{]',
+  { pattern = '^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+([[:alnum:]_]+)', after = '^[[:space:]]*#\[([[:alnum:]_]+::)*test\]' },
+]
+above = '^[[:space:]]*#\['
 assertion = ['^[[:space:]]*(debug_)?assert(_eq|_ne)?!']
 
 # A path's module: what follows the crate's `src/`, joined by `::`; `lib`,
@@ -58,6 +68,13 @@ wrap = "fn __olifant() {\n{= fill =}\n}"
 [holes.type]
 placeholder = "() /* olifant: {= hole =} */"
 wrap = "type __Olifant = {= fill =};"
+
+# An inline module's items (`end of mod tests`: where a stub's test goes).
+[targets.mod]
+phrase = "mod NAME"
+container = { kind = "declaration_list", inside = { kind = "mod_item", has = { field = "name", regex = "^{= NAME =}$" } } }
+items = { any = [{ kind = "function_item" }, { kind = "use_declaration" }, { kind = "struct_item" }, { kind = "enum_item" }, { kind = "impl_item" }, { kind = "trait_item" }, { kind = "mod_item" }, { kind = "const_item" }, { kind = "static_item" }, { kind = "type_item" }, { kind = "macro_definition" }] }
+example = "end of mod tests"
 
 [targets.struct]
 phrase = "struct NAME"

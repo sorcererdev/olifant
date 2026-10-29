@@ -47,7 +47,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), Language (..), Select (..), TestDef (..), matchesGlob, regexName, supportOf)
+import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), TestDef (..), matchesGlob, moduleOf, regexName, supportOf)
+import Olifant.Template (Value (VText), parseTemplate, render)
 import Olifant.Language.TestFormats (Reported (..), attribute, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
 import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
@@ -141,8 +142,9 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
         around
           | testExclusive td = inSlot slotsPerKey (langName lang <> ":test:" <> ctx)
           | otherwise = ($ Nothing)
-        requested = requestedFiles td ids files
-        args = maybe (map T.unpack ids) (\sel -> map (T.unpack . selected td files sel) ids) (testSelect td)
+        requested = requestedFiles lang td ids files
+        -- an argument twice (a flag each test repeats: `--exact`) once
+        args = maybe (map T.unpack ids) (\sel -> map T.unpack (nub (concatMap (selected lang td files sel) ids))) (testSelect td)
     around $ \slot ->
       scratchRun token limit lang "olifant-test" (testCommand td) ctx slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
         Left ScratchEmpty -> Left "empty test command"
@@ -157,21 +159,27 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
 fileOfId :: TestId -> FilePath
 fileOfId = T.unpack . fst . T.breakOn "::"
 
--- | The files a run asks for, each with its `file_group` (from its text).
-requestedFiles :: TestDef -> [TestId] -> Map FilePath Text -> [(FilePath, Maybe Text)]
-requestedFiles td ids files = nubOrd [(f, groupOf f) | f <- map fileOfId ids]
+-- | The files a run asks for, each with its group: its `file_group` (from
+-- its text), else its module by the language's `[imports] module_of` (none
+-- when that is empty: a Rust crate's root).
+requestedFiles :: Language -> TestDef -> [TestId] -> Map FilePath Text -> [(FilePath, Maybe Text)]
+requestedFiles lang td ids files = nubOrd [(f, groupOf f) | f <- map fileOfId ids]
   where
-    groupOf f = testFileGroup td >>= \re -> M.lookup f files >>= regexName re
+    groupOf f = case testFileGroup td of
+      Just re -> M.lookup f files >>= regexName re
+      Nothing -> langImportsDef lang >>= imModuleOf >>= \mo -> let m = moduleOf mo f in if T.null m then Nothing else Just m
 
--- | One id as the runner's argument by `[test.select]`: a file's by 'selFile',
--- a test's by 'selTest', with @{= group =}@ the file's group and @{= name =}@
--- its segments below the file joined by @/@.
-selected :: TestDef -> Map FilePath Text -> Select -> TestId -> Text
-selected td files sel i = T.replace "{= name =}" name (T.replace "{= group =}" grp (if T.null rest then selFile sel else selTest sel))
+-- | One id as the runner's arguments by `[test.select]`: a file's by
+-- 'selFile', a test's by 'selTest', templates with @{= group =}@ the file's
+-- group (empty with none) and @{= name =}@ its segments below the file
+-- joined by 'selJoin'.
+selected :: Language -> TestDef -> Map FilePath Text -> Select -> TestId -> [Text]
+selected lang td files sel i = map fill (if T.null rest then selFile sel else selTest sel)
   where
     (_, rest) = T.breakOn "::" i
-    name = T.intercalate "/" (T.splitOn "::" (T.drop 2 rest))
-    grp = fromMaybe "" (lookup (fileOfId i) (requestedFiles td [i] files) >>= id)
+    name = T.intercalate (selJoin sel) (T.splitOn "::" (T.drop 2 rest))
+    grp = fromMaybe "" (lookup (fileOfId i) (requestedFiles lang td [i] files) >>= id)
+    fill a = either (const (T.replace "{= name =}" name (T.replace "{= group =}" grp a))) id (parseTemplate a >>= render (M.fromList [("group", VText grp), ("name", VText name)]))
 
 -- | A run's report read by the `[test] format`, from stdout then stderr
 -- (olifant-json, and a converted report, from stdout); a report a parser

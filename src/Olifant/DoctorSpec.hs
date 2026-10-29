@@ -111,9 +111,9 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkFix bad `shouldBe` Just "install Claude Code, or set [plans] runner"
   it "a capability a language lacks is a warning naming the key; one it has is ok" $ do
     let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))
-        [tests] = [c | c <- cs, checkName c == "rust: tests"]
+        [mutation] = [c | c <- cs, checkName c == "rust: mutation"]
         [diag] = [c | c <- cs, checkName c == "rust: diagnostics"]
-    (checkStatus tests, checkDetail tests, checkFix tests) `shouldBe` (Warn, "absent", Just "add [test] to .olifant/languages/rust.toml")
+    (checkStatus mutation, checkDetail mutation, checkFix mutation) `shouldBe` (Warn, "absent", Just "add [[mutate]] to .olifant/languages/rust.toml")
     (checkStatus diag, checkDetail diag) `shouldBe` (Ok, "[check] format rustc-json · from toolchain cargo")
   it "shows each language's layers and where each capability's key came from" $ do
     hs <- shippedLanguage "haskell" [("project", ".olifant")]
@@ -124,3 +124,10 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     checkDetail (row "haskell: units") `shouldSatisfy` T.isSuffixOf " · from shipped"
     checkFix (row "haskell: mutation") `shouldBe` Just "add [[mutate]] to .olifant/languages/haskell.toml"
     checkDetail (row "haskell: stub") `shouldBe` "[test] stub · from toolchain hspec"
+  it "rust: its tests, test units, selection and stub, from cargo-test and the shipped language" $ do
+    rust <- shippedLanguage "rust" []
+    let cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust]}))
+        row n = head [c | c <- cs, checkName c == n]
+    map (checkStatus . row) ["rust: tests", "rust: test units", "rust: test selection", "rust: stub"] `shouldBe` [Ok, Ok, Ok, Ok]
+    checkDetail (row "rust: stub") `shouldBe` "[test] stub at end of mod tests · from toolchain cargo-test"
+    checkDetail (row "rust: test units") `shouldBe` "[test] unit, above · from shipped"
