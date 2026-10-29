@@ -28,7 +28,7 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Char (isAlphaNum)
 import Data.Functor ((<&>))
-import Data.List (sort, stripPrefix)
+import Data.List (sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -38,10 +38,12 @@ import Olifant.Anchor (locateContainers)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Generation.FillPhase (projectFiles)
-import Olifant.Language (Language (..), Syntax, TestId, TestRun, languageFor, runTestsIn, testsForFile)
+import Olifant.Language (ImportsDef (..), Language (..), ModuleOf (..), Resolve (..), Syntax, TestId, TestRun, languageFor, moduleOf, runTestsIn, testsForFile)
+import Olifant.Template (Value (..), parseTemplate, render)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
 import Olifant.Server.State (ServerState (..), appendStepLine, projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
-import System.FilePath (dropExtension, makeRelative, splitDirectories, (</>))
+import System.FilePath (makeRelative, (</>))
 
 -- | Where a command at a cursor stands: the module and its test
 -- file (the cursor in either), their texts, and the def at or above the
@@ -95,49 +97,43 @@ functionAt s site line = case (siteOnTest site, siteAtCursor site, siteDefLine s
       _ -> Nothing
   _ -> pure Nothing
 
--- | The line importing a function into a new test file (the class it is a
--- method of, if any): Python's `from pkg.module import Name`, the module's
--- path less its `src/` folder; none for another language.
-importOf :: Language -> FilePath -> Text -> Text -> Maybe Int -> Maybe Text
-importOf lang moduleRel moduleText fn defLine
-  | langName lang /= "python" = Nothing
-  | otherwise = Just ("from " <> dotted <> " import " <> owner)
-  where
-    dotted = T.intercalate "." (map T.pack (splitDirectories (dropExtension (fromMaybe moduleRel (stripPrefix "src/" moduleRel)))))
-    ls = T.lines moduleText
-    -- the def at its line (another class may define the name too), else the first of the name
-    isDef l = ("def " <> fn <> "(") `T.isPrefixOf` T.strip l
-    (above, at) = case defLine of
-      Just d | maybe False isDef (listToMaybe (drop (d - 1) ls)) -> splitAt (d - 1) ls
-      _ -> break isDef ls
-    owner = case at of
-      d : _ | T.isPrefixOf " " d || T.isPrefixOf "\t" d -> case [l | l <- reverse above, not (T.null (T.strip l)), not (" " `T.isPrefixOf` l || "\t" `T.isPrefixOf` l)] of
-        l : _ | Just c <- T.stripPrefix "class " l -> T.takeWhile ident c
-        _ -> fn
-      _ -> fn
+-- | The line importing a unit into a test file, by the language's
+-- `[imports] write` over the module of MODULEREL (`module_of`) and the
+-- unit's owner: the first segment of its qualified name QUALIFIED (`Table`
+-- for `Table.seats`). Nothing for a language with no `write`.
+importOf :: Language -> FilePath -> Text -> Maybe Text
+importOf lang moduleRel qualified = do
+  im <- langImportsDef lang
+  w <- imWrite im
+  tp <- either (const Nothing) Just (parseTemplate w)
+  let m = moduleOf (fromMaybe (ModuleOf [] [] ".") (imModuleOf im)) moduleRel
+      owner = fst (T.breakOn "." qualified)
+  either (const Nothing) Just (render (M.fromList [("module", VText m), ("owner", VText owner)]) tp)
 
 -- | The project modules a conjure sees beside its file and the file beside it
--- (KNOWN, never repeated): the Python files their TEXTS import, an absolute
--- import's module (or a name imported from it that is a module) found as
--- @src/a/b/c.py@ or @src/a/b/c/__init__.py@, then what those import (one
--- level, so the cap cuts these first); in import order, at most
--- 'importedFiles' of them, each at most 'importedLines' lines (cut with a
--- line saying how many more) and 'importedTotal' in all. The standard
--- library and third-party packages are no file of the project: skipped.
+-- (KNOWN, never repeated): the modules the import lines of TEXTS name (by
+-- the language's `[[imports.resolve]]`), each found as the first of its
+-- `[imports] paths` that is a file, then what those import (one level, so
+-- the cap cuts these first); in import order, at most 'importedFiles' of
+-- them, each at most 'importedLines' lines (cut with a comment saying how
+-- many more) and 'importedTotal' in all. A module that is no file of the
+-- project (the standard library, a dependency) is skipped. A language with
+-- no `resolve` sees none.
 importedContext :: Workspace IO -> Language -> [FilePath] -> [Text] -> IO [(FilePath, Text)]
-importedContext ws lang known texts
-  | langName lang /= "python" = pure []
-  | otherwise = do
-      direct <- resolved known texts
-      -- one level further: what those import (a port's models)
-      further <- resolved (known ++ map fst direct) (map snd direct)
-      pure (capped importedTotal (take importedFiles (direct ++ further)))
+importedContext ws lang known texts = case langImportsDef lang of
+  Just im | not (null (imResolve im)) -> do
+    let sep = maybe "." moSeparator (imModuleOf im)
+        resolved seen ts = do
+          found <- forM (concatMap (importedModulesWith sep (imResolve im)) ts) $ \m ->
+            let path = T.intercalate "/" (filter (not . T.null) (T.splitOn sep m))
+             in firstFile [T.unpack p | Right tp <- map parseTemplate (imPaths im), Right p <- [render (M.singleton "path" (VText path)) tp]]
+          pure (dedupe [(p, t) | Just (p, t) <- found, p `notElem` seen, not (T.null (T.strip t))])
+    direct <- resolved known texts
+    -- one level further: what those import (a port's models)
+    further <- resolved (known ++ map fst direct) (map snd direct)
+    pure (capped importedTotal (take importedFiles (direct ++ further)))
+  _ -> pure []
   where
-    resolved seen ts = do
-      found <- forM (concatMap importedModules ts) $ \m ->
-        let path = T.unpack (T.intercalate "/" (T.splitOn "." m))
-         in firstFile ["src" </> path <> ".py", "src" </> path </> "__init__.py"]
-      pure (dedupe [(p, t) | Just (p, t) <- found, p `notElem` seen, not (T.null (T.strip t))])
     firstFile = \case
       [] -> pure Nothing
       p : rest -> readText ws p >>= maybe (firstFile rest) (pure . Just . (p,))
@@ -149,27 +145,33 @@ importedContext ws lang known texts
           let ls = T.lines t
               keep = minimum [length ls, importedLines, budget]
               cut
-                | keep < length ls = T.intercalate "\n" (take keep ls ++ ["# \8230 (" <> T.pack (show (length ls - keep)) <> " more lines)"])
+                | keep < length ls = T.intercalate "\n" (take keep ls ++ [langComment lang <> " \8230 (" <> T.pack (show (length ls - keep)) <> " more lines)"])
                 | otherwise = t
            in (p, cut) : capped (budget - keep) rest
 
--- | The modules a Python file's absolute imports name, in order: @import
--- a.b, c@ names @a.b@ and @c@; @from a.b import x, y@ names @a.b@, then
--- @a.b.x@ and @a.b.y@ (a name may be a module). Relative imports are not
--- followed.
-importedModules :: Text -> [Text]
-importedModules t = concatMap named (map T.strip (T.lines t))
+-- | The modules a file's import lines name, in order, by RESOLVES (the
+-- first that matches a stripped line): its `module` group's modules
+-- (comma-separated, each less its alias, brackets and comment), then each
+-- of its `names` joined to the module by @.@ (a name may be a module).
+-- Python's: @import a.b, c@ names @a.b@ and @c@; @from a.b import x, y@
+-- names @a.b@, then @a.b.x@ and @a.b.y@; a relative import names none.
+importedModules :: [Resolve] -> Text -> [Text]
+importedModules = importedModulesWith "."
+
+-- | 'importedModules' with the language's module separator.
+importedModulesWith :: Text -> [Resolve] -> Text -> [Text]
+importedModulesWith sep resolves t = concatMap named (map T.strip (T.lines t))
   where
-    named l
-      | Just rest <- T.stripPrefix "from " l
-      , (m, names) <- T.breakOn " import " rest
-      , not (T.null names)
-      , not ("." `T.isPrefixOf` m) =
-          m : [m <> "." <> n | n <- map nameOf (T.splitOn "," (T.drop (T.length " import ") names)), not (T.null n)]
-      | Just rest <- T.stripPrefix "import " l = filter (not . T.null) (map nameOf (T.splitOn "," rest))
-      | otherwise = []
+    compiled = [(rx, r) | r <- resolves, Just (rx :: Regex) <- [makeRegexM (T.unpack (rsPattern r))]]
+    named l = case [(groups, r) | (rx, r) <- compiled, Just (AllTextSubmatches groups) <- [matchM rx (T.unpack l) :: Maybe (AllTextSubmatches [] String)]] of
+      (groups, r) : _ ->
+        let grp n = maybe "" T.pack (listToMaybe (drop n groups))
+            mods = items (grp (rsModule r))
+         in mods ++ [m <> sep <> n | m <- mods, Just g <- [rsNames r], n <- items (grp g)]
+      [] -> []
+    items = filter (not . T.null) . map nameOf . T.splitOn ","
     -- a name less its alias, brackets and comment
-    nameOf = T.takeWhile (\c -> ident c || c == '.') . T.dropWhile (`elem` (" (" :: String)) . T.takeWhile (/= '#')
+    nameOf = T.takeWhile (\c -> ident c || c == '.' || c == ':') . T.dropWhile (`elem` (" (" :: String)) . T.takeWhile (/= '#')
 
 -- | A conjure's imported modules: how many files, lines each, lines in all.
 importedFiles, importedLines, importedTotal :: Int

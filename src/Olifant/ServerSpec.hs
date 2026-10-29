@@ -26,7 +26,9 @@ import System.FilePath (makeRelative, (</>))
 import Control.Concurrent.Async (replicateConcurrently_, wait)
 import Data.Set qualified as S
 import Olifant.Server.State qualified as St
-import Olifant.Server.Site (Site (..), importedModules, siteAt)
+import Olifant.Server.Site (Site (..), importOf, importedContext, importedModules, siteAt)
+import Olifant.Server.Stub (testNameIn, unitWordsOf)
+import Olifant.Server.Unit (Named (..), unitAround)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Olifant.Decide qualified as De
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
@@ -37,7 +39,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (Language, noChecker, noRunner, noSyntax)
+import Olifant.Language (ImportsDef (..), Language (..), noChecker, noRunner, noSyntax, parseLanguage, shippedLanguage)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
 import Olifant.Rules (RulesConfig (..), Severity (..))
@@ -147,23 +149,34 @@ spec = describe "Olifant.Server (projects across roots, open documents, jobs)" $
 -- | `olifant/stub`: a new test's stub for the unit at a line.
 stubSpecs :: Spec
 stubSpecs = describe "a test's stub (olifant/stub)" $ do
-  describe "the unit's test name and the class at a line" $ do
-    it "a function's name, snake case" $ testNameOf "handle" `shouldBe` "test_handle"
-    it "a class's name, snake case" $ testNameOf "CloseTable" `shouldBe` "test_close_table"
-    it "underscores at its ends dropped" $ testNameOf "__init__" `shouldBe` "test_init"
-    it "a digit before a capital splits too" $ testNameOf "V2Table" `shouldBe` "test_v2_table"
+  describe "the unit's test name and the unit at a line" $ do
+    let named n = do
+          py <- shippedLanguage "python" []
+          pure (testNameIn py (unitWordsOf n))
+    it "a function's name, snake case" $ named "handle" `shouldReturn` "test_handle"
+    it "a class's name, snake case" $ named "CloseTable" `shouldReturn` "test_close_table"
+    it "underscores at its ends dropped" $ named "__init__" `shouldReturn` "test_init"
+    it "a digit before a capital splits too" $ named "V2Table" `shouldReturn` "test_v2_table"
     -- `stubbed`: 1 class CloseTable, 2 def __init__, 4 blank, 5 def handle, 7-8 blank, 9 def unrelated
-    it "the class line is the class" $ classAt stubbed 1 `shouldBe` Just ("CloseTable", 1)
-    it "a blank line between its methods is the class" $ classAt stubbed 4 `shouldBe` Just ("CloseTable", 1)
-    it "a line in a method is in the class too" $ classAt stubbed 6 `shouldBe` Just ("CloseTable", 1)
-    it "a blank line after the class, before a top-level def, is no class" $ classAt stubbed 8 `shouldBe` Nothing
-    it "a top-level function is in no class" $ classAt stubbed 10 `shouldBe` Nothing
-    it "a line past the end is nothing" $ classAt stubbed 99 `shouldBe` Nothing
+    let around line = do
+          (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
+          py <- pythonOf s
+          fmap (\n -> (namedName n, fst (namedLines n))) <$> unitAround unitSyntax py stubbed line
+        aroundIn src line = do
+          (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
+          py <- pythonOf s
+          fmap (\n -> (namedName n, namedDef n)) <$> unitAround unitSyntax py src line
+    it "the class line is the class" $ around 1 `shouldReturn` Right ("CloseTable", 1)
+    it "a blank line between its methods is the class" $ around 4 `shouldReturn` Right ("CloseTable", 1)
+    it "a line in a method is the method" $ around 6 `shouldReturn` Right ("CloseTable.handle", 5)
+    it "a blank line after the class, before a top-level def, is no unit" $ around 8 `shouldReturn` Left "no function or class at line 8: put the cursor in one to stub its test"
+    it "a top-level function" $ around 10 `shouldReturn` Right ("unrelated", 9)
+    it "a line past the end is nothing" $ fmap (either (const Nothing) Just) (around 99) `shouldReturn` Nothing
     let decorated = T.unlines ["import functools", "", "", "@functools.cache", "@other", "def dish() -> int:", "    return 1"]
-    it "a decorator line is its def's" $ belowDecorators decorated 4 `shouldBe` 6
-    it "a line that is no decorator stays" $ belowDecorators decorated 7 `shouldBe` 7
+    it "a decorator line is its def's" $ aroundIn decorated 4 `shouldReturn` Right ("dish", 6)
+    it "a line in the def stays" $ aroundIn decorated 7 `shouldReturn` Right ("dish", 6)
   describe "stubAt" $ do
-    let quiet = blocks (const (TestRun [] [] Nothing))
+    let quiet = blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing)))
         stub = "def test_handle() -> None:\n    ...\n    assert ...\n"
         sentence st path line = either id (const "stubbed") . snd <$> stubAt path line Nothing st
     it "in a method: test_<method> after the test file's last test, its import already there" $ do
@@ -986,7 +999,23 @@ orderSpecs = describe "the decision model's order" $ do
 siteSpecs :: Spec
 siteSpecs = describe "a conjure's imported modules" $ do
   it "reads Python's absolute imports: aliases, several names, brackets, a star and relative imports" $ do
-    importedModules "import a.b as c, d\nfrom .x import y\nfrom p.q import (\n    r,\n)\nfrom m import n as k, *  # c\n" `shouldBe` ["a.b", "d", "p.q", "m", "m.n"]
+    pythonResolve <- maybe [] imResolve . langImportsDef <$> shippedLanguage "python" []
+    importedModules pythonResolve "import a.b as c, d\nfrom .x import y\nfrom p.q import (\n    r,\n)\nfrom m import n as k, *  # c\n" `shouldBe` ["a.b", "d", "p.q", "m", "m.n"]
+  it "importOf writes [imports] write over the module and the unit's owner" $ do
+    py <- shippedLanguage "python" []
+    hs <- shippedLanguage "haskell" []
+    rust <- shippedLanguage "rust" []
+    importOf py "src/a/b.py" "Table.seats" `shouldBe` Just "from a.b import Table"
+    importOf hs "src/Olifant/Plans.hs" "parsePlan" `shouldBe` Just "import Olifant.Plans"
+    importOf rust "src/money.rs" "convert" `shouldBe` Nothing
+  it "resolves imports from data: a Haskell language's resolve and paths" $ do
+    let Right hs =
+          parseLanguage "haskell" "/h" . T.unlines $
+            [ "files = [\"**/*.hs\"]", "comment = \"--\"", "grammar = \"haskell\""
+            , "[imports]", "module_of = { strip = [\"^src/\"], separator = \".\" }", "paths = [\"src/{= path =}.hs\"]"
+            , "[[imports.resolve]]", "pattern = \"^import +(qualified +)?([A-Z][A-Za-z0-9_.]*)\"", "module = 2" ]
+    (ws, _) <- memoryWorkspace [("src/A.hs", "module A where\nimport qualified Data.Map as M\nimport B.C\n"), ("src/B/C.hs", "module B.C where\nc = 1\n")]
+    importedContext ws hs ["src/A.hs"] ["module A where\nimport qualified Data.Map as M\nimport B.C\n"] `shouldReturn` [("src/B/C.hs", "module B.C where\nc = 1\n")]
 
 root, moduleRel, testRel :: FilePath
 root = "/r"

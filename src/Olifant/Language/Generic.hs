@@ -36,7 +36,7 @@ data ErrorFormat = ErrorFormat {efPattern :: Text, efFile :: Int, efLine :: Int,
 -- block, which runs to the next one or to an 'lfEnd' match, without lines
 -- matching 'lfDrop'. (Here, not in "Olifant.Language.TestFormats", so the
 -- adapter can hold it without an import cycle.)
-data LinesFormat = LinesFormat {lfPass :: Text, lfFail :: Text, lfNest :: Bool, lfFailure :: Maybe Text, lfEnd :: Maybe Text, lfDrop :: Maybe Text}
+data LinesFormat = LinesFormat {lfPass :: Text, lfFail :: Text, lfNest :: Bool, lfFailure :: Maybe Text, lfEnd :: Maybe Text, lfDrop :: Maybe Text, lfSplit :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | A support whose only knowledge is its parser: patterns are written as

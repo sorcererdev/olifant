@@ -142,7 +142,7 @@ escalate = "ask"      # only <leader>mpc climbs here
 
 A backend with no `escalate` key defaults to `ask`, so only `<leader>mpc` climbs to it. (The backends' other keys are as in chapter 12.) The demo's config sets `escalate = "auto"` on its local backend for that reason.
 
-**Tests on a step.** `<leader>ms` on a step stubs a test under it (Python; the step needs an anchor), the step's text as the
+**Tests on a step.** `<leader>ms` on a step stubs a test under it (any language with a `[test.stub]`: Python, Haskell, Rust; the step needs an anchor), the step's text as the
 sentence. `<leader>mt` runs the step's tests and ticks it when all are green. A `do` runs the
 step's tests when it finishes, over the files it wrote as they are on disk (the editor reloads
 them only afterwards).

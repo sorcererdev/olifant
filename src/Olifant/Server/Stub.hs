@@ -1,76 +1,43 @@
 -- | Internal to Olifant.Server: a new test's stub (`olifant/stub`) for the
--- function, method or class at a line of a module, at the end of its test
--- file. No model: the test file's edit and where the test's
--- name is.
+-- function, method or class at a line of a module, in its test file, as
+-- the language's `[test.stub]` writes it. No model: the test file's edit
+-- and where the test's name is.
 module Olifant.Server.Stub
   ( StubAnswer (..)
   , stubAt
   , stubWith
-  , classAt
-  , testNameOf
-  , belowDecorators
+  , testNameIn
+  , unitWordsOf
   ) where
 
-import Control.Monad (forM_, when)
-import Olifant.Capabilities (Capability (..), capabilities)
+import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT, throwE)
-import Data.Char (isAlphaNum, isDigit, isLower, isUpper, toLower)
+import Data.Char (isDigit, isLower, isUpper, toLower)
+import Data.List (find)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.TestName (stubNameFor, uniqueTestName)
+import Olifant.Anchor (Located (..), RenderedAnchor (..), Spacing (..), insertLines, resolveLayers)
 import Olifant.Generation.FillPhase (addImports)
-import Olifant.Language (Language (..))
+import Olifant.Language (ImportsDef (..), Language (..), ModuleOf (..), StubDef (..), TestDef (..), moduleOf, regexName)
+import System.FilePath (takeExtension)
+import Olifant.Language.TestUnits (TestUnit (..), anchorName, testUnitsIn)
 import Olifant.Mutate (Mutant (..))
-import Olifant.Server.Site (Site (..), appendStepLine, defLineAbove, defName, functionAt, importOf, siteAt, siteTestFile, tshow)
+import Olifant.Naming (wordsName)
 import Olifant.Server.Edits (FileEdit (..), smallestChange)
+import Olifant.Server.Site (Site (..), appendStepLine, importOf, siteAt, siteTestFile, tshow)
 import Olifant.Server.State (ServerState (..))
+import Olifant.Server.Unit (Named (..), unitAround)
+import Olifant.App (Ports (..))
+import Olifant.Template (Value (..), parseTemplate, render)
+import Olifant.TestName (stubNameFor)
 
--- | The class enclosing LINE (1-based) of a Python module: its name and
--- its `class` line. A blank line is in it only when the next line that is
--- not blank is.
-classAt :: Text -> Int -> Maybe (Text, Int)
-classAt text line
-  | line < 1 || line > length ls = Nothing
-  | otherwise = listToMaybe [(n, d) | (d, l) <- reverse (take line ls), Just n <- [className l], encloses d l]
-  where
-    ls = zip [1 :: Int ..] (T.lines text)
-    indentOf = T.length . T.takeWhile (== ' ')
-    blank = T.null . T.strip
-    next = listToMaybe [l | (i, l) <- ls, i >= line, not (blank l)]
-    encloses d dl =
-      d == line
-        || ( all (\(_, l) -> blank l || indentOf l > indentOf dl) [x | x@(i, _) <- ls, i > d, i <= line]
-               && maybe False (\l -> indentOf l > indentOf dl) next
-           )
-    className l = do
-      rest <- T.stripPrefix "class " (T.strip l)
-      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
-      if T.null n then Nothing else Just n
-
--- | A unit's test name: `test_` and its name in snake case, the
--- underscores at its ends dropped (`CloseTable` → `test_close_table`).
-testNameOf :: Text -> Text
-testNameOf n = "test_" <> T.pack (go ' ' (T.unpack (T.dropAround (== '_') n)))
-  where
-    go prev (c : cs)
-      | isUpper c && (isLower prev || isDigit prev) = '_' : toLower c : go c cs
-      | otherwise = toLower c : go c cs
-    go _ [] = []
-
--- | A decorator line (1-based) stands for the def or class below it.
-belowDecorators :: Text -> Int -> Int
-belowDecorators text line = case drop (line - 1) ls of
-  l : _ | "@" `T.isPrefixOf` T.strip l -> maybe line fst (listToMaybe [x | x@(_, l') <- drop line (zip [1 ..] ls), isJust (defName l') || "class " `T.isPrefixOf` T.strip l'])
-  _ -> line
-  where
-    ls = T.lines text
-
--- | A stub's answer: the test file (absolute), the new test's def line
--- (1-based, in the edited file), its name, and the test file's one edit
--- (creating the file when it is new).
+-- | A stub's answer: the test file (absolute), the new test's first line
+-- (1-based, in the edited file), its name as a plan anchor names it
+-- ('anchorName' of its path: `test_x`, `Olifant.Plans.reads_a_step`), and
+-- the test file's one edit (creating the file when it is new).
 data StubAnswer = StubAnswer
   { saFile :: FilePath
   , saLine :: Int
@@ -79,13 +46,14 @@ data StubAnswer = StubAnswer
   }
   deriving (Eq, Show)
 
--- | A new test's stub for the function, method or class at LINE (1-based;
--- a decorator's is its def's) of a module: `test_<unit>` after the test
--- file's last line, the unit's import joined to the file's (a new file
--- starts with it), its body `...` and `assert ...`. Nothing is conjured
--- or stored. With a survivor (its line is LINE), the test
--- is named from the mutant and the mutant is a comment in its body. Left is
--- one sentence on why there is none.
+-- | A new test's stub for the unit at LINE (1-based; a decorator's is its
+-- def's) of a module, by the language's `[test.stub]`: its `test` after the
+-- test file's last line (`gap` blank lines before it), named by `[test]
+-- name` from the unit's words, the unit's import (`[imports] write`) joined
+-- to the file's; a new file starts with the stub's `file` head. Nothing is
+-- conjured or stored. With a survivor (its line is LINE), the test is named
+-- from the mutant and the mutant is a comment in its body. Left is one
+-- sentence on why there is none.
 stubAt :: FilePath -> Int -> Maybe Mutant -> ServerState -> IO (ServerState, Either Text StubAnswer)
 stubAt = stubWith Nothing
 
@@ -95,39 +63,96 @@ stubWith :: Maybe Text -> FilePath -> Int -> Maybe Mutant -> ServerState -> IO (
 stubWith given path line0 survivor s0 =
   siteAt path line0 s0 >>= \case
     (s, Left why) -> pure (s, Left why)
-    (s, Right site0) -> fmap (s,) . runExceptT $ do
-      when (siteOnTest site0) (throwE "on a test: stub writes a new test for a function or class, from its module")
-      let lang = siteLang site0
-          moduleText = siteModuleText site0
-          line = belowDecorators moduleText line0
-          above = defLineAbove line moduleText
-          site = site0 {siteAtCursor = snd <$> above, siteDefLine = fst <$> above}
-      forM_ [why | c <- capabilities lang, capName c == "stub", Left why <- [capHow c]] (\why -> throwE ("no stub for " <> langName lang <> ": " <> why))
-      (unit, defLine) <-
-        lift (functionAt s site line) >>= \case
-          Just (n, d, _) -> pure (n, d)
-          Nothing -> maybe (throwE ("no function or class at line " <> tshow line0 <> ": put the cursor in one to stub its test")) pure (classAt moduleText line)
-      let testFile = siteTestFile site
+    (s, Right site) -> fmap (s,) . runExceptT $ do
+      when (siteOnTest site) (throwE "on a test: stub writes a new test for a function or class, from its module")
+      let lang = siteLang site
+          moduleText = siteModuleText site
+          td = langTest lang
+      sd <- maybe (throwE ("no `[test] stub` for " <> langName lang <> ": add a [test.stub] (or a [test] preset that has one) to stub its tests")) pure (td >>= testStub)
+      named <- lift (unitAround (pSyntax (ssPorts s)) lang moduleText line0) >>= either throwE pure
+      let qualified = namedName named
+          unit = snd (T.breakOnEnd "." qualified)
+          testFile = siteTestFile site
           testText0 = siteTestText site
           base = fromMaybe "" testText0
+          rules = maybe [] testUnitRules td
+          above = td >>= testAbove
+          defined = [n | u <- testUnitsIn rules above base, Just n <- [listToMaybe (reverse (tuPath u))]]
           name = case given of
-            Just n -> uniqueTestName n base
-            Nothing -> maybe (uniqueTestName (testNameOf unit) base) (\m -> stubNameFor m base (langKeywords lang)) survivor
+            Just n -> uniqueAmong n defined
+            Nothing -> maybe (uniqueAmong (testNameIn lang (unitWordsOf unit)) defined) (\m -> stubNameFor m base (langKeywords lang)) survivor
           flat = T.replace "\n" "\9166"
-          note = case survivor of
-            Just m -> ind <> "# kills: " <> flat (muFrom m) <> " \8594 " <> flat (muTo m) <> " on line " <> tshow (muLine m) <> "\n"
-            Nothing -> ""
           ind = langIndent lang
-          imported = case importOf lang (siteModuleRel site) moduleText unit (Just defLine) of
-            Just i | T.null (T.strip base) -> i
-            Just i -> addImports lang [i] base
-            Nothing -> base
-          kept = T.stripEnd imported
-          stub = "def " <> name <> "() -> None:\n" <> note <> ind <> "...\n" <> ind <> "assert ...\n"
-          new = if T.null kept then stub else kept <> "\n\n\n" <> stub
-          at = if T.null kept then 1 else length (T.splitOn "\n" kept) + 3
-          edit = case testText0 of
+          note = case survivor of
+            Just m -> ind <> langComment lang <> " kills: " <> flat (muFrom m) <> " \8594 " <> flat (muTo m) <> " on line " <> tshow (muLine m) <> "\n"
+            Nothing -> ""
+          modu = moduleOf (fromMaybe (ModuleOf [] [] ".") (langImportsDef lang >>= imModuleOf)) (siteModuleRel site)
+          imported = importOf lang (siteModuleRel site) qualified
+          env extra = M.fromList ([("name", VText name), ("unit", VText unit), ("module", VText modu), ("indent", VText ind), ("note", VText note)] ++ extra)
+          rendered what src = either (const (throwE ("the language's [test.stub] " <> what <> " does not render"))) pure (parseTemplate src >>= render (env [("import", VText (fromMaybe "" imported))]))
+      test <- rendered "test" (sdTest sd)
+      (new, at) <-
+        if T.null (T.strip base)
+          then do
+            -- a new file: the stub's head, then the test
+            hd <- maybe (pure "") (rendered "file") (sdFile sd)
+            let hd' = if T.null (T.strip hd) then "" else hd
+            pure (hd' <> test, length (T.lines hd') + 1)
+          else do
+            -- the tests in another file (`mod tests;`): refused, naming it
+            case sdElsewhere sd >>= \re -> listToMaybe [n | l <- T.lines base, Just n <- [regexName re l]] of
+              Just other -> throwE ("tests live in another file: " <> other <> T.pack (takeExtension (siteTestRel site)))
+              Nothing -> pure ()
+            let joined = case imported of
+                  Just i -> addImports lang [i] base
+                  Nothing -> base
+                kept = T.stripEnd joined
+                gap = T.replicate (sdGap sd + 1) "\n"
+                atEnd t = (kept <> gap <> t, length (T.splitOn "\n" kept) + sdGap sd + 1)
+            placed <- case sdAt sd of
+              Nothing -> pure Nothing
+              Just phrase -> Just <$> lift (resolveLayers (pSyntax (ssPorts s)) (Just lang) [PhraseAnchor phrase] joined)
+            case (placed, sdAt sd, sdOpen sd) of
+              -- at its target (`end of mod tests`), after the gap
+              (Just (Right loc), _, _) ->
+                let (first, t) = insertLines loc {locSpacing = NoSpacing} (T.replicate (sdGap sd) "\n" <> test) joined
+                 in pure (t, first + sdGap sd)
+              -- no target: opened at the file's end, the test inside
+              (_, Just _, Just o) -> do
+                opened <- either (const (throwE "the language's [test.stub] open does not render")) pure (parseTemplate o >>= render (env [("test", VText test)]))
+                let (new, at0) = atEnd opened
+                    inside = length (T.lines (fst (T.breakOn test opened)))
+                pure (new, at0 + inside)
+              _ -> pure (atEnd test)
+      let edit = case testText0 of
             Nothing -> FileEdit testFile Nothing True ((0, 0), (0, 0)) new
             Just _ -> let (range, t) = smallestChange base new in FileEdit testFile (fst <$> M.lookup testFile (ssDocs s)) False range t
+          -- its name as an anchor names it: the path of the test at its line
+          anchored = maybe name (anchorName . tuPath) (listToMaybe [u | u <- reverse (testUnitsIn rules above new), fst (tuLines u) <= at, at <= snd (tuLines u)])
       lift (appendStepLine (ssPorts s) (siteRoot site) ["stub", "person", T.pack (siteModuleRel site) <> "::" <> unit, "stubbed " <> name <> maybe "" (\m -> " (kills line " <> tshow (muLine m) <> ")") survivor])
-      pure (StubAnswer testFile at name edit)
+      pure (StubAnswer testFile at anchored edit)
+
+-- | A new test's name in LANG from WORDS, by its `[test] name` template
+-- over @{= words =}@ (a name of those words: `test_{= words|snake =}`);
+-- the words joined by @_@ without one. No words are the word `step`.
+testNameIn :: Language -> [Text] -> Text
+testNameIn lang ws0 = fromMaybe (render' "{= words|snake =}") (render' <$> (langTest lang >>= testNaming))
+  where
+    ws = if null ws0 then ["step"] else ws0
+    render' src = either (const (T.intercalate "_" ws)) id (parseTemplate src >>= render (M.singleton "words" (VName (wordsName ws))))
+
+-- | A unit's name as words: the underscores at its ends dropped, split at
+-- each underscore and before a capital after a lowercase letter or a digit,
+-- lowercased (`CloseTable` is `close table`, `V2Table` `v2 table`).
+unitWordsOf :: Text -> [Text]
+unitWordsOf n = T.splitOn "_" (T.pack (go ' ' (T.unpack (T.dropAround (== '_') n))))
+  where
+    go prev (c : cs)
+      | isUpper c && (isLower prev || isDigit prev) = '_' : toLower c : go c cs
+      | otherwise = toLower c : go c cs
+    go _ [] = []
+
+-- | NAME, or, NAMES holding it already, the first of NAME_2, NAME_3, … they
+-- do not hold.
+uniqueAmong :: Text -> [Text] -> Text
+uniqueAmong base names = fromMaybe base (find (`notElem` names) (base : [base <> "_" <> T.pack (show i) | i <- [2 :: Int ..]]))

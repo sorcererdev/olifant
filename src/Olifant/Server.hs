@@ -72,9 +72,8 @@ module Olifant.Server
   , TestsAnswer (..)
   , testsRun
   , testAt
-  , belowDecorators
-  , classAt
-  , testNameOf
+  , unitAround
+  , Named (..)
   , StubAnswer (..)
   , stubAt
   , Unit (..)
@@ -129,8 +128,8 @@ import Olifant.Server.Hints (LineHint (..), fileActionsFor, hintsFor)
 import Olifant.Server.Jobs (Jobs, newJobs, submit)
 import Olifant.Server.Preview (PickStep (..), Preview (..), previewFor, stepsPlanWith)
 import Olifant.Server.State
-import Olifant.Server.Stub (StubAnswer (..), belowDecorators, classAt, stubAt, testNameOf)
-import Olifant.Server.Unit (Unit (..), unitAt)
+import Olifant.Server.Stub (StubAnswer (..), stubAt)
+import Olifant.Server.Unit (Named (..), Unit (..), unitAround, unitAt)
 import Olifant.Server.Conjure (ConjureAnswer (..), ConjureOutcome (..), PausedAnswer (..), Proposal (..), pausedJson, Resume (..), ResumeChoice (..), conjureAt, resumeConjure)
 import Olifant.Server.Mutate (MutateAnswer (..), mutateAt)
 import Olifant.Server.Waive (waiveAt)

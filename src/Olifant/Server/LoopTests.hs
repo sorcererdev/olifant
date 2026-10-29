@@ -20,23 +20,24 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (Ports (..), Project (..))
-import Olifant.Language (TestRun (..), languageFor, ownedBy)
+import Olifant.Language (Language, TestRun (..), languageFor, ownedBy)
 import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), Verdict (..), anchorText, childrenOf, evidenceTag, parsePlan, withTestState, withVerdict)
 import Olifant.Server.LoopTypes (Fact (..))
 import Olifant.Server.Plans (Resolved (..), confined, resolveAnchor, safely)
 import Olifant.Server.State (ServerState (..), projectFor)
-import Olifant.Server.Stub (StubAnswer (..), stubWith)
-import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testLineIn, testLineOf, testsRun)
+import Olifant.Server.Stub (StubAnswer (..), stubWith, testNameIn)
+import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..), testLineIn, testsRun)
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Server.Unit (Named (..))
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, (</>))
 
--- | A step's words as a test's name: past its checkbox, before its anchor
--- (and so its marks), lowercased, each run of other characters one `_`
--- ("the repository answers closed_on" → "test_the_repository_answers_closed_on").
-testNameFor :: Text -> Text
-testNameFor t = "test_" <> if null ws then "step" else T.intercalate "_" ws
+-- | A step's words as a test's name in LANG ('testNameIn'): past its
+-- checkbox, before its anchor (and so its marks), lowercased, each run of
+-- other characters a break between words (pytest's: "the repository
+-- answers closed_on" → "test_the_repository_answers_closed_on").
+testNameFor :: Language -> Text -> Text
+testNameFor lang t = testNameIn lang ws
   where
     ws = filter (not . T.null) (T.split (\c -> not (isAscii c && isAlphaNum c)) (T.toLower (wordsOf t)))
 
@@ -65,7 +66,8 @@ stepStub path row s0 =
           resolveAnchor s p a >>= \r -> case rsUnit r of
             Nothing -> pure (s, Left "the step's unit was not found")
             Just n ->
-              stubWith (Just (testNameFor said)) (rsAbs r) (namedDef n) Nothing s <&&> \sa ->
+              let lang = languageFor (catalogLanguages (prCatalog p)) (makeRelative (normalisePath (prRoot p)) (normalisePath (rsAbs r)))
+               in maybe (pure (s, Left ("no language knows " <> T.pack (rsAbs r)))) (\l -> stubWith (Just (testNameFor l said)) (rsAbs r) (namedDef n) Nothing s) lang <&&> \sa ->
                 let rel = makeRelative (normalisePath (prRoot p)) (normalisePath (saFile sa))
                     child = T.replicate (lnIndent step + 2) " " <> "- test: " <> wordsOf said <> " @" <> T.pack rel <> ":" <> saName sa <> " ○"
                     after = maybe row lnRow (listToMaybe (reverse (childrenOf ls row)))
@@ -137,7 +139,7 @@ testsRan s0 p ls row = case drop row ls of
       Just rel -> do
         text <- safely Nothing (readText (prWorkspace p) rel)
         let lang = languageFor (catalogLanguages (prCatalog p)) rel
-        case text >>= \t -> maybe (testLineOf t (T.replace "." "::" (anUnit a))) (\l -> testLineIn l t (anUnit a)) lang of
+        case text >>= \t -> lang >>= \l -> testLineIn l t (anUnit a) of
           Nothing -> pure (s, (Left (anUnit a <> " is not in " <> T.pack rel), 0))
           Just line ->
             testsRun (ScopeAt line) (normalisePath (prRoot p </> rel)) s <&> \case

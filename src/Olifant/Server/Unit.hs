@@ -7,6 +7,7 @@ module Olifant.Server.Unit
   , unitHeader
   , Named (..)
   , unitsOf
+  , unitAround
   , unitNamed
   , unitNameIn
   , fingerprint
@@ -138,6 +139,17 @@ unitsOf syntax lang text
       | (sp, d, n) <- us
       , let parentOf s = listToMaybe [pn | (ps, _, pn) <- sortOn (\((a, z), _, _) -> (Down a, z)) us, ps /= s, contains ps s]
       ]
+
+-- | The innermost unit (by 'unitsOf') whose lines hold LINE (1-based) of
+-- TEXT: a decorator's line is its def's. Left is one sentence on why there
+-- is none.
+unitAround :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Named)
+unitAround syntax lang text line =
+  unitsOf syntax lang text <&> \case
+    Left why -> Left why
+    Right ns -> case sortOn (\n -> (Down (fst (namedLines n)), snd (namedLines n))) [n | n <- ns, let (a, z) = namedLines n, a <= line, line <= z] of
+      n : _ -> Right n
+      [] -> Left ("no function or class at line " <> tshow line <> ": put the cursor in one to stub its test")
 
 -- | The unit called NAME: the exact qualified name (the earliest of several),
 -- or a bare name that is the last part of exactly one qualified name.

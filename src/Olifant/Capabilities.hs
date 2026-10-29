@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), defaultUnitNames, supportsMissing)
+import Olifant.Language (CheckDef (..), Language (..), StubDef (..), TestDef (..), defaultUnitNames, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -29,7 +29,7 @@ capabilities lang =
   , Capability "test units" testUnits "test.unit" Nothing
   , Capability "test selection" selection "test.select" Nothing
   , Capability "mutation" mutation "mutate" Nothing
-  , Capability "stub" stub "test.format" (either Just (const Nothing) stub)
+  , Capability "stub" stub "test.stub" Nothing
   ]
   where
     check = langCheck lang
@@ -49,12 +49,11 @@ capabilities lang =
       Nothing -> Left "[test]"
       Just td -> Right ("[test] format " <> testFormat td <> ", tests_for " <> testsFor td)
     testUnits
-      | maybe False (not . null . testUnitPatterns) test = Right "[test] unit"
-      | pytest = Right "built in (pytest shape)"
+      | maybe False (not . null . testUnitRules) test = Right ("[test] unit" <> (if maybe False (isJust . testAbove) test then ", above" else ""))
       | otherwise = Left "[test] unit"
-    stub
-      | pytest = Right "built in (pytest shape)"
-      | otherwise = Left "stubs for other test formats come with [test] stub"
+    stub = case test >>= testStub of
+      Just sd -> Right ("[test] stub" <> maybe "" (" at " <>) (sdAt sd))
+      Nothing -> Left "[test] stub"
     mutation = case langMutate lang of
       [] -> Left "[[mutate]]"
       ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")

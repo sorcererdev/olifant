@@ -4,12 +4,17 @@
 command = ["cabal", "test", "-v0", "--builddir={= cache =}/dist-test-{= context =}", "--test-show-details=direct", "--test-option=--format=checks", "--test-option=--no-color", "{= tests =}"]
 context = ["*.cabal", "cabal.project", "cabal.project.freeze"]
 format = "lines"
-unit = ["(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+\"([^\"]*)\""]
+# a describe or an it: its name is the string's (group 3), escapes and all
+unit = [{ pattern = '(^|[[:space:]$])(describe|context|it|specify|prop)[[:space:]]+"(([^"\\]|\\.)*)"', name = 3 }]
 file_group = "^module[[:space:]]+([[:alnum:]_.]+)Spec"
 exclusive = true
 timeout = 900
 tests_for = "{= dir =}/{= stem =}Spec.hs"
 install = "install with ghcup; it lives in ~/.ghcup/bin"
+# A new test: an `it` named by its words, red until written
+# (expectationFailure), one blank line before it; a new Spec module imports
+# its module and describes it by name.
+name = "{= words|lower_words =}"
 
 # hspec's `--format=checks` tree
 [test.lines]
@@ -23,3 +28,19 @@ drop = "^  [0-9]+\\) "
 [test.select]
 test = "--test-option=--match=/{= group =}/{= name =}/"
 file = "--test-option=--match=/{= group =}/"
+
+[test.stub]
+test = """
+{= indent =}it "{= name|escaped =}" $ do
+{= note =}{= indent =}{= indent =}expectationFailure "write this test"
+"""
+file = """
+module {= module =}Spec (spec) where
+
+{= import =}
+import Test.Hspec
+
+spec :: Spec
+spec = describe "{= module =}" $ do
+"""
+gap = 1

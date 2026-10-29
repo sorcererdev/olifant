@@ -19,6 +19,7 @@ hspecLines =
     , lfFailure = Just "^  ([^[:space:]].*):([0-9]+):[0-9]+: *$"
     , lfEnd = Just "^  To rerun use|^Randomized with seed|^Finished in"
     , lfDrop = Just "^  [0-9]+\\) "
+    , lfSplit = Nothing
     }
 
 files :: [(FilePath, Maybe Text)]
@@ -48,7 +49,7 @@ spec = do
           rs = parseLines hspecLines out
       map rpFailure rs `shouldBe` [Just (Failure (Just 3) "boom" "1) G a\n     boom"), Just (Failure Nothing "failed" "")]
     it "flat lines: a test is named by its line alone" $ do
-      let flat = LinesFormat {lfPass = "^test (.*) \\.\\.\\. ok$", lfFail = "^test (.*) \\.\\.\\. FAILED$", lfNest = False, lfFailure = Nothing, lfEnd = Nothing, lfDrop = Nothing}
+      let flat = LinesFormat {lfPass = "^test (.*) \\.\\.\\. ok$", lfFail = "^test (.*) \\.\\.\\. FAILED$", lfNest = False, lfFailure = Nothing, lfEnd = Nothing, lfDrop = Nothing, lfSplit = Nothing}
       map rpSegments (parseLines flat "running 2 tests\ntest a::b ... ok\n  test c ... FAILED\n") `shouldBe` [["a::b"]]
   describe "attribution" $ do
     it "attributes by group across several files, else the only file, else none" $ do

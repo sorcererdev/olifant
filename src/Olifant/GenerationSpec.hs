@@ -16,7 +16,7 @@ import Hedgehog.Range qualified as Range
 import Olifant.Anchor (astQueries)
 import Olifant.Generation
 import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Steer (..), Steering (..), noSeed)
-import Olifant.Generation.FillPhase (assertionSpan, cutToHole, fillLines, fillPhase, looksLikeFile, reindented)
+import Olifant.Generation.FillPhase (assertionSpan, cutToHole, fillLines, fillPhase, looksLikeFile, reindented, topLevelNames)
 import Olifant.Holes (HoleSite (..))
 import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
 import Olifant.Generation.Complete (insertBranch)
@@ -834,9 +834,10 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
           pure (map phStatus hs)
         ran r = Runner (\_ _ _ -> pure (Right r))
     it "(d) a test's assertion runs from its first assert statement to its end (a name that begins with `assert` is none)" $ do
-      assertionSpan "test_x" "def test_x() -> None:\n    assertion = 1\n    assert assertion == 1\n\n\ndef test_y() -> None:\n    assert True\n" `shouldBe` Just (3, 3)
-      assertionSpan "test_x" "def test_x() -> None:\n    assert(\n        1 == 1\n    )\n" `shouldBe` Just (2, 4)
-      assertionSpan "test_z" "def test_x() -> None:\n    assert True\n" `shouldBe` Nothing
+      py <- shippedLanguage "python" []
+      assertionSpan py "test_x" "def test_x() -> None:\n    assertion = 1\n    assert assertion == 1\n\n\ndef test_y() -> None:\n    assert True\n" `shouldBe` Just (3, 3)
+      assertionSpan py "test_x" "def test_x() -> None:\n    assert(\n        1 == 1\n    )\n" `shouldBe` Just (2, 4)
+      assertionSpan py "test_z" "def test_x() -> None:\n    assert True\n" `shouldBe` Nothing
     it "(d) VerifyRedAt: a test that passes stands (a regression test), unless its function's body raises: then it asserts nothing" $ do
       outcome (VerifyRedAt "t" 3 True) (ran (TestRun ["t"] [] Nothing)) `shouldReturn` [HoleFilled "fake" 1]
       st <- outcome (VerifyRedAt "t" 3 False) (ran (TestRun ["t"] [] Nothing))
@@ -1033,7 +1034,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
   describe "a fill cut to its hole (a model that answers with the whole file)" $ do
     let pyLang = l
           where
-            Right l = parseLanguage "python" "/p" $ T.unlines
+            Right l = parseOverShipped "python" "/p" $ T.unlines
               [ "files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""
               , "imports = \"^(from [A-Za-z0-9_.]+ import .+|import [A-Za-z0-9_.]+( as [A-Za-z0-9_]+)?)$\""
               , "[holes.stmt]", "placeholder = 'raise NotImplementedError(\"olifant: {= hole =}\")'", "wrap = \"def h():\\n{= fill|indent =}\"" ]
@@ -1095,26 +1096,51 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
       fillLines Nothing base (2, 3) "if a:\n    return 1\nreturn 2" `shouldBe` "def f():\n    if a:\n        return 1\n    return 2\n\ndef g():\n    pass\n"
       fillLines Nothing base (6, 6) "return 3" `shouldBe` "def f():\n    x = 1\n    return x\n\ndef g():\n    return 3\n"
     it "(c) cut only where the fill repeats the file: the line below at the fill's own level, never nested; an opener held twice is no anchor" $ do
+      py <- shippedLanguage "python" []
       let base = "def collect(xs):\n    result = []\n    PH\n    return result\n"
       -- the def repeated, an early return nested: cut at the base-level one
-      cutToHole Nothing [] base 3 "def collect(xs):\n    for x in xs:\n        if x is None:\n            return result\n    return result\n\ndef other():\n    pass"
+      cutToHole py Nothing [] base 3 "def collect(xs):\n    for x in xs:\n        if x is None:\n            return result\n    return result\n\ndef other():\n    pass"
         `shouldBe` Just ("    for x in xs:\n        if x is None:\n            return result", 5)
       -- no def in it: nothing is cut, whatever it holds
-      cutToHole Nothing [] base 3 "x = 1\nreturn result" `shouldBe` Nothing
+      cutToHole py Nothing [] base 3 "x = 1\nreturn result" `shouldBe` Nothing
       -- the def twice (two adapters alike): no cut
-      cutToHole Nothing [] base 3 "def collect(xs):\n    a = 1\n\ndef collect(xs):\n    b = 2" `shouldBe` Nothing
+      cutToHole py Nothing [] base 3 "def collect(xs):\n    a = 1\n\ndef collect(xs):\n    b = 2" `shouldBe` Nothing
     it "(c) the two-hole split with no assert after the body's first line: the arrangement is `pass`, the assertion all of it" $ do
+      py <- shippedLanguage "python" []
       let base = "def test_a() -> None:\n    PH_arr\n    PH_ass\n"
           whole = "def test_a() -> None:\n    assert pre()\n    x = 1\n    assert x"
-      fmap fst (cutToHole Nothing ["PH_ass"] base 2 whole) `shouldBe` Just "    pass"
-      fmap fst (cutToHole Nothing ["PH_arr"] base 3 whole) `shouldBe` Just "    assert pre()\n    x = 1\n    assert x"
-      fmap fst (cutToHole Nothing ["PH_ass"] base 2 "def test_a() -> None:\n    with pytest.raises(E):\n        go()") `shouldBe` Just "    pass"
+      fmap fst (cutToHole py Nothing ["PH_ass"] base 2 whole) `shouldBe` Just "    pass"
+      fmap fst (cutToHole py Nothing ["PH_arr"] base 3 whole) `shouldBe` Just "    assert pre()\n    x = 1\n    assert x"
+      fmap fst (cutToHole py Nothing ["PH_ass"] base 2 "def test_a() -> None:\n    with pytest.raises(E):\n        go()") `shouldBe` Just "    pass"
     it "(c) a file is told by its top-level names: a nested helper named like another test's, or a local import, is code" $ do
+      py <- shippedLanguage "python" []
       let base = "import os\n\ndef helper():\n    pass\n\ndef test_b() -> None:\n    def fake_clock():\n        return 1\n    assert fake_clock()\n"
-      looksLikeFile base "def fake_clock():\n    return 2\nresult = fake_clock()" `shouldBe` False
-      looksLikeFile base "x = 1\nimport json\nresult = json.dumps(x)" `shouldBe` False
-      looksLikeFile base "def helper():\n    return 1\nresult = helper()" `shouldBe` True
-      looksLikeFile base "x = 1\n\ndef test_c() -> None:\n    assert x" `shouldBe` True
+      looksLikeFile py (topLevelNames py base) "def fake_clock():\n    return 2\nresult = fake_clock()" `shouldBe` False
+      looksLikeFile py (topLevelNames py base) "x = 1\nimport json\nresult = json.dumps(x)" `shouldBe` False
+      looksLikeFile py (topLevelNames py base) "def helper():\n    return 1\nresult = helper()" `shouldBe` True
+      looksLikeFile py (topLevelNames py base) "x = 1\n\ndef test_c() -> None:\n    assert x" `shouldBe` True
+    it "(c) a Haskell whole-file answer is cut to the hole" $ do
+      hs <- shippedLanguage "haskell" []
+      let base = "module Olifant.FooSpec (spec) where\n\nimport Test.Hspec\n\nspec :: Spec\nspec = describe \"Olifant.Foo\" $ do\n  it \"adds\" $ do\n    PH\n"
+          whole = "module Olifant.FooSpec (spec) where\n\nimport Test.Hspec\n\nspec :: Spec\nspec = describe \"Olifant.Foo\" $ do\n  it \"adds\" $ do\n    let x = 1\n    x `shouldBe` 1\n"
+      fmap fst (cutToHole hs Nothing [] base 8 whole) `shouldBe` Just "    let x = 1\n    x `shouldBe` 1"
+    it "(c) a Rust test's arrangement stops at its assert!" $ do
+      rust <- shippedLanguage "rust" []
+      let base = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {\n        PH_arr\n        PH_ass\n    }\n}\n"
+          whole = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {\n        let x = 1;\n        assert_eq!(x, 1);\n    }\n}\n"
+      fmap fst (cutToHole rust Nothing ["PH_ass"] base 5 whole) `shouldBe` Just "        let x = 1;"
+      fmap fst (cutToHole rust Nothing ["PH_arr"] base 6 whole) `shouldBe` Just "        assert_eq!(x, 1);"
+      -- no arrangement before the assert, and no empty statement: an empty side
+      fmap fst (cutToHole rust Nothing ["PH_ass"] base 5 "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {\n        assert_eq!(1, 1);\n    }\n}\n") `shouldBe` Just ""
+    it "(c) a Haskell answer is a file: spec = describe at its top level" $ do
+      hs <- shippedLanguage "haskell" []
+      let base = "module Olifant.FooSpec (spec) where\n\nimport Test.Hspec\n\nspec :: Spec\nspec = describe \"Olifant.Foo\" $ do\n  it \"adds\" $ do\n    PH\n"
+      looksLikeFile hs (topLevelNames hs base) "spec :: Spec\nspec = describe \"Olifant.Foo\" $ do\n  it \"adds\" $ do\n    1 `shouldBe` 1" `shouldBe` True
+      looksLikeFile hs (topLevelNames hs base) "let x = 1\nx `shouldBe` 1" `shouldBe` False
+    it "(d) an hspec test's assertion: from its first `shouldBe` to the it's last line" $ do
+      hs <- shippedLanguage "haskell" []
+      let t = "spec = describe \"Olifant.Foo\" $ do\n  it \"adds\" $ do\n    let x = 1\n    x `shouldBe` 1\n    x + 1 `shouldBe` 2\n  it \"other\" $ pure ()\n"
+      assertionSpan hs "adds" t `shouldBe` Just (4, 5)
     it "(c) a fill that is only the hole's lines is left as it is (nothing to cut)" $ do
       (_, file, _, events) <- run oneHole (const (M.fromList [("arrange", "assert_ready = 1\nresult = command()")]))
       fmap (T.isInfixOf "    assert_ready = 1\n    result = command()\n    assert isinstance") file `shouldBe` Just True
