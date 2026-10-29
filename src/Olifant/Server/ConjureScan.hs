@@ -10,28 +10,36 @@ module Olifant.Server.ConjureScan
   , helperOf
   , handFake
   , Port (..)
-  , protocolPorts
+  , portsIn
   , derivePort
-  , initParams
+  , ctorParams
   , deriveParam
   , takesPort
   , conjurePortQuestion
+  , fakeIn
+  , handFakeIn
+  , derivePortIn
+  , ctorParamsIn
+  , takesPortIn
   , conjurePortGate
   , portFrom
   , portCandidates
   , missingMethod
   , methodSignature
-  , protocolEnd
+  , portEnd
   ) where
 
 import Data.Char (isAlphaNum, isSpace, isUpper, toLower)
 import Data.List (nub, sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
+import Olifant.Language (ConjureDef (..), CtorShape (..), FakeShape (..), PortShape (..))
+import Data.Array qualified
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchAll, matchM, matchTest)
 
 -- | A fake a test builds: the name it is bound to and the class (or @Mock@) called.
 data Fake = Fake {fkVariable :: Text, fkClass :: Text}
@@ -40,37 +48,41 @@ data Fake = Fake {fkVariable :: Text, fkClass :: Text}
 -- | The first fake bound in a test's body (SRC, its source: its own line, then its body)
 -- that is never an argument of a call in that body (positional or keyword); none when every
 -- fake is passed.
-unpassedFake :: Text -> Maybe Fake
-unpassedFake src = do
+unpassedFake :: FakeShape -> Text -> Maybe Fake
+unpassedFake fs src = do
   let body = T.intercalate "\n" (drop 1 (T.lines src))
-  listToMaybe [f | f <- mapMaybe bound (T.lines body), not (passedIn body (fkVariable f))]
+  listToMaybe [f | f <- mapMaybe (bound fs) (T.lines body), not (passedIn (isJust (fsKeyword fs)) body (fkVariable f))]
 
--- | @    var = Class(@ for a fake's class: @Mock@, @MagicMock@, @Fake…@, @InMemory…@, @Stub…@.
-bound :: Text -> Maybe Fake
-bound l = do
-  rest <- if T.null l || not (isSpace (T.head l)) then Nothing else Just (T.stripStart l)
-  let (var, r1) = T.span isIdent rest
-  r2 <- T.stripPrefix "=" (T.stripStart r1)
-  if "=" `T.isPrefixOf` r2 then Nothing else Just ()
-  let (cls, r3) = T.span isIdent (T.stripStart r2)
-  if T.null var || not ("(" `T.isPrefixOf` r3) || not (fakeClass cls) then Nothing else Just (Fake var cls)
+-- | A line binding a fake by the shape's `bound` (the variable, the class called), the class
+-- one of its `classes` or longer than one of its `prefixes` that starts it.
+bound :: FakeShape -> Text -> Maybe Fake
+bound fs l = do
+  [var, cls] <- take 2 . drop 1 <$> groups (fsBound fs) l
+  if T.null var || not (fakeClass cls) then Nothing else Just (Fake var cls)
   where
-    fakeClass c = c `elem` ["Mock", "MagicMock"] || any (\p -> p `T.isPrefixOf` c && T.length c > T.length p) ["Fake", "InMemory", "Stub"]
+    fakeClass c = c `elem` fsClasses fs || any (\p -> p `T.isPrefixOf` c && T.length c > T.length p) (fsPrefixes fs)
+
+-- | The groups of RE's match in a line (the whole match first); none when it does not match.
+groups :: Text -> Text -> Maybe [Text]
+groups re l = do
+  rx <- makeRegexM (T.unpack re) :: Maybe Regex
+  AllTextSubmatches gs <- matchM rx (T.unpack l) :: Maybe (AllTextSubmatches [] String)
+  pure (map T.pack gs)
 
 isIdent :: Char -> Bool
 isIdent c = isAlphaNum c || c == '_'
 
--- | VAR is an argument of a call in BODY: after @(@ or @,@ (and an optional @name=@), before
--- @)@ or @,@.
-passedIn :: Text -> Text -> Bool
-passedIn body var = any argAt (occurrences var body)
+-- | VAR is an argument of a call in BODY: after @(@ or @,@ (and, when KEYWORDS, an optional
+-- @name=@), before @)@ or @,@.
+passedIn :: Bool -> Text -> Text -> Bool
+passedIn keywords body var = any argAt (occurrences var body)
   where
     argAt (before, after) =
       let b = T.stripEnd before
           a = T.stripStart after
           opens t = maybe False (\(_, c) -> c `elem` ['(', ',']) (T.unsnoc (T.stripEnd t))
           keyword = case T.unsnoc b of
-            Just (b', '=') | not ("=" `T.isSuffixOf` b'), not (any (`T.isSuffixOf` b') ["!", "<", ">"]) ->
+            Just (b', '=') | keywords, not ("=" `T.isSuffixOf` b'), not (any (`T.isSuffixOf` b') ["!", "<", ">"]) ->
               let b'' = T.stripEnd b'
                   name = T.takeWhileEnd isIdent b''
                in not (T.null name) && opens (T.dropEnd (T.length name) b'')
@@ -124,49 +136,54 @@ helperOf method src = listToMaybe [callee | (i, l) <- zip [0 :: Int ..] ls, Just
       if T.null x || T.null callee || not ("(" `T.isPrefixOf` r3) then Nothing else Just (x, callee)
 
 -- | A test's source SRC (its own line, then its body) with its fake VAR handed to its first
--- call of HELPER as PARAM: @command()@ becomes @command(bookings=repository)@, @command(x)@
--- becomes @command(x, bookings=repository)@; none when its body has no such call on one line,
--- or the call already has the fake.
-handFake :: Text -> Text -> Text -> Text -> Maybe Text
-handFake helper param var src = do
-  (i, l') <- listToMaybe [(i, l') | (i, l) <- drop 1 numbered, Just l' <- [handIn l]]
+-- call of HELPER as PARAM, by the shape's `keyword` (@{= param =}={= var =}@: @command()@
+-- becomes @command(bookings=repository)@, @command(x)@ becomes
+-- @command(x, bookings=repository)@); none without a `keyword`, when its body has no such call
+-- on one line, or the call already has the fake.
+handFake :: FakeShape -> Text -> Text -> Text -> Text -> Maybe Text
+handFake fs helper param var src = do
+  kw <- fsKeyword fs
+  let arg = T.replace "{= param =}" param (T.replace "{= var =}" var kw)
+  (i, l') <- listToMaybe [(i, l') | (i, l) <- drop 1 numbered, Just l' <- [handIn arg l]]
   pure (T.intercalate "\n" [if j == i then l' else l | (j, l) <- numbered])
   where
     numbered = zip [0 :: Int ..] (T.splitOn "\n" src)
-    handIn l =
+    handIn arg l =
       listToMaybe
-        [ b <> helper <> "(" <> (if T.null (T.strip inner) then "" else inner <> ", ") <> param <> "=" <> var <> ")" <> T.drop (T.length args) r
+        [ b <> helper <> "(" <> (if T.null (T.strip inner) then "" else inner <> ", ") <> arg <> ")" <> T.drop (T.length args) r
         | (b, a) <- occurrences helper l
         , Just r <- [T.stripPrefix "(" a]
         , Just args <- [balanced r]
         , let inner = T.dropEnd 1 args
-        , not (passedIn ("(" <> args) var)
+        , not (passedIn True ("(" <> args) var)
         ]
 
--- | A service's port: its Protocol class and its method lines.
+-- | A service's port: its name and its method lines.
 data Port = Port {ptName :: Text, ptMethods :: [Text]}
   deriving stock (Eq, Show)
 
--- | Each @class X(Protocol):@ of FILES with its @def@ lines (stripped), sorted by name.
-protocolPorts :: [(FilePath, Text)] -> [Port]
-protocolPorts files = sortOn ptName [p | (_, t) <- files, p <- ports (T.lines t)]
+-- | Each port of FILES by the shape (a line its `start` matches, group 1 the name) with its
+-- block's lines (stripped) that its `method` matches, sorted by name. A block is the lines
+-- after the start up to the next one at column 0.
+portsIn :: PortShape -> [(FilePath, Text)] -> [Port]
+portsIn ps files = sortOn ptName [p | (_, t) <- files, p <- ports (T.lines t)]
   where
+    isMethod = maybe (const False) (\rx -> matchTest rx . T.unpack) (makeRegexM (T.unpack (psMethod ps)) :: Maybe Regex)
     ports = \case
       [] -> []
       l : rest
-        | Just r <- T.stripPrefix "class " l
-        , (name, r') <- T.span isIdent r
-        , "(Protocol):" `T.isPrefixOf` T.strip r' ->
+        | Just (_ : name : _) <- groups (psStart ps) l
+        , not (T.null name) ->
             let (body, after) = break topLevel rest
-             in Port name [T.strip d | d <- body, "def " `T.isPrefixOf` T.strip d] : ports after
+             in Port name [T.strip d | d <- body, isMethod (T.strip d)] : ports after
         | otherwise -> ports rest
     topLevel l = not (T.null l) && not (isSpace (T.head l))
 
 -- | The port a fake stands for: the fake's class less @Fake@/@InMemory@/@Stub@ names one; the
 -- variable's last word is exactly one port's last word; the service's only port; else none.
-derivePort :: Fake -> [Port] -> Maybe Text
-derivePort f ports
-  | n : _ <- [n | p <- ["Fake", "InMemory", "Stub"], Just n <- [T.stripPrefix p (fkClass f)], n `elem` names] = Just n
+derivePort :: FakeShape -> Fake -> [Port] -> Maybe Text
+derivePort fs f ports
+  | n : _ <- [n | p <- fsPrefixes fs, Just n <- [T.stripPrefix p (fkClass f)], n `elem` names] = Just n
   | [n] <- [n | n <- names, lastWord (snake n) == lastWord (T.toLower (fkVariable f))] = Just n
   | [n] <- names = Just n
   | otherwise = Nothing
@@ -182,13 +199,18 @@ snake = T.pack . go . T.unpack
       [] -> []
       c : cs -> toLower c : concatMap (\x -> if isUpper x then ['_', toLower x] else [x]) cs
 
--- | Each @__init__@ of a module's TEXT: its (param, Type) pairs (@self@ and untyped ones left out).
-initParams :: Text -> [(Text, Text)]
-initParams text = concat [params a | (_, r) <- T.breakOnAll "def __init__(" text, Just a <- [balanced (T.drop (T.length "def __init__(") r)]]
+-- | Each constructor of a module's TEXT by the shape (its parameters after a match of its
+-- `start`, to the bracket closing the one it opens): the (param, Type) pairs its `param`
+-- matches (group 1, group 2; the rest, @self@ or an untyped one, left out).
+ctorParams :: CtorShape -> Text -> [(Text, Text)]
+ctorParams ct text = concat [params a | r <- starts, Just a <- [balanced r]]
   where
+    starts = case makeRegexM (T.unpack (ctStart ct)) :: Maybe Regex of
+      Nothing -> []
+      Just rx -> [T.pack (drop (o + n) s) | let s = T.unpack text, (o, n) <- map (\m -> m Data.Array.! 0) (matchAll rx s)]
     params a = mapMaybe param (splitTop (T.dropEnd 1 a))
-    param p = case T.breakOn ":" (T.strip p) of
-      (n, t) | not (T.null t), T.all isIdent n, not (T.null n) -> Just (n, T.strip (fst (T.breakOn "=" (T.drop 1 t))))
+    param p = case groups (ctParam ct) (T.strip p) of
+      Just (_ : n : t : _) | not (T.null n), not (T.null t) -> Just (n, T.strip t)
       _ -> Nothing
     splitTop = go (0 :: Int) ""
     go depth acc t = case T.uncons t of
@@ -212,8 +234,8 @@ deriveParam port siblings f = case M.toList counts of
     counts = M.fromListWith (+) [(n, 1 :: Int) | ps <- siblings, (n, t) <- nub ps, t == port]
 
 -- | The unit's HEADER (its class and @__init__@) takes a parameter of type PORT.
-takesPort :: Text -> Text -> Bool
-takesPort header port = port `elem` map snd (initParams header)
+takesPort :: CtorShape -> Text -> Text -> Bool
+takesPort ct header port = port `elem` map snd (ctorParams ct header)
 
 -- | Jev's question when no rule names the port: which of the service's PORTS the fake in
 -- the test's SOURCE stands for, by the methods it USES on it.
@@ -305,16 +327,37 @@ methodSignature m port body moduleText testText = do
     entity = listToMaybe [e | d <- ptMethods port, let ret = snd (T.breakOnEnd "->" d), e <- idents ret, e /= ptName port, e `T.isPrefixOf` ptName port]
     idents t = [w | w <- T.split (not . isIdent) t, not (T.null w), isUpper (T.head w)]
 
--- | The line (1-based) a method goes in the file TEXT to end the Protocol class Q: the line
--- after its last, when that is blank or the end of the file; none when Q is not there.
-protocolEnd :: Text -> Text -> Maybe Int
-protocolEnd q text = do
+-- | The line (1-based) a method goes in the file TEXT to end the port Q (by the shape's
+-- `start`): the line after its last, when that is blank or the end of the file; none when Q is
+-- not there.
+portEnd :: PortShape -> Text -> Text -> Maybe Int
+portEnd ps q text = do
   let ls = T.splitOn "\n" text
       numbered = zip [1 :: Int ..] ls
-  start <- listToMaybe [i | (i, l) <- numbered, ("class " <> q <> "(") `T.isPrefixOf` l]
+  start <- listToMaybe [i | (i, l) <- numbered, Just (_ : n : _) <- [groups (psStart ps) l], n == q]
   let body = takeWhile (\(_, l) -> T.null (T.strip l) || isSpace (T.head l)) (drop start numbered)
       lastLine = maybe start fst (listToMaybe (reverse [x | x@(_, l) <- body, not (T.null (T.strip l))]))
       next = lastLine + 1
   case drop (next - 1) ls of
     l : _ | T.null (T.strip l) -> Just next
     _ -> Nothing
+
+-- | 'unpassedFake' by a pack's `[conjure.fake]`; none without one.
+fakeIn :: Maybe ConjureDef -> Text -> Maybe Fake
+fakeIn cj src = (cj >>= cjFake) >>= \fs -> unpassedFake fs src
+
+-- | 'handFake' by a pack's `[conjure.fake]`; none without one.
+handFakeIn :: Maybe ConjureDef -> Text -> Text -> Text -> Text -> Maybe Text
+handFakeIn cj helper param var src = (cj >>= cjFake) >>= \fs -> handFake fs helper param var src
+
+-- | 'derivePort' by a pack's `[conjure.fake]`; by the variable or the only port without one.
+derivePortIn :: Maybe ConjureDef -> Fake -> [Port] -> Maybe Text
+derivePortIn cj = derivePort (fromMaybe (FakeShape "" [] [] Nothing Nothing) (cj >>= cjFake))
+
+-- | 'ctorParams' by a pack's `[conjure.constructor]`; none without one.
+ctorParamsIn :: Maybe ConjureDef -> Text -> [(Text, Text)]
+ctorParamsIn cj text = maybe [] (`ctorParams` text) (cj >>= cjConstructor)
+
+-- | 'takesPort' by a pack's `[conjure.constructor]`; never without one.
+takesPortIn :: Maybe ConjureDef -> Text -> Text -> Bool
+takesPortIn cj header port = port `elem` map snd (ctorParamsIn cj header)

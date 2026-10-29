@@ -952,6 +952,39 @@ line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a b
 between imports is a group, so a new import joins the last group) and `when_empty = "after
 header"` (in a file with no imports, the first goes under the docstring).
 
+### Conjure's shapes: `[conjure]`
+
+A pack tells conjure how its architecture looks, in its own
+`languages/<name>.toml`. Conjure uses these shapes to find the ports a test's
+fake stands for, to wire a missing port, and to add a method to a port. Without
+`[conjure]`, conjure works at the floor: it writes a test's body or a
+function's from the test and the unit, and never asks about ports. This
+`[conjure]` is a language table in a pack. It is not the `[conjure] wire` key
+of a project's `.olifant/config.toml`, which names the generator that wires a
+port.
+
+Shapes are line expressions, like `[test] unit`. A block is the lines after
+its start that are blank or indented deeper.
+
+| Key | python-htmx's value | What it says |
+|---|---|---|
+| `service` | `"src/{= app =}/{= service =}"` | where a service lives. A module's path that starts so (and goes on by a folder and a file) binds `app` and `service` |
+| `[conjure.port] files` | `["ports/**/*.py"]` | globs under the service for the files holding ports |
+| `[conjure.port] start` | `'^class ([[:alnum:]_]+)\(Protocol\):'` | a line starting a port, group 1 its name |
+| `[conjure.port] method` | `'^def '` | a stripped line of the port's block that is one of its methods |
+| `[conjure.fake] bound` | `'^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('` | a test's line binding a fake: group 1 the variable, group 2 the class |
+| `[conjure.fake] classes` | `["Mock", "MagicMock"]` | classes that are fakes |
+| `[conjure.fake] prefixes` | `["Fake", "InMemory", "Stub"]` | a class starting with one (and longer) is a fake; less the prefix, it names a port |
+| `[conjure.fake] keyword` | `"{= param =}={= var =}"` | how a fake is handed to a call by name. Without it, only positional arguments count as handing it in, and conjure cannot hand a fake to a helper |
+| `[conjure.fake] stub` | `'\.{= method =} = lambda ([^:]*):(.*)'` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
+| `[conjure.constructor] files` | `["commands/**/*.py", "queries/**/*.py"]` | globs under the service for the siblings whose constructors show what a port's parameter is called (test files left out) |
+| `[conjure.constructor] owner` | `'^class ([[:alnum:]_]+)'` | a line starting what holds a constructor, group 1 its name |
+| `[conjure.constructor] start` | `'def __init__\('` | where a constructor's parameters start, up to the bracket closing the one it opens |
+| `[conjure.constructor] param` | `'^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'` | one parameter: group 1 its name, group 2 its type. One that does not match (`self`, an untyped one) is left out |
+
+`olifant doctor` shows a row "conjure shapes" per language: the parts a pack
+declares, or the floor.
+
 ## The project model: `model.toml`
 
 The language server keeps a model of each project: its services, commands, queries, ports,

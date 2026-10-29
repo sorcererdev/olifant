@@ -104,6 +104,19 @@ spec = do
     it "(i) an unknown preset names the new ones" $ do
       hs ["[check]", "preset = \"stack\""] `shouldSatisfy` either ("cabal-repl" `T.isInfixOf`) (const False)
       hs ["[test]", "preset = \"tasty\"", "tests_for = \"x\""] `shouldSatisfy` either ("hspec" `T.isInfixOf`) (const False)
+  describe "[conjure]: a pack's architecture" $ do
+    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
+    it "parses its service, port, fake and constructor; absent, there is none" $ do
+      let Right l = lang ["[conjure]", "service = \"src/{= app =}/{= service =}\"", "[conjure.port]", "files = [\"ports/*.py\"]", "start = '^class ([a-z]+)'", "method = '^def '", "[conjure.fake]", "bound = '^ +([a-z]+) = ([A-Za-z]+)\\('", "prefixes = [\"Fake\"]"]
+      fmap cjService (langConjure l) `shouldBe` Just (Just "src/{= app =}/{= service =}")
+      (langConjure l >>= cjPort) `shouldBe` Just (PortShape ["ports/*.py"] "^class ([a-z]+)" "^def ")
+      (langConjure l >>= cjFake) `shouldBe` Just (FakeShape "^ +([a-z]+) = ([A-Za-z]+)\\(" [] ["Fake"] Nothing Nothing)
+      (langConjure l >>= cjConstructor) `shouldBe` Nothing
+      fmap langConjure (lang []) `shouldBe` Right Nothing
+    it "an unknown key, a port without its start, or a bad expression is an error" $ do
+      either (const True) (const False) (lang ["[conjure]", "ports = 1"]) `shouldBe` True
+      either (const True) (const False) (lang ["[conjure.port]", "method = '^def '"]) `shouldBe` True
+      either (const True) (const False) (lang ["[conjure.port]", "start = '('", "method = '^def '"]) `shouldBe` True
   describe "Olifant.Language.Test" $ do
     it "(a) parsePytest: one failed, four passed, the failing line" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/one-failed.txt"

@@ -4,6 +4,7 @@ module Olifant.Server.ConjureNextSpec
   , succeedsId
   , notFoundId
   , cancelTestText
+  , pyHtmx
   , cancelHeader
   , cancelBefore
   , cancelRecords
@@ -33,7 +34,8 @@ import Olifant.Model (Escalate (..), Rung (..))
 import Olifant.Server.ConjureNext
 import Olifant.Server.ConjureScan (Fake (..))
 import Olifant.Generation.Tools (ProgressEvent (..))
-import Olifant.Server.Unit (unitHeader)
+import Olifant.Server.Unit (ownerHeader)
+import System.IO.Unsafe (unsafePerformIO)
 import Olifant.Language.TestUnits (testSourcesIn)
 import Test.Hspec
 
@@ -111,10 +113,10 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     rvUnit view `shouldBe` rcUnit ctx
     rvWired view `shouldBe` rcWired ctx
   it "(i) unitHeader gives the class and __init__ lines for a method, the def for a function" $ do
-    unitHeader "class C:\n    def __init__(self, a: A) -> None:\n        pass\n    def handle(self):\n        pass\n" 5
+    ownerHeader pyNow "class C:\n    def __init__(self, a: A) -> None:\n        pass\n    def handle(self):\n        pass\n" 5
       `shouldBe` "class C:\n    def __init__(self, a: A) -> None:"
-    unitHeader "def f():\n    pass\n" 2 `shouldBe` "def f():"
-    unitHeader "x = 1\n" 1 `shouldBe` ""
+    ownerHeader pyNow "def f():\n    pass\n" 2 `shouldBe` "def f():"
+    ownerHeader pyNow "x = 1\n" 1 `shouldBe` ""
   it "(m) the cancel_booking rounds: rows, involved tests, a repeat and a trade" $ do
     roundRows "cancel_booking" cancelRecords
       `shouldBe` [ RoundRow 1 "local" "return Ok(None)" False ["not_found"]
@@ -158,6 +160,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
           , dfFailure = Nothing
           , dfSources = testSourcesIn pyNow cancelTestText
           , dfAssertion = langAssertion pyNow
+          , dfConjure = langConjure pyNow
           }
   it "(o) the policy table, in order" $ do
     let base = PolicyFacts [(notFoundId, nf)] [notFoundId] [notFoundId] True True [] (Just ("bookings", "BookingRepository")) False False False Nothing
@@ -544,7 +547,7 @@ cancelPaused =
 
 cancelPausedFacts :: DiagnosisFacts
 cancelPausedFacts =
-  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing Nothing (testSourcesIn pyNow cancelTestText) (langAssertion pyNow)
+  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing Nothing (testSourcesIn pyNow cancelTestText) (langAssertion pyNow) (langConjure pyNow)
 
 -- | The cancel_booking pause as the by-hand run of 2026-10-24 had it (design §10): the wire
 -- before round 1 gave CancelBooking bookings: BookingRepository and the test's helper the
@@ -591,7 +594,7 @@ cancelWiredPaused =
       ]
     roundSummaryText = "red: test_cancel_booking_not_found \183 False = isinstance(Ok(value=None), NotFound)"
     facts =
-      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing Nothing (testSourcesIn pyNow wiredTest) (langAssertion pyNow)
+      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing Nothing (testSourcesIn pyNow wiredTest) (langAssertion pyNow) (langConjure pyNow)
     sentences = diagnosis facts CauseRepeat
     suspects = suspectFirst (dfFlagged facts) (involved cancelBefore records)
     landing = T.replace "        return Ok(None)" (T.intercalate "\n" (map ("        " <>) (T.lines body))) wiredModule
@@ -674,6 +677,12 @@ pretty v0 = go 0 v0 <> "\n"
     pad n = T.replicate (2 * n) " "
     scalar = TE.decodeUtf8 . BSL.toStrict . encode
 
--- | The shipped Python, for the facts' test sources and assertions.
+-- | Python as conjure reads it here: the python-htmx pack's.
 pyNow :: Language
-pyNow = shippedLanguageNow "python"
+pyNow = pyHtmx
+
+-- | Python as the python-htmx pack has it (its `[conjure]` shapes over the
+-- shipped language), read once for the pure fixtures here.
+pyHtmx :: Language
+pyHtmx = unsafePerformIO (shippedLanguage "python" [("pack python-htmx", "packs/python-htmx")])
+{-# NOINLINE pyHtmx #-}

@@ -2,3 +2,28 @@
 # A module's tests live beside it as NAME__test.py.
 [test]
 tests_for = "{= dir =}/{= stem =}__test.py"
+
+# How conjure reads this pack's architecture (book chapter 09, `[conjure]`):
+# a service is `src/<app>/<service>`; its ports are Protocol classes under
+# `ports/`; a test's fake is a Mock or a Fake…/InMemory…/Stub… class, handed
+# to a command by keyword; a command's ports are its `__init__` parameters.
+[conjure]
+service = "src/{= app =}/{= service =}"
+
+[conjure.port]
+files = ["ports/**/*.py"]
+start = '^class ([[:alnum:]_]+)\(Protocol\):'
+method = '^def '
+
+[conjure.fake]
+bound = '^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('
+classes = ["Mock", "MagicMock"]
+prefixes = ["Fake", "InMemory", "Stub"]
+keyword = "{= param =}={= var =}"
+stub = '\.{= method =} = lambda ([^:]*):(.*)'
+
+[conjure.constructor]
+files = ["commands/**/*.py", "queries/**/*.py"]
+owner = '^class ([[:alnum:]_]+)'
+start = 'def __init__\('
+param = '^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'

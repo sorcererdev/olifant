@@ -1,21 +1,27 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Olifant.Server.ConjureScanSpec (spec) where
 
 import Data.Maybe (fromJust)
 import Data.Text qualified as T
 import Olifant.Decide
-import Olifant.Language (shippedLanguageNow)
+import Olifant.Language (ConjureDef (..), Language (..), PortShape (..))
 import Olifant.Language.TestUnits (testSourceIn)
-import Olifant.Server.ConjureNextSpec (cancelTestText)
+import Olifant.Server.ConjureNextSpec (cancelTestText, pyHtmx)
 import Olifant.Server.ConjureScan
 import Test.Hspec
 
 spec :: Spec
 spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
-  let py = shippedLanguageNow "python"
+  let py = pyHtmx
+      Just cj = langConjure py
+      Just fs = cjFake cj
+      Just ct = cjConstructor cj
+      Just ps = cjPort cj
       -- the test NAME's fake in TEXT, by the test's source
-      unpassedIn text name = testSourceIn py name text >>= unpassedFake
+      unpassedIn text name = testSourceIn py name text >>= unpassedFake fs
       -- the test NAME in TEXT with its fake handed in
-      handIn name helper param var text = testSourceIn py name text >>= \src -> (\src' -> T.replace src src' text) <$> handFake helper param var src
+      handIn name helper param var text = testSourceIn py name text >>= \src -> (\src' -> T.replace src src' text) <$> handFake fs helper param var src
       succeedsSource = fromJust (testSourceIn py "test_cancel_booking_succeeds" cancelTestText)
       notFoundSource = fromJust (testSourceIn py "test_cancel_booking_not_found" cancelTestText)
       ports = [Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ..."], Port "IdGenerator" ["def next_id(self) -> str: ..."]]
@@ -34,17 +40,17 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     actCall "handle" notFoundSource `shouldBe` Just "handle(CancelBookingInput(id=\"1\"))"
     helperOf "handle" notFoundSource `shouldBe` Just "command"
   it "(d) the port: by the fake's class, by the variable's last word, the only one; else none" $ do
-    derivePort (Fake "repository" "Mock") ports `shouldBe` Just "BookingRepository"
-    derivePort (Fake "x" "InMemoryBookingRepository") ports `shouldBe` Just "BookingRepository"
-    derivePort (Fake "x" "Mock") ports `shouldBe` Nothing
-    derivePort (Fake "x" "Mock") (take 1 ports) `shouldBe` Just "BookingRepository"
+    derivePort fs (Fake "repository" "Mock") ports `shouldBe` Just "BookingRepository"
+    derivePort fs (Fake "x" "InMemoryBookingRepository") ports `shouldBe` Just "BookingRepository"
+    derivePort fs (Fake "x" "Mock") ports `shouldBe` Nothing
+    derivePort fs (Fake "x" "Mock") (take 1 ports) `shouldBe` Just "BookingRepository"
   it "(e) the param: the siblings' commonest, else the variable" $ do
     deriveParam "BookingRepository" [[("bookings", "BookingRepository"), ("ids", "IdGenerator")], [("booking_repository", "BookingRepository")], [("bookings", "BookingRepository")]] (Fake "repository" "Mock") `shouldBe` "bookings"
     deriveParam "BookingRepository" [] (Fake "repository" "Mock") `shouldBe` "repository"
-    initParams "class C:\n    def __init__(self, bookings: BookingRepository, ids: IdGenerator) -> None:\n" `shouldBe` [("bookings", "BookingRepository"), ("ids", "IdGenerator")]
+    ctorParams ct "class C:\n    def __init__(self, bookings: BookingRepository, ids: IdGenerator) -> None:\n" `shouldBe` [("bookings", "BookingRepository"), ("ids", "IdGenerator")]
   it "(f) takesPort, and the port question and its reading" $ do
-    takesPort "class CancelBooking:\n    def __init__(self) -> None:" "BookingRepository" `shouldBe` False
-    takesPort "class C:\n    def __init__(self, bookings: BookingRepository) -> None:" "BookingRepository" `shouldBe` True
+    takesPort ct "class CancelBooking:\n    def __init__(self) -> None:" "BookingRepository" `shouldBe` False
+    takesPort ct "class C:\n    def __init__(self, bookings: BookingRepository) -> None:" "BookingRepository" `shouldBe` True
     let q = conjurePortQuestion notFoundSource ["find_by_id"] ports
     qKind q `shouldBe` "conjure-port"
     qOptions q `shouldBe` ["BookingRepository", "IdGenerator"]
@@ -55,8 +61,8 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     portFrom ports (Chosen "Nope" [] (Confidence 0.9)) `shouldBe` Nothing
     portCandidates [("IdGenerator", 0.5), ("BookingRepository", 0.3)] ports `shouldBe` ["IdGenerator", "BookingRepository"]
     portCandidates [] ports `shouldBe` ["BookingRepository", "IdGenerator"]
-  it "(g) protocolPorts reads Protocol classes and their methods" $
-    protocolPorts
+  it "(g) portsIn reads Protocol classes and their methods" $
+    portsIn ps
       [ ("p/booking_repository.py", "class BookingRepository(Protocol):\n    def table(self, table_id: str) -> Table | None: ...\n")
       , ("p/in_memory.py", "class InMemoryBookingRepository:\n    def table(self, table_id: str) -> Table | None:\n        return None\n")
       ]
@@ -84,6 +90,12 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     -- an argument whose type is not known: none
     methodSignature "find_by_id" port "booking = self.bookings.find_by_id(thing)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
   it "(k) where a method goes in a port's file: the line after its Protocol's last" $ do
-    protocolEnd "BookingRepository" "class BookingRepository(Protocol):\n    def table(self) -> None: ...\n\n    def save(self) -> None: ...\n" `shouldBe` Just 5
-    protocolEnd "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n\n\nclass Other:\n    pass\n" `shouldBe` Just 3
-    protocolEnd "Nope" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n" `shouldBe` Nothing
+    portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def table(self) -> None: ...\n\n    def save(self) -> None: ...\n" `shouldBe` Just 5
+    portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n\n\nclass Other:\n    pass\n" `shouldBe` Just 3
+    portEnd ps "Nope" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n" `shouldBe` Nothing
+  it "(n) the shapes are the pack's: a Rust-shaped trait reads as a port; no fake shape, no fake" $ do
+    let rustPorts = PortShape ["ports/*.rs"] "^pub trait ([[:alnum:]_]+)" "^(async )?fn "
+    portsIn rustPorts [("ports/invoice_repository.rs", "#[async_trait]\npub trait InvoiceRepository: Send + Sync + 'static {\n    async fn get_invoice(&self, id: String) -> Result<Invoice, RepositoryFailure>;\n}\n")]
+      `shouldBe` [Port "InvoiceRepository" ["async fn get_invoice(&self, id: String) -> Result<Invoice, RepositoryFailure>;"]]
+    fakeIn Nothing "def test_d():\n    m = MagicMock()\n" `shouldBe` Nothing
+    ctorParamsIn Nothing "class C:\n    def __init__(self, a: A) -> None:\n" `shouldBe` []

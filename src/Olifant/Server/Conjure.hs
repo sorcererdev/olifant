@@ -43,22 +43,24 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), Failure (..), Language (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn)
+import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn, testsForFile)
+import Olifant.Glob (matchesGlob)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
 import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
-import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, derivePort, deriveParam, fakeCalls, initParams, methodSignature, missingMethod, portCandidates, portFrom, protocolEnd, protocolPorts, takesPort, unpassedFake)
+import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, missingMethod, portCandidates, portEnd, portFrom, portsIn, takesPortIn)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
 import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..))
 import Olifant.Language.TestUnits (testCaseAtIn, testCaseLineIn, testSourceIn, testSourcesIn)
 import Olifant.Server.Stub (testWordsIn)
-import Olifant.Server.Unit (isStubIn, Unit (..), unitAt, unitHeader)
+import Olifant.Server.Unit (isStubIn, Unit (..), ownerHeader, unitAt)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
-import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
+import System.FilePath (joinPath, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
 import Text.Printf (printf)
 
 -- | A conjure's answer: the conjured file (absolute), the unit, the edits
@@ -453,7 +455,7 @@ conjureWith progress path line selected resuming s0 = do
           | reChoice re == ResumeReconjure
           , Just tid <- reconjureOf re pd
           , before <- M.findWithDefault testText0 testRel writes0
-          , Just (_, after) <- testFix unit (pdFlagged pd) (pdWired pd) before (testSourcesIn lang before) tid -> do
+          , Just (_, after) <- testFix (langConjure lang) unit (pdFlagged pd) (pdWired pd) before (testSourcesIn lang before) tid -> do
               now <- lift getMonotonicTime
               let plain = plainPause (pdShown pd)
                   testAbs = absOf testRel
@@ -476,9 +478,9 @@ conjureWith progress path line selected resuming s0 = do
         -- body the rung's model's), proposed as a test's fix is
         Just (re, pd) | reChoice re == ResumePort, Just (q, m, ps, r) <- portOf re pd -> do
           let plain = plainPause (pdShown pd)
-              sets = maybe [] snd wire ++ pathService (siteModuleRel site)
+              sets = maybe [] snd wire ++ servicePaths (langConjure lang) (siteModuleRel site)
               short = m <> " to " <> q
-          attempt <- lift (portMethodPlan s project (worded (methodWords short) progress) filler writes0 sets q m ps r)
+          attempt <- lift (portMethodPlan s lang project (worded (methodWords short) progress) filler writes0 sets q m ps r)
           stop <- lift (cancelled (ssCancel s))
           when stop (throwE "cancelled")
           now <- lift getMonotonicTime
@@ -531,7 +533,7 @@ conjureWith progress path line selected resuming s0 = do
             (template, verify, context) <- except (testConjure lang working at tid (siteModuleRel site) moduleText)
             let context' =
                   context
-                    ++ [("the unit under test", unitHeader (wkText wk) (fst (wkSpan wk))), ("why the test is wrong", reconjureWhy (pdShown pd) tid)]
+                    ++ [("the unit under test", ownerHeader lang (wkText wk) (fst (wkSpan wk))), ("why the test is wrong", reconjureWhy (pdShown pd) tid)]
                     ++ [("the wire", "the helper now takes " <> w <> ": pass the test's fake to it") | w <- take 1 (pdWired pd)]
                     ++ [("the test's errors", knownNote ownKnown) | not (null ownKnown)]
                     ++ [("the person says", h) | Just h <- [reHint re]]
@@ -606,7 +608,7 @@ conjureWith progress path line selected resuming s0 = do
                     , cBases = M.empty
                     , cExplanation = Nothing
                     , cTestText = wkTestText first
-                    , cHeader = unitHeader (wkText first) (fst (wkSpan first))
+                    , cHeader = ownerHeader lang (wkText first) (fst (wkSpan first))
                     , cHistory = []
                     , cBefore = wkBefore first
                     , cStem = T.pack (takeBaseName (siteModuleRel site))
@@ -667,7 +669,7 @@ conjureWith progress path line selected resuming s0 = do
               -- when the call and the test's fake give it
               methodWall attempt why = do
                 c <- readIORef counters
-                case missingMethod (map snd (initParams (cHeader c))) why of
+                case missingMethod (map snd (ctorParamsIn (langConjure lang) (cHeader c))) why of
                   Nothing -> pure Nothing
                   Just (q, m) -> do
                     sf <- service
@@ -681,7 +683,7 @@ conjureWith progress path line selected resuming s0 = do
                 case cService c of
                   Just sf -> pure sf
                   Nothing -> do
-                    sf <- serviceFacts ws (siteModuleRel site) (maybe [] snd wire ++ pathService (siteModuleRel site))
+                    sf <- serviceFacts ws lang (siteModuleRel site) (maybe [] snd wire ++ servicePaths (langConjure lang) (siteModuleRel site))
                     sf <$ modifyIORef' counters (\c' -> c' {cService = Just sf})
               -- the wire's (param, port) for a flagged test's fake, and the candidates (`param: Port`):
               -- by rule, else Jev's conjure-port among the service's ports (once a test)
@@ -694,7 +696,7 @@ conjureWith progress path line selected resuming s0 = do
                     sf <- service
                     let ports = sfPorts sf
                         src = fromMaybe "" (testSourceIn lang (testName tid) (cTestText c))
-                    (port, weights) <- case derivePort f ports of
+                    (port, weights) <- case derivePortIn (langConjure lang) f ports of
                       Just q -> pure (Just q, [])
                       Nothing
                         | length ports >= 2, Just d <- dec -> do
@@ -733,7 +735,7 @@ conjureWith progress path line selected resuming s0 = do
                         , cVersions = M.union (cVersions c) (M.fromList [(a', fst <$> M.lookup a' (ssDocs s)) | (a', _) <- read'])
                         , cBases = M.union (cBases c) (M.fromList read')
                         , cTestText = wkTestText wk'
-                        , cHeader = if onTest then cHeader c else unitHeader (wkText wk') (fst (wkSpan wk'))
+                        , cHeader = if onTest then cHeader c else ownerHeader lang (wkText wk') (fst (wkSpan wk'))
                         }
                     lift . refreshKnown . cWireWrites =<< lift (readIORef counters)
                     lift (stepLine ("conjure-wire" : gid : [k <> "=" <> v | (k, v) <- sets]))
@@ -767,7 +769,7 @@ conjureWith progress path line selected resuming s0 = do
                   (flagged : _, Just (gid, pathSets)) -> do
                     (derived, _) <- lift (derive decider flagged)
                     sf <- lift service
-                    let lacks = not (any (takesPort (cHeader c)) (maybe (map ptName (sfPorts sf)) (pure . snd) derived))
+                    let lacks = not (any (takesPortIn (langConjure lang) (cHeader c)) (maybe (map ptName (sfPorts sf)) (pure . snd) derived))
                     case policy (PolicyFacts flags failing failing lacks True (cWired c) derived False False False Nothing) of
                       PolicyWire p q -> either (const first) id <$> wireOver (cWrites c) p q gid pathSets
                       _ -> pure first
@@ -805,7 +807,7 @@ conjureWith progress path line selected resuming s0 = do
                       tid = T.pack testRel <> "::" <> name
                       moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) (cWrites c)
                       still = "; the test still builds its own fake, re-conjure it"
-                  case testSourceIn lang (testName name) written0 >>= unpassedFake of
+                  case testSourceIn lang (testName name) written0 >>= fakeIn (langConjure lang) of
                     Nothing -> (outcome0, wk0, "") <$ lift (stepLine ["conjure-test", "ok", "-"])
                     Just f -> do
                       lift (logFlags stepLine [] [(tid, f)])
@@ -814,7 +816,7 @@ conjureWith progress path line selected resuming s0 = do
                       let lacks = " \183 needs a port the class lacks: " <> maybe (fkVariable f <> " = " <> fkClass f <> "()") (\(p, q) -> p <> ": " <> q) derived
                       wire' <- lift (if null (cWired c) then wireFor s project (siteModuleRel site) else pure Nothing)
                       case (derived, wire') of
-                        (Just (_, q), _) | takesPort (classHeaders moduleText) q -> pure (outcome0, wk0, "")
+                        (Just (_, q), _) | takesPortIn (langConjure lang) (classHeaders lang moduleText) q -> pure (outcome0, wk0, "")
                         (Just (p, q), Just (gid, pathSets)) ->
                           wireOver (M.insert rel written0 (cWrites c)) p q gid pathSets >>= \case
                             Left _ -> pure (outcome0, wk0, lacks)
@@ -824,7 +826,7 @@ conjureWith progress path line selected resuming s0 = do
                               when cancelled' (throwE "cancelled")
                               case refilled of
                                 Right o@(Written Nothing w _)
-                                  | isNothing (testSourceIn lang (testName (fromMaybe name (testCaseAtIn lang w (fst (wkSpan wk'))))) w >>= unpassedFake) -> pure (o, wk', "")
+                                  | isNothing (testSourceIn lang (testName (fromMaybe name (testCaseAtIn lang w (fst (wkSpan wk'))))) w >>= fakeIn (langConjure lang)) -> pure (o, wk', "")
                                   | otherwise -> pure (o, wk', still)
                                 -- the wire and the test as first written land together
                                 _ -> pure (Written Nothing (wkText wk') [], wk', still)
@@ -863,7 +865,7 @@ conjureWith progress path line selected resuming s0 = do
                   models = catalogModel (prCatalog project)
                   grant = maybe 0 sdRounds steered
                   next = steered >>= \sd -> rungName . fst <$> listToMaybe (drop (cRung c + 1) (sdLadder sd))
-                  className = classOf (cHeader c)
+                  className = classOf lang (cHeader c)
                   owner = if T.null className then unit else className
                   title = Title (if T.null className then unit else className <> "." <> unit) (rsRound rs) grant (rsRung rs) (maybe "" beModel (lookup (rsRung rs) (mcBackends models))) (round (cSeconds c))
                   facts = diagnosisFacts lang c (rsRung rs) next (round (cSeconds c))
@@ -901,7 +903,7 @@ conjureWith progress path line selected resuming s0 = do
                       , paRounds = cHistory c
                       , paTests = testEntries facts
                       , paHeader = cHeader c
-                      , paPorts = [n <> ": " <> ty | (n, ty) <- initParams (cHeader c)]
+                      , paPorts = [n <> ": " <> ty | (n, ty) <- ctorParamsIn (langConjure lang) (cHeader c)]
                       , paLanding = unifiedDiff rel text landing
                       , paWired = wired
                       , paOffers = rows
@@ -993,20 +995,41 @@ wireFor s project rel = case catalogConjureWire cat of
 data ServiceFacts = ServiceFacts {sfPorts :: [Port], sfSiblings :: [[(Text, Text)]]}
   deriving stock (Eq, Show)
 
--- | The service of the unit at REL (root-relative), by the wire's path
--- sets (@app@, @service@): the Protocol classes of every @.py@ under
--- @src/{app}/{service}/ports/@, and the @__init__@ parameters of every
--- other module (no test) under its @commands/@ and @queries/@.
-serviceFacts :: Workspace IO -> FilePath -> [(Text, Text)] -> IO ServiceFacts
-serviceFacts ws rel sets = case (lookup "app" sets, lookup "service" sets) of
-  (Just app, Just service) -> do
-    let base = "src" </> T.unpack app </> T.unpack service
-        under dir = map (dir </>) . filter (isSuffixOf ".py") <$> listFiles ws dir
-        texts fs = concat <$> traverse (\f -> maybe [] (pure . (f,)) <$> readText ws f) fs
-    ports <- texts =<< under (base </> "ports")
-    siblings <- texts . filter (\f -> normalisePath f /= normalisePath rel && not ("__test.py" `isSuffixOf` f)) . concat =<< traverse (under . (base </>)) ["commands", "queries"]
-    pure (ServiceFacts (protocolPorts ports) (filter (not . null) (map (initParams . snd) siblings)))
-  _ -> pure (ServiceFacts [] [])
+-- | The service of the unit at REL (root-relative) in LANG, by the wire's path sets (@app@,
+-- @service@) over the pack's `[conjure] service`: the ports (`[conjure.port]`) of its files
+-- under the service that `port.files` names, and the constructor parameters
+-- (`[conjure.constructor]`) of every other file `constructor.files` names, test files left out.
+serviceFacts :: Workspace IO -> Language -> FilePath -> [(Text, Text)] -> IO ServiceFacts
+serviceFacts ws lang rel sets = case serviceBase cj sets of
+  Just base -> do
+    let texts fs = concat <$> traverse (\f -> maybe [] (pure . (f,)) <$> readText ws f) fs
+    ports <- maybe (pure []) (\ps -> (`portsIn'` ps) <$> (texts =<< filesUnder ws base (psFiles ps))) (cj >>= cjPort)
+    siblingFiles <- maybe (pure []) (filesUnder ws base . ctFiles) (cj >>= cjConstructor)
+    let tests = [t | Just td <- [langTest lang], f <- siblingFiles, let t = testsForFile td f, t /= f]
+    siblings <- texts [f | f <- siblingFiles, normalisePath f /= normalisePath rel, f `notElem` tests]
+    pure (ServiceFacts ports (filter (not . null) (map (ctorParamsIn cj . snd) siblings)))
+  Nothing -> pure (ServiceFacts [] [])
+  where
+    cj = langConjure lang
+    portsIn' files ps = portsIn ps files
+
+-- | The service's folder: the pack's `[conjure] service` with the wire's SETS in it; none
+-- without one, or when a set it names is missing.
+serviceBase :: Maybe ConjureDef -> [(Text, Text)] -> Maybe FilePath
+serviceBase cj sets = do
+  t <- cj >>= cjService
+  segs <- traverse seg (T.splitOn "/" t)
+  pure (joinPath (map T.unpack segs))
+  where
+    seg x = case T.stripSuffix "=}" =<< T.stripPrefix "{=" x of
+      Just k -> lookup (T.strip k) sets
+      Nothing -> Just x
+
+-- | The files under BASE (root-relative) that one of GLOBS (relative to BASE) matches.
+filesUnder :: Workspace IO -> FilePath -> [Text] -> IO [FilePath]
+filesUnder ws base globs = do
+  found <- listFiles ws base
+  pure [normalisePath (base </> f) | f <- found, any (`matchesGlob` f) globs]
 
 -- | The generator GID run in-process with SETS over the project with the
 -- conjure's WRITES on top (no model fills it): the files it writes
@@ -1036,14 +1059,15 @@ wirePlan s project writes gid sets = case findEntry cat gid of
 -- the person would fill its tab stops, then @port-method-adapters@ over that for each adapter
 -- beside it (their bodies filled by FILLER) and the contract test's stub. The Protocol's file
 -- and each file changed (root-relative, before, after); Left: why not.
-portMethodPlan :: ServerState -> Project -> (ProgressEvent -> IO ()) -> ModelFiller IO -> Map FilePath Text -> [(Text, Text)] -> Text -> Text -> Text -> Text -> IO (Either Text (FilePath, [(FilePath, Text, Text)]))
-portMethodPlan s project progress filler writes sets q m ps r = runExceptT $ do
+portMethodPlan :: ServerState -> Language -> Project -> (ProgressEvent -> IO ()) -> ModelFiller IO -> Map FilePath Text -> [(Text, Text)] -> Text -> Text -> Text -> Text -> IO (Either Text (FilePath, [(FilePath, Text, Text)]))
+portMethodPlan s lang project progress filler writes sets q m ps r = runExceptT $ do
   (app, service) <- maybe (throwE "the unit's app and service are not known") pure ((,) <$> lookup "app" sets <*> lookup "service" sets)
-  let portsDir = "src" </> T.unpack app </> T.unpack service </> "ports"
-  found <- lift (listFiles ws portsDir)
-  texts <- lift (traverse (\f -> (f,) <$> readText ws f) [normalisePath (portsDir </> f) | f <- found, ".py" `isSuffixOf` f])
-  (protoRel, protoText) <- maybe (throwE ("no Protocol " <> q <> " under " <> T.pack portsDir)) pure (listToMaybe [(f, t) | (f, Just t) <- texts, ("class " <> q <> "(Protocol)") `T.isInfixOf` t])
-  line <- maybe (throwE ("no blank line ends " <> q <> " for port-method")) pure (protocolEnd q protoText)
+  ps' <- maybe (throwE ("no `[conjure.port]` for " <> langName lang <> ": conjure finds no ports")) pure (langConjure lang >>= cjPort)
+  base <- maybe (throwE ("no `[conjure] service` for " <> langName lang <> ": conjure cannot find the service")) pure (serviceBase (langConjure lang) sets)
+  found <- lift (filesUnder ws base (psFiles ps'))
+  texts <- lift (traverse (\f -> (f,) <$> readText ws f) found)
+  (protoRel, protoText) <- maybe (throwE ("no port " <> q <> " under " <> T.pack base)) pure (listToMaybe [(f, t) | (f, Just t) <- texts, any ((== q) . ptName) (portsIn ps' [(f, t)])])
+  line <- maybe (throwE ("no blank line ends " <> q <> " for port-method")) pure (portEnd ps' q protoText)
   method0 <- load "port-method"
   let here = project {prWorkspace = ws}
   method <- lift (placeAt ports here (protoRel, line) [method0]) >>= either throwE (maybe (throwE "port-method placed nothing") pure . listToMaybe)
@@ -1123,7 +1147,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
           failingNow = [t | Just r <- [rrRun record0], (t, _) <- trFailed r]
           failedEver = nub [t | r <- runs, (t, _) <- trFailed r]
           ports = maybe [] sfPorts (cService c)
-          lacks = not (any (takesPort (cHeader c)) (maybe (map ptName ports) (pure . snd) derived))
+          lacks = not (any (takesPortIn (langConjure lang) (cHeader c)) (maybe (map ptName ports) (pure . snd) derived))
       -- a check that refused the body for a method a port lacks
       missing <- case rrRun record0 of
         Nothing -> wall (rrAttempt record0) (maybe "" rhWhy (listToMaybe (rsHoles rs)))
@@ -1154,7 +1178,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
 -- | The scan over a run: each failing test of RUN whose source in the test file's TEXT builds a
 -- fake it never passes in.
 scanFlags :: Language -> Text -> TestRun -> [(Text, Fake)]
-scanFlags lang text run = [(t, f) | (t, _) <- trFailed run, Just f <- [testSourceIn lang (testName t) text >>= unpassedFake]]
+scanFlags lang text run = [(t, f) | (t, _) <- trFailed run, Just f <- [testSourceIn lang (testName t) text >>= fakeIn (langConjure lang)]]
 
 -- | A test id's function name (less its module and any parameters).
 testName :: Text -> Text
@@ -1172,17 +1196,26 @@ nubOn key = go []
       | key x `elem` seen = go seen xs
       | otherwise = x : go (key x : seen) xs
 
--- | A module's app and service by its path (@src/{app}/{service}/…@): the service's sets
--- when no wire generator binds them.
-pathService :: FilePath -> [(Text, Text)]
-pathService rel = case splitDirectories rel of
-  "src" : app : service : _ : _ -> [("app", T.pack app), ("service", T.pack service)]
-  _ -> []
+-- | A module's sets by its path and the pack's `[conjure] service` (@src/{= app =}/{= service =}@
+-- binds @app@ and @service@ for @src/bistro/booking/commands/x.py@): the service's sets when
+-- no wire generator binds them. The path must go on past the service by a folder and a file.
+servicePaths :: Maybe ConjureDef -> FilePath -> [(Text, Text)]
+servicePaths cj rel = case cj >>= cjService of
+  Nothing -> []
+  Just t ->
+    let segs = T.splitOn "/" t
+        parts = map T.pack (splitDirectories rel)
+        bind x p = case T.stripSuffix "=}" =<< T.stripPrefix "{=" x of
+          Just k -> Just [(T.strip k, p)]
+          Nothing -> if x == p then Just [] else Nothing
+     in if length parts >= length segs + 2 then maybe [] concat (sequence (zipWith bind segs parts)) else []
 
--- | The header of each top-level class with an @__init__@ in a module: the
--- ports the class under a test takes.
-classHeaders :: Text -> Text
-classHeaders t = T.intercalate "\n\n" [h | (i, l) <- zip [1 ..] (T.lines t), "class " `T.isPrefixOf` l, let h = unitHeader t i, "__init__" `T.isInfixOf` h]
+-- | The header of each top-level owner (`[conjure.constructor] owner`: a class) with a
+-- constructor in a module of LANG: the ports the class under a test takes.
+classHeaders :: Language -> Text -> Text
+classHeaders lang t = case langConjure lang >>= cjConstructor of
+  Nothing -> ""
+  Just ct -> T.intercalate "\n\n" [h | (i, l) <- zip [1 ..] (T.lines t), matchesRe (ctOwner ct) l, let h = ownerHeader lang t i, any (matchesRe (ctStart ct)) (T.lines h)]
 
 -- | The diagnosis' facts from the counters: the rung and the one above, the seconds used.
 diagnosisFacts :: Language -> Counters -> Text -> Maybe Text -> Int -> DiagnosisFacts
@@ -1192,7 +1225,7 @@ diagnosisFacts lang c rung next seconds =
     , dfNext = next
     , dfStem = cStem c
     , dfMethod = cUnit c
-    , dfClass = classOf (cHeader c)
+    , dfClass = classOf lang (cHeader c)
     , dfHeader = cHeader c
     , dfTestText = cTestText c
     , dfBefore = cBefore c
@@ -1206,13 +1239,25 @@ diagnosisFacts lang c rung next seconds =
     , dfFailure = Nothing
     , dfSources = testSourcesIn lang (cTestText c)
     , dfAssertion = langAssertion lang
+    , dfConjure = langConjure lang
     }
 
--- | The class a header opens (@class X:@ or @class X(…):@), or none.
-classOf :: Text -> Text
-classOf header = case T.lines header of
-  l : _ | Just r <- T.stripPrefix "class " (T.strip l) -> T.takeWhile (\ch -> ch /= '(' && ch /= ':') r
+-- | The owner a header opens (its `[conjure.constructor] owner` group 1: a class), or none.
+classOf :: Language -> Text -> Text
+classOf lang header = case (T.lines header, langConjure lang >>= cjConstructor) of
+  (l : _, Just ct) | Just (_ : n : _) <- regexGroups (ctOwner ct) (T.strip l) -> n
   _ -> ""
+
+-- | Whether RE matches LINE (an invalid one matches nothing).
+matchesRe :: Text -> Text -> Bool
+matchesRe re l = maybe False (`matchTest` T.unpack l) (makeRegexM (T.unpack re) :: Maybe Regex)
+
+-- | The groups of RE's match in LINE, the whole match first; none when it does not match.
+regexGroups :: Text -> Text -> Maybe [Text]
+regexGroups re l = do
+  rx <- makeRegexM (T.unpack re) :: Maybe Regex
+  AllTextSubmatches gs <- matchM rx (T.unpack l) :: Maybe (AllTextSubmatches [] String)
+  pure (map T.pack gs)
 
 -- | Jev's answer to Q with its distribution (a failure to ask is `unsure`; a cancel is rethrown).
 weighOr :: Decider IO -> Question -> IO (Answer, [(Text, Double)])

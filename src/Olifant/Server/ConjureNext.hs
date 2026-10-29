@@ -79,7 +79,7 @@ import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
-import Olifant.Server.ConjureScan (Fake (..), actCall, handFake, helperOf, initParams)
+import Olifant.Server.ConjureScan (Fake (..), actCall, ctorParamsIn, handFakeIn, helperOf)
 import Text.Printf (printf)
 import Olifant.Generation.Steer
 import Olifant.Generation.Tools (ProgressEvent (..))
@@ -499,6 +499,8 @@ data DiagnosisFacts = DiagnosisFacts
   -- ^ the test file's tests by their own names, each its source ('testSourcesIn')
   , dfAssertion :: [Text]
   -- ^ the language's `[test] assertion` expressions
+  , dfConjure :: Maybe ConjureDef
+  -- ^ the pack's `[conjure]` shapes
   }
   deriving stock (Eq, Show)
 
@@ -559,7 +561,7 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
     built f = fkVariable f <> " = " <> fkClass f <> "()"
     helperName t = lookup (snd (T.breakOnEnd "::" t)) (dfSources df) >>= helperOf (dfMethod df)
     helperCall t = maybe "the helper" (<> "()") (helperName t)
-    takes t = case (dfWired df, initParams (dfHeader df)) of
+    takes t = case (dfWired df, ctorParamsIn (dfConjure df) (dfHeader df)) of
       (w : _, _) | Just (p, q) <- paramPort w -> " " <> className <> " takes " <> p <> ": " <> q <> " since the wire; the test should pass its fake as " <> maybe ("the helper (" <> p <> "=\8230)") (\h -> h <> "(" <> p <> "=\8230)") (helperName t) <> "."
       (_, []) -> " " <> className <> "() takes no ports."
       (_, ps) -> " " <> className <> " takes " <> T.intercalate ", " [n <> ": " <> ty | (n, ty) <- ps] <> "."
@@ -714,7 +716,7 @@ testNote df tid = do
   let name = snd (T.breakOnEnd "::" tid)
       helper = lookup name (dfSources df) >>= helperOf (dfMethod df)
       className = if T.null (dfClass df) then dfMethod df else dfClass df
-      takes = case (dfWired df, initParams (dfHeader df)) of
+      takes = case (dfWired df, ctorParamsIn (dfConjure df) (dfHeader df)) of
         (w : _, _) -> className <> " takes " <> w <> " since the wire"
         (_, []) -> className <> "() takes no ports"
         (_, ps) -> className <> " takes " <> T.intercalate ", " [n <> ": " <> ty | (n, ty) <- ps]
@@ -762,21 +764,21 @@ cappedDetail d
 -- | The edit each flagged test gets, once a wire gave the class its port, in words
 -- (@hand repository to command(bookings=repository)@): see 'testFix'.
 fixMoves :: DiagnosisFacts -> [(Text, Text)]
-fixMoves df = [(t, w) | (t, _) <- dfFlagged df, Just (w, _) <- [testFix (dfMethod df) (dfFlagged df) (dfWired df) (dfTestText df) (dfSources df) t]]
+fixMoves df = [(t, w) | (t, _) <- dfFlagged df, Just (w, _) <- [testFix (dfConjure df) (dfMethod df) (dfFlagged df) (dfWired df) (dfTestText df) (dfSources df) t]]
 
 -- | The fix of the flagged test TID in the test file's TEXT (its tests' SOURCES by name) once the first of WIRED gave the
 -- unit its param: the test's fake handed to its helper's call (the helper is what the test
 -- calls METHOD on) as that param. Its words and the file's new text; none when the test is
 -- not flagged, nothing is wired, or the test has no helper call to edit.
-testFix :: Text -> [(Text, Fake)] -> [Text] -> Text -> [(Text, Text)] -> Text -> Maybe (Text, Text)
-testFix method flagged wired text sources tid = do
+testFix :: Maybe ConjureDef -> Text -> [(Text, Fake)] -> [Text] -> Text -> [(Text, Text)] -> Text -> Maybe (Text, Text)
+testFix cj method flagged wired text sources tid = do
   f <- lookup tid flagged
   (p, _) <- listToMaybe wired >>= paramPort
   let name = snd (T.breakOnEnd "::" tid)
       var = fkVariable f
   src <- lookup name sources
   helper <- helperOf method src
-  src' <- handFake helper p var src
+  src' <- handFakeIn cj helper p var src
   pure ("hand " <> var <> " to " <> helper <> "(" <> p <> "=" <> var <> ")", T.replace src src' text)
 
 -- | Why the test TID is wrong, as the re-conjure is told: its note when the scan flagged it,

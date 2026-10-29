@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (CheckDef (..), Language (..), StubDef (..), TestDef (..), defaultUnitNames, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), defaultUnitNames, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -19,7 +19,7 @@ data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKe
   deriving stock (Eq, Show)
 
 -- | Units, diagnostics, missing cases, tests, test units, test selection,
--- mutation, stub.
+-- mutation, stub, conjure shapes.
 capabilities :: Language -> [Capability]
 capabilities lang =
   [ Capability "units" units "unit.kinds" Nothing
@@ -30,6 +30,7 @@ capabilities lang =
   , Capability "test selection" selection "test.select" Nothing
   , Capability "mutation" mutation "mutate" Nothing
   , Capability "stub" stub "test.stub" Nothing
+  , Capability "conjure shapes" shapes "conjure" Nothing
   ]
   where
     check = langCheck lang
@@ -54,6 +55,9 @@ capabilities lang =
     stub = case test >>= testStub of
       Just sd -> Right ("[test] stub" <> maybe "" (" at " <>) (sdAt sd))
       Nothing -> Left "[test] stub"
+    shapes = case langConjure lang of
+      Just cj | parts@(_ : _) <- [n | (n, True) <- [("port", isJust (cjPort cj)), ("fake", isJust (cjFake cj)), ("constructor", isJust (cjConstructor cj))]] -> Right ("[conjure] " <> T.intercalate ", " parts)
+      _ -> Left "[conjure] (conjure works at the floor: the test and its fill, no ports)"
     mutation = case langMutate lang of
       [] -> Left "[[mutate]]"
       ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")

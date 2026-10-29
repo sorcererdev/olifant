@@ -14,6 +14,10 @@ module Olifant.Language.Adapter
   , HoleKind (..)
   , ImportMerge (..)
   , ImportsDef (..)
+  , ConjureDef (..)
+  , PortShape (..)
+  , FakeShape (..)
+  , CtorShape (..)
   , ModuleOf (..)
   , Resolve (..)
   , moduleOf
@@ -121,6 +125,9 @@ data Language = Language
   -- ^ `[test] assertion`: expressions over a line where a test's assertion
   -- starts (Python's `assert`, Rust's `assert_eq!`, hspec's `shouldBe`)
   , langStubLines :: [Text]
+  , langConjure :: Maybe ConjureDef
+  -- ^ `[conjure]`: a pack's architecture as conjure reads it (ports, fakes,
+  -- constructors); absent, conjure works at the floor (the test and its fill)
   -- ^ `stub_lines`: expressions over a stripped line of a body that is still
   -- a stub (Python's `...`, Rust's `todo!(`); a comment and a hole's line
   -- count in every language
@@ -168,6 +175,42 @@ data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
 -- line names modules; 'imPaths' (`paths`), templates over @{= path =}@ (a
 -- module, its separator written @/@) for the files a module may be.
 data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text]}
+  deriving stock (Eq, Show)
+
+-- | A pack's `[conjure]`: how conjure reads its architecture. 'cjService'
+-- (`service`), a path template over @{= app =}@ and @{= service =}@ a
+-- module's path starts with (binding the wire's sets); the port, fake and
+-- constructor shapes, each absent when the pack declares none.
+data ConjureDef = ConjureDef {cjService :: Maybe Text, cjPort :: Maybe PortShape, cjFake :: Maybe FakeShape, cjConstructor :: Maybe CtorShape}
+  deriving stock (Eq, Show)
+
+-- | `[conjure.port]`: 'psFiles' (`files`), globs under the service where
+-- ports live; 'psStart' (`start`), an expression over a line that starts a
+-- port (group 1 its name), its block the lines after it that are blank or
+-- deeper; 'psMethod' (`method`), an expression over a stripped block line
+-- that is one of its methods.
+data PortShape = PortShape {psFiles :: [Text], psStart :: Text, psMethod :: Text}
+  deriving stock (Eq, Show)
+
+-- | `[conjure.fake]`: 'fsBound' (`bound`), an expression over a test's line
+-- binding a fake (group 1 the variable, group 2 the class called); a fake's
+-- class is one of 'fsClasses' (`classes`) or starts with one of
+-- 'fsPrefixes' (`prefixes`) and is longer (the class less it names a port);
+-- 'fsKeyword' (`keyword`), a template over @{= param =}@ and @{= var =}@
+-- for a fake handed to a call by name (none: positional only); 'fsStub'
+-- (`stub`), an expression over @{= method =}@ for a fake's stand-in method
+-- (group 1 its parameters, group 2 what it returns).
+data FakeShape = FakeShape {fsBound :: Text, fsClasses :: [Text], fsPrefixes :: [Text], fsKeyword :: Maybe Text, fsStub :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | `[conjure.constructor]`: 'ctFiles' (`files`), globs under the service
+-- for the siblings whose constructors show what a port's parameter is
+-- called; 'ctOwner' (`owner`), an expression over a line starting what holds
+-- a constructor (group 1 its name: a class); 'ctStart' (`start`), an
+-- expression its parameters follow, up to the bracket closing the one it
+-- opens; 'ctParam' (`param`), an expression over one parameter (group 1 its
+-- name, group 2 its type; one that does not match is left out).
+data CtorShape = CtorShape {ctFiles :: [Text], ctOwner :: Text, ctStart :: Text, ctParam :: Text}
   deriving stock (Eq, Show)
 
 -- | `module_of = { strip, drop, separator }`: strip the first of `strip`'s
@@ -363,7 +406,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -389,6 +432,7 @@ languageFrom presets name grammarDir top = do
   opensBlock <- optional "opens_block" (text >=> validRegex "opens_block") top
   emptyStatement <- optional "empty_statement" text top
   stubLines <- fromMaybe [] <$> optional "stub_lines" (list (text >=> validRegex "stub_lines")) top
+  conjure <- optional "conjure" (table >=> conjureFrom) top
   unit <- fromMaybe M.empty <$> optional "unit" table top
   onlyKeys ["kinds", "name", "join"] unit
   unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
@@ -398,7 +442,7 @@ languageFrom presets name grammarDir top = do
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
@@ -442,6 +486,24 @@ languageFrom presets name grammarDir top = do
         paths <- fromMaybe [] <$> optional "paths" (list (text >=> \p -> tmpl p >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["path"] then Right p else Left "`[imports] paths` may use only {= path =}")) t
         pure (line, Just (ImportsDef write mo resolve paths))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
+    conjureFrom t = do
+      onlyKeys ["service", "port", "fake", "constructor"] t
+      let re k = text >=> validRegex ("[conjure] " <> k)
+      ConjureDef
+        <$> optional "service" text t
+        <*> optional "port" (table >=> \p -> do
+          onlyKeys ["files", "start", "method"] p
+          PortShape <$> (fromMaybe [] <$> optional "files" (list text) p) <*> required "start" (re "port start") p <*> required "method" (re "port method") p) t
+        <*> optional "fake" (table >=> \f -> do
+          onlyKeys ["bound", "classes", "prefixes", "keyword", "stub"] f
+          FakeShape <$> required "bound" (re "fake bound") f
+            <*> (fromMaybe [] <$> optional "classes" (list text) f)
+            <*> (fromMaybe [] <$> optional "prefixes" (list text) f)
+            <*> optional "keyword" text f
+            <*> optional "stub" text f) t
+        <*> optional "constructor" (table >=> \c -> do
+          onlyKeys ["files", "owner", "start", "param"] c
+          CtorShape <$> (fromMaybe [] <$> optional "files" (list text) c) <*> required "owner" (re "constructor owner") c <*> required "start" (re "constructor start") c <*> required "param" (re "constructor param") c) t
     importMergeFrom t = do
       onlyKeys ["pattern", "write"] t
       re <- required "pattern" text t

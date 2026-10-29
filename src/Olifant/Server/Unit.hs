@@ -4,7 +4,7 @@
 module Olifant.Server.Unit
   ( Unit (..)
   , unitAt
-  , unitHeader
+  , ownerHeader
   , isStubIn
   , Named (..)
   , unitsOf
@@ -24,11 +24,11 @@ import Data.List (sortOn)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word64)
 import Numeric (showHex)
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (Language (..), Match (..), Syntax (..), describeSyntaxFailure, regexName)
+import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), describeSyntaxFailure, regexName)
 import Olifant.Server.Site (tshow)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
@@ -69,32 +69,38 @@ unitAt syntax lang text line
       Just rx -> matchTest rx . T.unpack . T.stripEnd
       Nothing -> const True
 
--- | The header of the unit at LINE (1-based) of a Python module: for a method, its
--- class line and the class's `__init__` def line (through its closing `:`); for a free
--- function, its def line; empty when neither.
-unitHeader :: Text -> Int -> Text
-unitHeader text line = case ([c | c <- cands, isHead "class " (snd c)], [d | d <- cands, not (isHead "class " (snd d))]) of
+-- | The header of the unit at LINE (1-based) of a module in LANG: for a method, the line
+-- of what owns it (`[conjure.constructor] owner`: its class) and its constructor's
+-- (`start`) through the line that opens its block (`opens_block`); for a free function, its
+-- own line (named by `[unit] name`); empty when neither.
+ownerHeader :: Language -> Text -> Int -> Text
+ownerHeader lang text line = case ([c | c <- cands, isOwner (snd c)], [d | d <- cands, not (isOwner (snd d))]) of
   ((ci, cl) : _, _ : _) -> T.intercalate "\n" (cl : initDef ci cl)
   (_, (_, d) : _) -> T.stripEnd d
   _ -> ""
   where
-    cands = [(i, l) | (i, l) <- reverse (take line ls), isHead "class " l || isHead "def " l || isHead "async def " l, enclosing i l]
+    ct = langConjure lang >>= cjConstructor
+    matcherOf re = maybe (const False) (\rx -> matchTest rx . T.unpack) (makeRegexM (T.unpack re) :: Maybe Regex)
+    isOwner = maybe (const False) (\c -> matcherOf (ctOwner c) . T.stripStart) ct
+    isStart = maybe (const False) (\c -> matcherOf (ctStart c) . T.stripStart) ct
+    opens = maybe (const False) (\re -> matcherOf re . T.stripEnd) (langOpensBlock lang)
+    isHead l = isOwner l || isJust (unitNameIn lang l)
+    cands = [(i, l) | (i, l) <- reverse (take line ls), isHead l, enclosing i l]
     ls = zip [1 :: Int ..] (T.lines text)
     indentOf = T.length . T.takeWhile (== ' ')
     blank = T.null . T.strip
-    isHead p = (p `T.isPrefixOf`) . T.stripStart
     enclosing i l =
       i == line
         || all (\(_, x) -> blank x || indentOf x > indentOf l) [x | x@(j, _) <- ls, j > i, j <= line]
     initDef ci cl =
       let body = takeWhile (\(_, x) -> blank x || indentOf x > indentOf cl) (drop ci ls)
-       in case dropWhile (not . isHead "def __init__(" . snd) body of
+       in case dropWhile (not . isStart . snd) body of
             [] -> []
-            found -> [T.intercalate "\n" (map snd (upToColon found))]
-    upToColon [] = []
-    upToColon (x@(_, l) : r)
-      | ":" `T.isSuffixOf` T.stripEnd (T.takeWhile (/= '#') l) = [x]
-      | otherwise = x : upToColon r
+            found -> [T.intercalate "\n" (map snd (upToOpen found))]
+    upToOpen [] = []
+    upToOpen (x@(_, l) : r)
+      | opens (fst (T.breakOn (langComment lang) l)) = [x]
+      | otherwise = x : upToOpen r
 
 -- | A unit of a file by name (1-based, inclusive lines, like 'Unit'): its
 -- name qualified one level by containment (`Outer.Inner`), its lines, and
