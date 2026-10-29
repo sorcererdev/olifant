@@ -12,6 +12,12 @@ branch = "{= pattern =} -> {= body =}"
 # After a case's only alternative, a new one goes after a blank line.
 lone_arm_spaced = true
 
+# Imports: a Spec imports its module whole (`import Olifant.Plans`); a
+# path's module is its folders and name, less `src/` or `test/`, dotted.
+[imports]
+write = "import {= module =}"
+module_of = { strip = ["^src/", "^test/"], separator = "." }
+
 [targets.data]
 phrase = "data NAME"
 container = { kind = "data_constructors", inside = { kind = "data_type", regex = "^data {= NAME =}\\b" } }

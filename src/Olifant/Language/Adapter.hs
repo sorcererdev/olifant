@@ -12,6 +12,10 @@ module Olifant.Language.Adapter
   , LinesFormat (..)
   , HoleKind (..)
   , ImportMerge (..)
+  , ImportsDef (..)
+  , ModuleOf (..)
+  , Resolve (..)
+  , moduleOf
   , MutateDef (..)
   , Transform (..)
   , parseLanguage
@@ -48,8 +52,8 @@ import Olifant.Language.Support (formatSupport, knownFormats, knownTestFormats)
 import Olifant.Template (Template, describeTemplateError, freeVariables, parseTemplate)
 import Data.Set qualified as S
 import Olifant.Toml
-import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM)
-import System.FilePath (takeFileName, (</>))
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchOnceText)
+import System.FilePath (dropExtension, takeFileName, (</>))
 
 data Language = Language
   { langName :: Text
@@ -66,8 +70,12 @@ data Language = Language
   , langHoles :: [(Text, HoleKind)]
   -- ^ `[holes.KIND]` (spec §6.3): the hole kinds this language supports
   , langImports :: Maybe Text
-  -- ^ `imports`: a POSIX expression matching one import line. A fill may
-  -- begin with such lines; they join the file's imports
+  -- ^ `[imports] line` (or `imports`, a string): a POSIX expression matching
+  -- one import line. A fill may begin with such lines; they join the file's
+  -- imports
+  , langImportsDef :: Maybe ImportsDef
+  -- ^ `[imports]`: how a module imports a unit, a path's module, and which
+  -- project files an import names
   , langSeparator :: Maybe Text
   -- ^ `separator`: what follows each item of a container (`,`), so an item
   -- can join a one-line container (inline, or one item per line)
@@ -136,6 +144,44 @@ data HoleKind = HoleKind {kindPlaceholder :: Template, kindWrap :: Text}
 -- a line from @module@ and @names@.
 data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
   deriving stock (Show)
+
+-- | `[imports]`: 'imWrite' (`write`), a template over @{= module =}@ and
+-- @{= owner =}@ (a unit's first dotted segment: its class for a method)
+-- writing the line that imports a unit; 'imModuleOf' (`module_of`), how a
+-- path becomes a module; 'imResolve' (`[[imports.resolve]]`), how an import
+-- line names modules; 'imPaths' (`paths`), templates over @{= path =}@ (a
+-- module, its separator written @/@) for the files a module may be.
+data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text]}
+  deriving stock (Eq, Show)
+
+-- | `module_of = { strip, drop, separator }`: strip the first of `strip`'s
+-- expressions that matches the path, drop the extension, drop the trailing
+-- segments `drop` lists, and join the rest with `separator`.
+data ModuleOf = ModuleOf {moStrip :: [Text], moDrop :: [Text], moSeparator :: Text}
+  deriving stock (Eq, Show)
+
+-- | `[[imports.resolve]]`: an expression over an import line (stripped);
+-- group `module` holds the modules it names (comma-separated, each less its
+-- alias), group `names` (optional) the names imported from it, each of
+-- which may be a module too.
+data Resolve = Resolve {rsPattern :: Text, rsModule :: Int, rsNames :: Maybe Int}
+  deriving stock (Eq, Show)
+
+-- | A path's module by 'ModuleOf': @src/a/b.py@ is @a.b@ (Python's), and
+-- @crates/m/src/lib.rs@ is the empty module (Rust's crate root).
+moduleOf :: ModuleOf -> FilePath -> Text
+moduleOf mo path = T.intercalate (moSeparator mo) (dropTrailing (filter (not . T.null) (T.splitOn "/" noExt)))
+  where
+    stripped = case [r | re <- moStrip mo, Just r <- [stripOnce re (T.pack path)]] of
+      r : _ -> r
+      [] -> T.pack path
+    noExt = T.pack (dropExtension (T.unpack stripped))
+    dropTrailing = reverse . dropWhile (`elem` moDrop mo) . reverse
+    stripOnce re t = case makeRegexM (T.unpack re) :: Maybe Regex of
+      Nothing -> Nothing
+      Just rx -> case matchOnceText rx (T.unpack t) of
+        Just (before, _, after) -> Just (T.pack before <> T.pack after)
+        Nothing -> Nothing
 
 data Grammar = BuiltInGrammar Text | GrammarSource FilePath
   deriving stock (Eq, Show)
@@ -291,7 +337,7 @@ languageFrom presets name grammarDir top = do
   check <- optional "check" (table >=> checkFrom) top
   indent <- fromMaybe "    " <$> optional "indent" text top
   holes <- maybe [] M.toList <$> optional "holes" (table >=> traverse (\v -> table v >>= holeKindFrom)) top
-  imports <- optional "imports" (text >=> \re -> maybe (Left ("`imports` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))) top
+  (imports, importsDef) <- maybe (Nothing, Nothing) id <$> optional "imports" importsFrom top
   importMerge <- optional "import_merge" (table >=> importMergeFrom) top
   separator <- optional "separator" text top
   lineLength <- maybe 88 fromIntegral <$> optional "line_length" int top
@@ -306,7 +352,7 @@ languageFrom presets name grammarDir top = do
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
@@ -332,6 +378,24 @@ languageFrom presets name grammarDir top = do
         (Nothing, Just other) -> Left ("[[mutate]] `" <> n <> "`: `transform`: expected \"increment\", got " <> describeTree other)
         _ -> Left ("[[mutate]] `" <> n <> "`: one of `fix` or `transform`")
       pure (MutateDef n rule fix)
+    importsFrom = \case
+      TText re -> (\r -> (Just r, Nothing)) <$> validRegex "imports" re
+      TTable t -> do
+        onlyKeys ["line", "write", "module_of", "resolve", "paths"] t
+        line <- optional "line" (text >=> validRegex "[imports] line") t
+        write <- optional "write" (text >=> \w -> tmpl w >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["module", "owner"] then Right w else Left "`[imports] write` may use only {= module =} and {= owner =}") t
+        mo <- optional "module_of" (table >=> \m -> do
+          onlyKeys ["strip", "drop", "separator"] m
+          ModuleOf <$> (fromMaybe [] <$> optional "strip" (list (text >=> validRegex "[imports] module_of strip")) m)
+            <*> (fromMaybe [] <$> optional "drop" (list text) m)
+            <*> (fromMaybe "." <$> optional "separator" text m)) t
+        resolve <- fromMaybe [] <$> optional "resolve" (list (table >=> \r -> do
+          onlyKeys ["pattern", "module", "names"] r
+          let group k = int >=> \n -> if n > 0 then Right (fromIntegral n) else Left ("`[[imports.resolve]] " <> k <> "`: expected a group number above 0")
+          Resolve <$> required "pattern" (text >=> validRegex "[[imports.resolve]] pattern") r <*> required "module" (group "module") r <*> optional "names" (group "names") r)) t
+        paths <- fromMaybe [] <$> optional "paths" (list (text >=> \p -> tmpl p >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["path"] then Right p else Left "`[imports] paths` may use only {= path =}")) t
+        pure (line, Just (ImportsDef write mo resolve paths))
+      other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
     importMergeFrom t = do
       onlyKeys ["pattern", "write"] t
       re <- required "pattern" text t

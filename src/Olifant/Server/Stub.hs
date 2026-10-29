@@ -68,6 +68,22 @@ belowDecorators text line = case drop (line - 1) ls of
   where
     ls = T.lines text
 
+-- | A unit's qualified name in a Python module: @Class.name@ for a method
+-- (its def at line D, indented, under a class), else its name.
+qualifiedAt :: Text -> Text -> Int -> Text
+qualifiedAt moduleText fn d = if owner == fn then fn else owner <> "." <> fn
+  where
+    ls = T.lines moduleText
+    isDef l = ("def " <> fn <> "(") `T.isPrefixOf` T.strip l
+    (above, at) = case listToMaybe (drop (d - 1) ls) of
+      Just l | isDef l -> splitAt (d - 1) ls
+      _ -> break isDef ls
+    owner = case at of
+      x : _ | T.isPrefixOf " " x || T.isPrefixOf "\t" x -> case [l | l <- reverse above, not (T.null (T.strip l)), not (" " `T.isPrefixOf` l || "\t" `T.isPrefixOf` l)] of
+        l : _ | Just c <- T.stripPrefix "class " l -> T.takeWhile (\c' -> isAlphaNum c' || c' == '_') c
+        _ -> fn
+      _ -> fn
+
 -- | A stub's answer: the test file (absolute), the new test's def line
 -- (1-based, in the edited file), its name, and the test file's one edit
 -- (creating the file when it is new).
@@ -118,7 +134,7 @@ stubWith given path line0 survivor s0 =
             Just m -> ind <> "# kills: " <> flat (muFrom m) <> " \8594 " <> flat (muTo m) <> " on line " <> tshow (muLine m) <> "\n"
             Nothing -> ""
           ind = langIndent lang
-          imported = case importOf lang (siteModuleRel site) moduleText unit (Just defLine) of
+          imported = case importOf lang (siteModuleRel site) (qualifiedAt moduleText unit defLine) of
             Just i | T.null (T.strip base) -> i
             Just i -> addImports lang [i] base
             Nothing -> base

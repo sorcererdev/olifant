@@ -714,6 +714,17 @@ spec = do
       rust <- shippedLanguage "rust" []
       langArmSeparator rust `shouldBe` ","
       langLoneArmSpaced rust `shouldBe` False
+    it "module_of: a path's module, by the language's [imports] module_of" $ do
+      py <- shippedLanguage "python" []
+      hs <- shippedLanguage "haskell" []
+      rust <- shippedLanguage "rust" []
+      let mo l = maybe (error "no module_of") moduleOf (langImportsDef l >>= imModuleOf)
+      mo py "src/bistro/booking/commands/close_table.py" `shouldBe` "bistro.booking.commands.close_table"
+      mo py "pkg/__init__.py" `shouldBe` "pkg"
+      mo hs "src/Olifant/Plans.hs" `shouldBe` "Olifant.Plans"
+      mo rust "crates/money/src/lib.rs" `shouldBe` ""
+      mo rust "crates/money/src/money/rates.rs" `shouldBe` "money::rates"
+      originOf hs "imports.write" `shouldBe` Just "shipped"
     it "the shipped python language finds its tests by pytest's rules" $ do
       py <- shippedLanguage "python" []
       fmap (null . testUnitRules) (langTest py) `shouldBe` Just False
