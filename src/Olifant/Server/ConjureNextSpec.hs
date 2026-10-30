@@ -70,9 +70,21 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     attemptDiff Nothing "a\nb" `shouldBe` "+ a\n+ b"
     attemptDiff (Just "a") "a" `shouldBe` "(the same as the previous attempt)"
   it "(d) undefinedNames reads python and pyright" $ do
-    undefinedNames "E   NameError: name 'date' is not defined" `shouldBe` ["date"]
-    undefinedNames "src/a.py: \"Booking\" is not defined; src/a.py: \"Booking\" is not defined" `shouldBe` ["Booking"]
-    undefinedNames "assert 0 == 1" `shouldBe` []
+    undefinedNamesIn pyNow "E   NameError: name 'date' is not defined" `shouldBe` ["date"]
+    undefinedNamesIn pyNow "src/a.py: \"Booking\" is not defined; src/a.py: \"Booking\" is not defined" `shouldBe` ["Booking"]
+    undefinedNamesIn pyNow "assert 0 == 1" `shouldBe` []
+  it "(d2) undefinedNamesIn takes the check's and the runner's names in the text's order" $ do
+    undefinedNamesIn pyNow "src/a.py: \"x\" is not defined\nE   NameError: name 'y' is not defined" `shouldBe` ["x", "y"]
+    undefinedNamesIn pyNow "E   NameError: name 'y' is not defined\nsrc/a.py: \"x\" is not defined" `shouldBe` ["y", "x"]
+  it "(d3) undefinedNamesIn haskell reads GHC's Variable not in scope" $ do
+    undefinedNamesIn (shippedLanguageNow "haskell") "src/A.hs:3:7: error: [GHC-88464]\n    Variable not in scope: frobnicate :: Int -> Int" `shouldBe` ["frobnicate"]
+  it "(d4) undefinedNamesIn rust reads cargo's cannot find value, by its last group" $ do
+    undefinedNamesIn (shippedLanguageNow "rust") "error[E0425]: cannot find value `total` in this scope\nerror[E0425]: cannot find function `price` in this scope" `shouldBe` ["total", "price"]
+  it "(d5) gotExpectedIn on a language with no [test.failure] is Nothing" $ do
+    gotExpectedIn (shippedLanguageNow "haskell") (Failure Nothing "assert 3 == 4" "") `shouldBe` Nothing
+    assertionLineIn (shippedLanguageNow "haskell") "t" (Failure Nothing "x" "a.hs:3: in t\n  x `shouldBe` 1") `shouldBe` Nothing
+    gotExpectedIn pyNow (Failure Nothing "assert 3 == 4" "") `shouldBe` Just ("3", "4")
+    gotExpectedIn pyNow (Failure Nothing "assert f() == \"a == b\"" "") `shouldBe` Just ("f()", "\"a == b\"")
   it "(e) the question offers again, climb and ask, with eleven context keys" $ do
     let q = conjureNextQuestion (standing EscalateAsk) view
     qKind q `shouldBe` "conjure-next"
@@ -535,6 +547,7 @@ cancelPaused =
     , paSteps = []
     , paFailure = Nothing
     , paChecker = Nothing
+    , paFailureShape = failureOf pyNow
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -547,7 +560,7 @@ cancelPaused =
 
 cancelPausedFacts :: DiagnosisFacts
 cancelPausedFacts =
-  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing Nothing (testSourcesIn pyNow cancelTestText) (langAssertion pyNow) (langConjure pyNow)
+  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing Nothing (testSourcesIn pyNow cancelTestText) (langAssertion pyNow) (langConjure pyNow) (failureOf pyNow)
 
 -- | The cancel_booking pause as the by-hand run of 2026-10-24 had it (design §10): the wire
 -- before round 1 gave CancelBooking bookings: BookingRepository and the test's helper the
@@ -584,6 +597,7 @@ cancelWiredPaused =
     , paSteps = []
     , paFailure = Nothing
     , paChecker = Nothing
+    , paFailureShape = failureOf pyNow
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -594,7 +608,7 @@ cancelWiredPaused =
       ]
     roundSummaryText = "red: test_cancel_booking_not_found \183 False = isinstance(Ok(value=None), NotFound)"
     facts =
-      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing Nothing (testSourcesIn pyNow wiredTest) (langAssertion pyNow) (langConjure pyNow)
+      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing Nothing (testSourcesIn pyNow wiredTest) (langAssertion pyNow) (langConjure pyNow) (failureOf pyNow)
     sentences = diagnosis facts CauseRepeat
     suspects = suspectFirst (dfFlagged facts) (involved cancelBefore records)
     landing = T.replace "        return Ok(None)" (T.intercalate "\n" (map ("        " <>) (T.lines body))) wiredModule

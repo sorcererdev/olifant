@@ -7,3 +7,5 @@ context = ["*.cabal", "cabal.project", "cabal.project.freeze"]
 format = "ghc-json"
 exclusive = true
 install = "install with ghcup; it lives in ~/.ghcup/bin"
+# GHC's words for a name not defined.
+undefined = ["Variable not in scope: ([[:alnum:]_']+)"]

@@ -11,8 +11,12 @@ module Olifant.Language.Test
   , scriptFileRunner
   , parsePytest
   , failureLine
-  , assertionLine
-  , gotExpected
+  , headLineIn
+  , assertionLineIn
+  , gotExpectedIn
+  , assertionLineWith
+  , gotExpectedWith
+  , failureOf
   , testsForFile
   , keptVerdict
   , ownedBy
@@ -33,7 +37,8 @@ import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
-import Olifant.Language.Adapter (Language, TestDef (..))
+import Olifant.Language.Adapter (FailureDef (..), GotExpected (..), Language (..), TestDef (..))
+import Text.Regex.TDFA (AllTextSubmatches (..), (=~))
 import System.Exit (ExitCode (..))
 import System.FilePath (normalise, takeBaseName, takeDirectory)
 
@@ -175,28 +180,60 @@ failureLine f
   | bare first, w : _ <- [T.strip r | l <- T.lines (fMessage f), Just r <- [T.stripPrefix "+  where " (T.strip l)]] = w
   | otherwise = first
   where
-    first = headLine f
+    first = case T.lines (fMessage f) of
+      l : _ -> let x = T.strip l in fromMaybe x (T.stripPrefix "AssertionError: " x)
+      [] -> ""
     bare l = l `elem` ["assert False", "assert None", "AssertionError", ""]
 
-headLine :: Failure -> Text
-headLine f = case T.lines (fMessage f) of
-  l : _ -> let s = T.strip l in fromMaybe s (T.stripPrefix "AssertionError: " s)
+-- | A failure's message's first line, stripped, less LANG's `[test.failure]
+-- head_strip` match at its front.
+headLineIn :: Language -> Failure -> Text
+headLineIn = headLineWith . failureOf
+
+headLineWith :: Maybe FailureDef -> Failure -> Text
+headLineWith fd f = case T.lines (fMessage f) of
+  l : _ -> let x = T.strip l in maybe x (\re -> stripFront re x) (fd >>= fdHeadStrip)
   [] -> ""
+  where
+    stripFront re x = case x =~ re :: (Text, Text, Text) of
+      (before, m, after) | T.null before, not (T.null m) -> after
+      _ -> x
 
--- | The test's source line that failed: the line after the first
--- @…: in NAME@ line of the section (NAME the test's short name).
-assertionLine :: Text -> Failure -> Maybe Text
-assertionLine name f = case drop 1 (dropWhile (not . (T.isSuffixOf (": in " <> name) . T.stripEnd)) (T.lines (fOutput f))) of
-  l : _ | not (T.null (T.strip l)) -> Just (T.strip l)
-  _ -> Nothing
+-- | The test's source line that failed: the line after the first output line
+-- LANG's `[test.failure] line_after` (over @{= name =}@, NAME the test's short
+-- name) matches; Nothing without one.
+assertionLineIn :: Language -> Text -> Failure -> Maybe Text
+assertionLineIn = assertionLineWith . failureOf
 
--- | What came back and what was expected, for the two shapes the panel reads:
--- @assert A == B@ (A got, B expected) and @+  where False = isinstance(A, T)@.
-gotExpected :: Failure -> Maybe (Text, Text)
-gotExpected f
-  | Just e <- T.stripPrefix "assert " (headLine f), (a, b) <- T.breakOn " == " e, not (T.null b) = Just (T.strip a, T.strip (T.drop 4 b))
-  | i : _ <- [r | l <- T.lines (fMessage f), Just r <- [T.stripPrefix "+  where False = isinstance(" (T.strip l)], ")" `T.isSuffixOf` r] =
-      let inner = T.dropEnd 1 i
-          (a, t) = T.breakOnEnd ", " inner
-       in if T.null a then Nothing else Just (T.strip (T.dropEnd 2 a), T.strip t)
-  | otherwise = Nothing
+-- | 'assertionLineIn' by the `[test.failure]` table alone (a record kept without its language).
+assertionLineWith :: Maybe FailureDef -> Text -> Failure -> Maybe Text
+assertionLineWith fd name f = do
+  after <- fd >>= fdLineAfter
+  let re = T.replace "{= name =}" (literal name) after
+  case drop 1 (dropWhile (\l -> not (T.stripEnd l =~ re)) (T.lines (fOutput f))) of
+    l : _ | not (T.null (T.strip l)) -> Just (T.strip l)
+    _ -> Nothing
+
+-- | What came back and what was expected: the first of LANG's `[test.failure]
+-- got_expected` entries that matches one of the message's lines (stripped, its
+-- first by 'headLineIn'), its two groups; Nothing without one.
+gotExpectedIn :: Language -> Failure -> Maybe (Text, Text)
+gotExpectedIn = gotExpectedWith . failureOf
+
+-- | 'gotExpectedIn' by the `[test.failure]` table alone.
+gotExpectedWith :: Maybe FailureDef -> Failure -> Maybe (Text, Text)
+gotExpectedWith fd f = listToMaybe [ge | g <- maybe [] fdGotExpected fd, l <- ls, Just ge <- [groups g l]]
+  where
+    ls = headLineWith fd f : map T.strip (drop 1 (T.lines (fMessage f)))
+    groups g l = case getAllTextSubmatches (l =~ gePattern g) :: [Text] of
+      m@(_ : _) | Just a <- at (geGot g) m, Just b <- at (geExpected g) m, not (T.null a) -> Just (a, b)
+      _ -> Nothing
+    at i m = T.strip <$> listToMaybe (drop i m)
+
+-- | LANG's `[test.failure]`.
+failureOf :: Language -> Maybe FailureDef
+failureOf lang = langTest lang >>= testFailure
+
+-- | TEXT as an expression matching itself.
+literal :: Text -> Text
+literal = T.concatMap (\c -> if c `elem` ("\\^$.|?*+()[]{}" :: String) then T.pack ['\\', c] else T.singleton c)

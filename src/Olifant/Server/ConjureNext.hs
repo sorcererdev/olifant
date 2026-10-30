@@ -16,7 +16,8 @@ module Olifant.Server.ConjureNext
   , isRepeat
   , isTrade
   , attemptDiff
-  , undefinedNames
+  , undefinedNamesIn
+  , undefinedIn
   , roundSummary
   , Standing (..)
   , Offer (..)
@@ -72,7 +73,7 @@ module Olifant.Server.ConjureNext
 import Control.Applicative ((<|>))
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as Key
-import Data.List (isSuffixOf, nub)
+import Data.List (isSuffixOf, nub, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
@@ -85,7 +86,8 @@ import Olifant.Generation.Steer
 import Olifant.Generation.Tools (ProgressEvent (..))
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
-import Text.Regex.TDFA (Regex, makeRegexM, matchTest, (=~))
+import Data.Array (elems)
+import Text.Regex.TDFA (Regex, makeRegexM, matchAllText, matchTest, (=~))
 
 data RoundView = RoundView
   { rvRound :: Int
@@ -337,11 +339,24 @@ attemptDiff (Just old) new
     oldMid = take (length os' - suf) os'
     newMid = take (length ns' - suf) ns'
 
--- | Names a checker or runner says are undefined (Python's NameError, pyright), in order.
-undefinedNames :: Text -> [Text]
-undefinedNames t = nub [n | m <- matches, n <- take 1 (filter (not . T.null) (drop 1 m))]
+-- | Names LANG's checker or runner says are undefined in T (`[check]` and
+-- `[test]` `undefined`), in the text's order, once each.
+undefinedNamesIn :: Language -> Text -> [Text]
+undefinedNamesIn lang = nub . map fst . undefinedIn lang
+
+-- | Each undefined name in T, in the text's order, with its entry's `label`.
+undefinedIn :: Language -> Text -> [(Text, Maybe Text)]
+undefinedIn lang t = map snd (sortOn fst [hit | r <- rules, Just re <- [makeRegexM (T.unpack (udPattern r)) :: Maybe Regex], m <- matchAllText re t, Just hit <- [named r (elems m)]])
   where
-    matches = t =~ ("name '([^']+)' is not defined|\"([^\"]+)\" is not defined" :: Text) :: [[Text]]
+    rules = maybe [] checkUndefined (langCheck lang) ++ maybe [] testUndefined (langTest lang)
+    named r gs = case (udName r, gs) of
+      (Just n, _) | (g, _) : _ <- drop n gs, not (T.null g) -> Just (offsetOf gs, (g, udLabel r))
+      (Nothing, [(g, _)]) | not (T.null g) -> Just (offsetOf gs, (g, udLabel r))
+      (Nothing, _ : groups) | (g, _) : _ <- reverse groups, not (T.null g) -> Just (offsetOf gs, (g, udLabel r))
+      _ -> Nothing
+    offsetOf = \case
+      (_, (o, _)) : _ -> o
+      [] -> 0
 
 roundSummary :: RoundView -> Text
 roundSummary v = case rvFailing v of
@@ -501,6 +516,8 @@ data DiagnosisFacts = DiagnosisFacts
   -- ^ the language's `[test] assertion` expressions
   , dfConjure :: Maybe ConjureDef
   -- ^ the pack's `[conjure]` shapes
+  , dfFailureShape :: Maybe FailureDef
+  -- ^ the runner's `[test.failure]`
   }
   deriving stock (Eq, Show)
 
@@ -682,6 +699,8 @@ data PausedAnswer = PausedAnswer
   , paSteps :: [ConjureStep]
   , paFailure :: Maybe LatestFailure
   , paChecker :: Maybe Text
+  , paFailureShape :: Maybe FailureDef
+  -- ^ the runner's `[test.failure]`: how a failure names its assertion, got and expected
   }
   deriving stock (Eq, Show)
 
@@ -706,7 +725,7 @@ testEntries df = [entry t | t <- involved (dfBefore df) (dfHistory df)]
           src = fromMaybe "" (lookup name (dfSources df))
           lastFailure = listToMaybe [f | r <- runs, Just f <- [lookup tid (trFailed r)]]
           lastAssert = listToMaybe (reverse [T.strip l | l <- T.lines src, any (`matchesLine` l) (dfAssertion df)])
-          assertion = if tsFailing t then (lastFailure >>= assertionLine name) <|> lastAssert else lastAssert
+          assertion = if tsFailing t then (lastFailure >>= assertionLineWith (dfFailureShape df) name) <|> lastAssert else lastAssert
        in TestEntry t src assertion (testNote df tid)
 
 -- | The scan's note on a flagged test: the fake it never hands in, and what the class takes.
@@ -854,13 +873,13 @@ pausedJson p =
         , "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fromMaybe [] (lookup (rrRound r) (paRoundFiles p))]
         ]
     failedJson tid f =
-      let ge = gotExpected f
+      let ge = gotExpectedWith (paFailureShape p) f
        in object
             [ "test" .= tid
             , "message" .= fMessage f
             , "summary" .= failureLine f
             , "at" .= fLine f
-            , "assertion" .= assertionLine (snd (T.breakOnEnd "::" tid)) f
+            , "assertion" .= assertionLineWith (paFailureShape p) (snd (T.breakOnEnd "::" tid)) f
             , "got" .= fmap fst ge
             , "expected" .= fmap snd ge
             , "output" .= fOutput f

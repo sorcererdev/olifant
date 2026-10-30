@@ -9,3 +9,5 @@ exclusive = true
 root = ["Cargo.toml"]
 root_pick = "outermost"
 install = "install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)"
+# rustc's words for a name not defined (the name the last group).
+undefined = ['cannot find (value|function) `([^`]+)`']

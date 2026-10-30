@@ -16,8 +16,9 @@ spec :: Spec
 spec = do
   it "olifant's own haskell.toml: the six capabilities of milestone 1 and the stub present; no mutation" $ do
     hs <- packLanguage "haskell" ".olifant"
-    map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "test selection", "mutation", "stub", "conjure shapes"]
-    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True ++ [False, True, False]
+    map capName (capabilities hs) `shouldBe` ["units", "diagnostics", "missing cases", "tests", "test units", "test selection", "mutation", "stub", "conjure shapes", "messages"]
+    map (isRight . capHow) (capabilities hs) `shouldBe` replicate 6 True ++ [False, True, False, True]
+    lookup "messages" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[check] undefined")
     lookup "stub" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Right "[test] stub at end of do in spec")
     lookup "mutation" [(capName c, capFix c) | c <- capabilities hs] `shouldBe` Just Nothing
     lookup "mutation" [(capName c, capHow c) | c <- capabilities hs] `shouldBe` Just (Left "[[mutate]]")
@@ -35,8 +36,9 @@ spec = do
                  , Right "[[mutate]] (17 operators)"
                  , Right "[test] stub"
                  , Right "[conjure] port, fake, constructor"
+                 , Right "[check] undefined, missing_member; [test] undefined, failure"
                  ]
-  it "a bare language: nine absences, each naming its key" $ do
+  it "a bare language: ten absences, each naming its key" $ do
     let Right bare = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n"
     map capHow (capabilities bare)
       `shouldBe` [ Left "[unit] kinds"
@@ -48,6 +50,7 @@ spec = do
                  , Left "[[mutate]]"
                  , Left "[test] stub"
                  , Left "[conjure] (conjure works at the floor: the test and its fill, no ports)"
+                 , Left "[check] undefined, [test] undefined, [test.failure] (no undefined names read; the panel shows the test's last assertion)"
                  ]
   it "a check through convert says so" $ do
     let Right l = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\nconvert = [\"c\"]\n"

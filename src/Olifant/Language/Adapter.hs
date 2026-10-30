@@ -8,6 +8,10 @@ module Olifant.Language.Adapter
   , supportOf
   , TestDef (..)
   , UnitRule (..)
+  , UndefinedRule (..)
+  , MissingMember (..)
+  , FailureDef (..)
+  , GotExpected (..)
   , StubDef (..)
   , Select (..)
   , LinesFormat (..)
@@ -291,7 +295,10 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- @checkConvert@ (key `convert`): a command that turns the check's output
 -- into olifant-json, for a tool Olifant has no format for.
 -- @checkInstall@ (key `install`): how to install the tool, doctor's fix.
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text], checkInstall :: Maybe Text}
+-- @checkUndefined@ (`undefined`): expressions for a name the check says is
+-- undefined ('UndefinedRule'). @checkMissingMember@ (`missing_member`): the
+-- check's words for a member a type lacks.
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text], checkInstall :: Maybe Text, checkUndefined :: [UndefinedRule], checkMissingMember :: Maybe MissingMember}
   deriving stock (Eq, Show)
 
 -- | The compiler support that reads a check's report.
@@ -327,6 +334,11 @@ data TestDef = TestDef
   -- ^ `[test.stub]`: what a new test looks like and where it goes
   , testNaming :: Maybe Text
   -- ^ `name`: a new test's name, a template over @{= words =}@
+  , testUndefined :: [UndefinedRule]
+  -- ^ `undefined`: expressions for a name the runner says is undefined
+  , testFailure :: Maybe FailureDef
+  -- ^ `[test.failure]`: how a failure's output names its assertion, what
+  -- came back and what was expected
   }
   deriving stock (Eq, Show)
 
@@ -351,6 +363,31 @@ data StubDef = StubDef {sdTest :: Text, sdFile :: Maybe Text, sdGap :: Int, sdAt
 -- with escapes, whose own group is not the last). A string entry is a rule
 -- with neither.
 data UnitRule = UnitRule {urPattern :: Text, urAfter :: Maybe Text, urName :: Maybe Int}
+  deriving stock (Eq, Show)
+
+-- | One `undefined` entry of a `[check]` or `[test]`: an expression whose
+-- match names an undefined name (its last group, or group `name`), and
+-- `label`, how a summary calls such names (@NameError@; default
+-- @undefined:@). A string entry has neither.
+data UndefinedRule = UndefinedRule {udPattern :: Text, udName :: Maybe Int, udLabel :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | `[check] missing_member`: an expression for a check's words that a type
+-- lacks a member, the groups holding the member and the type.
+data MissingMember = MissingMember {mmPattern :: Text, mmMember :: Int, mmType :: Int}
+  deriving stock (Eq, Show)
+
+-- | `[test.failure]`: 'fdLineAfter' (`line_after`), an expression over
+-- @{= name =}@ (the test's short name) for the output line after which the
+-- failing source line comes; 'fdHeadStrip' (`head_strip`), an expression
+-- taken off the front of a message's first line; 'fdGotExpected'
+-- (`got_expected`), expressions over a message's lines (the first less
+-- `head_strip`) whose groups are what came back and what was expected.
+data FailureDef = FailureDef {fdLineAfter :: Maybe Text, fdHeadStrip :: Maybe Text, fdGotExpected :: [GotExpected]}
+  deriving stock (Eq, Show)
+
+-- | One `got_expected` entry: an expression and its two groups.
+data GotExpected = GotExpected {gePattern :: Text, geGot :: Int, geExpected :: Int}
   deriving stock (Eq, Show)
 
 -- | `[test.select]`: argument templates over @{= group =}@ (the file's
@@ -557,7 +594,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom hasModuleOf t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name"] (foldr M.delete t0 testShapeKeys)
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -586,6 +623,8 @@ languageFrom presets name grammarDir top = do
         <*> optional "above" (text >=> validRegex "[test] above") t
         <*> optional "stub" (table >=> stubFrom) t
         <*> optional "name" (text >=> templateOver "[test] name" ["words"]) t
+        <*> (fromMaybe [] <$> optional "undefined" (list (undefinedFrom "[test] undefined")) t)
+        <*> optional "failure" (table >=> failureFrom) t
     templateOver key vars src = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
@@ -605,6 +644,32 @@ languageFrom presets name grammarDir top = do
         UnitRule <$> required "pattern" (text >=> validRegex "[test] unit") u <*> optional "after" (text >=> validRegex "[test] unit after") u
           <*> optional "name" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`[test] unit` `name`: expected a group number above 0") u
       other -> Left ("`[test] unit`: expected an expression or { pattern, after, name }, got " <> describeTree other)
+    undefinedFrom key = \case
+      TText re -> (\r -> UndefinedRule r Nothing Nothing) <$> validRegex key re
+      TTable u -> do
+        onlyKeys ["pattern", "name", "label"] u
+        re <- required "pattern" (text >=> validRegex key) u
+        UndefinedRule re <$> optional "name" (int >=> groupOf key re) u <*> optional "label" text u
+      other -> Left ("`" <> key <> "`: expected an expression or { pattern, name, label }, got " <> describeTree other)
+    groupOf key re n
+      | n > 0, fromIntegral n <= groupCount re = Right (fromIntegral n)
+      | otherwise = Left ("`" <> key <> "`: group " <> T.pack (show n) <> " is not a group of " <> re)
+    missingMemberFrom t = do
+      let key = "[check] missing_member"
+      onlyKeys ["pattern", "member", "type"] t
+      re <- required "pattern" (text >=> validRegex key) t
+      MissingMember re <$> required "member" (int >=> groupOf key re) t <*> required "type" (int >=> groupOf key re) t
+    failureFrom t = do
+      onlyKeys ["line_after", "head_strip", "got_expected"] t
+      FailureDef
+        <$> optional "line_after" (text >=> templateOver "[test.failure] line_after" ["name"] >=> \x -> validRegex "[test.failure] line_after" (T.replace "{= name =}" "x" x) >> Right x) t
+        <*> optional "head_strip" (text >=> validRegex "[test.failure] head_strip") t
+        <*> (fromMaybe [] <$> optional "got_expected" (list (table >=> gotExpectedFrom)) t)
+    gotExpectedFrom t = do
+      let key = "[test.failure] got_expected"
+      onlyKeys ["pattern", "got", "expected"] t
+      re <- required "pattern" (text >=> validRegex key) t
+      GotExpected re <$> required "got" (int >=> groupOf key re) t <*> required "expected" (int >=> groupOf key re) t
     linesFrom t = do
       onlyKeys ["pass", "fail", "nest", "failure", "end", "drop", "split"] t
       let re k = text >=> validRegex ("[test.lines] " <> k)
@@ -618,7 +683,7 @@ languageFrom presets name grammarDir top = do
             v -> list text v
       Select <$> required "test" args t <*> required "file" args t <*> (fromMaybe "/" <$> optional "join" text t)
     checkFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert", "install"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert", "install", "undefined", "missing_member"] t0
       t <- applyPreset presets "check" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -644,6 +709,8 @@ languageFrom presets name grammarDir top = do
         <*> pure errorFormat
         <*> pure convert
         <*> optional "install" text t
+        <*> (fromMaybe [] <$> optional "undefined" (list (undefinedFrom "[check] undefined")) t)
+        <*> optional "missing_member" (table >=> missingMemberFrom) t
     errorFormatFrom t = do
       onlyKeys ["pattern", "file", "line", "message", "severity", "error"] t
       ErrorFormat
@@ -653,6 +720,24 @@ languageFrom presets name grammarDir top = do
         <*> (fromIntegral <$> required "message" int t)
         <*> (fmap fromIntegral <$> optional "severity" int t)
         <*> optional "error" (text >=> validRegex "[check.errorformat] error") t
+
+-- | The groups of a POSIX expression: its @(@s that are neither escaped nor
+-- inside a bracket expression.
+groupCount :: Text -> Int
+groupCount = go False . T.unpack
+  where
+    go _ [] = 0
+    go inB ('\\' : _ : r) = go inB r
+    go False ('[' : ']' : r) = go True r
+    go False ('[' : '^' : ']' : r) = go True r
+    go False ('[' : r) = go True r
+    go True ('[' : ':' : r) = go True (dropClass r)
+    go True (']' : r) = go False r
+    go False ('(' : r) = 1 + go False r
+    go inB (_ : r) = go inB r
+    dropClass r = case break (== ':') r of
+      (_, ':' : ']' : r') -> r'
+      (_, r') -> r'
 
 -- | The keys of `[test]` that are the language's shapes, not its runner's.
 testShapeKeys :: [Text]

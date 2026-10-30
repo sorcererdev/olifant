@@ -43,14 +43,14 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TypesDef (..), TestRun (..), failureLine, languageFor, runCheckIn, runTestsIn, testsForFile)
+import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TypesDef (..), TestRun (..), failureLine, failureOf, languageFor, runCheckIn, runTestsIn, testsForFile)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNames, withHint)
-import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMethod, portCandidates, portEnd, portFrom, portsIn, takesPortIn)
+import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
+import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, takesPortIn)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
@@ -669,7 +669,7 @@ conjureWith progress path line selected resuming s0 = do
               -- when the call and the test's fake give it
               methodWall attempt why = do
                 c <- readIORef counters
-                case missingMethod (map snd (ctorParamsIn (langConjure lang) (cHeader c))) why of
+                case missingMemberIn lang (map snd (ctorParamsIn (langConjure lang) (cHeader c))) why of
                   Nothing -> pure Nothing
                   Just (q, m) -> do
                     sf <- service
@@ -917,8 +917,9 @@ conjureWith progress path line selected resuming s0 = do
                       , paSteps = cSteps c
                       , paFailure = failure
                       , paChecker = checker
+                      , paFailureShape = failureOf lang
                       }
-                  pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNames lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation (cHistory c) (cBefore c) (cFlagged c) (cCause c) Nothing Nothing
+                  pd = PausedConjure file started line selected seed' (cRung c) (cRungs c) (cRounds c) (cSeconds c) view (cHint c) landing (undefinedNamesIn lang lastWhy) now (cWrites c) (M.delete file (cVersions c)) (cBases c) (cWired c) explanation (cHistory c) (cBefore c) (cFlagged c) (cCause c) Nothing Nothing
               token <- lift (atomicModifyIORef' (ssPaused s) (\(n, m) -> let t = "conjure-" <> tshow (n + 1) in ((n + 1, M.insert t (pd (shownAs t) landings (cRewritten c) (cSteps c) (cWireWrites c)) m), t)))
               lift (stepLine ("conjure-pause" : maybe [why] causeWords (cCause c)))
               pure (Paused (shownAs token))
@@ -947,12 +948,12 @@ conjureWith progress path line selected resuming s0 = do
                   keptWhat k = if k == 0 then "the wire alone" else "round " <> tshow k
                   keptLine k = withExtras ("kept " <> keptWhat k <> " \183 " <> shortVerdict)
                   shortVerdict = case (trBroken after, trFailed after) of
-                    (Nothing, fs@(_ : _)) | null (concatMap (undefinedNames . fMessage . snd) fs ++ extra) -> "red: " <> T.intercalate ", " (map (shortName (cStem c) . fst) fs)
-                    _ -> functionSummary extra after
+                    (Nothing, fs@(_ : _)) | null (concatMap (undefinedNamesIn lang . fMessage . snd) fs ++ extra) -> "red: " <> T.intercalate ", " (map (shortName (cStem c) . fst) fs)
+                    _ -> functionSummary lang extra after
                   headline
                     | onTest = testSummary lang extra tid (wkBefore wk) after written
                     | isSteered && green = "green in round " <> tshow n <> " \183 " <> T.intercalate " \8594 " rungs
-                    | otherwise = functionSummary extra after
+                    | otherwise = functionSummary lang extra after
                   staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> (if staying == 1 then " pyright error" else " pyright errors") | staying > 0, green]
                   summary = maybe (withExtras headline <> note) keptLine kept <> mconcat staying'
                   tid = T.pack testRel <> "::" <> fromMaybe unit (testCaseAtIn lang written (fst (wkSpan wk)))
@@ -972,7 +973,7 @@ conjureWith progress path line selected resuming s0 = do
                   by
                     | isSteered = T.intercalate " \8594 " rungs <> " \183 " <> tshow n <> (if n == 1 then " round" else " rounds")
                     | otherwise = mfName filler
-              lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, maybe ("conjured by " <> by <> " \183 " <> summary) (\k -> "kept " <> keptWhat k <> " \183 " <> functionSummary extra after) kept])
+              lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, maybe ("conjured by " <> by <> " \183 " <> summary) (\k -> "kept " <> keptWhat k <> " \183 " <> functionSummary lang extra after) kept])
               pure (Landed (ConjureAnswer file unit (edit ++ edits) summary green tests n rungs (isJust kept)))
 
 -- | The `[conjure] wire` generator for the unit at REL (root-relative):
@@ -1240,6 +1241,7 @@ diagnosisFacts lang c rung next seconds =
     , dfSources = testSourcesIn lang (cTestText c)
     , dfAssertion = langAssertion lang
     , dfConjure = langConjure lang
+    , dfFailureShape = failureOf lang
     }
 
 -- | The owner a header opens (its `[conjure.constructor] owner` group 1: a class), or none.
@@ -1345,7 +1347,7 @@ testConjure lang text (l1, l2) tid moduleRel moduleText = do
 -- fails now; then the names EXTRA (left undefined by the last attempt) that
 -- it does not already name.
 testSummary :: Language -> [Text] -> Text -> TestRun -> TestRun -> Text -> Text
-testSummary lang extra tid before after written = base <> (if null missing then "" else " \183 NameError " <> T.intercalate ", " missing)
+testSummary lang extra tid before after written = base <> (if null missing then "" else " \183 undefined: " <> T.intercalate ", " missing)
   where
     base = own <> T.concat ["; red: " <> short t <> " no longer passes" | t <- broke]
     missing = [n | n <- nub extra, not (n `T.isInfixOf` base)]
@@ -1399,11 +1401,16 @@ roundsProgress total modelOf progress = do
     worded (roundWords total modelOf r) progress e
 
 -- | A function's after-run in a few words: a name left undefined (by a
--- failure's message, or EXTRA: the last attempt's check) is named first.
-functionSummary :: [Text] -> TestRun -> Text
-functionSummary extra run = case (trBroken run, trFailed run) of
+-- failure's message, or EXTRA: the last attempt's check) is named first,
+-- by the label of the runner's `undefined` entry that read it (else
+-- @undefined:@).
+functionSummary :: Language -> [Text] -> TestRun -> Text
+functionSummary lang extra run = case (trBroken run, trFailed run) of
   (Just why, _) -> "red: could not run \183 " <> firstLine why
-  (_, failed) | names@(_ : _) <- nub (concatMap (undefinedNames . fMessage . snd) failed ++ extra) -> (if null failed then "green \183 NameError " else "red: NameError ") <> T.intercalate ", " names
+  (_, failed) | names@(_ : _) <- nub (map fst found ++ extra) -> (if null failed then "green \183 " else "red: ") <> label <> " " <> T.intercalate ", " names
+    where
+      found = concatMap (undefinedIn lang . fMessage . snd) failed
+      label = fromMaybe "undefined:" (listToMaybe [l | (_, Just l) <- found])
   (_, []) -> "green"
   (_, (t, f) : _) -> "red: " <> snd (T.breakOnEnd "::" t) <> " \183 " <> failureLine f
 
@@ -1452,4 +1459,4 @@ fill judged progress rounds s project rel text template verify context filler st
             w : _ | length pausedWhy == length red -> pure (Halted landing w)
             _ -> do
               when (null offered) (throwE ("the model gave no conjure: " <> why))
-              pure (Written (Just why) landing (undefinedNames why))
+              pure (Written (Just why) landing (maybe [] (`undefinedNamesIn` why) (langOf rel)))

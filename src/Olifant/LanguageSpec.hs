@@ -130,7 +130,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -156,14 +156,14 @@ spec = do
       let Just f = lookup (cb <> "::test_cancel_booking_succeeds") (trFailed r2)
       fMessage f `shouldBe` "AssertionError: assert NotFound(reason='Booking not found') == Ok(value=None)\n+  where Ok(value=None) = Ok(None)"
       failureLine f `shouldBe` "assert NotFound(reason='Booking not found') == Ok(value=None)"
-      assertionLine "test_cancel_booking_succeeds" f `shouldBe` Just "assert result == Ok(None)"
-      gotExpected f `shouldBe` Just ("NotFound(reason='Booking not found')", "Ok(value=None)")
+      assertionLineIn (shippedLanguageNow "python") "test_cancel_booking_succeeds" f `shouldBe` Just "assert result == Ok(None)"
+      gotExpectedIn (shippedLanguageNow "python") f `shouldBe` Just ("NotFound(reason='Booking not found')", "Ok(value=None)")
     it "(g) assert isinstance: the where line is the one-line form; got is the value, expected the type" $ do
       r1 <- parsePytest (ExitFailure 1) <$> TIO.readFile "src/Olifant/Language/testdata/pytest/cancel-booking-round1.txt"
       let Just f = lookup (cb <> "::test_cancel_booking_not_found") (trFailed r1)
       failureLine f `shouldBe` "False = isinstance(Ok(value=None), NotFound)"
-      assertionLine "test_cancel_booking_not_found" f `shouldBe` Just "assert isinstance(result, NotFound)"
-      gotExpected f `shouldBe` Just ("Ok(value=None)", "NotFound")
+      assertionLineIn (shippedLanguageNow "python") "test_cancel_booking_not_found" f `shouldBe` Just "assert isinstance(result, NotFound)"
+      gotExpectedIn (shippedLanguageNow "python") f `shouldBe` Just ("Ok(value=None)", "NotFound")
       fLine f `shouldBe` Just 26
       trPassed r1 `shouldBe` [cb <> "::test_cancel_booking_succeeds"]
     it "(h) a raised error before the assertion: the error is the message, no got/expected" $ do
@@ -181,8 +181,8 @@ spec = do
           Just f = lookup "src/x__test.py::test_x" (trFailed (parsePytest (ExitFailure 1) out))
       fMessage f `shouldBe` "TypeError: bad"
       failureLine f `shouldBe` "TypeError: bad"
-      assertionLine "test_x" f `shouldBe` Just "result = f()"
-      gotExpected f `shouldBe` Nothing
+      assertionLineIn (shippedLanguageNow "python") "test_x" f `shouldBe` Just "result = f()"
+      gotExpectedIn (shippedLanguageNow "python") f `shouldBe` Nothing
     it "(i) no section, a -rA tail: the tail is the message" $ do
       let out = T.unlines ["FAILED pkg/a__test.py::test_y - assert 3 == 4", "1 failed in 0.01s"]
           Just f = lookup "pkg/a__test.py::test_y" (trFailed (parsePytest (ExitFailure 1) out))
@@ -241,6 +241,11 @@ spec = do
       either (T.isInfixOf "[test.lines]") (const False) (parseLanguage "h" "/h" (base <> "format = \"lines\"\n")) `shouldBe` True
       either (T.isInfixOf "file_group") (const False) (parseLanguage "h" "/h" (base <> "format = \"tap\"\n[test.select]\ntest = \"{= group =}\"\nfile = \"x\"\n")) `shouldBe` True
       fmap (fmap testFormat . langTest) (parseLanguage "h" "/h" (base <> "format = \"junit-xml\"\n")) `shouldBe` Right (Just "junit-xml")
+    it "refuses a message key that is no expression, naming it" $ do
+      let base = "files = [\"**/*.hs\"]\ncomment = \"--\"\ngrammar = \"haskell\"\n"
+      either (T.isInfixOf "[check] undefined") (const False) (parseLanguage "h" "/h" (base <> "[check]\ncommand = [\"c\"]\nformat = \"ghc-json\"\nundefined = ['(']\n")) `shouldBe` True
+      either (T.isInfixOf "[check] missing_member") (const False) (parseLanguage "h" "/h" (base <> "[check]\ncommand = [\"c\"]\nformat = \"ghc-json\"\nmissing_member = { pattern = 'a(b)', member = 1, type = 3 }\n")) `shouldBe` True
+      either (T.isInfixOf "[test.failure] got_expected") (const False) (parseLanguage "h" "/h" (base <> "[test]\ncommand = [\"t\"]\ntests_for = \"x\"\nformat = \"tap\"\n[test.failure]\ngot_expected = [{ pattern = '(', got = 1, expected = 2 }]\n")) `shouldBe` True
     it "selects one test by its group and name, and reads hspec's lines" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/hspec/checks-one-failure.txt"
       let Right lang = parseLanguage "haskell" "/h" (hsToml [fake "--test-option=--match=/Olifant.Plans/parsePlan/reads a test/"])

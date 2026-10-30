@@ -6,3 +6,7 @@ format = "pyright-json"
 context = ["pyproject.toml", "uv.lock"]
 root = ["pyproject.toml"]
 install = "brew install uv (pyright comes with the project: `uv sync`)"
+# Its words for a name not defined, and for a member a class lacks (conjure
+# offers the method to the port).
+undefined = ['"([^"]+)" is not defined']
+missing_member = { pattern = 'Cannot access attribute "([^"]+)" for class "([^"]+)"', member = 1, type = 2 }

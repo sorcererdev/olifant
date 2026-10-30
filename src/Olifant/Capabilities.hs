@@ -19,7 +19,7 @@ data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKe
   deriving stock (Eq, Show)
 
 -- | Units, diagnostics, missing cases, tests, test units, test selection,
--- mutation, stub, conjure shapes.
+-- mutation, stub, conjure shapes, messages.
 capabilities :: Language -> [Capability]
 capabilities lang =
   [ Capability "units" units "unit.kinds" Nothing
@@ -31,6 +31,7 @@ capabilities lang =
   , Capability "mutation" mutation "mutate" Nothing
   , Capability "stub" stub "test.stub" Nothing
   , Capability "conjure shapes" shapes "conjure" Nothing
+  , Capability "messages" messages "check" Nothing
   ]
   where
     check = langCheck lang
@@ -58,6 +59,12 @@ capabilities lang =
     shapes = case langConjure lang of
       Just cj | parts@(_ : _) <- [n | (n, True) <- [("port", isJust (cjPort cj)), ("fake", isJust (cjFake cj)), ("constructor", isJust (cjConstructor cj))]] -> Right ("[conjure] " <> T.intercalate ", " parts)
       _ -> Left "[conjure] (conjure works at the floor: the test and its fill, no ports)"
+    messages = case (keysOf "[check]" [("undefined", maybe False (not . null . checkUndefined) check), ("missing_member", maybe False (isJust . checkMissingMember) check)], keysOf "[test]" [("undefined", maybe False (not . null . testUndefined) test), ("failure", maybe False (isJust . testFailure) test)]) of
+      ("", "") -> Left "[check] undefined, [test] undefined, [test.failure] (no undefined names read; the panel shows the test's last assertion)"
+      parts -> Right (T.intercalate "; " (filter (not . T.null) [fst parts, snd parts]))
+    keysOf table ks = case [k | (k, True) <- ks] of
+      [] -> ""
+      present -> table <> " " <> T.intercalate ", " present
     mutation = case langMutate lang of
       [] -> Left "[[mutate]]"
       ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")

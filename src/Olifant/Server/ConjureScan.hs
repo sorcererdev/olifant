@@ -24,7 +24,7 @@ module Olifant.Server.ConjureScan
   , conjurePortGate
   , portFrom
   , portCandidates
-  , missingMethod
+  , missingMemberIn
   , methodSignature
   , methodText
   , portEnd
@@ -38,9 +38,9 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
-import Olifant.Language (ConjureDef (..), CtorShape (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), regexName)
+import Olifant.Language (CheckDef (..), ConjureDef (..), CtorShape (..), MissingMember (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), regexName)
 import Data.Array qualified
-import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchAll, matchM, matchTest)
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchAll, matchM, matchTest, (=~))
 
 -- | A fake a test builds: the name it is bound to and the class (or @Mock@) called.
 data Fake = Fake {fkVariable :: Text, fkClass :: Text}
@@ -268,16 +268,14 @@ portCandidates probabilities ports = take 2 (nub (probable ++ names))
     names = map ptName ports
     probable = [n | (n, _) <- sortOn (Down . snd) probabilities, n `elem` names]
 
--- | The method a check says a port lacks: @Cannot access attribute "M" for class "Q"@ in its
--- words WHY, Q one of PORTS (the classes the unit takes): (Q, M).
-missingMethod :: [Text] -> Text -> Maybe (Text, Text)
-missingMethod ports why = listToMaybe [(q, m) | (_, r) <- T.breakOnAll "Cannot access attribute \"" why, Just (m, q) <- [names (T.drop (T.length "Cannot access attribute \"") r)], q `elem` ports]
+-- | The member a check says a port lacks, by LANG's `[check] missing_member`, in its words
+-- WHY, its type one of PORTS (the types the unit takes): (the type, the member).
+missingMemberIn :: Language -> [Text] -> Text -> Maybe (Text, Text)
+missingMemberIn lang ports why = do
+  mm <- langCheck lang >>= checkMissingMember
+  listToMaybe [(q, m) | g <- why =~ mmPattern mm :: [[Text]], Just m <- [at (mmMember mm) g], Just q <- [at (mmType mm) g], not (T.null m), q `elem` ports]
   where
-    names r = do
-      let (m, r1) = T.breakOn "\"" r
-      r2 <- T.stripPrefix "\" for class \"" r1
-      let (q, r3) = T.breakOn "\"" r2
-      if T.null m || T.null q || T.null r3 then Nothing else Just (m, q)
+    at i g = listToMaybe (drop i g)
 
 -- | The signature of the method M a BODY calls on a port (@x = self.p.M(args)@, or the call
 -- alone), in LANG's words (`[types]`), as the port-method snippet takes it: its parameters

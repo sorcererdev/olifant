@@ -77,9 +77,9 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     handIn "test_d" "command" "bookings" "repo" "def test_d():\n    repo = Mock()\n    c = command(bookings=repo)\n" `shouldBe` Nothing
   it "(i) a port missing a method: the check's words, on a class the unit takes" $ do
     let why = "src/bistro/booking/commands/cancel_booking.py: Type of \"booking\" is unknown; src/bistro/booking/commands/cancel_booking.py: Cannot access attribute \"find_by_id\" for class \"BookingRepository\"\n  Attribute \"find_by_id\" is unknown"
-    missingMethod ["BookingRepository"] why `shouldBe` Just ("BookingRepository", "find_by_id")
-    missingMethod ["IdGenerator"] why `shouldBe` Nothing
-    missingMethod ["BookingRepository"] "src/x.py: \"y\" is not defined" `shouldBe` Nothing
+    missingMemberIn (shippedLanguageNow "python") ["BookingRepository"] why `shouldBe` Just ("BookingRepository", "find_by_id")
+    missingMemberIn (shippedLanguageNow "python") ["IdGenerator"] why `shouldBe` Nothing
+    missingMemberIn (shippedLanguageNow "python") ["BookingRepository"] "src/x.py: \"y\" is not defined" `shouldBe` Nothing
   it "(j) the missing method's signature: names from the test's fake, types from the call, the result from its use" $ do
     let port = Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ...", "def booking_at(self, table_id: str, slot: Slot) -> Booking | None: ...", "def bookings_on(self, day: date) -> list[Booking]: ..."]
         body = "booking = self.bookings.find_by_id(input.id)\nif booking is None:\n    return NotFound(\"Booking not found\")\nreturn Ok(None)"

@@ -622,6 +622,23 @@ doctor` gives it as the fix when the tool is not on the PATH. Every shipped pres
 without it doctor says "install <program> and make sure it is on the PATH your editor starts
 with".
 
+**Message keys.** A check's and a runner's words are read by expressions, not by code per tool,
+so conjure reads them the same way in every language. Each is optional; without it that reading
+is off.
+
+| key | | shipped |
+|---|---|---|
+| `[check] undefined` | expressions for a name the check says is not defined; the name is the last group (an entry `{ pattern, name = N }` picks group N) | pyright's `'"([^"]+)" is not defined'`, cabal-repl's `"Variable not in scope: ([[:alnum:]_']+)"`, cargo's `` 'cannot find (value|function) `([^`]+)`' `` |
+| `[check] missing_member` | `{ pattern, member = N, type = M }`: the check's words that a type lacks a member. Conjure offers the member to a port the unit takes | pyright's `'Cannot access attribute "([^"]+)" for class "([^"]+)"'`, member 1, type 2 |
+| `[test] undefined` | as `[check] undefined`, over a failure's message; an entry's `label` is how a summary names them (`red: NameError date`; default `undefined:`) | pytest's `"name '([^']+)' is not defined"`, label `NameError` |
+| `[test.failure] line_after` | an expression over `{= name =}` (the test's short name) for the output line after which the failing source line comes; the pause panel shows it | pytest's `': in {= name =}$'` |
+| `[test.failure] head_strip` | an expression taken off the front of a message's first line | pytest's `'^AssertionError: '` |
+| `[test.failure] got_expected` | `[{ pattern, got = N, expected = M }]` over a message's lines (the first less `head_strip`): what came back and what was expected | pytest's `assert A == B`, and `+  where False = isinstance(A, T)` |
+
+Undefined names are taken from both tables, in the order the text gives them. Without
+`line_after` the panel shows the test's last assertion line (by `[test] assertion`). Doctor's
+"messages" row lists the keys a language has.
+
 `[test]` also says where a module's tests live: `tests_for`, a template of the module's folder
 (`{= dir =}`) and name without its extension (`{= stem =}`). The editor's commands find a module's test file
 by it, and a test file's module by it backwards.
