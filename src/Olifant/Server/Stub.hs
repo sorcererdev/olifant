@@ -8,6 +8,7 @@ module Olifant.Server.Stub
   , stubWith
   , testNameIn
   , testWordsIn
+  , namePrefixesIn
   , unitWordsOf
   ) where
 
@@ -153,6 +154,16 @@ testWordsIn lang name = T.replace "_" " " (fromMaybe core (T.stripSuffix after c
       (b, a) | not (T.null a) -> (b, T.drop (T.length marker) a)
       _ -> ("", "")
     core = fromMaybe name (T.stripPrefix before name)
+
+-- | What a test's name in LANG drops to be short beside the module STEM:
+-- the name its `[test] name` template gives the stem's words (pytest's
+-- @test_cancel_booking@), then the template's text before the words
+-- (@test_@); 'Olifant.Server.ConjureNext.shortName' takes them.
+namePrefixesIn :: Language -> Text -> [Text]
+namePrefixesIn lang stem = [testNameIn lang (unitWordsOf stem), before]
+  where
+    marker = "olifantwords"
+    before = fst (T.breakOn marker (testNameIn lang [marker]))
 
 -- | A unit's name as words: the underscores at its ends dropped, split at
 -- each underscore and before a capital after a lowercase letter or a digit,

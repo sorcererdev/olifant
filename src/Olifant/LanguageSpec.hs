@@ -155,13 +155,13 @@ spec = do
       r2 <- parsePytest (ExitFailure 1) <$> TIO.readFile "src/Olifant/Language/testdata/pytest/cancel-booking-round2.txt"
       let Just f = lookup (cb <> "::test_cancel_booking_succeeds") (trFailed r2)
       fMessage f `shouldBe` "AssertionError: assert NotFound(reason='Booking not found') == Ok(value=None)\n+  where Ok(value=None) = Ok(None)"
-      failureLine f `shouldBe` "assert NotFound(reason='Booking not found') == Ok(value=None)"
+      failureLineIn (shippedLanguageNow "python") f `shouldBe` "assert NotFound(reason='Booking not found') == Ok(value=None)"
       assertionLineIn (shippedLanguageNow "python") "test_cancel_booking_succeeds" f `shouldBe` Just "assert result == Ok(None)"
       gotExpectedIn (shippedLanguageNow "python") f `shouldBe` Just ("NotFound(reason='Booking not found')", "Ok(value=None)")
     it "(g) assert isinstance: the where line is the one-line form; got is the value, expected the type" $ do
       r1 <- parsePytest (ExitFailure 1) <$> TIO.readFile "src/Olifant/Language/testdata/pytest/cancel-booking-round1.txt"
       let Just f = lookup (cb <> "::test_cancel_booking_not_found") (trFailed r1)
-      failureLine f `shouldBe` "False = isinstance(Ok(value=None), NotFound)"
+      failureLineIn (shippedLanguageNow "python") f `shouldBe` "False = isinstance(Ok(value=None), NotFound)"
       assertionLineIn (shippedLanguageNow "python") "test_cancel_booking_not_found" f `shouldBe` Just "assert isinstance(result, NotFound)"
       gotExpectedIn (shippedLanguageNow "python") f `shouldBe` Just ("Ok(value=None)", "NotFound")
       fLine f `shouldBe` Just 26
@@ -180,14 +180,14 @@ spec = do
             , "1 failed in 0.01s" ]
           Just f = lookup "src/x__test.py::test_x" (trFailed (parsePytest (ExitFailure 1) out))
       fMessage f `shouldBe` "TypeError: bad"
-      failureLine f `shouldBe` "TypeError: bad"
+      failureLineIn (shippedLanguageNow "python") f `shouldBe` "TypeError: bad"
       assertionLineIn (shippedLanguageNow "python") "test_x" f `shouldBe` Just "result = f()"
       gotExpectedIn (shippedLanguageNow "python") f `shouldBe` Nothing
     it "(i) no section, a -rA tail: the tail is the message" $ do
       let out = T.unlines ["FAILED pkg/a__test.py::test_y - assert 3 == 4", "1 failed in 0.01s"]
           Just f = lookup "pkg/a__test.py::test_y" (trFailed (parsePytest (ExitFailure 1) out))
       fMessage f `shouldBe` "assert 3 == 4"
-      failureLine f `shouldBe` "assert 3 == 4"
+      failureLineIn (shippedLanguageNow "python") f `shouldBe` "assert 3 == 4"
     it "(j) the scripted runner carries output" $ do
       Right run <- runTests (scriptedRunner (M.fromList [("t.py::test_a", object ["line" .= (2 :: Int), "message" .= ("m" :: Text), "output" .= ("S" :: Text)])])) undefined ["t.py::test_a"] M.empty
       map (fOutput . snd) (trFailed run) `shouldBe` ["S"]
@@ -263,7 +263,7 @@ spec = do
       let rust = rustOver ["command = [\"sh\", \"-c\", 'case \"$1\" in \"rates::\") cat out.txt; exit 101;; *) echo \"bad args: $*\"; exit 2;; esac', \"sh\", \"{= tests =}\"]"]
       Right run <- runTests (processRunner neverCancel 60) rust ["src/rates.rs"] (M.fromList [("src/rates.rs", ""), ("out.txt", out)])
       trPassed run `shouldBe` ["src/rates.rs::tests::adds", "src/rates.rs::tests::it_works"]
-      [(i, fLine f, failureLine f) | (i, f) <- trFailed run] `shouldBe` [("src/rates.rs::tests::fails", Just 16, "assertion `left == right` failed")]
+      [(i, fLine f, failureLineIn (shippedLanguageNow "rust") f) | (i, f) <- trFailed run] `shouldBe` [("src/rates.rs::tests::fails", Just 16, "assertion `left == right` failed")]
     it "cargo-test: a crate root's test (src/lib.rs) has no module before it" $ do
       let rust = rustOver ["command = [\"sh\", \"-c\", 'case \"$1 $2\" in \"--exact tests::it_works\") echo \"test tests::it_works ... ok\";; *) echo \"bad args: $*\"; exit 2;; esac', \"sh\", \"{= tests =}\"]"]
       Right run <- runTests (processRunner neverCancel 60) rust ["src/lib.rs::tests::it_works"] (M.fromList [("src/lib.rs", "")])

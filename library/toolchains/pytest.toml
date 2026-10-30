@@ -32,6 +32,9 @@ gap = 2
 [test.failure]
 line_after = ': in {= name =}$'
 head_strip = '^AssertionError: '
+# a first line that says nothing gives way to the first `+  where` line
+bare = ['^assert False$', '^assert None$', '^AssertionError$']
+explain = '^\+  where (.*)$'
 got_expected = [
   { pattern = '^assert (([^=]|=[^=])*[^= ]) == (.*)$', got = 1, expected = 3 },
   { pattern = '^\+  where False = isinstance\((.*), ([^,]*)\)$', got = 1, expected = 2 },

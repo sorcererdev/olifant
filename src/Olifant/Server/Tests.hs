@@ -27,7 +27,7 @@ import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
-import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), failureLine, languageFor, ownedBy, testsForFile)
+import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), FailureDef, failureLineWith, failureOf, languageFor, ownedBy, testsForFile)
 import Olifant.Language.TestUnits (testAtBy, testLineBy)
 import Olifant.Server.Site (appendStepLine, runOver, tshow)
 import Olifant.Server.State (ServerState (..), projectFor)
@@ -48,6 +48,7 @@ data TestsAnswer = TestsAnswer
   , taRoot :: FilePath
   , taRun :: TestRun
   , taSeconds :: Double
+  , taFailureShape :: Maybe FailureDef  -- ^ the runner's `[test.failure]`: a failure's one line
   }
   deriving (Eq, Show)
 
@@ -100,7 +101,7 @@ testsRun scope path s0 =
             (_, Just tid) -> tid
             _ -> T.intercalate " " ids
       lift (appendStepLine (ssPorts s) (plRoot p) ["test", "person", ran, summary run])
-      pure (TestsAnswer file scope one (plRoot p) run (end - start))
+      pure (TestsAnswer file scope one (plRoot p) run (end - start) (failureOf (plLanguage p)))
 
 -- | A run in a few words, for the step log: `2 passed, 1 failed: test_x`,
 -- or `broken: <its first line>`.
@@ -198,7 +199,7 @@ testsJson a =
     , "passed" .= trPassed (taRun a)
     , "scope" .= (case (taTest a, taScope a) of (Just _, _) -> "test"; (_, ScopeAll) -> "all"; _ -> "file" :: Text)
     , "test" .= taTest a
-    , "failed" .= [object ["id" .= tid, "file" .= normalisePath (taRoot a </> T.unpack (T.takeWhile (/= ':') tid)), "line" .= fLine f, "message" .= failureLine f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
+    , "failed" .= [object ["id" .= tid, "file" .= normalisePath (taRoot a </> T.unpack (T.takeWhile (/= ':') tid)), "line" .= fLine f, "message" .= failureLineWith (taFailureShape a) f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
     , "broken" .= trBroken (taRun a)
     , "seconds" .= taSeconds a
     ]

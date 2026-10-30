@@ -43,7 +43,7 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TypesDef (..), TestRun (..), failureLine, failureOf, languageFor, runCheckIn, runTestsIn, testsForFile)
+import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn, testsForFile)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
@@ -56,8 +56,8 @@ import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
 import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..))
 import Olifant.Language.TestUnits (testCaseAtIn, testCaseLineIn, testSourceIn, testSourcesIn)
-import Olifant.Server.Stub (testWordsIn)
-import Olifant.Server.Unit (isStubIn, Unit (..), ownerHeader, unitAt)
+import Olifant.Server.Stub (namePrefixesIn, testWordsIn)
+import Olifant.Server.Unit (isStubIn, Unit (..), ownerHeader, testUnitAt, unitAt)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
 import System.FilePath (joinPath, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
@@ -128,7 +128,7 @@ data Counters = Counters
   , cHeader :: Text
   , cHistory :: [RoundRecord]
   , cBefore :: TestRun
-  , cStem :: Text
+  , cPrefixes :: [Text]
   , cUnit :: Text
   , cCause :: Maybe Cause
   , cFlagged :: [(Text, Fake)]
@@ -213,7 +213,7 @@ resumeConjure progress path re s = do
     -- every file a proposal writes joins the working writes
     written pd p = foldr (\(f, _, a) -> M.insert f a) (M.insert (prFile p) (prAfter p) (pdWrites pd)) (prOthers p)
     -- the test's last failure (its line), in the rounds or the before-run
-    failedAs pd tid = listToMaybe [failureLine f | run <- reverse [r | Just r <- map rrRun (pdHistory pd)] ++ [pdBefore pd], Just f <- [lookup tid (trFailed run)]]
+    failedAs pd tid = listToMaybe [failureLineWith (paFailureShape (pdShown pd)) f | run <- reverse [r | Just r <- map rrRun (pdHistory pd)] ++ [pdBefore pd], Just f <- [lookup tid (trFailed run)]]
     -- accept: the proposed test file joins the working writes (a step); reject keeps
     -- the proposal (to answer the pause before it); any other answer drops it
     answered pd = case (reChoice re, pdProposal pd) of
@@ -372,7 +372,12 @@ conjureWith progress path line selected resuming s0 = do
           started = fst <$> M.lookup file (ssDocs s)
           stepLine = appendStepLine (ssPorts s) (siteRoot site)
       text <- if onTest then maybe (throwE ("cannot read " <> T.pack rel)) pure (siteTestText site) else pure (siteModuleText site)
-      found <- lift (unitAt (pSyntax (ssPorts s)) lang text line)
+      -- on a test (in a test file, or a module that holds its own tests: Rust's), its
+      -- `[test] unit` (hspec's `it` is no `[unit]`; Rust's brace is not in its body)
+      found0 <- lift (unitAt (pSyntax (ssPorts s)) lang text line)
+      let testy = (onTest || siteTestRel site == siteModuleRel site) && isNothing selected && isJust (testUnitAt lang text line)
+          found = if testy then maybe found0 Right (testUnitAt lang text line) else found0
+          unitIn working i = if testy then pure (maybe (Left ("no test at line " <> tshow i)) Right (testUnitAt lang working i)) else unitAt (pSyntax (ssPorts s)) lang working i
       (unit, span') <- case (selected, found) of
         (Just sp, _) -> pure (either (const "selection") unitName found, sp)
         (Nothing, Left why) -> throwE (why <> ": put the cursor in one to conjure it")
@@ -413,7 +418,7 @@ conjureWith progress path line selected resuming s0 = do
               let defLine = fromMaybe "" (listToMaybe (drop (unitDef u - 1) (T.splitOn "\n" text)))
                   at = listToMaybe [i | (i, l) <- zip [1 ..] (T.splitOn "\n" working), i >= unitDef u, l == defLine]
               i <- maybe (throwE (unit <> " is no longer in " <> T.pack rel)) pure at
-              u' <- lift (unitAt (pSyntax (ssPorts s)) lang working i) >>= either throwE pure
+              u' <- lift (unitIn working i) >>= either throwE pure
               unless (unitName u' == unitName u) (throwE (unit <> " is no longer in " <> T.pack rel))
               maybe (throwE (unit <> " is on one line")) pure (unitBody u')
             _ -> pure span'
@@ -442,7 +447,7 @@ conjureWith progress path line selected resuming s0 = do
         -- stop: nothing lands, the working files (a wire's) are dropped
         Just (re, pd) | reChoice re == ResumeStop, not (reLand re) -> do
           lift (stepLine ["conjure", "person", T.pack rel <> "::" <> unit, "stopped \183 nothing landed"])
-          let none = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) (TestRun [] [] Nothing) 0
+          let none = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) (TestRun [] [] Nothing) 0 (failureOf lang)
           pure (Landed (ConjureAnswer file unit [] "nothing landed" False none (seedRound (pdSeed pd)) (pdRungs pd) True))
         -- reject: the pause the proposal came from, under the same token
         Just (re, pd) | reChoice re == ResumeReject, Just prev <- pdPrevious pd -> do
@@ -459,8 +464,8 @@ conjureWith progress path line selected resuming s0 = do
               now <- lift getMonotonicTime
               let plain = plainPause (pdShown pd)
                   testAbs = absOf testRel
-                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (langImports lang) (shortName (paStem plain) tid) before after) "test" []
-                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] [] (langTypes lang >>= tyMethod)))
+                  proposal = Proposal testRel tid before after (unifiedDiff testRel before after) Nothing (proposalStep (langImports lang) (shortName (paPrefixes plain) tid) before after) "test" []
+                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paPrefixes plain) [] [] (langTypes lang >>= tyMethod)))
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift . keep s (reToken re) $
                 pd
@@ -490,7 +495,7 @@ conjureWith progress path line selected resuming s0 = do
                   others = [x | x@(f, _, _) <- files, f /= protoRel]
                   diff = T.concat [unifiedDiff f b a | (f, b, a) <- files]
                   proposal = Proposal protoRel (q <> "." <> m) pb pa diff Nothing ("port method: " <> q <> "." <> m <> "(" <> T.drop 2 ps <> ") -> " <> r) "port" others
-                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] [] (langTypes lang >>= tyMethod)))
+                  rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paPrefixes plain) [] [] (langTypes lang >>= tyMethod)))
                   -- the rows say what lands: the method, not a test
                   said row = case orOffer row of
                     OfferAccept -> row {orDetail = "the method lands with the conjure; round " <> tshow (paRound plain + 1) <> " runs against it"}
@@ -540,7 +545,7 @@ conjureWith progress path line selected resuming s0 = do
                 ws' = prWorkspace (wkProject wk)
             imported <- lift (importedContext ws' lang (testRel : map fst context') (working : map snd context'))
             rounds' <- lift (newIORef 0)
-            fill [] (worded (fixWords (shortName (paStem plain) tid)) progress) rounds' s' (wkProject wk) testRel working template verify (context' ++ imported) filler (const Nothing)
+            fill [] (worded (fixWords (shortName (paPrefixes plain) tid)) progress) rounds' s' (wkProject wk) testRel working template verify (context' ++ imported) filler (const Nothing)
           stop <- lift (cancelled (ssCancel s))
           when stop (throwE "cancelled")
           now <- lift getMonotonicTime
@@ -555,10 +560,10 @@ conjureWith progress path line selected resuming s0 = do
                   , pdBases = M.insertWith (\_ old -> old) testAbs (Just testText0) (pdBases pd)
                   , pdVersions = M.insertWith (\_ old -> old) testAbs (fst <$> M.lookup testAbs (ssDocs s)) (pdVersions pd)
                   }
-              rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paStem plain) [] [] (langTypes lang >>= tyMethod)))
+              rows = map (offerRow (OfferFacts 0 "" Nothing (paRound plain) "" Nothing False (paPrefixes plain) [] [] (langTypes lang >>= tyMethod)))
           case attempt of
             Right (Written Nothing after _) | after /= testText0 -> do
-              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (langImports lang) (shortName (paStem plain) tid) testText0 after) "test" []
+              let proposal = Proposal testRel tid testText0 after (unifiedDiff testRel testText0 after) Nothing (proposalStep (langImports lang) (shortName (paPrefixes plain) tid) testText0 after) "test" []
                   shown = plain {paOffers = rows [OfferAccept, OfferReject], paProposal = Just proposal}
               lift (keep s (reToken re) (proposing proposal plain) {pdShown = shown})
               lift (stepLine ["conjure-proposal", tid])
@@ -577,11 +582,11 @@ conjureWith progress path line selected resuming s0 = do
               let reason = case [(m, l) | ((p, m), l) <- added, p == testRel] of
                     (m, l) : _ -> addsReason m l
                     [] -> T.dropWhileEnd (== '.') (firstLine why)
-                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason) (proposalStep (langImports lang) (shortName (paStem plain) tid) testText0 l) "test" []) <$> written'
+                  refusal = (\l -> Proposal testRel tid testText0 l (unifiedDiff testRel testText0 l) (Just reason) (proposalStep (langImports lang) (shortName (paPrefixes plain) tid) testText0 l) "test" []) <$> written'
                   again r = case r of
                     OfferRow (OfferReconjure t) _ _ | t == tid -> rows ([OfferRefused | isJust refusal] ++ [OfferReconjureAgain t])
                     _ -> [r]
-                  shown = plain {paOutcome = Just (refusedSentence (shortName (paStem plain) tid) reason), paProposal = refusal, paOffers = concatMap again (paOffers plain), paHeld = [r | r@(OfferRow (OfferReconjure t) _ _) <- paOffers plain, t == tid]}
+                  shown = plain {paOutcome = Just (refusedSentence (shortName (paPrefixes plain) tid) reason), paProposal = refusal, paOffers = concatMap again (paOffers plain), paHeld = [r | r@(OfferRow (OfferReconjure t) _ _) <- paOffers plain, t == tid]}
               lift . keep s (reToken re) $ case refusal of
                 Just p -> (proposing p shown) {pdShown = shown}
                 Nothing -> pd {pdShown = shown, pdAt = now}
@@ -611,7 +616,7 @@ conjureWith progress path line selected resuming s0 = do
                     , cHeader = ownerHeader lang (wkText first) (fst (wkSpan first))
                     , cHistory = []
                     , cBefore = wkBefore first
-                    , cStem = T.pack (takeBaseName (siteModuleRel site))
+                    , cPrefixes = namePrefixesIn lang (T.pack (takeBaseName (siteModuleRel site)))
                     , cUnit = unit
                     , cCause = Nothing
                     , cFlagged = []
@@ -872,8 +877,8 @@ conjureWith progress path line selected resuming s0 = do
                   cause = fromMaybe CauseAsk (cCause c)
                   lastDecided = rrDecided =<< listToMaybe (reverse (cHistory c))
                   suspects = suspectFirst (cFlagged c) (involved (cBefore c) (cHistory c))
-                  again = [(t, f) | t <- suspects, Just (Just f) <- [fixAgain (cSteps c) (cHistory c) t]]
-                  rows = map (offerRow (OfferFacts grant (rsRung rs) next (rsRound rs) owner (listToMaybe suspects) (not (null (cWired c))) (cStem c) (fixMoves facts) again (langTypes lang >>= tyMethod))) (cOffers c)
+                  again = [(t, f) | t <- suspects, Just (Just f) <- [fixAgain (failureOf lang) (cSteps c) (cHistory c) t]]
+                  rows = map (offerRow (OfferFacts grant (rsRung rs) next (rsRound rs) owner (listToMaybe suspects) (not (null (cWired c))) (cPrefixes c) (fixMoves facts) again (langTypes lang >>= tyMethod))) (cOffers c)
                   -- what each written file is against what the conjure read (the unit's file: the buffer)
                   baseOf r = if r == rel then text else fromMaybe "" (M.findWithDefault Nothing (absOf r) (cBases c))
                   wiredFiles = [(r, unifiedDiff r (baseOf r) new) | (r, new) <- M.toList (cWrites c), baseOf r /= new]
@@ -908,7 +913,7 @@ conjureWith progress path line selected resuming s0 = do
                       , paWired = wired
                       , paOffers = rows
                       , paExpires = round pausedLifetime
-                      , paStem = cStem c
+                      , paPrefixes = cPrefixes c
                       , paProposal = Nothing
                       , paOutcome = Nothing
                       , paRoundFiles = roundFiles
@@ -943,12 +948,12 @@ conjureWith progress path line selected resuming s0 = do
                     _ -> Nothing
                   -- the landing in a line (design §8): what came of it, then the wire and the tests rewritten
                   params = [maybe w fst (paramPort w) | w <- cWired c]
-                  extras = [T.intercalate ", " params <> " wired" | not (null params)] ++ [T.intercalate ", " (map (shortName (cStem c)) (cRewritten c)) <> " rewritten" | not (null (cRewritten c)), not wireAlone]
+                  extras = [T.intercalate ", " params <> " wired" | not (null params)] ++ [T.intercalate ", " (map (shortName (cPrefixes c)) (cRewritten c)) <> " rewritten" | not (null (cRewritten c)), not wireAlone]
                   withExtras t = T.intercalate " \183 " (t : extras)
                   keptWhat k = if k == 0 then "the wire alone" else "round " <> tshow k
                   keptLine k = withExtras ("kept " <> keptWhat k <> " \183 " <> shortVerdict)
                   shortVerdict = case (trBroken after, trFailed after) of
-                    (Nothing, fs@(_ : _)) | null (concatMap (undefinedNamesIn lang . fMessage . snd) fs ++ extra) -> "red: " <> T.intercalate ", " (map (shortName (cStem c) . fst) fs)
+                    (Nothing, fs@(_ : _)) | null (concatMap (undefinedNamesIn lang . fMessage . snd) fs ++ extra) -> "red: " <> T.intercalate ", " (map (shortName (cPrefixes c) . fst) fs)
                     _ -> functionSummary lang extra after
                   headline
                     | onTest = testSummary lang extra tid (wkBefore wk) after written
@@ -967,7 +972,7 @@ conjureWith progress path line selected resuming s0 = do
                     , let version = M.findWithDefault Nothing a (cVersions c)
                     , M.findWithDefault Nothing a (cBases c) /= Just new
                     ]
-                  tests = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) after (end - start)
+                  tests = TestsAnswer (siteTestFile site) ScopeFile Nothing (siteRoot site) after (end - start) (failureOf lang)
                   isSteered = isJust steered || isJust resuming
                   rungs = if isSteered then cRungs c else [mfName filler]
                   by
@@ -1130,7 +1135,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
     False -> do
       c0 <- readIORef counters
       now <- getMonotonicTime
-      let record0 = (roundRecord rs) {rrSteps = length (cSteps c0)}
+      let record0 = (roundRecord (failureOf lang) rs) {rrSteps = length (cSteps c0)}
           history0 = cHistory c0 ++ [record0]
           runs = cBefore c0 : [r | Just r <- map rrRun history0]
           flags = nubOn fst (concatMap (scanFlags lang (cTestText c0)) runs)
@@ -1140,7 +1145,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
         [] -> pure (Nothing, [])
       c <- readIORef counters
       let wireable = wires && null (cWired c) && isNothing (cExplanation c)
-          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable (cHistory c) (cBefore c) (cStem c) (testSourcesIn lang (cTestText c))) (cLast c) rs
+          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable (cHistory c) (cBefore c) (cPrefixes c) (testSourcesIn lang (cTestText c)) (failureOf lang)) (cLast c) rs
           used = cRounds c + 1
           seconds = cSecondsBefore c + (now - begun)
           above = drop (cRung c + 1) (sdLadder sd)
@@ -1171,7 +1176,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
         Left (p, q) -> Pause "wire" <$ writeIORef counters c' {cWire = Just (p, q)}
         Right (NextClimb _) | (r, f) : _ <- above -> Climb (record f) <$ writeIORef counters c' {cRung = cRung c + 1, cRungs = cRungs c ++ [rungName r]}
         Right (NextPause cause) -> do
-          let suspects = [t | t <- suspectFirst flags (involved (cBefore c) history), isJust (fixAgain (cSteps c) history t)]
+          let suspects = [t | t <- suspectFirst flags (involved (cBefore c) history), isJust (fixAgain (failureOf lang) (cSteps c) history t)]
               sentences = diagnosis facts cause
           Pause (fromMaybe "" (listToMaybe sentences)) <$ writeIORef counters c' {cOffers = offersAt standing cause suspects candidates (rsRound rs), cCause = Just cause, cDiagnosis = sentences}
         _ -> Again <$ writeIORef counters c'
@@ -1224,7 +1229,7 @@ diagnosisFacts lang c rung next seconds =
   DiagnosisFacts
     { dfRung = rung
     , dfNext = next
-    , dfStem = cStem c
+    , dfPrefixes = cPrefixes c
     , dfMethod = cUnit c
     , dfClass = classOf lang (cHeader c)
     , dfHeader = cHeader c
@@ -1309,7 +1314,7 @@ functionConjure lang text (l1, l2) unit testRel testText before = do
       instruction = oneLine $ case (trBroken before, failed) of
         (Just why, _) -> "the tests could not run (" <> firstLine why <> "); write the body of " <> unit <> " its tests describe"
         (_, []) -> "the tests pass; write the body of " <> unit <> " they describe, keeping them passing"
-        _ -> "make the failing tests pass (" <> T.intercalate ", " [short t <> ": " <> failureLine f | (t, f) <- failed] <> ") and keep the file's other tests passing; the tests and their messages are in the context; write the least code that does it"
+        _ -> "make the failing tests pass (" <> T.intercalate ", " [short t <> ": " <> failureLineIn lang f | (t, f) <- failed] <> ") and keep the file's other tests passing; the tests and their messages are in the context; write the least code that does it"
       failing = T.intercalate "\n\n" [t <> "\n" <> fMessage f <> "\n" <> T.unlines (sourceOf (short t)) | (t, f) <- failed]
       sourceOf n = maybe [] T.lines (testSourceIn lang (snd (T.breakOnEnd "::" (fst (T.breakOn "[" n)))) testText)
       context =
@@ -1357,8 +1362,8 @@ testSummary lang extra tid before after written = base <> (if null missing then 
     own = case (trBroken after, [f | (t, f) <- trFailed after, isOwn t]) of
       (Just why, _) -> "red: could not run \183 " <> firstLine why
       (_, f : _)
-        | Just l <- fLine f, Just (a, z) <- assertionSpan lang (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> failureLine f
-        | otherwise -> "red: error before the assertion \183 " <> failureLine f
+        | Just l <- fLine f, Just (a, z) <- assertionSpan lang (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> failureLineIn lang f
+        | otherwise -> "red: error before the assertion \183 " <> failureLineIn lang f
       _
         | any isOwn (trPassed after) -> "green: already passes"
         | otherwise -> "red: " <> short tid <> " did not run"
@@ -1412,7 +1417,7 @@ functionSummary lang extra run = case (trBroken run, trFailed run) of
       found = concatMap (undefinedIn lang . fMessage . snd) failed
       label = fromMaybe "undefined:" (listToMaybe [l | (_, Just l) <- found])
   (_, []) -> "green"
-  (_, (t, f) : _) -> "red: " <> snd (T.breakOnEnd "::" t) <> " \183 " <> failureLine f
+  (_, (t, f) : _) -> "red: " <> snd (T.breakOnEnd "::" t) <> " \183 " <> failureLineIn lang f
 
 -- | TEMPLATE planned over REL (TEXT) with VERIFY and CONTEXT: the file as
 -- the fill writes it, or, when no attempt passed its verify, as the last

@@ -12,6 +12,7 @@ module Olifant.Language.TestUnits
   , testLineBy
   , anchorName
   , testCaseAtIn
+  , testCaseUnitAtIn
   , testCaseLineIn
   , testSourceIn
   , testSourcesIn
@@ -141,7 +142,11 @@ rulesOf lang = maybe ([], Nothing) (\td -> (testUnitRules td, testAbove td)) (la
 -- 'testAtBy' names it: the innermost unit there when no other unit lies
 -- inside it (a group's own lines, a class or a describe, are none).
 testCaseAtIn :: Language -> Text -> Int -> Maybe Text
-testCaseAtIn lang text line = T.intercalate "::" . tuPath <$> (listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- units, let (a, z) = tuLines u, a <= line, line <= throughBlanks z]) >>= leaf)
+testCaseAtIn lang text line = T.intercalate "::" . tuPath <$> testCaseUnitAtIn lang text line
+
+-- | The test case at LINE as its unit (see 'testCaseAtIn').
+testCaseUnitAtIn :: Language -> Text -> Int -> Maybe TestUnit
+testCaseUnitAtIn lang text line = (listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- units, let (a, z) = tuLines u, a <= line, line <= throughBlanks z]) >>= leaf)
   where
     (rules, above) = rulesOf lang
     units = testUnitsIn rules above text

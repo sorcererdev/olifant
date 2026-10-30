@@ -10,7 +10,8 @@ module Olifant.Language.Test
   , scriptedRunner
   , scriptFileRunner
   , parsePytest
-  , failureLine
+  , failureLineIn
+  , failureLineWith
   , headLineIn
   , assertionLineIn
   , gotExpectedIn
@@ -27,17 +28,17 @@ import Control.Exception (SomeException, try)
 import Data.Aeson (Value (..), eitherDecodeStrict)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
-import Data.Char (isAlphaNum)
 import Data.Containers.ListUtils (nubOrd)
 import Data.ByteString qualified as BS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
-import Olifant.Language.Adapter (FailureDef (..), GotExpected (..), Language (..), TestDef (..))
+import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
+import Olifant.Language.Adapter (FailureDef (..), GotExpected (..), Language (..), TestDef (..), regexName)
 import Text.Regex.TDFA (AllTextSubmatches (..), (=~))
 import System.Exit (ExitCode (..))
 import System.FilePath (normalise, takeBaseName, takeDirectory)
@@ -96,10 +97,10 @@ noRunner = Runner (\_ _ _ -> pure (Left "no test runner"))
 -- defines (a top-level `def test…(`) and those the script names in it (a
 -- file it is not given: the file's id alone).
 scriptedRunner :: Applicative m => Map TestId Value -> Runner m
-scriptedRunner script = Runner $ \_ ids files ->
+scriptedRunner script = Runner $ \lang ids files ->
   let under i = [k | k <- M.keys script, (i <> "::") `T.isPrefixOf` k]
       inFile i = case M.lookup (T.unpack i) files of
-        Just text | not ("::" `T.isInfixOf` i) -> nubOrd ([i <> "::" <> n | Just n <- map defined (T.lines text)] ++ under i)
+        Just text | not ("::" `T.isInfixOf` i) -> nubOrd ([i <> "::" <> n | n <- defined lang text] ++ under i)
         _ -> []
       tests i = case inFile i of
         [] -> [i]
@@ -108,10 +109,12 @@ scriptedRunner script = Runner $ \_ ids files ->
       failed = concatMap failing ids
    in pure (Right (TestRun [t | i <- ids, t <- tests i, t `notElem` map fst failed, null (failing t) || t /= i] failed Nothing))
   where
-    defined l = do
-      rest <- T.stripPrefix "def " l
-      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
-      if "test" `T.isPrefixOf` n && "(" `T.isPrefixOf` T.drop (T.length n) rest then Just n else Nothing
+    -- the file's outermost tests by the language's `[test] unit` rules (a
+    -- group's tests are not listed: the script names them)
+    defined lang text = case langTest lang of
+      Just td -> [n | TestUnit [n] _ <- testUnitsIn (testUnitRules td) (testAbove td) text, not (isGroup n text td)]
+      Nothing -> []
+    isGroup n text td = any (\u -> take 1 (tuPath u) == [n] && length (tuPath u) > 1) (testUnitsIn (testUnitRules td) (testAbove td) text)
     failureIn = \case
       Object o -> Just (Failure (KM.lookup "line" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing) (case KM.lookup "message" o of Just (String m) -> m; _ -> "failed") (case KM.lookup "output" o of Just (String x) -> x; _ -> ""))
       _ -> Nothing
@@ -172,18 +175,20 @@ parsePytest code out = TestRun passed failed broken
       (f, rest) | f == file, Right (n, _) <- TR.decimal (T.drop 1 rest) -> Just n
       _ -> Nothing
 
--- | A failure in one line: the first line of its message less a leading
--- @AssertionError: @; when that is bare (@assert False@, @assert None@,
--- @AssertionError@, nothing), the first @+  where@ line, less that.
-failureLine :: Failure -> Text
-failureLine f
-  | bare first, w : _ <- [T.strip r | l <- T.lines (fMessage f), Just r <- [T.stripPrefix "+  where " (T.strip l)]] = w
+-- | A failure in one line, by LANG's `[test.failure]`: its message's first
+-- line ('headLineIn'); when that says nothing (empty, or `bare`), the first
+-- line `explain` matches, by its last group.
+failureLineIn :: Language -> Failure -> Text
+failureLineIn = failureLineWith . failureOf
+
+-- | 'failureLineIn' by the `[test.failure]` table alone.
+failureLineWith :: Maybe FailureDef -> Failure -> Text
+failureLineWith fd f
+  | bare, w : _ <- [T.strip x | Just re <- [fd >>= fdExplain], l <- T.lines (fMessage f), Just x <- [regexName re (T.strip l)]] = w
   | otherwise = first
   where
-    first = case T.lines (fMessage f) of
-      l : _ -> let x = T.strip l in fromMaybe x (T.stripPrefix "AssertionError: " x)
-      [] -> ""
-    bare l = l `elem` ["assert False", "assert None", "AssertionError", ""]
+    first = headLineWith fd f
+    bare = T.null first || any (first =~) (maybe [] fdBare fd)
 
 -- | A failure's message's first line, stripped, less LANG's `[test.failure]
 -- head_strip` match at its front.

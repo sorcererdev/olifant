@@ -4,6 +4,7 @@
 module Olifant.Server.Unit
   ( Unit (..)
   , unitAt
+  , testUnitAt
   , ownerHeader
   , isStubIn
   , Named (..)
@@ -18,7 +19,7 @@ import Control.Applicative ((<|>))
 import Data.Aeson (object, (.=))
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
 import Data.List (sortOn)
 import Data.Text.Encoding (encodeUtf8)
@@ -28,7 +29,8 @@ import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), describeSyntaxFailure, regexName)
+import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), TestDef (..), describeSyntaxFailure, regexName)
+import Olifant.Language.TestUnits (TestUnit (..), testCaseUnitAtIn)
 import Olifant.Server.Site (tshow)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
@@ -62,9 +64,38 @@ unitAt syntax lang text line
     pick spans = listToMaybe (sortOn (\(a, z) -> (Down a, z)) [sp | sp@(a, z) <- spans, a <= line, line <= z]) >>= unitOf
     unitOf (a, z) = do
       (d, n) <- listToMaybe [(i, n) | i <- [a .. z], Just n <- [unitNameIn lang (lineAt i)]]
-      let opener = listToMaybe [i | i <- [d .. z], opens (fst (T.breakOn (" " <> langComment lang) (lineAt i)))]
-          body = opener >>= \c -> if c + 1 <= z then Just (c + 1, z) else Nothing
-      pure (Unit n d (a, z) body)
+      pure (Unit n d (a, z) (bodyOf lang ls d z))
+
+-- | The test case at LINE (1-based) of a test file in LANG as a unit (by
+-- `[test] unit`: hspec's `it`, which no `[unit]` kind is): named by its
+-- own name, its def its first line below its `above` lines; its body the
+-- block's lines indented deeper than the def (Rust's closing brace is not
+-- in it).
+testUnitAt :: Language -> Text -> Int -> Maybe Unit
+testUnitAt lang text line = do
+  u <- testCaseUnitAtIn lang text line
+  n <- listToMaybe (reverse (tuPath u))
+  let (a, z) = tuLines u
+      isAbove l = maybe False (\rx -> matchTest rx (T.unpack l)) (langTest lang >>= testAbove >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex)
+      d = fromMaybe a (listToMaybe [i | i <- [a .. z], not (isAbove (lineAt i))])
+      -- the block: through its last line deeper than the def (a closing brace is not in it)
+      deeper i = not (T.null (T.strip (lineAt i))) && indent (lineAt i) > indent (lineAt d)
+      body = bodyOf lang ls d z >>= \(c, _) -> case [i | i <- [c .. z], deeper i] of
+        [] -> Nothing
+        is -> Just (c, last is)
+  pure (Unit n d (a, z) body)
+  where
+    indent = T.length . T.takeWhile isSpace
+    ls = T.splitOn "\n" text
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+
+-- | A unit's body in lines LS: from the line after the first from D (its
+-- def) that opens a block (`opens_block`, its comment cut) through Z.
+bodyOf :: Language -> [Text] -> Int -> Int -> Maybe (Int, Int)
+bodyOf lang ls d z = opener >>= \c -> if c + 1 <= z then Just (c + 1, z) else Nothing
+  where
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+    opener = listToMaybe [i | i <- [d .. z], opens (fst (T.breakOn (" " <> langComment lang) (lineAt i)))]
     opens = case langOpensBlock lang >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex of
       Just rx -> matchTest rx . T.unpack . T.stripEnd
       Nothing -> const True

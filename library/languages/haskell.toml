@@ -56,6 +56,12 @@ assertion = ['`should[A-Z][A-Za-z]*`', '(^|[^[:alnum:]_])expectationFailure([^[:
 placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'
 wrap = "olifantHole = {= fill =}"
 
+# A body of statements (a test's `do`, conjure's fill): the placeholder
+# fits any type; the fill must parse as a `do` block.
+[holes.block]
+placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'
+wrap = "olifantHole = do\n{= fill|indent =}"
+
 # Tab stops in snippets (spec §4.9): text inside a string.
 [holes.text]
 placeholder = "{= hole =}"

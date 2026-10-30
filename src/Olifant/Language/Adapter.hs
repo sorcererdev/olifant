@@ -382,8 +382,11 @@ data MissingMember = MissingMember {mmPattern :: Text, mmMember :: Int, mmType :
 -- failing source line comes; 'fdHeadStrip' (`head_strip`), an expression
 -- taken off the front of a message's first line; 'fdGotExpected'
 -- (`got_expected`), expressions over a message's lines (the first less
--- `head_strip`) whose groups are what came back and what was expected.
-data FailureDef = FailureDef {fdLineAfter :: Maybe Text, fdHeadStrip :: Maybe Text, fdGotExpected :: [GotExpected]}
+-- `head_strip`) whose groups are what came back and what was expected;
+-- 'fdBare' (`bare`), expressions for a first line that says nothing (an
+-- empty one says nothing too); 'fdExplain' (`explain`), an expression for
+-- a line explaining it, its last group the one-line form in its place.
+data FailureDef = FailureDef {fdLineAfter :: Maybe Text, fdHeadStrip :: Maybe Text, fdGotExpected :: [GotExpected], fdBare :: [Text], fdExplain :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | One `got_expected` entry: an expression and its two groups.
@@ -660,11 +663,13 @@ languageFrom presets name grammarDir top = do
       re <- required "pattern" (text >=> validRegex key) t
       MissingMember re <$> required "member" (int >=> groupOf key re) t <*> required "type" (int >=> groupOf key re) t
     failureFrom t = do
-      onlyKeys ["line_after", "head_strip", "got_expected"] t
+      onlyKeys ["line_after", "head_strip", "got_expected", "bare", "explain"] t
       FailureDef
         <$> optional "line_after" (text >=> templateOver "[test.failure] line_after" ["name"] >=> \x -> validRegex "[test.failure] line_after" (T.replace "{= name =}" "x" x) >> Right x) t
         <*> optional "head_strip" (text >=> validRegex "[test.failure] head_strip") t
         <*> (fromMaybe [] <$> optional "got_expected" (list (table >=> gotExpectedFrom)) t)
+        <*> (fromMaybe [] <$> optional "bare" (list (text >=> validRegex "[test.failure] bare")) t)
+        <*> optional "explain" (text >=> validRegex "[test.failure] explain") t
     gotExpectedFrom t = do
       let key = "[test.failure] got_expected"
       onlyKeys ["pattern", "got", "expected"] t

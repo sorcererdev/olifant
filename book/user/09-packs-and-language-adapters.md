@@ -976,7 +976,12 @@ A pack tells conjure how its architecture looks, in its own
 `languages/<name>.toml`. Conjure uses these shapes to find the ports a test's
 fake stands for, to wire a missing port, and to add a method to a port. Without
 `[conjure]`, conjure works at the floor: it writes a test's body or a
-function's from the test and the unit, and never asks about ports. This
+function's from the test and the unit, and never asks about ports. Haskell
+and Rust ship at the floor: on a hspec `it` or a `#[test] fn` whose body is
+its stub (`stub_lines`), conjure fills that body (the language's
+`[holes.block]`). On a test, the unit conjured is the `[test] unit` at the
+cursor (hspec's `it`, which no `[unit]` kind is); its body is the lines
+indented deeper than its first, so Rust's closing brace stays out of it. This
 `[conjure]` is a language table in a pack. It is not the `[conjure] wire` key
 of a project's `.olifant/config.toml`, which names the generator that wires a
 port.
