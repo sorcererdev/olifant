@@ -29,6 +29,14 @@ spec = do
   it "names a Rust fn; its body after its brace" $ do
     r <- unitAt (spans [(0, 2)]) rust "fn add(a: i32) -> i32 {\n    a\n}\n" 2
     fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("add", Just (2, 3))
+ describe "the test at a line, else the unit (testOrUnitAt)" $ do
+  it "a hspec it: the it, its body its own lines (not the spec's)" $ do
+    let text = "spec :: Spec\nspec = describe \"M\" $ do\n  it \"a\" $ do\n    1 `shouldBe` 1\n  it \"b\" $ do\n    2 `shouldBe` 2\n"
+    r <- testOrUnitAt (spans [(1, 5)]) haskell text 5
+    fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("b", Just (6, 6))
+  it "no test there: the [unit]" $ do
+    r <- testOrUnitAt (spans [(0, 2)]) haskell "foo :: Int\nfoo =\n  1\n" 3
+    fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("foo", Just (3, 3))
  describe "a body that is still a stub (isStubIn)" $ do
   it "a hspec stub is a stub, a shouldBe is not" $ do
     isStubIn haskell ["  expectationFailure \"write this test\""] `shouldBe` True

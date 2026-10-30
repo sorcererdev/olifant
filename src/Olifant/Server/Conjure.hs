@@ -43,7 +43,7 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TestDef (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn, testsForFile)
+import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn, testsForFile)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
@@ -57,7 +57,7 @@ import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
 import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..))
 import Olifant.Language.TestUnits (testCaseAtIn, testCaseLineIn, testSourceIn, testSourcesIn)
 import Olifant.Server.Stub (namePrefixesIn, testWordsIn)
-import Olifant.Server.Unit (isStubIn, Unit (..), ownerHeader, testUnitAt, unitAt)
+import Olifant.Server.Unit (isStubIn, Unit (..), ownerHeader, testOrUnitAt, testUnitAt, unitAt)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
 import System.FilePath (joinPath, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
@@ -364,7 +364,8 @@ conjureWith progress path line selected resuming s0 = do
       let lang = siteLang site
           project = siteProject site
           ws = prWorkspace project
-          onTest = siteOnTest site
+          -- on a test: in a test file, or in a module that holds its own tests (Rust's)
+          onTest = siteOnTest site || (isNothing selected && siteTestRel site == siteModuleRel site && isJust (testCaseAtIn lang (siteModuleText site) line))
           rel = if onTest then siteTestRel site else siteModuleRel site
           testRel = siteTestRel site
           file = normalisePath (siteRoot site </> rel)
@@ -533,7 +534,7 @@ conjureWith progress path line selected resuming s0 = do
           attempt <- lift . runExceptT $ do
             when (T.unpack (fst (T.breakOn "::" tid)) /= testRel) (throwE (tid <> " is not in " <> T.pack testRel))
             l <- maybe (throwE ("no test " <> name <> " in " <> T.pack testRel)) pure (testCaseLineIn lang working name)
-            u <- lift (unitAt (pSyntax (ssPorts s)) lang working l) >>= either throwE pure
+            u <- lift (testOrUnitAt (pSyntax (ssPorts s)) lang working l) >>= either throwE pure
             at <- maybe (throwE (name <> " is on one line")) pure (unitBody u)
             (template, verify, context) <- except (testConjure lang working at tid (siteModuleRel site) moduleText)
             let context' =
@@ -959,7 +960,7 @@ conjureWith progress path line selected resuming s0 = do
                     | onTest = testSummary lang extra tid (wkBefore wk) after written
                     | isSteered && green = "green in round " <> tshow n <> " \183 " <> T.intercalate " \8594 " rungs
                     | otherwise = functionSummary lang extra after
-                  staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> (if staying == 1 then " pyright error" else " pyright errors") | staying > 0, green]
+                  staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> " " <> fromMaybe "check" (T.takeWhile (/= '-') . checkFormat <$> langCheck lang) <> (if staying == 1 then " error" else " errors") | staying > 0, green]
                   summary = maybe (withExtras headline <> note) keptLine kept <> mconcat staying'
                   tid = T.pack testRel <> "::" <> fromMaybe unit (testCaseAtIn lang written (fst (wkSpan wk)))
                   green = isNothing (trBroken after) && null (trFailed after)

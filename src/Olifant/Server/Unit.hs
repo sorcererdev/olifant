@@ -5,6 +5,7 @@ module Olifant.Server.Unit
   ( Unit (..)
   , unitAt
   , testUnitAt
+  , testOrUnitAt
   , ownerHeader
   , isStubIn
   , Named (..)
@@ -88,6 +89,11 @@ testUnitAt lang text line = do
     indent = T.length . T.takeWhile isSpace
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+
+-- | The test at LINE of a test file as a unit ('testUnitAt'), else the
+-- `[unit]` there ('unitAt'): what a re-conjure takes for a test's hole.
+testOrUnitAt :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Unit)
+testOrUnitAt syntax lang text line = maybe (unitAt syntax lang text line) (pure . Right) (testUnitAt lang text line)
 
 -- | A unit's body in lines LS: from the line after the first from D (its
 -- def) that opens a block (`opens_block`, its comment cut) through Z.

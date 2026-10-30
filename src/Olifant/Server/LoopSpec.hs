@@ -29,7 +29,8 @@ import System.IO.Temp (withSystemTempDirectory)
 import Olifant.LspSpec (needsUv, plainPorts, withPython)
 import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
 import Olifant.Server (ConjureAnswer (..), ConjureOutcome (..), PausedAnswer (..), TestsFile (..), conjureAt, newServerState, projectFor, stubAt, testsFile)
-import Olifant.Fill (Filler (..), ModelFiller (..))
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
+import Data.IORef (modifyIORef, newIORef, readIORef)
 import Olifant.Language (Failure (..), Runner (..), TestRun (..))
 import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
@@ -305,6 +306,17 @@ conjureFloorSpec = describe "conjure at the floor (no [conjure])" $ do
       (daFile a, daUnit a) `shouldBe` (dir </> rates, "convert")
       map fePath (daEdits a) `shouldBe` [dir </> rates]
       edited a text `shouldBe` T.replace "todo!(\"write this test\");" "assert_eq!(convert(2, 3), 7);" text
+
+  it "Rust: a test in its module's own mod tests is conjured as a test (its instruction, not a function's)" $ do
+    let rates = "src/rates.rs"
+        text = ratesText <> "\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn convert() {\n        todo!(\"write this test\");\n    }\n}\n"
+    asked <- newIORef []
+    withRustProject [(rates, text)] $ \dir s -> do
+      let s' = (ready "assert_eq!(convert(2, 3), 7);" s) {ssTestFiller = Just (ModelFiller "conjurer" 0 (Filler (\r -> modifyIORef asked (map fhInstruction (frHoles r) ++) >> pure (Right (M.fromList [("body", "assert_eq!(convert(2, 3), 7);")])))))}
+      (_, r) <- conjureAt (const (pure ())) (dir </> rates) 11 Nothing s'
+      either (fail . T.unpack) (const (pure ())) r
+    instructions <- readIORef asked
+    instructions `shouldSatisfy` \is -> not (null is) && all ("write the body of the test" `T.isInfixOf`) is
 
 -- | A project of the shipped rust language (cargo-test's stub, ast-grep's
 -- syntax) holding FILES; a fresh state.

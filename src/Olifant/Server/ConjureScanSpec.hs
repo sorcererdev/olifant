@@ -89,6 +89,8 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     methodSignature py "cancel" port "self.bookings.cancel(input.id)\nreturn Ok(None)" moduleText "" `shouldBe` Just (", id: str", "None")
     -- an argument whose type is not known: none
     methodSignature py "find_by_id" port "booking = self.bookings.find_by_id(thing)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
+    -- a fake with no parameters that returns nothing: optional
+    methodSignature py "latest" port "booking = self.bookings.latest()\nreturn Ok(booking)" moduleText "    repo.latest = lambda: None\n" `shouldBe` Just ("", "Booking | None")
   it "(k) where a method goes in a port's file: the line after its Protocol's last" $ do
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def table(self) -> None: ...\n\n    def save(self) -> None: ...\n" `shouldBe` Just 5
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n\n\nclass Other:\n    pass\n" `shouldBe` Just 3

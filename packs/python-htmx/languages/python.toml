@@ -20,7 +20,7 @@ bound = '^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('
 classes = ["Mock", "MagicMock"]
 prefixes = ["Fake", "InMemory", "Stub"]
 keyword = "{= param =}={= var =}"
-stub = '\.{= method =} = lambda ([^:]*):(.*)'
+stub = '\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'
 
 [conjure.constructor]
 files = ["commands/**/*.py", "queries/**/*.py"]

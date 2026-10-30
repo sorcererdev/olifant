@@ -999,7 +999,7 @@ its start that are blank or indented deeper.
 | `[conjure.fake] classes` | `["Mock", "MagicMock"]` | classes that are fakes |
 | `[conjure.fake] prefixes` | `["Fake", "InMemory", "Stub"]` | a class starting with one (and longer) is a fake; less the prefix, it names a port |
 | `[conjure.fake] keyword` | `"{= param =}={= var =}"` | how a fake is handed to a call by name. Without it, only positional arguments count as handing it in, and conjure cannot hand a fake to a helper |
-| `[conjure.fake] stub` | `'\.{= method =} = lambda ([^:]*):(.*)'` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
+| `[conjure.fake] stub` | `'\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
 | `[conjure.constructor] files` | `["commands/**/*.py", "queries/**/*.py"]` | globs under the service for the siblings whose constructors show what a port's parameter is called (test files left out) |
 | `[conjure.constructor] owner` | `'^class ([[:alnum:]_]+)'` | a line starting what holds a constructor, group 1 its name |
 | `[conjure.constructor] start` | `'def __init__\('` | where a constructor's parameters start, up to the bracket closing the one it opens |
