@@ -43,24 +43,24 @@ import Olifant.TestName (helpedIn)
 import Olifant.Generation.FillPhase (applyFills, assertionSpan, fillLines, projectFiles)
 import Olifant.Generator (AppliesAt (..), GeneratorWith (..), Verify (..), replaceGenerator)
 import Olifant.Holes (HoleSite (..), Marker (..), splitMarkers)
-import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn, testsForFile)
+import Olifant.Language (CheckDef (..), CheckReport (..), Checker (..), ConjureDef (..), CtorShape (..), Failure (..), Language (..), PortShape (..), TypesDef (..), TestRun (..), failureLineIn, failureLineWith, failureOf, languageFor, runCheckIn, runTestsIn)
 import Olifant.Glob (matchesGlob)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 import Olifant.Model (Backend (..), ModelConfig (..), Rung (..))
 import Olifant.Process (cancelled)
 import Olifant.Server.Actions (fillerFor, rungFiller)
-import Olifant.Server.ConjureNext (Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
-import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, takesPortIn)
+import Olifant.Server.ConjureNext (undefinedLabelIn, Cause (..), Decided (..), DiagnosisFacts (..), Next (..), Offer (..), OfferFacts (..), OfferRow (..), PausedAnswer (..), Title (..), addsReason, knownNote, offerRow, fixMoves, paramPort, reconjureWhy, roundWords, testFix, fixWords, methodWords, pausedJson, refusedSentence, shortName, testEntries, trigger, withoutKnown, PausedConjure (..), Policy (..), PolicyFacts (..), Proposal (..), RoundContext (..), RoundRecord (..), RoundView, Standing (..), causeWords, conjureNextQuestion, diagnosis, involved, isRepeat, isTrade, nextFrom, offersAt, pausedLifetime, policy, pruned, roundRecord, ConjureStep (..), StepKind (..), fixAgain, proposalStep, LatestFailure (..), rootFirst, roundSummary, roundView, spent, suspectFirst, undefinedNamesIn, undefinedIn, withHint)
+import Olifant.Server.ConjureScan (Fake (..), Port (..), conjurePortQuestion, ctorParamsIn, derivePortIn, deriveParam, fakeCalls, fakeIn, methodSignature, methodText, missingMemberIn, portCandidates, portEnd, portFrom, portsIn, servicePaths, siblingsOf, takesPortIn)
 import Olifant.Server.Site (Site (..), appendStepLine, importedContext, runOver, siteAt, siteTestFile, tshow)
 import Olifant.Server.Edits (FileEdit (..), smallestChange, unifiedDiff)
 import Olifant.Server.State (ServerConfig (..), ServerState (..), deciderUnder)
 import Olifant.Server.Tests (TestsAnswer (..), TestsScope (..))
-import Olifant.Language.TestUnits (testCaseAtIn, testCaseLineIn, testSourceIn, testSourcesIn)
+import Olifant.Language.TestUnits (caseOfId, testCaseAtIn, testCaseLineIn, testSourceIn, testSourcesIn)
 import Olifant.Server.Stub (namePrefixesIn, testWordsIn)
 import Olifant.Server.Unit (isStubIn, Unit (..), ownerHeader, testOrUnitAt, testUnitAt, unitAt)
 import Olifant.Template (Template, describeTemplateError, parseTemplate)
 import Olifant.Workspace (Workspace (..), normalisePath, overlayMany)
-import System.FilePath (joinPath, splitDirectories, takeBaseName, takeDirectory, takeFileName, (</>))
+import System.FilePath (joinPath, takeBaseName, takeDirectory, takeFileName, (</>))
 import Text.Printf (printf)
 
 -- | A conjure's answer: the conjured file (absolute), the unit, the edits
@@ -522,7 +522,7 @@ conjureWith progress path line selected resuming s0 = do
         -- reconjure: the wrong test conjured again over the working files, proposed
         Just (re, pd) | reChoice re == ResumeReconjure, Just tid <- reconjureOf re pd -> do
           wk <- prepare writes0
-          let name = snd (T.breakOnEnd "::" tid)
+          let name = caseOfId tid
               working = wkTestText wk
               moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) writes0
               plain = plainPause (pdShown pd)
@@ -915,6 +915,7 @@ conjureWith progress path line selected resuming s0 = do
                       , paOffers = rows
                       , paExpires = round pausedLifetime
                       , paPrefixes = cPrefixes c
+                      , paComment = langComment lang
                       , paProposal = Nothing
                       , paOutcome = Nothing
                       , paRoundFiles = roundFiles
@@ -1012,8 +1013,7 @@ serviceFacts ws lang rel sets = case serviceBase cj sets of
     let texts fs = concat <$> traverse (\f -> maybe [] (pure . (f,)) <$> readText ws f) fs
     ports <- maybe (pure []) (\ps -> (`portsIn'` ps) <$> (texts =<< filesUnder ws base (psFiles ps))) (cj >>= cjPort)
     siblingFiles <- maybe (pure []) (filesUnder ws base . ctFiles) (cj >>= cjConstructor)
-    let tests = [t | Just td <- [langTest lang], f <- siblingFiles, let t = testsForFile td f, t /= f]
-    siblings <- texts [f | f <- siblingFiles, normalisePath f /= normalisePath rel, f `notElem` tests]
+    siblings <- texts (siblingsOf lang (normalisePath rel) siblingFiles)
     pure (ServiceFacts ports (filter (not . null) (map (ctorParamsIn cj . snd) siblings)))
   Nothing -> pure (ServiceFacts [] [])
   where
@@ -1146,7 +1146,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
         [] -> pure (Nothing, [])
       c <- readIORef counters
       let wireable = wires && null (cWired c) && isNothing (cExplanation c)
-          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable (cHistory c) (cBefore c) (cPrefixes c) (testSourcesIn lang (cTestText c)) (failureOf lang)) (cLast c) rs
+          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable (cHistory c) (cBefore c) (cPrefixes c) (testSourcesIn lang (cTestText c)) (failureOf lang) (langComment lang)) (cLast c) rs
           used = cRounds c + 1
           seconds = cSecondsBefore c + (now - begun)
           above = drop (cRung c + 1) (sdLadder sd)
@@ -1202,20 +1202,6 @@ nubOn key = go []
     go seen (x : xs)
       | key x `elem` seen = go seen xs
       | otherwise = x : go (key x : seen) xs
-
--- | A module's sets by its path and the pack's `[conjure] service` (@src/{= app =}/{= service =}@
--- binds @app@ and @service@ for @src/bistro/booking/commands/x.py@): the service's sets when
--- no wire generator binds them. The path must go on past the service by a folder and a file.
-servicePaths :: Maybe ConjureDef -> FilePath -> [(Text, Text)]
-servicePaths cj rel = case cj >>= cjService of
-  Nothing -> []
-  Just t ->
-    let segs = T.splitOn "/" t
-        parts = map T.pack (splitDirectories rel)
-        bind x p = case T.stripSuffix "=}" =<< T.stripPrefix "{=" x of
-          Just k -> Just [(T.strip k, p)]
-          Nothing -> if x == p then Just [] else Nothing
-     in if length parts >= length segs + 2 then maybe [] concat (sequence (zipWith bind segs parts)) else []
 
 -- | The header of each top-level owner (`[conjure.constructor] owner`: a class) with a
 -- constructor in a module of LANG: the ports the class under a test takes.
@@ -1416,7 +1402,7 @@ functionSummary lang extra run = case (trBroken run, trFailed run) of
   (_, failed) | names@(_ : _) <- nub (map fst found ++ extra) -> (if null failed then "green \183 " else "red: ") <> label <> " " <> T.intercalate ", " names
     where
       found = concatMap (undefinedIn lang . fMessage . snd) failed
-      label = fromMaybe "undefined:" (listToMaybe [l | (_, Just l) <- found])
+      label = undefinedLabelIn lang found
   (_, []) -> "green"
   (_, (t, f) : _) -> "red: " <> snd (T.breakOnEnd "::" t) <> " \183 " <> failureLineIn lang f
 

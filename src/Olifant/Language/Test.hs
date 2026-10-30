@@ -19,6 +19,7 @@ module Olifant.Language.Test
   , gotExpectedWith
   , failureOf
   , testsForFile
+  , isTestFile
   , keptVerdict
   , ownedBy
   , ranIn
@@ -32,14 +33,14 @@ import Data.Containers.ListUtils (nubOrd)
 import Data.ByteString qualified as BS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
 import Olifant.Language.Adapter (FailureDef (..), GotExpected (..), Language (..), TestDef (..), regexName)
-import Text.Regex.TDFA (AllTextSubmatches (..), (=~))
+import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, (=~))
 import System.Exit (ExitCode (..))
 import System.FilePath (normalise, takeBaseName, takeDirectory)
 
@@ -135,6 +136,32 @@ scriptFileRunner file = Runner $ \lang ids files ->
 testsForFile :: TestDef -> FilePath -> FilePath
 testsForFile td file =
   normalise (T.unpack (T.replace "{= stem =}" (T.pack (takeBaseName file)) (T.replace "{= dir =}" (T.pack (takeDirectory file)) (testsFor td))))
+
+-- | Whether FILE is another module's test file by the language's @tests_for@: its
+-- path matches the template, and the stem it binds is not FILE's own (Rust's
+-- module that holds its own tests is no test file).
+isTestFile :: TestDef -> FilePath -> Bool
+isTestFile td file = fromMaybe False $ do
+  rx <- makeRegexM ("^" <> concatMap regexOf pieces <> "$") :: Maybe Regex
+  AllTextSubmatches (_ : gs) <- matchM rx (normalise file) :: Maybe (AllTextSubmatches [] String)
+  stem <- lookup True (zip [p == "stem" | p <- slots] gs)
+  pure (stem /= takeBaseName file)
+  where
+    -- the template in pieces: @{= dir =}/@ (a folder, or none at the root), @{= stem =}@, literals
+    pieces :: [Either String Char]
+    pieces = go (T.unpack (testsFor td))
+    go :: String -> [Either String Char]
+    go str
+      | Just rest <- stripStr "{= dir =}/" str = Left "dir" : go rest
+      | Just rest <- stripStr "{= stem =}" str = Left "stem" : go rest
+      | c : rest <- str = Right c : go rest
+      | otherwise = []
+    stripStr pre str = if take (length pre) str == pre then Just (drop (length pre) str) else Nothing
+    slots = [p | Left p <- pieces]
+    regexOf = \case
+      Left "dir" -> "(.*/)?"
+      Left _ -> "([^/]+)"
+      Right c -> if c `elem` ("\\.[]()*+?{}|^$" :: String) then ['[', c, ']'] else [c]
 
 -- | pytest's @-q -rA --tb=short@ report: the summary lines say which tests
 -- passed or failed, their failure sections where and why. A run with no

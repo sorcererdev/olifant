@@ -28,6 +28,8 @@ module Olifant.Server.ConjureScan
   , methodSignature
   , methodText
   , portEnd
+  , siblingsOf
+  , servicePaths
   ) where
 
 import Data.Char (isAlphaNum, isSpace, isUpper, toLower)
@@ -38,8 +40,9 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question, choice, confident)
-import Olifant.Language (CheckDef (..), ConjureDef (..), CtorShape (..), MissingMember (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), regexName)
+import Olifant.Language (CheckDef (..), ConjureDef (..), CtorShape (..), MissingMember (..), FakeShape (..), Language (..), PortShape (..), TypesDef (..), isTestFile, regexName)
 import Data.Array qualified
+import System.FilePath (splitDirectories)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchAll, matchM, matchTest, (=~))
 
 -- | A fake a test builds: the name it is bound to and the class (or @Mock@) called.
@@ -378,3 +381,22 @@ takesPortIn cj header port = port `elem` map snd (ctorParamsIn cj header)
 -- (each @, @ and a parameter) and what it RETURNS; the name alone without one.
 methodText :: Maybe Text -> Text -> Text -> Text -> Text
 methodText template name params returns = maybe name (T.replace "{= name =}" name . T.replace "{= params =}" params . T.replace "{= returns =}" returns) template
+
+-- | The files beside the unit at REL a service's constructors are read from: FILES less
+-- REL and every test file ('isTestFile').
+siblingsOf :: Language -> FilePath -> [FilePath] -> [FilePath]
+siblingsOf lang rel files = [f | f <- files, f /= rel, not (maybe False (`isTestFile` f) (langTest lang))]
+
+-- | A module's sets by its path and the pack's `[conjure] service` (@src/{= app =}/{= service =}@
+-- binds @app@ and @service@ for @src/bistro/booking/commands/x.py@): the service's sets when
+-- no wire generator binds them. The path goes on past the service, by a file at least.
+servicePaths :: Maybe ConjureDef -> FilePath -> [(Text, Text)]
+servicePaths cj rel = case cj >>= cjService of
+  Nothing -> []
+  Just t ->
+    let segs = T.splitOn "/" t
+        parts = map T.pack (splitDirectories rel)
+        bind x p = case T.stripSuffix "=}" =<< T.stripPrefix "{=" x of
+          Just k -> Just [(T.strip k, p)]
+          Nothing -> if x == p then Just [] else Nothing
+     in if length parts >= length segs + 1 then maybe [] concat (sequence (zipWith bind segs parts)) else []

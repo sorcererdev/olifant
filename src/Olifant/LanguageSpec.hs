@@ -117,6 +117,21 @@ spec = do
       either (const True) (const False) (lang ["[conjure]", "ports = 1"]) `shouldBe` True
       either (const True) (const False) (lang ["[conjure.port]", "method = '^def '"]) `shouldBe` True
       either (const True) (const False) (lang ["[conjure.port]", "start = '('", "method = '^def '"]) `shouldBe` True
+  describe "[types] and undefined names: checked as they load" $ do
+    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
+        bad = either (const True) (const False)
+    it "a [types] template's variables and a [types] expression are checked" $ do
+      bad (lang ["[types]", "param = \"{= nme =}: {= type =}\""]) `shouldBe` True
+      bad (lang ["[types]", "optional = \"{= typ =} | None\""]) `shouldBe` True
+      bad (lang ["[types]", "method = \"{= name =}({= args =})\""]) `shouldBe` True
+      bad (lang ["[types]", "annotation = '{= name =}:[[:space:]]*(['"]) `shouldBe` True
+      bad (lang ["[types]", "record = '^class {= nam =}'"]) `shouldBe` True
+      bad (lang ["[types]", "checks_none = ['{= name =} is (']"]) `shouldBe` True
+      bad (lang ["[types]", "param = \"{= name =}: {= type =}\"", "optional = \"{= type =} | None\"", "method = \"{= name =}(self{= params =}) -> {= returns =}\"", "annotation = '{= name =}:[[:space:]]*([^,)=]+)'", "record = '^class {= name =}[(:]'", "checks_none = ['{= name =} is None']"]) `shouldBe` False
+    it "an undefined-name expression with no group is an error (the name is its last group)" $ do
+      bad (lang ["[check]", "command = [\"c\"]", "format = \"pyright-json\"", "undefined = ['is not defined']"]) `shouldBe` True
+      bad (lang ["[check]", "command = [\"c\"]", "format = \"pyright-json\"", "undefined = [{ pattern = 'is not defined' }]"]) `shouldBe` True
+      bad (lang ["[check]", "command = [\"c\"]", "format = \"pyright-json\"", "undefined = ['\"(.*)\" is not defined']"]) `shouldBe` False
   describe "Olifant.Language.Test" $ do
     it "(a) parsePytest: one failed, four passed, the failing line" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/one-failed.txt"
