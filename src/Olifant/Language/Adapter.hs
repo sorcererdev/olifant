@@ -130,14 +130,14 @@ data Language = Language
   -- ^ `[test] assertion`: expressions over a line where a test's assertion
   -- starts (Python's `assert`, Rust's `assert_eq!`, hspec's `shouldBe`)
   , langStubLines :: [Text]
-  , langConjure :: Maybe ConjureDef
-  , langTypes :: Maybe TypesDef
-  -- ^ `[types]`: what a new method's signature is made of
-  -- ^ `[conjure]`: a pack's architecture as conjure reads it (ports, fakes,
-  -- constructors); absent, conjure works at the floor (the test and its fill)
   -- ^ `stub_lines`: expressions over a stripped line of a body that is still
   -- a stub (Python's `...`, Rust's `todo!(`); a comment and a hole's line
   -- count in every language
+  , langConjure :: Maybe ConjureDef
+  -- ^ `[conjure]`: a pack's architecture as conjure reads it (ports, fakes,
+  -- constructors); absent, conjure works at the floor (the test and its fill)
+  , langTypes :: Maybe TypesDef
+  -- ^ `[types]`: what a new method's signature is made of
   , langMutate :: [MutateDef]
   -- ^ `[[mutate]]`: the mutation operators, ways to break this language's
   -- code that a test must notice
@@ -551,8 +551,11 @@ languageFrom presets name grammarDir top = do
     typesFrom t = do
       onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t
       let o k = optional k text t
-      TypesDef <$> o "string" <*> o "integer" <*> o "nothing" <*> o "optional" <*> o "param" <*> o "annotation" <*> optional "returns" (text >=> validRegex "[types] returns") t <*> optional "assigned" (text >=> validRegex "[types] assigned") t <*> o "record" <*> o "method"
-        <*> (fromMaybe [] <$> optional "checks_none" (list text) t)
+          -- a template over VARS; an expression over @{= name =}@, valid once it is filled
+          over k vars = optional k (text >=> templateOver ("[types] " <> k) vars) t
+          named k = text >=> templateOver ("[types] " <> k) ["name"] >=> \x -> validRegex ("[types] " <> k) (T.replace "{= name =}" "x" x) >> Right x
+      TypesDef <$> o "string" <*> o "integer" <*> o "nothing" <*> over "optional" ["type"] <*> over "param" ["name", "type"] <*> optional "annotation" (named "annotation") t <*> optional "returns" (text >=> validRegex "[types] returns") t <*> optional "assigned" (text >=> validRegex "[types] assigned") t <*> optional "record" (named "record") t <*> over "method" ["name", "params", "returns"]
+        <*> (fromMaybe [] <$> optional "checks_none" (list (named "checks_none")) t)
     conjureFrom t = do
       onlyKeys ["service", "port", "fake", "constructor"] t
       let re k = text >=> validRegex ("[conjure] " <> k)
@@ -648,12 +651,15 @@ languageFrom presets name grammarDir top = do
           <*> optional "name" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`[test] unit` `name`: expected a group number above 0") u
       other -> Left ("`[test] unit`: expected an expression or { pattern, after, name }, got " <> describeTree other)
     undefinedFrom key = \case
-      TText re -> (\r -> UndefinedRule r Nothing Nothing) <$> validRegex key re
+      TText re -> (\r -> UndefinedRule r Nothing Nothing) <$> (validRegex key re >>= grouped)
       TTable u -> do
         onlyKeys ["pattern", "name", "label"] u
-        re <- required "pattern" (text >=> validRegex key) u
+        re <- required "pattern" (text >=> validRegex key >=> grouped) u
         UndefinedRule re <$> optional "name" (int >=> groupOf key re) u <*> optional "label" text u
       other -> Left ("`" <> key <> "`: expected an expression or { pattern, name, label }, got " <> describeTree other)
+      where
+        -- the name is a group (the last, without `name`)
+        grouped re = if groupCount re > 0 then Right re else Left ("`" <> key <> "`: " <> re <> " has no group: the undefined name is its last group")
     groupOf key re n
       | n > 0, fromIntegral n <= groupCount re = Right (fromIntegral n)
       | otherwise = Left ("`" <> key <> "`: group " <> T.pack (show n) <> " is not a group of " <> re)

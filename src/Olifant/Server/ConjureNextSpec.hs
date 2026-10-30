@@ -45,7 +45,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
   let run = TestRun ["t.py::test_b"] [("t.py::test_a", Failure (Just 6) "assert 0 == 1\nmore" "")] Nothing
       hole = RoundHole "body" "the tests failed:" [("return 0", "w1")] (Just run)
       state = RoundState 1 "qwen" [hole]
-      ctx = RoundContext "def test_a():\n    assert 0 == 1\n" "class C:\n    def __init__(self):" ["x: X"] False [] (TestRun [] [] Nothing) (namePrefixesIn pyNow "t") (testSourcesIn pyNow "def test_a():\n    assert 0 == 1\n") (failureOf pyNow)
+      ctx = RoundContext "def test_a():\n    assert 0 == 1\n" "class C:\n    def __init__(self):" ["x: X"] False [] (TestRun [] [] Nothing) (namePrefixesIn pyNow "t") (testSourcesIn pyNow "def test_a():\n    assert 0 == 1\n") (failureOf pyNow) "#"
       -- the same attempt again, a round later
       state2 = RoundState 2 "qwen" [hole]
       viewAgain = roundView ctx {rcHistory = [roundRecord (failureOf pyNow) state]} (Just view) state2
@@ -66,6 +66,13 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     rvFailing viewB `shouldBe` []
     let broken = roundView ctx Nothing (RoundState 1 "qwen" [hole {rhRun = Just (TestRun [] [] (Just "ImportError: x"))}])
     rvCheck broken `shouldBe` Just "ImportError: x"
+  it "(b2) an attempt's line: its first that is no comment, by the language's comment" $ do
+    attemptLine "--" "-- the empty plan\n\nparsePlan _ = []" `shouldBe` "parsePlan _ = []"
+    attemptLine "#" "# a note\nreturn Ok(None)" `shouldBe` "return Ok(None)"
+  it "(d3) undefined names are labelled by the language's entries, a check-only name too" $ do
+    undefinedLabelIn pyNow [("x", Nothing)] `shouldBe` "NameError"
+    undefinedLabelIn pyNow [("x", Just "NameError")] `shouldBe` "NameError"
+    undefinedLabelIn (shippedLanguageNow "haskell") [("x", Nothing)] `shouldBe` "undefined:"
   it "(c) attemptDiff drops the common lines" $ do
     attemptDiff (Just "a\nb\nc") "a\nx\nc" `shouldBe` "@@ line 2\n- b\n+ x"
     attemptDiff Nothing "a\nb" `shouldBe` "+ a\n+ b"
@@ -131,7 +138,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     ownerHeader pyNow "def f():\n    pass\n" 2 `shouldBe` "def f():"
     ownerHeader pyNow "x = 1\n" 1 `shouldBe` ""
   it "(m) the cancel_booking rounds: rows, involved tests, a repeat and a trade" $ do
-    roundRows cancelPrefixes cancelRecords
+    roundRows "#" cancelPrefixes cancelRecords
       `shouldBe` [ RoundRow 1 "local" "return Ok(None)" False ["not_found"]
                  , RoundRow 2 "local" "return NotFound(reason=\"Booking not found\")" False ["succeeds"]
                  , RoundRow 3 "local" "(the same as round 2)" False ["succeeds"]
@@ -142,7 +149,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     isTrade cancelBefore (take 1 cancelRecords) `shouldBe` False
     isRepeat (take 2 cancelRecords) `shouldBe` False
   it "(n) the view holds every involved test's source and the attempts" $ do
-    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore cancelPrefixes (testSourcesIn pyNow cancelTestText) (failureOf pyNow)) Nothing (cancelState 3)
+    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore cancelPrefixes (testSourcesIn pyNow cancelTestText) (failureOf pyNow) "#") Nothing (cancelState 3)
     map fst (rvTests v) `shouldBe` [succeedsId, notFoundId]
     rvPassingTests v `shouldBe` [notFoundId]
     rvAttempts v
@@ -216,7 +223,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     map offerText [OfferHint, OfferWire "bookings" "BookingRepository", OfferKeep 3] `shouldBe` ["hint", "wire:bookings: BookingRepository", "keep:3"]
     causeWords (CauseTest notFoundId) `shouldBe` ["test", notFoundId]
   it "(s) the narrowed question and its gates" $ do
-    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore cancelPrefixes (testSourcesIn pyNow cancelTestText) (failureOf pyNow)) Nothing (cancelState 3)
+    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore cancelPrefixes (testSourcesIn pyNow cancelTestText) (failureOf pyNow) "#") Nothing (cancelState 3)
         st = Standing 3 50 Nothing Nothing False
         q = conjureNextQuestion st v
     map fst (qOptions' q) `shouldBe` ["again", "ask"]
@@ -384,7 +391,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
         r3 = (cancelRecords !! 2) {rrSteps = 1}
     isRepeat [r2, r3] `shouldBe` False
     isRepeat [r2, r3 {rrSteps = 0}] `shouldBe` True
-    map rwLine (roundRows cancelPrefixes [r2, r3]) `shouldBe` ["return NotFound(reason=\"Booking not found\")", "return NotFound(reason=\"Booking not found\")"]
+    map rwLine (roundRows "#" cancelPrefixes [r2, r3]) `shouldBe` ["return NotFound(reason=\"Booking not found\")", "return NotFound(reason=\"Booking not found\")"]
   it "(bb) a port missing a method pauses at once and offers it: p adds it, the diagnosis says where the check refused" $ do
     let base = PolicyFacts [] [] [] False True ["bookings: BookingRepository"] Nothing True False False (Just ("BookingRepository", "find_by_id"))
         sig = Just (", id: str", "Booking | None")
@@ -540,6 +547,7 @@ cancelPaused =
     , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False cancelPrefixes (fixMoves cancelPausedFacts) [] pyMethod)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
     , paExpires = 600
     , paPrefixes = cancelPrefixes
+    , paComment = "#"
     , paProposal = Nothing
     , paOutcome = Nothing
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule l)]) | (n, l) <- [(1, cancelModule), (2, landing), (3, landing)]]
@@ -590,6 +598,7 @@ cancelWiredPaused =
     , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True cancelPrefixes (fixMoves facts) [] pyMethod)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
     , paExpires = 600
     , paPrefixes = cancelPrefixes
+    , paComment = "#"
     , paProposal = Nothing
     , paOutcome = Nothing
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule landing), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)]) | n <- [1, 2]]

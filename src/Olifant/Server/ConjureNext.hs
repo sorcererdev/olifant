@@ -18,6 +18,7 @@ module Olifant.Server.ConjureNext
   , attemptDiff
   , undefinedNamesIn
   , undefinedIn
+  , undefinedLabelIn
   , roundSummary
   , Standing (..)
   , Offer (..)
@@ -235,9 +236,9 @@ shortName prefixes tid = fromMaybe name (listToMaybe (mapMaybe dropped prefixes)
         | otherwise -> Just r
       Nothing -> Nothing
 
--- | An attempt's first line that is neither blank nor a comment.
-attemptLine :: Text -> Text
-attemptLine a = case [l | l <- map T.strip (T.lines a), not (T.null l), not ("#" `T.isPrefixOf` l)] of
+-- | An attempt's first line that is neither blank nor a comment (the language's COMMENT).
+attemptLine :: Text -> Text -> Text
+attemptLine comment a = case [l | l <- map T.strip (T.lines a), not (T.null l), T.null comment || not (comment `T.isPrefixOf` l)] of
   l : _ -> l
   [] -> ""
 
@@ -246,8 +247,8 @@ attemptLine a = case [l | l <- map T.strip (T.lines a), not (T.null l), not ("#"
 data RoundRow = RoundRow {rwRound :: Int, rwRung :: Text, rwLine :: Text, rwGreen :: Bool, rwFailing :: [Text]}
   deriving stock (Eq, Show)
 
-roundRows :: [Text] -> [RoundRecord] -> [RoundRow]
-roundRows stem records = zipWith row (Nothing : map Just records) records
+roundRows :: Text -> [Text] -> [RoundRecord] -> [RoundRow]
+roundRows comment stem records = zipWith row (Nothing : map Just records) records
   where
     row prev r =
       RoundRow
@@ -255,7 +256,7 @@ roundRows stem records = zipWith row (Nothing : map Just records) records
         (rrRung r)
         (case prev of
            Just p | sameRound p r -> "(the same as round " <> T.pack (show (rrRound p)) <> ")"
-           _ -> attemptLine (rrAttempt r))
+           _ -> attemptLine comment (rrAttempt r))
         (isGreen r)
         (maybe [] (\run -> [shortName stem t | (t, _) <- trFailed run]) (rrRun r))
     isGreen r = case rrRun r of
@@ -290,7 +291,7 @@ firstLine = firstLines 1
 
 -- | What the round's view needs beyond the round: the test file's text, the unit's header,
 -- what is wired, and whether a wire may still run.
-data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool, rcHistory :: [RoundRecord], rcBefore :: TestRun, rcPrefixes :: [Text], rcSources :: [(Text, Text)], rcFailureShape :: Maybe FailureDef}
+data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool, rcHistory :: [RoundRecord], rcBefore :: TestRun, rcPrefixes :: [Text], rcSources :: [(Text, Text)], rcFailureShape :: Maybe FailureDef, rcComment :: Text}
   deriving stock (Eq, Show)
 
 -- | The previous view, the round; built from the first hole. A passing delta needs a test
@@ -309,7 +310,7 @@ roundView ctx prev rs =
     , rvTests = [(i, fromMaybe "(source not found)" (lookup (snd (T.breakOnEnd "::" i)) (rcSources ctx))) | i <- map tsTest tests]
     , rvUnit = rcUnit ctx
     , rvWired = rcWired ctx
-    , rvAttempts = [attemptText r | r <- roundRows (rcPrefixes ctx) history]
+    , rvAttempts = [attemptText r | r <- roundRows (rcComment ctx) (rcPrefixes ctx) history]
     , rvTrade = isTrade (rcBefore ctx) history
     , rvPassingTests = [tsTest t | t <- tests, not (tsFailing t)]
     }
@@ -351,6 +352,14 @@ attemptDiff (Just old) new
 -- `[test]` `undefined`), in the text's order, once each.
 undefinedNamesIn :: Language -> Text -> [Text]
 undefinedNamesIn lang = nub . map fst . undefinedIn lang
+
+-- | How a summary names undefined names FOUND: the first found entry's `label`, else the
+-- first label LANG's entries give (a name only the check reports is still pytest's
+-- "NameError"), else "undefined:".
+undefinedLabelIn :: Language -> [(Text, Maybe Text)] -> Text
+undefinedLabelIn lang found = fromMaybe "undefined:" (listToMaybe ([l | (_, Just l) <- found] ++ [l | r <- rules, Just l <- [udLabel r]]))
+  where
+    rules = maybe [] checkUndefined (langCheck lang) ++ maybe [] testUndefined (langTest lang)
 
 -- | Each undefined name in T, in the text's order, with its entry's `label`.
 undefinedIn :: Language -> Text -> [(Text, Maybe Text)]
@@ -709,6 +718,8 @@ data PausedAnswer = PausedAnswer
   , paChecker :: Maybe Text
   , paFailureShape :: Maybe FailureDef
   -- ^ the runner's `[test.failure]`: how a failure names its assertion, got and expected
+  , paComment :: Text
+  -- ^ the language's comment: an attempt's line is its first that is no comment
   }
   deriving stock (Eq, Show)
 
@@ -849,7 +860,7 @@ pausedJson p =
     , "title" .= object ["unit" .= tiUnit t, "round" .= tiRound t, "of" .= tiOf t, "rung" .= tiRung t, "model" .= tiModel t, "seconds" .= tiSeconds t]
     , "diagnosis" .= paDiagnosis p
     , "trigger" .= paTrigger p
-    , "rounds" .= zipWith roundJson (roundRows (paPrefixes p) (paRounds p)) (paRounds p)
+    , "rounds" .= zipWith roundJson (roundRows (paComment p) (paPrefixes p) (paRounds p)) (paRounds p)
     , "tests" .= map testJson (paTests p)
     , "unit" .= object ["header" .= paHeader p, "ports" .= paPorts p]
     , "landing" .= object ["diff" .= paLanding p]

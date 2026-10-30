@@ -14,13 +14,14 @@ module Olifant.Language.TestUnits
   , testCaseAtIn
   , testCaseUnitAtIn
   , testCaseLineIn
+  , caseOfId
   , testSourceIn
   , testSourcesIn
   , lastAssertionIn
   ) where
 
 import Data.Char (isAlphaNum)
-import Data.List (sortOn)
+import Data.List (sort, sortOn)
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
@@ -157,7 +158,19 @@ testCaseUnitAtIn lang text line = (listToMaybe (sortOn (\u -> (Down (fst (tuLine
 -- | The first line (1-based) of the test case NAME (as 'testCaseAtIn'
 -- names it) in a test file in LANG.
 testCaseLineIn :: Language -> Text -> Text -> Maybe Int
-testCaseLineIn lang text name = listToMaybe [i | i <- [1 .. length (T.lines text)], testCaseAtIn lang text i == Just name]
+testCaseLineIn lang text name = listToMaybe (sort [fst (tuLines u) | u <- units, T.intercalate "::" (tuPath u) == name, not (any (inside u) units)])
+  where
+    (rules, above) = rulesOf lang
+    units = testUnitsIn rules above text
+    -- a case is a leaf: no other unit lies inside it
+    inside u o = o /= u && fst (tuLines u) <= fst (tuLines o) && snd (tuLines o) <= snd (tuLines u)
+
+-- | A test id's case: its file part (@path::@) dropped, a class kept
+-- (@f.py::TestX::test_y@ is @TestX::test_y@).
+caseOfId :: Text -> Text
+caseOfId tid = case T.breakOn "::" tid of
+  (_, rest) | not (T.null rest) -> T.drop 2 rest
+  _ -> tid
 
 -- | The source of the test whose own name (its path's last) is NAME in a
 -- test file in LANG ('testSourcesIn').

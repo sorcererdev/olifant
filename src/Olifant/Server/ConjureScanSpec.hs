@@ -91,6 +91,21 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
     methodSignature py "find_by_id" port "booking = self.bookings.find_by_id(thing)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
     -- a fake with no parameters that returns nothing: optional
     methodSignature py "latest" port "booking = self.bookings.latest()\nreturn Ok(booking)" moduleText "    repo.latest = lambda: None\n" `shouldBe` Just ("", "Booking | None")
+  it "(j2) a parameter typed on its own line of a multi-line def: not known" $ do
+    let port = Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ..."]
+        moduleText = "class CancelBooking:\n    def handle(\n        self,\n        input: CancelBookingInput,\n    ) -> CancelBookingOutput:\n        return Ok(None)\n"
+    methodSignature py "find_by_id" port "booking = self.bookings.find_by_id(input)\nreturn Ok(None)" moduleText "" `shouldBe` Nothing
+  it "(j3) the siblings: test files (an orphan's too) and the unit's own file left out" $ do
+    let files = ["src/b/s/commands/x.py", "src/b/s/commands/x__test.py", "src/b/s/commands/y__test.py", "src/b/s/commands/z.py"]
+    siblingsOf py "src/b/s/commands/z.py" files `shouldBe` ["src/b/s/commands/x.py"]
+    -- a Rust module that holds its own tests is a sibling
+    siblingsOf (shippedLanguageNow "rust") "src/a.rs" ["src/a.rs", "src/b.rs", "src/c.rs"] `shouldBe` ["src/b.rs", "src/c.rs"]
+  it "(j4) a module's service sets by its path: in the service's folder or below it" $ do
+    let cj = langConjure py
+    servicePaths cj "src/bistro/booking/commands/x.py" `shouldBe` [("app", "bistro"), ("service", "booking")]
+    servicePaths cj "src/bistro/booking/x.py" `shouldBe` [("app", "bistro"), ("service", "booking")]
+    servicePaths cj "src/bistro/booking" `shouldBe` []
+    servicePaths cj "lib/bistro/booking/x.py" `shouldBe` []
   it "(k) where a method goes in a port's file: the line after its Protocol's last" $ do
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def table(self) -> None: ...\n\n    def save(self) -> None: ...\n" `shouldBe` Just 5
     portEnd ps "BookingRepository" "class BookingRepository(Protocol):\n    def save(self) -> None: ...\n\n\nclass Other:\n    pass\n" `shouldBe` Just 3

@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), defaultUnitNames, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -19,7 +19,8 @@ data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKe
   deriving stock (Eq, Show)
 
 -- | Units, diagnostics, missing cases, tests, test units, test selection,
--- mutation, stub, conjure shapes, messages.
+-- mutation, stub, conjure shapes, the check's and the runner's messages,
+-- stub bodies, signature facts.
 capabilities :: Language -> [Capability]
 capabilities lang =
   [ Capability "units" units "unit.kinds" Nothing
@@ -32,6 +33,9 @@ capabilities lang =
   , Capability "stub" stub "test.stub" Nothing
   , Capability "conjure shapes" shapes "conjure" Nothing
   , Capability "messages" messages "check" Nothing
+  , Capability "test messages" testMessages "test" Nothing
+  , Capability "stub bodies" stubBodies "stub_lines" Nothing
+  , Capability "signature facts" signatureFacts "types" Nothing
   ]
   where
     check = langCheck lang
@@ -59,9 +63,18 @@ capabilities lang =
     shapes = case langConjure lang of
       Just cj | parts@(_ : _) <- [n | (n, True) <- [("port", isJust (cjPort cj)), ("fake", isJust (cjFake cj)), ("constructor", isJust (cjConstructor cj))]] -> Right ("[conjure] " <> T.intercalate ", " parts)
       _ -> Left "[conjure] (conjure works at the floor: the test and its fill, no ports)"
-    messages = case (keysOf "[check]" [("undefined", maybe False (not . null . checkUndefined) check), ("missing_member", maybe False (isJust . checkMissingMember) check)], keysOf "[test]" [("undefined", maybe False (not . null . testUndefined) test), ("failure", maybe False (isJust . testFailure) test)]) of
-      ("", "") -> Left "[check] undefined, [test] undefined, [test.failure] (no undefined names read; the panel shows the test's last assertion)"
-      parts -> Right (T.intercalate "; " (filter (not . T.null) [fst parts, snd parts]))
+    messages = case keysOf "[check]" [("undefined", maybe False (not . null . checkUndefined) check), ("missing_member", maybe False (isJust . checkMissingMember) check)] of
+      "" -> Left "[check] undefined, missing_member (no undefined names read from the check)"
+      present -> Right present
+    testMessages = case keysOf "[test]" [("undefined", maybe False (not . null . testUndefined) test), ("failure", maybe False (isJust . testFailure) test)] of
+      "" -> Left "[test] undefined, [test.failure] (the panel shows the test's last assertion)"
+      present -> Right present
+    stubBodies = case langStubLines lang of
+      [] -> Left "stub_lines (a body is a stub only when it is empty, a comment or a hole)"
+      ls -> Right ("stub_lines (" <> T.pack (show (length ls)) <> ")")
+    signatureFacts = case langTypes lang of
+      Nothing -> Left "[types] (no new port method's signature is derived)"
+      Just ty -> Right ("[types] " <> T.intercalate ", " ([k | (k, Just _) <- [("string", tyString ty), ("integer", tyInteger ty), ("nothing", tyNothing ty), ("optional", tyOptional ty), ("param", tyParam ty), ("annotation", tyAnnotation ty), ("returns", tyReturns ty), ("assigned", tyAssigned ty), ("record", tyRecord ty), ("method", tyMethod ty)]] ++ ["checks_none" | not (null (tyChecksNone ty))]))
     keysOf table ks = case [k | (k, True) <- ks] of
       [] -> ""
       present -> table <> " " <> T.intercalate ", " present

@@ -16,6 +16,8 @@ import Olifant.Server.Stub (testWordsIn)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath ((</>))
 import Test.Hspec
+import Control.Exception (evaluate)
+import System.Timeout (timeout)
 
 -- a keyword at the line's start or after a space or `$` (`spec = describe "…" $ do`); the last group is the name
 hspecUnit :: [UnitRule]
@@ -180,6 +182,13 @@ spec = do
     it "a test case's first line by its name (decorators included)" $ do
       py <- shippedLanguage "python" []
       map (testCaseLineIn py pyFile) ["test_closes", "TestSeats::test_two", "make_table"] `shouldBe` [Just 8, Just 16, Nothing]
+    it "a test id's case keeps its class; a long file's last test is found at once" $ do
+      py <- shippedLanguage "python" []
+      map caseOfId ["src/a__test.py::TestSeats::test_two", "src/a__test.py::test_closes"] `shouldBe` ["TestSeats::test_two", "test_closes"]
+      testCaseLineIn py pyFile (caseOfId "src/a__test.py::TestSeats::test_two") `shouldBe` Just 16
+      let long = T.unlines (concat [["def test_" <> T.pack (show i) <> "() -> None:", "    x = 1", "    assert x == 1", "", ""] | i <- [1 .. 400 :: Int]])
+      found <- timeout 3000000 (evaluate (testCaseLineIn py long "test_400"))
+      found `shouldBe` Just (Just 1996)
     it "a test's source by its short name: from its own line (no decorators), trailing blanks dropped" $ do
       py <- shippedLanguage "python" []
       hs <- shippedLanguage "haskell" []
