@@ -11,6 +11,12 @@ module Olifant.Language.TestUnits
   , testAtBy
   , testLineBy
   , anchorName
+  , testCaseAtIn
+  , testCaseUnitAtIn
+  , testCaseLineIn
+  , testSourceIn
+  , testSourcesIn
+  , lastAssertionIn
   ) where
 
 import Data.Char (isAlphaNum)
@@ -19,7 +25,7 @@ import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language.Adapter (UnitRule (..), regexName)
+import Olifant.Language.Adapter (Language (..), TestDef (..), UnitRule (..), regexName)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, matchTest)
 
 -- | A test or a group: its path (enclosing groups, then its name) and its
@@ -127,3 +133,51 @@ anchorName = T.intercalate "." . map squash
       (a, rest)
         | T.null rest -> a
         | otherwise -> a <> "_" <> squash (T.dropWhile (not . ok) rest)
+
+-- | The rules and `above` of LANG's `[test] unit` (none without them).
+rulesOf :: Language -> ([UnitRule], Maybe Text)
+rulesOf lang = maybe ([], Nothing) (\td -> (testUnitRules td, testAbove td)) (langTest lang)
+
+-- | The test case at LINE (1-based) of a test file in LANG, named as
+-- 'testAtBy' names it: the innermost unit there when no other unit lies
+-- inside it (a group's own lines, a class or a describe, are none).
+testCaseAtIn :: Language -> Text -> Int -> Maybe Text
+testCaseAtIn lang text line = T.intercalate "::" . tuPath <$> testCaseUnitAtIn lang text line
+
+-- | The test case at LINE as its unit (see 'testCaseAtIn').
+testCaseUnitAtIn :: Language -> Text -> Int -> Maybe TestUnit
+testCaseUnitAtIn lang text line = (listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- units, let (a, z) = tuLines u, a <= line, line <= throughBlanks z]) >>= leaf)
+  where
+    (rules, above) = rulesOf lang
+    units = testUnitsIn rules above text
+    ls = T.lines text
+    throughBlanks z = z + length (takeWhile (T.null . T.strip) (drop z ls))
+    leaf u = if any (\o -> o /= u && fst (tuLines u) <= fst (tuLines o) && snd (tuLines o) <= snd (tuLines u)) units then Nothing else Just u
+
+-- | The first line (1-based) of the test case NAME (as 'testCaseAtIn'
+-- names it) in a test file in LANG.
+testCaseLineIn :: Language -> Text -> Text -> Maybe Int
+testCaseLineIn lang text name = listToMaybe [i | i <- [1 .. length (T.lines text)], testCaseAtIn lang text i == Just name]
+
+-- | The source of the test whose own name (its path's last) is NAME in a
+-- test file in LANG ('testSourcesIn').
+testSourceIn :: Language -> Text -> Text -> Maybe Text
+testSourceIn lang name text = lookup name (testSourcesIn lang text)
+
+-- | Each unit of a test file in LANG by its own name (its path's last), in
+-- order, with its source: from the line its rule matched (lines `above` it
+-- left out) to its end, trailing blank lines dropped.
+testSourcesIn :: Language -> Text -> [(Text, Text)]
+testSourcesIn lang text = [(n, T.intercalate "\n" (drop (own a z - a) (slice a z))) | u <- testUnitsIn rules above text, Just n <- [listToMaybe (reverse (tuPath u))], let (a, z) = tuLines u]
+  where
+    (rules, above) = rulesOf lang
+    ls = T.lines text
+    slice a z = take (z - a + 1) (drop (a - 1) ls)
+    isAbove = maybe (const False) matcher above
+    starts l = any (\r -> matcher (urPattern r) l) rules
+    -- the unit's own line: the first in it that a rule matches and is no `above` line
+    own a z = maybe a fst (listToMaybe [x | x@(_, l) <- zip [a ..] (slice a z), starts l, not (isAbove l)])
+
+-- | The last line of TEXT matching LANG's `[test] assertion`, stripped.
+lastAssertionIn :: Language -> Text -> Maybe Text
+lastAssertionIn lang text = listToMaybe (reverse [T.strip l | l <- T.lines text, any (`matcher` l) (langAssertion lang)])

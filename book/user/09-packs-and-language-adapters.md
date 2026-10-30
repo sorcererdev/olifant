@@ -293,6 +293,8 @@ example   = "end of struct BillingService"
 | `[imports]` (3) | `[[imports.resolve]]` and `paths`: which project files an import line names, for a conjure's context. Each resolve is `{ pattern, module, names }`: an expression over a stripped line, the group holding its modules (comma-separated, each less its alias) and, optionally, the group holding names imported from it, each of which may be a module too (`module.name`). The first resolve that matches a line counts. `paths` are templates over `{= path =}` (the module, its separator as `/`); the first that is a file is the module's. Python's two resolves read `from a.b import x, y` (`a.b`, `a.b.x`, `a.b.y`) and `import a.b, c`; its paths are `src/{= path =}.py` and `src/{= path =}/__init__.py`. Without `resolve`, a conjure sees no imported files |
 | `opens_block` | an expression over a line (its comment cut) that opens a block: Python's `':[[:space:]]*(#.*)?$'`, Rust's `'[{][[:space:]]*$'`, Haskell's a line ending in `do`, `=` or `$`. A model that answers a hole of lines with the whole file is cut back to the hole's lines, from the block that opens above it . Without it, such a fill is not cut |
 | `empty_statement` | a statement that does nothing (Python's `pass`, Haskell's `pure ()`): what a test's arrangement becomes when the model put nothing before the assertion. Without it (Rust), that side is left empty |
+| `stub_lines` | expressions over a stripped line of a body that is still a stub, so conjure treats it as unwritten rather than as a body the person rejected: Python's `...`, `pass`, `assert ...`, `raise NotImplementedError`; Haskell's `expectationFailure "write this test"`, `error "`, `pure ()`; Rust's `todo!(`, `unimplemented!(`. A comment (the language's `comment`) and a hole's line (`olifant:`) count in every language |
+| `[types]` | what a new method's signature is made of, when conjure adds a method a test calls to a port: `string` and `integer` (a literal argument's type: Python `str`, `int`; Rust `&str`, `i64`), `nothing` (a call whose result is unused: `None`, `()`), `optional` (a template over `{= type =}` for a result the code tests for absence: `{= type =} \| None`, `Option<{= type =}>`), `checks_none` (expressions over `{= name =}` that test it: `{= name =} is None`, `{= name =}\.is_none\(\)`), `annotation` (an expression over `{= name =}`, its last group that name's declared type, read on a unit's header line for a parameter and on a `record`'s lines for a field), `record` (an expression over `{= name =}` starting a type with fields), `returns` (an expression over a port's method line, group 1 what it returns: the port's entity is a type there whose name starts the port's), `assigned` (an expression over a line assigning a call's result, its last group the variable), `param` (a template over `{= name =}` and `{= type =}` writing one parameter) and `method` (a template over `{= name =}`, `{= params =}` and `{= returns =}` writing the signature: Python `{= name =}(self{= params =}) -> {= returns =}`). The method itself is written by the pack's `port-method` generator. When a fact is missing, conjure does not guess the signature: the pause asks the person to add the method |
 | `[import_merge]` | with `[imports] line`: `pattern` (an expression whose first group is the module and second the comma-separated names) and `write` (a template of `module` and `names`). An import of names from a module the file already imports from adds the new names to that line instead of writing a second one: `from datetime import date` + a fill's `from datetime import date, time` → `from datetime import date, time`. Python's: `pattern = "^from ([A-Za-z0-9_.]+) import ([A-Za-z0-9_, ]+)$"`, `write = "from {= module =} import {= names =}"` |
 | `[targets.*]` | the `at` targets (below) |
 
@@ -619,6 +621,23 @@ A `[check]` or `[test]` may say how to install its tool, `install = "…"` (a se
 doctor` gives it as the fix when the tool is not on the PATH. Every shipped preset carries one;
 without it doctor says "install <program> and make sure it is on the PATH your editor starts
 with".
+
+**Message keys.** A check's and a runner's words are read by expressions, not by code per tool,
+so conjure reads them the same way in every language. Each is optional; without it that reading
+is off.
+
+| key | | shipped |
+|---|---|---|
+| `[check] undefined` | expressions for a name the check says is not defined; the name is the last group (an entry `{ pattern, name = N }` picks group N) | pyright's `'"([^"]+)" is not defined'`, cabal-repl's `"Variable not in scope: ([[:alnum:]_']+)"`, cargo's `` 'cannot find (value|function) `([^`]+)`' `` |
+| `[check] missing_member` | `{ pattern, member = N, type = M }`: the check's words that a type lacks a member. Conjure offers the member to a port the unit takes | pyright's `'Cannot access attribute "([^"]+)" for class "([^"]+)"'`, member 1, type 2 |
+| `[test] undefined` | as `[check] undefined`, over a failure's message; an entry's `label` is how a summary names them (`red: NameError date`; default `undefined:`) | pytest's `"name '([^']+)' is not defined"`, label `NameError` |
+| `[test.failure] line_after` | an expression over `{= name =}` (the test's short name) for the output line after which the failing source line comes; the pause panel shows it | pytest's `': in {= name =}$'` |
+| `[test.failure] head_strip` | an expression taken off the front of a message's first line | pytest's `'^AssertionError: '` |
+| `[test.failure] got_expected` | `[{ pattern, got = N, expected = M }]` over a message's lines (the first less `head_strip`): what came back and what was expected | pytest's `assert A == B`, and `+  where False = isinstance(A, T)` |
+
+Undefined names are taken from both tables, in the order the text gives them. Without
+`line_after` the panel shows the test's last assertion line (by `[test] assertion`). Doctor's
+"messages" row lists the keys a language has.
 
 `[test]` also says where a module's tests live: `tests_for`, a template of the module's folder
 (`{= dir =}`) and name without its extension (`{= stem =}`). The editor's commands find a module's test file
@@ -950,6 +969,44 @@ parameters (`web-command` gives a router factory its command). All three want on
 line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a blank line
 between imports is a group, so a new import joins the last group) and `when_empty = "after
 header"` (in a file with no imports, the first goes under the docstring).
+
+### Conjure's shapes: `[conjure]`
+
+A pack tells conjure how its architecture looks, in its own
+`languages/<name>.toml`. Conjure uses these shapes to find the ports a test's
+fake stands for, to wire a missing port, and to add a method to a port. Without
+`[conjure]`, conjure works at the floor: it writes a test's body or a
+function's from the test and the unit, and never asks about ports. Haskell
+and Rust ship at the floor: on a hspec `it` or a `#[test] fn` whose body is
+its stub (`stub_lines`), conjure fills that body (the language's
+`[holes.block]`). On a test, the unit conjured is the `[test] unit` at the
+cursor (hspec's `it`, which no `[unit]` kind is); its body is the lines
+indented deeper than its first, so Rust's closing brace stays out of it. This
+`[conjure]` is a language table in a pack. It is not the `[conjure] wire` key
+of a project's `.olifant/config.toml`, which names the generator that wires a
+port.
+
+Shapes are line expressions, like `[test] unit`. A block is the lines after
+its start that are blank or indented deeper.
+
+| Key | python-htmx's value | What it says |
+|---|---|---|
+| `service` | `"src/{= app =}/{= service =}"` | where a service lives. A module's path that starts so (and goes on by a folder and a file) binds `app` and `service` |
+| `[conjure.port] files` | `["ports/**/*.py"]` | globs under the service for the files holding ports |
+| `[conjure.port] start` | `'^class ([[:alnum:]_]+)\(Protocol\):'` | a line starting a port, group 1 its name |
+| `[conjure.port] method` | `'^def '` | a stripped line of the port's block that is one of its methods |
+| `[conjure.fake] bound` | `'^[[:space:]]+([[:alnum:]_]+)[[:space:]]*=[[:space:]]*([[:alnum:]_]+)\('` | a test's line binding a fake: group 1 the variable, group 2 the class |
+| `[conjure.fake] classes` | `["Mock", "MagicMock"]` | classes that are fakes |
+| `[conjure.fake] prefixes` | `["Fake", "InMemory", "Stub"]` | a class starting with one (and longer) is a fake; less the prefix, it names a port |
+| `[conjure.fake] keyword` | `"{= param =}={= var =}"` | how a fake is handed to a call by name. Without it, only positional arguments count as handing it in, and conjure cannot hand a fake to a helper |
+| `[conjure.fake] stub` | `'\.{= method =} = lambda[[:space:]]*([^:]*):(.*)'` | a fake's stand-in for a method: group 1 its parameters, group 2 what it returns |
+| `[conjure.constructor] files` | `["commands/**/*.py", "queries/**/*.py"]` | globs under the service for the siblings whose constructors show what a port's parameter is called (test files left out) |
+| `[conjure.constructor] owner` | `'^class ([[:alnum:]_]+)'` | a line starting what holds a constructor, group 1 its name |
+| `[conjure.constructor] start` | `'def __init__\('` | where a constructor's parameters start, up to the bracket closing the one it opens |
+| `[conjure.constructor] param` | `'^([[:alnum:]_]+)[[:space:]]*:[[:space:]]*([^=]*[^=[:space:]])'` | one parameter: group 1 its name, group 2 its type. One that does not match (`self`, an untyped one) is left out |
+
+`olifant doctor` shows a row "conjure shapes" per language: the parts a pack
+declares, or the floor.
 
 ## The project model: `model.toml`
 

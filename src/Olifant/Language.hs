@@ -9,6 +9,7 @@ module Olifant.Language
   , module Olifant.Language.Support
   , module Olifant.Language.Test
   , shippedLanguage
+  , shippedLanguageNow
   ) where
 
 import Data.Text (Text)
@@ -25,6 +26,11 @@ import Olifant.Language.Support
 import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
+
+-- | The shipped language of that name alone, for specs (fails on a file
+-- that does not parse).
+shippedLanguageNow :: Text -> Language
+shippedLanguageNow name = either (error . T.unpack) id (languageFromLayers shippedPresets name (maybe [] pure (shippedLayer name)))
 
 -- | The shipped language of that name under these packs' files (origin,
 -- pack root: @root/languages/<name>.toml@), as a project would have it; for

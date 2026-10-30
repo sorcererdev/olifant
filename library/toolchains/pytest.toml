@@ -7,6 +7,8 @@ context = ["pyproject.toml", "uv.lock"]
 root = ["pyproject.toml"]
 tests_for = "{= dir =}/test_{= stem =}.py"
 install = "brew install uv (pytest comes with the project: `uv sync`)"
+# Its words for a name not defined (a summary says NameError).
+undefined = [{ pattern = "name '([^']+)' is not defined", label = "NameError" }]
 # Tests by rule: a `test…` function (async too) and a `Test…` class, whose
 # methods it names `TestX::test_y`; decorators belong to the def below.
 unit = [
@@ -23,3 +25,17 @@ name = "test_{= words|snake =}"
 test = "def {= name =}() -> None:\n{= note =}{= indent =}...\n{= indent =}assert ...\n"
 file = "{= import =}\n\n\n"
 gap = 2
+
+# A failure's section: the failing source line follows `…: in NAME`; the
+# message's first line less `AssertionError: `; what came back and what was
+# expected, from `assert A == B` and from isinstance's `where` line.
+[test.failure]
+line_after = ': in {= name =}$'
+head_strip = '^AssertionError: '
+# a first line that says nothing gives way to the first `+  where` line
+bare = ['^assert False$', '^assert None$', '^AssertionError$']
+explain = '^\+  where (.*)$'
+got_expected = [
+  { pattern = '^assert (([^=]|=[^=])*[^= ]) == (.*)$', got = 1, expected = 3 },
+  { pattern = '^\+  where False = isinstance\((.*), ([^,]*)\)$', got = 1, expected = 2 },
+]

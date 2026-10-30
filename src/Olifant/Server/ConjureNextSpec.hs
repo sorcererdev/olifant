@@ -4,6 +4,7 @@ module Olifant.Server.ConjureNextSpec
   , succeedsId
   , notFoundId
   , cancelTestText
+  , pyHtmx
   , cancelHeader
   , cancelBefore
   , cancelRecords
@@ -33,7 +34,10 @@ import Olifant.Model (Escalate (..), Rung (..))
 import Olifant.Server.ConjureNext
 import Olifant.Server.ConjureScan (Fake (..))
 import Olifant.Generation.Tools (ProgressEvent (..))
-import Olifant.Server.Unit (unitHeader)
+import Olifant.Server.Stub (namePrefixesIn)
+import Olifant.Server.Unit (ownerHeader)
+import System.IO.Unsafe (unsafePerformIO)
+import Olifant.Language.TestUnits (testSourcesIn)
 import Test.Hspec
 
 spec :: Spec
@@ -41,10 +45,10 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
   let run = TestRun ["t.py::test_b"] [("t.py::test_a", Failure (Just 6) "assert 0 == 1\nmore" "")] Nothing
       hole = RoundHole "body" "the tests failed:" [("return 0", "w1")] (Just run)
       state = RoundState 1 "qwen" [hole]
-      ctx = RoundContext "def test_a():\n    assert 0 == 1\n" "class C:\n    def __init__(self):" ["x: X"] False [] (TestRun [] [] Nothing) "t"
+      ctx = RoundContext "def test_a():\n    assert 0 == 1\n" "class C:\n    def __init__(self):" ["x: X"] False [] (TestRun [] [] Nothing) (namePrefixesIn pyNow "t") (testSourcesIn pyNow "def test_a():\n    assert 0 == 1\n") (failureOf pyNow)
       -- the same attempt again, a round later
       state2 = RoundState 2 "qwen" [hole]
-      viewAgain = roundView ctx {rcHistory = [roundRecord state]} (Just view) state2
+      viewAgain = roundView ctx {rcHistory = [roundRecord (failureOf pyNow) state]} (Just view) state2
       view = roundView ctx Nothing state
       viewB = roundView ctx Nothing (RoundState 1 "qwen" [hole {rhRun = Nothing, rhWhy = "does not parse as block"}])
       nextRung e = Just (Rung "claude" e)
@@ -67,9 +71,21 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     attemptDiff Nothing "a\nb" `shouldBe` "+ a\n+ b"
     attemptDiff (Just "a") "a" `shouldBe` "(the same as the previous attempt)"
   it "(d) undefinedNames reads python and pyright" $ do
-    undefinedNames "E   NameError: name 'date' is not defined" `shouldBe` ["date"]
-    undefinedNames "src/a.py: \"Booking\" is not defined; src/a.py: \"Booking\" is not defined" `shouldBe` ["Booking"]
-    undefinedNames "assert 0 == 1" `shouldBe` []
+    undefinedNamesIn pyNow "E   NameError: name 'date' is not defined" `shouldBe` ["date"]
+    undefinedNamesIn pyNow "src/a.py: \"Booking\" is not defined; src/a.py: \"Booking\" is not defined" `shouldBe` ["Booking"]
+    undefinedNamesIn pyNow "assert 0 == 1" `shouldBe` []
+  it "(d2) undefinedNamesIn takes the check's and the runner's names in the text's order" $ do
+    undefinedNamesIn pyNow "src/a.py: \"x\" is not defined\nE   NameError: name 'y' is not defined" `shouldBe` ["x", "y"]
+    undefinedNamesIn pyNow "E   NameError: name 'y' is not defined\nsrc/a.py: \"x\" is not defined" `shouldBe` ["y", "x"]
+  it "(d3) undefinedNamesIn haskell reads GHC's Variable not in scope" $ do
+    undefinedNamesIn (shippedLanguageNow "haskell") "src/A.hs:3:7: error: [GHC-88464]\n    Variable not in scope: frobnicate :: Int -> Int" `shouldBe` ["frobnicate"]
+  it "(d4) undefinedNamesIn rust reads cargo's cannot find value, by its last group" $ do
+    undefinedNamesIn (shippedLanguageNow "rust") "error[E0425]: cannot find value `total` in this scope\nerror[E0425]: cannot find function `price` in this scope" `shouldBe` ["total", "price"]
+  it "(d5) gotExpectedIn on a language with no [test.failure] is Nothing" $ do
+    gotExpectedIn (shippedLanguageNow "haskell") (Failure Nothing "assert 3 == 4" "") `shouldBe` Nothing
+    assertionLineIn (shippedLanguageNow "haskell") "t" (Failure Nothing "x" "a.hs:3: in t\n  x `shouldBe` 1") `shouldBe` Nothing
+    gotExpectedIn pyNow (Failure Nothing "assert 3 == 4" "") `shouldBe` Just ("3", "4")
+    gotExpectedIn pyNow (Failure Nothing "assert f() == \"a == b\"" "") `shouldBe` Just ("f()", "\"a == b\"")
   it "(e) the question offers again, climb and ask, with eleven context keys" $ do
     let q = conjureNextQuestion (standing EscalateAsk) view
     qKind q `shouldBe` "conjure-next"
@@ -110,12 +126,12 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     rvUnit view `shouldBe` rcUnit ctx
     rvWired view `shouldBe` rcWired ctx
   it "(i) unitHeader gives the class and __init__ lines for a method, the def for a function" $ do
-    unitHeader "class C:\n    def __init__(self, a: A) -> None:\n        pass\n    def handle(self):\n        pass\n" 5
+    ownerHeader pyNow "class C:\n    def __init__(self, a: A) -> None:\n        pass\n    def handle(self):\n        pass\n" 5
       `shouldBe` "class C:\n    def __init__(self, a: A) -> None:"
-    unitHeader "def f():\n    pass\n" 2 `shouldBe` "def f():"
-    unitHeader "x = 1\n" 1 `shouldBe` ""
+    ownerHeader pyNow "def f():\n    pass\n" 2 `shouldBe` "def f():"
+    ownerHeader pyNow "x = 1\n" 1 `shouldBe` ""
   it "(m) the cancel_booking rounds: rows, involved tests, a repeat and a trade" $ do
-    roundRows "cancel_booking" cancelRecords
+    roundRows cancelPrefixes cancelRecords
       `shouldBe` [ RoundRow 1 "local" "return Ok(None)" False ["not_found"]
                  , RoundRow 2 "local" "return NotFound(reason=\"Booking not found\")" False ["succeeds"]
                  , RoundRow 3 "local" "(the same as round 2)" False ["succeeds"]
@@ -126,7 +142,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     isTrade cancelBefore (take 1 cancelRecords) `shouldBe` False
     isRepeat (take 2 cancelRecords) `shouldBe` False
   it "(n) the view holds every involved test's source and the attempts" $ do
-    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore "cancel_booking") Nothing (cancelState 3)
+    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore cancelPrefixes (testSourcesIn pyNow cancelTestText) (failureOf pyNow)) Nothing (cancelState 3)
     map fst (rvTests v) `shouldBe` [succeedsId, notFoundId]
     rvPassingTests v `shouldBe` [notFoundId]
     rvAttempts v
@@ -141,7 +157,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
         DiagnosisFacts
           { dfRung = "local"
           , dfNext = Nothing
-          , dfStem = "cancel_booking"
+          , dfPrefixes = cancelPrefixes
           , dfMethod = "handle"
           , dfClass = "CancelBooking"
           , dfHeader = cancelHeader
@@ -155,6 +171,9 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
           , dfSeconds = 14
           , dfWireFailed = Nothing
           , dfFailure = Nothing
+          , dfSources = testSourcesIn pyNow cancelTestText
+          , dfAssertion = langAssertion pyNow
+          , dfConjure = langConjure pyNow
           }
   it "(o) the policy table, in order" $ do
     let base = PolicyFacts [(notFoundId, nf)] [notFoundId] [notFoundId] True True [] (Just ("bookings", "BookingRepository")) False False False Nothing
@@ -197,7 +216,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     map offerText [OfferHint, OfferWire "bookings" "BookingRepository", OfferKeep 3] `shouldBe` ["hint", "wire:bookings: BookingRepository", "keep:3"]
     causeWords (CauseTest notFoundId) `shouldBe` ["test", notFoundId]
   it "(s) the narrowed question and its gates" $ do
-    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore "cancel_booking") Nothing (cancelState 3)
+    let v = roundView (RoundContext cancelTestText cancelHeader [] False cancelRecords cancelBefore cancelPrefixes (testSourcesIn pyNow cancelTestText) (failureOf pyNow)) Nothing (cancelState 3)
         st = Standing 3 50 Nothing Nothing False
         q = conjureNextQuestion st v
     map fst (qOptions' q) `shouldBe` ["again", "ask"]
@@ -228,7 +247,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
   it "(v) a refused re-conjure: the sentence, its rows, and the keep row's round" $ do
     refusedSentence "not_found" (addsReason "\"BAD\" is not defined" (Just 26)) `shouldBe` "Your re-conjure of not_found was refused: it adds `\"BAD\" is not defined` at line 26."
     addsReason "x" Nothing `shouldBe` "it adds `x`"
-    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False "cancel_booking" [] [])
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing False cancelPrefixes [] [] pyMethod)
         json = pausedJson cancelPaused {paOffers = map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2]}
     map (\r -> (orLabel r, orDetail r)) (map row [OfferRefused, OfferReconjureAgain notFoundId, OfferKeep 2])
       `shouldBe` [ ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
@@ -328,18 +347,18 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     at ["steps", "1", "files", "0", "file"] v `shouldBe` Just (String cb)
     at ["steps", "0", "kind"] v `shouldBe` Just (String "wire")
     -- the step's words: the line it changed, less what it assigns to
-    proposalStep "not_found" cancelTestText (T.replace "    cancel_booking = command()\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" "    cancel_booking = command(bookings=repository)\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" cancelTestText)
+    proposalStep (langImports pyNow) "not_found" cancelTestText (T.replace "    cancel_booking = command()\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" "    cancel_booking = command(bookings=repository)\n    result = cancel_booking.handle(CancelBookingInput(id=\"1\"))\n    assert isinstance" cancelTestText)
       `shouldBe` "test fixed: not_found (command(bookings=repository))"
     -- no run since the fix: not offered; a run failing the same way: not offered; failing anew: offered, saying so
     let checked = RoundRecord 3 "local" "x" Nothing (Just "pyright") Nothing 2
         same = checked {rrRun = Just round1Run}
         anew = checked {rrRun = Just (TestRun [] [(notFoundId, Failure (Just 26) "AttributeError: 'Mock' object has no attribute 'cancel'" "")] Nothing)}
         before2 = take 2 cancelRecords
-    fixAgain [fixed] (before2 ++ [checked]) notFoundId `shouldBe` Nothing
-    fixAgain [fixed] (before2 ++ [same]) notFoundId `shouldBe` Nothing
-    fixAgain [fixed] (before2 ++ [anew]) notFoundId `shouldBe` Just (Just "AttributeError: 'Mock' object has no attribute 'cancel'")
-    fixAgain [fixed] before2 succeedsId `shouldBe` Just Nothing
-    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing True "cancel_booking" [] [(notFoundId, "AttributeError: 'Mock' object has no attribute 'cancel'")])
+    fixAgain (failureOf pyNow) [fixed] (before2 ++ [checked]) notFoundId `shouldBe` Nothing
+    fixAgain (failureOf pyNow) [fixed] (before2 ++ [same]) notFoundId `shouldBe` Nothing
+    fixAgain (failureOf pyNow) [fixed] (before2 ++ [anew]) notFoundId `shouldBe` Just (Just "AttributeError: 'Mock' object has no attribute 'cancel'")
+    fixAgain (failureOf pyNow) [fixed] before2 succeedsId `shouldBe` Just Nothing
+    let row = offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" Nothing True cancelPrefixes [] [(notFoundId, "AttributeError: 'Mock' object has no attribute 'cancel'")] pyMethod)
     orDetail (row (OfferReconjure notFoundId)) `shouldBe` "fails anew: AttributeError: 'Mock' object has no attribute 'cancel'; you see its diff"
   it "(z) the failing section is the latest round's real failure: a check's refusal, with its lines, leads the diagnosis' others" $ do
     let refusal = LatestCheck 3 "pyright" [("src/bistro/booking/commands/cancel_booking.py", Just 30, "Cannot access attribute \"find_by_id\" for class \"BookingRepository\"")]
@@ -365,7 +384,7 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
         r3 = (cancelRecords !! 2) {rrSteps = 1}
     isRepeat [r2, r3] `shouldBe` False
     isRepeat [r2, r3 {rrSteps = 0}] `shouldBe` True
-    map rwLine (roundRows "cancel_booking" [r2, r3]) `shouldBe` ["return NotFound(reason=\"Booking not found\")", "return NotFound(reason=\"Booking not found\")"]
+    map rwLine (roundRows cancelPrefixes [r2, r3]) `shouldBe` ["return NotFound(reason=\"Booking not found\")", "return NotFound(reason=\"Booking not found\")"]
   it "(bb) a port missing a method pauses at once and offers it: p adds it, the diagnosis says where the check refused" $ do
     let base = PolicyFacts [] [] [] False True ["bookings: BookingRepository"] Nothing True False False (Just ("BookingRepository", "find_by_id"))
         sig = Just (", id: str", "Booking | None")
@@ -378,10 +397,10 @@ spec = describe "conjure-next (Olifant.Server.ConjureNext)" $ do
     let st = Standing 6 180 Nothing Nothing False
     offersAt st cause [notFoundId] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None", OfferReconjure notFoundId, OfferStop, OfferKeep 1]
     offersAt st (CauseMethod "BookingRepository" "find_by_id" Nothing) [] [] 1 `shouldBe` [OfferContinue, OfferHint, OfferStop, OfferKeep 1]
-    let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True "cancel_booking" [] []) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
+    let row = offerRow (OfferFacts 6 "local" Nothing 1 "CancelBooking" Nothing True cancelPrefixes [] [] pyMethod) (OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None")
     (orLabel row, orDetail row) `shouldBe` ("add find_by_id to BookingRepository", "find_by_id(self, id: str) -> Booking | None in the port and its adapters, then round 2")
     -- every detail under 90 cells (conjure-pause-ux-pass-2.md §5): the window wraps it, never cuts it
-    let facts = OfferFacts 6 "local" (Just "claude") 1 "CancelBooking" (Just notFoundId) True "cancel_booking" [(notFoundId, "hand repository to command(bookings=repository)")] []
+    let facts = OfferFacts 6 "local" (Just "claude") 1 "CancelBooking" (Just notFoundId) True cancelPrefixes [(notFoundId, "hand repository to command(bookings=repository)")] [] pyMethod
         everyOffer = [OfferContinue, OfferHint, OfferClimb "claude", OfferWire "bookings" "BookingRepository", OfferReconjure notFoundId, OfferStop, OfferKeep 12, OfferAccept, OfferReject, OfferRefused, OfferReconjureAgain notFoundId, OfferPort "BookingRepository" "find_by_id" ", id: str" "Booking | None"]
     [d | d <- map (orDetail . offerRow facts) everyOffer, T.length d >= 90] `shouldBe` []
     -- a detail whose facts run long is cut at 89 cells and ends in …
@@ -518,9 +537,9 @@ cancelPaused =
     , paPorts = []
     , paLanding = unifiedDiff rel cancelModule landing
     , paWired = []
-    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False "cancel_booking" (fixMoves cancelPausedFacts) [])) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 3 "CancelBooking" (listToMaybe' suspects) False cancelPrefixes (fixMoves cancelPausedFacts) [] pyMethod)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 3)
     , paExpires = 600
-    , paStem = "cancel_booking"
+    , paPrefixes = cancelPrefixes
     , paProposal = Nothing
     , paOutcome = Nothing
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule l)]) | (n, l) <- [(1, cancelModule), (2, landing), (3, landing)]]
@@ -529,6 +548,7 @@ cancelPaused =
     , paSteps = []
     , paFailure = Nothing
     , paChecker = Nothing
+    , paFailureShape = failureOf pyNow
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -541,7 +561,7 @@ cancelPaused =
 
 cancelPausedFacts :: DiagnosisFacts
 cancelPausedFacts =
-  DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing Nothing
+  DiagnosisFacts "local" Nothing cancelPrefixes "handle" "CancelBooking" cancelHeader cancelTestText cancelBefore cancelRecords [(notFoundId, Fake "repository" "Mock")] [] [] 3 14 Nothing Nothing (testSourcesIn pyNow cancelTestText) (langAssertion pyNow) (langConjure pyNow) (failureOf pyNow)
 
 -- | The cancel_booking pause as the by-hand run of 2026-10-24 had it (design §10): the wire
 -- before round 1 gave CancelBooking bookings: BookingRepository and the test's helper the
@@ -567,9 +587,9 @@ cancelWiredPaused =
     , paPorts = ["bookings: BookingRepository"]
     , paLanding = unifiedDiff rel cancelModule landing
     , paWired = [("bookings: BookingRepository", [(rel, unifiedDiff rel cancelModule wiredModule), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)])]
-    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True "cancel_booking" (fixMoves facts) [])) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
+    , paOffers = map (offerRow (OfferFacts 6 "local" Nothing 2 "CancelBooking" (listToMaybe' suspects) True cancelPrefixes (fixMoves facts) [] pyMethod)) (offersAt (Standing 6 180 Nothing Nothing False) CauseRepeat suspects [] 2)
     , paExpires = 600
-    , paStem = "cancel_booking"
+    , paPrefixes = cancelPrefixes
     , paProposal = Nothing
     , paOutcome = Nothing
     , paRoundFiles = [(n, [(rel, unifiedDiff rel cancelModule landing), (T.unpack cb, unifiedDiff (T.unpack cb) cancelTestText wiredTest)]) | n <- [1, 2]]
@@ -578,6 +598,7 @@ cancelWiredPaused =
     , paSteps = []
     , paFailure = Nothing
     , paChecker = Nothing
+    , paFailureShape = failureOf pyNow
     }
   where
     rel = "src/bistro/booking/commands/cancel_booking.py"
@@ -588,7 +609,7 @@ cancelWiredPaused =
       ]
     roundSummaryText = "red: test_cancel_booking_not_found \183 False = isinstance(Ok(value=None), NotFound)"
     facts =
-      DiagnosisFacts "local" Nothing "cancel_booking" "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing Nothing
+      DiagnosisFacts "local" Nothing cancelPrefixes "handle" "CancelBooking" wiredHeader wiredTest cancelBefore records [(notFoundId, Fake "repository" "Mock")] ["bookings: BookingRepository"] [] 2 16 Nothing Nothing (testSourcesIn pyNow wiredTest) (langAssertion pyNow) (langConjure pyNow) (failureOf pyNow)
     sentences = diagnosis facts CauseRepeat
     suspects = suspectFirst (dfFlagged facts) (involved cancelBefore records)
     landing = T.replace "        return Ok(None)" (T.intercalate "\n" (map ("        " <>) (T.lines body))) wiredModule
@@ -670,3 +691,21 @@ pretty v0 = go 0 v0 <> "\n"
       x -> scalar x
     pad n = T.replicate (2 * n) " "
     scalar = TE.decodeUtf8 . BSL.toStrict . encode
+
+-- | Python as conjure reads it here: the python-htmx pack's.
+pyNow :: Language
+pyNow = pyHtmx
+
+-- | Python as the python-htmx pack has it (its `[conjure]` shapes over the
+-- shipped language), read once for the pure fixtures here.
+pyHtmx :: Language
+pyHtmx = unsafePerformIO (shippedLanguage "python" [("pack python-htmx", "packs/python-htmx")])
+{-# NOINLINE pyHtmx #-}
+
+-- | Python's method signature template (`[types] method`).
+pyMethod :: Maybe Text
+pyMethod = langTypes pyNow >>= tyMethod
+
+-- | What cancel_booking's tests' names drop to be short (pytest's `test_cancel_booking`, `test_`).
+cancelPrefixes :: [Text]
+cancelPrefixes = namePrefixesIn pyNow "cancel_booking"

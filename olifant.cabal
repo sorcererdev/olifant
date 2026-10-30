@@ -207,6 +207,7 @@ test-suite spec
     Olifant.Cli
     Olifant.Cli.Options
     Olifant.CliSpec
+    Olifant.ConjureNeutralSpec
     Olifant.Cursor
     Olifant.CursorSpec
     Olifant.Decide

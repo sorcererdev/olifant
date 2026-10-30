@@ -54,7 +54,7 @@ data StepStub = StepStub {stAnswer :: StubAnswer, stChild :: Text, stFact :: Fac
 
 -- | A test for the step at ROW (0-based) of the plan at PATH, named for its
 -- words, in its unit's test file. Left is one sentence: no step, no anchor,
--- its unit not found, or the stub's own reason (Python only).
+-- its unit not found, or the stub's own reason, naming its key when the language lacks one.
 stepStub :: FilePath -> Int -> ServerState -> IO (ServerState, Either Text StepStub)
 stepStub path row s0 =
   planAt path s0 >>= \case

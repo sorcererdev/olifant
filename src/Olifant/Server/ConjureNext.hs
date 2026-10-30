@@ -3,7 +3,6 @@
 module Olifant.Server.ConjureNext
   ( RoundView (..)
   , RoundContext (..)
-  , testSource
   , roundView
   , Decided (..)
   , RoundRecord (..)
@@ -17,7 +16,8 @@ module Olifant.Server.ConjureNext
   , isRepeat
   , isTrade
   , attemptDiff
-  , undefinedNames
+  , undefinedNamesIn
+  , undefinedIn
   , roundSummary
   , Standing (..)
   , Offer (..)
@@ -73,20 +73,22 @@ module Olifant.Server.ConjureNext
 import Control.Applicative ((<|>))
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as Key
-import Data.List (isSuffixOf, nub)
+import Data.List (isSuffixOf, nub, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isNothing, listToMaybe)
+import Data.Char (isAlphaNum)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Decide (Answer (..), Question (..), choice, confident)
-import Olifant.Server.ConjureScan (Fake (..), actCall, handFake, helperOf, initParams, testSource)
+import Olifant.Server.ConjureScan (Fake (..), actCall, ctorParamsIn, handFakeIn, helperOf, methodText)
 import Text.Printf (printf)
 import Olifant.Generation.Steer
 import Olifant.Generation.Tools (ProgressEvent (..))
 import Olifant.Language
 import Olifant.Model (Escalate (..), Rung (..))
-import Text.Regex.TDFA ((=~))
+import Data.Array (elems)
+import Text.Regex.TDFA (Regex, makeRegexM, matchAllText, matchTest, (=~))
 
 data RoundView = RoundView
   { rvRound :: Int
@@ -128,12 +130,13 @@ data StepKind = StepWire | StepTest Text (Maybe Text) | StepHint Text | StepPort
   deriving stock (Eq, Show)
 
 -- | The words of a test fix's step for the test SHORT, from the test file BEFORE and AFTER:
--- the first line it changed (no import), less what that line assigns to.
-proposalStep :: Text -> Text -> Text -> Text
-proposalStep short before after = "test fixed: " <> short <> maybe "" (\l -> " (" <> l <> ")") changed
+-- the first line it changed (none matching IMPORTS, the language's import line), less what
+-- that line assigns to.
+proposalStep :: Maybe Text -> Text -> Text -> Text -> Text
+proposalStep imports short before after = "test fixed: " <> short <> maybe "" (\l -> " (" <> l <> ")") changed
   where
     olds = map T.strip (T.lines before)
-    changed = listToMaybe [rhs l | l <- map T.strip (T.lines after), not (T.null l), l `notElem` olds, not ("import " `T.isPrefixOf` l), not ("from " `T.isPrefixOf` l)]
+    changed = listToMaybe [rhs l | l <- map T.strip (T.lines after), not (T.null l), l `notElem` olds, not (maybe False (`matchesLine` l) imports)]
     rhs l = case T.breakOn " = " l of
       (lhs, r) | not (T.null r), T.all (\ch -> ch == '_' || ch == '.' || ch == ' ' || ch `elem` ['a' .. 'z'] || ch `elem` ['A' .. 'Z'] || ch `elem` ['0' .. '9']) lhs -> T.drop 3 r
       _ -> l
@@ -152,18 +155,18 @@ rootFirst ps = [p | p <- ps, not (consequence p)] ++ [p | p <- ps, consequence p
 -- | Whether the test TID is offered for a fix, given the STEPS so far and the rounds: Just
 -- Nothing when no step fixed it; when one did, only if the last run after that step that
 -- has the test fails it for another reason than it failed when fixed (Just that failure's line).
-fixAgain :: [ConjureStep] -> [RoundRecord] -> Text -> Maybe (Maybe Text)
-fixAgain steps records tid = case reverse [(a, was) | ConjureStep a (StepTest t was) _ _ <- steps, t == tid] of
+fixAgain :: Maybe FailureDef -> [ConjureStep] -> [RoundRecord] -> Text -> Maybe (Maybe Text)
+fixAgain fd steps records tid = case reverse [(a, was) | ConjureStep a (StepTest t was) _ _ <- steps, t == tid] of
   [] -> Just Nothing
   (a, was) : _ ->
     let runs = [run | r <- records, rrRound r > a, Just run <- [rrRun r], tid `elem` map fst (trFailed run) || tid `elem` trPassed run]
      in case reverse runs of
-          run : _ | Just f <- failureLine <$> lookup tid (trFailed run), Just f /= was -> Just (Just f)
+          run : _ | Just f <- failureLineWith fd <$> lookup tid (trFailed run), Just f /= was -> Just (Just f)
           _ -> Nothing
 
 -- | The record of a round, from its first hole (Jev not yet asked).
-roundRecord :: RoundState -> RoundRecord
-roundRecord rs = RoundRecord (rsRound rs) (rsRung rs) attempt (rhRun hole) (snd (verdictOf hole)) Nothing 0
+roundRecord :: Maybe FailureDef -> RoundState -> RoundRecord
+roundRecord fd rs = RoundRecord (rsRound rs) (rsRung rs) attempt (rhRun hole) (snd (verdictOf fd hole)) Nothing 0
   where
     hole = firstHole rs
     attempt = case reverse (map fst (rhPrevious hole)) of
@@ -177,14 +180,14 @@ firstHole rs = case rsHoles rs of
 
 -- | A hole's failing tests (with their one-line messages) and its check: the run's broken
 -- text, or the hole's why when no run judged it.
-verdictOf :: RoundHole -> ([(Text, Text)], Maybe Text)
-verdictOf hole = case rhRun hole of
+verdictOf :: Maybe FailureDef -> RoundHole -> ([(Text, Text)], Maybe Text)
+verdictOf fd hole = case rhRun hole of
   Nothing -> ([], Just why)
   Just r -> case trBroken r of
     Just b -> ([], Just (firstLines 3 b))
     Nothing
       | null (trFailed r) -> ([], Just why)
-      | otherwise -> ([(i, failureLine f) | (i, f) <- trFailed r], Nothing)
+      | otherwise -> ([(i, failureLineWith fd f) | (i, f) <- trFailed r], Nothing)
   where
     why = firstLines 3 (rhWhy hole)
 
@@ -219,11 +222,18 @@ involved before records = [s | s <- statuses, tsFailing s] ++ [s | s <- statuses
        in TestStatus t now flipped
     lastOf xs = if null xs then Nothing else Just (last xs)
 
--- | A test's short name beside its module's stem: less @test_<stem>_@, else less @test_@.
-shortName :: Text -> Text -> Text
-shortName stem tid = fromMaybe (fromMaybe name (T.stripPrefix "test_" name)) (T.stripPrefix ("test_" <> stem <> "_") name)
+-- | A test's short name: less the first of PREFIXES it starts with ('Olifant.Server.Stub.namePrefixesIn'): pytest's @test_<stem>_@, else @test_@.
+shortName :: [Text] -> Text -> Text
+shortName prefixes tid = fromMaybe name (listToMaybe (mapMaybe dropped prefixes))
   where
     name = snd (T.breakOnEnd "::" tid)
+    -- a prefix ending in a letter or digit ends at a separator, which goes too
+    dropped p = case T.stripPrefix p name of
+      Just r
+        | T.null p || T.null r -> Nothing
+        | isAlphaNum (T.last p) -> let r' = T.dropWhile (not . isAlphaNum) r in if T.length r' < T.length r && not (T.null r') then Just r' else Nothing
+        | otherwise -> Just r
+      Nothing -> Nothing
 
 -- | An attempt's first line that is neither blank nor a comment.
 attemptLine :: Text -> Text
@@ -236,7 +246,7 @@ attemptLine a = case [l | l <- map T.strip (T.lines a), not (T.null l), not ("#"
 data RoundRow = RoundRow {rwRound :: Int, rwRung :: Text, rwLine :: Text, rwGreen :: Bool, rwFailing :: [Text]}
   deriving stock (Eq, Show)
 
-roundRows :: Text -> [RoundRecord] -> [RoundRow]
+roundRows :: [Text] -> [RoundRecord] -> [RoundRow]
 roundRows stem records = zipWith row (Nothing : map Just records) records
   where
     row prev r =
@@ -280,7 +290,7 @@ firstLine = firstLines 1
 
 -- | What the round's view needs beyond the round: the test file's text, the unit's header,
 -- what is wired, and whether a wire may still run.
-data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool, rcHistory :: [RoundRecord], rcBefore :: TestRun, rcStem :: Text}
+data RoundContext = RoundContext {rcTestText :: Text, rcUnit :: Text, rcWired :: [Text], rcWireable :: Bool, rcHistory :: [RoundRecord], rcBefore :: TestRun, rcPrefixes :: [Text], rcSources :: [(Text, Text)], rcFailureShape :: Maybe FailureDef}
   deriving stock (Eq, Show)
 
 -- | The previous view, the round; built from the first hole. A passing delta needs a test
@@ -296,21 +306,21 @@ roundView ctx prev rs =
     , rvPassingDelta = delta
     , rvCheck = check
     , rvRepeat = isRepeat history
-    , rvTests = [(i, fromMaybe "(source not found)" (testSource (snd (T.breakOnEnd "::" i)) (rcTestText ctx))) | i <- map tsTest tests]
+    , rvTests = [(i, fromMaybe "(source not found)" (lookup (snd (T.breakOnEnd "::" i)) (rcSources ctx))) | i <- map tsTest tests]
     , rvUnit = rcUnit ctx
     , rvWired = rcWired ctx
-    , rvAttempts = [attemptText r | r <- roundRows (rcStem ctx) history]
+    , rvAttempts = [attemptText r | r <- roundRows (rcPrefixes ctx) history]
     , rvTrade = isTrade (rcBefore ctx) history
     , rvPassingTests = [tsTest t | t <- tests, not (tsFailing t)]
     }
   where
     hole = firstHole rs
-    (failing, check) = verdictOf hole
+    (failing, check) = verdictOf (rcFailureShape ctx) hole
     passing = maybe 0 (length . trPassed) (rhRun hole)
     -- the history with this round (once: a record of it may be there already)
     history = case reverse (rcHistory ctx) of
       r : _ | rrRound r == rsRound rs -> rcHistory ctx
-      _ -> rcHistory ctx ++ [roundRecord rs]
+      _ -> rcHistory ctx ++ [roundRecord (rcFailureShape ctx) rs]
     tests = involved (rcBefore ctx) history
     attemptText r = "round " <> T.pack (show (rwRound r)) <> ": " <> rwLine r <> (if rwGreen r then " \183 green" else " \183 red: " <> T.intercalate ", " (rwFailing r))
     delta = case prev of
@@ -337,11 +347,24 @@ attemptDiff (Just old) new
     oldMid = take (length os' - suf) os'
     newMid = take (length ns' - suf) ns'
 
--- | Names a checker or runner says are undefined (Python's NameError, pyright), in order.
-undefinedNames :: Text -> [Text]
-undefinedNames t = nub [n | m <- matches, n <- take 1 (filter (not . T.null) (drop 1 m))]
+-- | Names LANG's checker or runner says are undefined in T (`[check]` and
+-- `[test]` `undefined`), in the text's order, once each.
+undefinedNamesIn :: Language -> Text -> [Text]
+undefinedNamesIn lang = nub . map fst . undefinedIn lang
+
+-- | Each undefined name in T, in the text's order, with its entry's `label`.
+undefinedIn :: Language -> Text -> [(Text, Maybe Text)]
+undefinedIn lang t = map snd (sortOn fst [hit | r <- rules, Just re <- [makeRegexM (T.unpack (udPattern r)) :: Maybe Regex], m <- matchAllText re t, Just hit <- [named r (elems m)]])
   where
-    matches = t =~ ("name '([^']+)' is not defined|\"([^\"]+)\" is not defined" :: Text) :: [[Text]]
+    rules = maybe [] checkUndefined (langCheck lang) ++ maybe [] testUndefined (langTest lang)
+    named r gs = case (udName r, gs) of
+      (Just n, _) | (g, _) : _ <- drop n gs, not (T.null g) -> Just (offsetOf gs, (g, udLabel r))
+      (Nothing, [(g, _)]) | not (T.null g) -> Just (offsetOf gs, (g, udLabel r))
+      (Nothing, _ : groups) | (g, _) : _ <- reverse groups, not (T.null g) -> Just (offsetOf gs, (g, udLabel r))
+      _ -> Nothing
+    offsetOf = \case
+      (_, (o, _)) : _ -> o
+      [] -> 0
 
 roundSummary :: RoundView -> Text
 roundSummary v = case rvFailing v of
@@ -481,7 +504,7 @@ policy pf
 data DiagnosisFacts = DiagnosisFacts
   { dfRung :: Text
   , dfNext :: Maybe Text
-  , dfStem :: Text
+  , dfPrefixes :: [Text]
   , dfMethod :: Text
   , dfClass :: Text
   , dfHeader :: Text
@@ -495,6 +518,14 @@ data DiagnosisFacts = DiagnosisFacts
   , dfSeconds :: Int
   , dfWireFailed :: Maybe Text
   , dfFailure :: Maybe LatestFailure
+  , dfSources :: [(Text, Text)]
+  -- ^ the test file's tests by their own names, each its source ('testSourcesIn')
+  , dfAssertion :: [Text]
+  -- ^ the language's `[test] assertion` expressions
+  , dfConjure :: Maybe ConjureDef
+  -- ^ the pack's `[conjure]` shapes
+  , dfFailureShape :: Maybe FailureDef
+  -- ^ the runner's `[test.failure]`
   }
   deriving stock (Eq, Show)
 
@@ -509,7 +540,7 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
     trade = isTrade (dfBefore df) (dfHistory df)
     rounds = dfHistory df
     lastRound = maybe 0 rrRound (lastOf rounds)
-    calls = [c | t <- statuses, Just src <- [testSource (snd (T.breakOnEnd "::" (tsTest t))) (dfTestText df)], Just c <- [actCall (dfMethod df) src]]
+    calls = [c | t <- statuses, Just src <- [lookup (snd (T.breakOnEnd "::" (tsTest t))) (dfSources df)], Just c <- [actCall (dfMethod df) src]]
     sameCall = [c | (i, c) <- zip [0 :: Int ..] calls, c `elem` drop (i + 1) calls]
     failingSets = [maybe [] (map fst . trFailed) (rrRun r) | r <- rounds]
     noProgress = not trade && case reverse failingSets of
@@ -549,19 +580,19 @@ diagnosis df cause = take 3 (nub (causeSentence ++ concat others))
     spentSentence = tshow' (dfRounds df) <> (if dfRounds df == 1 then " round" else " rounds") <> " used (" <> tshow' (dfSeconds df) <> " s); nothing passed."
     className = if T.null (dfClass df) then dfMethod df else dfClass df
     unsatisfiableSentence t = case lookup t (dfFlagged df) of
-      Nothing -> "No body can pass " <> shortName (dfStem df) t <> "."
+      Nothing -> "No body can pass " <> shortName (dfPrefixes df) t <> "."
       Just f ->
-        "No body can pass " <> shortName (dfStem df) t <> ": it builds " <> built f <> " and never hands it to " <> helperCall t <> ", so " <> dfMethod df <> " never sees it." <> takes t
+        "No body can pass " <> shortName (dfPrefixes df) t <> ": it builds " <> built f <> " and never hands it to " <> helperCall t <> ", so " <> dfMethod df <> " never sees it." <> takes t
     built f = fkVariable f <> " = " <> fkClass f <> "()"
-    helperName t = testSource (snd (T.breakOnEnd "::" t)) (dfTestText df) >>= helperOf (dfMethod df)
+    helperName t = lookup (snd (T.breakOnEnd "::" t)) (dfSources df) >>= helperOf (dfMethod df)
     helperCall t = maybe "the helper" (<> "()") (helperName t)
-    takes t = case (dfWired df, initParams (dfHeader df)) of
+    takes t = case (dfWired df, ctorParamsIn (dfConjure df) (dfHeader df)) of
       (w : _, _) | Just (p, q) <- paramPort w -> " " <> className <> " takes " <> p <> ": " <> q <> " since the wire; the test should pass its fake as " <> maybe ("the helper (" <> p <> "=\8230)") (\h -> h <> "(" <> p <> "=\8230)") (helperName t) <> "."
       (_, []) -> " " <> className <> "() takes no ports."
       (_, ps) -> " " <> className <> " takes " <> T.intercalate ", " [n <> ": " <> ty | (n, ty) <- ps] <> "."
     portSentence = case [(t, f) | (t, f) <- dfFlagged df] of
       (t, f) : _ ->
-        shortName (dfStem df) t <> " builds " <> built f <> " for a port " <> className <> " lacks" <> (if null (dfCandidates df) then "." else "; it could be " <> T.intercalate " or " (dfCandidates df) <> ".")
+        shortName (dfPrefixes df) t <> " builds " <> built f <> " for a port " <> className <> " lacks" <> (if null (dfCandidates df) then "." else "; it could be " <> T.intercalate " or " (dfCandidates df) <> ".")
       [] -> className <> " lacks a port a test needs."
     lastOf xs = if null xs then Nothing else Just (last xs)
 
@@ -667,7 +698,7 @@ data PausedAnswer = PausedAnswer
   , paWired :: [(Text, [(FilePath, Text)])]
   , paOffers :: [OfferRow]
   , paExpires :: Int
-  , paStem :: Text
+  , paPrefixes :: [Text]
   , paProposal :: Maybe Proposal
   , paOutcome :: Maybe Text
   , paRoundFiles :: [(Int, [(FilePath, Text)])]
@@ -676,6 +707,8 @@ data PausedAnswer = PausedAnswer
   , paSteps :: [ConjureStep]
   , paFailure :: Maybe LatestFailure
   , paChecker :: Maybe Text
+  , paFailureShape :: Maybe FailureDef
+  -- ^ the runner's `[test.failure]`: how a failure names its assertion, got and expected
   }
   deriving stock (Eq, Show)
 
@@ -697,10 +730,10 @@ testEntries df = [entry t | t <- involved (dfBefore df) (dfHistory df)]
     entry t =
       let tid = tsTest t
           name = snd (T.breakOnEnd "::" tid)
-          src = fromMaybe "" (testSource name (dfTestText df))
+          src = fromMaybe "" (lookup name (dfSources df))
           lastFailure = listToMaybe [f | r <- runs, Just f <- [lookup tid (trFailed r)]]
-          lastAssert = listToMaybe (reverse [T.strip l | l <- T.lines src, "assert" `T.isPrefixOf` T.strip l])
-          assertion = if tsFailing t then (lastFailure >>= assertionLine name) <|> lastAssert else lastAssert
+          lastAssert = listToMaybe (reverse [T.strip l | l <- T.lines src, any (`matchesLine` l) (dfAssertion df)])
+          assertion = if tsFailing t then (lastFailure >>= assertionLineWith (dfFailureShape df) name) <|> lastAssert else lastAssert
        in TestEntry t src assertion (testNote df tid)
 
 -- | The scan's note on a flagged test: the fake it never hands in, and what the class takes.
@@ -708,9 +741,9 @@ testNote :: DiagnosisFacts -> Text -> Maybe Text
 testNote df tid = do
   f <- lookup tid (dfFlagged df)
   let name = snd (T.breakOnEnd "::" tid)
-      helper = testSource name (dfTestText df) >>= helperOf (dfMethod df)
+      helper = lookup name (dfSources df) >>= helperOf (dfMethod df)
       className = if T.null (dfClass df) then dfMethod df else dfClass df
-      takes = case (dfWired df, initParams (dfHeader df)) of
+      takes = case (dfWired df, ctorParamsIn (dfConjure df) (dfHeader df)) of
         (w : _, _) -> className <> " takes " <> w <> " since the wire"
         (_, []) -> className <> "() takes no ports"
         (_, ps) -> className <> " takes " <> T.intercalate ", " [n <> ": " <> ty | (n, ty) <- ps]
@@ -723,7 +756,7 @@ data OfferRow = OfferRow {orOffer :: Offer, orLabel :: Text, orDetail :: Text}
 -- | What an offer's detail is written from: the rounds a grant gives, the rung, the one
 -- above, the round paused at, the class, the suspect test, whether a wire ran, the module's
 -- stem (the tests' short names), and each flagged test's fix ('fixMoves').
-data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool, ofStem :: Text, ofFixes :: [(Text, Text)], ofAgain :: [(Text, Text)]}
+data OfferFacts = OfferFacts {ofGrant :: Int, ofRung :: Text, ofNext :: Maybe Text, ofRound :: Int, ofClass :: Text, ofSuspect :: Maybe Text, ofWired :: Bool, ofPrefixes :: [Text], ofFixes :: [(Text, Text)], ofAgain :: [(Text, Text)], ofMethod :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | An offer in plain words (conjure-pause-ux-design.md §6): the label says what it is, the
@@ -742,11 +775,11 @@ offerRow o offer = uncurry (OfferRow offer) . fmap cappedDetail $ case offer of
   OfferReject -> ("reject", "back to the rows; the test stands as it was")
   OfferRefused -> ("see the refused proposal", "the diff it wrote and why it was refused; a accepts it anyway")
   OfferReconjureAgain t -> ("fix the test: " <> short t <> ", again", "re-conjure it once more; you see its diff")
-  OfferPort q m ps r -> ("add " <> m <> " to " <> q, m <> "(self" <> ps <> ") -> " <> r <> " in the port and its adapters, then round " <> next)
+  OfferPort q m ps r -> ("add " <> m <> " to " <> q, methodText (ofMethod o) m ps r <> " in the port and its adapters, then round " <> next)
   where
     n = T.pack . show
     next = n (ofRound o + 1)
-    short = shortName (ofStem o)
+    short = shortName (ofPrefixes o)
 
 -- | A row's detail as the window shows it: under 90 cells (conjure-pause-ux-pass-2.md §5),
 -- so the window wraps it whole; one whose facts run longer is cut at 89, ending in @…@.
@@ -758,21 +791,22 @@ cappedDetail d
 -- | The edit each flagged test gets, once a wire gave the class its port, in words
 -- (@hand repository to command(bookings=repository)@): see 'testFix'.
 fixMoves :: DiagnosisFacts -> [(Text, Text)]
-fixMoves df = [(t, w) | (t, _) <- dfFlagged df, Just (w, _) <- [testFix (dfMethod df) (dfFlagged df) (dfWired df) (dfTestText df) t]]
+fixMoves df = [(t, w) | (t, _) <- dfFlagged df, Just (w, _) <- [testFix (dfConjure df) (dfMethod df) (dfFlagged df) (dfWired df) (dfTestText df) (dfSources df) t]]
 
--- | The fix of the flagged test TID in the test file's TEXT once the first of WIRED gave the
+-- | The fix of the flagged test TID in the test file's TEXT (its tests' SOURCES by name) once the first of WIRED gave the
 -- unit its param: the test's fake handed to its helper's call (the helper is what the test
 -- calls METHOD on) as that param. Its words and the file's new text; none when the test is
 -- not flagged, nothing is wired, or the test has no helper call to edit.
-testFix :: Text -> [(Text, Fake)] -> [Text] -> Text -> Text -> Maybe (Text, Text)
-testFix method flagged wired text tid = do
+testFix :: Maybe ConjureDef -> Text -> [(Text, Fake)] -> [Text] -> Text -> [(Text, Text)] -> Text -> Maybe (Text, Text)
+testFix cj method flagged wired text sources tid = do
   f <- lookup tid flagged
   (p, _) <- listToMaybe wired >>= paramPort
   let name = snd (T.breakOnEnd "::" tid)
       var = fkVariable f
-  helper <- testSource name text >>= helperOf method
-  fixed <- handFake name helper p var text
-  pure ("hand " <> var <> " to " <> helper <> "(" <> p <> "=" <> var <> ")", fixed)
+  src <- lookup name sources
+  helper <- helperOf method src
+  src' <- handFakeIn cj helper p var src
+  pure ("hand " <> var <> " to " <> helper <> "(" <> p <> "=" <> var <> ")", T.replace src src' text)
 
 -- | Why the test TID is wrong, as the re-conjure is told: its note when the scan flagged it,
 -- else the pause's first sentence.
@@ -815,7 +849,7 @@ pausedJson p =
     , "title" .= object ["unit" .= tiUnit t, "round" .= tiRound t, "of" .= tiOf t, "rung" .= tiRung t, "model" .= tiModel t, "seconds" .= tiSeconds t]
     , "diagnosis" .= paDiagnosis p
     , "trigger" .= paTrigger p
-    , "rounds" .= zipWith roundJson (roundRows (paStem p) (paRounds p)) (paRounds p)
+    , "rounds" .= zipWith roundJson (roundRows (paPrefixes p) (paRounds p)) (paRounds p)
     , "tests" .= map testJson (paTests p)
     , "unit" .= object ["header" .= paHeader p, "ports" .= paPorts p]
     , "landing" .= object ["diff" .= paLanding p]
@@ -847,13 +881,13 @@ pausedJson p =
         , "files" .= [object ["file" .= f, "diff" .= d] | (f, d) <- fromMaybe [] (lookup (rrRound r) (paRoundFiles p))]
         ]
     failedJson tid f =
-      let ge = gotExpected f
+      let ge = gotExpectedWith (paFailureShape p) f
        in object
             [ "test" .= tid
             , "message" .= fMessage f
-            , "summary" .= failureLine f
+            , "summary" .= failureLineWith (paFailureShape p) f
             , "at" .= fLine f
-            , "assertion" .= assertionLine (snd (T.breakOnEnd "::" tid)) f
+            , "assertion" .= assertionLineWith (paFailureShape p) (snd (T.breakOnEnd "::" tid)) f
             , "got" .= fmap fst ge
             , "expected" .= fmap snd ge
             , "output" .= fOutput f
@@ -991,3 +1025,7 @@ pruned :: Double -> Map FilePath (Int, Text) -> Map Text PausedConjure -> Map Te
 pruned now docs = M.filter good
   where
     good pd = now - pdAt pd <= pausedLifetime && (fst <$> M.lookup (pdFile pd) docs) == pdVersion pd
+
+-- | Whether the expression RE matches LINE (an invalid one matches nothing).
+matchesLine :: Text -> Text -> Bool
+matchesLine re l = maybe False (`matchTest` T.unpack l) (makeRegexM (T.unpack re) :: Maybe Regex)

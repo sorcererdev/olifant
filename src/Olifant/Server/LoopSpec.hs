@@ -28,7 +28,10 @@ import System.Directory (canonicalizePath, getTemporaryDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import Olifant.LspSpec (needsUv, plainPorts, withPython)
 import Olifant.Plans (Anchor (..), Line (..), TestState (..), parsePlan)
-import Olifant.Server (TestsFile (..), newServerState, projectFor, stubAt, testsFile)
+import Olifant.Server (ConjureAnswer (..), ConjureOutcome (..), PausedAnswer (..), TestsFile (..), conjureAt, newServerState, projectFor, stubAt, testsFile)
+import Olifant.Fill (FillHole (..), FillRequest (..), Filler (..), ModelFiller (..))
+import Data.IORef (modifyIORef, newIORef, readIORef)
+import Olifant.Language (Failure (..), Runner (..), TestRun (..))
 import Olifant.Server.Loop
 import Olifant.Server.Plans (Resolved (..), resolveAnchor)
 import Olifant.Server.ReviewReadings (applyFactsText)
@@ -42,7 +45,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
-spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> haskellStubSpec >> rustStubSpec >> excerptsSpec
+spec = factsSpec >> workSetSpec >> questionsSpec >> reconcileSpec >> stepTestsSpec >> haskellStubSpec >> rustStubSpec >> conjureFloorSpec >> excerptsSpec
 
 workSetSpec :: Spec
 workSetSpec = describe "Olifant.Server.Loop (the work set)" $ do
@@ -270,6 +273,50 @@ haskellStubSpec = describe "a Haskell test's stub (hspec)" $ do
       st <- either (fail . T.unpack) pure r
       stChild st `shouldBe` "  - test: answers zero @src/Olifant/Foo/BarSpec.hs:Olifant.Foo.Bar.answers_zero \9675"
       applyEdit (saEdit (stAnswer st)) existing `shouldSatisfy` T.isInfixOf "  it \"answers zero\" $ do"
+
+-- | Conjure where no pack declares `[conjure]` (milestone 4a's floor): a test
+-- whose body is its stub gets the body filled, with no port asked and
+-- nothing wired. The runner says every test it runs fails; the model fake
+-- answers the body.
+conjureFloorSpec :: Spec
+conjureFloorSpec = describe "conjure at the floor (no [conjure])" $ do
+  let red = Runner (\_ ids _ -> pure (Right (TestRun [] [(i, Failure Nothing "expected: 2\n but got: 1" "") | i <- ids] Nothing)))
+      ready fill s = s {ssTestFiller = Just (ModelFiller "conjurer" 0 (Filler (\_ -> pure (Right (M.fromList [("body", fill)]))))), ssPorts = (ssPorts s) {pTester = const red, pTesterWithin = \_ _ -> red}}
+      conjured path line fill s = do
+        (_, r) <- conjureAt (const (pure ())) path line Nothing (ready fill s)
+        case r of
+          Right (Landed a) -> pure a
+          Right (Paused p) -> fail (T.unpack ("paused: " <> paWhy p))
+          Left why -> fail (T.unpack why)
+      edited a text = foldl (flip applyEdit) text (daEdits a)
+  it "Haskell: a hspec it whose body is the stub: its body filled, no port, no wire" $ do
+    let bar = "src/Olifant/Foo/Bar.hs"
+        barSpec = "src/Olifant/Foo/BarSpec.hs"
+        specText = T.unlines ["module Olifant.Foo.BarSpec (spec) where", "", "import Olifant.Foo.Bar", "import Test.Hspec", "", "spec :: Spec", "spec = describe \"Olifant.Foo.Bar\" $ do", "  it \"baz\" $ do", "    expectationFailure \"write this test\""]
+    withHaskellProject [(bar, barText), (barSpec, specText)] $ \dir s -> do
+      a <- conjured (dir </> barSpec) 9 "baz 1 `shouldBe` 3" s
+      (daFile a, daUnit a) `shouldBe` (dir </> barSpec, "baz")
+      map fePath (daEdits a) `shouldBe` [dir </> barSpec]
+      edited a specText `shouldBe` T.replace "expectationFailure \"write this test\"" "baz 1 `shouldBe` 3" specText
+  it "Rust: a #[test] fn in mod tests whose body is todo!(): its body filled, no port, no wire" $ do
+    let rates = "src/rates.rs"
+        text = ratesText <> "\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn convert() {\n        todo!(\"write this test\");\n    }\n}\n"
+    withRustProject [(rates, text)] $ \dir s -> do
+      a <- conjured (dir </> rates) 11 "assert_eq!(convert(2, 3), 7);" s
+      (daFile a, daUnit a) `shouldBe` (dir </> rates, "convert")
+      map fePath (daEdits a) `shouldBe` [dir </> rates]
+      edited a text `shouldBe` T.replace "todo!(\"write this test\");" "assert_eq!(convert(2, 3), 7);" text
+
+  it "Rust: a test in its module's own mod tests is conjured as a test (its instruction, not a function's)" $ do
+    let rates = "src/rates.rs"
+        text = ratesText <> "\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn convert() {\n        todo!(\"write this test\");\n    }\n}\n"
+    asked <- newIORef []
+    withRustProject [(rates, text)] $ \dir s -> do
+      let s' = (ready "assert_eq!(convert(2, 3), 7);" s) {ssTestFiller = Just (ModelFiller "conjurer" 0 (Filler (\r -> modifyIORef asked (map fhInstruction (frHoles r) ++) >> pure (Right (M.fromList [("body", "assert_eq!(convert(2, 3), 7);")])))))}
+      (_, r) <- conjureAt (const (pure ())) (dir </> rates) 11 Nothing s'
+      either (fail . T.unpack) (const (pure ())) r
+    instructions <- readIORef asked
+    instructions `shouldSatisfy` \is -> not (null is) && all ("write the body of the test" `T.isInfixOf`) is
 
 -- | A project of the shipped rust language (cargo-test's stub, ast-grep's
 -- syntax) holding FILES; a fresh state.

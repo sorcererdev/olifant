@@ -7,8 +7,6 @@ module Olifant.Server.Tests
   ( TestsAnswer (..)
   , TestsScope (..)
   , testsRun
-  , testAt
-  , testLineOf
   , testAtIn
   , testLineIn
   , testsJson
@@ -18,21 +16,20 @@ module Olifant.Server.Tests
   ) where
 
 import Control.Monad.Trans.Class (lift)
-import Control.Monad (guard, when)
-import Data.Char (isAlphaNum)
+import Control.Monad (when)
 import Data.Set qualified as S
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Aeson (Value, object, (.=))
 import Data.Functor ((<&>))
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
-import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), failureLine, languageFor, ownedBy, testsForFile)
+import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), FailureDef, failureLineWith, failureOf, languageFor, ownedBy, testsForFile)
 import Olifant.Language.TestUnits (testAtBy, testLineBy)
-import Olifant.Server.Site (appendStepLine, defName, runOver, tshow)
+import Olifant.Server.Site (appendStepLine, runOver, tshow)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, takeExtension, takeFileName, (</>))
@@ -51,6 +48,7 @@ data TestsAnswer = TestsAnswer
   , taRoot :: FilePath
   , taRun :: TestRun
   , taSeconds :: Double
+  , taFailureShape :: Maybe FailureDef  -- ^ the runner's `[test.failure]`: a failure's one line
   }
   deriving (Eq, Show)
 
@@ -103,7 +101,7 @@ testsRun scope path s0 =
             (_, Just tid) -> tid
             _ -> T.intercalate " " ids
       lift (appendStepLine (ssPorts s) (plRoot p) ["test", "person", ran, summary run])
-      pure (TestsAnswer file scope one (plRoot p) run (end - start))
+      pure (TestsAnswer file scope one (plRoot p) run (end - start) (failureOf (plLanguage p)))
 
 -- | A run in a few words, for the step log: `2 passed, 1 failed: test_x`,
 -- or `broken: <its first line>`.
@@ -201,7 +199,7 @@ testsJson a =
     , "passed" .= trPassed (taRun a)
     , "scope" .= (case (taTest a, taScope a) of (Just _, _) -> "test"; (_, ScopeAll) -> "all"; _ -> "file" :: Text)
     , "test" .= taTest a
-    , "failed" .= [object ["id" .= tid, "file" .= normalisePath (taRoot a </> T.unpack (T.takeWhile (/= ':') tid)), "line" .= fLine f, "message" .= failureLine f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
+    , "failed" .= [object ["id" .= tid, "file" .= normalisePath (taRoot a </> T.unpack (T.takeWhile (/= ':') tid)), "line" .= fLine f, "message" .= failureLineWith (taFailureShape a) f, "output" .= fOutput f] | (tid, f) <- trFailed (taRun a)]
     , "broken" .= trBroken (taRun a)
     , "seconds" .= taSeconds a
     ]
@@ -221,39 +219,3 @@ testLineIn :: Language -> Text -> Text -> Maybe Int
 testLineIn lang = case langTest lang of
   Just td | not (null (testUnitRules td)) -> testLineBy (testUnitRules td) (testAbove td)
   _ -> \_ _ -> Nothing
-
--- | The first line (1-based) of the test NAME (as 'testAt' names it) in
--- a Python test file: its def's, or its first decorator's.
-testLineOf :: Text -> Text -> Maybe Int
-testLineOf text name = listToMaybe [i | i <- [1 .. length (T.lines text)], testAt text i == Just name]
-
--- | The test enclosing LINE (1-based) of a Python test file, as pytest
--- names it after `path::`: `test_x`, or `TestX::test_y` for a method of a
--- test class. A decorator line is its def's. Nothing outside any test.
-testAt :: Text -> Int -> Maybe Text
-testAt text line
-  | line < 1 || line > length ls = Nothing
-  | otherwise = listToMaybe [qualified d dl | (d, dl) <- candidates, encloses d dl]
-  where
-    ls = zip [1 :: Int ..] (T.lines text)
-    indentOf = T.length . T.takeWhile (== ' ')
-    blank = T.null . T.strip
-    -- a decorator line stands for the first def below it
-    target = case drop (line - 1) ls of
-      (_, l) : rest | "@" `T.isPrefixOf` T.strip l -> maybe line fst (listToMaybe [x | x@(_, l') <- rest, isJust (defName l')])
-      _ -> line
-    candidates = [(i, l) | (i, l) <- reverse (take target ls), Just n <- [defName l], "test" `T.isPrefixOf` n]
-    -- every line from the def's to the target is blank or deeper than the def
-    encloses d dl = all (\(_, l) -> blank l || indentOf l > indentOf dl) [x | x@(i, _) <- ls, i > d, i <= target]
-    qualified d dl = maybe name (\c -> c <> "::" <> name) owner
-      where
-        name = fromMaybe "" (defName dl)
-        -- an indented def: the first less-indented line above, when it is a class
-        owner = do
-          guard (indentOf dl > 0)
-          (_, l) <- listToMaybe [x | x@(i, l) <- reverse ls, i < d, not (blank l), indentOf l < indentOf dl]
-          className l
-    className l = do
-      rest <- T.stripPrefix "class " (T.strip l)
-      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
-      if T.null n then Nothing else Just n

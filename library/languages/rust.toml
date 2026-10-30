@@ -15,6 +15,8 @@ placeholder = 'todo!("{= message|rust_string =}")'
 branch = "{= pattern =} => {= body =},"
 # A block opens at a line ending in `{`.
 opens_block = '[{][[:space:]]*$'
+# A body still a stub: each stripped line one of these (a comment and a hole's line count too).
+stub_lines = ['^todo!\(', '^unimplemented!\(']
 
 # Tests: cargo test, in the file itself (its `mod tests`). A test is a fn
 # under #[test] (or #[tokio::test]), looking past other attributes; an
@@ -157,3 +159,18 @@ name = [
   '^[[:space:]]*impl(<.*>)?[[:space:]]+([[:alnum:]_]+)',
   '^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?((async|const|unsafe|extern)[[:space:]]+)*(fn|struct|enum|trait|mod)[[:space:]]+([[:alnum:]_]+)',
 ]
+
+# What a new port method's signature is made of (conjure adding a method a
+# test calls): literal types, declarations, a result that may be absent.
+[types]
+string = "&str"
+integer = "i64"
+nothing = "()"
+optional = "Option<{= type =}>"
+param = "{= name =}: {= type =}"
+annotation = '{= name =}:[[:space:]]*([^,)=]+)'
+returns = '->(.*)$'
+assigned = '^[[:space:]]*let[[:space:]]+(mut[[:space:]]+)?([[:alnum:]_]+)[[:space:]]*=[^=]'
+checks_none = ['{= name =}\.is_none\(\)', '{= name =}\.is_some\(\)']
+record = '^(pub[[:space:]]+)?struct {= name =}([^[:alnum:]_]|$)'
+method = "{= name =}(&self{= params =}) -> {= returns =}"

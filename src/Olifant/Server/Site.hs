@@ -1,22 +1,16 @@
 -- | Internal to Olifant.Server: where a request at a cursor stands (the
--- module, its test file, the def at or above the cursor) and the helpers
--- the editor's commands share: the step log, a run over the editor's
--- files, the modules a file imports, a def's name.
+-- module and its test file) and the helpers the editor's commands share:
+-- the step log, a run over the editor's files, the modules a file imports.
 module Olifant.Server.Site
   ( Site (..)
   , siteAt
   , siteFile
   , siteTestFile
-  , functionAt
-  , functionSpanAfter
   , importOf
   , importedContext
   , importedModules
   , appendStepLine
   , runOver
-  , testBody
-  , defLineAbove
-  , defName
   , ident
   , fileOf
   , testName
@@ -46,8 +40,7 @@ import Olifant.Workspace (Workspace (..), normalisePath)
 import System.FilePath (makeRelative, (</>))
 
 -- | Where a command at a cursor stands: the module and its test
--- file (the cursor in either), their texts, and the def at or above the
--- cursor.
+-- file (the cursor in either), and their texts.
 data Site = Site
   { siteRoot :: FilePath
   , siteProject :: Project
@@ -57,9 +50,6 @@ data Site = Site
   , siteOnTest :: Bool
   , siteModuleText :: Text
   , siteTestText :: Maybe Text
-  , siteAtCursor :: Maybe Text
-  , -- | the line (1-based) of that def
-    siteDefLine :: Maybe Int
   }
 
 siteFile, siteTestFile :: Site -> FilePath
@@ -83,19 +73,7 @@ siteAt path line s0 =
           testRel = if onTest then rel else testsForFile td rel
       moduleText <- lift (readText ws moduleRel) >>= maybe (throwE ("cannot read " <> T.pack moduleRel)) pure
       testText0 <- lift (readText ws testRel)
-      let above = defLineAbove line (if onTest then fromMaybe "" testText0 else moduleText)
-      pure (Site root project lang moduleRel testRel onTest moduleText testText0 (snd <$> above) (fst <$> above))
-
--- | The function a cursor (1-based line) is in, in a module: the def at or
--- above it (its name, its line) while its body reaches the cursor, and that
--- body. The def is the one at that line, whatever else shares its name.
-functionAt :: ServerState -> Site -> Int -> IO (Maybe (Text, Int, (Int, Int)))
-functionAt s site line = case (siteOnTest site, siteAtCursor site, siteDefLine site) of
-  (False, Just n, Just d) ->
-    functionSpanAfter (pSyntax (ssPorts s)) (siteLang site) n d (siteModuleText site) <&> \case
-      Just sp@(_, z) | line <= z -> Just (n, d, sp)
-      _ -> Nothing
-  _ -> pure Nothing
+      pure (Site root project lang moduleRel testRel onTest moduleText testText0)
 
 -- | The line importing a unit into a test file, by the language's
 -- `[imports] write` over the module of MODULEREL (`module_of`) and the
@@ -124,7 +102,7 @@ importedContext ws lang known texts = case langImportsDef lang of
   Just im | not (null (imResolve im)) -> do
     let sep = maybe "." moSeparator (imModuleOf im)
         resolved seen ts = do
-          found <- forM (concatMap (importedModulesWith sep (imResolve im)) ts) $ \m ->
+          found <- forM (concatMap (importedModulesWith (langComment lang) sep (imResolve im)) ts) $ \m ->
             let path = T.intercalate "/" (filter (not . T.null) (T.splitOn sep m))
              in firstFile [T.unpack p | Right tp <- map parseTemplate (imPaths im), Right p <- [render (M.singleton "path" (VText path)) tp]]
           pure (dedupe [(p, t) | Just (p, t) <- found, p `notElem` seen, not (T.null (T.strip t))])
@@ -155,12 +133,12 @@ importedContext ws lang known texts = case langImportsDef lang of
 -- of its `names` joined to the module by @.@ (a name may be a module).
 -- Python's: @import a.b, c@ names @a.b@ and @c@; @from a.b import x, y@
 -- names @a.b@, then @a.b.x@ and @a.b.y@; a relative import names none.
-importedModules :: [Resolve] -> Text -> [Text]
-importedModules = importedModulesWith "."
+importedModules :: Language -> [Resolve] -> Text -> [Text]
+importedModules lang = importedModulesWith (langComment lang) "."
 
--- | 'importedModules' with the language's module separator.
-importedModulesWith :: Text -> [Resolve] -> Text -> [Text]
-importedModulesWith sep resolves t = concatMap named (map T.strip (T.lines t))
+-- | 'importedModules' with the language's comment and module separator.
+importedModulesWith :: Text -> Text -> [Resolve] -> Text -> [Text]
+importedModulesWith comment sep resolves t = concatMap named (map T.strip (T.lines t))
   where
     compiled = [(rx, r) | r <- resolves, Just (rx :: Regex) <- [makeRegexM (T.unpack (rsPattern r))]]
     named l = case [(groups, r) | (rx, r) <- compiled, Just (AllTextSubmatches groups) <- [matchM rx (T.unpack l) :: Maybe (AllTextSubmatches [] String)]] of
@@ -171,7 +149,7 @@ importedModulesWith sep resolves t = concatMap named (map T.strip (T.lines t))
       [] -> []
     items = filter (not . T.null) . map nameOf . T.splitOn ","
     -- a name less its alias, brackets and comment
-    nameOf = T.takeWhile (\c -> ident c || c == '.' || c == ':') . T.dropWhile (`elem` (" (" :: String)) . T.takeWhile (/= '#')
+    nameOf = T.takeWhile (\c -> ident c || c == '.' || c == ':') . T.dropWhile (`elem` (" (" :: String)) . fst . T.breakOn comment
 
 -- | A conjure's imported modules: how many files, lines each, lines in all.
 importedFiles, importedLines, importedTotal :: Int
@@ -179,37 +157,11 @@ importedFiles = 8
 importedLines = 120
 importedTotal = 600
 
--- | The body (1-based) of the function NAME whose def is on line D: the
--- first of the name's bodies that starts at or after it.
-functionSpanAfter :: Syntax IO -> Language -> Text -> Int -> Text -> IO (Maybe (Int, Int))
-functionSpanAfter syntax lang name d text = either (const Nothing) (\cs -> listToMaybe (sort [(a + 1, z + 1) | (a, z) <- cs, a + 1 >= d])) <$> locateContainers syntax lang ["function", name] text
-
 -- | Tests (ids, or test files) run over the project's files as the editor has them.
 runOver :: ServerState -> Workspace IO -> Language -> [TestId] -> IO (Either Text TestRun)
 runOver s ws lang ids = do
   (_, files) <- projectFiles ws (M.empty :: Map FilePath Text) lang (map (T.unpack . fileOf) ids)
   runTestsIn (pTester (ssPorts s) (ssCancel s)) lang ids files
-
--- | A test's lines: its def to the next line at or left of the def's indentation.
-testBody :: Text -> Text -> [Text]
-testBody name text = case dropWhile (not . isDef) (T.lines text) of
-  [] -> []
-  d : rest -> takeWhile (\l -> T.null (T.strip l) || indentOf l > indentOf d) rest
-  where
-    isDef l = ("def " <> name <> "(") `T.isPrefixOf` T.strip l
-    indentOf = T.length . T.takeWhile (== ' ')
-
--- | The def at or above a line (1-based): its line and name.
-defLineAbove :: Int -> Text -> Maybe (Int, Text)
-defLineAbove line text = listToMaybe [(i, n) | (i, Just n) <- reverse (take line (zip [1 ..] (map defName (T.lines text))))]
-
-defName :: Text -> Maybe Text
-defName l = do
-  rest <- T.stripPrefix "def " (fromMaybe stripped (T.stripPrefix "async " stripped))
-  let n = T.takeWhile ident rest
-  if not (T.null n) && "(" `T.isPrefixOf` T.drop (T.length n) rest then Just n else Nothing
-  where
-    stripped = T.strip l
 
 ident :: Char -> Bool
 ident c = isAlphaNum c || c == '_'

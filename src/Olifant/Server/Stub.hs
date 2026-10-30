@@ -7,6 +7,8 @@ module Olifant.Server.Stub
   , stubAt
   , stubWith
   , testNameIn
+  , testWordsIn
+  , namePrefixesIn
   , unitWordsOf
   ) where
 
@@ -140,6 +142,28 @@ testNameIn lang ws0 = fromMaybe (render' "{= words|snake =}") (render' <$> (lang
   where
     ws = if null ws0 then ["step"] else ws0
     render' src = either (const (T.intercalate "_" ws)) id (parseTemplate src >>= render (M.singleton "words" (VName (wordsName ws))))
+
+-- | A test NAME's words in LANG: past the literal text its `[test] name`
+-- template puts before and after the words (pytest's @test_@), each @_@ a
+-- space.
+testWordsIn :: Language -> Text -> Text
+testWordsIn lang name = T.replace "_" " " (fromMaybe core (T.stripSuffix after core))
+  where
+    marker = "olifantwords"
+    (before, after) = case T.breakOn marker (testNameIn lang [marker]) of
+      (b, a) | not (T.null a) -> (b, T.drop (T.length marker) a)
+      _ -> ("", "")
+    core = fromMaybe name (T.stripPrefix before name)
+
+-- | What a test's name in LANG drops to be short beside the module STEM:
+-- the name its `[test] name` template gives the stem's words (pytest's
+-- @test_cancel_booking@), then the template's text before the words
+-- (@test_@); 'Olifant.Server.ConjureNext.shortName' takes them.
+namePrefixesIn :: Language -> Text -> [Text]
+namePrefixesIn lang stem = [testNameIn lang (unitWordsOf stem), before]
+  where
+    marker = "olifantwords"
+    before = fst (T.breakOn marker (testNameIn lang [marker]))
 
 -- | A unit's name as words: the underscores at its ends dropped, split at
 -- each underscore and before a capital after a lowercase letter or a digit,

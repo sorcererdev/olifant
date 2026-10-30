@@ -4,7 +4,10 @@
 module Olifant.Server.Unit
   ( Unit (..)
   , unitAt
-  , unitHeader
+  , testUnitAt
+  , testOrUnitAt
+  , ownerHeader
+  , isStubIn
   , Named (..)
   , unitsOf
   , unitAround
@@ -17,18 +20,20 @@ import Control.Applicative ((<|>))
 import Data.Aeson (object, (.=))
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<&>))
 import Data.List (sortOn)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word64)
 import Numeric (showHex)
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (Language (..), Match (..), Syntax (..), describeSyntaxFailure, regexName)
-import Olifant.Server.Site (defName, tshow)
+import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), TestDef (..), describeSyntaxFailure, regexName)
+import Olifant.Language.TestUnits (TestUnit (..), testCaseUnitAtIn)
+import Olifant.Server.Site (tshow)
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 -- | A unit (1-based lines): its name, its header line, its node's lines,
 -- and its body's (the lines after the header; Nothing for a one-line def).
@@ -41,7 +46,9 @@ data Unit = Unit
   deriving stock (Eq, Show)
 
 -- | The unit enclosing LINE (1-based) of TEXT: the innermost node of the
--- language's `[unit]` kinds there; a decorator's is the def it decorates.
+-- language's `[unit]` kinds there, named by `[unit] name` on its first line
+-- that has one (a decorator's is the def below it); its body starts after
+-- the first line that opens a block (`opens_block`, its comment cut).
 -- Left is one sentence on why there is none.
 unitAt :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Unit)
 unitAt syntax lang text line
@@ -57,42 +64,80 @@ unitAt syntax lang text line
     -- the innermost around the line: the latest start, then the earliest end
     pick spans = listToMaybe (sortOn (\(a, z) -> (Down a, z)) [sp | sp@(a, z) <- spans, a <= line, line <= z]) >>= unitOf
     unitOf (a, z) = do
-      (d, n) <- listToMaybe [(i, n) | i <- [a .. z], Just n <- [headerName (lineAt i)]]
-      let colon = listToMaybe [i | i <- [d .. z], ":" `T.isSuffixOf` T.stripEnd (fst (T.breakOn " #" (lineAt i)))]
-          body = colon >>= \c -> if c + 1 <= z then Just (c + 1, z) else Nothing
-      pure (Unit n d (a, z) body)
-    headerName l = defName l <|> className l
-    className l = do
-      rest <- T.stripPrefix "class " (T.strip l)
-      let n = T.takeWhile (\c -> isAlphaNum c || c == '_') rest
-      if T.null n then Nothing else Just n
+      (d, n) <- listToMaybe [(i, n) | i <- [a .. z], Just n <- [unitNameIn lang (lineAt i)]]
+      pure (Unit n d (a, z) (bodyOf lang ls d z))
 
--- | The header of the unit at LINE (1-based) of a Python module: for a method, its
--- class line and the class's `__init__` def line (through its closing `:`); for a free
--- function, its def line; empty when neither.
-unitHeader :: Text -> Int -> Text
-unitHeader text line = case ([c | c <- cands, isHead "class " (snd c)], [d | d <- cands, not (isHead "class " (snd d))]) of
+-- | The test case at LINE (1-based) of a test file in LANG as a unit (by
+-- `[test] unit`: hspec's `it`, which no `[unit]` kind is): named by its
+-- own name, its def its first line below its `above` lines; its body the
+-- block's lines indented deeper than the def (Rust's closing brace is not
+-- in it).
+testUnitAt :: Language -> Text -> Int -> Maybe Unit
+testUnitAt lang text line = do
+  u <- testCaseUnitAtIn lang text line
+  n <- listToMaybe (reverse (tuPath u))
+  let (a, z) = tuLines u
+      isAbove l = maybe False (\rx -> matchTest rx (T.unpack l)) (langTest lang >>= testAbove >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex)
+      d = fromMaybe a (listToMaybe [i | i <- [a .. z], not (isAbove (lineAt i))])
+      -- the block: through its last line deeper than the def (a closing brace is not in it)
+      deeper i = not (T.null (T.strip (lineAt i))) && indent (lineAt i) > indent (lineAt d)
+      body = bodyOf lang ls d z >>= \(c, _) -> case [i | i <- [c .. z], deeper i] of
+        [] -> Nothing
+        is -> Just (c, last is)
+  pure (Unit n d (a, z) body)
+  where
+    indent = T.length . T.takeWhile isSpace
+    ls = T.splitOn "\n" text
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+
+-- | The test at LINE of a test file as a unit ('testUnitAt'), else the
+-- `[unit]` there ('unitAt'): what a re-conjure takes for a test's hole.
+testOrUnitAt :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Unit)
+testOrUnitAt syntax lang text line = maybe (unitAt syntax lang text line) (pure . Right) (testUnitAt lang text line)
+
+-- | A unit's body in lines LS: from the line after the first from D (its
+-- def) that opens a block (`opens_block`, its comment cut) through Z.
+bodyOf :: Language -> [Text] -> Int -> Int -> Maybe (Int, Int)
+bodyOf lang ls d z = opener >>= \c -> if c + 1 <= z then Just (c + 1, z) else Nothing
+  where
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+    opener = listToMaybe [i | i <- [d .. z], opens (fst (T.breakOn (" " <> langComment lang) (lineAt i)))]
+    opens = case langOpensBlock lang >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex of
+      Just rx -> matchTest rx . T.unpack . T.stripEnd
+      Nothing -> const True
+
+-- | The header of the unit at LINE (1-based) of a module in LANG: for a method, the line
+-- of what owns it (`[conjure.constructor] owner`: its class) and its constructor's
+-- (`start`) through the line that opens its block (`opens_block`); for a free function, its
+-- own line (named by `[unit] name`); empty when neither.
+ownerHeader :: Language -> Text -> Int -> Text
+ownerHeader lang text line = case ([c | c <- cands, isOwner (snd c)], [d | d <- cands, not (isOwner (snd d))]) of
   ((ci, cl) : _, _ : _) -> T.intercalate "\n" (cl : initDef ci cl)
   (_, (_, d) : _) -> T.stripEnd d
   _ -> ""
   where
-    cands = [(i, l) | (i, l) <- reverse (take line ls), isHead "class " l || isHead "def " l || isHead "async def " l, enclosing i l]
+    ct = langConjure lang >>= cjConstructor
+    matcherOf re = maybe (const False) (\rx -> matchTest rx . T.unpack) (makeRegexM (T.unpack re) :: Maybe Regex)
+    isOwner = maybe (const False) (\c -> matcherOf (ctOwner c) . T.stripStart) ct
+    isStart = maybe (const False) (\c -> matcherOf (ctStart c) . T.stripStart) ct
+    opens = maybe (const False) (\re -> matcherOf re . T.stripEnd) (langOpensBlock lang)
+    isHead l = isOwner l || isJust (unitNameIn lang l)
+    cands = [(i, l) | (i, l) <- reverse (take line ls), isHead l, enclosing i l]
     ls = zip [1 :: Int ..] (T.lines text)
     indentOf = T.length . T.takeWhile (== ' ')
     blank = T.null . T.strip
-    isHead p = (p `T.isPrefixOf`) . T.stripStart
     enclosing i l =
       i == line
         || all (\(_, x) -> blank x || indentOf x > indentOf l) [x | x@(j, _) <- ls, j > i, j <= line]
     initDef ci cl =
       let body = takeWhile (\(_, x) -> blank x || indentOf x > indentOf cl) (drop ci ls)
-       in case dropWhile (not . isHead "def __init__(" . snd) body of
+       in case dropWhile (not . isStart . snd) body of
             [] -> []
-            found -> [T.intercalate "\n" (map snd (upToColon found))]
-    upToColon [] = []
-    upToColon (x@(_, l) : r)
-      | ":" `T.isSuffixOf` T.stripEnd (T.takeWhile (/= '#') l) = [x]
-      | otherwise = x : upToColon r
+            found -> [T.intercalate "\n" (map snd (upToOpen found))]
+    upToOpen [] = []
+    upToOpen (x@(_, l) : r)
+      | opens (fst (T.breakOn (langComment lang) l)) = [x]
+      | otherwise = x : upToOpen r
 
 -- | A unit of a file by name (1-based, inclusive lines, like 'Unit'): its
 -- name qualified one level by containment (`Outer.Inner`), its lines, and
@@ -197,3 +242,12 @@ reflowed = \case
       | "," `T.isPrefixOf` n = go True (acc <> n) rest
       | otherwise = go joined (acc <> "\n" <> n) rest
     tight t = foldr (\(from, to) -> T.replace from to) t ([(o <> " ", o) | o <- ["(", "[", "{"]] ++ [(" " <> c, c) | c <- [")", "]", "}"]])
+
+-- | Whether a body's LINES are only a stub in LANG: each non-blank line,
+-- stripped, matches one of its `stub_lines`, is a comment, or holds a hole
+-- (@olifant:@).
+isStubIn :: Language -> [Text] -> Bool
+isStubIn lang = all stubLine . filter (not . T.null) . map T.strip
+  where
+    stubs = [rx | re <- langStubLines lang, Just rx <- [makeRegexM (T.unpack re) :: Maybe Regex]]
+    stubLine l = any (`matchTest` T.unpack l) stubs || "olifant:" `T.isInfixOf` l || langComment lang `T.isPrefixOf` l

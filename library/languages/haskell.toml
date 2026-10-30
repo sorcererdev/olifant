@@ -10,6 +10,8 @@ indent = "  "
 # A block opens after `do`, `=` or `$` at a line's end; `pure ()` does nothing.
 opens_block = "((^|[^[:alnum:]_'])do|=|[$])[[:space:]]*$"
 empty_statement = "pure ()"
+# A body still a stub: each stripped line one of these (a comment and a hole's line count too).
+stub_lines = ['^expectationFailure "write this test"$', '^error "', '^pure \(\)$']
 placeholder = 'error "{= message =}"'
 branch = "{= pattern =} -> {= body =}"
 # After a case's only alternative, a new one goes after a blank line.
@@ -54,6 +56,12 @@ assertion = ['`should[A-Z][A-Za-z]*`', '(^|[^[:alnum:]_])expectationFailure([^[:
 placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'
 wrap = "olifantHole = {= fill =}"
 
+# A body of statements (a test's `do`, conjure's fill): the placeholder
+# fits any type; the fill must parse as a `do` block.
+[holes.block]
+placeholder = 'error "olifant: {= hole =}: {= instruction|escaped =}"'
+wrap = "olifantHole = do\n{= fill|indent =}"
+
 # Tab stops in snippets (spec §4.9): text inside a string.
 [holes.text]
 placeholder = "{= hole =}"
@@ -75,3 +83,15 @@ name = [
   "^[[:space:]]*(\\([^)]*\\))",
   "^[[:space:]]*([[:alpha:]_][[:alnum:]_']*)",
 ]
+
+# What a new method's signature is made of (conjure adding one a test
+# calls): literal types, declarations, a result that may be absent.
+[types]
+string = "Text"
+integer = "Int"
+nothing = "()"
+optional = "Maybe {= type =}"
+param = "{= name =} :: {= type =}"
+annotation = '{= name =}[[:space:]]*::[[:space:]]*([^,}]+)'
+checks_none = ['{= name =} `shouldBe` Nothing', 'isNothing {= name =}']
+record = '^data {= name =}([^[:alnum:]_]|$)'

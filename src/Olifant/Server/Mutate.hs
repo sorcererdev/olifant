@@ -93,5 +93,5 @@ mutateAt path line s0 =
               summary
                 | n == 0 = "no survivors \183 " <> tally
                 | otherwise = tshow n <> (if n == 1 then " survivor" else " survivors") <> " \183 " <> tally
-          ordered <- lift (orderSurvivors s (deciderFor s project) file moduleText testText (pure ()) surviving)
+          ordered <- lift (orderSurvivors s (deciderFor s project) lang file moduleText testText (pure ()) surviving)
           done killed waived ordered summary

@@ -8,12 +8,21 @@ module Olifant.Language.Adapter
   , supportOf
   , TestDef (..)
   , UnitRule (..)
+  , UndefinedRule (..)
+  , MissingMember (..)
+  , FailureDef (..)
+  , GotExpected (..)
   , StubDef (..)
   , Select (..)
   , LinesFormat (..)
   , HoleKind (..)
   , ImportMerge (..)
   , ImportsDef (..)
+  , ConjureDef (..)
+  , TypesDef (..)
+  , PortShape (..)
+  , FakeShape (..)
+  , CtorShape (..)
   , ModuleOf (..)
   , Resolve (..)
   , moduleOf
@@ -120,6 +129,15 @@ data Language = Language
   , langAssertion :: [Text]
   -- ^ `[test] assertion`: expressions over a line where a test's assertion
   -- starts (Python's `assert`, Rust's `assert_eq!`, hspec's `shouldBe`)
+  , langStubLines :: [Text]
+  , langConjure :: Maybe ConjureDef
+  , langTypes :: Maybe TypesDef
+  -- ^ `[types]`: what a new method's signature is made of
+  -- ^ `[conjure]`: a pack's architecture as conjure reads it (ports, fakes,
+  -- constructors); absent, conjure works at the floor (the test and its fill)
+  -- ^ `stub_lines`: expressions over a stripped line of a body that is still
+  -- a stub (Python's `...`, Rust's `todo!(`); a comment and a hole's line
+  -- count in every language
   , langMutate :: [MutateDef]
   -- ^ `[[mutate]]`: the mutation operators, ways to break this language's
   -- code that a test must notice
@@ -164,6 +182,60 @@ data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
 -- line names modules; 'imPaths' (`paths`), templates over @{= path =}@ (a
 -- module, its separator written @/@) for the files a module may be.
 data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text]}
+  deriving stock (Eq, Show)
+
+-- | A pack's `[conjure]`: how conjure reads its architecture. 'cjService'
+-- (`service`), a path template over @{= app =}@ and @{= service =}@ a
+-- module's path starts with (binding the wire's sets); the port, fake and
+-- constructor shapes, each absent when the pack declares none.
+data ConjureDef = ConjureDef {cjService :: Maybe Text, cjPort :: Maybe PortShape, cjFake :: Maybe FakeShape, cjConstructor :: Maybe CtorShape}
+  deriving stock (Eq, Show)
+
+-- | `[types]`: the facts a new method's signature is made of, in the language's own words.
+-- 'tyString' (`string`) and 'tyInteger' (`integer`), the types of a string and a number
+-- literal; 'tyNothing' (`nothing`), what a call whose result is unused returns;
+-- 'tyOptional' (`optional`), a template over @{= type =}@ for a result that may be absent;
+-- 'tyParam' (`param`), a template over @{= name =}@ and @{= type =}@ writing one parameter;
+-- 'tyAnnotation' (`annotation`), an expression over @{= name =}@ whose last group is that
+-- name's declared type; 'tyReturns' (`returns`), an expression over a method's line, group 1
+-- what it returns; 'tyAssigned' (`assigned`), an expression over a line assigning a call's
+-- result, its last group the variable; 'tyChecksNone' (`checks_none`), expressions over
+-- @{= name =}@ testing a result for absence; 'tyRecord' (`record`), an expression over
+-- @{= name =}@ starting a type with fields; 'tyMethod' (`method`), a template over @{= name =}@,
+-- @{= params =}@ (each @, @ and `param`) and @{= returns =}@ writing a method's signature.
+data TypesDef = TypesDef
+  { tyString, tyInteger, tyNothing, tyOptional, tyParam, tyAnnotation, tyReturns, tyAssigned, tyRecord, tyMethod :: Maybe Text
+  , tyChecksNone :: [Text]
+  }
+  deriving stock (Eq, Show)
+
+-- | `[conjure.port]`: 'psFiles' (`files`), globs under the service where
+-- ports live; 'psStart' (`start`), an expression over a line that starts a
+-- port (group 1 its name), its block the lines after it that are blank or
+-- deeper; 'psMethod' (`method`), an expression over a stripped block line
+-- that is one of its methods.
+data PortShape = PortShape {psFiles :: [Text], psStart :: Text, psMethod :: Text}
+  deriving stock (Eq, Show)
+
+-- | `[conjure.fake]`: 'fsBound' (`bound`), an expression over a test's line
+-- binding a fake (group 1 the variable, group 2 the class called); a fake's
+-- class is one of 'fsClasses' (`classes`) or starts with one of
+-- 'fsPrefixes' (`prefixes`) and is longer (the class less it names a port);
+-- 'fsKeyword' (`keyword`), a template over @{= param =}@ and @{= var =}@
+-- for a fake handed to a call by name (none: positional only); 'fsStub'
+-- (`stub`), an expression over @{= method =}@ for a fake's stand-in method
+-- (group 1 its parameters, group 2 what it returns).
+data FakeShape = FakeShape {fsBound :: Text, fsClasses :: [Text], fsPrefixes :: [Text], fsKeyword :: Maybe Text, fsStub :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | `[conjure.constructor]`: 'ctFiles' (`files`), globs under the service
+-- for the siblings whose constructors show what a port's parameter is
+-- called; 'ctOwner' (`owner`), an expression over a line starting what holds
+-- a constructor (group 1 its name: a class); 'ctStart' (`start`), an
+-- expression its parameters follow, up to the bracket closing the one it
+-- opens; 'ctParam' (`param`), an expression over one parameter (group 1 its
+-- name, group 2 its type; one that does not match is left out).
+data CtorShape = CtorShape {ctFiles :: [Text], ctOwner :: Text, ctStart :: Text, ctParam :: Text}
   deriving stock (Eq, Show)
 
 -- | `module_of = { strip, drop, separator }`: strip the first of `strip`'s
@@ -223,7 +295,10 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- @checkConvert@ (key `convert`): a command that turns the check's output
 -- into olifant-json, for a tool Olifant has no format for.
 -- @checkInstall@ (key `install`): how to install the tool, doctor's fix.
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text], checkInstall :: Maybe Text}
+-- @checkUndefined@ (`undefined`): expressions for a name the check says is
+-- undefined ('UndefinedRule'). @checkMissingMember@ (`missing_member`): the
+-- check's words for a member a type lacks.
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text], checkInstall :: Maybe Text, checkUndefined :: [UndefinedRule], checkMissingMember :: Maybe MissingMember}
   deriving stock (Eq, Show)
 
 -- | The compiler support that reads a check's report.
@@ -259,6 +334,11 @@ data TestDef = TestDef
   -- ^ `[test.stub]`: what a new test looks like and where it goes
   , testNaming :: Maybe Text
   -- ^ `name`: a new test's name, a template over @{= words =}@
+  , testUndefined :: [UndefinedRule]
+  -- ^ `undefined`: expressions for a name the runner says is undefined
+  , testFailure :: Maybe FailureDef
+  -- ^ `[test.failure]`: how a failure's output names its assertion, what
+  -- came back and what was expected
   }
   deriving stock (Eq, Show)
 
@@ -283,6 +363,34 @@ data StubDef = StubDef {sdTest :: Text, sdFile :: Maybe Text, sdGap :: Int, sdAt
 -- with escapes, whose own group is not the last). A string entry is a rule
 -- with neither.
 data UnitRule = UnitRule {urPattern :: Text, urAfter :: Maybe Text, urName :: Maybe Int}
+  deriving stock (Eq, Show)
+
+-- | One `undefined` entry of a `[check]` or `[test]`: an expression whose
+-- match names an undefined name (its last group, or group `name`), and
+-- `label`, how a summary calls such names (@NameError@; default
+-- @undefined:@). A string entry has neither.
+data UndefinedRule = UndefinedRule {udPattern :: Text, udName :: Maybe Int, udLabel :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | `[check] missing_member`: an expression for a check's words that a type
+-- lacks a member, the groups holding the member and the type.
+data MissingMember = MissingMember {mmPattern :: Text, mmMember :: Int, mmType :: Int}
+  deriving stock (Eq, Show)
+
+-- | `[test.failure]`: 'fdLineAfter' (`line_after`), an expression over
+-- @{= name =}@ (the test's short name) for the output line after which the
+-- failing source line comes; 'fdHeadStrip' (`head_strip`), an expression
+-- taken off the front of a message's first line; 'fdGotExpected'
+-- (`got_expected`), expressions over a message's lines (the first less
+-- `head_strip`) whose groups are what came back and what was expected;
+-- 'fdBare' (`bare`), expressions for a first line that says nothing (an
+-- empty one says nothing too); 'fdExplain' (`explain`), an expression for
+-- a line explaining it, its last group the one-line form in its place.
+data FailureDef = FailureDef {fdLineAfter :: Maybe Text, fdHeadStrip :: Maybe Text, fdGotExpected :: [GotExpected], fdBare :: [Text], fdExplain :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | One `got_expected` entry: an expression and its two groups.
+data GotExpected = GotExpected {gePattern :: Text, geGot :: Int, geExpected :: Int}
   deriving stock (Eq, Show)
 
 -- | `[test.select]`: argument templates over @{= group =}@ (the file's
@@ -359,7 +467,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -384,6 +492,9 @@ languageFrom presets name grammarDir top = do
     _ -> Right Nothing
   opensBlock <- optional "opens_block" (text >=> validRegex "opens_block") top
   emptyStatement <- optional "empty_statement" text top
+  stubLines <- fromMaybe [] <$> optional "stub_lines" (list (text >=> validRegex "stub_lines")) top
+  conjure <- optional "conjure" (table >=> conjureFrom) top
+  types <- optional "types" (table >=> typesFrom) top
   unit <- fromMaybe M.empty <$> optional "unit" table top
   onlyKeys ["kinds", "name", "join"] unit
   unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
@@ -393,7 +504,7 @@ languageFrom presets name grammarDir top = do
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
@@ -437,6 +548,29 @@ languageFrom presets name grammarDir top = do
         paths <- fromMaybe [] <$> optional "paths" (list (text >=> \p -> tmpl p >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["path"] then Right p else Left "`[imports] paths` may use only {= path =}")) t
         pure (line, Just (ImportsDef write mo resolve paths))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
+    typesFrom t = do
+      onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t
+      let o k = optional k text t
+      TypesDef <$> o "string" <*> o "integer" <*> o "nothing" <*> o "optional" <*> o "param" <*> o "annotation" <*> optional "returns" (text >=> validRegex "[types] returns") t <*> optional "assigned" (text >=> validRegex "[types] assigned") t <*> o "record" <*> o "method"
+        <*> (fromMaybe [] <$> optional "checks_none" (list text) t)
+    conjureFrom t = do
+      onlyKeys ["service", "port", "fake", "constructor"] t
+      let re k = text >=> validRegex ("[conjure] " <> k)
+      ConjureDef
+        <$> optional "service" text t
+        <*> optional "port" (table >=> \p -> do
+          onlyKeys ["files", "start", "method"] p
+          PortShape <$> (fromMaybe [] <$> optional "files" (list text) p) <*> required "start" (re "port start") p <*> required "method" (re "port method") p) t
+        <*> optional "fake" (table >=> \f -> do
+          onlyKeys ["bound", "classes", "prefixes", "keyword", "stub"] f
+          FakeShape <$> required "bound" (re "fake bound") f
+            <*> (fromMaybe [] <$> optional "classes" (list text) f)
+            <*> (fromMaybe [] <$> optional "prefixes" (list text) f)
+            <*> optional "keyword" text f
+            <*> optional "stub" text f) t
+        <*> optional "constructor" (table >=> \c -> do
+          onlyKeys ["files", "owner", "start", "param"] c
+          CtorShape <$> (fromMaybe [] <$> optional "files" (list text) c) <*> required "owner" (re "constructor owner") c <*> required "start" (re "constructor start") c <*> required "param" (re "constructor param") c) t
     importMergeFrom t = do
       onlyKeys ["pattern", "write"] t
       re <- required "pattern" text t
@@ -463,7 +597,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left ("`when_empty`: expected \"after header\", got `" <> w <> "`")) t
         <*> optional "separator" text t
     testFrom hasModuleOf t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name"] (foldr M.delete t0 testShapeKeys)
+      onlyKeys ["preset", "command", "context", "format", "root", "tests_for", "lines", "convert", "unit", "file_group", "select", "exclusive", "timeout", "files", "install", "above", "stub", "name", "undefined", "failure"] (foldr M.delete t0 testShapeKeys)
       t <- applyPreset presets "test" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -492,6 +626,8 @@ languageFrom presets name grammarDir top = do
         <*> optional "above" (text >=> validRegex "[test] above") t
         <*> optional "stub" (table >=> stubFrom) t
         <*> optional "name" (text >=> templateOver "[test] name" ["words"]) t
+        <*> (fromMaybe [] <$> optional "undefined" (list (undefinedFrom "[test] undefined")) t)
+        <*> optional "failure" (table >=> failureFrom) t
     templateOver key vars src = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
@@ -511,6 +647,34 @@ languageFrom presets name grammarDir top = do
         UnitRule <$> required "pattern" (text >=> validRegex "[test] unit") u <*> optional "after" (text >=> validRegex "[test] unit after") u
           <*> optional "name" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`[test] unit` `name`: expected a group number above 0") u
       other -> Left ("`[test] unit`: expected an expression or { pattern, after, name }, got " <> describeTree other)
+    undefinedFrom key = \case
+      TText re -> (\r -> UndefinedRule r Nothing Nothing) <$> validRegex key re
+      TTable u -> do
+        onlyKeys ["pattern", "name", "label"] u
+        re <- required "pattern" (text >=> validRegex key) u
+        UndefinedRule re <$> optional "name" (int >=> groupOf key re) u <*> optional "label" text u
+      other -> Left ("`" <> key <> "`: expected an expression or { pattern, name, label }, got " <> describeTree other)
+    groupOf key re n
+      | n > 0, fromIntegral n <= groupCount re = Right (fromIntegral n)
+      | otherwise = Left ("`" <> key <> "`: group " <> T.pack (show n) <> " is not a group of " <> re)
+    missingMemberFrom t = do
+      let key = "[check] missing_member"
+      onlyKeys ["pattern", "member", "type"] t
+      re <- required "pattern" (text >=> validRegex key) t
+      MissingMember re <$> required "member" (int >=> groupOf key re) t <*> required "type" (int >=> groupOf key re) t
+    failureFrom t = do
+      onlyKeys ["line_after", "head_strip", "got_expected", "bare", "explain"] t
+      FailureDef
+        <$> optional "line_after" (text >=> templateOver "[test.failure] line_after" ["name"] >=> \x -> validRegex "[test.failure] line_after" (T.replace "{= name =}" "x" x) >> Right x) t
+        <*> optional "head_strip" (text >=> validRegex "[test.failure] head_strip") t
+        <*> (fromMaybe [] <$> optional "got_expected" (list (table >=> gotExpectedFrom)) t)
+        <*> (fromMaybe [] <$> optional "bare" (list (text >=> validRegex "[test.failure] bare")) t)
+        <*> optional "explain" (text >=> validRegex "[test.failure] explain") t
+    gotExpectedFrom t = do
+      let key = "[test.failure] got_expected"
+      onlyKeys ["pattern", "got", "expected"] t
+      re <- required "pattern" (text >=> validRegex key) t
+      GotExpected re <$> required "got" (int >=> groupOf key re) t <*> required "expected" (int >=> groupOf key re) t
     linesFrom t = do
       onlyKeys ["pass", "fail", "nest", "failure", "end", "drop", "split"] t
       let re k = text >=> validRegex ("[test.lines] " <> k)
@@ -524,7 +688,7 @@ languageFrom presets name grammarDir top = do
             v -> list text v
       Select <$> required "test" args t <*> required "file" args t <*> (fromMaybe "/" <$> optional "join" text t)
     checkFrom t0 = do
-      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert", "install"] t0
+      onlyKeys ["preset", "command", "context", "format", "root", "root_pick", "exclusive", "concurrent", "errorformat", "convert", "install", "undefined", "missing_member"] t0
       t <- applyPreset presets "check" t0
       convert <- fromMaybe [] <$> optional "convert" (list text) t
       format <- (if null convert then required "format" text t else fromMaybe "olifant-json" <$> optional "format" text t)
@@ -550,6 +714,8 @@ languageFrom presets name grammarDir top = do
         <*> pure errorFormat
         <*> pure convert
         <*> optional "install" text t
+        <*> (fromMaybe [] <$> optional "undefined" (list (undefinedFrom "[check] undefined")) t)
+        <*> optional "missing_member" (table >=> missingMemberFrom) t
     errorFormatFrom t = do
       onlyKeys ["pattern", "file", "line", "message", "severity", "error"] t
       ErrorFormat
@@ -559,6 +725,24 @@ languageFrom presets name grammarDir top = do
         <*> (fromIntegral <$> required "message" int t)
         <*> (fmap fromIntegral <$> optional "severity" int t)
         <*> optional "error" (text >=> validRegex "[check.errorformat] error") t
+
+-- | The groups of a POSIX expression: its @(@s that are neither escaped nor
+-- inside a bracket expression.
+groupCount :: Text -> Int
+groupCount = go False . T.unpack
+  where
+    go _ [] = 0
+    go inB ('\\' : _ : r) = go inB r
+    go False ('[' : ']' : r) = go True r
+    go False ('[' : '^' : ']' : r) = go True r
+    go False ('[' : r) = go True r
+    go True ('[' : ':' : r) = go True (dropClass r)
+    go True (']' : r) = go False r
+    go False ('(' : r) = 1 + go False r
+    go inB (_ : r) = go inB r
+    dropClass r = case break (== ':') r of
+      (_, ':' : ']' : r') -> r'
+      (_, r') -> r'
 
 -- | The keys of `[test]` that are the language's shapes, not its runner's.
 testShapeKeys :: [Text]
