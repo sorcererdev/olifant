@@ -450,7 +450,7 @@ spec = do
       r <- runCheck noChecker lang M.empty
       either describeCheckFailure (const "") r `shouldSatisfy` ("no checker" `T.isInfixOf`)
   describe "the Elm adapter (ast-grep, fixture Main.elm)" $ do
-    let at syn elm file p = fmap (fmap locLine) (resolveLayers syn (Just elm) [PhraseAnchor p] file)
+    let at syn elm file p = fmap (fmap locLine) (resolveLayers syn (Just elm) Nothing [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
     it "a grammar built by several queries at once, on a cold cache, serves them all (parallel tests, the server's threads)" $ withAstGrep $ \_ elm file ->
       forM_ [1 .. 3 :: Int] $ \_ -> withSystemTempDirectory "olifant-cold-cache" $ \cold -> do
@@ -478,13 +478,13 @@ spec = do
       either (const True) (const False) r `shouldBe` True
     it "(pack-opens c) a one-line list in a language with no separator is still refused" $ withAstGrep $ \syn elm _ -> do
       let src = T.unlines ["module A exposing (..)", "", "parser =", "    oneOf [ a, b ]"]
-      r <- resolveLayers syn (Just elm) [PhraseAnchor "end of list in parser"] src
+      r <- resolveLayers syn (Just elm) Nothing [PhraseAnchor "end of list in parser"] src
       either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
     it "an unknown function is a miss, not a crash" $ withAstGrep $ \syn elm file ->
       fmap (either (const "miss") (const "hit")) (at syn elm file "end of case in nope") `shouldReturn` ("miss" :: Text)
 
   describe "the Python adapter (python-htmx)" $ do
-    let at syn lang file p = fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
+    let at syn lang file p = fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor p] file)
         lineOf needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines pythonModule))
     it "[unit] kinds: the adapter's definition kinds, none when it has no [unit]" $ do
       py <- either (error . T.unpack) id . parseOverShipped "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
@@ -506,10 +506,10 @@ spec = do
       either (const True) (const False) (parseLanguage "x" "/x" (base <> "join = \"yes\"\n")) `shouldBe` True
     it "the unit at a line, by the adapter's [unit] kinds (real ast-grep)" $ withPython $ \syn py _ -> do
       let src = T.unlines ["import functools", "", "", "class Table:", "    @functools.cache", "    def seats(self) -> int:", "        return 4", "", "    def free(self) -> bool:", "        return True"]
-      fmap unitName <$> unitAt syn py src 7 `shouldReturn` Right "seats"
-      fmap unitDef <$> unitAt syn py src 5 `shouldReturn` Right 6
-      fmap unitName <$> unitAt syn py src 8 `shouldReturn` Right "Table"
-      either id (const "") <$> unitAt syn py src 2 `shouldReturn` "no function or class at line 2"
+      fmap unitName <$> unitAt syn py Nothing src 7 `shouldReturn` Right "seats"
+      fmap unitDef <$> unitAt syn py Nothing src 5 `shouldReturn` Right 6
+      fmap unitName <$> unitAt syn py Nothing src 8 `shouldReturn` Right "Table"
+      either id (const "") <$> unitAt syn py Nothing src 2 `shouldReturn` "no function or class at line 2"
     it "(b) loads: hole kinds, a four-space indent, pyright-json" $ withPython $ \_ lang _ -> do
       map fst (langHoles lang) `shouldMatchList` ["expr", "stmt", "block", "ident", "text"]
       langIndent lang `shouldBe` "    "
@@ -528,13 +528,13 @@ spec = do
       at syn lang file "end of call CreateBooking in create" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
     it "(c) end of imports adds no blank line: one between import groups is grouping, not spacing" $ withPython $ \syn lang _ -> do
       let grouped = T.unlines ["from pathlib import Path", "", "from app.x import y", "", "", "def f() -> None:", "    pass"]
-      fmap (fmap locSpacing) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] grouped) `shouldReturn` Right NoSpacing
+      fmap (fmap locSpacing) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of imports"] grouped) `shouldReturn` Right NoSpacing
     it "(c) end of imports in a file with none goes after its docstring, a blank line before" $ withPython $ \syn lang _ -> do
       let bare = T.unlines ["\"\"\"Clock in memory.\"\"\"", "", "", "class InMemoryClock:", "    pass"]
-      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] bare) `shouldReturn` Right (1, BlankBefore)
+      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of imports"] bare) `shouldReturn` Right (1, BlankBefore)
     describe "one-line containers (pack-opens: inline if it fits, else one per line)" $ do
       let grown syn lang src phrase text = do
-            Right loc <- resolveLayers syn (Just lang) [PhraseAnchor phrase] src
+            Right loc <- resolveLayers syn (Just lang) Nothing [PhraseAnchor phrase] src
             pure (snd (insertLines loc text src), presentAt loc text src)
           long = "tables_with_a_rather_long_name: TableRepositoryWithAnEvenLongerName"
       it "(a) inline when it fits the line length" $ withPython $ \syn lang _ ->
@@ -549,13 +549,13 @@ spec = do
       it "(e) a separator already at the end is not doubled (Review Focus 3)" $ withPython $ \syn lang _ ->
         fmap fst (grown syn lang "y = f(a,)\n" "end of call f" "b") `shouldReturn` "y = f(a, b)\n"
       it "(g) review C1: code that is not an item (a lambda, an operator) refuses rather than vanish" $ withPython $ \syn lang _ -> do
-        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of call foo"] "x = foo(a + b, lambda q: q, c)  # note\n"
+        r <- resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of call foo"] "x = foo(a + b, lambda q: q, c)  # note\n"
         either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
       it "(h) review C1: a keyword-only marker is not an item: refused, not dropped" $ withPython $ \syn lang _ -> do
-        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of parameters in f"] "def f(self, *, x: int) -> None:\n    pass\n"
+        r <- resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of parameters in f"] "def f(self, *, x: int) -> None:\n    pass\n"
         either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
       it "(i) review C1: a one-line union is not a comma list: refused" $ withPython $ \syn lang _ -> do
-        r <- resolveLayers syn (Just lang) [PhraseAnchor "end of union F"] "type F = (NotFound | Late)\n"
+        r <- resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of union F"] "type F = (NotFound | Late)\n"
         either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
       it "(f) already there: present" $ withPython $ \syn lang _ ->
         fmap snd (grown syn lang "y = f(a, b)\n" "end of call f" "b") `shouldReturn` True
@@ -565,34 +565,34 @@ spec = do
       headerEnd ["b'''a", "b'''", "x"] `shouldBe` 2
       headerEnd ["x = 1"] `shouldBe` 0
     it "(pack-opens) end of imports in a file with no header: line 0, no blank line" $ withPython $ \syn lang _ ->
-      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of imports"] "class X:\n    pass\n") `shouldReturn` Right (0, NoSpacing)
+      fmap (fmap (\l -> (locLine l, locSpacing l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of imports"] "class X:\n    pass\n") `shouldReturn` Right (0, NoSpacing)
     it "(c) end of parameters in FUNCTION goes after its last parameter (python-pack: web-command)" $ withPython $ \syn lang file ->
       at syn lang file "end of parameters in floor_routes" `shouldReturn` Right (lineOf "find_free_tables: FindFreeTables," + 1, "    ")
     it "(c) end of call NAME (anywhere in the file) goes after its last argument" $ withPython $ \syn lang file ->
       at syn lang file "end of call CreateBooking" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
     it "(c) end of call NAME in FUNCTION opens an empty argument list" $ withPython $ \syn lang file ->
-      fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
+      fmap (fmap locOpen) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
 
   describe "rewriting (ast-grep, a rule with a fix)" $
     it "gives each match its replacement and its byte range" $ withPython $ \syn lang _ ->
       rewriteSyntax syn lang (object ["pattern" .= ("$A > $B" :: Text)]) "$A >= $B" "if é > b:\n    pass\n"
         `shouldReturn` Right [Rewrite (0, 3) (0, 8) "é > b" "é >= b" (3, 9)]
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
-    let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) [PhraseAnchor p] file)
+    let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) Nothing [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
     it "end of data goes after the last constructor (haskell adapter)" $ withHaskell $ \syn lang file ->
-      fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) [PhraseAnchor "end of data SampleError"] file)
+      fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of data SampleError"] file)
         `shouldReturn` Right (6, "  ")
     it "end of parameters in new goes after the last parameter" $ withRustFile "billing/billing-service/src/service.rs" $ \syn lang file ->
       at syn lang file "end of parameters in new" `shouldReturn` Right (lineOf file "invoice_repository: Arc<dyn InvoiceRepository>," + 1)
     it "end of literal VoidInvoice in new opens the empty literal" $ withRustFile "billing/billing-service/src/service.rs" $ \syn lang file ->
-      fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of literal VoidInvoice in new"] file) >>= (`shouldSatisfy` either (const False) isJust)
+      fmap (fmap locOpen) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of literal VoidInvoice in new"] file) >>= (`shouldSatisfy` either (const False) isJust)
     it "end of literal RefundInvoice in new goes after its last field" $ withRustFile "billing/billing-service/src/service.rs" $ \syn lang file ->
       at syn lang file "end of literal RefundInvoice in new" `shouldReturn` Right (lineOf file "invoice_repository: invoice_repository.clone()," + 1)
     it "end of call … BillingService::new in main goes after the last argument" $ withRustFile "main/src/main.rs" $ \syn lang file ->
       at syn lang file "end of call billing_service::service::BillingService::new in main" `shouldReturn` Right (lineOf file "invoice_repository.clone()," + 1)
     it "end of call … NotificationsService::new in main opens the empty argument list" $ withRustFile "main/src/main.rs" $ \syn lang file ->
-      fmap (fmap locOpen) (resolveLayers syn (Just lang) [PhraseAnchor "end of call notifications_service::service::NotificationsService::new in main"] file) >>= (`shouldSatisfy` either (const False) isJust)
+      fmap (fmap locOpen) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of call notifications_service::service::NotificationsService::new in main"] file) >>= (`shouldSatisfy` either (const False) isJust)
     it "anchors lines up every target's example, however long the phrase" $ do
       src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
       let Right lang = parseOverShipped "rust" "packs/rust-htmx" src

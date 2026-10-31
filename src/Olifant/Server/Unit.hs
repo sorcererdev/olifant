@@ -51,11 +51,11 @@ data Unit = Unit
 -- that has one (a decorator's is the def below it); its body starts after
 -- the first line that opens a block (`opens_block`, its comment cut).
 -- Left is one sentence on why there is none.
-unitAt :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Unit)
-unitAt syntax lang text line = case langUnitProvider lang of
+unitAt :: Syntax IO -> Language -> Maybe FilePath -> Text -> Int -> IO (Either Text Unit)
+unitAt syntax lang file text line = case langUnitProvider lang of
   -- a provider: the innermost answer holding the line, its body as a rule's
   Just _ ->
-    unitAnswers syntax lang Nothing text <&> \case
+    unitAnswers syntax lang file text <&> \case
       Left why -> Left why
       Right us -> case sortOn (\u -> (Down (uaLine u), uaEnd u)) [u | u <- us, uaLine u <= line, line <= uaEnd u] of
         u : _ -> let d = defLine lang ls u in Right (Unit (uaName u) d (uaLine u, uaEnd u) (bodyOf lang ls d (uaEnd u)))
@@ -118,9 +118,9 @@ defLine lang ls u = fromMaybe (uaLine u) (listToMaybe [i | i <- [uaLine u .. uaE
 -- own name, its def its first line below its `above` lines; its body the
 -- block's lines indented deeper than the def (Rust's closing brace is not
 -- in it).
-testUnitAt :: Language -> Text -> Int -> Maybe Unit
-testUnitAt lang text line = do
-  u <- testCaseUnitAtIn lang text line
+testUnitAt :: Language -> Maybe FilePath -> Text -> Int -> Maybe Unit
+testUnitAt lang file text line = do
+  u <- testCaseUnitAtIn lang file text line
   n <- listToMaybe (reverse (tuPath u))
   let (a, z) = tuLines u
       isAbove l = maybe False (\rx -> matchTest rx (T.unpack l)) (langTest lang >>= testAbove >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex)
@@ -138,8 +138,8 @@ testUnitAt lang text line = do
 
 -- | The test at LINE of a test file as a unit ('testUnitAt'), else the
 -- `[unit]` there ('unitAt'): what a re-conjure takes for a test's hole.
-testOrUnitAt :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Unit)
-testOrUnitAt syntax lang text line = maybe (unitAt syntax lang text line) (pure . Right) (testUnitAt lang text line)
+testOrUnitAt :: Syntax IO -> Language -> Maybe FilePath -> Text -> Int -> IO (Either Text Unit)
+testOrUnitAt syntax lang file text line = maybe (unitAt syntax lang file text line) (pure . Right) (testUnitAt lang file text line)
 
 -- | A unit's body in lines LS: from the line after the first from D (its
 -- def) that opens a block (`opens_block`, its comment cut) through Z.
@@ -197,9 +197,9 @@ data Named = Named {namedName :: Text, namedLines :: (Int, Int), namedDef :: Int
 -- decorated def), is the same unit. With `[unit] join`, units of one name at
 -- one indentation separated only by blank lines (or touching) are one: a
 -- Haskell signature and its equations.
-unitsOf :: Syntax IO -> Language -> Text -> IO (Either Text [Named])
-unitsOf syntax lang text =
-  unitAnswers syntax lang Nothing text <&> fmap (\us -> qualify (joined (dedupe [((uaLine u, uaEnd u), defLine lang ls u, uaName u) | u <- sortOn (\u -> (uaLine u, Down (uaEnd u))) us])))
+unitsOf :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO (Either Text [Named])
+unitsOf syntax lang file text =
+  unitAnswers syntax lang file text <&> fmap (\us -> qualify (joined (dedupe [((uaLine u, uaEnd u), defLine lang ls u, uaName u) | u <- sortOn (\u -> (uaLine u, Down (uaEnd u))) us])))
   where
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
@@ -227,9 +227,9 @@ unitsOf syntax lang text =
 -- | The innermost unit (by 'unitsOf') whose lines hold LINE (1-based) of
 -- TEXT: a decorator's line is its def's. Left is one sentence on why there
 -- is none.
-unitAround :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Named)
-unitAround syntax lang text line =
-  unitsOf syntax lang text <&> \case
+unitAround :: Syntax IO -> Language -> Maybe FilePath -> Text -> Int -> IO (Either Text Named)
+unitAround syntax lang file text line =
+  unitsOf syntax lang file text <&> \case
     Left why -> Left why
     Right ns -> case sortOn (\n -> (Down (fst (namedLines n)), snd (namedLines n))) [n | n <- ns, let (a, z) = namedLines n, a <= line, line <= z] of
       n : _ -> Right n

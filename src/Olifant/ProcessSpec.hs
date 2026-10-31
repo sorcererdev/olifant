@@ -1,9 +1,13 @@
 module Olifant.ProcessSpec (spec) where
 
+import Control.Concurrent (forkIO, threadDelay)
+import Data.ByteString qualified as BS
 import Data.Set qualified as S
 import Data.Text qualified as T
-import Olifant.Process (gitBaseFiles, gitBaseText, gitTracked)
+import Olifant.Process (Outcome (..), gitBaseFiles, gitBaseText, gitTracked, newCancel, neverCancel, runBytes, runBytesCancellable)
 import System.Directory (createDirectoryIfMissing)
+import System.Exit (ExitCode (..))
+import System.Timeout (timeout)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (callProcess)
@@ -11,6 +15,25 @@ import Test.Hspec
 
 spec :: Spec
 spec = describe "Olifant.Process" $ do
+  describe "runBytesCancellable with an input the tool never reads (4b m1 review I2)" $ do
+    -- 200 KB is past any pipe's buffer: writing it blocks until the tool reads
+    let big = BS.replicate 200000 120
+        sleeper pidFile = ["-c", "echo $$ > " <> pidFile <> "; sleep 30"]
+        gone pidFile = do
+          pid <- T.unpack . T.strip . T.pack <$> readFile pidFile
+          runBytes "kill" ["-0", pid] Nothing "" >>= \case
+            Right (ExitSuccess, _, _) -> pure False
+            _ -> pure True
+    it "a cancel stops it at once and kills it" $
+      withSystemTempDirectory "olifant-cancel" $ \dir -> do
+        (token, trip) <- newCancel
+        _ <- forkIO (threadDelay 500000 >> trip)
+        timeout 5000000 (runBytesCancellable token Nothing "sh" (sleeper (dir </> "pid")) Nothing big) `shouldReturn` Just (Right Cancelled)
+        gone (dir </> "pid") `shouldReturn` True
+    it "an interruption while the input is unwritten kills it: no process is left" $
+      withSystemTempDirectory "olifant-interrupt" $ \dir -> do
+        timeout 1000000 (runBytesCancellable neverCancel Nothing "sh" (sleeper (dir </> "pid")) Nothing big) `shouldReturn` Nothing
+        gone (dir </> "pid") `shouldReturn` True
   describe "gitTracked" $ do
     it "lists the files git tracks under a folder (relative to it), not the untracked ones" $
       withSystemTempDirectory "olifant-tracked" $ \dir -> do

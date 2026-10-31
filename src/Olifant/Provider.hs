@@ -15,6 +15,7 @@ module Olifant.Provider
     providedUnits,
     lineCount,
     providerTimeout,
+    providerCoolOff,
     withVersion,
     UnitAnswer (..),
     AnchorAnswer (..),
@@ -42,6 +43,7 @@ import System.Directory (doesFileExist, findExecutable, makeAbsolute)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, (</>))
 import System.IO.Unsafe (unsafePerformIO)
+import GHC.Clock (getMonotonicTime)
 
 -- | A program answering a slot: its argv, and the folder it runs from (the
 -- project root, set by the catalog; 'Nothing' is the current folder).
@@ -61,23 +63,67 @@ withVersion = \case
 -- | Run a provider on a request. 'Left' is why the slot is unavailable, in
 -- one line: the program is missing, it timed out, its stderr's first line
 -- (on a non-zero exit), or why its answer is not JSON.
+--
+-- A circuit breaker per provider (argv and root): once it times out, or its
+-- program is missing or cannot start, every request to it is answered with
+-- that same 'Left', at once, for 'providerCoolOff' seconds. A broken
+-- provider then costs one timeout, not one per file asked.
 runProvider :: Provider -> Value -> IO (Either Text Value)
-runProvider (Provider argv root) request = case argv of
-  [] -> pure (Left "the provider names no program")
+runProvider p request = ranAnswer <$> runGuarded p request
+
+-- | How a provider's run ended: its answer (memoised: the same request
+-- gives the same one), a failure of the program itself (trips the breaker,
+-- not memoised), or a stop (neither).
+data Ran = Answered (Either Text Value) | Broken Text | Stopped Text
+
+ranAnswer :: Ran -> Either Text Value
+ranAnswer = \case
+  Answered a -> a
+  Broken why -> Left why
+  Stopped why -> Left why
+
+-- | How long, in seconds, a provider that timed out or would not start is
+-- not asked again.
+providerCoolOff :: Double
+providerCoolOff = 60
+
+-- | 'runOnce' behind the provider's breaker.
+runGuarded :: Provider -> Value -> IO Ran
+runGuarded p request = do
+  let key = (provArgv p, provRoot p)
+  now <- getMonotonicTime
+  M.lookup key <$> readMVar providerBreaker >>= \case
+    Just (till, why) | now < till -> pure (Broken why)
+    _ ->
+      runOnce p request >>= \case
+        ran@(Broken why) -> do
+          at <- getMonotonicTime
+          modifyMVar_ providerBreaker (pure . M.insert key (at + providerCoolOff, why))
+          pure ran
+        ran -> pure ran
+
+{-# NOINLINE providerBreaker #-}
+providerBreaker :: MVar (Map ([Text], Maybe FilePath) (Double, Text))
+providerBreaker = unsafePerformIO (newMVar M.empty)
+
+-- | One run of a provider, no breaker.
+runOnce :: Provider -> Value -> IO Ran
+runOnce (Provider argv root) request = case argv of
+  [] -> pure (Answered (Left "the provider names no program"))
   prog : args ->
     resolve prog >>= \case
-      Nothing -> pure (Left ("`" <> prog <> "` is not installed"))
+      Nothing -> pure (Broken ("`" <> prog <> "` is not installed"))
       Just exe ->
-        runBytesCancellable neverCancel (Just providerTimeout) exe (map T.unpack args) root (BL.toStrict (encode (withVersion request))) >>= \case
-          Left why -> pure (Left why)
-          Right TimedOut -> pure (Left ("it timed out (" <> T.pack (show providerTimeout) <> " s)"))
-          Right Cancelled -> pure (Left "it was cancelled")
+        runBytesCancellable neverCancel (Just providerTimeout) exe (map T.unpack args) root (BL.toStrict (encode (withVersion request))) <&> \case
+          Left why -> Broken why
+          Right TimedOut -> Broken ("it timed out (" <> T.pack (show providerTimeout) <> " s)")
+          Right Cancelled -> Stopped "it was cancelled"
           Right (Finished (ExitFailure n) _ err) ->
-            pure . Left $ case filter (not . T.null) (map T.strip (T.lines (TE.decodeUtf8Lenient err))) of
+            Answered . Left $ case filter (not . T.null) (map T.strip (T.lines (TE.decodeUtf8Lenient err))) of
               l : _ -> l
               [] -> "it exited " <> T.pack (show n) <> " and said nothing"
           Right (Finished ExitSuccess out _) ->
-            pure $ either (Left . ("its answer is not JSON: " <>) . T.pack) Right (eitherDecodeStrict out)
+            Answered (either (Left . ("its answer is not JSON: " <>) . T.pack) Right (eitherDecodeStrict out))
   where
     -- a name with a slash is a path, against the root; a bare name is on PATH
     resolve prog
@@ -89,18 +135,23 @@ runProvider (Provider argv root) request = case argv of
       | otherwise = findExecutable (T.unpack prog)
 
 -- | 'runProvider', memoised for the process by (argv, root, request). The
--- request holds the file's path and text, so an edited file is asked again.
+-- request holds the file's path (when the caller knows it) and its text, so
+-- an edited or another file is asked again. Only answers are kept: a
+-- timeout, a missing program or a stop is asked again once the breaker
+-- lets it.
 runProviderMemo :: Provider -> Value -> IO (Either Text Value)
 runProviderMemo p request = do
   let key = (provArgv p, provRoot p, BL.toStrict (encode request))
   M.lookup key <$> readMVar providerMemo >>= \case
     Just answer -> pure answer
-    Nothing -> do
+    Nothing ->
       -- run outside the lock: a slow provider must not hold up other slots
-      answer <- runProvider p request
-      modifyMVar_ providerMemo $ \m ->
-        pure (M.insert key answer (if M.size m >= memoCap then M.empty else m))
-      pure answer
+      runGuarded p request >>= \case
+        Answered answer -> do
+          modifyMVar_ providerMemo $ \m ->
+            pure (M.insert key answer (if M.size m >= memoCap then M.empty else m))
+          pure answer
+        ran -> pure (ranAnswer ran)
 
 -- | 'runProviderMemo' from pure code (test units are read in pure code).
 -- Sound because a provider is pure by contract: the same request gives the

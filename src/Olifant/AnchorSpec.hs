@@ -95,23 +95,23 @@ resolveSpec = do
   describe "an anchors provider (4b m1)" $ do
     it "a phrase no target knows goes to the anchors provider" $ do
       lang <- withAnchors "anchor.sh"
-      Right loc <- resolveLayers providingSyntax (Just lang) [PhraseAnchor "end of the imports"] source
+      Right loc <- resolveLayers providingSyntax (Just lang) Nothing [PhraseAnchor "end of the imports"] source
       (locLine loc, locIndent loc, locSpacing loc) `shouldBe` (2, "    ", NoSpacing)
       let (_, new) = insertLines loc "snippet" source
       take 4 (T.lines new) `shouldBe` ["update msg =", "  -- lead", "    snippet", "    case x of"]
     it "a declared target is never sent to the provider" $ do
       lang <- withAnchors "fails.sh"
-      fmap locLine <$> resolveLayers providingSyntax (Just lang) [PhraseAnchor "end of case in update"] source `shouldReturn` Right 9
+      fmap locLine <$> resolveLayers providingSyntax (Just lang) Nothing [PhraseAnchor "end of case in update"] source `shouldReturn` Right 9
     it "a provider that fails is a miss with its reason, not a missing tool" $ do
       lang <- withAnchors "fails.sh"
-      resolveLayers providingSyntax (Just lang) [PhraseAnchor "end of the imports"] source
+      resolveLayers providingSyntax (Just lang) Nothing [PhraseAnchor "end of the imports"] source
         `shouldReturn` Left [Miss "end of the imports" "the anchors provider: no grammar" False]
     it "without a runner (noSyntax, a plain querying fake) the provider is a miss" $ do
       lang <- withAnchors "anchor.sh"
-      resolveLayers (querying (\_ _ _ -> pure (Right []))) (Just lang) [PhraseAnchor "end of the imports"] source
+      resolveLayers (querying (\_ _ _ -> pure (Right []))) (Just lang) Nothing [PhraseAnchor "end of the imports"] source
         `shouldReturn` Left [Miss "end of the imports" "the anchors provider: no provider runner" False]
   describe "resolveLayers" $ do
-    let resolve anchors = runIdentity (resolveLayers fakeSyntax (Just caseTarget) anchors source)
+    let resolve anchors = runIdentity (resolveLayers fakeSyntax (Just caseTarget) Nothing anchors source)
     it "puts `end of` after the last top-level item, at its indentation" $
       fmap (\l -> (locLine l, locIndent l, locUsed l)) (resolve [PhraseAnchor "end of case in update"]) `shouldBe` Right (9, "        ", "end of case in update")
     it "puts `start of` before the first item" $
@@ -130,11 +130,11 @@ resolveSpec = do
     it "suggests a known target for an unknown one" $
       resolve [PhraseAnchor "end of cases in update"] `shouldSatisfy` either (any (("did you mean `end of case in update`" `T.isInfixOf`) . missReason)) (const False)
     it "misses (flagged as a tool problem) when the syntax tool is missing" $
-      runIdentity (resolveLayers noSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source) `shouldSatisfy` either (all missTool) (const False)
+      runIdentity (resolveLayers noSyntax (Just caseTarget) Nothing [PhraseAnchor "end of case in update"] source) `shouldSatisfy` either (all missTool) (const False)
     it "resolves a marker without any tools" $
-      fmap locLine (runIdentity (resolveLayers noSyntax Nothing [PhraseAnchor "before marker -- lead"] source)) `shouldBe` Right 1
+      fmap locLine (runIdentity (resolveLayers noSyntax Nothing Nothing [PhraseAnchor "before marker -- lead"] source)) `shouldBe` Right 1
     it "needs an adapter for a named target" $
-      runIdentity (resolveLayers noSyntax Nothing [PhraseAnchor "end of type Msg"] source) `shouldSatisfy` either (any (("no language adapter" `T.isInfixOf`) . missReason)) (const False)
+      runIdentity (resolveLayers noSyntax Nothing Nothing [PhraseAnchor "end of type Msg"] source) `shouldSatisfy` either (any (("no language adapter" `T.isInfixOf`) . missReason)) (const False)
   describe "resolveLayers (items sharing a line with their container)" $ do
     -- `[ a, b ]` on one line: the container is line 1, cols 4-12; items a and b.
     let inline = querying $ \_ rule _ -> Identity . Right $
@@ -142,7 +142,7 @@ resolveSpec = do
             then [Match (1, 6) (1, 7) "a" (0, 0), Match (1, 9) (1, 10) "b" (0, 0)]
             else [Match (1, 4) (1, 12) "[ a, b ]" (0, 0)]
         src = "x =\n    [ a, b ]\ny = 2\n"
-        resolve p = runIdentity (resolveLayers inline (Just caseTarget) [PhraseAnchor p] src)
+        resolve p = runIdentity (resolveLayers inline (Just caseTarget) Nothing [PhraseAnchor p] src)
     it "misses `end of` when the last item does not end its line (review)" $
       resolve "end of case in x" `shouldSatisfy` either (any (("whole lines" `T.isInfixOf`) . missReason)) (const False)
     it "misses `start of` when the first item does not start its line (review)" $
@@ -180,20 +180,20 @@ resolveSpec = do
         `shouldBe` Right [(Just (VText "A ->\n    a"), Just (VText ""))]
   describe "spacing copied from neighbouring items" $ do
     it "end of puts a blank line before the text when the last two items are separated by one" $
-      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right BlankBefore
+      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) Nothing [PhraseAnchor "end of case in update"] source)) `shouldBe` Right BlankBefore
     it "start of puts a blank line after the text when the first two items are separated by one" $
-      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) [PhraseAnchor "start of case in update"] source)) `shouldBe` Right BlankAfter
+      fmap locSpacing (runIdentity (resolveLayers fakeSyntax (Just caseTarget) Nothing [PhraseAnchor "start of case in update"] source)) `shouldBe` Right BlankAfter
     it "copies nothing from a one-item container (Review Focus 4)" $ do
       let one = querying $ \_ rule _ -> Identity . Right $
             if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (3, 8) (4, 20) "A -> …" (0, 0)] else [Match (2, 4) (4, 20) "case" (0, 0)]
-      fmap locSpacing (runIdentity (resolveLayers one (Just caseTarget) [PhraseAnchor "end of case in update"] source)) `shouldBe` Right NoSpacing
+      fmap locSpacing (runIdentity (resolveLayers one (Just caseTarget) Nothing [PhraseAnchor "end of case in update"] source)) `shouldBe` Right NoSpacing
     it "insertLines adds the blank line unless the text already has it" $ do
       insertLines (Located 1 "" "" "x" BlankBefore Nothing "") "b" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
       insertLines (Located 1 "" "" "x" BlankBefore Nothing "") "\nb" "a\nc\n" `shouldBe` (2, "a\n\nb\nc\n")
   describe "opening an empty container (spec §7.1)" $ do
     let emptyAt c = querying $ \_ rule _ -> Identity . Right $
           if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [] else [c]
-        resolveIn syn phrase src = runIdentity (resolveLayers syn (Just caseTarget) [PhraseAnchor phrase] src)
+        resolveIn syn phrase src = runIdentity (resolveLayers syn (Just caseTarget) Nothing [PhraseAnchor phrase] src)
         apply c phrase snippet src = fmap (\l -> snd (insertLines l snippet src)) (resolveIn (emptyAt c) phrase src)
     it "opens a one-line container that shares its line (Review Focus 1)" $
       apply (Match (0, 10) (0, 12) "()" (0, 0)) "end of case in update" "x: X," "pub fn new() -> Self {\n"
@@ -230,16 +230,16 @@ resolveSpec = do
             if "\"all\"" `isInfixOf` BL.unpack (encode rule) then [Match (1, 4) (1, 9) "x: X," (0, 0)] else [Match (0, 10) (2, 1) "(\n    x: X,\n)" (0, 0)]
       fmap (\l -> presentAt l "x: X," opened) (resolveIn withItem "end of case in update" opened) `shouldBe` Right True
   describe "start of file / end of file (any file, no adapter needed)" $ do
-    let at p c = fmap locLine (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor p] c))
+    let at p c = fmap locLine (runIdentity (resolveLayers fakeSyntax Nothing Nothing [PhraseAnchor p] c))
     it "end of file is after the last line; start of file is line 0" $ do
       at "end of file" "a\nb\n" `shouldBe` Right 2
       at "end of file" "a\nb" `shouldBe` Right 2
       at "start of file" "a\nb\n" `shouldBe` Right 0
     it "works on an empty file" $ do
       at "end of file" "" `shouldBe` Right 0
-      fmap (\l -> snd (insertLines l "pub mod x;" "")) (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor "end of file"] "")) `shouldBe` Right "pub mod x;\n"
+      fmap (\l -> snd (insertLines l "pub mod x;" "")) (runIdentity (resolveLayers fakeSyntax Nothing Nothing [PhraseAnchor "end of file"] "")) `shouldBe` Right "pub mod x;\n"
     it "counts the whole file for 'already present', so re-runs are no-ops" $
-      fmap (\l -> presentAt l "pub mod x;" "pub mod x;\npub mod y;\n") (runIdentity (resolveLayers fakeSyntax Nothing [PhraseAnchor "end of file"] "pub mod x;\npub mod y;\n")) `shouldBe` Right True
+      fmap (\l -> presentAt l "pub mod x;" "pub mod x;\npub mod y;\n") (runIdentity (resolveLayers fakeSyntax Nothing Nothing [PhraseAnchor "end of file"] "pub mod x;\npub mod y;\n")) `shouldBe` Right True
   describe "insertLines" $ do
     it "indents non-blank lines and reports the 1-based line" $
       insertLines (Located 1 "  " "" "x" NoSpacing Nothing "") "a\n\nb\n" "one\ntwo\n" `shouldBe` (2, "one\n  a\n\n  b\ntwo\n")

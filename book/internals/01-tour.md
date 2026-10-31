@@ -2223,7 +2223,10 @@ failed query becomes a `problem`, not a failure: a partial model beats none in a
 `neverCancel` is the CLI's. `runBytesCancellable` polls it while a child runs and, when it
 trips, kills the child's process group (cargo's rustc, uv's python). If the thread itself is
 interrupted (an asynchronous exception: a client's progress cancel), the group is killed and
-reaped, and the interruption goes on; only synchronous failures become answers. The ports' checker and
+reaped, and the interruption goes on; only synchronous failures become answers. The kill
+wraps everything after the child starts, and stdin is written from a thread of its own, so
+neither a child that never reads a large input nor an interruption while it is being written
+can hold the call past its limit or leave the group running. The ports' checker and
 verifier take one (`pChecker`, `pVerifier :: Cancel -> …`; `Main` passes `processCheckerWith`
 and `processVerifierCancellable`), and so does a plan (`poCancel`): `planWith` gives it to the
 checks, the verifies, the `uncovered` queries and the model filler (`modelFillerWith`, curl),

@@ -4,6 +4,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Either (isLeft)
 import Data.Text qualified as T
+import GHC.Clock (getMonotonicTime)
 import Olifant.Provider
 import System.Directory (copyFile, getCurrentDirectory, getPermissions, setOwnerExecutable, setPermissions)
 import System.FilePath ((</>))
@@ -16,6 +17,13 @@ script :: FilePath -> IO Provider
 script name = do
   here <- getCurrentDirectory
   pure (Provider ["sh", T.pack ("testdata/providers" </> name)] (Just (here </> "src/Olifant")))
+
+-- | `sleeps.sh` from its own root: a breaker of its own, whatever else
+-- timed out.
+sleeperIn :: FilePath -> IO Provider
+sleeperIn dir = do
+  here <- getCurrentDirectory
+  pure (Provider ["sh", T.pack (here </> "src/Olifant/testdata/providers/sleeps.sh")] (Just dir))
 
 spec :: Spec
 spec = describe "Olifant.Provider" $ do
@@ -50,6 +58,21 @@ spec = describe "Olifant.Provider" $ do
     it "a provider that hangs is stopped after 10 s" $ do
       p <- script "sleeps.sh"
       timeout (15 * 1000000) (runProvider p (object [])) `shouldReturn` Just (Left "it timed out (10 s)")
+    it "a provider that never reads its input is stopped after 10 s, a large text too (review I2)" $
+      withSystemTempDirectory "olifant-provider" $ \dir -> do
+        p <- sleeperIn dir
+        timeout (15 * 1000000) (runProvider p (object ["text" .= T.replicate 200000 "x"])) `shouldReturn` Just (Left "it timed out (10 s)")
+
+  it "after a timeout, its breaker answers any request with the same reason at once (review I3)" $
+    withSystemTempDirectory "olifant-provider" $ \dir -> do
+      p <- sleeperIn dir
+      timeout (15 * 1000000) (runProviderMemo p (object ["text" .= ("a" :: T.Text)])) `shouldReturn` Just (Left "it timed out (10 s)")
+      start <- getMonotonicTime
+      runProviderMemo p (object ["text" .= ("b" :: T.Text)]) `shouldReturn` Left "it timed out (10 s)"
+      (`shouldSatisfy` (< 1)) . subtract start =<< getMonotonicTime
+      -- another provider (its own root) is not held by it
+      q <- script "units.sh"
+      fmap isLeft (runProviderMemo q (object ["text" .= ("b" :: T.Text)])) `shouldReturn` False
 
   describe "decodeUnits rejects an answer as a whole, naming the first bad entry" $ do
     let unit l e = object ["name" .= ("f" :: T.Text), "line" .= (l :: Int), "end" .= (e :: Int)]

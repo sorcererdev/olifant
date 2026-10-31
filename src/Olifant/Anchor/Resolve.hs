@@ -69,17 +69,20 @@ data Miss = Miss {missAnchor :: Text, missReason :: Text, missTool :: Bool}
 describeMisses :: [Miss] -> Text
 describeMisses = T.intercalate "; " . map (\m -> "`" <> missAnchor m <> "`: " <> missReason m)
 
-resolveLayers :: Monad m => Syntax m -> Maybe Language -> [RenderedAnchor] -> Text -> m (Either [Miss] Located)
-resolveLayers syntax lang anchors content = go [] anchors
+-- | The first of ANCHORS that resolves in CONTENT (the text of FILE, a
+-- project-relative path, when the caller knows it: an anchors provider is
+-- told it), else every miss.
+resolveLayers :: Monad m => Syntax m -> Maybe Language -> Maybe FilePath -> [RenderedAnchor] -> Text -> m (Either [Miss] Located)
+resolveLayers syntax lang file anchors content = go [] anchors
   where
     go misses [] = pure (Left (reverse misses))
     go misses (a : rest) =
-      resolveOne syntax lang a content >>= \case
+      resolveOne syntax lang file a content >>= \case
         Right loc -> pure (Right loc)
         Left miss -> go (miss : misses) rest
 
-resolveOne :: Monad m => Syntax m -> Maybe Language -> RenderedAnchor -> Text -> m (Either Miss Located)
-resolveOne syntax lang anchor content = case anchor of
+resolveOne :: Monad m => Syntax m -> Maybe Language -> Maybe FilePath -> RenderedAnchor -> Text -> m (Either Miss Located)
+resolveOne syntax lang file anchor content = case anchor of
   RuleAnchor rule pos -> case lang of
     Nothing -> pure (Left (miss "no language adapter for this file (add languages/<name>.toml to a pack)"))
     Just l ->
@@ -161,7 +164,7 @@ resolveOne syntax lang anchor content = case anchor of
       _ -> declared
       where
         provided p =
-          runSlotProvider syntax p (textRequest Nothing content [("phrase", Aeson.String used)]) <&> \case
+          runSlotProvider syntax p (textRequest file content [("phrase", Aeson.String used)]) <&> \case
             Left why -> Left (miss ("the anchors provider: " <> why))
             Right v -> case decodeAnchor (lineCount content) v of
               Left why -> Left (miss ("the anchors provider: " <> why))

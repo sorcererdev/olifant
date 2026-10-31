@@ -5,6 +5,7 @@
 module Olifant.Process (gitBaseFiles, gitBaseText, gitStateStamp, gitTracked, runBytes, runBytesWithin, Outcome (..), runBytesCancellable, Cancel, newCancel, neverCancel, cancelled) where
 
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Monad (void)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, SomeAsyncException, SomeException, displayException, evaluate, fromException, onException, try, tryJust)
 import Data.ByteString (ByteString)
@@ -78,42 +79,49 @@ runBytesCancellable token secs exe args dir input = do
   result <- tryJust synchronous $ do
     (Just hin, Just hout, Just herr, ph) <-
       createProcess (proc exe args) {cwd = dir, std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe, create_group = True}
-    mapM_ (`hSetBinaryMode` True) [hin, hout, herr]
-    outV <- newEmptyMVar
-    errV <- newEmptyMVar
-    let drain h v = forkIO ((try (BS.hGetContents h >>= evaluate) :: IO (Either IOException ByteString)) >>= putMVar v)
-    _ <- drain hout outV
-    _ <- drain herr errV
-    _ <- try (BS.hPut hin input) :: IO (Either IOException ())
-    _ <- try (hClose hin) :: IO (Either IOException ())
-    -- polled, not `timeout` around waitForProcess: without the threaded
-    -- runtime that call blocks everything, so a timeout could never fire
-    let poll ticks = getProcessExitCode ph >>= \case
-          Just code -> pure (Right code)
-          Nothing ->
-            cancelled token >>= \case
-              True -> pure (Left Cancelled)
-              False
-                | maybe False (\s -> ticks >= s * 20) secs -> pure (Left TimedOut)
-                | otherwise -> threadDelay 50000 >> poll (ticks + 1 :: Int)
-        stopGroup = do
+    let stopGroup = do
           _ <- try (interruptProcessGroupOf ph) :: IO (Either SomeException ())
           _ <- try (getPid ph >>= mapM_ (signalProcessGroup sigKILL)) :: IO (Either SomeException ())
           terminateProcess ph
-    (poll 0 `onException` (stopGroup >> try (waitForProcess ph) :: IO (Either SomeException ExitCode))) >>= \case
-      Left stopped -> do
-        stopGroup
-        _ <- waitForProcess ph
-        _ <- takeMVar outV
-        _ <- takeMVar errV
-        pure (Right stopped)
-      Right code -> do
-        out <- takeMVar outV
-        err <- takeMVar errV
-        pure $ case (out, err) of
-          (Right o, Right e) -> Right (Finished code o e)
-          (Left x, _) -> Left (firstLine (displayException x))
-          (_, Left x) -> Left (firstLine (displayException x))
+    -- everything after the start is under the kill: an interruption anywhere
+    -- (a client's cancel) stops the group, so no process is left behind
+    flip onException (stopGroup >> try (waitForProcess ph) :: IO (Either SomeException ExitCode)) $ do
+      mapM_ (`hSetBinaryMode` True) [hin, hout, herr]
+      outV <- newEmptyMVar
+      errV <- newEmptyMVar
+      let drain h v = forkIO ((try (BS.hGetContents h >>= evaluate) :: IO (Either IOException ByteString)) >>= putMVar v)
+      _ <- drain hout outV
+      _ <- drain herr errV
+      -- written from a thread of its own: a tool that never reads its input
+      -- (a big text past the pipe's buffer) must not hold up the clock below;
+      -- killed, it breaks the pipe and the writer ends
+      _ <- forkIO $ do
+        _ <- try (BS.hPut hin input) :: IO (Either IOException ())
+        void (try (hClose hin) :: IO (Either IOException ()))
+      -- polled, not `timeout` around waitForProcess: without the threaded
+      -- runtime that call blocks everything, so a timeout could never fire
+      let poll ticks = getProcessExitCode ph >>= \case
+            Just code -> pure (Right code)
+            Nothing ->
+              cancelled token >>= \case
+                True -> pure (Left Cancelled)
+                False
+                  | maybe False (\s -> ticks >= s * 20) secs -> pure (Left TimedOut)
+                  | otherwise -> threadDelay 50000 >> poll (ticks + 1 :: Int)
+      poll 0 >>= \case
+        Left stopped -> do
+          stopGroup
+          _ <- waitForProcess ph
+          _ <- takeMVar outV
+          _ <- takeMVar errV
+          pure (Right stopped)
+        Right code -> do
+          out <- takeMVar outV
+          err <- takeMVar errV
+          pure $ case (out, err) of
+            (Right o, Right e) -> Right (Finished code o e)
+            (Left x, _) -> Left (firstLine (displayException x))
+            (_, Left x) -> Left (firstLine (displayException x))
   pure $ case result of
     Left x -> Left (T.pack exe <> ": " <> firstLine (displayException x))
     Right r -> r

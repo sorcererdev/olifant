@@ -843,8 +843,9 @@ unit = { provider = ["go", "run", "./tools/testunits"] }
 **The protocol.**
 
 - **Requests** are a JSON object on stdin, and every one carries `"v": 1`. A units, test-units
-  or anchor request is `{"v": 1, "text": "…", "file": "src/a.go"}`; `file` is there only when
-  the caller knows the path. An anchor request adds `"phrase"`, the whole `at` text. A
+  or anchor request is `{"v": 1, "text": "…", "file": "src/a.go"}`. `file` is the path from
+  the project root, sent whenever Olifant is reading a file. It is missing only when the
+  text is no file: a model's answer that Olifant checks for tests before placing it. An anchor request adds `"phrase"`, the whole `at` text. A
   selection request is `{"v": 1, "tests": ["path::name", …]}`.
 - **Answers** are JSON on stdout:
   - units and test units: `[{"name": "add", "line": 3, "end": 5, "kind": "function"}]`
@@ -854,20 +855,32 @@ unit = { provider = ["go", "run", "./tools/testunits"] }
     text, or a span repeated rejects all of it, naming the first bad entry;
   - an anchor: `{"line": 12, "column": 5}` or `null` (not known here). `line` is where the
     inserted lines start (one past the last line is the end of the file), `column` their
-    indentation;
+    indentation, written as that many spaces (a tab-indented language gets spaces here);
   - a selection: `["arg", …]`, which takes the place of `{= tests =}`.
 - **Positions:** lines are 1-based and inclusive, as the editor and olifant-json's
   `broken.line` show them; columns are 1-based and counted in characters.
 - **Where it runs:** from the project root, whether olifant runs from a subfolder or under the
   language server. `argv[0]` with a `/` in it (`./tools/x`) is a path under the root; a bare
-  name is looked up on `PATH`. A pack's provider runs from the project root too.
-- **Time:** a provider is stopped after 10 seconds.
+  name is looked up on `PATH`. A pack's provider runs from the project root too; a pack tried
+  outside any project runs its providers from the current folder.
+- **Time:** a provider is stopped after 10 seconds, counted from its start, whether or not it
+  has read its request.
 - **Failure:** a non-zero exit, a timeout, or an answer that does not decode leaves the slot
   unavailable. The reason is stderr's first line, or why the answer did not decode; `olifant
-  doctor` shows it, and the slot behaves as if the language had no rule for it.
+  doctor` shows it. What the slot then does depends on the slot:
+  - units: a command that needs the unit at the cursor (conjure, mutate, stub) fails with the
+    reason; a plan step's unit is not found; a fill that only wanted a file's top-level names
+    falls back to the lines that `[unit] name` names at column 0;
+  - test units: none, as if the file had no tests;
+  - an anchor: the phrase does not resolve, "the anchors provider: REASON";
+  - a selection: the test run fails, "the test selection provider: REASON".
+- **When it keeps failing:** a provider that times out, or whose program is missing or will
+  not start, is not asked again for 60 seconds. Every request in that time gets the same
+  reason at once, so a broken provider costs one timeout, not one per file.
 - **Purity:** a provider must be pure: the same request gives the same answer. Olifant may
-  remember an answer for the rest of the process (test units are read from many places), and
-  asks again when the file's text changes.
+  remember an answer for the rest of the process (test units are read from many places). It
+  asks again when the file's text or path changes. A timeout or a missing program is not
+  remembered: after the 60 seconds, the provider is asked again.
 - **Diagnostics and test results** are the existing `convert` commands
   ([check formats](#check-formats), [test formats](#test-formats)): stdin
   `{"v": 1, "exit": N, "stdout": "…", "stderr": "…"}`, stdout olifant-json.

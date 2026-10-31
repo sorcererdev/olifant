@@ -237,7 +237,16 @@ one type, so everything downstream is the same code.
   (`withVersion`), resolves `argv[0]` (against the root when it holds a `/`, else on `PATH`) and
   runs it through `Process.runBytesCancellable` with a 10 s limit (`providerTimeout`), cwd the
   root. Its `Left` is one line: "`x` is not installed", "it timed out (10 s)", stderr's first
-  line, "it exited N and said nothing", or "its answer is not JSON: …".
+  line, "it exited N and said nothing", or "its answer is not JSON: …". The limit covers the
+  whole exchange: `runBytesCancellable` writes stdin from a thread of its own, so a provider that
+  never reads a large text still times out, and the kill of the process group wraps everything
+  after the start, so an interruption (a cancel) leaves no process behind.
+- Every run goes through a **circuit breaker** per provider (`runGuarded`, keyed by argv and
+  root, in the `NOINLINE` `providerBreaker`). A run that ends in `Broken` (a timeout, a missing
+  program, one that will not start) opens it: for `providerCoolOff` (60 s) every request to that
+  provider gets the same `Left` at once, without a run. So a broken provider costs one timeout,
+  not one per file: doctor's evidence, which asks it for each sampled file, stays bounded. A run
+  is `Answered` (an answer, or a non-zero exit, or bad JSON), `Broken`, or `Stopped` (cancelled).
 - The answer types: `UnitAnswer` (`name`, `line`, `end`, optional `kind`; units and test units),
   `AnchorAnswer` (`line`, `column`), and an argv for a selection. `decodeUnits n` checks a units
   answer whole against a text of `n` lines (no line before 1, no `end` before `line` or past
@@ -245,15 +254,23 @@ one type, so everything downstream is the same code.
   `decodeAnchor` allows `line` one past the end (the end of the file); `decodeArgs` wants a
   list of strings.
 - `providerPure :: Provider -> Value -> Either Text Value` is `runProvider` from pure code,
-  through `unsafePerformIO`, memoised for the process in a `NOINLINE` `MVar` keyed by argv,
-  root and the encoded request. The request holds the file's path and text, so the long-lived
-  server asks again after an edit; the memo starts over past 512 answers. It is sound because a
+  through `unsafePerformIO`, memoised (`runProviderMemo`) for the process in a `NOINLINE`
+  `MVar` keyed by argv, root and the encoded request. The request holds the file's path
+  (`textRequest (Just path)`, when the caller knows it) and its text, so the long-lived server
+  asks again after an edit, and the same text at two paths is asked twice. Only `Answered` runs
+  are kept: a timeout, a missing program or a cancel is asked again once the breaker lets it.
+  The memo starts over past 512 answers. It is sound because a
   provider is pure by contract (the same request gives the same answer), which chapter 9's
   protocol section states. It exists for test units, which are read in pure code at many call
   sites; threading IO through conjure, the fill phase and stubs instead would be a large
   refactor for an escape hatch. The other slots are read in IO and call `runProvider`.
 - Where each slot asks: units in `Server/Unit.unitAnswers`; test units in
-  `TestUnits.testUnitsOf`; an anchor in `Anchor/Resolve`'s `named`, when no `[targets.*]` shape
+  `TestUnits.testUnitsOf`; every reader of either takes the file's project-relative path as a
+  `Maybe FilePath` after the language (`unitAt`, `unitsOf`, `unitAround`, `testUnitAt`,
+  `testOrUnitAt`, `testUnitsOf`, `testUnitsReport`, `testAtIn`, `testLineIn`, `testCaseAtIn`,
+  `testCaseLineIn`, `testSourcesIn`, `testSourceIn`, `FillPhase.assertionSpan`, and
+  `resolveLayers` for anchors), and every caller that reads a file passes it; only
+  `FillPhase.looksLikeFile`, which reads a model's code rather than a file, passes `Nothing`; an anchor in `Anchor/Resolve`'s `named`, when no `[targets.*]` shape
   matches the phrase, through the **Syntax** port's `runSlotProvider` (anchors resolve in any
   monad; `astGrepSyntax` runs `runProvider`, `noSyntax` and `querying` fakes answer "no
   provider runner"); a selection in `Check.processRunner` (request `{"tests": [ids]}`, the
@@ -280,7 +297,11 @@ units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in
 --run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
 the fix "regenerate the key or supply a provider (see chapter 9, Providers)". The origin is kept
 on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
-The language server's `olifant.doctor` passes `False` for `run`.
+The language server's `olifant.doctor` passes `False` for `run`, and answers through
+`inBackground` (evidence runs tools on the sample, so it must not hold up the message loop). It
+races `doctorChecks` against `untilCancelled` on the request's token: a `$/cancelRequest` ends
+the race, which interrupts the evidence thread, and `runBytesCancellable` kills the processes it
+had started.
 
 To add a capability: add a row in `capabilities`, a `capKey` that `originOf` can resolve, and an
 example to `CapabilitiesSpec` (its "a bare language" example counts the absences, so it changes
@@ -296,18 +317,22 @@ the rows, so it changes too.
 "not run") or `Disproven` (the line or reason that failed).
 
 - **The sample** (`sampleOf`): the first 40 files (`sampleSize`), in path order, that match the
-  language's `files`. Its test files are its sources' `tests_for` files that exist, plus any
+  language's `files` (sorted through a set, so a large project costs n log n). Units and anchors
+  run at most eight at a time (`pooled`). Its test files are its sources' `tests_for` files that exist, plus any
   sampled file that holds test units itself (a Rust module with its own tests).
 - **units:** `unitsOf` on each sampled file (concurrently): "212 found in 38 files (e.g.
   src/a.py:14 add)"; with none, the first non-blank line, or the slot's failure.
-- **test units:** `testUnitsReport` on each test file; with none in an existing test file, the
+- **test units:** `testUnitsReport` on each test file (each with its path). A sampled source
+  that holds test units itself is found by asking every sampled file when the language has rules,
+  but with a test-units provider the asking stops at the first failure; with none in an existing test file, the
   first unit the units slot finds there ("0 found; path:9 is `…`"); with no test file, "not seen
   (no test file in the 40 sampled)".
 - **anchors:** each `[targets.*]` with at most one parameter, tried through `resolveLayers` with
   the position its `example` uses, on the sample's units' bare names (those whose unit text holds
   the target's words first; at most six tries each, targets in parallel). Targets with more
   parameters are "not tried". Proven when any target resolves; a target that never does is listed
-  with `✗` and its last miss.
+  with `✗` and its last miss. When there was nothing to try them on (no unit in the sample) the
+  row is `Unproven` "not seen (no unit in the 40 sampled)", not `Disproven`.
 - **holes:** each `[holes.KIND]` placeholder (`Holes.placeholderFor`) put in its `wrap`, then the
   Syntax port's `ERROR` query, as `FillPhase.parses` does.
 - **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed

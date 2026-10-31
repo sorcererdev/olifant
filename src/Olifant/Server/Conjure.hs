@@ -124,6 +124,7 @@ data Counters = Counters
   , cBases :: Map FilePath (Maybe Text)
   , cExplanation :: Maybe Text
   , cTestText :: Text
+  , cTestRel :: FilePath
   , cHeader :: Text
   , cHistory :: [RoundRecord]
   , cBefore :: TestRun
@@ -364,7 +365,7 @@ conjureWith progress path line selected resuming s0 = do
           project = siteProject site
           ws = prWorkspace project
           -- on a test: in a test file, or in a module that holds its own tests (Rust's)
-          onTest = siteOnTest site || (isNothing selected && siteTestRel site == siteModuleRel site && isJust (testCaseAtIn lang (siteModuleText site) line))
+          onTest = siteOnTest site || (isNothing selected && siteTestRel site == siteModuleRel site && isJust (testCaseAtIn lang (Just (siteModuleRel site)) (siteModuleText site) line))
           rel = if onTest then siteTestRel site else siteModuleRel site
           testRel = siteTestRel site
           file = normalisePath (siteRoot site </> rel)
@@ -374,16 +375,16 @@ conjureWith progress path line selected resuming s0 = do
       text <- if onTest then maybe (throwE ("cannot read " <> T.pack rel)) pure (siteTestText site) else pure (siteModuleText site)
       -- on a test (in a test file, or a module that holds its own tests: Rust's), its
       -- `[test] unit` (hspec's `it` is no `[unit]`; Rust's brace is not in its body)
-      found0 <- lift (unitAt (pSyntax (ssPorts s)) lang text line)
-      let testy = (onTest || siteTestRel site == siteModuleRel site) && isNothing selected && isJust (testUnitAt lang text line)
-          found = if testy then maybe found0 Right (testUnitAt lang text line) else found0
-          unitIn working i = if testy then pure (maybe (Left ("no test at line " <> tshow i)) Right (testUnitAt lang working i)) else unitAt (pSyntax (ssPorts s)) lang working i
+      found0 <- lift (unitAt (pSyntax (ssPorts s)) lang (Just rel) text line)
+      let testy = (onTest || siteTestRel site == siteModuleRel site) && isNothing selected && isJust (testUnitAt lang (Just rel) text line)
+          found = if testy then maybe found0 Right (testUnitAt lang (Just rel) text line) else found0
+          unitIn working i = if testy then pure (maybe (Left ("no test at line " <> tshow i)) Right (testUnitAt lang (Just rel) working i)) else unitAt (pSyntax (ssPorts s)) lang (Just rel) working i
       (unit, span') <- case (selected, found) of
         (Just sp, _) -> pure (either (const "selection") unitName found, sp)
         (Nothing, Left why) -> throwE (why <> ": put the cursor in one to conjure it")
         (Nothing, Right u) -> maybe (throwE (unitName u <> " is on one line: select the lines to conjure")) (pure . (unitName u,)) (unitBody u)
       when (fst span' < 1 || snd span' < fst span' || snd span' > length (T.splitOn "\n" text)) (throwE "the selection is not in the file")
-      when (onTest && isNothing selected && isNothing (testCaseAtIn lang text line)) (throwE (unit <> " is no test: conjure a test here, or a function from its module"))
+      when (onTest && isNothing selected && isNothing (testCaseAtIn lang (Just rel) text line)) (throwE (unit <> " is no test: conjure a test here, or a function from its module"))
       -- a module needs its test file (on a test, the file is the test file)
       testText0 <- case siteTestText site of
         Just t -> pure t
@@ -435,7 +436,7 @@ conjureWith progress path line selected resuming s0 = do
               if onTest
                 then do
                   -- (a helper in a test file was refused above)
-                  name <- maybe (throwE ("no test at line " <> tshow line)) pure (testCaseAtIn lang working (fst at))
+                  name <- maybe (throwE ("no test at line " <> tshow line)) pure (testCaseAtIn lang (Just rel) working (fst at))
                   except (testConjure lang working at (T.pack testRel <> "::" <> name) (siteModuleRel site) moduleText)
                 else except (functionConjure lang working at unit testRel testText before)
             imported <- lift (importedContext ws' lang (rel : map fst context) (working : map snd context))
@@ -460,7 +461,7 @@ conjureWith progress path line selected resuming s0 = do
           | reChoice re == ResumeReconjure
           , Just tid <- reconjureOf re pd
           , before <- M.findWithDefault testText0 testRel writes0
-          , Just (_, after) <- testFix (langConjure lang) unit (pdFlagged pd) (pdWired pd) before (testSourcesIn lang before) tid -> do
+          , Just (_, after) <- testFix (langConjure lang) unit (pdFlagged pd) (pdWired pd) before (testSourcesIn lang (Just testRel) before) tid -> do
               now <- lift getMonotonicTime
               let plain = plainPause (pdShown pd)
                   testAbs = absOf testRel
@@ -532,8 +533,8 @@ conjureWith progress path line selected resuming s0 = do
               ownKnown = [(l, m) | ((p, m), l) <- known, p == testRel]
           attempt <- lift . runExceptT $ do
             when (T.unpack (fst (T.breakOn "::" tid)) /= testRel) (throwE (tid <> " is not in " <> T.pack testRel))
-            l <- maybe (throwE ("no test " <> name <> " in " <> T.pack testRel)) pure (testCaseLineIn lang working name)
-            u <- lift (testOrUnitAt (pSyntax (ssPorts s)) lang working l) >>= either throwE pure
+            l <- maybe (throwE ("no test " <> name <> " in " <> T.pack testRel)) pure (testCaseLineIn lang (Just testRel) working name)
+            u <- lift (testOrUnitAt (pSyntax (ssPorts s)) lang (Just testRel) working l) >>= either throwE pure
             at <- maybe (throwE (name <> " is on one line")) pure (unitBody u)
             (template, verify, context) <- except (testConjure lang working at tid (siteModuleRel site) moduleText)
             let context' =
@@ -613,6 +614,7 @@ conjureWith progress path line selected resuming s0 = do
                     , cBases = M.empty
                     , cExplanation = Nothing
                     , cTestText = wkTestText first
+                    , cTestRel = testRel
                     , cHeader = ownerHeader lang (wkText first) (fst (wkSpan first))
                     , cHistory = []
                     , cBefore = wkBefore first
@@ -701,7 +703,7 @@ conjureWith progress path line selected resuming s0 = do
                   _ -> do
                     sf <- service
                     let ports = sfPorts sf
-                        src = fromMaybe "" (testSourceIn lang (testName tid) (cTestText c))
+                        src = fromMaybe "" (testSourceIn lang (Just testRel) (testName tid) (cTestText c))
                     (port, weights) <- case derivePortIn (langConjure lang) f ports of
                       Just q -> pure (Just q, [])
                       Nothing
@@ -809,11 +811,11 @@ conjureWith progress path line selected resuming s0 = do
             Written Nothing written0 _
               | onTest && isNothing selected && not stopping -> do
                   c <- lift (readIORef counters)
-                  let name = fromMaybe unit (testCaseAtIn lang written0 (fst (wkSpan wk0)))
+                  let name = fromMaybe unit (testCaseAtIn lang (Just rel) written0 (fst (wkSpan wk0)))
                       tid = T.pack testRel <> "::" <> name
                       moduleText = M.findWithDefault (siteModuleText site) (siteModuleRel site) (cWrites c)
                       still = "; the test still builds its own fake, re-conjure it"
-                  case testSourceIn lang (testName name) written0 >>= fakeIn (langConjure lang) of
+                  case testSourceIn lang (Just rel) (testName name) written0 >>= fakeIn (langConjure lang) of
                     Nothing -> (outcome0, wk0, "") <$ lift (stepLine ["conjure-test", "ok", "-"])
                     Just f -> do
                       lift (logFlags stepLine [] [(tid, f)])
@@ -832,7 +834,7 @@ conjureWith progress path line selected resuming s0 = do
                               when cancelled' (throwE "cancelled")
                               case refilled of
                                 Right o@(Written Nothing w _)
-                                  | isNothing (testSourceIn lang (testName (fromMaybe name (testCaseAtIn lang w (fst (wkSpan wk'))))) w >>= fakeIn (langConjure lang)) -> pure (o, wk', "")
+                                  | isNothing (testSourceIn lang (Just rel) (testName (fromMaybe name (testCaseAtIn lang (Just rel) w (fst (wkSpan wk'))))) w >>= fakeIn (langConjure lang)) -> pure (o, wk', "")
                                   | otherwise -> pure (o, wk', still)
                                 -- the wire and the test as first written land together
                                 _ -> pure (Written Nothing (wkText wk') [], wk', still)
@@ -963,7 +965,7 @@ conjureWith progress path line selected resuming s0 = do
                     | otherwise = functionSummary lang extra after
                   staying' = [" \183 " <> T.pack (takeFileName testRel) <> " has " <> tshow staying <> " " <> fromMaybe "check" (T.takeWhile (/= '-') . checkFormat <$> langCheck lang) <> (if staying == 1 then " error" else " errors") | staying > 0, green]
                   summary = maybe (withExtras headline <> note) keptLine kept <> mconcat staying'
-                  tid = T.pack testRel <> "::" <> fromMaybe unit (testCaseAtIn lang written (fst (wkSpan wk)))
+                  tid = T.pack testRel <> "::" <> fromMaybe unit (testCaseAtIn lang (Just rel) written (fst (wkSpan wk)))
                   green = isNothing (trBroken after) && null (trFailed after)
                   edit = [FileEdit file started False range new | written /= text, let (range, new) = smallestChange text written]
                   edits =
@@ -1154,7 +1156,7 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
         [] -> pure (Nothing, [])
       c <- readIORef counters
       let wireable = wires && null (cWired c) && isNothing (cExplanation c)
-          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable (cHistory c) (cBefore c) (cPrefixes c) (testSourcesIn lang (cTestText c)) (failureOf lang) (langComment lang)) (cLast c) rs
+          view = roundView (RoundContext (cTestText c) (cHeader c) (cWired c) wireable (cHistory c) (cBefore c) (cPrefixes c) (testSourcesIn lang (Just (cTestRel c)) (cTestText c)) (failureOf lang) (langComment lang)) (cLast c) rs
           used = cRounds c + 1
           seconds = cSecondsBefore c + (now - begun)
           above = drop (cRung c + 1) (sdLadder sd)
@@ -1193,7 +1195,9 @@ steer s lang stepLine begun counters sd wires derive wall record rs =
 -- | The scan over a run: each failing test of RUN whose source in the test file's TEXT builds a
 -- fake it never passes in.
 scanFlags :: Language -> Text -> TestRun -> [(Text, Fake)]
-scanFlags lang text run = [(t, f) | (t, _) <- trFailed run, Just f <- [testSourceIn lang (testName t) text >>= fakeIn (langConjure lang)]]
+scanFlags lang text run = [(t, f) | (t, _) <- trFailed run, Just f <- [testSourceIn lang (Just (fileOfId t)) (testName t) text >>= fakeIn (langConjure lang)]]
+  where
+    fileOfId = T.unpack . fst . T.breakOn "::"
 
 -- | A test id's function name (less its module and any parameters).
 testName :: Text -> Text
@@ -1238,7 +1242,7 @@ diagnosisFacts lang c rung next seconds =
     , dfSeconds = seconds
     , dfWireFailed = T.stripPrefix "wire failed: " =<< cExplanation c
     , dfFailure = Nothing
-    , dfSources = testSourcesIn lang (cTestText c)
+    , dfSources = testSourcesIn lang (Just (cTestRel c)) (cTestText c)
     , dfAssertion = langAssertion lang
     , dfConjure = langConjure lang
     , dfFailureShape = failureOf lang
@@ -1311,7 +1315,7 @@ functionConjure lang text (l1, l2) unit testRel testText before = do
         (_, []) -> "the tests pass; write the body of " <> unit <> " they describe, keeping them passing"
         _ -> "make the failing tests pass (" <> T.intercalate ", " [short t <> ": " <> failureLineIn lang f | (t, f) <- failed] <> ") and keep the file's other tests passing; the tests and their messages are in the context; write the least code that does it"
       failing = T.intercalate "\n\n" [t <> "\n" <> fMessage f <> "\n" <> T.unlines (sourceOf (short t)) | (t, f) <- failed]
-      sourceOf n = maybe [] T.lines (testSourceIn lang (snd (T.breakOnEnd "::" (fst (T.breakOn "[" n)))) testText)
+      sourceOf n = maybe [] T.lines (testSourceIn lang (Just testRel) (snd (T.breakOnEnd "::" (fst (T.breakOn "[" n)))) testText)
       context =
         [(testRel, testText)]
           ++ [("failing now (make these pass)", failing) | not (null failed)]
@@ -1357,7 +1361,7 @@ testSummary lang extra tid before after written = base <> (if null missing then 
     own = case (trBroken after, [f | (t, f) <- trFailed after, isOwn t]) of
       (Just why, _) -> "red: could not run \183 " <> firstLine why
       (_, f : _)
-        | Just l <- fLine f, Just (a, z) <- assertionSpan lang (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> failureLineIn lang f
+        | Just l <- fLine f, Just (a, z) <- assertionSpan lang (Just (T.unpack (fst (T.breakOn "::" tid)))) (short tid) written, l >= a, l <= z -> "red at the assertion \183 " <> failureLineIn lang f
         | otherwise -> "red: error before the assertion \183 " <> failureLineIn lang f
       _
         | any isOwn (trPassed after) -> "green: already passes"

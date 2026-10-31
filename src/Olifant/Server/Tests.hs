@@ -82,7 +82,7 @@ testsRun scope path s0 =
               | testShaped (plTest p) rel -> pure rel
               | otherwise -> throwE ("no test file for this module yet: " <> T.pack mapped)
           here <- case scope of
-            ScopeAt n | testRel == rel -> lift (readText ws rel) <&> \t -> t >>= \x -> testAtIn (plLanguage p) x n
+            ScopeAt n | testRel == rel -> lift (readText ws rel) <&> \t -> t >>= \x -> testAtIn (plLanguage p) (Just rel) x n
             _ -> pure Nothing
           let one' = (\name -> T.pack testRel <> "::" <> name) <$> here
           pure (maybe [T.pack testRel] pure one', normalisePath (plRoot p </> testRel), one')

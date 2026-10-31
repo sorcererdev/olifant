@@ -19,6 +19,7 @@ import System.FilePath ((</>))
 import Test.Hspec
 import Control.Exception (evaluate)
 import System.Timeout (timeout)
+import System.IO.Temp (withSystemTempDirectory)
 
 -- a keyword at the line's start or after a space or `$` (`spec = describe "…" $ do`); the last group is the name
 hspecUnit :: [UnitRule]
@@ -83,12 +84,21 @@ spec = do
       found `shouldBe` []
     it "a test-units provider gives paths by containment" $ do
       lang <- providing "test-units.sh"
-      testUnitsOf lang (T.unlines (replicate 9 "x")) `shouldBe` [TestUnit ["describe"] (1, 9), TestUnit ["describe", "it"] (2, 4)]
-      testCaseAtIn lang (T.unlines (replicate 9 "x")) 3 `shouldBe` Just "describe::it"
+      testUnitsOf lang Nothing (T.unlines (replicate 9 "x")) `shouldBe` [TestUnit ["describe"] (1, 9), TestUnit ["describe", "it"] (2, 4)]
+      testCaseAtIn lang Nothing (T.unlines (replicate 9 "x")) 3 `shouldBe` Just "describe::it"
+    it "the request names the file: the same text at two paths is asked twice (review I4)" $
+      withSystemTempDirectory "olifant-file-units" $ \dir -> do
+        lang <- providingWith "file-unit.sh" [T.pack (dir </> "runs")]
+        let t = "def test_x():\n    pass\n"
+        testUnitsOf lang (Just "a__test.py") t `shouldBe` [TestUnit ["a__test.py"] (1, 1)]
+        testUnitsOf lang (Just "a__test.py") t `shouldBe` [TestUnit ["a__test.py"] (1, 1)]
+        testUnitsOf lang (Just "b__test.py") t `shouldBe` [TestUnit ["b__test.py"] (1, 1)]
+        testUnitsOf lang Nothing t `shouldBe` [TestUnit ["none"] (1, 1)]
+        length . lines <$> readFile (dir </> "runs") `shouldReturn` 3
     it "a failing provider: no test units, the reason in testUnitsReport" $ do
       lang <- providing "fails.sh"
-      testUnitsOf lang "a\nb\n" `shouldBe` []
-      testUnitsReport lang "a\nb\n" `shouldBe` Left "no grammar"
+      testUnitsOf lang Nothing "a\nb\n" `shouldBe` []
+      testUnitsReport lang Nothing "a\nb\n" `shouldBe` Left "no grammar"
   it "names the test at a line by its describe path" $ do
     testAtBy hspecUnit Nothing specText 5 `shouldBe` Just "Olifant.Plans::(a) reads a step"
     testAtBy hspecUnit Nothing specText 7 `shouldBe` Just "Olifant.Plans::parsePlan::x/y, z"
@@ -122,8 +132,8 @@ spec = do
     it "testLineBy finds an it by its anchor name" $ do
       let t = T.unlines ["spec = describe \"Olifant.Plans\" $ do", "  it \"parses \\\"x\\\" twice\" $", "    pure ()"]
       hs <- shippedLanguage "haskell" []
-      testLineIn hs t "Olifant.Plans.parses_x_twice" `shouldBe` Just 2
-      testAtIn hs t 3 `shouldBe` Just "Olifant.Plans::parses \"x\" twice"
+      testLineIn hs Nothing t "Olifant.Plans.parses_x_twice" `shouldBe` Just 2
+      testAtIn hs Nothing t 3 `shouldBe` Just "Olifant.Plans::parses \"x\" twice"
     it "a name repeated in two describes: the first" $ do
       let t = T.unlines ["spec = describe \"M\" $ do", "  describe \"a\" $", "    it \"x\" $ pure ()", "  describe \"a\" $", "    it \"x\" $ pure ()"]
       testLineBy hspecUnit Nothing t "M.a.x" `shouldBe` Just 3
@@ -134,7 +144,7 @@ spec = do
       length files `shouldSatisfy` (> 10)
       forM_ files $ \f -> do
         text <- TIO.readFile f
-        let diffs = [(f, i, testCaseAtIn py text i, testAt text i) | i <- [0 .. length (T.lines text) + 1], testCaseAtIn py text i /= testAt text i]
+        let diffs = [(f, i, testCaseAtIn py Nothing text i, testAt text i) | i <- [0 .. length (T.lines text) + 1], testCaseAtIn py Nothing text i /= testAt text i]
         diffs `shouldBe` []
     it "a decorated method in a test class, its decorator, a nested def, an async test" $ do
       py <- shippedLanguage "python" []
@@ -155,8 +165,8 @@ spec = do
               , "async def test_later() -> None:"       -- 13
               , "    assert True"                       -- 14
               ]
-      forM_ [5 .. 14] $ \i -> (i, testAtIn py t i) `shouldBe` (i, testAt t i)
-      map (testAtIn py t) [5, 8, 13] `shouldBe` [Just "TestSeats::test_two", Just "TestSeats::test_two", Just "test_later"]
+      forM_ [5 .. 14] $ \i -> (i, testAtIn py Nothing t i) `shouldBe` (i, testAt t i)
+      map (testAtIn py Nothing t) [5, 8, 13] `shouldBe` [Just "TestSeats::test_two", Just "TestSeats::test_two", Just "test_later"]
   describe "conjure's test lookups (by the language's rules)" $ do
     let pyFile =
           T.unlines
@@ -190,26 +200,26 @@ spec = do
     it "a test case at a line: a test, never a group (a class or describe line is none)" $ do
       py <- shippedLanguage "python" []
       hs <- shippedLanguage "haskell" []
-      map (testCaseAtIn py pyFile) [1, 5, 8, 9, 10, 11, 15, 17, 99]
+      map (testCaseAtIn py Nothing pyFile) [1, 5, 8, 9, 10, 11, 15, 17, 99]
         `shouldBe` [Nothing, Nothing, Just "test_closes", Just "test_closes", Just "test_closes", Just "test_closes", Nothing, Just "TestSeats::test_two", Nothing]
-      map (testCaseAtIn hs hsFile) [2, 3, 5] `shouldBe` [Nothing, Just "Olifant.Plans::parses an empty plan", Just "Olifant.Plans::parses an empty plan"]
+      map (testCaseAtIn hs Nothing hsFile) [2, 3, 5] `shouldBe` [Nothing, Just "Olifant.Plans::parses an empty plan", Just "Olifant.Plans::parses an empty plan"]
     it "a test case's first line by its name (decorators included)" $ do
       py <- shippedLanguage "python" []
-      map (testCaseLineIn py pyFile) ["test_closes", "TestSeats::test_two", "make_table"] `shouldBe` [Just 8, Just 16, Nothing]
+      map (testCaseLineIn py Nothing pyFile) ["test_closes", "TestSeats::test_two", "make_table"] `shouldBe` [Just 8, Just 16, Nothing]
     it "a test id's case keeps its class; a long file's last test is found at once" $ do
       py <- shippedLanguage "python" []
       map caseOfId ["src/a__test.py::TestSeats::test_two", "src/a__test.py::test_closes"] `shouldBe` ["TestSeats::test_two", "test_closes"]
-      testCaseLineIn py pyFile (caseOfId "src/a__test.py::TestSeats::test_two") `shouldBe` Just 16
+      testCaseLineIn py Nothing pyFile (caseOfId "src/a__test.py::TestSeats::test_two") `shouldBe` Just 16
       let long = T.unlines (concat [["def test_" <> T.pack (show i) <> "() -> None:", "    x = 1", "    assert x == 1", "", ""] | i <- [1 .. 400 :: Int]])
-      found <- timeout 3000000 (evaluate (testCaseLineIn py long "test_400"))
+      found <- timeout 3000000 (evaluate (testCaseLineIn py Nothing long "test_400"))
       found `shouldBe` Just (Just 1996)
     it "a test's source by its short name: from its own line (no decorators), trailing blanks dropped" $ do
       py <- shippedLanguage "python" []
       hs <- shippedLanguage "haskell" []
-      testSourceIn py "test_closes" pyFile `shouldBe` Just "def test_closes(n: int) -> None:\n    table = make_table()\n\n    assert table.handle(n) == 1"
-      testSourceIn py "test_two" pyFile `shouldBe` Just "    def test_two(self) -> None:\n        assert make_table().handle(2) == 0"
-      testSourceIn hs "parses an empty plan" hsFile `shouldBe` Just "  it \"parses an empty plan\" $ do\n    let ps = parsePlan \"\"\n    length ps `shouldBe` 0"
-      testSourceIn py "test_nothing" pyFile `shouldBe` Nothing
+      testSourceIn py Nothing "test_closes" pyFile `shouldBe` Just "def test_closes(n: int) -> None:\n    table = make_table()\n\n    assert table.handle(n) == 1"
+      testSourceIn py Nothing "test_two" pyFile `shouldBe` Just "    def test_two(self) -> None:\n        assert make_table().handle(2) == 0"
+      testSourceIn hs Nothing "parses an empty plan" hsFile `shouldBe` Just "  it \"parses an empty plan\" $ do\n    let ps = parsePlan \"\"\n    length ps `shouldBe` 0"
+      testSourceIn py Nothing "test_nothing" pyFile `shouldBe` Nothing
     it "a source's last assertion, by [test] assertion" $ do
       py <- shippedLanguage "python" []
       hs <- shippedLanguage "haskell" []
@@ -256,10 +266,14 @@ testAt text line
 
 -- | The shipped python with its test units answered by a script.
 providing :: FilePath -> IO Language
-providing script = do
+providing script = providingWith script []
+
+-- | 'providing', the script given ARGS.
+providingWith :: FilePath -> [T.Text] -> IO Language
+providingWith script args = do
   here <- getCurrentDirectory
   py <- shippedLanguage "python" []
-  let p = Provider ["sh", T.pack ("testdata/providers" </> script)] (Just (here </> "src/Olifant"))
+  let p = Provider (["sh", T.pack ("testdata/providers" </> script)] ++ args) (Just (here </> "src/Olifant"))
   pure py {langTest = (\td -> td {testUnitProvider = Just p}) <$> langTest py}
 
 -- | Every Haskell file under a folder.

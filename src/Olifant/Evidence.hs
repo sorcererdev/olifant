@@ -15,10 +15,12 @@ module Olifant.Evidence
   ) where
 
 import Control.Concurrent.Async (mapConcurrently)
+import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
+import Control.Exception (bracket_)
 import Data.Aeson (object, (.=))
 import Data.Either (lefts)
 import Data.List (nub, sort, sortOn)
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -54,7 +56,7 @@ sampleSize = 40
 -- | The first 'sampleSize' files, in path order, that match the language's
 -- `files`.
 sampleOf :: Language -> [FilePath] -> [FilePath]
-sampleOf lang files = take sampleSize (sort (nub [f | f <- files, any (`matchesGlob` f) (langFiles lang)]))
+sampleOf lang files = take sampleSize (S.toAscList (S.fromList [f | f <- files, any (`matchesGlob` f) (langFiles lang)]))
 
 -- | Each slot of LANG run on a sample of the project's files.
 evidenceFor :: EvidencePorts -> Language -> IO Evidence
@@ -63,14 +65,25 @@ evidenceFor ports lang = do
   let sample = sampleOf lang files
       known = S.fromList files
   texts <- catMaybes <$> mapM (\p -> fmap (p,) <$> epRead ports p) sample
-  units <- if hasUnits lang then mapConcurrently (\(p, t) -> (p,t,) <$> unitsOf (epSyntax ports) lang t) texts else pure []
+  units <- if hasUnits lang then pooled (\(p, t) -> (p,t,) <$> unitsOf (epSyntax ports) lang (Just p) t) texts else pure []
   -- the sample's test files: its sources' `tests_for` files that exist, and
   -- any sampled file that holds test units itself (a module with its own tests)
   let td = langTest lang
       testsFor = case td of
         Just d -> [t | (p, _) <- texts, not (isTestFile d p), let t = testsForFile d p, S.member t known]
         Nothing -> []
-      holding = [p | (p, t) <- texts, hasTestUnits lang, either (const False) (not . null) (testUnitsReport lang t)]
+      -- by rule, every sampled file is asked; by provider, asking stops at
+      -- the first failure (a slow provider is not run 40 times)
+      holding
+        | not (hasTestUnits lang) = []
+        | isJust (td >>= testUnitProvider) = untilFailing texts
+        | otherwise = [p | (p, t) <- texts, either (const False) (not . null) (testUnitsReport lang (Just p) t)]
+      untilFailing = \case
+        [] -> []
+        (p, t) : rest -> case testUnitsReport lang (Just p) t of
+          Left _ -> []
+          Right [] -> untilFailing rest
+          Right _ -> p : untilFailing rest
       testFiles = sort (nub (testsFor ++ holding))
   testTexts <- catMaybes <$> mapM (\p -> fmap (p,) <$> maybe (epRead ports p) (pure . Just) (lookup p texts)) testFiles
   -- anchors are tried in the sample's sources (another module's test file is none)
@@ -98,7 +111,7 @@ testUnitsProof ports lang testTexts
   | not (hasTestUnits lang) = pure (Unproven "no [test] unit")
   | null testTexts = pure (Unproven ("not seen (no test file in the " <> count sampleSize <> " sampled)"))
   | otherwise =
-      let reports = [(p, t, testUnitsReport lang t) | (p, t) <- testTexts]
+      let reports = [(p, t, testUnitsReport lang (Just p) t) | (p, t) <- testTexts]
        in case ([(p, u) | (p, _, Right us) <- reports, u <- us], lefts [r | (_, _, r) <- reports]) of
             (found@((p, u) : _), _) -> pure (Proven (count (length found) <> " found in " <> count (length [() | (_, _, Right (_ : _)) <- reports]) <> " test files (e.g. " <> T.pack p <> ":" <> count (fst (tuLines u)) <> " " <> fromMaybe "" (listToMaybe (reverse (tuPath u))) <> ")"))
             ([], why : _) -> pure (Disproven why)
@@ -107,7 +120,7 @@ testUnitsProof ports lang testTexts
               let (p, t) = case testTexts of
                     x : _ -> x
                     [] -> ("", "")
-              first <- if hasUnits lang then unitsOf (epSyntax ports) lang t else pure (Left "")
+              first <- if hasUnits lang then unitsOf (epSyntax ports) lang (Just p) t else pure (Left "")
               pure . Disproven . ("0 found; " <>) $ case first of
                 Right (n : _) -> T.pack p <> ":" <> count (namedDef n) <> " is `" <> lineOf t (namedDef n) <> "`"
                 _ -> fromMaybe (T.pack p <> " is empty") (firstLineOf [(p, t)])
@@ -157,7 +170,7 @@ anchorsProof ports lang sources = case langTargets lang of
   [] -> pure (Unproven "no [targets.*]")
   targets -> do
     let (tryable, skipped) = (filter ((<= 1) . length . params) targets, filter ((> 1) . length . params) targets)
-    tried <- mapConcurrently tryTarget tryable
+    tried <- pooled tryTarget tryable
     let proven = [found | Right found <- tried]
         failed = [(p, why) | (p, Left why) <- zip (map targetPhrase tryable) tried]
         text =
@@ -168,6 +181,8 @@ anchorsProof ports lang sources = case langTargets lang of
             ]
     pure $ case (proven, failed) of
       (_ : _, _) -> Proven text
+      -- nothing to try them on is not a failure of the targets
+      ([], _ : _) | all ((== noUnit) . snd) failed -> Unproven ("not seen (no unit in the " <> count sampleSize <> " sampled)")
       ([], _ : _) -> Disproven text
       ([], []) -> Unproven text
   where
@@ -187,18 +202,29 @@ anchorsProof ports lang sources = case langTargets lang of
                 | (i, (p, txt, n)) <- zip [0 :: Int ..] [(p, txt, n) | (p, txt, ns) <- sources, n <- ns]
                 ]
           phraseFor name = T.unwords (positionOf t : [if isParam w then fromMaybe w name else w | w <- targetShape t])
-          go lastMiss [] = pure (Left (fromMaybe "no unit in the sample to try" lastMiss))
+          go lastMiss [] = pure (Left (fromMaybe noUnit lastMiss))
           go _ ((p, txt, name) : rest) =
-            resolveLayers (epSyntax ports) (Just lang) [PhraseAnchor (phraseFor name)] txt >>= \case
+            resolveLayers (epSyntax ports) (Just lang) (Just p) [PhraseAnchor (phraseFor name)] txt >>= \case
               Right loc -> pure (Right (phraseFor name <> " (" <> T.pack p <> ":" <> count (locLine loc + 1) <> ")"))
               Left misses -> go (Just (T.intercalate "; " (map missReason misses))) rest
        in go Nothing (take triesPerTarget (nubOn (\(_, _, n) -> n) candidates))
+    noUnit = "no unit in the sample to try"
     lastPart = last . T.splitOn "."
     spanText txt n = let (a, z) = namedLines n in T.unlines (take (z - a + 1) (drop (a - 1) (T.lines txt)))
     nubOn f = go S.empty
       where
         go _ [] = []
         go seen (x : xs) = if S.member (f x) seen then go seen xs else x : go (S.insert (f x) seen) xs
+
+-- | 'mapConcurrently', at most 'poolSize' at a time: a sample's tools are
+-- not all started at once.
+pooled :: (a -> IO b) -> [a] -> IO [b]
+pooled f xs = do
+  slots <- newQSem poolSize
+  mapConcurrently (\x -> bracket_ (waitQSem slots) (signalQSem slots) (f x)) xs
+
+poolSize :: Int
+poolSize = 8
 
 -- | How many names an anchors proof tries per target.
 triesPerTarget :: Int

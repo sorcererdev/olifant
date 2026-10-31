@@ -138,13 +138,13 @@ testLineOver units name = listToMaybe [fst (tuLines u) | u <- units, anchorName 
 -- | The test at LINE (1-based) of a test file in LANG, named as its ids
 -- name it after `path::` ('testAtBy'), by 'testUnitsOf'. A language with no
 -- test units has no test at any line.
-testAtIn :: Language -> Text -> Int -> Maybe Text
-testAtIn lang text = testAtOver (testUnitsOf lang text) text
+testAtIn :: Language -> Maybe FilePath -> Text -> Int -> Maybe Text
+testAtIn lang file text = testAtOver (testUnitsOf lang file text) text
 
 -- | The first line of the test or group a plan anchor names by its dotted
 -- name ('anchorName'), by 'testUnitsOf'; Nothing with none.
-testLineIn :: Language -> Text -> Text -> Maybe Int
-testLineIn lang text = testLineOver (testUnitsOf lang text)
+testLineIn :: Language -> Maybe FilePath -> Text -> Text -> Maybe Int
+testLineIn lang file text = testLineOver (testUnitsOf lang file text)
 
 -- | A test's name in a plan anchor: its path joined by @.@, each run of
 -- characters outside @[A-Za-z0-9_.]@ written as one @_@
@@ -167,15 +167,16 @@ rulesOf lang = maybe ([], Nothing) (\td -> (testUnitRules td, testAbove td)) (la
 -- rule, 'testUnitsIn' over its `[test] unit` and `above`. By provider, its
 -- answers, each one's path the names of the answers that strictly hold it
 -- (outermost first), then its own. A provider that fails gives none.
-testUnitsOf :: Language -> Text -> [TestUnit]
-testUnitsOf lang text = either (const []) id (testUnitsReport lang text)
+testUnitsOf :: Language -> Maybe FilePath -> Text -> [TestUnit]
+testUnitsOf lang file text = either (const []) id (testUnitsReport lang file text)
 
 -- | 'testUnitsOf', with why a provider gave none (for doctor). Read from
 -- pure code, a provider runs through 'providerPure': it is pure by
--- contract, and its answer is memoised by request (the text).
-testUnitsReport :: Language -> Text -> Either Text [TestUnit]
-testUnitsReport lang text = case langTest lang >>= testUnitProvider of
-  Just p -> byContainment <$> (providerPure p (textRequest Nothing text []) >>= decodeUnits (lineCount text))
+-- contract, and its answer is memoised by request (the path, when
+-- the caller knows it, and the text).
+testUnitsReport :: Language -> Maybe FilePath -> Text -> Either Text [TestUnit]
+testUnitsReport lang file text = case langTest lang >>= testUnitProvider of
+  Just p -> byContainment <$> (providerPure p (textRequest file text []) >>= decodeUnits (lineCount text))
   Nothing -> Right (testUnitsIn rules above text)
   where
     (rules, above) = rulesOf lang
@@ -188,24 +189,24 @@ testUnitsReport lang text = case langTest lang >>= testUnitProvider of
 -- | The test case at LINE (1-based) of a test file in LANG, named as
 -- 'testAtBy' names it: the innermost unit there when no other unit lies
 -- inside it (a group's own lines, a class or a describe, are none).
-testCaseAtIn :: Language -> Text -> Int -> Maybe Text
-testCaseAtIn lang text line = T.intercalate "::" . tuPath <$> testCaseUnitAtIn lang text line
+testCaseAtIn :: Language -> Maybe FilePath -> Text -> Int -> Maybe Text
+testCaseAtIn lang file text line = T.intercalate "::" . tuPath <$> testCaseUnitAtIn lang file text line
 
 -- | The test case at LINE as its unit (see 'testCaseAtIn').
-testCaseUnitAtIn :: Language -> Text -> Int -> Maybe TestUnit
-testCaseUnitAtIn lang text line = (listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- units, let (a, z) = tuLines u, a <= line, line <= throughBlanks z]) >>= leaf)
+testCaseUnitAtIn :: Language -> Maybe FilePath -> Text -> Int -> Maybe TestUnit
+testCaseUnitAtIn lang file text line = (listToMaybe (sortOn (\u -> (Down (fst (tuLines u)), snd (tuLines u))) [u | u <- units, let (a, z) = tuLines u, a <= line, line <= throughBlanks z]) >>= leaf)
   where
-    units = testUnitsOf lang text
+    units = testUnitsOf lang file text
     ls = T.lines text
     throughBlanks z = z + length (takeWhile (T.null . T.strip) (drop z ls))
     leaf u = if any (\o -> o /= u && fst (tuLines u) <= fst (tuLines o) && snd (tuLines o) <= snd (tuLines u)) units then Nothing else Just u
 
 -- | The first line (1-based) of the test case NAME (as 'testCaseAtIn'
 -- names it) in a test file in LANG.
-testCaseLineIn :: Language -> Text -> Text -> Maybe Int
-testCaseLineIn lang text name = listToMaybe (sort [fst (tuLines u) | u <- units, T.intercalate "::" (tuPath u) == name, not (any (inside u) units)])
+testCaseLineIn :: Language -> Maybe FilePath -> Text -> Text -> Maybe Int
+testCaseLineIn lang file text name = listToMaybe (sort [fst (tuLines u) | u <- units, T.intercalate "::" (tuPath u) == name, not (any (inside u) units)])
   where
-    units = testUnitsOf lang text
+    units = testUnitsOf lang file text
     -- a case is a leaf: no other unit lies inside it
     inside u o = o /= u && fst (tuLines u) <= fst (tuLines o) && snd (tuLines o) <= snd (tuLines u)
 
@@ -218,14 +219,14 @@ caseOfId tid = case T.breakOn "::" tid of
 
 -- | The source of the test whose own name (its path's last) is NAME in a
 -- test file in LANG ('testSourcesIn').
-testSourceIn :: Language -> Text -> Text -> Maybe Text
-testSourceIn lang name text = lookup name (testSourcesIn lang text)
+testSourceIn :: Language -> Maybe FilePath -> Text -> Text -> Maybe Text
+testSourceIn lang file name text = lookup name (testSourcesIn lang file text)
 
 -- | Each unit of a test file in LANG by its own name (its path's last), in
 -- order, with its source: from the line its rule matched (lines `above` it
 -- left out) to its end, trailing blank lines dropped.
-testSourcesIn :: Language -> Text -> [(Text, Text)]
-testSourcesIn lang text = [(n, T.intercalate "\n" (drop (own a z - a) (slice a z))) | u <- testUnitsOf lang text, Just n <- [listToMaybe (reverse (tuPath u))], let (a, z) = tuLines u]
+testSourcesIn :: Language -> Maybe FilePath -> Text -> [(Text, Text)]
+testSourcesIn lang file text = [(n, T.intercalate "\n" (drop (own a z - a) (slice a z))) | u <- testUnitsOf lang file text, Just n <- [listToMaybe (reverse (tuPath u))], let (a, z) = tuLines u]
   where
     (rules, above) = rulesOf lang
     ls = T.lines text
