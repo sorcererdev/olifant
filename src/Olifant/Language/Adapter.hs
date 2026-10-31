@@ -43,6 +43,11 @@ module Olifant.Language.Adapter
   , regexName
   , defaultUnitNames
   , defaultUnitWords
+  , Provider (..)
+  , withProviderRoot
+  , hasUnits
+  , hasTestUnits
+  , mergeLayerTables
   ) where
 
 import Control.Monad ((>=>))
@@ -55,6 +60,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Glob (matchesGlob)
+import Olifant.Provider (Provider (..))
 import Olifant.Anchor.Phrase (parsePhrase)
 import Olifant.Language.Presets (Presets (..), applyPreset, shippedPresets)
 import Olifant.Library (shippedLanguages)
@@ -140,6 +146,10 @@ data Language = Language
   -- constructors); absent, conjure works at the floor (the test and its fill)
   , langTypes :: Maybe TypesDef
   -- ^ `[types]`: what a new method's signature is made of
+  , langUnitProvider :: Maybe Provider
+  -- ^ `[unit] kinds = { provider = [...] }`: a program answers the units slot
+  , langAnchorProvider :: Maybe Provider
+  -- ^ `anchors = { provider = [...] }`: a program places a phrase no target knows
   , langMutate :: [MutateDef]
   -- ^ `[[mutate]]`: the mutation operators, ways to break this language's
   -- code that a test must notice
@@ -363,6 +373,10 @@ data TestDef = TestDef
   , testFailure :: Maybe FailureDef
   -- ^ `[test.failure]`: how a failure's output names its assertion, what
   -- came back and what was expected
+  , testUnitProvider :: Maybe Provider
+  -- ^ `unit = { provider = [...] }`: a program answers the test-units slot
+  , testSelectProvider :: Maybe Provider
+  -- ^ `select = { provider = [...] }`: a program turns ids into arguments
   }
   deriving stock (Eq, Show)
 
@@ -450,12 +464,12 @@ parseOverShipped name packRoot src = do
   languageFromLayers shippedPresets name (maybe [] pure (shippedLayer name) ++ [Layer ("pack " <> T.pack (takeFileName packRoot)) (Just packRoot) top])
 
 -- | A language from its layers, merged by key, later winning
--- ('mergeTables'); then the one preset the merged [check] or [test] names
+-- ('mergeLayerTables'); then the one preset the merged [check] or [test] names
 -- fills what is left. A grammar source is found beside the layer that set
 -- `grammar`.
 languageFromLayers :: Presets -> Text -> [Layer] -> Either Text Language
 languageFromLayers presets name layers = do
-  let top = foldl (\acc l -> mergeTables (dropPresets acc (layerTable l)) (layerTable l)) M.empty layers
+  let top = foldl (\acc l -> mergeLayerTables (dropPresets acc (layerTable l)) (layerTable l)) M.empty layers
       grammarDir = case [layerDir l | l <- layers, M.member "grammar" (layerTable l)] of
         [] -> Nothing
         ds -> last ds
@@ -492,7 +506,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types", "anchors"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -522,16 +536,29 @@ languageFrom presets name grammarDir top = do
   types <- optional "types" (table >=> typesFrom) top
   unit <- fromMaybe M.empty <$> optional "unit" table top
   onlyKeys ["kinds", "name", "join"] unit
-  unitKinds <- fromMaybe [] <$> optional "kinds" (list text) unit
+  (unitKinds, unitProvider) <- maybe ([], Nothing) id <$> optional "kinds" (ruleOrProvider "unit.kinds" (list text) []) unit
+  anchorProvider <- optional "anchors" (providerFrom "anchors") top
   unitNames <- fromMaybe defaultUnitNames <$> optional "name" (list (text >=> validRegex "[unit] name")) unit
   unitJoin <- fromMaybe False <$> optional "join" bool unit
   mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty)
   where
     tmpl = first describeTemplateError . parseTemplate
+    -- a slot's value: the rule, or `{ provider = [...] }` alone in its place
+    ruleOrProvider key rule none = \case
+      TTable t | M.member "provider" t -> (\p -> (none, Just p)) <$> providerFrom key (TTable t)
+      v -> (\r -> (r, Nothing)) <$> rule v
+    providerFrom key = \case
+      TTable t -> do
+        case filter (/= "provider") (M.keys t) of
+          [] -> Right ()
+          other -> Left ("`" <> key <> "`: `{ provider = [...] }` stands alone in the rule's place; it also has " <> T.intercalate ", " ["`" <> k <> "`" | k <- other])
+        argv <- inKey key (required "provider" (list text) t)
+        if null argv then Left ("`" <> key <> "`: `provider` names no program") else Right (Provider argv Nothing)
+      other -> Left ("`" <> key <> "`: expected { provider = [...] }, got " <> describeTree other)
     validRegex key re = maybe (Left ("`" <> key <> "` is not a valid expression: " <> re)) (\(_ :: Regex) -> Right re) (makeRegexM (T.unpack re))
     grammarFrom = \case
       TText builtIn -> Right (BuiltInGrammar builtIn)
@@ -652,14 +679,15 @@ languageFrom presets name grammarDir top = do
         (_, Just _) -> Left "[test.lines] is read only with `format = \"lines\"`"
         _ -> Right ()
       fileGroup <- optional "file_group" (text >=> validRegex "[test] file_group") t
-      select <- optional "select" (table >=> selectFrom) t
+      (select, selectProvider) <- maybe (Nothing, Nothing) id <$> optional "select" (ruleOrProvider "test.select" (fmap Just . (table >=> selectFrom)) Nothing) t
+      (unitRules, unitProvider) <- maybe ([], Nothing) id <$> optional "unit" (ruleOrProvider "test.unit" (list unitRuleFrom) []) t
       case select of
         Just (Select a b _) | any ("{= group =}" `T.isInfixOf`) (a ++ b), Nothing <- fileGroup, not hasModuleOf -> Left "[test.select] uses {= group =}, which needs `file_group` (or [imports] module_of)"
         _ -> Right ()
       TestDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
         <*> pure linesFormat <*> pure convert
-        <*> (fromMaybe [] <$> optional "unit" (list unitRuleFrom) t)
+        <*> pure unitRules
         <*> pure fileGroup <*> pure select
         <*> (fromMaybe False <$> optional "exclusive" bool t)
         <*> optional "timeout" (int >=> \n -> if n > 0 then Right (fromIntegral n) else Left "`timeout`: expected a number of seconds above 0") t
@@ -670,6 +698,8 @@ languageFrom presets name grammarDir top = do
         <*> optional "name" (text >=> templateOver "[test] name" ["words"]) t
         <*> (fromMaybe [] <$> optional "undefined" (list (undefinedFrom "[test] undefined")) t)
         <*> optional "failure" (table >=> failureFrom) t
+        <*> pure unitProvider
+        <*> pure selectProvider
     templateOver key vars src = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
@@ -788,6 +818,38 @@ groupCount = go False . T.unpack
     dropClass r = case break (== ':') r of
       (_, ':' : ']' : r') -> r'
       (_, r') -> r'
+
+-- | Language layers merged by key, the later winning ('mergeTables'), except
+-- that a slot's `{ provider = [...] }` replaces the value under it whole and
+-- is replaced whole: it takes the rule's place, and never merges with it.
+mergeLayerTables :: Table -> Table -> Table
+mergeLayerTables = M.unionWith (flip merge)
+  where
+    merge (TTable new) (TTable old)
+      | M.member "provider" new || M.member "provider" old = TTable new
+      | otherwise = TTable (mergeLayerTables old new)
+    merge new _ = new
+
+-- | Every provider of the language runs from the project root.
+withProviderRoot :: FilePath -> Language -> Language
+withProviderRoot root lang =
+  lang
+    { langUnitProvider = rooted <$> langUnitProvider lang
+    , langAnchorProvider = rooted <$> langAnchorProvider lang
+    , langTest = (\td -> td {testUnitProvider = rooted <$> testUnitProvider td, testSelectProvider = rooted <$> testSelectProvider td}) <$> langTest lang
+    }
+  where
+    rooted p = p {provRoot = Just root}
+
+-- | The language can name its units: by `[unit] kinds` or a provider.
+hasUnits :: Language -> Bool
+hasUnits lang = not (null (langUnitKinds lang)) || langUnitProvider lang /= Nothing
+
+-- | The language can find its tests: by `[test] unit` rules or a provider.
+hasTestUnits :: Language -> Bool
+hasTestUnits lang = case langTest lang of
+  Just td -> not (null (testUnitRules td)) || testUnitProvider td /= Nothing
+  Nothing -> False
 
 -- | The keys of `[test]` that are the language's shapes, not its runner's.
 testShapeKeys :: [Text]

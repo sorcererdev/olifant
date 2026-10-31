@@ -58,6 +58,11 @@ spec = do
                  , Left "stub_lines (a body is a stub only when it is empty, a comment or a hole)"
                  , Left "[types] (no new port method's signature is derived)"
                  ]
+  it "a units provider is a capability, and test units and selection by program" $ do
+    let Right l = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[unit]\nkinds = { provider = [\"sh\", \"tools/units.sh\"] }\n[test]\ncommand = [\"t\"]\nformat = \"tap\"\ntests_for = \"x\"\nunit = { provider = [\"tests\"] }\nselect = { provider = [\"pick\"] }\n"
+    lookup "units" [(capName c, capHow c) | c <- capabilities l] `shouldBe` Just (Right "[unit] provider sh tools/units.sh")
+    lookup "test units" [(capName c, capHow c) | c <- capabilities l] `shouldBe` Just (Right "[test] unit provider tests")
+    lookup "test selection" [(capName c, capHow c) | c <- capabilities l] `shouldBe` Just (Right "[test] select provider pick")
   it "a check through convert says so" $ do
     let Right l = parseLanguage "x" "/x" "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\nconvert = [\"c\"]\n"
     take 2 (map capHow (capabilities l)) `shouldBe` [Left "[unit] kinds", Right "[check] format olifant-json via convert"]

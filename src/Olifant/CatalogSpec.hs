@@ -16,7 +16,7 @@ import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Olifant.Generator (EditWith (..), GeneratorId (..), GeneratorWith (..))
 import Olifant.Naming (parseName)
 import Olifant.Template (Value (..), render)
-import Olifant.Language (Language (..), Match (..), Syntax (..), TestDef (..), originOf, querying, noSyntax)
+import Olifant.Language (Language (..), Match (..), Provider (..), Syntax (..), TestDef (..), originOf, querying, noSyntax)
 import Olifant.Region (RegionDefWith (..))
 import Olifant.Workspace
 import Test.Hspec
@@ -158,6 +158,19 @@ spec = describe "catalog" $ do
       Right cat <- openWith [("/proj/.olifant/config.toml", "[packs]\na = { path = \"/packs/a\" }\nb = { path = \"/packs/b\" }\n"), ("/packs/a/languages/python.toml", "indent = \"  \"\n"), ("/packs/b/languages/python.toml", "line_length = 100\n")]
       map langLayers (catalogLanguages cat) `shouldBe` [["shipped", "pack a", "pack b"]]
       map langIndent (catalogLanguages cat) `shouldBe` ["  "]
+    it "a project's units provider wins over the shipped kinds, its origin the project, its root the project root (Review Focus 5, 2)" $ do
+      Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python"), ("/packs/p/languages/python.toml", "anchors = { provider = [\"./tools/anchor.sh\"] }\n"), ("/proj/.olifant/languages/python.toml", "[unit]\nkinds = { provider = [\"sh\", \"tools/units.sh\"] }\n")]
+      let [l] = catalogLanguages cat
+      langUnitProvider l `shouldBe` Just (Provider ["sh", "tools/units.sh"] (Just "/proj"))
+      langUnitKinds l `shouldBe` []
+      originOf l "unit.kinds" `shouldBe` Just "project"
+      langAnchorProvider l `shouldBe` Just (Provider ["./tools/anchor.sh"] (Just "/proj"))
+      originOf l "anchors" `shouldBe` Just "pack p"
+    it "a project's selection provider replaces the shipped [test.select] whole" $ do
+      Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python"), ("/proj/.olifant/languages/python.toml", "[test]\nselect = { provider = [\"sh\", \"tools/select.sh\"] }\n")]
+      let [l] = catalogLanguages cat
+      (langTest l >>= testSelectProvider) `shouldBe` Just (Provider ["sh", "tools/select.sh"] (Just "/proj"))
+      (langTest l >>= testSelect) `shouldBe` Nothing
     it "a project override wins" $ do
       Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python"), ("/proj/.olifant/languages/python.toml", "indent = \"  \"\n")]
       let [l] = catalogLanguages cat

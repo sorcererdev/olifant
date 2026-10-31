@@ -809,6 +809,69 @@ Rust relies on rustfmt's layout; and a signature split over several lines (attri
 | `exclusive` | the runner keeps a build cache: each run gets a slot (`{= cache =}` is the slot's), as `[check] exclusive` |
 | `timeout` | seconds a run may take, over the editor's default |
 
+### Providers: answering a slot with a program
+
+A **slot** is one question Olifant asks of a language: where its units are, where its tests
+are, where an anchor phrase lands, which arguments run some tests, what the compiler and the
+runner said. Each has a rule in the language file. In place of the rule you can write
+`{ provider = [...] }`, a program that answers the same question; everything after the answer
+is the same code, so conjure, mutate, stubs, plans and the editor behave the same either way.
+
+| Slot | Key | Without a provider |
+|---|---|---|
+| units | `[unit] kinds = { provider = [...] }` | `[unit] kinds` (ast-grep node kinds) |
+| test units | `[test] unit = { provider = [...] }` | the `[test] unit` rules |
+| anchor | `anchors = { provider = [...] }` (top level) | none: asked only for a phrase no `[targets.*]` shape matches, before "unknown target" |
+| test selection | `[test] select = { provider = [...] }` | `[test.select]` |
+| diagnostics | `[check] convert` | the `[check] format` parser |
+| test results | `[test] convert` | the `[test] format` parser |
+
+`{ provider = [...] }` stands alone: an empty list, or another key beside `provider`, is a load
+error naming the key. It takes the rule's place in the layer merge too: a project's
+`kinds = { provider = [...] }` replaces the shipped `kinds = [...]` whole (and a provider is
+replaced whole by a later rule), and `olifant doctor` names the layer it came from.
+
+```toml
+# .olifant/languages/go.toml
+[unit]
+kinds = { provider = ["./tools/go-units"] }
+
+[test]
+unit = { provider = ["go", "run", "./tools/testunits"] }
+```
+
+**The protocol.**
+
+- **Requests** are a JSON object on stdin, and every one carries `"v": 1`. A units, test-units
+  or anchor request is `{"v": 1, "text": "…", "file": "src/a.go"}`; `file` is there only when
+  the caller knows the path. An anchor request adds `"phrase"`, the whole `at` text. A
+  selection request is `{"v": 1, "tests": ["path::name", …]}`.
+- **Answers** are JSON on stdout:
+  - units and test units: `[{"name": "add", "line": 3, "end": 5, "kind": "function"}]`
+    (`kind` optional). Olifant works out the rest by containment, as it does for rules: a
+    unit inside another is `Outer.Inner`, and a test unit's groups are the answers around it.
+    The answer is checked whole: a `line` before 1, an `end` before its `line` or past the
+    text, or a span repeated rejects all of it, naming the first bad entry;
+  - an anchor: `{"line": 12, "column": 5}` or `null` (not known here). `line` is where the
+    inserted lines start (one past the last line is the end of the file), `column` their
+    indentation;
+  - a selection: `["arg", …]`, which takes the place of `{= tests =}`.
+- **Positions:** lines are 1-based and inclusive, as the editor and olifant-json's
+  `broken.line` show them; columns are 1-based and counted in characters.
+- **Where it runs:** from the project root, whether olifant runs from a subfolder or under the
+  language server. `argv[0]` with a `/` in it (`./tools/x`) is a path under the root; a bare
+  name is looked up on `PATH`. A pack's provider runs from the project root too.
+- **Time:** a provider is stopped after 10 seconds.
+- **Failure:** a non-zero exit, a timeout, or an answer that does not decode leaves the slot
+  unavailable. The reason is stderr's first line, or why the answer did not decode; `olifant
+  doctor` shows it, and the slot behaves as if the language had no rule for it.
+- **Purity:** a provider must be pure: the same request gives the same answer. Olifant may
+  remember an answer for the rest of the process (test units are read from many places), and
+  asks again when the file's text changes.
+- **Diagnostics and test results** are the existing `convert` commands
+  ([check formats](#check-formats), [test formats](#test-formats)): stdin
+  `{"v": 1, "exit": N, "stdout": "…", "stderr": "…"}`, stdout olifant-json.
+
 ### Hole kinds: `[holes.KIND]`
 
 A typed hole (`{= ? name: kind | instruction =}`, [chapter 12](12-holes-and-models.md)) can

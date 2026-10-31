@@ -104,6 +104,28 @@ spec = do
     it "(i) an unknown preset names the new ones" $ do
       hs ["[check]", "preset = \"stack\""] `shouldSatisfy` either ("cabal-repl" `T.isInfixOf`) (const False)
       hs ["[test]", "preset = \"tasty\"", "tests_for = \"x\""] `shouldSatisfy` either ("hspec" `T.isInfixOf`) (const False)
+  describe "providers: a slot takes { provider = [...] } (4b m1)" $ do
+    let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
+        runner = ["[test]", "command = [\"t\"]", "format = \"lines\"", "tests_for = \"x\"", "[test.lines]", "pass = 'ok'", "fail = 'no'"]
+    it "a slot takes `{ provider = [...] }`: units, test units, selection and anchors" $ do
+      let Right l = lang (["anchors = { provider = [\"sh\", \"tools/anchor.sh\"] }", "[unit]", "kinds = { provider = [\"sh\", \"tools/units.sh\"] }", "[test]", "command = [\"t\"]", "format = \"lines\"", "tests_for = \"x\"", "unit = { provider = [\"sh\", \"tools/tests.sh\"] }", "select = { provider = [\"sh\", \"tools/select.sh\"] }", "[test.lines]", "pass = 'ok'", "fail = 'no'"])
+      langUnitProvider l `shouldBe` Just (Provider ["sh", "tools/units.sh"] Nothing)
+      langUnitKinds l `shouldBe` []
+      langAnchorProvider l `shouldBe` Just (Provider ["sh", "tools/anchor.sh"] Nothing)
+      (langTest l >>= testUnitProvider) `shouldBe` Just (Provider ["sh", "tools/tests.sh"] Nothing)
+      fmap testUnitRules (langTest l) `shouldBe` Just []
+      (langTest l >>= testSelectProvider) `shouldBe` Just (Provider ["sh", "tools/select.sh"] Nothing)
+      (langTest l >>= testSelect) `shouldBe` Nothing
+      (hasUnits l, hasTestUnits l) `shouldBe` (True, True)
+    it "without providers, none; hasUnits and hasTestUnits follow the rules" $ do
+      let Right l = lang runner
+      (langUnitProvider l, langAnchorProvider l, langTest l >>= testUnitProvider, langTest l >>= testSelectProvider) `shouldBe` (Nothing, Nothing, Nothing, Nothing)
+      (hasUnits l, hasTestUnits l) `shouldBe` (False, False)
+    it "an empty provider, or a provider with another key beside it, is an error naming the key" $ do
+      lang ["[unit]", "kinds = { provider = [] }"] `shouldSatisfy` either ("unit.kinds" `T.isInfixOf`) (const False)
+      lang ["[unit]", "kinds = { provider = [\"x\"], kinds = [] }"] `shouldSatisfy` either ("unit.kinds" `T.isInfixOf`) (const False)
+      lang ["anchors = { provider = [] }"] `shouldSatisfy` either ("anchors" `T.isInfixOf`) (const False)
+      lang (runner ++ ["[test.select]", "provider = [\"x\"]", "test = \"a\"", "file = \"b\""]) `shouldSatisfy` either ("test.select" `T.isInfixOf`) (const False)
   describe "[conjure]: a pack's architecture" $ do
     let lang = parseLanguage "python" "/pack" . T.unlines . (["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\""] ++)
     it "parses its service, port, fake and constructor; absent, there is none" $ do
@@ -151,7 +173,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"

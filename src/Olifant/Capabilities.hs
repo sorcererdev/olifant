@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, missingFormats, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, missingFormats, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -40,7 +40,9 @@ capabilities lang =
   where
     check = langCheck lang
     test = langTest lang
+    provided table p = Right (table <> " provider " <> T.unwords (provArgv p))
     units
+      | Just p <- langUnitProvider lang = provided "[unit]" p
       | null (langUnitKinds lang) = Left "[unit] kinds"
       | otherwise = Right ("[unit] kinds (ast-grep)" <> (if hasNames then ", named by [unit] name" else "") <> (if langUnitJoin lang then ", joined" else ""))
     hasNames = langUnitNames lang /= defaultUnitNames
@@ -54,6 +56,7 @@ capabilities lang =
       Nothing -> Left "[test]"
       Just td -> Right ("[test] format " <> testFormat td <> ", tests_for " <> testsFor td)
     testUnits
+      | Just p <- test >>= testUnitProvider = provided "[test] unit" p
       | maybe False (not . null . testUnitRules) test = Right ("[test] unit" <> (if maybe False (isJust . testAbove) test then ", above" else ""))
       | otherwise = Left "[test] unit"
     stub = case test >>= testStub of
@@ -82,5 +85,6 @@ capabilities lang =
       [] -> Left "[[mutate]]"
       ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")
     selection
+      | Just p <- test >>= testSelectProvider = provided "[test] select" p
       | maybe False (isJust . testSelect) test = Right "[test] select"
       | otherwise = Left "[test] select (whole files run)"
