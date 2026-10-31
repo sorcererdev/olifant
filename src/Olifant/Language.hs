@@ -13,12 +13,17 @@ module Olifant.Language
   , renamedPhrases
   , oneContainer
   , linkedGrammars
+  , grammarLabel
+  , queriesFor
   , grammarLinked
+  , genericNames
+  , linkedGrammarOf
   , treeSitterAnchors
   , shippedLanguage
   , shippedLanguageNow
   ) where
 
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -33,15 +38,27 @@ import Olifant.Language.Support
 import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
-import Olifant.Language.Captures (genericPhrase, genericPhrases, oneContainer, renamedPhrases)
-import Olifant.Language.TreeSitter (linkedGrammars, treeSitterAnchors)
+import Olifant.Language.Captures (definedNames, genericPhrase, genericPhrases, oneContainer, renamedPhrases)
+import Olifant.Language.TreeSitter (capturesOf, grammarLabel, linkedGrammars, queriesFor, treeSitterAnchors)
 
 -- | Is the language's grammar linked in, so the generic anchor phrases
 -- work on it?
 grammarLinked :: Language -> Bool
-grammarLinked l = case langGrammar l of
-  BuiltInGrammar g -> g `elem` linkedGrammars
-  GrammarSource _ -> False
+grammarLinked = isJust . linkedGrammarOf
+
+-- | The names a generic phrase's word (`function`, `class`, a kind word)
+-- can take in a text: its definitions of that kind, in order. None when the
+-- grammar is not linked.
+genericNames :: Language -> Text -> Text -> [Text]
+genericNames l kind txt = case linkedGrammarOf l of
+  Just g -> either (const []) (definedNames kind . snd) (capturesOf g (queriesFor g) txt)
+  Nothing -> []
+
+-- | The language's grammar, when it is linked in.
+linkedGrammarOf :: Language -> Maybe Text
+linkedGrammarOf l = case langGrammar l of
+  BuiltInGrammar g | g `elem` linkedGrammars -> Just g
+  _ -> Nothing
 
 -- | The shipped language of that name alone, for specs (fails on a file
 -- that does not parse).

@@ -14,6 +14,7 @@ module Olifant.Language.TreeSitter
   , cacheSize
   , linkedGrammars
   , grammarNodeTypes
+  , grammarLabel
   , queriesFor
   , shippedQueries
   , treeSitterAnchors
@@ -84,11 +85,20 @@ foreign import ccall unsafe "ots_next" c_next :: Ptr TSQueryCursor -> Word32 -> 
 -- | The grammar table: a language file's `grammar` to its compiled-in
 -- parser. Data, keyed by grammar, never by a language's name.
 grammarTable :: [(Text, FunPtr (IO (Ptr TSLanguage)))]
-grammarTable = [("rust", p_rust)]
+grammarTable = [(g, fp) | (g, fp, _) <- grammars]
+
+-- | Each grammar compiled in, with its parser and the crate and version
+-- vendored (cbits/tree-sitter-<grammar>/SOURCES).
+grammars :: [(Text, FunPtr (IO (Ptr TSLanguage)), Text)]
+grammars = [("rust", p_rust, "tree-sitter-rust 0.24.2")]
 
 -- | The grammars linked into this binary.
 linkedGrammars :: [Text]
 linkedGrammars = map fst grammarTable
+
+-- | A linked grammar's crate and version (`tree-sitter-rust 0.24.2`).
+grammarLabel :: Text -> Maybe Text
+grammarLabel g = listToMaybe [l | (g', _, l) <- grammars, g' == g]
 
 -- | A linked grammar's named node types (none for a grammar not linked).
 grammarNodeTypes :: Text -> [Text]

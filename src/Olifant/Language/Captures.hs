@@ -11,6 +11,7 @@ module Olifant.Language.Captures
   ( PNode (..)
   , Cap (..)
   , anchorFromCaptures
+  , definedNames
   , oneContainer
   , genericPhrase
   , genericPhrases
@@ -38,8 +39,9 @@ data PNode = PNode {pType :: Text, pStart :: (Int, Int), pEnd :: (Int, Int), pBy
 
 -- | A capture: its name, the query file and pattern, the match it is in,
 -- its node, the node's parent and top-level ancestor, and the fields the
--- rule reads (`body`, `parameters`, `arguments`) with their named,
--- non-extra children.
+-- rule reads (a definition's `body` and `parameters`, a call's
+-- `arguments`) with their named, non-extra children (none for a `body`:
+-- its items are the inner captures).
 data Cap = Cap
   { capName :: Text
   , capFile :: Text
@@ -113,6 +115,18 @@ definitions caps =
   ]
   where
     names = M.fromList [(capMatch n, n) | n <- caps, capName n == "name"]
+
+-- | The names of the definitions a phrase word takes (`function`, `class`,
+-- or a kind word), one per definition in the file's order (a struct and its
+-- impl: the name twice): what doctor tries the phrase on.
+definedNames :: Text -> [Cap] -> [Text]
+definedNames kind caps = map snd (nubOn fst [(pBytes (capNode (defCap d)), defName d) | d <- sortOn (pBytes . capNode . defCap) (definitions caps), wanted (defCap d)])
+  where
+    nubOn f = foldr (\x acc -> x : filter ((/= f x) . f) acc) []
+    wanted c = case kind of
+      "function" -> capName c `elem` functionCaps
+      "class" -> capName c `elem` classCaps
+      w -> pType (capNode c) == w || (w <> "_") `T.isPrefixOf` pType (capNode c)
 
 -- | The generic rule. 'Nothing': not a generic phrase. Else every container
 -- the phrase names, in the file's order, each with its items ('Right []':

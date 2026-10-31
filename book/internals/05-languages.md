@@ -391,6 +391,12 @@ units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in
 --run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
 the fix "regenerate the key or supply a provider (see chapter 9, Providers)". The origin is kept
 on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
+After a language's capability rows, `Doctor.queriesRow` adds `LANGUAGE: queries`: for a linked
+grammar (`linkedGrammarOf`), `Ok` with its crate and version (`grammarLabel`) and its query
+files (`tree-sitter-rust 0.24.2; impls, imports, tags, textobjects (shipped)`); otherwise
+`Warn` "no linked grammar (anchors from [targets.*] only)", with no fix (it is not a key to
+add). The `anchors` capability's `how` adds "generic phrases (queries)" for a linked grammar,
+which is never `absent` even with no `[targets.*]`.
 The language server's `olifant.doctor` passes `False` for `run`, and answers through
 `inBackground` (evidence runs tools on the sample, so it must not hold up the message loop). It
 races `doctorChecks` against `untilCancelled` on the request's token: a `$/cancelRequest` ends
@@ -421,9 +427,14 @@ the rows, so it changes too.
   but with a test-units provider the asking stops at the first failure; with none in an existing test file, the
   first unit the units slot finds there ("0 found; path:9 is `…`"); with no test file, "not seen
   (no test file in the 40 sampled)".
-- **anchors:** each `[targets.*]` with at most one parameter, tried through `resolveLayers` with
+- **anchors:** for a linked grammar, the generic phrases first: `end of function N` and `end of
+  class N`, N from the definitions the captures name in each sampled file (`genericNames`;
+  names only one definition has first, since a struct and its impl share one), and `end of
+  imports` on each sampled file until one resolves. Then each `[targets.*]` with at most one
+  parameter, tried through `resolveLayers` with
   the position its `example` uses, on the sample's units' bare names (those whose unit text holds
-  the target's words first; at most six tries each, targets in parallel). Targets with more
+  the target's words first; at most six tries each, targets in parallel; a target with no
+  parameter is tried once per file). Each try is a `Try` (form, words, position) in `anchorsProof`. Targets with more
   parameters are "not tried". Proven when any target resolves; a target that never does is listed
   with `✗` and its last miss. When there was nothing to try them on (no unit in the sample) the
   row is `Unproven` "not seen (no unit in the 40 sampled)", not `Disproven`.

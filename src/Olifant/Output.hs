@@ -34,13 +34,13 @@ import Olifant.Anchor (Located (..), positionWords)
 import Olifant.Doctor (Check (..), Status (..))
 import Olifant.Actions (Action (..), FileAction (..), Nearby (..), Range (..))
 import Olifant.Cursor (isSnippet)
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Olifant.Catalog (CatalogEntry (..))
 import Olifant.Snippet (Snippet (..), holeSource)
 import Olifant.Generation
 import Olifant.Holes (HoleSite (..))
 import Olifant.Generator
-import Olifant.Language (Language (..), TargetDef (..), targetPhrase)
+import Olifant.Language (Language (..), TargetDef (..), genericPhrases, grammarLabel, grammarLinked, linkedGrammarOf, targetPhrase)
 import Olifant.Template.Syntax (Segment (..), Template (..))
 import System.FilePath ((</>))
 
@@ -377,18 +377,26 @@ anchorsJson lang =
     [ "language" .= langName lang
     , "positions" .= (["start of", "end of", "before", "after"] :: [Text])
     , "builtin" .= builtinForms
-    , "targets" .= [object ["phrase" .= targetPhrase t, "example" .= targetExample t] | t <- langTargets lang]
+    , "targets" .=
+        ( [object ["phrase" .= targetPhrase t, "example" .= targetExample t, "origin" .= ("targets" :: Text)] | t <- langTargets lang]
+            ++ [object ["phrase" .= p, "example" .= e, "origin" .= ("queries" :: Text)] | (p, e) <- generic]
+        )
     ]
+  where
+    generic = if grammarLinked lang then genericPhrases else []
 
 anchorsHuman :: Language -> Text
 anchorsHuman lang =
   T.unlines $
     [langName lang <> ": at = \"<start of|end of|before|after> <target>\"", "", "targets:"]
-      ++ ["  " <> T.justifyLeft width ' ' (targetPhrase t) <> "e.g. " <> targetExample t | t <- langTargets lang]
+      ++ [row (targetPhrase t) (targetExample t) | t <- langTargets lang]
+      ++ concat [["", "from queries (" <> fromMaybe g (grammarLabel g) <> "):"] ++ [row p e | (p, e) <- genericPhrases] | Just g <- [linkedGrammarOf lang]]
       ++ ["", "built in (any file):"]
       ++ map ("  " <>) builtinForms
   where
-    width = maximum (0 : map (T.length . targetPhrase) (langTargets lang)) + 2
+    row p e = "  " <> T.justifyLeft width ' ' p <> "e.g. " <> e
+    generic = if grammarLinked lang then map fst genericPhrases else []
+    width = maximum (0 : map T.length (map targetPhrase (langTargets lang) ++ generic)) + 2
 
 -- | Up to three lines either side of where text would go.
 whereContext :: Located -> Text -> ([Text], [Text])

@@ -58,6 +58,11 @@ built in (any file):
   before|after last line matching REGEX
 ```
 
+For a language whose grammar olifant links in (Rust), the listing has a second section,
+`from queries (tree-sitter-rust 0.24.2):`, with the generic phrases below, and
+`olifant anchors rust --json` gives each target an `origin`: `targets` for a declared one,
+`queries` for a generic phrase.
+
 Words in capitals are filled in by you (`case in update`, `type Route`). The built-in
 targets work in any file, even one with no adapter:
 

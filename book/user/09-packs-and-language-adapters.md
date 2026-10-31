@@ -135,7 +135,7 @@ targets:
   literal in FUNCTION       e.g. end of literal in new
   literal NAME in FUNCTION  e.g. end of literal RefundInvoice in new
 
-from queries (tree-sitter-rust):
+from queries (tree-sitter-rust 0.24.2):
   function NAME             e.g. end of function main
   class NAME                e.g. end of class BillingService
   KIND NAME                 e.g. end of struct BillingService

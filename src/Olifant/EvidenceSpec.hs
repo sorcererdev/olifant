@@ -72,9 +72,21 @@ spec = describe "Olifant.Evidence" $ do
     withPorts [("src/" <> f, t) | (f, t) <- files] Nothing $ \ports -> do
       ev <- evidenceFor ports rust
       evAnchors ev `shouldSatisfy` isProven
-      proofText (evAnchors ev) `shouldSatisfy` T.isInfixOf "end of struct "
+      proofText (evAnchors ev) `shouldSatisfy` T.isInfixOf "end of function "
       proofText (evAnchors ev) `shouldSatisfy` T.isInfixOf "not tried: "
       proofText (evAnchors ev) `shouldSatisfy` T.isInfixOf "literal NAME in FUNCTION"
+  it "rust anchors: generic phrases proven on the sample" $ do
+    let a = T.unlines ["use std::fmt;", "", "pub struct X {", "    a: u8,", "}", "", "fn f() {", "    let _ = 1;", "}"]
+    withPorts [("src/a.rs", a)] Nothing $ \ports -> do
+      ev <- evidenceFor ports rust
+      evAnchors ev `shouldSatisfy` isProven
+      T.splitOn " · " (fst (T.breakOn "; " (proofText (evAnchors ev))))
+        `shouldBe` ["end of function f (src/a.rs:9)", "end of class X (src/a.rs:5)", "end of imports (src/a.rs:2)"]
+  it "a linked grammar with no [targets.*] is proven by the generic phrases alone" $ do
+    let a = T.unlines ["use std::fmt;", "", "fn f() {", "    let _ = 1;", "}"]
+    withPorts [("src/a.rs", a)] Nothing $ \ports -> do
+      ev <- evidenceFor ports rust {langTargets = []}
+      evAnchors ev `shouldBe` Proven "end of function f (src/a.rs:5) · end of imports (src/a.rs:2); ✗ class NAME: no unit in the sample to try"
   it "tests: Unproven without a runner; with a fake runner, ran …, 3 results parsed" $ do
     withPorts pair Nothing $ \ports -> do
       ev <- evidenceFor ports py

@@ -161,23 +161,26 @@ holesProof ports lang = case [(k, h) | (k, h) <- langHoles lang, not (T.null (ki
     indented f = T.intercalate "\n" [if T.null (T.strip l) then l else "    " <> l | l <- T.splitOn "\n" f]
     firstNonBlank t = fromMaybe "" (listToMaybe [T.strip l | l <- T.lines t, not (T.null (T.strip l))])
 
--- | Anchors: each declared target with at most one parameter, tried on the
--- sample's units' bare names until one resolves (at most 'triesPerTarget'
--- tries, the names whose unit mentions the target's words first). Targets
--- with more parameters are "not tried".
+-- | Anchors: for a linked grammar, the generic phrases first (`end of
+-- function N` and `end of class N`, N from the sample's units, and `end of
+-- imports` on each sampled file until one resolves); then each declared
+-- target with at most one parameter, tried on the sample's units' bare
+-- names until one resolves (at most 'triesPerTarget' tries, the names whose
+-- unit mentions the target's words first). Targets with more parameters are
+-- "not tried".
 anchorsProof :: EvidencePorts -> Language -> [(FilePath, Text, [Named])] -> IO Proof
-anchorsProof ports lang sources = case langTargets lang of
+anchorsProof ports lang sources = case generic ++ map declared (langTargets lang) of
   [] -> pure (Unproven "no [targets.*]")
-  targets -> do
-    let (tryable, skipped) = (filter ((<= 1) . length . params) targets, filter ((> 1) . length . params) targets)
+  tries -> do
+    let (tryable, skipped) = (filter ((<= 1) . length . params) tries, filter ((> 1) . length . params) tries)
     tried <- pooled tryTarget tryable
     let proven = [found | Right found <- tried]
-        failed = [(p, why) | (p, Left why) <- zip (map targetPhrase tryable) tried]
+        failed = [(p, why) | (p, Left why) <- zip (map tryPhrase tryable) tried]
         text =
           T.intercalate "; " . filter (not . T.null) $
             [ T.intercalate " · " proven
             , T.intercalate " · " ["✗ " <> p <> ": " <> why | (p, why) <- failed]
-            , if null skipped then "" else "not tried: " <> T.intercalate ", " (map targetPhrase skipped)
+            , if null skipped then "" else "not tried: " <> T.intercalate ", " (map tryPhrase skipped)
             ]
     pure $ case (proven, failed) of
       (_ : _, _) -> Proven text
@@ -186,28 +189,39 @@ anchorsProof ports lang sources = case langTargets lang of
       ([], _ : _) -> Disproven text
       ([], []) -> Unproven text
   where
-    params t = [w | w <- targetShape t, isParam w]
+    -- the engine's phrases, where the grammar is linked in
+    generic = [Try "function NAME" ["function", "NAME"] "end of" | grammarLinked lang] ++ [Try "class NAME" ["class", "NAME"] "end of" | grammarLinked lang] ++ [Try "imports" ["imports"] "end of" | grammarLinked lang]
+    declared t = Try (targetPhrase t) (targetShape t) (positionOf t)
+    params t = [w | w <- tryShape t, isParam w]
     isParam w = T.all (\c -> c `elem` ['A' .. 'Z'] || c == '_') w && T.any (`elem` ['A' .. 'Z']) w
     -- the position the target's example uses (`end of`), else `end of`
     positionOf t = case parsePhrase (targetExample t) of
       Right (Phrase pos _) -> positionWords pos
       Left _ -> "end of"
     tryTarget t =
-      let literal = [w | w <- targetShape t, not (isParam w), w /= "in"]
+      let literal = [w | w <- tryShape t, not (isParam w), w /= "in"]
           candidates = case params t of
             [] -> [(p, txt, Nothing) | (p, txt, _) <- sources]
+            -- a generic phrase: the definitions its word names, those one
+            -- definition has first (a struct and its impl share a name)
+            _ | t `elem` generic, [kind, _] <- tryShape t ->
+              map snd . sortOn fst $
+                [ ((Down (length (filter (== n) names) == 1), i), (p, txt, Just n))
+                | (i, (p, txt, n, names)) <- zip [0 :: Int ..] [(p, txt, n, names) | (p, txt, _) <- sources, let names = genericNames lang kind txt, n <- nub names]
+                ]
             _ ->
               map snd . sortOn fst $
                 [ ((Down (all (`T.isInfixOf` spanText txt n) literal), i), (p, txt, Just (lastPart (namedName n))))
                 | (i, (p, txt, n)) <- zip [0 :: Int ..] [(p, txt, n) | (p, txt, ns) <- sources, n <- ns]
                 ]
-          phraseFor name = T.unwords (positionOf t : [if isParam w then fromMaybe w name else w | w <- targetShape t])
+          phraseFor name = T.unwords (tryPosition t : [if isParam w then fromMaybe w name else w | w <- tryShape t])
           go lastMiss [] = pure (Left (fromMaybe noUnit lastMiss))
           go _ ((p, txt, name) : rest) =
             resolveLayers (epSyntax ports) (Just lang) (Just p) [PhraseAnchor (phraseFor name)] txt >>= \case
               Right loc -> pure (Right (phraseFor name <> " (" <> T.pack p <> ":" <> count (locLine loc + 1) <> ")"))
               Left misses -> go (Just (T.intercalate "; " (map missReason misses))) rest
-       in go Nothing (take triesPerTarget (nubOn (\(_, _, n) -> n) candidates))
+       in -- a name is tried once; a phrase with no name, once per file
+          go Nothing (take triesPerTarget (nubOn (\(p, _, n) -> maybe (Left p) Right n) candidates))
     noUnit = "no unit in the sample to try"
     lastPart = last . T.splitOn "."
     spanText txt n = let (a, z) = namedLines n in T.unlines (take (z - a + 1) (drop (a - 1) (T.lines txt)))
@@ -215,6 +229,10 @@ anchorsProof ports lang sources = case langTargets lang of
       where
         go _ [] = []
         go seen (x : xs) = if S.member (f x) seen then go seen xs else x : go (S.insert (f x) seen) xs
+
+-- | A phrase an anchors proof tries: its form, its words, its position.
+data Try = Try {tryPhrase :: Text, tryShape :: [Text], tryPosition :: Text}
+  deriving stock (Eq)
 
 -- | 'mapConcurrently', at most 'poolSize' at a time: a sample's tools are
 -- not all started at once.
