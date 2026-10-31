@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, missingFormats, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, grammarLinked, missingFormats, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -61,9 +61,9 @@ capabilities lang =
       | Just p <- test >>= testUnitProvider = provided "[test] unit" p
       | maybe False (not . null . testUnitRules) test = Right ("[test] unit" <> (if maybe False (isJust . testAbove) test then ", above" else ""))
       | otherwise = Left "[test] unit"
-    anchors = case (langTargets lang, langAnchorProvider lang) of
-      ([], Nothing) -> Left "[targets.*]"
-      (ts, p) -> Right (T.intercalate ", " (["[targets] " <> T.pack (show (length ts)) <> " targets" | not (null ts)] ++ ["anchors provider " <> T.unwords (provArgv q) | Just q <- [p]]))
+    anchors = case (langTargets lang, langAnchorProvider lang, grammarLinked lang) of
+      ([], Nothing, False) -> Left "[targets.*]"
+      (ts, p, linked) -> Right (T.intercalate ", " (["[targets] " <> T.pack (show (length ts)) <> " targets" | not (null ts)] ++ ["generic phrases (queries)" | linked] ++ ["anchors provider " <> T.unwords (provArgv q) | Just q <- [p]]))
     holes = case langHoles lang of
       [] -> Left "[holes.*]"
       ks -> Right ("[holes] " <> T.intercalate ", " (map fst ks))

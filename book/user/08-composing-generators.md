@@ -318,7 +318,7 @@ rust-htmx/command-dependency (7 edits, 0 conflicts)
   ~ main/src/main.rs (+1 line at line 27)
 ```
 
-The imports go at `end of uses` (with `start of file` as the fallback for a file that has
+The imports go at `end of imports` (with `start of file` as the fallback for a file that has
 none): after the file's last top-level `use`, whole, so after the multi-line `use crate::{ …
 };` block rather than inside it. The `use`s in these files are separated by blank lines, so
 the new one gets a blank line too, which is why each import is `+2 lines`. `service.rs`'s

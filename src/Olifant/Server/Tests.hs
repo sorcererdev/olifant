@@ -16,7 +16,7 @@ module Olifant.Server.Tests
   ) where
 
 import Control.Monad.Trans.Class (lift)
-import Control.Monad (when)
+import Control.Monad (filterM, when)
 import Data.Set qualified as S
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Data.Aeson (Value, object, (.=))
@@ -28,7 +28,7 @@ import GHC.Clock (getMonotonicTime)
 import Olifant.App (Project (..))
 import Olifant.Catalog (catalogLanguages)
 import Olifant.Language (Failure (..), Language (..), TestDef (..), TestRun (..), FailureDef, failureLineWith, failureOf, languageFor, ownedBy, testsForFile)
-import Olifant.Language.TestUnits (testAtIn, testLineIn)
+import Olifant.Language.TestUnits (testAtIn, testLineIn, testUnitsOf)
 import Olifant.Server.Site (appendStepLine, runOver, tshow)
 import Olifant.Server.State (ServerState (..), projectFor)
 import Olifant.Workspace (Workspace (..), normalisePath)
@@ -69,7 +69,11 @@ testsRun scope path s0 =
           paths <- lift (listFiles ws ".")
           let known = S.fromList paths
               mapped' = S.fromList [t | m <- paths, let t = testsForFile (plTest p) m, t /= m, t `S.member` known]
-              tests = S.toAscList (mapped' <> S.fromList [m | m <- paths, testShaped (plTest p) m])
+              -- a module that is its own test file (inline tests): run it
+              -- when it holds test units
+              ownTests = [m | m <- paths, isJust (languageFor [plLanguage p] m), testsForFile (plTest p) m == m, not (testShaped (plTest p) m)]
+          holding <- lift (filterM (\m -> maybe False (not . null . testUnitsOf (plLanguage p) (Just m)) <$> readText ws m) ownTests)
+          let tests = S.toAscList (mapped' <> S.fromList [m | m <- paths, testShaped (plTest p) m] <> S.fromList holding)
           when (null tests) (throwE "no test files in this project: nothing to run")
           pure (map T.pack tests, plRoot p, Nothing)
         _ -> do

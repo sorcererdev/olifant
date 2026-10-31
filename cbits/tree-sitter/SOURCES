@@ -1,0 +1,8 @@
+tree-sitter runtime 0.27.0, the version ast-grep 0.45.3's Cargo.lock pins (so both parsers read the same trees).
+Fetched from https://static.crates.io/crates/tree-sitter/tree-sitter-0.27.0.crate (2026-10-31);
+crate sha256 2038684e0058edba0d17302619f62eabce4a8e11c6ac59506996a8d79848851d (matches the lock);
+git 6070dbfefd326bd735e5683eb128cc1b57dad0c0 (path lib/ in tree-sitter/tree-sitter). MIT (LICENSE).
+Vendored: include/ and src/ as the crate ships them, less src/wasm-stdlib/ (only built with
+TREE_SITTER_FEATURE_WASM / TREE_SITTER_WASM_STDLIB, which olifant does not set).
+Compiled as one translation unit: src/lib.c (the amalgamation, which #includes the other .c files).
+changes: none.

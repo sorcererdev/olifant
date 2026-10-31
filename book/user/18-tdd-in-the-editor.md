@@ -59,7 +59,10 @@ write it yourself, `<leader>mt` again, then `<leader>mm` to see what the tests m
 `:DurandalTest` (`<leader>mt`) in durandal.nvim runs the test under the cursor; in a module, or
 in a test file outside any test, it runs the file's: for a module, its test file (the one
 `tests_for` names). `:DurandalTest file` (`<leader>mT`) runs the file's tests, and
-`:DurandalTest all` (`:Durandal test all`) the project's. On the wire this is
+`:DurandalTest all` (`:Durandal test all`) the project's: every test file a module's
+`tests_for` names, every file named as a test file, and, for a language whose tests live
+inside the module (Rust's `mod tests`, where `tests_for` names the module itself), every one
+of its files that holds test units. On the wire this is
 `olifant/tests/run` with an optional `position` (the test there) and `scope` (`"file"` or
 `"all"`; scope wins over position, and neither is the whole file). Each run is a line in the
 step log (`test person <what ran> <outcome>`). The run is over the editor's text, unsaved

@@ -17,7 +17,8 @@ import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, originOf)
+import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, grammarLabel, linkedGrammarOf, originOf, queriesFor)
+import System.FilePath (dropExtension)
 import Olifant.Model (Backend (..), ModelConfig (..))
 
 data Status = Ok | Warn | Bad
@@ -84,6 +85,13 @@ doctor ports di = do
       | c <- capabilities lang
       , let name = langName lang <> ": " <> capName c
       ]
+        ++ [queriesRow lang]
+    -- the tree-sitter grammar and queries the generic anchor phrases read
+    queriesRow lang = case linkedGrammarOf lang of
+      Just g ->
+        let files = [T.pack (dropExtension f) | (f, _) <- queriesFor g]
+         in Check (langName lang <> ": queries") Ok (fromMaybe g (grammarLabel g) <> "; " <> T.intercalate ", " files <> " (shipped)") Nothing
+      Nothing -> Check (langName lang <> ": queries") Warn "no linked grammar (anchors from [targets.*] only)" Nothing
     -- the evidence row a capability takes
     proofOf cap ev = lookup cap [("units", evUnits ev), ("test units", evTestUnits ev), ("tests", evTests ev), ("anchors", evAnchors ev), ("holes", evHoles ev)]
     plansRunner = do

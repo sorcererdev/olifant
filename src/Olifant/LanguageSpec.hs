@@ -2,7 +2,7 @@
 
 module Olifant.LanguageSpec (spec) where
 
-import Data.Aeson (object, (.=))
+import Data.Aeson (encode, object, (.=))
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -31,7 +31,7 @@ import Olifant.Language.Ghc (parseGhcReport, typeOf)
 import Olifant.Language.Header (headerEnd)
 import Olifant.Language.Pyright (parsePyrightReport, pyrightSupport)
 import Olifant.Language.Rustc (parseRustcReport, rustFunctionAt, rustcSupport)
-import Olifant.Output (anchorsHuman)
+import Olifant.Output (anchorsHuman, anchorsJson)
 import Olifant.Process (neverCancel)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Test.Hspec
@@ -600,6 +600,14 @@ spec = do
       rows `shouldSatisfy` all (\l -> "  e.g. " `T.isInfixOf` l)
       length (nub [T.length (fst (T.breakOn "e.g. " l)) | l <- rows]) `shouldBe` 1
       anchorsHuman lang `shouldSatisfy` T.isInfixOf "start of|end of file"
+      anchorsHuman lang `shouldSatisfy` T.isInfixOf "from queries (tree-sitter-rust 0.24.2):"
+      rows `shouldSatisfy` any ("end of struct BillingService" `T.isInfixOf`)
+    it "anchors --json lists the generic phrases with origin queries, a declared target with origin targets" $ do
+      src <- TIO.readFile "packs/rust-htmx/languages/rust.toml"
+      let Right lang = parseOverShipped "rust" "packs/rust-htmx" src
+          json = TE.decodeUtf8 (BS.toStrict (encode (anchorsJson lang)))
+      json `shouldSatisfy` T.isInfixOf "{\"example\":\"end of function main\",\"origin\":\"queries\",\"phrase\":\"function NAME\"}"
+      json `shouldSatisfy` T.isInfixOf "{\"example\":\"end of crate imports\",\"origin\":\"targets\",\"phrase\":\"crate imports\"}"
     it "end of struct goes after the last field" $ withRust $ \syn lang file ->
       at syn lang file "end of struct BillingService" `shouldReturn` Right (lineOf file "pub cancel_invoice: CancelInvoice," + 1)
     it "end of impl goes after the last method" $ withRust $ \syn lang file ->
@@ -608,6 +616,13 @@ spec = do
       at syn lang file "end of literal in new" `shouldReturn` Right (lineOf file "cancel_invoice: CancelInvoice {}," + 1)
     it "end of crate imports goes after the last imported item" $ withRust $ \syn lang file ->
       at syn lang file "end of crate imports" `shouldReturn` Right (lineOf file "cancel_invoice::{CancelInvoice" + 1)
+    it "Rust keeps only the exotic targets" $ withRust $ \_ lang _ ->
+      map targetPhrase (langTargets lang) `shouldBe` ["crate imports", "literal in FUNCTION", "literal NAME in FUNCTION"]
+    it "`end of uses` suggests imports" $ withRust $ \syn lang file ->
+      fmap (either (map missReason) (const [])) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of uses"] file)
+        >>= (`shouldSatisfy` any ("did you mean `end of imports`" `T.isInfixOf`))
+    it "end of imports goes after the last top-level use, a grouped `use crate::{…}` whole" $ withRust $ \syn lang file ->
+      at syn lang file "end of imports" `shouldReturn` Right (lineOf file "};" + 1)
   describe "compiler support" $ do
     it "maps the elm-json format to Elm's support" $
       fmap supportFormat (supportFor "elm-json") `shouldBe` Just "elm-json"

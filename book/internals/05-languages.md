@@ -222,6 +222,107 @@ of its own. The `conjure shapes` row lists `port.add` and `advice` when present,
 | `[test] name` | `Server/Stub.testAffixesIn`: the text before and after the words, which a survivor's stub name (`TestName.stubNameFor`) is put between; uniqueness is against the file's tests by `[test] unit` |
 | `opens_block`, `empty_statement`, `stub_lines` | `Server/Unit.hs` (`bodyOf`, `isStubIn`), `FillPhase` (cutting a whole-file answer back to a hole) |
 
+## Queries: tree-sitter in process
+
+Besides the ast-grep shell-out (`Language/AstGrep.hs`, which keeps `[[mutate]]` and the
+declared `[targets.*]`), olifant parses in process with tree-sitter, to read the generic
+anchor phrases from community queries (design 4b §A).
+
+- **The C.** The tree-sitter runtime 0.27.0 (its one-file amalgamation, `cbits/tree-sitter/src/lib.c`)
+  and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`) are `c-sources` in
+  `olifant.cabal`, in both the `library` and the `spec` stanzas. Nothing is installed: no
+  Homebrew library, no dylib, no doctor row for it. Both are pinned to the versions ast-grep
+  0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2), so the two parsers
+  read the same trees. Each directory has a `SOURCES` (version, git commit, crate sha256) and
+  the upstream `LICENSE`.
+- **The shim.** GHC's FFI cannot pass a `TSNode` (a 32-byte struct) by value, so
+  `cbits/olifant_ts.c` wraps the calls olifant needs and holds nodes by pointer
+  (`ots_parse`, `ots_facts`, `ots_field`, `ots_next` and `ots_captures`, `ots_prune`, …). The grammar is passed
+  in: `TreeSitter.hs`'s `grammarTable` maps a language file's `grammar` to the compiled-in
+  `tree_sitter_<grammar>` function. That table is data keyed by grammar, never by a language's
+  name; `linkedGrammars` lists it.
+- **The queries.** `library/queries/<grammar>/*.scm`, embedded with `embedDir`
+  (`shippedQueries`, `queriesFor`). For Rust: `tags.scm` (the grammar's own, MIT: the
+  `@definition.*` and `@name` captures), `textobjects.scm` (nvim-treesitter-textobjects,
+  Apache-2.0: `@function.inner`, `@class.inner`, `@parameter.inner`, `@call.outer`) and two
+  olifant writes: `imports.scm` (an import statement, whole, `@import`) and `impls.scm` (an
+  inherent impl named by its type, generics included, as `@definition.impl`; a trait impl is
+  not captured, so no phrase names it). `SOURCES` pins each vendored file to a commit and lists
+  any line olifant removed under "changes".
+- **The capture data.** `capturesOf grammar queries text` returns the root node and every
+  capture as plain data from `Language/Captures.hs`: a `Cap` (capture name, query file,
+  pattern, match number, its `PNode`, the node's parent, its top-level ancestor for `@import`,
+  and the `body`/`parameters`/`arguments` fields with their named, non-extra children). A
+  `PNode` has its type, start and end as 0-based (line, column) with columns in characters (as
+  ast-grep's `Match` counts them; tree-sitter counts bytes, `pnode` converts), its byte range,
+  text, and whether it is named or extra. Each query set is compiled once per process
+  (`compiled`, keyed by grammar and query set), as **one** query (the files joined), so the
+  tree is walked once for all of them; each file is also compiled alone first, so a query
+  that does not compile is a `Left` naming the file, the byte and the kind of error, and a
+  capture's `capFile`/`capPattern` are recovered from each file's first pattern index. The
+  query is pruned (`ots_prune`) to the captures the rule reads (`readCaptures` and every
+  `definition.*`), and a pattern whose only kept capture is a bare `@name` (tags.scm's
+  references) is disabled, so the others cost nothing at match time.
+- **What is marshalled.** A node's facts come in one C call (`ots_facts`: bytes, rows, byte
+  columns, symbol, flags); its type is the grammar's symbol name from a table read once
+  (`symbolTable`). Its text and character columns are lazy, since most nodes are only compared.
+  A capture's parent is read only for `.inner` captures, and fields only where the rule reads
+  them (a definition's `body` and `parameters`, a call's `arguments`), with the children of a
+  parameter or argument list but not of a body (a body's items are its inner captures).
+- **The cache.** `capturesOf` keeps the last 16 answers it computed (`answers`, `cacheBound`),
+  newest first, keyed by (grammar, query set, text). It is first in, first out: a hit does
+  not move its entry, so a text asked about constantly is still dropped after 16 newer ones
+  (and parsed again on its next request). The LSP asks about one document again and
+  again, and a generator's edits ask about one file several times: a request on the same text
+  skips the parse and the marshalling. A changed text is another key, so a stale tree never
+  answers; the oldest computed entry goes when a 17th text arrives (`cacheSize`, for the spec). Two
+  threads that miss at once both compute the same pure answer; the list is updated with
+  `atomicModifyIORef'`, and no lock is held while parsing.
+- **What it costs.** Measured with `OLIFANT_TS_BENCH=<dir>` (the opt-in example in
+  `TreeSitterSpec`, `<dir>` holding lock_api's `rwlock.rs` as `big.rs` and main's
+  `rust.toml` with its declared targets as `rust-main.toml`), medians of 20 in the test build:
+  `end of struct BillingService` on the fixture's `service.rs` 0.11 ms cold, 0.01 ms cached
+  (ast-grep: 4.2 ms); `end of struct RwLock` on the 3,130-line `rwlock.rs` 12 ms cold, 0.9 ms
+  cached (ast-grep: 15 ms). The C floor on that file is about 2.7 ms to parse and 4 ms to run
+  the queries.
+- **The rule.** `Captures.anchorFromCaptures root caps words` is the generic anchor rule, pure:
+  `Nothing` for a phrase that is not generic (`genericPhrase` is its shape), else every
+  container the phrase names, in the file's order, each with its items. A definition is a
+  `definition.*` capture with the `@name` of its match; `functionCaps` and `classCaps` are the
+  engine's table of which captures `function` and `class` mean, and any other kind word
+  narrows by node type (`struct` → `struct_item`, `mod` → `mod_item`). A definition's items are
+  the `function.inner`/`class.inner` captures whose *nearest strictly enclosing* definition it
+  is ("strictly": an impl with one method has the method as both item and definition), named
+  and not extra (no punctuation, no comments); their parent is the container. An item that is
+  no definition and ends on the line before a definition (or on its line) decorates it (a
+  Rust attribute, a decorator): the two become one item (`decorated`), so `end of` spacing is
+  measured between whole members and `start of` goes before the decoration. A match holds
+  every capture of a `_+` however many (`ots_next` returns the count, `ots_captures` copies
+  them), so a body of hundreds of children is read whole. With no inner
+  capture (an empty body), the container is the definition's `body` field, empty, which
+  placement opens. `parameters in F` reads the function's `parameters` field (type parameters
+  are a direct child too, so a capture alone would not do), a call is named by its text up to
+  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`).
+  `oneContainer` turns the list into "one, none, or matches N places".
+- **Where the rule is asked.** It is the `Syntax` port's `anchorSyntax` field (after
+  `runSlotProvider`); `AstGrep.astGrepSyntax` sets it to `TreeSitter.treeSitterAnchors`, which
+  answers `Nothing` unless the language's `grammar` is linked, the phrase is generic, and its
+  kind word names a node type of the grammar (`grammarNodeTypes`; so `end of the imports` is
+  not the engine's). Fakes use `noAnchors`. In `Anchor/Resolve.hs`, `named` follows Decision 2:
+  a declared target (`itemsOfTarget`'s declared branch), else the generic rule, whose answer
+  is final ("no `struct Nope` in this file"), else the anchors provider, else
+  `itemsOfTarget`'s "unknown target", whose "did you mean" and target list add
+  `genericPhrases` when `grammarLinked`. `itemsOfTarget` (an `items of` query, a fragment, the
+  catalog's target check) and `locateContainers` (every container; a name two definitions
+  share gives both) ask the same field. `Anchor/Items.hs`'s up-front "unknown target in any
+  language adapter" check lets a generic phrase through when any language's grammar is linked.
+- **Pure.** A parse and a query run are functions of (grammar, queries, text), so
+  `capturesOf` is pure and wraps its IO in `unsafePerformIO` (Decision 6 of the m2 plan). Pure
+  callers (the anchor rule; later, units and test units) read captures without threading IO.
+  It is `unsafePerformIO`, not the dupable variant: the compile cache is behind an `MVar` and
+  the tree and cursor are freed by `bracket`, which an abandoned duplicate evaluation would
+  skip.
+
 ## Slots and providers
 
 A **slot** is one question the engine asks of a language: the units in a text, its test units,
@@ -297,6 +398,12 @@ units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in
 --run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
 the fix "regenerate the key or supply a provider (see chapter 9, Providers)". The origin is kept
 on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
+After a language's capability rows, `Doctor.queriesRow` adds `LANGUAGE: queries`: for a linked
+grammar (`linkedGrammarOf`), `Ok` with its crate and version (`grammarLabel`) and its query
+files (`tree-sitter-rust 0.24.2; impls, imports, tags, textobjects (shipped)`); otherwise
+`Warn` "no linked grammar (anchors from [targets.*] only)", with no fix (it is not a key to
+add). The `anchors` capability's `how` adds "generic phrases (queries)" for a linked grammar,
+which is never `absent` even with no `[targets.*]`.
 The language server's `olifant.doctor` passes `False` for `run`, and answers through
 `inBackground` (evidence runs tools on the sample, so it must not hold up the message loop). It
 races `doctorChecks` against `untilCancelled` on the request's token: a `$/cancelRequest` ends
@@ -327,9 +434,14 @@ the rows, so it changes too.
   but with a test-units provider the asking stops at the first failure; with none in an existing test file, the
   first unit the units slot finds there ("0 found; path:9 is `…`"); with no test file, "not seen
   (no test file in the 40 sampled)".
-- **anchors:** each `[targets.*]` with at most one parameter, tried through `resolveLayers` with
+- **anchors:** for a linked grammar, the generic phrases first: `end of function N` and `end of
+  class N`, N from the definitions the captures name in each sampled file (`genericNames`;
+  names only one definition has first, since a struct and its impl share one), and `end of
+  imports` on each sampled file until one resolves. Then each `[targets.*]` with at most one
+  parameter, tried through `resolveLayers` with
   the position its `example` uses, on the sample's units' bare names (those whose unit text holds
-  the target's words first; at most six tries each, targets in parallel). Targets with more
+  the target's words first; at most six tries each, targets in parallel; a target with no
+  parameter is tried once per file). Each try is a `Try` (form, words, position) in `anchorsProof`. Targets with more
   parameters are "not tried". Proven when any target resolves; a target that never does is listed
   with `✗` and its last miss. When there was nothing to try them on (no unit in the sample) the
   row is `Unproven` "not seen (no unit in the 40 sampled)", not `Disproven`.
