@@ -124,5 +124,5 @@ objectOf v = expectationFailure ("not an object: " <> show v) >> fail "not an ob
 memoryPorts :: IO (Ports, IO (Map FilePath Text))
 memoryPorts = do
   (disk, snap) <- memoryWorkspace []
-  let ports = Ports disk (querying (\_ _ _ -> pure (Right []))) (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure t0) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+  let ports = Ports disk (querying (\_ _ _ -> pure (Right []))) (const noChecker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure t0) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   pure (ports, snap)

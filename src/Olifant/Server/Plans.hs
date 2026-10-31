@@ -33,7 +33,7 @@ import Data.List (find, isPrefixOf, nub)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import Data.Text.Encoding qualified as TE
-import Olifant.Language.Adapter (Language (..), TestDef (..))
+import Olifant.Language.Adapter (Language (..), TestDef (..), chooseTestCommand)
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
 import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPrompt, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
@@ -45,7 +45,7 @@ import Olifant.Server.Review (Review (..), archiveErrand, changeSince, keptDiff,
 import Olifant.Server.Telemetry (ErrandRecord (..), Record (..), appendRecord, errandId)
 import Olifant.Server.State (appendStepLine, closeDoc, projectFor)
 import System.Exit (ExitCode (..))
-import System.FilePath (makeRelative, splitDirectories, takeFileName)
+import System.FilePath (dropTrailingPathSeparator, makeRelative, splitDirectories, takeFileName)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
@@ -292,9 +292,10 @@ runErrand after reviewed reopen token verb path row s0 =
               around = target : childrenOf ls row ++ [l | l <- ls, lnRow l >= secRow sec, lnRow l < secEnd sec]
               anchors = take groundingLimit (foldl (\acc a -> if any ((== key a) . key) acc then acc else acc ++ [a]) [] [a | l <- around, Just a <- [lnAnchor l]])
           grounded <- catMaybes <$> mapM (\a -> grounding a <$> resolveAnchor s p a) anchors
-          let tools = if verb == Do then testTools p else []
+          tests <- projectTests (fileExists (pFiles (ssPorts s))) p
+          let tools = if verb == Do then testTools p tests else []
               asked = maybe "" (\ro -> "Further change asked: " <> roAsk ro <> "\n\n") reopen
-              prompt = asked <> errandPrompt verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand (projectTests p)) else Nothing) text ls target grounded
+              prompt = asked <> errandPrompt verb (projectUnitWords (catalogLanguages (prCatalog p))) (if verb == Do then listToMaybe' (mapMaybe doTestCommand tests) else Nothing) text ls target grounded
               rel = makeRelative root (normalisePath path)
           branch <- currentBranch root
           now <- pNow (ssPorts s)
@@ -456,12 +457,18 @@ gitText root args =
 -- | A `do`'s test tools: the project's (first) test command as its prompt
 -- prints it, up to the tests slot ('doTestTools'), e.g.
 -- `Bash(uv run --frozen pytest -q*)`; none without a `[test]`.
-testTools :: Project -> [Text]
-testTools p = take 1 [ts | ts <- map (doTestTools (prRoot p)) (projectTests p), not (null ts)] >>= id
+testTools :: Project -> [[Text]] -> [Text]
+testTools p tests = take 1 [ts | ts <- map (doTestTools (prRoot p)) tests, not (null ts)] >>= id
 
--- | The project's test commands, the first language's first.
-projectTests :: Project -> [[Text]]
-projectTests p = [testCommand td | l <- catalogLanguages (prCatalog p), Just td <- [langTest l]]
+-- | The project's test commands, the first language's first: each the
+-- candidate the project's files choose ('chooseTestCommand', by EXISTS,
+-- from the project root), @{= root =}@ the project's folder.
+projectTests :: Monad m => (FilePath -> m Bool) -> Project -> m [[Text]]
+projectTests exists p = concat <$> traverse chosen [td | l <- catalogLanguages (prCatalog p), Just td <- [langTest l]]
+  where
+    chosen td = chooseTestCommand (\f -> exists (prRoot p </> f)) td <&> \case
+      Right (c, _) -> [map (T.replace "{= root =}" (T.pack (dropTrailingPathSeparator (prRoot p)))) (testCommand c)]
+      Left _ -> []
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

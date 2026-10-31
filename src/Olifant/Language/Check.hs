@@ -48,13 +48,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), TestDef (..), matchesGlob, moduleOf, regexName, supportOf)
+import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), TestCandidate (..), TestDef (..), chooseTestCommand, matchesGlob, moduleOf, regexName, supportOf)
 import Olifant.Template (Value (VText), parseTemplate, render)
 import Olifant.Language.TestFormats (Reported (..), attribute, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
 import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
-import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory, makeAbsolute)
+import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, doesFileExist, findExecutable, getXdgDirectory, makeAbsolute)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -136,11 +136,21 @@ scratchRun token secs lang prefix command0 ctx vars slot convert special files =
 -- | The language's test command over a scratch copy of the files (as a
 -- verify runs, with @{= cache =}@ and @{= context =}@; the one argument
 -- @{= tests =}@ becomes the test ids), stopped after @secs@ seconds, its
--- report read by the test format.
+-- report read by the test format. Its command is the first candidate
+-- whose `when` file is among the files or in the package folder on disk
+-- ('chooseTestCommand'); @{= root =}@ is that folder.
 processRunner :: Cancel -> Int -> Runner IO
 processRunner token secs = Runner $ \lang ids files -> case langTest lang of
   Nothing -> pure (Left (langName lang <> " has no [test] in its adapter"))
-  Just td -> do
+  Just td0 -> do
+    -- {= root =}: the package folder on disk (left as written when unknown)
+    root <- traverse makeAbsolute (testDir td0)
+    let exists f = if M.member f files then pure True else maybe (pure False) (\d -> doesFileExist (d </> f)) root
+    chooseTestCommand exists td0 >>= \case
+      Left why -> pure (Left why)
+      Right (td, _) -> runChosen lang ids files root td
+  where
+   runChosen lang ids files root td = do
     let limit = fromMaybe secs (testTimeout td)
         ctx = contextKeyOf (testContext td) files
         -- a runner with a build cache (cabal's dist): a slot of its own
@@ -150,9 +160,7 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
         requested = requestedFiles lang td ids files
         -- an argument twice (a flag each test repeats: `--exact`) once
         byRule = maybe (map T.unpack ids) (\sel -> map T.unpack (nub (concatMap (selected lang td files sel) ids))) (testSelect td)
-        run args = do
-          -- {= root =}: the package folder on disk (left as written when unknown)
-          root <- traverse makeAbsolute (testDir td)
+        run args =
           around $ \slot ->
             scratchRun token limit lang "olifant-test" (testCommand td) ctx [("root", T.pack r) | Just r <- [root]] slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
               Left ScratchEmpty -> Left "empty test command"
@@ -419,7 +427,7 @@ checkScope :: Language -> [FilePath] -> [FilePath] -> (FilePath, [FilePath])
 checkScope lang paths judged = (scope, [p | p <- paths, Just rel <- [inside scope p], not (any (`elem` pruned) (splitDirectories p)), any (`matchesGlob` rel) globs])
   where
     check = langCheck lang
-    globs = langFiles lang ++ maybe [] checkContext check ++ maybe [] (\t -> testContext t ++ testFiles t) (langTest lang)
+    globs = langFiles lang ++ maybe [] checkContext check ++ maybe [] (\t -> testContext t ++ concat [c | Just c <- map tcContext (testCandidates t)] ++ testFiles t) (langTest lang)
     scope = packageScope (maybe [] checkRoot check) (maybe False checkRootOutermost check) paths judged
 
 -- | The package of the judged files: the nearest folder (or the outermost)

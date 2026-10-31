@@ -635,10 +635,38 @@ holding one `[check]` or `[test]` table with the keys it fills in:
 |---|---|---|
 | `[check]` | `pyright` | `uv run pyright --outputjson` in the project's venv in Olifant's cache; `pyright-json`; rooted at `pyproject.toml` |
 | `[check]` | `cargo` | `cargo check --workspace --exclude diesel-* --message-format=json`, a target dir per workspace in the cache; `rustc-json`; `exclusive`; the outermost `Cargo.toml` |
-| `[test]` | `pytest` | `uv run pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, in the same venv; `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml`; `tests_for = "{= dir =}/test_{= stem =}.py"`; `unit` finds `def test…`, `above` its decorators; a test's class, whatever its name (`ElectionTests(TestCase)` too), comes from the grammar |
+| `[test]` | `pytest` | `pytest -q -rA --tb=short -p no:cacheprovider` over the test ids, run as the project runs it, the first that fits under the package root: with a `uv.lock`, `uv run pytest` in the same venv as pyright's (context `pyproject.toml`, `uv.lock`); else the project's own `.venv/bin/pytest` or `venv/bin/pytest` (poetry's, pip's; `{= root =}/.venv/bin/pytest`); else `pytest` from PATH ([command candidates](#test-command-candidates)); `format = "pytest"` reads which test failed, at which line, and why; rooted at `pyproject.toml`; `tests_for = "{= dir =}/test_{= stem =}.py"`; `unit` finds `def test…`, `above` its decorators; a test's class, whatever its name (`ElectionTests(TestCase)` too), comes from the grammar |
 | `[check]` | `cabal-repl` | `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}` with `-fno-code`, GHC's JSON diagnostics and its missing-pattern warning; `ghc-json`; `exclusive`; context `*.cabal`, `cabal.project`, `cabal.project.freeze`. Loads the package's one library |
 | `[test]` | `cargo-test` | `cargo test --target-dir {= cache =}/test-target-{= context =} --`, then the selected tests, in the file's crate (`root = ["Cargo.toml"]`); `format = "lines"` over libtest's lines ([test formats](#test-formats)); one test by `--exact <module>::tests::<name>`, a file by `<module>::`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}.rs"`: tests live in the source file. Its stub writes a `#[test] fn` with `todo!("write this test")` at `end of mod tests`, opening `#[cfg(test)] mod tests { use super::*; … }` at the file's end when there is none, and refuses (`elsewhere`) when the file says `mod tests;` |
 | `[test]` | `hspec` | `cabal test -v0 --builddir={= cache =}/dist-test-{= context =} --test-show-details=direct --test-option=--format=checks --test-option=--no-color`, then the selected tests; `format = "lines"` over hspec's tree ([test formats](#test-formats)); one test by `--match=/{= group =}/{= name =}/`, a file by its module (`file_group`); `unit` finds `describe`/`it`; `exclusive`, `timeout = 900`; `tests_for = "{= dir =}/{= stem =}Spec.hs"` |
+
+#### Test command candidates
+
+A `[test] command` is a command, or a list of **candidates** to choose from, the first that fits:
+
+```toml
+[test]
+command = [
+  { when = ["uv.lock"], context = ["pyproject.toml", "uv.lock"], command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "{= tests =}"] },
+  { when = [".venv/bin/pytest"], command = ["{= root =}/.venv/bin/pytest", "{= tests =}"] },
+  { command = ["pytest", "{= tests =}"] },
+]
+context = ["pyproject.toml"]
+```
+
+A candidate fits when one of its `when` files exists, a path from the package root (the folder
+`root`'s markers find, else the project's), among the files a run copies or on disk; one without
+`when` always fits. Its `context` replaces the table's for that run (so only the uv run is keyed
+by `uv.lock`). No candidate fitting is a run's error, `no [test] command fits here: no uv.lock or
+…`. `olifant doctor`'s runner row names the chosen one and why, from the project root:
+
+```
+✓ test runner .venv/bin/pytest (python) — /…/nightvote/.venv/bin/pytest; .venv/bin/pytest found; tests_for = {= dir =}/{= stem =}__test.py
+✓ test runner uv (python) — /opt/homebrew/bin/uv; uv.lock found; tests_for = …
+```
+
+A layer's own `command`, bare or a list, replaces the preset's whole list. A plan's `do` is told
+the chosen command, with `{= root =}` the project's folder.
 
 Any key you write beside `preset` wins over the preset's: `[check] preset = "pyright"` with your
 own `root = ["apps/web/pyproject.toml"]` keeps the rest. An unknown preset is a load error naming

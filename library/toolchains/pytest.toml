@@ -1,12 +1,21 @@
-# pytest through uv, its venv in Olifant's cache as pyright's; a module's
-# tests beside it as test_<module>.py unless the language says otherwise.
+# pytest as the project runs it, the first that fits under the package
+# root: with a uv.lock, through uv, its venv in Olifant's cache as
+# pyright's; else the project's own venv (.venv or venv, by its path:
+# the run is in a scratch copy, {= root =} the package folder); else
+# pytest from PATH. A module's tests beside it as test_<module>.py unless
+# the language says otherwise.
 [test]
-command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"]
+command = [
+  { when = ["uv.lock"], context = ["pyproject.toml", "uv.lock"], command = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
+  { when = [".venv/bin/pytest"], command = ["{= root =}/.venv/bin/pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
+  { when = ["venv/bin/pytest"], command = ["{= root =}/venv/bin/pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
+  { command = ["pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider", "{= tests =}"] },
+]
 format = "pytest"
-context = ["pyproject.toml", "uv.lock"]
+context = ["pyproject.toml"]
 root = ["pyproject.toml"]
 tests_for = "{= dir =}/test_{= stem =}.py"
-install = "brew install uv (pytest comes with the project: `uv sync`)"
+install = "with uv: brew install uv (pytest comes with the project: `uv sync`); else pytest in the project's venv (`pip install pytest`)"
 # Its words for a name not defined (a summary says NameError).
 undefined = [{ pattern = "name '([^']+)' is not defined", label = "NameError" }]
 # Tests by rule: a `test…` function (async too); decorators belong to the

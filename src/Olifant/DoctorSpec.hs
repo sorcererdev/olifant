@@ -35,6 +35,7 @@ ports exes probe envs =
     , dpPath = Identity "/usr/bin:/bin"
     , dpProbe = \_ -> Identity probe
     , dpEnvSet = \v -> Identity (v `elem` envs)
+    , dpExists = \f -> Identity (f `elem` ["/proj/uv.lock"])
     }
 
 statusOf :: Text -> [Check] -> Maybe Status
@@ -85,8 +86,23 @@ spec = describe "olifant doctor (spec §4.7)" $ do
         [bad] = [c | c <- run ["ast-grep"], checkName c == "test runner uv (python)"]
     checkStatus ok `shouldBe` Ok
     checkDetail ok `shouldSatisfy` T.isInfixOf "tests_for = {= dir =}/{= stem =}__test.py"
+    checkDetail ok `shouldSatisfy` T.isInfixOf "uv.lock found"
     checkStatus bad `shouldBe` Bad
     checkDetail bad `shouldSatisfy` (\d -> "uv" `T.isInfixOf` d && "/usr/bin:/bin" `T.isInfixOf` d)
+  it "(f2) the test runner row names the command candidate chosen, and why" $ do
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
+        withFiles fs = (ports ["ast-grep", "pytest", "/proj/.venv/bin/pytest"] (Right ()) []) {dpExists = \f -> Identity (f `elem` fs)}
+        rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "test runner" `T.isPrefixOf` checkName c]
+    case rows ["/proj/.venv/bin/pytest"] of
+      [(name, st, detail)] -> do
+        (name, st) `shouldBe` ("test runner .venv/bin/pytest (python)", Ok)
+        detail `shouldSatisfy` T.isInfixOf ".venv/bin/pytest found"
+      other -> expectationFailure (show other)
+    case rows [] of
+      [(name, st, detail)] -> do
+        (name, st) `shouldBe` ("test runner pytest (python)", Ok)
+        detail `shouldSatisfy` T.isInfixOf "no uv.lock, .venv/bin/pytest or venv/bin/pytest"
+      other -> expectationFailure (show other)
   it "(g) a language without [test] gets no test runner line" $
     [checkName c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local)), "test runner" `T.isPrefixOf` checkName c] `shouldBe` []
   it "reports a broken language adapter or generator as an error" $ do

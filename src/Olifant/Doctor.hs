@@ -17,8 +17,8 @@ import Data.Text qualified as T
 import Olifant.Capabilities (Capability (..), capabilities)
 import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Catalog (PlansConfig (..))
-import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, grammarLabel, linkedGrammarOf, originOf, queriesOf)
-import System.FilePath (dropExtension)
+import Olifant.Language (CheckDef (..), Language (..), TestDef (..), checkProgram, chooseTestCommand, grammarLabel, linkedGrammarOf, originOf, queriesOf)
+import System.FilePath (dropExtension, (</>))
 import Olifant.Model (Backend (..), ModelConfig (..))
 
 data Status = Ok | Warn | Bad
@@ -57,6 +57,8 @@ data DoctorPorts m = DoctorPorts
   -- ^ does the model answer (a short timeout)
   , dpEnvSet :: Text -> m Bool
   -- ^ is an environment variable set (never its value)
+  , dpExists :: FilePath -> m Bool
+  -- ^ is there a file at this path (a `[test] command` candidate's `when`)
   }
 
 doctor :: Monad m => DoctorPorts m -> DoctorInput -> m [Check]
@@ -134,9 +136,18 @@ doctor ports di = do
     commandTool kind lang install command = case checkProgram command of
       Just exe -> pure <$> tool (kind <> " " <> exe <> " (" <> langName lang <> ")") (T.unpack exe) (fromMaybe ("install " <> exe <> " and make sure it is on the PATH your editor starts with") install)
       Nothing -> pure []
-    testRunner lang td = do
-      cs <- commandTool "test runner" lang (testInstall td) (testCommand td)
-      pure [c {checkDetail = if checkStatus c == Ok then checkDetail c <> "; tests_for = " <> testsFor td else checkDetail c} | c <- cs]
+    -- the command candidate the project's files choose, named as written
+    -- (`{= root =}/` dropped), found at the project root, and why
+    testRunner lang td0 =
+      chooseTestCommand (\f -> maybe (pure False) (\r -> dpExists ports (r </> f)) (diProject di)) td0 >>= \case
+        Left why -> pure [Check ("test runner (" <> langName lang <> ")") Bad why (Just "add the file a [test] command candidate names, or a candidate without `when`")]
+        Right (td, why) -> case checkProgram (testCommand td) of
+          Nothing -> pure []
+          Just exe -> do
+            let shown = T.replace "{= root =}/" "" exe
+                found = T.unpack (T.replace "{= root =}" (maybe "." T.pack (diProject di)) exe)
+            c <- tool ("test runner " <> shown <> " (" <> langName lang <> ")") found (fromMaybe ("install " <> shown <> " and make sure it is on the PATH your editor starts with") (testInstall td))
+            pure [if checkStatus c == Ok then c {checkDetail = checkDetail c <> maybe "" ("; " <>) why <> "; tests_for = " <> testsFor td} else c]
     modelCheck = case (mcDefault (diModel di), mcBackends (diModel di)) of
       (Nothing, []) -> pure (Check "model" Warn "no [model] configured: holes stay placeholders" (Just modelSnippet))
       (Nothing, _) -> pure (Check "model" Warn "[model] has backends but no default" (Just "set `default = \"NAME\"` under [model]"))

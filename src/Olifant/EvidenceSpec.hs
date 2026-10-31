@@ -93,12 +93,13 @@ spec = describe "Olifant.Evidence" $ do
       evTests ev `shouldBe` Unproven "not run (olifant doctor --run)"
     let fake _ ids = pure (Right (TestRun [i <> "::a" | i <- ids] [(i <> "::b", Failure Nothing "x" "") | i <- ids] Nothing))
         threeResults _ ids = pure (Right (TestRun [i <> "::" <> n | i <- ids, n <- ["a", "b", "c"]] [] Nothing))
-    withPorts pair (Just threeResults) $ \ports -> do
+    -- the program named is the chosen command candidate's: uv with a uv.lock
+    withPorts (pair ++ [("uv.lock", "")]) (Just threeResults) $ \ports -> do
       ev <- evidenceFor ports py
       evTests ev `shouldBe` Proven "ran uv on src/a__test.py, 3 results parsed (pytest)"
     withPorts pair (Just fake) $ \ports -> do
       ev <- evidenceFor ports py
-      evTests ev `shouldBe` Proven "ran uv on src/a__test.py, 2 results parsed (pytest)"
+      evTests ev `shouldBe` Proven "ran pytest on src/a__test.py, 2 results parsed (pytest)"
     withPorts pair (Just (\_ _ -> pure (Right (TestRun [] [] (Just "no tests ran"))))) $ \ports -> do
       ev <- evidenceFor ports py
       evTests ev `shouldBe` Disproven "src/a__test.py: no tests ran"

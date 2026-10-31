@@ -163,7 +163,7 @@ withFixtureChecked checker extra act = do
         ++ [(root </> p, t) | (p, t) <- M.toList app]
         ++ [(root </> ".olifant/config.toml", "[packs]\npython-htmx = { path = \"/pack\" }\n")]
         ++ [(root </> p, t) | (p, t) <- extra]
-  let ports = Ports disk (astGrepSyntax (tmp </> "olifant-test-cache")) (const checker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 20) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+  let ports = Ports disk (astGrepSyntax (tmp </> "olifant-test-cache")) (const checker) (const noVerifier) (const noRunner) (\_ _ -> noRunner) (pure (UTCTime (fromGregorian 2026 10 20) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
   s <- newServerState ports
   withSystemTempDirectory "olifant-anticipate" (act s)
 
