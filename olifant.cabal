@@ -3,7 +3,7 @@ name:               olifant
 version:            0.1.0.0
 synopsis:           Olifant: Durandal's generator engine (prototype)
 build-type:         Simple
-extra-source-files: library/**/*.toml
+extra-source-files: library/**/*.toml, library/**/*.scm, cbits/**/*.h, cbits/**/*.c, cbits/**/SOURCES, cbits/**/LICENSE
 
 common shared
   default-language:   GHC2021
@@ -42,6 +42,11 @@ common shared
 library
   import:          shared
   hs-source-dirs:  src
+  -- tree-sitter in process: the runtime (its amalgamation) and the grammars
+  -- ast-grep 0.45.3 locks, compiled in; no system library (cbits/*/SOURCES)
+  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c
+  include-dirs:    cbits/tree-sitter/include cbits/tree-sitter/src cbits/tree-sitter-rust
+  cc-options:      -O2 -std=c11
   exposed-modules:
     -- olifant:region library-modules (generated from glob src/**/*.hs; edit the declaration, not this block)
     Olifant.Actions
@@ -82,6 +87,7 @@ library
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep
+    Olifant.Language.Captures
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
@@ -97,6 +103,7 @@ library
     Olifant.Language.Test
     Olifant.Language.TestFormats
     Olifant.Language.TestUnits
+    Olifant.Language.TreeSitter
     Olifant.Library
     Olifant.Lsp
     Olifant.Migration
@@ -186,6 +193,11 @@ test-suite spec
   -- the specs run in parallel (SpecHook), on every core
   ghc-options:        -threaded -rtsopts "-with-rtsopts=-N"
   build-tool-depends: hspec-discover:hspec-discover
+  -- tree-sitter in process: the runtime (its amalgamation) and the grammars
+  -- ast-grep 0.45.3 locks, compiled in; no system library (cbits/*/SOURCES)
+  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c
+  include-dirs:    cbits/tree-sitter/include cbits/tree-sitter/src cbits/tree-sitter-rust
+  cc-options:      -O2 -std=c11
   build-depends:
     , hedgehog        >=1.4
     , hspec           >=2.11
@@ -248,6 +260,7 @@ test-suite spec
     Olifant.Language
     Olifant.Language.Adapter
     Olifant.Language.AstGrep
+    Olifant.Language.Captures
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm
@@ -267,6 +280,8 @@ test-suite spec
     Olifant.Language.TestFormatsSpec
     Olifant.Language.TestUnits
     Olifant.Language.TestUnitsSpec
+    Olifant.Language.TreeSitter
+    Olifant.Language.TreeSitterSpec
     Olifant.LanguageSpec
     Olifant.Library
     Olifant.Lsp

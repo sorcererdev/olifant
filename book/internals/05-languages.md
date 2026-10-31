@@ -222,6 +222,50 @@ of its own. The `conjure shapes` row lists `port.add` and `advice` when present,
 | `[test] name` | `Server/Stub.testAffixesIn`: the text before and after the words, which a survivor's stub name (`TestName.stubNameFor`) is put between; uniqueness is against the file's tests by `[test] unit` |
 | `opens_block`, `empty_statement`, `stub_lines` | `Server/Unit.hs` (`bodyOf`, `isStubIn`), `FillPhase` (cutting a whole-file answer back to a hole) |
 
+## Queries: tree-sitter in process
+
+Besides the ast-grep shell-out (`Language/AstGrep.hs`, which keeps `[[mutate]]` and the
+declared `[targets.*]`), olifant parses in process with tree-sitter, to read the generic
+anchor phrases from community queries (design 4b §A).
+
+- **The C.** The tree-sitter runtime 0.27.0 (its one-file amalgamation, `cbits/tree-sitter/src/lib.c`)
+  and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`) are `c-sources` in
+  `olifant.cabal`, in both the `library` and the `spec` stanzas. Nothing is installed: no
+  Homebrew library, no dylib, no doctor row for it. Both are pinned to the versions ast-grep
+  0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2), so the two parsers
+  read the same trees. Each directory has a `SOURCES` (version, git commit, crate sha256) and
+  the upstream `LICENSE`.
+- **The shim.** GHC's FFI cannot pass a `TSNode` (a 32-byte struct) by value, so
+  `cbits/olifant_ts.c` wraps the calls olifant needs and holds nodes by pointer
+  (`ots_parse`, `ots_points`, `ots_field`, `ots_next`, `ots_prune`, …). The grammar is passed
+  in: `TreeSitter.hs`'s `grammarTable` maps a language file's `grammar` to the compiled-in
+  `tree_sitter_<grammar>` function. That table is data keyed by grammar, never by a language's
+  name; `linkedGrammars` lists it.
+- **The queries.** `library/queries/<grammar>/*.scm`, embedded with `embedDir`
+  (`shippedQueries`, `queriesFor`). For Rust: `tags.scm` (the grammar's own, MIT: the
+  `@definition.*` and `@name` captures), `textobjects.scm` (nvim-treesitter-textobjects,
+  Apache-2.0: `@function.inner`, `@class.inner`, `@parameter.inner`, `@call.outer`) and two
+  olifant writes: `imports.scm` (an import statement, whole, `@import`) and `impls.scm` (an
+  inherent impl named by its type, generics included, as `@definition.impl`; a trait impl is
+  not captured, so no phrase names it). `SOURCES` pins each vendored file to a commit and lists
+  any line olifant removed under "changes".
+- **The capture data.** `capturesOf grammar queries text` returns the root node and every
+  capture as plain data from `Language/Captures.hs`: a `Cap` (capture name, query file,
+  pattern, match number, its `PNode`, the node's parent, its top-level ancestor for `@import`,
+  and the `body`/`parameters`/`arguments` fields with their named, non-extra children). A
+  `PNode` has its type, start and end as 0-based (line, column) with columns in characters (as
+  ast-grep's `Match` counts them; tree-sitter counts bytes, `pnode` converts), its byte range,
+  text, and whether it is named or extra. Each query set is compiled once per process
+  (`compiled`, keyed by grammar and query set) and pruned to the captures the rule reads
+  (`readCaptures` and every `definition.*`), so the others cost nothing at match time. A query
+  that does not compile is a `Left` naming the file, the byte and the kind of error.
+- **Pure.** A parse and a query run are functions of (grammar, queries, text), so
+  `capturesOf` is pure and wraps its IO in `unsafePerformIO` (Decision 6 of the m2 plan). Pure
+  callers (the anchor rule; later, units and test units) read captures without threading IO.
+  It is `unsafePerformIO`, not the dupable variant: the compile cache is behind an `MVar` and
+  the tree and cursor are freed by `bracket`, which an abandoned duplicate evaluation would
+  skip.
+
 ## Slots and providers
 
 A **slot** is one question the engine asks of a language: the units in a text, its test units,
