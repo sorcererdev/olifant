@@ -19,7 +19,7 @@ import Olifant.Language.Presets (shippedPresets)
 import Olifant.Toml (mergeTables, parseToml)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Server (Unit (..), unitAt)
-import System.Directory (doesDirectoryExist, findExecutable, getCurrentDirectory, getTemporaryDirectory, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, findExecutable, getCurrentDirectory, getPermissions, getTemporaryDirectory, listDirectory, setOwnerExecutable, setPermissions)
 import System.Environment (lookupEnv)
 import System.FilePath (takeExtension, (</>))
 import Olifant.Template (Value (..))
@@ -174,7 +174,7 @@ spec = do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/all-passed.txt"
       parsePytest ExitSuccess out `shouldSatisfy` \r -> null (trFailed r) && length (trPassed r) == 4 && trBroken r == Nothing
     it "(c) testsForFile: the module's test file" $
-      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing) "src/bistro/booking/commands/close_table.py"
+      testsForFile (TestDef [] [] "pytest" [] "{= dir =}/{= stem =}__test.py" Nothing [] [] Nothing Nothing False Nothing [] Nothing Nothing Nothing Nothing [] Nothing Nothing Nothing Nothing) "src/bistro/booking/commands/close_table.py"
         `shouldBe` "src/bistro/booking/commands/close_table__test.py"
     it "(d) a run that could not start is broken, not red" $ do
       out <- TIO.readFile "src/Olifant/Language/testdata/pytest/broken.txt"
@@ -335,6 +335,29 @@ spec = do
         Right _ <- runTests (processRunner neverCancel 60) (selLang "selects.sh") ["a_t.x::t1"] (M.fromList [("a_t.x", "")])
         lines <$> readFile (out </> "argv") `shouldReturn` ["--only", "picked"]
         runTests (processRunner neverCancel 60) (selLang "fails.sh") ["a_t.x::t1"] (M.fromList [("a_t.x", "")]) `shouldReturn` Left "the test selection provider: no grammar"
+    it "{= root =} is the package folder on disk (the project's without root markers), the program too" $
+      withSystemTempDirectory "olifant-root" $ \proj -> do
+        createDirectoryIfMissing True (proj </> "pkg" </> "bin")
+        let runner = proj </> "pkg" </> "bin" </> "run"
+        writeFile runner "#!/bin/sh\nprintf '%s' \"$1\" > \"$1/said\"\necho '{\"passed\":[\"a_t.x::t1\"]}'\n"
+        p <- getPermissions runner
+        setPermissions runner (setOwnerExecutable True p)
+        let Right lang0 = parseLanguage "x" "/x" (T.unlines
+              [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+              , "[test]", "command = [\"{= root =}/bin/run\", \"{= root =}\", \"{= tests =}\"]", "root = [\"marker.cfg\"]"
+              , "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+              ])
+            lang = withProviderRoot proj lang0
+        Right run <- runTestsIn (processRunner neverCancel 60) lang ["pkg/a_t.x"] (M.fromList [("pkg/a_t.x", ""), ("pkg/marker.cfg", "")])
+        trPassed run `shouldBe` ["pkg/a_t.x::t1"]
+        readFile (proj </> "pkg" </> "said") `shouldReturn` (proj </> "pkg")
+        let Right bare = parseLanguage "x" "/x" (T.unlines
+              [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\""
+              , "[test]", "command = [\"sh\", \"-c\", \"printf '%s' \\\"$0\\\" > \\\"$0/said\\\"; echo '{}'\", \"{= root =}\"]"
+              , "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+              ])
+        _ <- runTestsIn (processRunner neverCancel 60) (withProviderRoot proj bare) ["a_t.x"] (M.fromList [("a_t.x", "")])
+        readFile (proj </> "said") `shouldReturn` proj
     it "the [test] timeout wins over the caller's" $ do
       let Right lang = parseLanguage "haskell" "/h" (hsToml ["command = [\"sleep\", \"5\"]", "timeout = 1"])
       Right run <- runTests (processRunner neverCancel 60) lang [T.pack specFile] (M.fromList [(specFile, "module Olifant.PlansSpec (spec) where\n")])

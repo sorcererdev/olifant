@@ -391,6 +391,10 @@ data TestDef = TestDef
   -- ^ `unit = { provider = [...] }`: a program answers the test-units slot
   , testSelectProvider :: Maybe Provider
   -- ^ `select = { provider = [...] }`: a program turns ids into arguments
+  , testDir :: Maybe FilePath
+  -- ^ the folder on disk a run's files are relative to, @{= root =}@: the
+  -- project's (set at load, 'withProviderRoot'), narrowed to the package by
+  -- 'Olifant.Language.Check.runTestsIn'; unknown for a language read alone
   }
   deriving stock (Eq, Show)
 
@@ -717,6 +721,7 @@ languageFrom presets name grammarDir top = do
         <*> optional "failure" (table >=> failureFrom) t
         <*> pure unitProvider
         <*> pure selectProvider
+        <*> pure Nothing
     templateOver key vars src = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
@@ -847,13 +852,14 @@ mergeLayerTables = M.unionWith (flip merge)
       | otherwise = TTable (mergeLayerTables old new)
     merge new _ = new
 
--- | Every provider of the language runs from the project root.
+-- | Every provider of the language runs from the project root, and its
+-- test runs know it ('testDir', @{= root =}@).
 withProviderRoot :: FilePath -> Language -> Language
 withProviderRoot root lang =
   lang
     { langUnitProvider = rooted <$> langUnitProvider lang
     , langAnchorProvider = rooted <$> langAnchorProvider lang
-    , langTest = (\td -> td {testUnitProvider = rooted <$> testUnitProvider td, testSelectProvider = rooted <$> testSelectProvider td}) <$> langTest lang
+    , langTest = (\td -> td {testUnitProvider = rooted <$> testUnitProvider td, testSelectProvider = rooted <$> testSelectProvider td, testDir = Just root}) <$> langTest lang
     }
   where
     rooted p = p {provRoot = Just root}

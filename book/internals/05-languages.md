@@ -151,7 +151,11 @@ phase is generic in its monad.
 a scratch copy of the project's files (`scratchRun`, `:105`), `readTestReport` (`:187`) picks
 the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | parseTestJson`),
 `selected` (`:176`) turns a test id into arguments with `[test.select]`, and `runTestsIn`
-(`:453`) is the entry the server uses. `tests_for` is read by `Server/Tests.hs`
+(`:453`) is the entry the server uses. A run knows its folder on disk, `TestDef.testDir`: the
+catalog sets it to the project root as it roots the providers (`Adapter.withProviderRoot`), and
+`runTestsIn` narrows it to the package its `root` markers find; `processRunner` passes it to
+`scratchRun` as `{= root =}` (made absolute), expanded in the program too, so a command can
+name a venv in the project although it runs in a scratch copy. `tests_for` is read by `Server/Tests.hs`
 (`testsForFile`, `placeOf`) and `Language.Test.testsForFile`.
 
 The **shape** keys are the language's own, parsed even when there is no runner (a table holding

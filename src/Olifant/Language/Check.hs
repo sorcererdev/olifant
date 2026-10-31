@@ -54,7 +54,7 @@ import Olifant.Language.TestFormats (Reported (..), attribute, fromReported, par
 import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
-import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory)
+import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, findExecutable, getXdgDirectory, makeAbsolute)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -85,7 +85,7 @@ processVerifierWith = processVerifierCancellable neverCancel
 -- | 'processVerifierWith', killed when the token is tripped ("cancelled").
 processVerifierCancellable :: Cancel -> Int -> Verifier IO
 processVerifierCancellable token secs = Verifier $ \lang argv files ->
-  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) Nothing [] (const Nothing) files <&> \case
+  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) [] Nothing [] (const Nothing) files <&> \case
     Left ScratchEmpty -> Left (CheckFailed "empty verify command")
     Left ScratchNoProgram -> Left (CheckFailed "the verify command runs no program")
     Left (ScratchMissing program) -> Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)"))
@@ -99,35 +99,39 @@ data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | Sc
 
 -- | A command run in a scratch copy of the files, as a check runs: its
 -- program (past a leading @env@) must be installed; @{= cache =}@ (the
--- slot's, when it holds one) and @{= context =}@ (the given key) are
--- expanded in its arguments, and @special@ may replace a whole argument by
--- several. Stopped after @secs@. With a @convert@ command, its stdout is
--- the outcome's stdout (and stderr is empty).
-scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
-scratchRun token secs lang prefix command ctx slot convert special files = case (command, checkProgram command) of
-  ([], _) -> pure (Left ScratchEmpty)
-  (_, Nothing) -> pure (Left ScratchNoProgram)
-  (exe : args, Just program) ->
-    (findExecutable (T.unpack program) >>= \case
-      Nothing -> pure Nothing
-      Just _ -> findExecutable (T.unpack exe)) >>= \case
-      Nothing -> pure (Left (ScratchMissing program))
-      Just path -> withSystemTempDirectory prefix $ \tmp0 -> do
-        tmp <- canonicalizePath tmp0
-        forM_ (M.toList files) $ \(p, t) -> do
-          createDirectoryIfMissing True (takeDirectory (tmp </> p))
-          BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
-        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
-        createDirectoryIfMissing True cache
-        let expand a = fromMaybe [T.unpack (T.replace "{= context =}" ctx (T.replace "{= cache =}" (T.pack cache) a))] (special (T.strip a))
-        runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" >>= \case
-          Left why -> pure (Left (ScratchFailed why))
-          Right (Finished code out err)
-            | not (null convert) ->
-                convertReport convert tmp code out err <&> \case
-                  Left why -> Left (ScratchFailed ("the convert command failed: " <> why))
-                  Right report -> Right (Finished code report "")
-          Right outcome -> pure (Right outcome)
+-- slot's, when it holds one), @{= context =}@ (the given key) and the
+-- given @vars@ (a test's @{= root =}@) are expanded in it, the program
+-- too, and @special@ may replace a whole argument by several. Stopped
+-- after @secs@. With a @convert@ command, its stdout is the outcome's
+-- stdout (and stderr is empty).
+scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> [(Text, Text)] -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
+scratchRun token secs lang prefix command0 ctx vars slot convert special files = do
+  cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
+  let fill a = foldr (\(k, v) -> T.replace ("{= " <> k <> " =}") v) a (("cache", T.pack cache) : ("context", ctx) : vars)
+      command = [maybe (fill a) (const a) (special (T.strip a)) | a <- command0]
+  case (command, checkProgram command) of
+    ([], _) -> pure (Left ScratchEmpty)
+    (_, Nothing) -> pure (Left ScratchNoProgram)
+    (exe : args, Just program) ->
+      (findExecutable (T.unpack program) >>= \case
+        Nothing -> pure Nothing
+        Just _ -> findExecutable (T.unpack exe)) >>= \case
+        Nothing -> pure (Left (ScratchMissing program))
+        Just path -> withSystemTempDirectory prefix $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          forM_ (M.toList files) $ \(p, t) -> do
+            createDirectoryIfMissing True (takeDirectory (tmp </> p))
+            BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
+          createDirectoryIfMissing True cache
+          let expand a = fromMaybe [T.unpack a] (special (T.strip a))
+          runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" >>= \case
+            Left why -> pure (Left (ScratchFailed why))
+            Right (Finished code out err)
+              | not (null convert) ->
+                  convertReport convert tmp code out err <&> \case
+                    Left why -> Left (ScratchFailed ("the convert command failed: " <> why))
+                    Right report -> Right (Finished code report "")
+            Right outcome -> pure (Right outcome)
 
 -- | The language's test command over a scratch copy of the files (as a
 -- verify runs, with @{= cache =}@ and @{= context =}@; the one argument
@@ -146,9 +150,11 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
         requested = requestedFiles lang td ids files
         -- an argument twice (a flag each test repeats: `--exact`) once
         byRule = maybe (map T.unpack ids) (\sel -> map T.unpack (nub (concatMap (selected lang td files sel) ids))) (testSelect td)
-        run args =
+        run args = do
+          -- {= root =}: the package folder on disk (left as written when unknown)
+          root <- traverse makeAbsolute (testDir td)
           around $ \slot ->
-            scratchRun token limit lang "olifant-test" (testCommand td) ctx slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
+            scratchRun token limit lang "olifant-test" (testCommand td) ctx [("root", T.pack r) | Just r <- [root]] slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
               Left ScratchEmpty -> Left "empty test command"
               Left ScratchNoProgram -> Left "the test command runs no program"
               Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
@@ -457,12 +463,14 @@ runVerifyIn verifier lang scope argv files = runVerify verifier lang (map fromSc
 
 -- | The tests (ids of the project) run inside the judged files' package
 -- (the nearest folder with one of the language's @[test] root@ markers): the
--- runner sees ids and files from that scope; the ids it reports say project
--- paths again.
+-- runner sees ids and files from that scope, and its 'testDir' is that
+-- folder on disk; the ids it reports say project paths again.
 runTestsIn :: Monad m => Runner m -> Language -> [TestId] -> Map FilePath Text -> m (Either Text TestRun)
-runTestsIn runner lang ids files = fmap (upTo scope) <$> runTests runner lang (map fromScope ids) (into scope files)
+runTestsIn runner lang ids files = fmap (upTo scope) <$> runTests runner lang {langTest = narrowed <$> langTest lang} (map fromScope ids) (into scope files)
   where
     scope = packageScope (maybe [] testRoot (langTest lang)) False (M.keys files) (map (T.unpack . T.takeWhile (/= ':')) ids)
+    -- the run's folder on disk is the package's ({= root =})
+    narrowed td = if null scope then td else td {testDir = (</> scope) <$> testDir td}
     fromScope a
       | null scope = a
       | otherwise = maybe a T.pack (inside scope (T.unpack a))
