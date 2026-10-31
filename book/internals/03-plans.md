@@ -107,10 +107,18 @@ starting).
    (`take groundingLimit`), and each found unit's body is cut (`cutBody`) into a `Grounded`.
 3. **Build the prompt** (`errandPrompt`): the plan, the target line, the grounded units, the
    language's `unit_words` (`projectUnitWords`) so the model knows what an anchor may name, and
-   for a `do` the project's exact test command (`doTestCommand`, from `[test] command`).
+   for a `do` its tools first (files only by `Edit` and `Write`, never a shell heredoc, `cat >`,
+   `sed -i` or `python -`), then the project's exact test command as the one shell command it may
+   run (`doTestCommand`, from `[test] command`, the path as configured), and that Olifant runs
+   the tests after the change.
 4. **Run the runner** (`runClaude`, `Errand.hs:74`): `[plans] runner` with `-p
    --output-format json --model <model>` and `--allowedTools Read,Grep,Glob` (a `do` adds
    `Edit`, `Write`, the test tool and `[plans] do_tools`, and `--permission-mode acceptEdits`).
+   The test tool (`doTestTools`, `Errand.hs`; `testTools` in `Server/Plans.hs`) is the command as
+   the prompt prints it, up to its `{= tests =}` slot, as a prefix pattern
+   (`Bash(uv run --frozen pytest -q*)`), and, when its program is an absolute path inside the
+   project, the same by its project-relative path. (`allowPattern`, what `p` adds for a
+   denial, is still a command's first two words.)
    `CLAUDECODE` is unset for it. It never throws: a failure is a `RunFailure` with a `Status`
    (`Error | Timeout | Cancelled`) and one sentence.
 5. **Read the answer** (`parseAnswer`): lines outside the grammar are dropped and counted;
@@ -121,6 +129,9 @@ starting).
    `errands.jsonl` and a `plan-<verb>` line to the step log. The id (`errandId`,
    `Telemetry.hs:172`) is the runner's session id when it answered, so the editor's later
    `olifant/plans/outcome` notification (accepted or rejected, by block index) can name it.
+   durandal.nvim sends `accepted` for each block of an `ask` as soon as it lands, since it writes
+   the answer straight in (`plans.lua` `M.write_answer`, through `ghosts.lua` `M.accept_id`);
+   `plans.review_answers = true` brings back the ghost and the user's choice.
 
 Nothing is written to the plan. A `do` is different only in what surrounds it, below.
 
@@ -149,7 +160,11 @@ from their blobs. The index is never touched.
 `olifant/plans/review/choose`: `keep`, `revert`, `reopen`, `test` or `allow` (`chooseReview`,
 `Lsp.hs:2004`). `allow` takes the tool permissions the runner refused (`deniedWords`,
 `allowPattern`) and writes them into `[plans] do_tools` (`allowInConfig`, a text edit of
-`config.toml`). `keep` and `revert` append an `AnOutcome` record, the label that Jev's
+`config.toml`). `keep` writes `keepTicked` (`Review.hs`): the `do`'s lines, and on an open step with
+no test children (in the plan or among those lines) the step ticked, stamped and its excerpts
+frozen by `doneFacts` (`Lsp.hs`, shared with "Mark done"'s `toggleEdit`), one edit through
+`planFactsEdit`; its journal choice is `kept-ticked` (`keepEvent`). A `reopen` never ticks.
+`keep` and `revert` append an `AnOutcome` record, the label that Jev's
 telemetry is graded by. `Lsp` adds a code lens on each open review's step (`textDocument/codeLens`,
 refreshed with `workspace/codeLens/refresh` by `lensesChanged`).
 
@@ -225,7 +240,8 @@ rungs.
    and parses `N: <line>` back (`parseWords`). With no chat rung, a new step is the unit's header
    (`headerWords`) and a why is "names changed".
 7. **Blocks.** The pieces are assembled into `ReconcileBlock`s: `stateGhosts` (a tick or untick
-   line; a `done` for a step **without tests** is dropped, because only tests tick a step),
+   line; a `done` for a step **without tests** is dropped, because only tests, keeping its `do`
+   or the user tick a step),
    `also` children, `goneGhosts`, `whyGhosts` (`✗ changed:`), and `newSteps` for unplaced units
    placed by `newStepPlace` (the end of the section for the current branch).
 8. **Record.** An `AReconcile` record (id, plan, branch, baseline, counts, seconds, every
@@ -293,7 +309,7 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 | `olifant/plans/review/ready` | **notification**: a `do`'s review is saved |
 | `olifant/plans/reconcile` (`:732`) | the reconcile above |
 | `olifant/plans/stub`, `test` | a step's test written / run |
-| `olifant/plans/outcome` (`:791`) | **notification**: a block was accepted or rejected |
+| `olifant/plans/outcome` (`:791`) | **notification**: a block was accepted or rejected (an `ask`'s at once, unless the editor reviews answers) |
 | `textDocument/definition`, `hover`, `completion`, `codeLens`, `foldingRange` | `gd` on an anchor, the unit hover, `@` completion, review and delegation lenses, excerpt folds |
 
 All the slow ones go through `inBackground` and `planProgress` like the other slow requests

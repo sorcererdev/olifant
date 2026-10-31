@@ -187,13 +187,15 @@ doEvent eid step row at again model end =
       DoTimeout -> "timed out"
       DoCancelled -> "cancelled"
 
--- | A do review answered: CHOICE is kept, reverted or reopened.
+-- | A do review answered: CHOICE is kept, kept-ticked (a step with no
+-- tests, ticked by the keep), reverted or reopened.
 keepEvent :: Text -> Text -> Text -> Int -> UTCTime -> Text -> Event
 keepEvent rid eid step row at choice = Event ("review|" <> rid <> "||" <> choice) step row at words' (Just eid)
   where
     words' = case choice of
       "reverted" -> "reverted the do's change"
       "reopened" -> "kept the do's change · asked for more"
+      "kept-ticked" -> "kept the do's change · ticked: the step has no tests"
       _ -> "kept the do's change"
 
 -- | A test run's line for the step at ROW (LS before FACTS): a tick, an

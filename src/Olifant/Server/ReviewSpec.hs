@@ -90,6 +90,19 @@ spec = describe "Olifant.Server.Review (the do review)" $ do
       let unanchored = sample {rvStep = "- [ ] add a label", rvLines = ["- [ ] add a label   @a.py:Table.label", "  - also @a.py:Table"]}
       fmap (\(l, rep, rest) -> (lnRow l, rep, rest)) (keepLines (parsePlan "# T\n\n- [ ] add a label\n") unanchored)
         `shouldBe` Just (2, Just "- [ ] add a label   @a.py:Table.label", ["  - also @a.py:Table"])
+    it "keep ticks a step with no tests (its replace ticked too); the Bool says it did" $ do
+      let unanchored = sample {rvStep = "- [ ] add a label", rvLines = ["- [ ] add a label   @a.py:Table.label", "  - also @a.py:Table"]}
+      fmap (\(l, rep, rest, t) -> (lnRow l, rep, rest, t)) (keepTicked (parsePlan "# T\n\n- [ ] add a label\n") unanchored)
+        `shouldBe` Just (2, Just "- [x] add a label   @a.py:Table.label", ["  - also @a.py:Table"], True)
+      fmap (\(l, rep, rest, t) -> (lnRow l, rep, rest, t)) (keepTicked (parsePlan "# T\n\n- [ ] add a label @a.py:Table.label\n") sample)
+        `shouldBe` Just (2, Just "- [x] add a label @a.py:Table.label", ["  - also @a.py:Table"], True)
+    it "keep leaves a step with tests (or one the do gives tests) to its tests" $ do
+      let withTest = parsePlan "# T\n\n- [ ] add a label @a.py:Table.label\n  - test: @a__test.py:test_label\n"
+          addsTest = sample {rvLines = ["  - test: @a__test.py:test_label"]}
+      fmap (\(_, rep, _, t) -> (rep, t)) (keepTicked withTest sample) `shouldBe` Just (Nothing, False)
+      fmap (\(_, rep, _, t) -> (rep, t)) (keepTicked (parsePlan "# T\n\n- [ ] add a label @a.py:Table.label\n") addsTest) `shouldBe` Just (Nothing, False)
+    it "keep does not tick a step already ticked" $
+      fmap (\(_, rep, _, t) -> (rep, t)) (keepTicked (parsePlan "# T\n\n- [x] add a label @a.py:Table.label\n") sample) `shouldBe` Just (Nothing, False)
     it "is drawn as a pause: title, summary, the tests, the denials in words, the landing and the offers" $ do
       let change = FileChange "a.py" Modified (Just "x = 1\n") (Just "x = 2\n") "--- a/a.py\n+++ b/a.py\n"
           v = reviewPayload sample (Just (2, 1)) [change] Null

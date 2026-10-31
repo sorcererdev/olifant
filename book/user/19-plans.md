@@ -1,8 +1,8 @@
 # 19. Plans
 
 A plan is a markdown file in which you write what you believe about the code and what you mean to
-do, in lines the engine can check. You ask the model about it, and its answers land in the plan as
-ghost blocks you accept or reject. Plans live under `plans/` of the project (`[plans] dir`);
+do, in lines the engine can check. You ask the model about it: an `ask`'s answer goes straight
+into the plan (one `u` takes it out), a `validate`'s lands as ghost blocks you accept or reject. Plans live under `plans/` of the project (`[plans] dir`);
 durandal.nvim treats a markdown file there as a plan, and any other buffer after
 `:Durandal plan`.
 
@@ -54,7 +54,10 @@ it. A name the file does not have says so: `Nope is not in src/Olifant/PlansSpec
   - **validate** (on a claim, or a `##` heading for the section): checks claims against the
     units' code and answers verdicts and evidence.
   - **do** (on a step or test child): does the step in the repository, with edit rights and the
-    project's test command, which its prompt names exactly (no pipe, no `cd`). It is told Olifant
+    project's test command, which its prompt names exactly (no pipe, no `cd`) as the one shell
+    command it may run, the path as you configured it (an absolute program inside the project
+    is allowed by its relative path too). Its prompt says up front that files change only through
+    its Edit and Write tools, never a shell heredoc, `cat >`, `sed -i` or `python -`. It is told Olifant
     runs the step's tests after it, so tests it could not run are no reason to answer `BLOCKED`. A
     `DONE` of the step's own unit is no `also` line. In a git repository a `do` ends in a review ([below](#reviews-and-the-journal)): its diff, and `revert` to undo it.
   The prompt holds the plan and the bodies of the units it anchors. The answer is read against the
@@ -143,7 +146,8 @@ escalate = "ask"      # only <leader>mpc climbs here
 A backend with no `escalate` key defaults to `ask`, so only `<leader>mpc` climbs to it. (The backends' other keys are as in chapter 12.) The demo's config sets `escalate = "auto"` on its local backend for that reason.
 
 **Tests on a step.** `<leader>ms` on a step stubs a test under it (any language with a `[test.stub]`: Python, Haskell, Rust; the step needs an anchor), the step's text as the
-sentence. `<leader>mt` runs the step's tests and ticks it when all are green. A `do` runs the
+sentence. `<leader>mt` runs the step's tests and ticks it when all are green; a step with no
+tests is ticked by keeping its `do` (below) or by `<leader>mpx`. A `do` runs the
 step's tests when it finishes, over the files it wrote as they are on disk (the editor reloads
 them only afterwards).
 
@@ -159,11 +163,13 @@ create`, or HEAD when nothing differs; untracked files too). When the `do` answe
 tree however it ended, the change since that reference becomes a **review**, kept under
 `.olifant/state/reviews/<plan>/` until you answer it. The window shows the step, what the model
 said, the tests after it and the commands it was refused, in words, beside the diff file by file
-(`[` `]`); the answers are:
+(`[` `]`). A refused command over several lines (a heredoc) shows as its first line and a count,
+and any row longer than 3 lines is cut there with `… N more lines (d details)`; `d` has them
+whole. The answers are:
 
 | key | choice | does |
 |---|---|---|
-| `a` | keep | the `do`'s plan lines land under the step; the review goes |
+| `a` | keep | the `do`'s plan lines land under the step; the review goes. A step with no test children (none in the plan, none the `do` adds) is ticked by the same edit, as `<leader>mpx` would (`✓` its unit now, a live excerpt frozen; one undo step), and the journal says `kept the do's change · ticked: the step has no tests`. A step with tests is left to its tests |
 | `r` | revert | the files are restored from the reference, new ones removed; your edits to those files since the `do` go with it, and the plan, `.olifant/state/` and `.olifant/config.toml` are left alone |
 | `o` | reopen | keep it and ask for more in the same thread: a sentence, and a `do` on the step resumes the model's session in a fork; it comes back as a new review |
 | `t` | test | run the step's tests now |
@@ -193,7 +199,7 @@ each:
 ```
 
 A `do` ending (`answered`, `blocked`, `answered nothing`, `error`, `timed out`, `cancelled`), a review
-answered (kept, reverted, kept and asked for more), a step's tests ticking, unticking or going red or
+answered (kept, kept and ticked, reverted, kept and asked for more), a step's tests ticking, unticking or going red or
 green. Delete a line you do not want and it is not written again. The store is
 `.olifant/state/journal/<plan>.jsonl`. A line you write in the same shape reads as a journal line.
 
@@ -213,7 +219,7 @@ main                3           5          0.0  2/3 (0 ?)       0.19         2  
   errand that failed before it reported one).
 - `reconciles` counts the branch's `reconcile` records; `reconcile s` is the seconds they spent
   in model calls, Jev's rung and the words call included (`--json`: `reconciles`, `reconcile_seconds`).
-- `accepted` is ghost blocks accepted / blocks decided, and in parentheses the blocks of answered
+- `accepted` is ghost blocks accepted / blocks decided (an `ask` written straight in counts as accepted), and in parentheses the blocks of answered
   errands no one has decided yet.
 - `sessions` counts Claude Code sessions that are not errands: a session whose id is some errand's
   session is that errand's and is never counted twice, whatever the errand's status. Each message
@@ -244,10 +250,10 @@ The fair comparison is a head-to-head: the same change made both ways.
 
 | key | |
 |---|---|
-| `<leader>mpq` | ask, on a `- ?` line |
+| `<leader>mpq` | ask, on a `- ?` line: the answer is written under it at once (verified claims with their `✓ <fp>`, accepted to the engine), one undo step; while you type in the plan it waits for insert mode to end, and a plan that is not modifiable gets a ghost instead. `plans = { review_answers = true }` keeps the old ghost block for `<leader>mpy` / `<leader>mpn` |
 | `<leader>mpv` | validate, on a claim or a `##` heading |
 | `<leader>mpd` | do, on a step or test child |
-| `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line (an accepted verified claim gains its `✓ <fp>`) |
+| `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line: a validate's, a no-git do's, or an ask's with `review_answers` (an accepted verified claim gains its `✓ <fp>`) |
 | `<leader>mpc` | force a reconcile (and run the touched steps' tests) |
 | `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
 | `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`) |

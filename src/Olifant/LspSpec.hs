@@ -2718,15 +2718,17 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
       fmap (arr . lookupKey "reviews") listed `shouldBe` Right []
       (rs, 0) <- records dir
       [(orId o, orOutcome o) | AnOutcome o <- rs] `shouldBe` [(rid, "rejected")]
-  it "keep lands the plan lines (the anchor the do found) and keeps the tree" $
+  it "keep lands the plan lines (the anchor the do found), ticks a step with no tests (✓ its unit now) and keeps the tree" $
     withRepo (planWith "- [ ] add a method") $ \ports dir -> do
-      ((rid, chosen), _) <- inProcessWith ports dir $ do
+      ((rid, chosen, journal'), _) <- inProcessWith ports dir $ do
         p <- openDoc "plans/t.md" "markdown"
         (rid, _, _) <- doStep p
-        (rid,) <$> choose p rid "keep"
+        chosen <- choose p rid "keep"
+        (rid, chosen,) <$> liftIO (TIO.readFile (dir </> ".olifant/state/journal/plans/t.jsonl"))
       c <- either (fail . T.unpack) pure chosen
       lookupKey "done" c `shouldBe` Just (Bool True)
-      Aeson.encode (lookupKey "edit" c) `shouldSatisfy` \e -> ("add a method   @" <> TE.encodeUtf8 (T.pack table) <> ":Table.label") `BS.isInfixOf` BSL.toStrict e
+      Aeson.encode (lookupKey "edit" c) `shouldSatisfy` \e -> ("- [x] add a method   @" <> TE.encodeUtf8 (T.pack table) <> ":Table.label \226\156\147 ") `BS.isInfixOf` BSL.toStrict e
+      journal' `shouldSatisfy` T.isInfixOf "ticked: the step has no tests"
       TIO.readFile (dir </> table) >>= (`shouldSatisfy` T.isInfixOf "def label")
       (rs, 0) <- records dir
       [(orId o, orOutcome o) | AnOutcome o <- rs] `shouldBe` [(rid, "accepted")]
@@ -2738,7 +2740,7 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
         before <- blockMove reviewP (object [docOf p, "id" .= rid])
         (before,) <$> choose p rid "allow"
       b <- either (fail . T.unpack) pure before
-      at ["denied"] b `shouldBe` Just (Array (pure (String "tried `python -m pytest t.py` 2 times; not allowed.") <> pure (String "Allowed: `uv run \8230`.")))
+      at ["denied"] b `shouldBe` Just (Array (pure (String "tried `python -m pytest t.py` 2 times; not allowed.") <> pure (String "Allowed: `uv run --quiet --frozen pytest -q -rA --tb=short -p no:cacheprovider \8230`.")))
       map (lookupKey "key") (arr (at ["offers"] b)) `shouldBe` map (Just . String) ["a", "r", "o", "t", "p"]
       c <- either (fail . T.unpack) pure chosen
       lookupKey "said" c `shouldBe` Just (String "allowed Bash(python -m pytest*) in .olifant/config.toml")

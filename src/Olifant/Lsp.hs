@@ -52,7 +52,7 @@ import Olifant.Server.LoopTests (checkbox)
 import Olifant.Server.Loop (ReconcileAnswer (..), StepStub (..), StepTest (..), baseline, factJson, reconcile, reconcileJson, stepStub, stepTest, stepTestFacts)
 import Olifant.Server.ReviewReadings (Choice (..), Reading (..), ReadingsReview (..), answerReading, applyFactsText, choiceOf, readingEvent, dropReadings, entryKind, loadReadings, outcomeOf, readingFacts, readingKey, readingLens, readingRow, readingsId, readingsPayload, replaceReadings, saveReadings)
 import Olifant.Server.Telemetry (OutcomeRecord (..), Record (..), appendRecord)
-import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, loadArchive, loadArchiveIndex, loadArchived, loadReview, loadReviews, locateStep, revertChange, pastDosAt, reopenable, reviewPayload, sameStep, saveReview, testsOfFacts)
+import Olifant.Server.Review (Change (..), FileChange (..), Review (..), allowInConfig, allowPattern, archiveErrand, changeSince, dropReview, errandPayload, keepLines, keepTicked, loadArchive, loadArchiveIndex, loadArchived, loadReview, loadReviews, locateStep, revertChange, pastDosAt, reopenable, reviewPayload, sameStep, saveReview, testsOfFacts)
 import Olifant.Server.Journal (Entry (..), Event (..), keepEvent, movedEvent, withJournal)
 import Olifant.Server.Journal qualified as Journal
 import Olifant.Transcripts (slugOf)
@@ -1487,16 +1487,23 @@ toggleEdit env path row version =
         _ | now /= version -> pure (s', Left "the plan changed since; ask again")
         Nothing -> pure (s', Left "not on a step")
         Just st | stepDone st -> pure (s', Right (factsEdit path version text [Replace row (withVerdict (checkbox "- [x]" "- [ ]" (lnText st)) NoVerdict)]))
-        Just st -> do
-          fp <- maybe (pure Nothing) (\a -> resolveAnchor s' project a <&> \r -> rsFingerprint r <* rsUnit r) (lnAnchor st)
-          let ticked = maybe id (\f t -> withVerdict t (Verified f)) fp (checkbox "- [ ]" "- [x]" (lnText st))
-              after = parsePlan (applyFactsText [Replace row ticked] text)
-              mine = [e | e <- excerptsOf after, exStep e == row, not (exDone e)]
-          base <- if null mine then pure Nothing else baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
-          codes <- mapM (\e -> (exAnchor e,) <$> unitExcerpt s' project base (exAnchor e)) mine
-          let freeze = [f | f <- excerptFacts after (const Nothing) (\a -> join (lookup a codes)), factRow f `elem` map exOpen mine]
-          pure (s', Right (factsEdit path version text (Replace row ticked : freeze)))
+        Just st -> (s',) . Right . factsEdit path version text <$> doneFacts s' project path text row (checkbox "- [ ]" "- [x]" (lnText st))
     (s', _) -> pure (s', Left "not a plan"))
+
+-- | The facts that mark the step at ROW of TEXT done, TICKED its line
+-- already ticked: ✓ its unit's fingerprint now when its anchor resolves (an
+-- explicit claim: no reading offers it again) and its live excerpts frozen
+-- with the code now. "Mark done", and `keep` on a step with no tests.
+doneFacts :: ServerState -> Project -> FilePath -> T.Text -> Int -> T.Text -> IO [Fact]
+doneFacts s project path text row ticked0 = do
+  fp <- maybe (pure Nothing) (\a -> resolveAnchor s project a <&> \r -> rsFingerprint r <* rsUnit r) (listToMaybe (parsePlan ticked0) >>= lnAnchor)
+  let ticked = maybe id (\f t -> withVerdict t (Verified f)) fp ticked0
+      after = parsePlan (applyFactsText [Replace row ticked] text)
+      mine = [e | e <- excerptsOf after, exStep e == row, not (exDone e)]
+  base <- if null mine then pure Nothing else baseline (prRoot project) (makeRelative (prRoot project) (normalisePath path))
+  codes <- mapM (\e -> (exAnchor e,) <$> unitExcerpt s project base (exAnchor e)) mine
+  let freeze = [f | f <- excerptFacts after (const Nothing) (\a -> join (lookup a codes)), factRow f `elem` map exOpen mine]
+  pure (Replace row ticked : freeze)
   where
     factRow = \case
       Replace r _ -> r
@@ -1999,11 +2006,15 @@ canReopen p = \case
 -- | The plan's text with ROWS' lines replaced (row, text) and LINES inserted
 -- after a row, as one edit of the plan at its version (Nothing: no change).
 planEdit :: Env -> FilePath -> T.Text -> [(Int, T.Text)] -> Maybe (Int, [T.Text]) -> IO (Maybe WorkspaceEdit)
-planEdit env path text reps insert = do
+planEdit env path text reps insert = planFactsEdit env path text ([Replace r t | (r, t) <- reps] ++ [Insert after more | Just (after, more) <- [insert], not (null more)])
+
+-- | 'planEdit' of FACTS0 (rows of TEXT).
+planFactsEdit :: Env -> FilePath -> T.Text -> [Fact] -> IO (Maybe WorkspaceEdit)
+planFactsEdit env path text facts0 = do
   version <- versionOf env path
   -- the plan's pending journal lines land with it
   (jf, land) <- journalOn env path text
-  let facts = withJournal ([Replace r t | (r, t) <- reps] ++ [Insert after more | Just (after, more) <- [insert], not (null more)]) jf
+  let facts = withJournal facts0 jf
   if applyFactsText facts text == text then pure Nothing else Just (factsEdit path version text facts) <$ land
 
 -- | Answer the review RID of the plan at PATH with CHOICE: keep (its plan
@@ -2029,10 +2040,12 @@ chooseReview env path rid choice =
             appendRecord ports root (AnOutcome (OutcomeRecord {orId = rvErrand r, orBlock = 0, orAt = now, orOutcome = o}))
             dropReview ports root r
           -- the answer journaled under its step and kept in the archive
-          answered how = do
+          answered how = answeredAs how how
+          -- WORDS: the journal's choice (keepEvent), HOW the archive's
+          answeredAs words' how = do
             now <- pNow ports
             let step = locateStep ls r
-            journal env path [keepEvent (rvId r) (rvErrand r) (maybe (rvStep r) lnText step) (maybe (rvRow r) lnRow step) now how]
+            journal env path [keepEvent (rvId r) (rvErrand r) (maybe (rvStep r) lnText step) (maybe (rvRow r) lnRow step) now words']
             loadArchived ports root rel (rvId r) >>= mapM_ (\a -> archiveErrand ports root a {rvChoice = Just how})
           again r' = do
             saveReview ports root r'
@@ -2040,10 +2053,16 @@ chooseReview env path rid choice =
             reviewView p text' r'
       case choice of
         _ | choice `elem` ["keep", "reopen"] -> do
-          answered (if choice == "keep" then "kept" else "reopened")
-          edit <- case keepLines ls r of
+          -- keep ticks a step with no tests (as "Mark done" does); a reopen never
+          let kept = if choice == "keep" then keepTicked ls r else (\(st, rep, more) -> (st, rep, more, False)) <$> keepLines ls r
+              ticks = maybe False (\(_, _, _, t) -> t) kept
+          answeredAs (if choice == "keep" then (if ticks then "kept-ticked" else "kept") else "reopened") (if choice == "keep" then "kept" else "reopened")
+          edit <- case kept of
             Nothing -> planEdit env path text [] Nothing
-            Just (step, rep, more) -> planEdit env path text [(lnRow step, t) | Just t <- [rep]] (Just (lnRow step, more))
+            Just (step, Just t, more, True) -> do
+              done <- withSnapshot env (\s -> (s,) <$> doneFacts s p path text (lnRow step) t)
+              planFactsEdit env path text (done ++ [Insert (lnRow step) more | not (null more)])
+            Just (step, rep, more, _) -> planEdit env path text [(lnRow step, t) | Just t <- [rep]] (Just (lnRow step, more))
           outcome "accepted"
           pure (Right (object (["done" .= True, "edit" .= edit, "said" .= (if choice == "keep" then "kept" else "kept; say what to change" :: T.Text)] ++ ["reopen" .= object ["id" .= rvId r] | choice == "reopen"])))
         "revert" -> case rvRef r of
