@@ -1,6 +1,7 @@
 # Over the shipped haskell.toml: what olifant's own specs need.
 [test]
 # what the specs read at run time (packs, fixtures), what the library
-# embeds (library/), and this file (specs read it); copied, not in the
+# embeds (library/), the C it compiles (cbits/: tree-sitter), and this
+# file (specs read it); copied, not in the
 # context key, so a fixture edit does not make a fresh builddir
-files = ["packs/**", "**/testdata/**", "library/**", ".olifant/languages/*.toml"]
+files = ["packs/**", "**/testdata/**", "library/**", "cbits/**", ".olifant/languages/*.toml"]
