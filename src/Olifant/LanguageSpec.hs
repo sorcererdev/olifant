@@ -586,6 +586,9 @@ spec = do
   describe "the Rust adapter (ast-grep, fixture service.rs)" $ do
     let at syn lang file p = fmap (fmap locLine) (resolveLayers syn (Just lang) Nothing [PhraseAnchor p] file)
         lineOf file needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines file))
+    it "end of function NAME goes after the last equation (haskell adapter)" $ withHaskell $ \syn lang _ ->
+      fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of function f"] "module A where\n\nf :: Int -> Int\nf 0 = 1\nf n = n\n\ng :: Int\ng = 2\n")
+        `shouldReturn` Right (5, "")
     it "end of data goes after the last constructor (haskell adapter)" $ withHaskell $ \syn lang file ->
       fmap (fmap (\l -> (locLine l, locIndent l))) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of data SampleError"] file)
         `shouldReturn` Right (6, "  ")

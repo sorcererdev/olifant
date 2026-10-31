@@ -61,6 +61,7 @@ data TSQueryMatch
 -- the grammars compiled in (cbits/tree-sitter-<grammar>/)
 foreign import ccall "&tree_sitter_rust" p_rust :: FunPtr (IO (Ptr TSLanguage))
 foreign import ccall "&tree_sitter_python" p_python :: FunPtr (IO (Ptr TSLanguage))
+foreign import ccall "&tree_sitter_haskell" p_haskell :: FunPtr (IO (Ptr TSLanguage))
 foreign import ccall "dynamic" callLanguage :: FunPtr (IO (Ptr TSLanguage)) -> IO (Ptr TSLanguage)
 
 foreign import ccall unsafe "ts_language_symbol_count" c_symbolCount :: Ptr TSLanguage -> IO Word32
@@ -98,7 +99,7 @@ grammarTable = [(g, fp) | (g, fp, _) <- grammars]
 -- | Each grammar compiled in, with its parser and the crate and version
 -- vendored (cbits/tree-sitter-<grammar>/SOURCES).
 grammars :: [(Text, FunPtr (IO (Ptr TSLanguage)), Text)]
-grammars = [("python", p_python, "tree-sitter-python 0.25.0"), ("rust", p_rust, "tree-sitter-rust 0.24.2")]
+grammars = [("haskell", p_haskell, "tree-sitter-haskell 0.23.1"), ("python", p_python, "tree-sitter-python 0.25.0"), ("rust", p_rust, "tree-sitter-rust 0.24.2")]
 
 -- | The grammars linked into this binary.
 linkedGrammars :: [Text]

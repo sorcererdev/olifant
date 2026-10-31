@@ -138,9 +138,7 @@ anchorFromCaptures root caps = \case
   ["imports"] ->
     -- top-level import statements only (a `use` inside `mod tests` is not one)
     let tops = nub [capNode c | c <- caps, capName c == "import", capTop c == Just (capNode c)]
-     -- the file is the one container, with no items when it has no import
-     -- (placement puts a first import after the file's header)
-     in Just (Right [(toMatch root, map toMatch (sortOn pBytes tops))])
+     in Just (Right [(toMatch root, map toMatch (sortOn pBytes tops)) | not (null tops)])
   ["parameters", "in", f] -> Just (Right (mapMaybe (\d -> field "parameters" (defCap d) "parameter.inner") (defsOf functionCaps f)))
   ["call", name] -> Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, callName c == name]))
   ["call", name, "in", f] ->
@@ -152,7 +150,7 @@ anchorFromCaptures root caps = \case
     | otherwise -> Just (Right (mapMaybe body [d | d <- defsOf (functionCaps ++ classCaps) name, kindOf kind (capNode (defCap d))]))
   _ -> Nothing
   where
-    defs = definitions caps
+    defs = adjacent source (definitions caps)
     defNodes = nub (map (capNode . defCap) defs)
     -- one definition node may carry several captures (method and function)
     defsOf names n = sortOn (pBytes . capNode . defCap) (dedupe [d | d <- defs, defName d == n, capName (defCap d) `elem` names])
@@ -170,7 +168,12 @@ anchorFromCaptures root caps = \case
        in case (wholes, items, nub [p | c <- inners, Just p <- [capParent c]]) of
             ((b, kids) : _, _, _) -> Just (toMatch b, map groupMatch (decorated (sortOn pBytes kids)))
             (_, _ : _, [p]) -> Just (toMatch p, map groupMatch (decorated (sortOn pBytes items)))
-            _ -> fmap (\b -> (toMatch b, [])) (fieldOf "body" (defCap d))
+            -- no inner range: the body, empty (opened); with no body
+            -- either (a Haskell function: signature and equations), the
+            -- definition is its own container and its one item
+            _ -> case fieldOf "body" (defCap d) of
+              Just b -> Just (toMatch b, [])
+              Nothing -> Just (toMatch dn, [toMatch dn])
     wholeBody c = listToMaybe [(b, kids) | (f, b, kids) <- capFields c, f == "body", b == capNode c]
     -- An item that is no definition, ending on the line before a definition
     -- (or on its line), decorates it (an attribute, a decorator): the two
@@ -205,6 +208,29 @@ anchorFromCaptures root caps = \case
       [] -> Nothing
     size p = snd (pBytes p) - fst (pBytes p)
     encloses a b = fst (pBytes a) <= fst (pBytes b) && snd (pBytes b) <= snd (pBytes a)
+
+-- | Adjacent function definitions of one capture and one name, with only
+-- white space between, are one (a Haskell signature and its equations): one
+-- node from the first's start to the last's end. Class-like ones are not
+-- joined (a Haskell class and its instance after it stay two).
+adjacent :: BS.ByteString -> [Def] -> [Def]
+adjacent source = reverse . foldl step [] . sortOn (pBytes . capNode . defCap)
+  where
+    step acc d = case break (joins d) acc of
+      (before, prev : after) -> before ++ grow prev d : after
+      _ -> d : acc
+    joins d p =
+      capName (defCap p) == capName (defCap d)
+        && capName (defCap d) `elem` functionCaps
+        && defName p == defName d
+        && let (_, pe) = pBytes (capNode (defCap p))
+               (ds, _) = pBytes (capNode (defCap d))
+            in pe <= ds && BS.all (`BS.elem` " \t\r\n") (BS.take (ds - pe) (BS.drop pe source))
+    grow p d =
+      let a = capNode (defCap p)
+          z = capNode (defCap d)
+          (s, e) = (fst (pBytes a), snd (pBytes z))
+       in p {defCap = (defCap p) {capNode = a {pEnd = pEnd z, pBytes = (s, e), pText = TE.decodeUtf8Lenient (BS.take (e - s) (BS.drop s source))}}}
 
 toMatch :: PNode -> Match
 toMatch p = Match (pStart p) (pEnd p) (pText p) (pBytes p)

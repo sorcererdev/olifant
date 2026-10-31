@@ -58,7 +58,7 @@ built in (any file):
   before|after last line matching REGEX
 ```
 
-For a language whose grammar olifant links in (Rust, Python), the listing has a second section,
+For a language whose grammar olifant links in (Rust, Python, Haskell), the listing has a second section,
 `from queries (tree-sitter-rust 0.24.2):`, with the generic phrases below, and
 `olifant anchors rust --json` gives each target an `origin`: `targets` for a declared one,
 `queries` for a generic phrase.
@@ -80,7 +80,7 @@ error: `end of cases in update`: unknown target `cases in update` for elm; did y
 
 ### The generic phrases
 
-A language whose grammar olifant links in (today Rust and Python; `olifant doctor`'s `queries`
+A language whose grammar olifant links in (today Rust, Python and Haskell; `olifant doctor`'s `queries`
 row says which) knows these phrases with no `[targets.*]` table. They are read from tree-sitter's
 community queries for the grammar, shipped inside olifant:
 
@@ -91,7 +91,7 @@ community queries for the grammar, shipped inside olifant:
 | `KIND NAME` | the same, narrowed to definitions whose node type is `KIND` or starts with `KIND_`: `struct BillingService` (a `struct_item`), `enum`, `mod tests`, `impl BillingService`, `trait` | its fields, variants, items or methods |
 | `parameters in FUNCTION` | the function's parameter list | its parameters (an empty `()` is opened) |
 | `call NAME` / `call NAME in FUNCTION` | the call's argument list, the call named by its text up to the arguments (`BillingService::new`) | its arguments |
-| `imports` | the file | its top-level import statements, whole (`end of imports`: after the last one; in a file with none, after its leading comments and docstring) |
+| `imports` | the file | its top-level import statements, whole (`end of imports`: after the last one; in a file with none, after its leading comments and docstring where the language's `[imports] when_empty` says so, as Python's does) |
 
 `class` alone is often ambiguous: in Rust a struct and its `impl` share a name, so
 `end of class BillingService` matches two places and is refused. Say `struct` or `impl`.

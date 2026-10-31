@@ -24,11 +24,8 @@ line = "^import[[:space:]]+(qualified[[:space:]]+)?[A-Z][A-Za-z0-9_.']*"
 write = "import {= module =}"
 module_of = { strip = ["^src/", "^test/"], separator = "." }
 
-[targets.data]
-phrase = "data NAME"
-container = { kind = "data_constructors", inside = { kind = "data_type", regex = "^data {= NAME =}\\b" } }
-items = { kind = "data_constructor" }
-example = "end of data CatalogError"
+# `data NAME` (and `function NAME`, `class NAME`, `instance NAME`, `imports`)
+# are generic phrases, from olifant's queries (library/queries/haskell).
 
 # A function's outermost do block; its items are its statements (`end of
 # do in spec`: where an hspec stub's it goes, before any helper after spec).

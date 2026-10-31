@@ -37,8 +37,9 @@ paths = ["src/{= path =}.py", "src/{= path =}/__init__.py"]
 # What the model is shown: a fill that needs a name starts with its import.
 example = { needs = "date", fill = "from datetime import date\n\ndate.fromisoformat(text)" }
 # A blank line between imports groups them: `end of imports` joins the last
-# import with none.
+# import with none. In a file with none, the first goes under the docstring.
 spaced = false
+when_empty = "after header"
 
 [[imports.resolve]]
 pattern = '^from ([^.].*) import (.*)$'

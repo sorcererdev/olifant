@@ -197,8 +197,11 @@ data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
 -- the model when its fill may begin with imports: @needs@, the name the
 -- import binds, and @fill@, the whole fill; 'imSpaced' (`spaced`, default
 -- true): false when a blank line between imports groups them, so `end of
--- imports` joins the last import with no blank line.
-data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text], imExample :: Maybe (Text, Text), imSpaced :: Bool}
+-- imports` joins the last import with no blank line; 'imWhenEmpty'
+-- (`when_empty`, as a target's): "after header" puts a file's first import
+-- after its leading comments and docstring (else a file with none is "no
+-- `imports` in this file").
+data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text], imExample :: Maybe (Text, Text), imSpaced :: Bool, imWhenEmpty :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | A pack's `[conjure]`: how conjure reads its architecture. 'cjService'
@@ -587,7 +590,7 @@ languageFrom presets name grammarDir top = do
     importsFrom = \case
       TText re -> (\r -> (Just r, Nothing)) <$> validRegex "imports" re
       TTable t -> do
-        onlyKeys ["line", "write", "module_of", "resolve", "paths", "example", "spaced"] t
+        onlyKeys ["line", "write", "module_of", "resolve", "paths", "example", "spaced", "when_empty"] t
         line <- optional "line" (text >=> validRegex "[imports] line") t
         write <- optional "write" (text >=> \w -> tmpl w >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["module", "owner"] then Right w else Left "`[imports] write` may use only {= module =} and {= owner =}") t
         mo <- optional "module_of" (table >=> \m -> do
@@ -604,7 +607,8 @@ languageFrom presets name grammarDir top = do
           onlyKeys ["needs", "fill"] e
           (,) <$> required "needs" text e <*> required "fill" text e) t
         spaced <- fromMaybe True <$> optional "spaced" bool t
-        pure (line, Just (ImportsDef write mo resolve paths example spaced))
+        whenEmpty <- optional "when_empty" (text >=> \w -> if w == "after header" then Right w else Left "`[imports] when_empty`: expected \"after header\"") t
+        pure (line, Just (ImportsDef write mo resolve paths example spaced whenEmpty))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
     typesFrom t = do
       onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t

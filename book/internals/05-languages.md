@@ -230,11 +230,11 @@ anchor phrases from community queries (design 4b §A).
 
 - **The C.** The tree-sitter runtime 0.27.0 (its one-file amalgamation, `cbits/tree-sitter/src/lib.c`)
   and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`; the same in
-  `cbits/tree-sitter-python/`) are `c-sources` in
+  `cbits/tree-sitter-python/` and `cbits/tree-sitter-haskell/`) are `c-sources` in
   `olifant.cabal`, in both the `library` and the `spec` stanzas. Nothing is installed: no
   Homebrew library, no dylib, no doctor row for it. Both are pinned to the versions ast-grep
   0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2, tree-sitter-python
-  0.25.0), so the two parsers
+  0.25.0, tree-sitter-haskell 0.23.1), so the two parsers
   read the same trees. Each directory has a `SOURCES` (version, git commit, crate sha256) and
   the upstream `LICENSE`.
 - **The shim.** GHC's FFI cannot pass a `TSNode` (a 32-byte struct) by value, so
@@ -252,7 +252,15 @@ anchor phrases from community queries (design 4b §A).
   not captured, so no phrase names it). For Python: the grammar's `tags.scm`,
   nvim-treesitter-textobjects' `textobjects.scm` less its two comment patterns (they use
   `#offset!` and `#lua-match?`), and olifant's `imports.scm` (`import`, `from … import` and
-  `from __future__ import`). `SOURCES` pins each vendored file to a commit and lists any line
+  `from __future__ import`). For Haskell all three files are olifant's own, because
+  tree-sitter-haskell ships no `tags.scm` and nvim-treesitter-textobjects' Haskell file has no
+  class bodies: `tags.scm` tags a `signature`, `function` and `bind` as `@definition.function`,
+  `data_type` and `newtype` as `.type`, `class` and `instance` as `.class`;
+  `textobjects.scm` makes a data type's constructors and a class's or instance's declarations
+  `@class.inner`; `imports.scm` captures the `imports` block whole. They carry no upstream
+  licence. The place to upstream them is tree-sitter-haskell's `queries/tags.scm` (and
+  nvim-treesitter-textobjects for the inner ranges), after which they would be vendored like
+  Rust's. Haskell's `parser.c` is 19.8 MB; it compiles clean at `-O2` in under a second. `SOURCES` pins each vendored file to a commit and lists any line
   olifant removed under "changes".
 - **Predicates.** The C cursor returns a match without judging its predicates;
   `TreeSitter.patternPredicates` reads each pattern's (`ts_query_predicates_for_pattern`) when
@@ -320,14 +328,19 @@ anchor phrases from community queries (design 4b §A).
   every capture of a `_+` however many (`ots_next` returns the count, `ots_captures` copies
   them), so a body of hundreds of children is read whole. When the inner capture is the whole
   body (a Python block), the body is the container and its named children are the items
-  (`wholeBody`). With no inner
+  (`wholeBody`). Adjacent function definitions of one name with only white space between
+  are one (`adjacent`: a Haskell signature and its equations, captured each on its own, are
+  one function from the signature to the last equation); class-like ones are not joined. A
+  definition with no inner range and no `body` field (that Haskell function) is its own
+  container and its one item, so `end of` goes after it. With no inner
   capture (an empty body), the container is the definition's `body` field, empty, which
   placement opens. `parameters in F` reads the function's `parameters` field (type parameters
   are a direct child too, so a capture alone would not do), a call is named by its text up to
   its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`);
-  the file is its container even with none, and `Resolve.named` then puts a first import after
-  the file's header (`headerEnd`), and spaces `end of imports` unless the language's
-  `[imports] spaced = false` (Python's: a blank line there separates import groups).
+  in a file with none, `Resolve.named` puts a first import after the file's header
+  (`headerEnd`) when the language's `[imports] when_empty = "after header"` (Python's), and
+  spaces `end of imports` unless its `[imports] spaced = false` (Python's: a blank line there
+  separates import groups).
   `oneContainer` turns the list into "one, none, or matches N places".
 - **Where the rule is asked.** It is the `Syntax` port's `anchorSyntax` field (after
   `runSlotProvider`); `AstGrep.astGrepSyntax` sets it to `TreeSitter.treeSitterAnchors`, which

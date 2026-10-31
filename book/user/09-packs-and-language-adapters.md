@@ -299,7 +299,7 @@ example   = "end of struct BillingService"
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
-| `[imports]` | how this language imports. `line`: a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`; `imports = "…"`, a string, is the same key on its own). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check. `example = { needs, fill }` (optional): the example the model is shown, a fill that starts with the import of the name it `needs`; Python's `{ needs = "date", fill = "from datetime import date\n\ndate.fromisoformat(text)" }`. Without it the model is told the rule with no example. `spaced = false` (default `true`): a blank line between imports groups them, so `end of imports` (the generic phrase) joins the last import with no blank line; Python sets it |
+| `[imports]` | how this language imports. `line`: a POSIX expression matching one import line (Python's: `^(from [A-Za-z0-9_.]+ import [A-Za-z0-9_., ]+\|import …)$`; `imports = "…"`, a string, is the same key on its own). With it, a model's fill may **begin with import lines**: they are not code for the hole but join the file's imports, after its last top-level import (or, in a file with none, after its leading comments and docstring), each only once. The model is told it may; the fill's parse check sees only its code; `--plan` shows a created file with the imports where they went. Without the key a fill is code only, so a fill that needs a name the file lacks fails its check. `example = { needs, fill }` (optional): the example the model is shown, a fill that starts with the import of the name it `needs`; Python's `{ needs = "date", fill = "from datetime import date\n\ndate.fromisoformat(text)" }`. Without it the model is told the rule with no example. `spaced = false` (default `true`): a blank line between imports groups them, so `end of imports` (the generic phrase) joins the last import with no blank line; Python sets it. `when_empty = "after header"`: in a file with no import, `end of imports` goes after its leading comments and docstring (else it is "no `imports` in this file"); Python sets it |
 | `[imports]` (2) | `write`: the line a test file imports a unit with, a template over `{= module =}` and `{= owner =}` (the unit's first dotted segment: a method's class). Python's `from {= module =} import {= owner =}`, Haskell's `import {= module =}`; Rust has none (its tests sit in the file's `mod tests`, under `use super::*;`). Without it a stub writes no import. `module_of = { strip, drop, separator }`: how a path becomes a module — strip the first `strip` expression that matches, drop the extension, drop trailing segments that `drop` lists, join with `separator` (default `.`). Python's `{ strip = ["^src/"], drop = ["__init__"] }` (`src/a/b.py` is `a.b`, `pkg/__init__.py` is `pkg`); Haskell's strips `^src/` or `^test/`; Rust's `{ strip = ["^(.*/)?src/"], drop = ["lib", "main", "mod"], separator = "::" }` (`crates/m/src/money/rates.rs` is `money::rates`, `src/lib.rs` the crate root) |
 | `[imports]` (3) | `[[imports.resolve]]` and `paths`: which project files an import line names, for a conjure's context. Each resolve is `{ pattern, module, names }`: an expression over a stripped line, the group holding its modules (comma-separated, each less its alias) and, optionally, the group holding names imported from it, each of which may be a module too (`module.name`). The first resolve that matches a line counts. `paths` are templates over `{= path =}` (the module, its separator as `/`); the first that is a file is the module's. Python's two resolves read `from a.b import x, y` (`a.b`, `a.b.x`, `a.b.y`) and `import a.b, c`; its paths are `src/{= path =}.py` and `src/{= path =}/__init__.py`. Without `resolve`, a conjure sees no imported files |
 | `opens_block` | an expression over a line (its comment cut) that opens a block: Python's `':[[:space:]]*(#.*)?$'`, Rust's `'[{][[:space:]]*$'`, Haskell's a line ending in `do`, `=` or `$`. A model that answers a hole of lines with the whole file is cut back to the hole's lines, from the block that opens above it . Without it, such a fill is not cut |
@@ -330,18 +330,20 @@ grammar     = "haskell"
 placeholder = 'error "{= message =}"'
 branch      = "{= pattern =} -> {= body =}"
 
-[targets.data]
-phrase    = "data NAME"
-container = { kind = "data_constructors", inside = { kind = "data_type", regex = "^data {= NAME =}\\b" } }
-items     = { kind = "data_constructor" }
-example   = "end of data CatalogError"
-
 [check]
 preset = "cabal-repl"
 
 [test]
 preset = "hspec"
 ```
+
+Its anchors are the generic phrases ([chapter 3](03-anchors.md#the-generic-phrases)) read
+from olifant's own Haskell queries (tree-sitter-haskell ships no tags), plus one declared
+target, `do in FUNCTION` (a function's outermost `do` block). `end of data SampleError` goes
+after the last constructor; `end of function f` after f's last equation (a function is its
+signature and its equations, so `f` is one place, not three); `end of class C`, `end of
+instance C` after the last declaration in its `where`; `end of imports` after the import
+block.
 
 The `cabal-repl` preset runs `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}
 --repl-options=-fno-code --repl-options=-fdiagnostics-as-json --repl-options=-Wincomplete-patterns

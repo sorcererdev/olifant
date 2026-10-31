@@ -19,7 +19,8 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language.Captures (Cap (..), PNode (..))
+import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures)
+import Olifant.Language.Syntax (Match (..))
 import Olifant.Language.TreeSitter (cacheSize, capturesOf, linkedGrammars, queriesFor)
 import Test.Hspec
 
@@ -111,8 +112,24 @@ benchSpec = describe "tree-sitter: timing" $
 
 captureSpec :: Spec
 captureSpec = describe "tree-sitter captures" $ do
-  it "links the python and rust grammars" $
-    linkedGrammars `shouldBe` ["python", "rust"]
+  it "links the haskell, python and rust grammars" $
+    linkedGrammars `shouldBe` ["haskell", "python", "rust"]
+  describe "Haskell (olifant's own queries)" $ do
+    let hs src = either (error . T.unpack) id (capturesOf "haskell" (queriesFor "haskell") src)
+        containers src ws = case hs src of
+          (root, caps) -> fmap (fmap (map (\(c, items) -> ((fst (matchStart c), fst (matchEnd c)), length items)))) (anchorFromCaptures root caps ws)
+    it "a Haskell function's definition spans its signature and equations" $
+      containers "f :: Int -> Int\nf 0 = 1\nf n = n\n\ng = 2\n" ["function", "f"] `shouldBe` Just (Right [((0, 2), 1)])
+    it "a function without a signature is its equations" $
+      containers "f :: Int -> Int\nf 0 = 1\n\ng 0 = 1\ng n = n\n" ["function", "g"] `shouldBe` Just (Right [((3, 4), 1)])
+    it "`data` is a class-like definition: its constructors are its items" $ do
+      let src = "data E\n  = A\n  | B Int\n  deriving (Show)\n"
+      [n | ("definition.type", n) <- defs (snd (hs src))] `shouldBe` ["E"]
+      containers src ["class", "E"] `shouldBe` Just (Right [((1, 2), 2)])
+      containers src ["data", "E"] `shouldBe` Just (Right [((1, 2), 2)])
+    it "a class's and an instance's declarations are their items" $ do
+      let src = "class C a where\n  m :: a -> Int\n  m _ = 1\n\ninstance C Int where\n  m x = x\n"
+      containers src ["instance", "C"] `shouldBe` Just (Right [((5, 5), 1)])
   it "every shipped query compiles and uses only known predicates" $
     forM_ linkedGrammars $ \g ->
       either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf g (queriesFor g) "") `shouldBe` Nothing
