@@ -161,8 +161,10 @@ existsFor root files f = if M.member f files then pure True else maybe (pure Fal
 copyRest :: [FilePath] -> FilePath -> FilePath -> Map FilePath Text -> IO ()
 copyRest skip dir tmp files = do
   listed <- listFilesSkipping (diskWorkspace dir) skip ""
-  forM_ [p | p <- listed, not (M.member p files)] $ \p -> do
-    createDirectoryIfMissing True (takeDirectory (tmp </> p))
+  let rest = [p | p <- listed, not (M.member p files)]
+  -- each folder once (most of the time on a large tree goes to making them)
+  mapM_ (createDirectoryIfMissing True . (tmp </>)) (S.toList (S.fromList (map takeDirectory rest)))
+  forM_ rest $ \p -> do
     cloned <- withCString (dir </> p) $ \src -> withCString (tmp </> p) (c_clone src)
     if cloned == 0 then pure () else () <$ (try (copyFile (dir </> p) (tmp </> p)) :: IO (Either IOException ()))
 
