@@ -260,7 +260,7 @@ one type, so everything downstream is the same code.
   answer replacing `{= tests =}`). Diagnostics and test results are `convert`
   (`Check.convertReport`), whose stdin now carries `"v": 1` too.
 
-## Doctor's capability table
+## Doctor: capabilities and evidence
 
 `Olifant.Capabilities.capabilities :: Language -> [Capability]` (`Capabilities.hs:24`) is a list
 of thirteen rows, one function of the `Language` each: `units`, `diagnostics`, `missing cases`,
@@ -276,6 +276,32 @@ To add a capability: add a row in `capabilities`, a `capKey` that `originOf` can
 example to `CapabilitiesSpec` (its "a bare language" example counts the absences, so it changes
 from thirteen). The user book's doctor table ([chapter 2](../user/02-running-generators.md)) lists
 the rows, so it changes too.
+
+### Evidence: each slot on a sample of the project
+
+`Olifant.Evidence` (`Evidence.hs`) proves the slots on the project's own code.
+`evidenceFor :: EvidencePorts -> Language -> IO Evidence` reads through `EvidencePorts`
+(`epFiles`, the project's files; `epRead`; `epSyntax`; `epRun`, a test runner only with `doctor
+--run`) and gives one `Proof` per slot: `Proven` (with the evidence), `Unproven` ("not seen",
+"not run") or `Disproven` (the line or reason that failed).
+
+- **The sample** (`sampleOf`): the first 40 files (`sampleSize`), in path order, that match the
+  language's `files`. Its test files are its sources' `tests_for` files that exist, plus any
+  sampled file that holds test units itself (a Rust module with its own tests).
+- **units:** `unitsOf` on each sampled file (concurrently): "212 found in 38 files (e.g.
+  src/a.py:14 add)"; with none, the first non-blank line, or the slot's failure.
+- **test units:** `testUnitsReport` on each test file; with none in an existing test file, the
+  first unit the units slot finds there ("0 found; path:9 is `…`"); with no test file, "not seen
+  (no test file in the 40 sampled)".
+- **anchors:** each `[targets.*]` with at most one parameter, tried through `resolveLayers` with
+  the position its `example` uses, on the sample's units' bare names (those whose unit text holds
+  the target's words first; at most six tries each, targets in parallel). Targets with more
+  parameters are "not tried". Proven when any target resolves; a target that never does is listed
+  with `✗` and its last miss.
+- **holes:** each `[holes.KIND]` placeholder (`Holes.placeholderFor`) put in its `wrap`, then the
+  Syntax port's `ERROR` query, as `FillPhase.parses` does.
+- **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed
+  (pytest)", or the run's broken reason.
 
 ## The rule, and the specs that hold it
 
