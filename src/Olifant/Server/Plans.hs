@@ -81,7 +81,7 @@ resolveAnchor :: ServerState -> Project -> Anchor -> IO Resolved
 resolveAnchor s p a = do
   text <- maybe (pure Nothing) (safely Nothing . readText (prWorkspace p)) (confined (anPath a))
   unit <- case (text, languageFor (catalogLanguages (prCatalog p)) rel) of
-    (Just t, Just lang) -> safely Nothing (either (const Nothing) (unitNamed (anUnit a)) <$> unitsOf (pSyntax (ssPorts s)) lang t)
+    (Just t, Just lang) -> safely Nothing (either (const Nothing) (unitNamed (anUnit a)) <$> unitsOf (pSyntax (ssPorts s)) lang (Just rel) t)
     _ -> pure Nothing
   pure (Resolved rel (normalisePath (prRoot p </> rel)) unit (fingerprint <$> text <*> fmap namedLines unit) text)
   where
@@ -181,7 +181,7 @@ anchorItems s p upTo = case T.breakOnEnd "@" upTo of
       case known of
         Just (t', d) | t' == t, Just us <- fromDynamic d -> pure us
         _ -> do
-          us <- either (const []) id <$> unitsOf (pSyntax (ssPorts s)) lang t
+          us <- either (const []) id <$> unitsOf (pSyntax (ssPorts s)) lang (Just r) t
           modifyIORef' (ssUnitCache s) (M.insert k (t, toDyn us))
           pure us
     subseq needle hay = go (T.unpack (T.toLower needle)) (T.unpack (T.toLower hay))

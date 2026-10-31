@@ -145,15 +145,15 @@ changedUnits s p base = do
     b = T.unpack base
     plansDir = normalisePath (pcDir (catalogPlans (prCatalog p)))
     kept f = not (any (\d -> (d <> "/") `isPrefixOf` f) [plansDir, ".olifant"])
-    units lang t
+    units lang f t
       | T.null t = pure (Right [])
-      | otherwise = safely (Left "") (unitsOf (pSyntax (ssPorts s)) lang t)
+      | otherwise = safely (Left "") (unitsOf (pSyntax (ssPorts s)) lang (Just f) t)
     fileUnits f = case languageFor (catalogLanguages (prCatalog p)) f of
       Nothing -> pure []
       Just lang -> do
         now <- fromMaybe "" <$> safely Nothing (readText (prWorkspace p) f)
         old <- fromMaybe "" <$> gitText root ["show", b <> ":./" <> f]
-        (,) <$> units lang now <*> units lang old <&> \case
+        (,) <$> units lang f now <*> units lang f old <&> \case
           (Right ns, Right os) -> compareUnits f now old ns os
           _ -> []
 

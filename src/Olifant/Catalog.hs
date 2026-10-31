@@ -70,7 +70,7 @@ import Data.Text qualified as T
 import Olifant.Generator
 import Olifant.Snippet (withHoleSources)
 import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
-import Olifant.Language (Language (..), Layer (..), Match (..), Syntax, languageFor, languageFromLayers, matchShape, shippedLayer)
+import Olifant.Language (Language (..), Layer (..), Match (..), Syntax, languageFor, languageFromLayers, matchShape, shippedLayer, withProviderRoot)
 import Olifant.Language.Presets (Presets, overPresets, presetsFrom, shippedPresets)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.ProjectModel (ModelMap, parseModelMap)
@@ -412,7 +412,9 @@ openAt root loadP olifantDir packs = do
       layerNames = [n | Right (n, _, _) <- layers]
       configuredNames = either (const []) id configured
       named = [(n, True) | n <- layerNames] ++ [(genLanguage (entryDefinition e), False) | e <- rights loaded] ++ [(n, True) | n <- configuredNames]
-      (langs, brokenLangs) = assembleLanguages presets (rights layers) [T.pack (takeBaseName p) | Left (p, _) <- layers] named
+      (assembled, brokenLangs) = assembleLanguages presets (rights layers) [T.pack (takeBaseName p) | Left (p, _) <- layers] named
+      -- a provider, from a pack or the project, runs from the project root
+      langs = maybe assembled (\d -> map (withProviderRoot (takeDirectory d)) assembled) olifantDir
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured
       base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks])
       strangled = base {catalogBrokenRules = catalogBrokenRules base ++ [b | Just (Left b) <- map lpStrangler fromPacks]}

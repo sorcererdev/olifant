@@ -19,11 +19,11 @@ spec = describe "ConjureScan (Olifant.Server.ConjureScan)" $ do
       Just ct = cjConstructor cj
       Just ps = cjPort cj
       -- the test NAME's fake in TEXT, by the test's source
-      unpassedIn text name = testSourceIn py name text >>= unpassedFake fs
+      unpassedIn text name = testSourceIn py Nothing name text >>= unpassedFake fs
       -- the test NAME in TEXT with its fake handed in
-      handIn name helper param var text = testSourceIn py name text >>= \src -> (\src' -> T.replace src src' text) <$> handFake fs helper param var src
-      succeedsSource = fromJust (testSourceIn py "test_cancel_booking_succeeds" cancelTestText)
-      notFoundSource = fromJust (testSourceIn py "test_cancel_booking_not_found" cancelTestText)
+      handIn name helper param var text = testSourceIn py Nothing name text >>= \src -> (\src' -> T.replace src src' text) <$> handFake fs helper param var src
+      succeedsSource = fromJust (testSourceIn py Nothing "test_cancel_booking_succeeds" cancelTestText)
+      notFoundSource = fromJust (testSourceIn py Nothing "test_cancel_booking_not_found" cancelTestText)
       ports = [Port "BookingRepository" ["def table(self, table_id: str) -> Table | None: ..."], Port "IdGenerator" ["def next_id(self) -> str: ..."]]
   it "(a) the demo's not_found builds a Mock it never passes in; succeeds builds none" $ do
     unpassedIn cancelTestText "test_cancel_booking_not_found" `shouldBe` Just (Fake "repository" "Mock")

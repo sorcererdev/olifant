@@ -164,6 +164,8 @@ From the bottom up:
 | **Glob** | `**` / `*` path globs | `Glob.hs`: `matchesGlob`, `globPrefix` | none |
 | **Template** | The `{= … =}` language, holes included: parse, render, exemplars | `Template.hs` over `Template/{Syntax,Parse,Render,Value,Exemplar,Error}`: `Template`, `parseTemplate`, `render`, `evaluate`, `Value`, `Env`, `exemplar`, `freeVariables` | Naming, Suggest |
 | **Language** | Language adapters from packs (`languages/*.toml`), ast-grep rules, and the **Syntax** and **Checker** ports | `Language.hs` re-exports `Adapter`, `Rule`, `Syntax`, `Check`, `Diagnostics`, `Support` (`Language.Header`'s `headerEnd`, a file's leading comments and docstring, is used by the anchors and the fill phase): `Language`, `parseLanguage`, `languageFor`, `Rule`, `renderRule`, `Syntax`, `noSyntax`, `Checker`, `noChecker`, `processChecker`, `compileClean`, `CompilerSupport`, `typeNames`, `supportFor`. `checkProgram`, `indentBlockEnd`. `Language.Elm`, `Language.Ghc`, `Language.Pyright` and `Language.Rustc` (one `CompilerSupport` record each, spec §5.6) and `Language.AstGrep` (the ast-grep adapter) are internal; only `AstGrep` is imported directly, by `Main`. `HoleKind` is an adapter's `[holes.KIND]`. The **Runner** port is `Language.Test`'s (`Runner`, `TestRun`, `Failure`, `TestId`, `parsePytest`, `testsForFile`; an adapter's `[test]` is its `TestDef`), the process behind it `Check`'s `runTestsIn`; `Language.Presets` (internal) fills a `[check]` or `[test]` table from its `preset` | Glob, Process, Template, Toml |
+| **Provider** | The slot protocol: a program answering units, test units, an anchor or a test selection in place of a language file's rule; versioned requests, the answer types and their checks, a 10 s run from the project root, and a memoised pure door for test units | `Provider.hs`: `Provider`, `runProvider`, `providerPure`, `withVersion`, `UnitAnswer`, `AnchorAnswer`, `decodeUnits`, `decodeAnchor`, `decodeArgs` | Process |
+| **Evidence** | Doctor's proofs: each language slot (units, test units, anchors, holes, tests) run on a 40-file sample of the project | `Evidence.hs`: `evidenceFor`, `Evidence`, `Proof`, `EvidencePorts`, `sampleOf`, `sampleSize` | Anchor, Holes, Language, Server (`unitsOf`) |
 | **Process** | Run an external program with byte stdin/stdout/stderr; never throws; stop it (and its process group) when a `Cancel` token trips | `Process.hs`: `runBytes`, `runBytesWithin`, `runBytesCancellable`, `Outcome`, and `Process/Cancel`'s `Cancel`, `newCancel`, `neverCancel`, `cancelled` | none |
 | **Fill** | The **Filler** port: what a model is asked for typed holes, and what it answers | `Fill.hs`: `FillHole`, `FillRequest`, `Filler`, `ModelFiller` | none |
 | **Model** | `[model]` config and the real fillers: request and reply formats per backend, called with `curl` | `Model.hs`: `Backend`, `ModelConfig`, `parseModelConfig`, `backendKinds`, `backendModel`, `systemPrompt`, `userPrompt`, `requestBody`, `decodeFills`, `curlFiller`, `probeBackend` | Fill, Process, Toml |
@@ -365,7 +367,8 @@ generators, and below).
 -- src/Olifant/Language/Syntax.hs:22
 data Syntax m = Syntax
   { querySyntax :: Language -> Value -> Text -> m (Either SyntaxFailure [Match]),
-    rewriteSyntax :: Language -> Value -> Text -> Text -> m (Either SyntaxFailure [Rewrite])
+    rewriteSyntax :: Language -> Value -> Text -> Text -> m (Either SyntaxFailure [Rewrite]),
+    runSlotProvider :: Provider -> Value -> m (Either Text Value)
   }
 
 -- src/Olifant/Language/Check.hs:65
@@ -2220,7 +2223,10 @@ failed query becomes a `problem`, not a failure: a partial model beats none in a
 `neverCancel` is the CLI's. `runBytesCancellable` polls it while a child runs and, when it
 trips, kills the child's process group (cargo's rustc, uv's python). If the thread itself is
 interrupted (an asynchronous exception: a client's progress cancel), the group is killed and
-reaped, and the interruption goes on; only synchronous failures become answers. The ports' checker and
+reaped, and the interruption goes on; only synchronous failures become answers. The kill
+wraps everything after the child starts, and stdin is written from a thread of its own, so
+neither a child that never reads a large input nor an interruption while it is being written
+can hold the call past its limit or leave the group running. The ports' checker and
 verifier take one (`pChecker`, `pVerifier :: Cancel -> …`; `Main` passes `processCheckerWith`
 and `processVerifierCancellable`), and so does a plan (`poCancel`): `planWith` gives it to the
 checks, the verifies, the `uncovered` queries and the model filler (`modelFillerWith`, curl),

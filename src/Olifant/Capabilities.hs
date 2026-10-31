@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, missingFormats, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), Provider (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, missingFormats, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -18,7 +18,7 @@ import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef 
 data Capability = Capability {capName :: Text, capHow :: Either Text Text, capKey :: Text, capFix :: Maybe Text}
   deriving stock (Eq, Show)
 
--- | Units, diagnostics, missing cases, tests, test units, test selection,
+-- | Units, diagnostics, missing cases, tests, test units, anchors, holes, test selection,
 -- mutation, stub, conjure shapes, the check's and the runner's messages,
 -- stub bodies, signature facts.
 capabilities :: Language -> [Capability]
@@ -28,6 +28,8 @@ capabilities lang =
   , Capability "missing cases" missingCases "check.format" Nothing
   , Capability "tests" tests "test.format" Nothing
   , Capability "test units" testUnits "test.unit" Nothing
+  , Capability "anchors" anchors "targets" Nothing
+  , Capability "holes" holes "holes" Nothing
   , Capability "test selection" selection "test.select" Nothing
   , Capability "mutation" mutation "mutate" Nothing
   , Capability "stub" stub "test.stub" Nothing
@@ -40,7 +42,9 @@ capabilities lang =
   where
     check = langCheck lang
     test = langTest lang
+    provided table p = Right (table <> " provider " <> T.unwords (provArgv p))
     units
+      | Just p <- langUnitProvider lang = provided "[unit]" p
       | null (langUnitKinds lang) = Left "[unit] kinds"
       | otherwise = Right ("[unit] kinds (ast-grep)" <> (if hasNames then ", named by [unit] name" else "") <> (if langUnitJoin lang then ", joined" else ""))
     hasNames = langUnitNames lang /= defaultUnitNames
@@ -54,8 +58,15 @@ capabilities lang =
       Nothing -> Left "[test]"
       Just td -> Right ("[test] format " <> testFormat td <> ", tests_for " <> testsFor td)
     testUnits
+      | Just p <- test >>= testUnitProvider = provided "[test] unit" p
       | maybe False (not . null . testUnitRules) test = Right ("[test] unit" <> (if maybe False (isJust . testAbove) test then ", above" else ""))
       | otherwise = Left "[test] unit"
+    anchors = case (langTargets lang, langAnchorProvider lang) of
+      ([], Nothing) -> Left "[targets.*]"
+      (ts, p) -> Right (T.intercalate ", " (["[targets] " <> T.pack (show (length ts)) <> " targets" | not (null ts)] ++ ["anchors provider " <> T.unwords (provArgv q) | Just q <- [p]]))
+    holes = case langHoles lang of
+      [] -> Left "[holes.*]"
+      ks -> Right ("[holes] " <> T.intercalate ", " (map fst ks))
     stub = case test >>= testStub of
       Just sd -> Right ("[test] stub" <> maybe "" (" at " <>) (sdAt sd))
       Nothing -> Left "[test] stub"
@@ -82,5 +93,6 @@ capabilities lang =
       [] -> Left "[[mutate]]"
       ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")
     selection
+      | Just p <- test >>= testSelectProvider = provided "[test] select" p
       | maybe False (isJust . testSelect) test = Right "[test] select"
       | otherwise = Left "[test] select (whole files run)"

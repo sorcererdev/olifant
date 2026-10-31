@@ -4,8 +4,10 @@ module Olifant.Server.UnitSpec (spec) where
 
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Language (..), Match (..), Syntax (..), parseLanguage, parseOverShipped, querying)
+import Olifant.Language (Language (..), Match (..), Provider (..), Syntax (..), parseLanguage, parseOverShipped, querying)
 import Olifant.Server.Unit
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import Test.Hspec
 
 -- | A pack's real language file.
@@ -24,18 +26,32 @@ spec = do
  elm <- runIO (packLanguage "elm" "packs/elm")
  describe "the unit at a line, by the language (unitAt)" $ do
   it "names a Haskell function by [unit] name; its body after the line that opens a block" $ do
-    r <- unitAt (spans [(0, 2)]) haskell "foo :: Int\nfoo =\n  1\n" 3
+    r <- unitAt (spans [(0, 2)]) haskell Nothing "foo :: Int\nfoo =\n  1\n" 3
     fmap (\u -> (unitName u, unitDef u, unitBody u)) r `shouldBe` Right ("foo", 1, Just (3, 3))
   it "names a Rust fn; its body after its brace" $ do
-    r <- unitAt (spans [(0, 2)]) rust "fn add(a: i32) -> i32 {\n    a\n}\n" 2
+    r <- unitAt (spans [(0, 2)]) rust Nothing "fn add(a: i32) -> i32 {\n    a\n}\n" 2
     fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("add", Just (2, 3))
+ describe "a units provider (4b m1)" $ do
+  here <- runIO getCurrentDirectory
+  let provided script = python {langUnitProvider = Just (Provider ["sh", T.pack ("testdata/providers" </> script)] (Just (here </> "src/Olifant")))}
+      -- the rule's query must not run when a provider answers
+      noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+      text = "import x\n\ndef add(a, b):\n    return a + b\n\n"
+  it "a units provider names the units" $ do
+    unitsOf noQuery (provided "units.sh") Nothing text `shouldReturn` Right [Named "add" (3, 5) 3]
+    r <- unitAt noQuery (provided "units.sh") Nothing text 4
+    fmap (\u -> (unitName u, unitDef u, unitLines u, unitBody u)) r `shouldBe` Right ("add", 3, (3, 5), Just (4, 5))
+    fmap unitName <$> unitAt noQuery (provided "units.sh") Nothing text 1 `shouldReturn` Left "no function or class at line 1"
+  it "a failing units provider is a Left with its reason" $ do
+    unitsOf noQuery (provided "fails.sh") Nothing text `shouldReturn` Left "no grammar"
+    fmap unitName <$> unitAt noQuery (provided "fails.sh") Nothing text 4 `shouldReturn` Left "no grammar"
  describe "the test at a line, else the unit (testOrUnitAt)" $ do
   it "a hspec it: the it, its body its own lines (not the spec's)" $ do
     let text = "spec :: Spec\nspec = describe \"M\" $ do\n  it \"a\" $ do\n    1 `shouldBe` 1\n  it \"b\" $ do\n    2 `shouldBe` 2\n"
-    r <- testOrUnitAt (spans [(1, 5)]) haskell text 5
+    r <- testOrUnitAt (spans [(1, 5)]) haskell Nothing text 5
     fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("b", Just (6, 6))
   it "no test there: the [unit]" $ do
-    r <- testOrUnitAt (spans [(0, 2)]) haskell "foo :: Int\nfoo =\n  1\n" 3
+    r <- testOrUnitAt (spans [(0, 2)]) haskell Nothing "foo :: Int\nfoo =\n  1\n" 3
     fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("foo", Just (3, 3))
  describe "a body that is still a stub (isStubIn)" $ do
   it "a hspec stub is a stub, a shouldBe is not" $ do
@@ -47,10 +63,10 @@ spec = do
     isStubIn python ["    assert x == 1"] `shouldBe` False
  describe "Olifant.Server.Unit (units by name)" $ do
   it "names and qualifies python units" $ do
-    r <- unitsOf (spans [(0, 5), (1, 2), (3, 4)]) python "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        pass\n"
+    r <- unitsOf (spans [(0, 5), (1, 2), (3, 4)]) python Nothing "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        pass\n"
     fmap (map namedName) r `shouldBe` Right ["Foo", "Foo.bar", "Foo.baz"]
   it "a decorated def and its function_definition are one unit, def line after the decorator" $ do
-    r <- unitsOf (spans [(0, 2), (1, 2)]) python "@cache\ndef f():\n    pass\n"
+    r <- unitsOf (spans [(0, 2), (1, 2)]) python Nothing "@cache\ndef f():\n    pass\n"
     r `shouldBe` Right [Named "f" (1, 3) 2]
   it "finds a method by its qualified name and a unique bare name" $ do
     let ns = [Named "Foo" (1, 6) 1, Named "Foo.bar" (2, 3) 2]
@@ -66,15 +82,15 @@ spec = do
     unitNameIn haskell "conjureIn top =" `shouldBe` Just "conjureIn"
   it "joins a haskell signature and its equations into one unit" $ do
     -- signature (0,0), its type's function node (0,0), two equations (1,1), (2,2)
-    r <- unitsOf (spans [(0, 0), (0, 0), (1, 1), (2, 2)]) haskell "go :: Int -> Int\ngo 0 = 1\ngo n = n\n"
+    r <- unitsOf (spans [(0, 0), (0, 0), (1, 1), (2, 2)]) haskell Nothing "go :: Int -> Int\ngo 0 = 1\ngo n = n\n"
     r `shouldBe` Right [Named "go" (1, 3) 1]
   it "names haskell operators and multi-line signatures" $ do
-    r <- unitsOf (spans [(0, 0), (1, 1)]) haskell "(<+>) :: A -> A -> A\na <+> b = b\n"
+    r <- unitsOf (spans [(0, 0), (1, 1)]) haskell Nothing "(<+>) :: A -> A -> A\na <+> b = b\n"
     fmap (map namedName) r `shouldBe` Right ["(<+>)", "a"] -- an infix equation is named by its first word, as today; not joined
-    r2 <- unitsOf (spans [(0, 2), (3, 3)]) haskell "run\n  :: Int\n  -> Int\nrun = id\n"
+    r2 <- unitsOf (spans [(0, 2), (3, 3)]) haskell Nothing "run\n  :: Int\n  -> Int\nrun = id\n"
     r2 `shouldBe` Right [Named "run" (1, 4) 1]
   it "joins across blank lines, not across other code" $ do
-    r <- unitsOf (spans [(0, 0), (2, 2), (3, 3), (4, 4)]) haskell "f :: Int\n\nf = 1\ng = 2\nf' = 3\n"
+    r <- unitsOf (spans [(0, 0), (2, 2), (3, 3), (4, 4)]) haskell Nothing "f :: Int\n\nf = 1\ng = 2\nf' = 3\n"
     fmap (map namedLines) r `shouldBe` Right [(1, 3), (4, 4), (5, 5)]
   it "names rust items by the item, and impl blocks by their type" $ do
     unitNameIn rust "pub(crate) async fn load(x: u8) {" `shouldBe` Just "load"

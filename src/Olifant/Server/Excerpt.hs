@@ -149,7 +149,7 @@ unitExcerpt s p base a = do
     (Just u, Just t, Just lang) -> do
       old <- maybe (pure Nothing) (\b -> gitText (prRoot p) ["show", T.unpack b <> ":./" <> rsRel r]) base
       units <- case old of
-        Just o | not (T.null o) -> safely (Left "") (unitsOf (pSyntax (ssPorts s)) lang o)
+        Just o | not (T.null o) -> safely (Left "") (unitsOf (pSyntax (ssPorts s)) lang (Just (rsRel r)) o)
         _ -> pure (Right [])
       let was = case units of
             Right us | Just w <- unitNamed (namedName u) us, namedName w == namedName u, Just o <- old ->

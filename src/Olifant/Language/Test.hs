@@ -38,7 +38,7 @@ import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
-import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
+import Olifant.Language.TestUnits (TestUnit (..), testUnitsOf)
 import Olifant.Language.Adapter (FailureDef (..), GotExpected (..), Language (..), TestDef (..), regexName)
 import Text.Regex.TDFA (AllTextSubmatches (..), Regex, makeRegexM, matchM, (=~))
 import System.Exit (ExitCode (..))
@@ -101,7 +101,7 @@ scriptedRunner :: Applicative m => Map TestId Value -> Runner m
 scriptedRunner script = Runner $ \lang ids files ->
   let under i = [k | k <- M.keys script, (i <> "::") `T.isPrefixOf` k]
       inFile i = case M.lookup (T.unpack i) files of
-        Just text | not ("::" `T.isInfixOf` i) -> nubOrd ([i <> "::" <> n | n <- defined lang text] ++ under i)
+        Just text | not ("::" `T.isInfixOf` i) -> nubOrd ([i <> "::" <> n | n <- defined lang (T.unpack i) text] ++ under i)
         _ -> []
       tests i = case inFile i of
         [] -> [i]
@@ -112,10 +112,10 @@ scriptedRunner script = Runner $ \lang ids files ->
   where
     -- the file's outermost tests by the language's `[test] unit` rules (a
     -- group's tests are not listed: the script names them)
-    defined lang text = case langTest lang of
-      Just td -> [n | TestUnit [n] _ <- testUnitsIn (testUnitRules td) (testAbove td) text, not (isGroup n text td)]
+    defined lang file text = case langTest lang of
+      Just _ -> let units = testUnitsOf lang (Just file) text in [n | TestUnit [n] _ <- units, not (isGroup n units)]
       Nothing -> []
-    isGroup n text td = any (\u -> take 1 (tuPath u) == [n] && length (tuPath u) > 1) (testUnitsIn (testUnitRules td) (testAbove td) text)
+    isGroup n units = any (\u -> take 1 (tuPath u) == [n] && length (tuPath u) > 1) units
     failureIn = \case
       Object o -> Just (Failure (KM.lookup "line" o >>= \case Number n -> toBoundedInteger n; _ -> Nothing) (case KM.lookup "message" o of Just (String m) -> m; _ -> "failed") (case KM.lookup "output" o of Just (String x) -> x; _ -> ""))
       _ -> Nothing

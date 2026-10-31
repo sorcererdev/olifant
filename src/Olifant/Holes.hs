@@ -8,6 +8,7 @@ module Olifant.Holes
   , splitMarkers
   , hasMarkers
   , placeholderize
+  , placeholderFor
   , placeholderizeWith
   , dedented
   , placeHoles

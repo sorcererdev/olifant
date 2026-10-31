@@ -22,7 +22,8 @@ import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Ste
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..), dedented)
 import Olifant.Language.Header (headerEnd)
-import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
+import Olifant.Provider (UnitAnswer (..), decodeUnits, lineCount, providerPure, textRequest)
+import Olifant.Language.TestUnits (TestUnit (..), testUnitsOf)
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
 import Olifant.Template (Value (..), render)
@@ -40,7 +41,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     -- each file's top-level unit names, once, for the files with a hole of
     -- lines (what tells a whole-file answer)
     tops <- fmap M.fromList . forM (nub [holeFile (phSite h) | h <- holes, linesKind (phSite h)]) $ \p ->
-      (p,) <$> maybe (pure []) (\l -> topNames l (M.findWithDefault "" p base)) (langOf p)
+      (p,) <$> maybe (pure []) (\l -> topNames l p (M.findWithDefault "" p base)) (langOf p)
     case toolSteering tools of
       Nothing -> loop tops mf 1 M.empty [] [] [Try h 0 [] | h <- holes]
       -- a steered loop starts after its seed's rounds, each hole with its
@@ -49,7 +50,13 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
   where
     -- by the language's [unit] query (spans at column 0), else its
     -- [unit] name over the lines at column 0
-    topNames l text
+    topNames l file text
+      -- a provider's: the answers no other answer holds
+      | Just p <- langUnitProvider l =
+          -- generic in its monad, so through the pure door ('providerPure')
+          pure $ case providerPure p (textRequest (Just file) text []) >>= decodeUnits (lineCount text) of
+            Left _ -> topLevelNames l text
+            Right us -> nub [uaName u | u <- us, not (any (\o -> uaLine o <= uaLine u && uaEnd u <= uaEnd o && (uaLine o, uaEnd o) /= (uaLine u, uaEnd u)) us)]
       | null (langUnitKinds l) = pure (topLevelNames l text)
       | otherwise =
           querySyntax (toolSyntax tools) l (object ["any" .= [object ["kind" .= k] | k <- langUnitKinds l]]) text <&> \case
@@ -256,7 +263,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           | otherwise -> Right (False, passesAgainstRaise, Just run)
       where
         (file, test) = (T.unpack (fst (T.breakOn "::" tid)), T.drop 2 (snd (T.breakOn "::" tid)))
-        (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan lang test)
+        (from, to) = maybe (line, line) id (M.lookup file everything >>= assertionSpan lang (Just file) test)
         inside l = l >= from && l <= to
 
     -- A kill: the tests that passed before and the new ones (KEEP) pass on
@@ -649,7 +656,8 @@ looksLikeFile lang names code = any defines tops || any (atTop . fst . tuLines) 
     top l = not (" " `T.isPrefixOf` l) && not ("\t" `T.isPrefixOf` l)
     tops = filter top ls
     defines l = maybe False (`elem` names) (unitNameOf lang l)
-    tests = maybe [] (\td -> testUnitsIn (testUnitRules td) (testAbove td) (T.intercalate "\n" ls)) (langTest lang)
+    -- a fill's code, no file's: no path to give
+    tests = testUnitsOf lang Nothing (T.intercalate "\n" ls)
     atTop i = maybe False (\l -> top l && not (T.null (T.strip l))) (listToMaybe (drop (i - 1) ls))
 
 -- | The names of TEXT's units at column 0 by the language's `[unit] name`
@@ -678,12 +686,12 @@ passesAgainstRaise = "this test passes against a body that raises: it asserts no
 -- @::@; the test whose path ends so, by the `[test] unit` rules) that
 -- matches the language's `[test] assertion`, to the test's last line;
 -- none without such a test or an assertion in it.
-assertionSpan :: Language -> Text -> Text -> Maybe (Int, Int)
-assertionSpan lang name text = do
-  td <- langTest lang
+assertionSpan :: Language -> Maybe FilePath -> Text -> Text -> Maybe (Int, Int)
+assertionSpan lang file name text = do
+  _ <- langTest lang
   let want = T.splitOn "::" name
       ls = T.splitOn "\n" text
-  u <- listToMaybe [u | u <- testUnitsIn (testUnitRules td) (testAbove td) text, want `isSuffixOf` tuPath u]
+  u <- listToMaybe [u | u <- testUnitsOf lang file text, want `isSuffixOf` tuPath u]
   let (a0, z) = tuLines u
   a <- listToMaybe [i | i <- [a0 + 1 .. z], Just l <- [listToMaybe (drop (i - 1) ls)], any (`matches` l) (langAssertion lang)]
   pure (a, z)

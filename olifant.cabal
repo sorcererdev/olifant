@@ -57,6 +57,7 @@ library
     Olifant.Cursor
     Olifant.Decide
     Olifant.Doctor
+    Olifant.Evidence
     Olifant.Fill
     Olifant.Generation
     Olifant.Generation.Complete
@@ -113,6 +114,7 @@ library
     Olifant.Process
     Olifant.Process.Cancel
     Olifant.ProjectModel
+    Olifant.Provider
     Olifant.Query
     Olifant.Recognize
     Olifant.Recognize.Ask
@@ -214,6 +216,8 @@ test-suite spec
     Olifant.DecideSpec
     Olifant.Doctor
     Olifant.DoctorSpec
+    Olifant.Evidence
+    Olifant.EvidenceSpec
     Olifant.Fill
     Olifant.Generation
     Olifant.Generation.Complete
@@ -293,6 +297,8 @@ test-suite spec
     Olifant.ProcessSpec
     Olifant.ProjectModel
     Olifant.ProjectModelSpec
+    Olifant.Provider
+    Olifant.ProviderSpec
     Olifant.Query
     Olifant.QuerySpec
     Olifant.Recognize

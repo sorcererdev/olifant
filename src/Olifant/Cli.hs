@@ -479,8 +479,8 @@ runCommand rt cwd fmt cat = \case
                      ]
         emit rt fmt (object (["regions" .= regionsJson, "findings" .= map (findingJson olds) fs, "exceptions" .= map exceptionJson exs, "errors" .= (broken ++ gitProblem)] ++ ["migration" .= migrationJson m | Just m <- [mig]] ++ reportJson fs)) human
         pure (if failed then ExitFailure 1 else ExitSuccess)
-  DoctorCmd -> do
-    checks <- doctorChecks (portsOf rt) (projectOf rt cat)
+  DoctorCmd run -> do
+    checks <- doctorChecks (portsOf rt) (projectOf rt cat) run
     let mark = \case Ok -> "✓" :: Text; Warn -> "!"; Bad -> "✗"
     emit rt fmt (doctorJson checks) (T.unlines (concat [[mark (checkStatus c) <> " " <> checkName c <> " — " <> checkDetail c] ++ ["  fix: " <> f | Just f <- [checkFix c]] | c <- checks]))
     pure (if any ((== Bad) . checkStatus) checks then ExitFailure 1 else ExitSuccess)
@@ -519,7 +519,7 @@ runCommand rt cwd fmt cat = \case
       readText (rtRoot rt) (cwd </> file) >>= \case
         Nothing -> failWith rt fmt 3 "file_not_found" ("cannot read " <> T.pack file) Nothing []
         Just content ->
-          resolveLayers (rtSyntax rt) (languageFor (catalogLanguages cat) file) [PhraseAnchor phrase] content >>= \case
+          resolveLayers (rtSyntax rt) (languageFor (catalogLanguages cat) file) (Just (cwd </> file)) [PhraseAnchor phrase] content >>= \case
             Left misses -> failWith rt fmt 5 "anchor_unresolved" (describeMisses misses) (Just "`olifant anchors <language>` lists the targets") []
             Right loc -> emit rt fmt (whereJson file phrase loc content) (whereHuman file loc content) >> pure ExitSuccess
   SyncCmd mode -> do
@@ -853,7 +853,7 @@ initFences ws tools def
             Left FenceMissing -> case regionInitAt def of
               Nothing -> pure (Left (2, "usage", "region `" <> regionName def <> "` has no `init_at`, so Olifant cannot tell where its fences go"))
               Just phrase ->
-                resolveLayers (toolSyntax tools) lang [PhraseAnchor phrase] content >>= \case
+                resolveLayers (toolSyntax tools) lang (Just file) [PhraseAnchor phrase] content >>= \case
                   Left misses -> pure (Left (5, "anchor_unresolved", T.pack file <> ": " <> describeMisses misses))
                   Right loc -> do
                     let (open, close) = fenceLines def c

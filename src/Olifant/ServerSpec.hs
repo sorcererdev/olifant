@@ -162,11 +162,11 @@ stubSpecs = describe "a test's stub (olifant/stub)" $ do
     let around line = do
           (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
           py <- pythonOf s
-          fmap (\n -> (namedName n, fst (namedLines n))) <$> unitAround unitSyntax py stubbed line
+          fmap (\n -> (namedName n, fst (namedLines n))) <$> unitAround unitSyntax py Nothing stubbed line
         aroundIn src line = do
           (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
           py <- pythonOf s
-          fmap (\n -> (namedName n, namedDef n)) <$> unitAround unitSyntax py src line
+          fmap (\n -> (namedName n, namedDef n)) <$> unitAround unitSyntax py Nothing src line
     it "the class line is the class" $ around 1 `shouldReturn` Right ("CloseTable", 1)
     it "a blank line between its methods is the class" $ around 4 `shouldReturn` Right ("CloseTable", 1)
     it "a line in a method is the method" $ around 6 `shouldReturn` Right ("CloseTable.handle", 5)
@@ -253,7 +253,7 @@ unitSpecs = describe "the unit at a line" $ do
   let unit line = do
         (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
         py <- pythonOf s
-        unitAt unitSyntax py stubbed line
+        unitAt unitSyntax py Nothing stubbed line
       withPy k = do
         (s, _) <- blocksOnSyntax unitSyntax (const (Right (TestRun [] [] Nothing))) []
         pythonOf s >>= k
@@ -268,12 +268,12 @@ unitSpecs = describe "the unit at a line" $ do
     unit 8 `shouldReturn` Left "no function or class at line 8"
   it "a decorator line: the def it decorates" $ withPy $ \py -> do
     let src = T.unlines ["import functools", "", "", "@functools.cache", "def dish() -> int:", "    return 1"]
-    unitAt unitSyntax py src 4 `shouldReturn` Right (Unit "dish" 5 (4, 6) (Just (6, 6)))
+    unitAt unitSyntax py Nothing src 4 `shouldReturn` Right (Unit "dish" 5 (4, 6) (Just (6, 6)))
   it "a header over several lines: the body starts after its colon" $ withPy $ \py -> do
     let src = T.unlines ["def book(", "    seats: int,", ") -> int:  # the party", "    return seats"]
-    fmap unitBody <$> unitAt unitSyntax py src 4 `shouldReturn` Right (Just (4, 4))
+    fmap unitBody <$> unitAt unitSyntax py Nothing src 4 `shouldReturn` Right (Just (4, 4))
   it "a one-line def: no body to conjure" $ withPy $ \py ->
-    fmap unitBody <$> unitAt unitSyntax py "def one() -> int: return 1\n" 1 `shouldReturn` Right Nothing
+    fmap unitBody <$> unitAt unitSyntax py Nothing "def one() -> int: return 1\n" 1 `shouldReturn` Right Nothing
 
 -- | `olifant/conjure`: the unit at the cursor conjured, its tests run before and after.
 conjureSpecs :: Spec
@@ -787,15 +787,15 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
           , "    def test_two(self) -> None:"           -- 16
           , "        assert make_table().handle(2) == 0" -- 17
           ]
-    it "a line in a test's body is that test" $ testCaseAtIn pyNow file 10 `shouldBe` Just "test_closes"
-    it "a blank line inside the body is still that test" $ testCaseAtIn pyNow file 11 `shouldBe` Just "test_closes"
-    it "the def line is that test" $ testCaseAtIn pyNow file 9 `shouldBe` Just "test_closes"
-    it "a decorator line is its def's test" $ testCaseAtIn pyNow file 8 `shouldBe` Just "test_closes"
-    it "a method of a test class is Class::method" $ testCaseAtIn pyNow file 17 `shouldBe` Just "TestSeats::test_two"
-    it "outside any test, nothing: imports" $ testCaseAtIn pyNow file 1 `shouldBe` Nothing
-    it "outside any test, nothing: a helper that is not a test" $ testCaseAtIn pyNow file 5 `shouldBe` Nothing
-    it "the class line itself is no test" $ testCaseAtIn pyNow file 15 `shouldBe` Nothing
-    it "a line past the file's end is nothing" $ testCaseAtIn pyNow file 99 `shouldBe` Nothing
+    it "a line in a test's body is that test" $ testCaseAtIn pyNow Nothing file 10 `shouldBe` Just "test_closes"
+    it "a blank line inside the body is still that test" $ testCaseAtIn pyNow Nothing file 11 `shouldBe` Just "test_closes"
+    it "the def line is that test" $ testCaseAtIn pyNow Nothing file 9 `shouldBe` Just "test_closes"
+    it "a decorator line is its def's test" $ testCaseAtIn pyNow Nothing file 8 `shouldBe` Just "test_closes"
+    it "a method of a test class is Class::method" $ testCaseAtIn pyNow Nothing file 17 `shouldBe` Just "TestSeats::test_two"
+    it "outside any test, nothing: imports" $ testCaseAtIn pyNow Nothing file 1 `shouldBe` Nothing
+    it "outside any test, nothing: a helper that is not a test" $ testCaseAtIn pyNow Nothing file 5 `shouldBe` Nothing
+    it "the class line itself is no test" $ testCaseAtIn pyNow Nothing file 15 `shouldBe` Nothing
+    it "a line past the file's end is nothing" $ testCaseAtIn pyNow Nothing file 99 `shouldBe` Nothing
   let recording verdict = blocksRun blockSyntax (pure ()) (const verdict)
       passing _ = Right (TestRun [testId] [] Nothing)
       -- a language of the pack's with no [test] table
@@ -1129,7 +1129,7 @@ blocksRun syntax hook verdict extra = do
 -- | `function handle`'s body (the lines under its def, deeper than it), and
 -- a boundary rewrite (`a > b` to `a >= b`) at every `>`; nothing else.
 blockSyntax :: Syntax IO
-blockSyntax = Syntax query rewrite
+blockSyntax = Syntax query rewrite (\_ _ -> pure (Left "no provider runner"))
   where
     query _ rule src = case T.breakOn "\"^" (TE.decodeUtf8 (BL.toStrict (J.encode rule))) of
       (_, r) | not (T.null r), "$\"" `T.isInfixOf` r -> pure (Right (body (T.takeWhile (/= '$') (T.drop 2 r)) src))

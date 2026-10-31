@@ -139,7 +139,7 @@ testsRan s0 p ls row = case drop row ls of
       Just rel -> do
         text <- safely Nothing (readText (prWorkspace p) rel)
         let lang = languageFor (catalogLanguages (prCatalog p)) rel
-        case text >>= \t -> lang >>= \l -> testLineIn l t (anUnit a) of
+        case text >>= \t -> lang >>= \l -> testLineIn l (Just rel) t (anUnit a) of
           Nothing -> pure (s, (Left (anUnit a <> " is not in " <> T.pack rel), 0))
           Just line ->
             testsRun (ScopeAt line) (normalisePath (prRoot p </> rel)) s <&> \case

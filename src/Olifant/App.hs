@@ -54,7 +54,7 @@ import Olifant.Glob (matchesGlob)
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.Char (isAlphaNum)
-import Data.List (find, sortOn, sort)
+import Data.List (find, isPrefixOf, sortOn, sort)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
@@ -70,7 +70,10 @@ import Olifant.Generation
 import Olifant.Generation.Steer (Steering)
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax, regexName)
+import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax, regexName, runTestsIn)
+import Olifant.Evidence (EvidencePorts (..), evidenceFor)
+import Olifant.Generation.FillPhase (projectFiles)
+import Data.Set qualified as S
 import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
@@ -83,7 +86,7 @@ import Olifant.Template qualified as Tm
 import Olifant.Template.Syntax (Segment (..), Template (..))
 import Olifant.Uncovered (uncoveredQuery)
 import Olifant.Workspace (PathState (..), Workspace (..), within)
-import System.FilePath (takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
+import System.FilePath (splitDirectories, takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 import Olifant.Doctor (Check, DoctorInput (..), DoctorPorts, doctor)
 
 -- | What the engine needs from the world: the file system (absolute
@@ -230,9 +233,12 @@ projectModel ports project = do
   paths <- listFiles ws "."
   buildModel (projectQueries ports project) paths (readText ws) (catalogModelMaps (prCatalog project)) (fromMaybe (T.pack (takeFileName (prRoot project))) (catalogName (prCatalog project)))
 
--- | What generators need here (`doctor`): tools, packs, the model.
-doctorChecks :: Ports -> Project -> IO [Check]
-doctorChecks ports project =
+-- | What generators need here (`doctor`): tools, packs, the model, and
+-- each language's evidence on a sample of the project; with @run@
+-- (`doctor --run`), a sample test file runs too.
+doctorChecks :: Ports -> Project -> Bool -> IO [Check]
+doctorChecks ports project run = do
+  evidence <- mapM (\l -> (langName l,) <$> evidenceFor (evidencePorts ports project run) l) (catalogLanguages cat)
   doctor (pDoctor ports) $
     DoctorInput
       (catalogProject cat)
@@ -243,8 +249,33 @@ doctorChecks ports project =
       (catalogModel cat)
       (catalogDecideModel cat)
       (catalogPlans cat)
+      evidence
+      run
   where
     cat = prCatalog project
+
+-- | What doctor's evidence reads in a project: the files version control
+-- tracks (else a walk below the root, past dot-folders and the folders no
+-- walk enters), the syntax port, and with @run@ the test runner over the
+-- language's files.
+evidencePorts :: Ports -> Project -> Bool -> EvidencePorts
+evidencePorts ports project run =
+  EvidencePorts
+    { epFiles =
+        pTracked ports (prRoot project) >>= \case
+          Just tracked -> pure (S.toList tracked)
+          Nothing -> filter (not . any (\c -> "." `isPrefixOf` c && c /= ".") . splitDirectories) <$> listFiles ws "."
+    , epRead = readText ws
+    , epSyntax = pSyntax ports
+    , epRun =
+        if run
+          then Just $ \lang ids -> do
+            (_, files) <- projectFiles ws M.empty lang [T.unpack (T.takeWhile (/= ':') i) | i <- ids]
+            runTestsIn (pTester ports neverCancel) lang ids files
+          else Nothing
+    }
+  where
+    ws = prWorkspace project
 
 -- | The tools a command in this project uses: the ports' syntax, checker
 -- and verifier, the catalog's languages and regions, and the project's

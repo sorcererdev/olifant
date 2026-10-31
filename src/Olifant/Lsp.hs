@@ -8,7 +8,7 @@
 module Olifant.Lsp (runLsp, runLspWithHandles, serverDefinition) where
 
 import Data.Char (isSpace)
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar, tryPutMVar, tryTakeMVar)
 import Control.Exception (SomeAsyncException, SomeException, catch, displayException, finally, fromException, throwIO)
 import Olifant.Process (Cancel, cancelled, neverCancel, newCancel)
@@ -325,7 +325,13 @@ handlers env =
           found <- liftIO (maybe (pure Nothing) (\u -> projectOfRequest env (object ["textDocument" .= object ["uri" .= u]])) uri)
           case found of
             Nothing -> respond (Left (TResponseError (InL LSPErrorCodes_RequestFailed) "olifant.doctor needs a document of an Olifant project" Nothing))
-            Just project -> liftIO (doctorChecks (envPorts env) project) >>= respond . Right . InL . doctorJson
+            -- never `--run`: the editor's doctor runs no tests. Its evidence
+            -- runs tools on a sample of the project, so it answers from the
+            -- background; a cancel stops it, its processes killed
+            Just project -> inBackground env req respond $ \job ->
+              liftIO (Async.race (untilCancelled (envCancel job)) (doctorChecks (envPorts env) project False)) >>= \case
+                Left () -> respond (Left (TResponseError (InL LSPErrorCodes_RequestCancelled) "cancelled" Nothing))
+                Right checks -> respond (Right (InL (doctorJson checks)))
         other -> respond (Left (TResponseError (InR ErrorCodes_InvalidParams) ("no command " <> other) Nothing))
     , notificationHandler SMethod_WorkspaceDidChangeWorkspaceFolders (\_ -> pure ())
     , notificationHandler SMethod_WorkspaceDidChangeConfiguration (\_ -> pure ())
@@ -1624,6 +1630,10 @@ holeData = \case
     Number line <- KM.lookup "line" o
     (T.unpack path,) <$> toBoundedInteger line
   _ -> Nothing
+
+-- | Returns once the token is tripped (polled every 50 ms).
+untilCancelled :: Cancel -> IO ()
+untilCancelled token = cancelled token >>= \stop -> if stop then pure () else threadDelay 50000 >> untilCancelled token
 
 -- | Answer a request from a thread of its own, so slow work never holds up
 -- the server; a failure there is answered as an error, never left hanging.

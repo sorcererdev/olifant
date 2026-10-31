@@ -835,9 +835,9 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
         ran r = Runner (\_ _ _ -> pure (Right r))
     it "(d) a test's assertion runs from its first assert statement to its end (a name that begins with `assert` is none)" $ do
       py <- shippedLanguage "python" []
-      assertionSpan py "test_x" "def test_x() -> None:\n    assertion = 1\n    assert assertion == 1\n\n\ndef test_y() -> None:\n    assert True\n" `shouldBe` Just (3, 3)
-      assertionSpan py "test_x" "def test_x() -> None:\n    assert(\n        1 == 1\n    )\n" `shouldBe` Just (2, 4)
-      assertionSpan py "test_z" "def test_x() -> None:\n    assert True\n" `shouldBe` Nothing
+      assertionSpan py Nothing "test_x" "def test_x() -> None:\n    assertion = 1\n    assert assertion == 1\n\n\ndef test_y() -> None:\n    assert True\n" `shouldBe` Just (3, 3)
+      assertionSpan py Nothing "test_x" "def test_x() -> None:\n    assert(\n        1 == 1\n    )\n" `shouldBe` Just (2, 4)
+      assertionSpan py Nothing "test_z" "def test_x() -> None:\n    assert True\n" `shouldBe` Nothing
     it "(d) VerifyRedAt: a test that passes stands (a regression test), unless its function's body raises: then it asserts nothing" $ do
       outcome (VerifyRedAt "t" 3 True) (ran (TestRun ["t"] [] Nothing)) `shouldReturn` [HoleFilled "fake" 1]
       st <- outcome (VerifyRedAt "t" 3 False) (ran (TestRun ["t"] [] Nothing))
@@ -1140,7 +1140,7 @@ fillSpec = describe "the fill phase (spec §6.4)" $ do
     it "(d) an hspec test's assertion: from its first `shouldBe` to the it's last line" $ do
       hs <- shippedLanguage "haskell" []
       let t = "spec = describe \"Olifant.Foo\" $ do\n  it \"adds\" $ do\n    let x = 1\n    x `shouldBe` 1\n    x + 1 `shouldBe` 2\n  it \"other\" $ pure ()\n"
-      assertionSpan hs "adds" t `shouldBe` Just (4, 5)
+      assertionSpan hs Nothing "adds" t `shouldBe` Just (4, 5)
     it "(c) a fill that is only the hole's lines is left as it is (nothing to cut)" $ do
       (_, file, _, events) <- run oneHole (const (M.fromList [("arrange", "assert_ready = 1\nresult = command()")]))
       fmap (T.isInfixOf "    assert_ready = 1\n    result = command()\n    assert isinstance") file `shouldBe` Just True

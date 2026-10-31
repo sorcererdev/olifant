@@ -114,6 +114,16 @@ The seven tables you will touch most, with the code that reads each field:
 `unitsOf` (`:154`) lists every unit in a file, naming each by the first of `name`'s POSIX
 expressions that matches (its last group), `join` folding a Haskell signature and its equations
 into one. This is what conjure, mutate, stub, plan anchors and the plan fingerprint stand on.
+
+Both paths meet in `unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO
+(Either Text [UnitAnswer])`, the units slot. By rule it gives each `[unit] kinds` match as a
+`UnitAnswer` (its 1-based span, its name by `[unit] name`); with `langUnitProvider` it gives the
+program's answer (`Provider.providedUnits`, memoised by request). `unitsOf` sorts either by
+start (longer first) and folds it the same way: `defLine` (the first line `name` names, else the
+first), `dedupe`, `joined`, `qualify`. `unitAt` keeps its rule path; with a provider it takes the
+innermost answer holding the line, its body from `bodyOf` as before. `FillPhase`'s top-level
+names (the answers no other answer holds) read a provider through `providerPure`, since the fill
+phase is generic in its monad.
 `unit_words` (`langUnitWords`) is a sentence for prompts (`Errand.projectUnitWords`).
 
 ### `[test]`: running tests and finding them
@@ -129,12 +139,22 @@ the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | 
 
 The **shape** keys are the language's own, parsed even when there is no runner (a table holding
 only shapes makes no `TestDef`: `testShapeKeys`): `unit` (rules: `langTest … testUnitRules`,
-with `after` and `above`) is read by `Language/TestUnits.hs` for tests and groups, and by
+with `after` and `above`, or `testUnitProvider`) is read by `Language/TestUnits.hs` for tests and groups, and by
 `Server/Unit.testUnitAt`; `assertion` (`langAssertion`) by conjure (red at the assertion),
 `Server/Order.hs` and `FillPhase` (the split of a test's two holes); `name`
 (`testNaming`) by `Server/Stub.hs`; `[test.stub]` (`testStub`, `StubDef`) by `Stub.stubWith`;
 `[test.failure]` (`FailureDef`) by `Language.Test.failureLineWith`/`gotExpectedWith`;
 `undefined` (`testUndefined`) by `ConjureNext.undefinedIn`.
+
+Every reader of test units goes through one door, `TestUnits.testUnitsOf :: Language -> Text
+-> [TestUnit]` (with `testUnitsReport`, which keeps a provider's failure for doctor; `testAtIn`
+and `testLineIn` are built on it). By rule it is `testUnitsIn` over `[test] unit` and `above`;
+with `testUnitProvider` it is the program's answer, each unit's path the names of the answers
+that strictly hold it, outermost first. The callers (stubs, the fill phase's assertion span and
+whole-file test, the scripted runner, conjure through `testCaseAtIn`/`testSourcesIn`) are pure,
+so a provider runs through `Provider.providerPure`, memoised by request; that rests on a
+provider being pure by contract. `TestUnitsSpec` fails if `testUnitsIn` appears in any other
+non-spec module.
 
 `format` is the one place a name is code: `knownTestFormats` (`Language/Support.hs`) lists
 `pytest, lines, tap, junit-xml, olifant-json`, and `readTestReport` dispatches on it. A format
@@ -202,22 +222,121 @@ of its own. The `conjure shapes` row lists `port.add` and `advice` when present,
 | `[test] name` | `Server/Stub.testAffixesIn`: the text before and after the words, which a survivor's stub name (`TestName.stubNameFor`) is put between; uniqueness is against the file's tests by `[test] unit` |
 | `opens_block`, `empty_statement`, `stub_lines` | `Server/Unit.hs` (`bodyOf`, `isStubIn`), `FillPhase` (cutting a whole-file answer back to a hole) |
 
-## Doctor's capability table
+## Slots and providers
+
+A **slot** is one question the engine asks of a language: the units in a text, its test units,
+where an anchor phrase lands, the arguments that select some tests. A rule in the language file
+answers each by default; `{ provider = [...] }` in the rule's place hands it to a program
+([chapter 9](../user/09-packs-and-language-adapters.md), "Providers"). Either way the answer has
+one type, so everything downstream is the same code.
+
+`Olifant.Provider` (`Provider.hs`) is the protocol:
+
+- `Provider` is the argv and the root it runs from (`provRoot`, set by the catalog).
+  `runProvider :: Provider -> Value -> IO (Either Text Value)` adds `"v": 1` to the request
+  (`withVersion`), resolves `argv[0]` (against the root when it holds a `/`, else on `PATH`) and
+  runs it through `Process.runBytesCancellable` with a 10 s limit (`providerTimeout`), cwd the
+  root. Its `Left` is one line: "`x` is not installed", "it timed out (10 s)", stderr's first
+  line, "it exited N and said nothing", or "its answer is not JSON: …". The limit covers the
+  whole exchange: `runBytesCancellable` writes stdin from a thread of its own, so a provider that
+  never reads a large text still times out, and the kill of the process group wraps everything
+  after the start, so an interruption (a cancel) leaves no process behind.
+- Every run goes through a **circuit breaker** per provider (`runGuarded`, keyed by argv and
+  root, in the `NOINLINE` `providerBreaker`). A run that ends in `Broken` (a timeout, a missing
+  program, one that will not start) opens it: for `providerCoolOff` (60 s) every request to that
+  provider gets the same `Left` at once, without a run. So a broken provider costs one timeout,
+  not one per file: doctor's evidence, which asks it for each sampled file, stays bounded. A run
+  is `Answered` (an answer, or a non-zero exit, or bad JSON), `Broken`, or `Stopped` (cancelled).
+- The answer types: `UnitAnswer` (`name`, `line`, `end`, optional `kind`; units and test units),
+  `AnchorAnswer` (`line`, `column`), and an argv for a selection. `decodeUnits n` checks a units
+  answer whole against a text of `n` lines (no line before 1, no `end` before `line` or past
+  `n`, no repeated span) and names the first bad entry; a half-good answer is never used.
+  `decodeAnchor` allows `line` one past the end (the end of the file); `decodeArgs` wants a
+  list of strings.
+- `providerPure :: Provider -> Value -> Either Text Value` is `runProvider` from pure code,
+  through `unsafePerformIO`, memoised (`runProviderMemo`) for the process in a `NOINLINE`
+  `MVar` keyed by argv, root and the encoded request. The request holds the file's path
+  (`textRequest (Just path)`, when the caller knows it) and its text, so the long-lived server
+  asks again after an edit, and the same text at two paths is asked twice. Only `Answered` runs
+  are kept: a timeout, a missing program or a cancel is asked again once the breaker lets it.
+  The memo starts over past 512 answers. It is sound because a
+  provider is pure by contract (the same request gives the same answer), which chapter 9's
+  protocol section states. It exists for test units, which are read in pure code at many call
+  sites; threading IO through conjure, the fill phase and stubs instead would be a large
+  refactor for an escape hatch. The other slots are read in IO and call `runProvider`.
+- Where each slot asks: units in `Server/Unit.unitAnswers`; test units in
+  `TestUnits.testUnitsOf`; every reader of either takes the file's project-relative path as a
+  `Maybe FilePath` after the language (`unitAt`, `unitsOf`, `unitAround`, `testUnitAt`,
+  `testOrUnitAt`, `testUnitsOf`, `testUnitsReport`, `testAtIn`, `testLineIn`, `testCaseAtIn`,
+  `testCaseLineIn`, `testSourcesIn`, `testSourceIn`, `FillPhase.assertionSpan`, and
+  `resolveLayers` for anchors), and every caller that reads a file passes it; only
+  `FillPhase.looksLikeFile`, which reads a model's code rather than a file, passes `Nothing`; an anchor in `Anchor/Resolve`'s `named`, when no `[targets.*]` shape
+  matches the phrase, through the **Syntax** port's `runSlotProvider` (anchors resolve in any
+  monad; `astGrepSyntax` runs `runProvider`, `noSyntax` and `querying` fakes answer "no
+  provider runner"); a selection in `Check.processRunner` (request `{"tests": [ids]}`, the
+  answer replacing `{= tests =}`). Diagnostics and test results are `convert`
+  (`Check.convertReport`), whose stdin now carries `"v": 1` too.
+
+## Doctor: capabilities and evidence
 
 `Olifant.Capabilities.capabilities :: Language -> [Capability]` (`Capabilities.hs:24`) is a list
-of thirteen rows, one function of the `Language` each: `units`, `diagnostics`, `missing cases`,
-`tests`, `test units`, `test selection`, `mutation`, `stub`, `conjure shapes`, `messages`,
-`test messages`, `stub bodies`, `signature facts`. A `Capability` is its name, how it is
-provided (`Right how`) or the key that would enable it (`Left key`), `capKey` (the dotted key
-whose layer doctor names with `originOf`), and an optional `capFix` for a capability no single
-key enables. `Doctor.doctor` (`Doctor.hs:~60`) turns a `Right` into an `Ok` row with `· from
-<origin>` and a `Left` into a `Warn` row with the fix: "add KEY to
-.olifant/languages/NAME.toml" unless `capFix` says otherwise.
+of fifteen rows, one function of the `Language` each: `units`, `diagnostics`, `missing cases`,
+`tests`, `test units`, `anchors`, `holes`, `test selection`, `mutation`, `stub`, `conjure
+shapes`, `messages`, `test messages`, `stub bodies`, `signature facts`. A `Capability` is its
+name, how it is provided (`Right how`) or the key that would enable it (`Left key`), `capKey`
+(the dotted key whose layer doctor names with `originOf`), and an optional `capFix` for a
+capability no single key enables.
+
+`Doctor.doctor` makes a row from a `Capability` plus, for five of them, a `Proof`
+(`DoctorInput`'s `diEvidence`, by language, which `App.doctorChecks` fills with
+`Evidence.evidenceFor` through `App.evidencePorts`). A `Left` is a `Warn` row with the fix: "add
+KEY to .olifant/languages/NAME.toml" unless `capFix` says otherwise; no evidence is asked. A
+`Right` with no evidence is an `Ok` row with `how · from <origin>`. With evidence (`units`, `test
+units`, `tests`, `anchors`, `holes`): `Proven` is `Ok` with the evidence text in place of `how`;
+`Unproven` is `Warn`, except the tests row when doctor did not run tests (`diRan`, from `doctor
+--run`), which stays `Ok` with `how (not run: olifant doctor --run)`; `Disproven` is `Warn` with
+the fix "regenerate the key or supply a provider (see chapter 9, Providers)". The origin is kept
+on every row, and evidence never makes a row `Bad`, so doctor's exit code rule is unchanged.
+The language server's `olifant.doctor` passes `False` for `run`, and answers through
+`inBackground` (evidence runs tools on the sample, so it must not hold up the message loop). It
+races `doctorChecks` against `untilCancelled` on the request's token: a `$/cancelRequest` ends
+the race, which interrupts the evidence thread, and `runBytesCancellable` kills the processes it
+had started.
 
 To add a capability: add a row in `capabilities`, a `capKey` that `originOf` can resolve, and an
 example to `CapabilitiesSpec` (its "a bare language" example counts the absences, so it changes
-from thirteen). The user book's doctor table ([chapter 2](../user/02-running-generators.md)) lists
+from fifteen). The user book's doctor table ([chapter 2](../user/02-running-generators.md)) lists
 the rows, so it changes too.
+
+### Evidence: each slot on a sample of the project
+
+`Olifant.Evidence` (`Evidence.hs`) proves the slots on the project's own code.
+`evidenceFor :: EvidencePorts -> Language -> IO Evidence` reads through `EvidencePorts`
+(`epFiles`, the project's files; `epRead`; `epSyntax`; `epRun`, a test runner only with `doctor
+--run`) and gives one `Proof` per slot: `Proven` (with the evidence), `Unproven` ("not seen",
+"not run") or `Disproven` (the line or reason that failed).
+
+- **The sample** (`sampleOf`): the first 40 files (`sampleSize`), in path order, that match the
+  language's `files` (sorted through a set, so a large project costs n log n). Units and anchors
+  run at most eight at a time (`pooled`). Its test files are its sources' `tests_for` files that exist, plus any
+  sampled file that holds test units itself (a Rust module with its own tests).
+- **units:** `unitsOf` on each sampled file (concurrently): "212 found in 38 files (e.g.
+  src/a.py:14 add)"; with none, the first non-blank line, or the slot's failure.
+- **test units:** `testUnitsReport` on each test file (each with its path). A sampled source
+  that holds test units itself is found by asking every sampled file when the language has rules,
+  but with a test-units provider the asking stops at the first failure; with none in an existing test file, the
+  first unit the units slot finds there ("0 found; path:9 is `…`"); with no test file, "not seen
+  (no test file in the 40 sampled)".
+- **anchors:** each `[targets.*]` with at most one parameter, tried through `resolveLayers` with
+  the position its `example` uses, on the sample's units' bare names (those whose unit text holds
+  the target's words first; at most six tries each, targets in parallel). Targets with more
+  parameters are "not tried". Proven when any target resolves; a target that never does is listed
+  with `✗` and its last miss. When there was nothing to try them on (no unit in the sample) the
+  row is `Unproven` "not seen (no unit in the 40 sampled)", not `Disproven`.
+- **holes:** each `[holes.KIND]` placeholder (`Holes.placeholderFor`) put in its `wrap`, then the
+  Syntax port's `ERROR` query, as `FillPhase.parses` does.
+- **tests:** with `epRun`, the first test file runs: "ran uv on src/a__test.py, 3 results parsed
+  (pytest)", or the run's broken reason.
 
 ## The rule, and the specs that hold it
 

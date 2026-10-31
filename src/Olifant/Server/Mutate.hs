@@ -58,7 +58,7 @@ mutateAt path line s0 =
           testRel = siteTestRel site
       when (siteOnTest site) (throwE "on a test: mutate a function or class, from its module")
       when (null (langMutate lang)) (throwE ("no [[mutate]] operators for " <> langName lang <> ": add them to .olifant/languages/" <> langName lang <> ".toml"))
-      unit <- lift (unitAt (pSyntax (ssPorts s)) lang moduleText line) >>= either (\why -> throwE (why <> ": put the cursor in one to mutate it")) pure
+      unit <- lift (unitAt (pSyntax (ssPorts s)) lang (Just rel) moduleText line) >>= either (\why -> throwE (why <> ": put the cursor in one to mutate it")) pure
       testText <- maybe (throwE ("no test file for this module yet: " <> T.pack testRel <> "; stub one first (:Durandal stub)")) pure (siteTestText site)
       let (l1, l2) = unitLines unit
           scope = S.fromList [l1 .. l2]

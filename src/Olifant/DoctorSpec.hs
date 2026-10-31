@@ -6,6 +6,7 @@ import Data.Functor.Identity (Identity (..), runIdentity)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Doctor
+import Olifant.Evidence (Evidence (..), Proof (..))
 import Olifant.Language (Language, parseLanguage, shippedLanguage)
 import Olifant.Catalog (PlansConfig (..), defaultPlans)
 import Olifant.Model (Backend (..), ModelConfig (..), defaultModelConfig)
@@ -20,7 +21,7 @@ local :: ModelConfig
 local = defaultModelConfig {mcDefault = Just "local", mcBackends = [("local", OpenAICompatible "http://localhost:11434/v1" "qwen3-coder:30b")]}
 
 input :: ModelConfig -> DoctorInput
-input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing defaultPlans
+input m = DoctorInput (Just "/proj") ["rust-htmx"] [rust] [] [] m Nothing defaultPlans [] False
 
 -- | The checks but the capability rows (`<lang>: …`) and the plans runner's.
 core :: [Check] -> [Check]
@@ -73,13 +74,13 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Left "must not be called") ["MY_KEY"]) (input claude))) `shouldBe` Just Ok
   it "(c) a check run through `env VAR=… uv …` checks uv, with how to install it (Review Focus 3)" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "preset = \"pyright\""])
-        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans))
+        cs = runIdentity (doctor (ports ["ast-grep", "env"] (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False))
         [c] = [c' | c' <- cs, checkName c' == "check tool uv (python)"]
     checkStatus c `shouldBe` Bad
     checkFix c `shouldSatisfy` maybe False ("brew install uv" `T.isInfixOf`)
   it "(f) a language with [test] gets a test runner line: the program found, and where its tests live" $ do
     let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[test]", "preset = \"pytest\"", "tests_for = \"{= dir =}/{= stem =}__test.py\""])
-        run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans))
+        run exes = runIdentity (doctor (ports exes (Right ()) []) (DoctorInput (Just "/proj") ["python-htmx"] [python] [] [] local Nothing defaultPlans [] False))
         [ok] = [c | c <- run ["ast-grep", "uv"], checkName c == "test runner uv (python)"]
         [bad] = [c | c <- run ["ast-grep"], checkName c == "test runner uv (python)"]
     checkStatus ok `shouldBe` Ok
@@ -90,7 +91,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     [checkName c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local)), "test runner" `T.isPrefixOf` checkName c] `shouldBe` []
   it "reports a broken language adapter or generator as an error" $ do
     let broken = DoctorInput (Just "/proj") ["p"] [] [("p/languages/x.toml", "bad grammar")] [("p/gen", "unknown key")]
-        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing defaultPlans))
+        cs = runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (broken local Nothing defaultPlans [] False))
     statusOf "language p/languages/x.toml" cs `shouldBe` Just Bad
     statusOf "generator p/gen" cs `shouldBe` Just Bad
   it "(e) checks that the recognition model ([recognize] model) is a configured backend" $ do
@@ -99,7 +100,7 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     statusOf "recognize model" (run "local") `shouldBe` Just Ok
     statusOf "recognize model" (runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local))) `shouldBe` Nothing
   it "outside a project: config is an error" $
-    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local Nothing defaultPlans))) `shouldBe` Just Bad
+    statusOf "config" (runIdentity (doctor (ports ["ast-grep"] (Right ()) []) (DoctorInput Nothing [] [] [] [] local Nothing defaultPlans [] False))) `shouldBe` Just Bad
   it "the plans runner: ok when found, with its timeout and do tools; an error with the fix when not" $ do
     let plans = defaultPlans {pcTimeout = 900, pcDoTools = ["Bash(cabal test*)"]}
         run exes = runIdentity (doctor (ports exes (Right ()) []) ((input local) {diPlans = plans}))
@@ -131,3 +132,23 @@ spec = describe "olifant doctor (spec §4.7)" $ do
     map (checkStatus . row) ["rust: tests", "rust: test units", "rust: test selection", "rust: stub"] `shouldBe` [Ok, Ok, Ok, Ok]
     checkDetail (row "rust: stub") `shouldBe` "[test] stub at end of mod tests · from toolchain cargo-test"
     checkDetail (row "rust: test units") `shouldBe` "[test] unit, above · from shipped"
+  it "evidence replaces how, origin kept; tests not run keep their text, ok" $ do
+    rust <- shippedLanguage "rust" []
+    let ev = Evidence (Proven "3 found in 2 files (e.g. src/a.rs:1 add)") (Unproven "not seen (no test file in the 40 sampled)") (Unproven "not run (olifant doctor --run)") (Proven "end of struct X (src/a.rs:3)") (Proven "expr wrappers parse with their placeholders")
+        cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust], diEvidence = [("rust", ev)]}))
+        row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
+    row "rust: units" `shouldBe` (Ok, "3 found in 2 files (e.g. src/a.rs:1 add) · from shipped", Nothing)
+    row "rust: test units" `shouldBe` (Warn, "not seen (no test file in the 40 sampled) · from shipped", Nothing)
+    row "rust: tests" `shouldBe` (Ok, "[test] format lines, tests_for {= dir =}/{= stem =}.rs (not run: olifant doctor --run) · from toolchain cargo-test", Nothing)
+    row "rust: anchors" `shouldBe` (Ok, "end of struct X (src/a.rs:3) · from shipped", Nothing)
+    row "rust: holes" `shouldBe` (Ok, "expr wrappers parse with their placeholders · from shipped", Nothing)
+    map checkName [c | c <- cs, "rust: " `T.isPrefixOf` checkName c] `shouldSatisfy` (\ns -> take 3 (drop (length (takeWhile (/= "rust: test units") ns)) ns) == ["rust: test units", "rust: anchors", "rust: holes"])
+  it "a Disproven row is a warning with the regenerate-or-provider fix; with --run, a run's evidence shows" $ do
+    rust <- shippedLanguage "rust" []
+    let ev = Evidence (Disproven "0 found in 2 files; src/a.rs:1 is `fn add() {}`") (Proven "1 found in 1 test files (e.g. src/a.rs:5 adds)") (Proven "ran cargo on src/a.rs, 1 results parsed (lines)") (Unproven "no [targets.*]") (Proven "x")
+        cs = runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) ((input local) {diLanguages = [rust], diEvidence = [("rust", ev)], diRan = True}))
+        row n = head [(checkStatus c, checkDetail c, checkFix c) | c <- cs, checkName c == n]
+    row "rust: units" `shouldBe` (Warn, "0 found in 2 files; src/a.rs:1 is `fn add() {}` · from shipped", Just "regenerate the key or supply a provider (see chapter 9, Providers)")
+    row "rust: tests" `shouldBe` (Ok, "ran cargo on src/a.rs, 1 results parsed (lines) · from toolchain cargo-test", Nothing)
+    -- an evidence warning is never an error: doctor's exit stays 0
+    [c | c <- cs, checkStatus c == Bad, "rust: " `T.isPrefixOf` checkName c] `shouldBe` []

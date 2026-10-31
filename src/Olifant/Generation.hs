@@ -234,7 +234,7 @@ generate ws resolve tools steps now mode =
               Left err -> pure (Left (failed ("query `" <> name <> "`: " <> describeTemplateError err)))
               Right q' -> fmap (\rs -> M.insert name (VList (map VRecord rs)) e) . first (\f -> f {failureWhy = "query `" <> name <> "`: " <> failureWhy f}) <$> runQuery (toolQueries tools) paths (readText ws) q'
       foldM one (Right env) queries
-    locate p anchors content = resolveLayers (toolSyntax tools) (languageFor (toolLanguages tools) p) anchors content
+    locate p anchors content = resolveLayers (toolSyntax tools) (languageFor (toolLanguages tools) p) (Just p) anchors content
     fromComposition = \case
       StepInputs p e -> InvalidInputs p e
       StepTemplate p e -> TemplateFailed p e

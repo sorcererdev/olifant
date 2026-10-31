@@ -284,7 +284,7 @@ example   = "end of struct BillingService"
 | `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids), `format` (`pytest`, `lines`, `tap`, `junit-xml`, `olifant-json`) or `convert`, `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). `[test.select]`, `file_group`, `unit`, `exclusive` and `timeout` say how one test is run and found. See [presets](#presets-check-and-test) and [test formats](#test-formats) |
 | `[[mutate]]` | mutation operators, for `mutate` ([chapter 18](18-tdd-in-the-editor.md)): each a `name`, a `pattern` or ast-grep `rule`, and a `fix` or `transform = "increment"`. Python ships seventeen |
 | `unit_words` | what a unit is in this language, as the plan prompts say it: "<Unit> is <unit_words> defined in that file". Python's is "a top-level class or function name (Name) or a method (Class.method)"; a project whose languages disagree, or one without the key, gets "a top-level function or type name (Name), or a method (Type.method)" |
-| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell) |
+| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Python's are `function_definition`, `class_definition` and `decorated_definition` (written inline, `unit = { kinds = [...] }`); Rust, Elm and Haskell list theirs. Without it, `conjure` says the language has no unit kinds. `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
@@ -701,7 +701,7 @@ GHC's and Elm's are read:
 
 **`convert`** — for a tool Olifant has no format for: a command that turns the check's output
 into olifant-json. It runs in the same scratch copy after the check, with
-`{"exit": N, "stdout": "…", "stderr": "…"}` on its stdin and 60 seconds to finish; what it
+`{"v": 1, "exit": N, "stdout": "…", "stderr": "…"}` on its stdin and 60 seconds to finish; what it
 prints is the report. A non-zero exit fails the check with what it said on stderr. With
 `convert`, `format` is absent or `"olifant-json"`; anything else is a load error naming both
 keys. The converted report is the verdict: a check that exits non-zero and converts to `{}` is
@@ -763,7 +763,7 @@ or `error` child fails it (its `message`, its text, its `line`); `skipped` is ne
 runner that writes the XML to a file is read through `convert` (`cat report.xml`).
 
 **`olifant-json`** — for `convert` (as in `[check]`: the command gets
-`{"exit": N, "stdout": "…", "stderr": "…"}` on stdin and prints this) or a runner that
+`{"v": 1, "exit": N, "stdout": "…", "stderr": "…"}` on stdin and prints this) or a runner that
 writes it:
 
 ```json
@@ -789,8 +789,8 @@ compile); with exit 0, "no tests ran".
 | key | |
 |---|---|
 | `file_group` | an expression over a test file's text; its last group is the file's outermost group. hspec's: `'^module[[:space:]]+([[:alnum:]_.]+)Spec'` |
-| `[test.select]` | how an id becomes arguments of `{= tests =}`. `test` for a test's id, `file` for a file's: each a template, or a list of them (several arguments; one repeated by several ids is given once). `{= group =}` is the file's group (its `file_group`, else its module by `[imports] module_of`; empty for a Rust crate's root), `{= name =}` the test's names below its file joined by `join` (default `/`), `{= id =}` the whole id (`path::name`), for a runner that reads ids as they are: pytest's `test = "{= id =}"`, `file = "{= id =}"`. hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. cargo-test's: `test = ["--exact", "{= if group =}{= group =}::{= end =}{= name =}"]`, `file = "{= if group =}{= group =}::{= end =}"`, `join = "::"`. Without it, the ids themselves are the arguments |
-| `unit` | rules whose line starts a test or a group: how the editor finds the test at the cursor, and a plan step a test by name ([chapter 19](19-plans.md)). An entry is an expression (its last group the name) or a table `{ pattern, after, name }`: `after` is an expression a line above must match, looking past `above` lines (Rust's `{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '#\[test\]' }`: a `fn` is a test only under `#[test]`, with `#[should_panic]` between allowed); `name` is the group holding the name when it is not the last (hspec's string with escapes: group 3; `\"` in it reads `"`). A unit runs from its line to the line before the next non-blank line at its indentation or less, so a nested unit's path is its parents' names, then its own: pytest's `class TestX` / `def test_y` is `TestX::test_y`. pytest's rules are `pytest.toml`'s (`def test…`, async too, and `class Test…`); hspec's find `describe`/`context`/`it`/`specify`/`prop`. A language with no `unit` has no test at a line: a cursor runs the whole file, and a plan step's test cannot be found |
+| `[test.select]` | how an id becomes arguments of `{= tests =}`. `test` for a test's id, `file` for a file's: each a template, or a list of them (several arguments; one repeated by several ids is given once). `{= group =}` is the file's group (its `file_group`, else its module by `[imports] module_of`; empty for a Rust crate's root), `{= name =}` the test's names below its file joined by `join` (default `/`), `{= id =}` the whole id (`path::name`), for a runner that reads ids as they are: pytest's `test = "{= id =}"`, `file = "{= id =}"`. hspec's: `test = "--test-option=--match=/{= group =}/{= name =}/"`. cargo-test's: `test = ["--exact", "{= if group =}{= group =}::{= end =}{= name =}"]`, `file = "{= if group =}{= group =}::{= end =}"`, `join = "::"`. Without it, the ids themselves are the arguments. `select = { provider = [...] }` in place of the table: a program gets `{"v": 1, "tests": [ids]}` and answers the arguments (`["-k", "adds"]`); when it fails, the run fails with its reason ([providers](#providers-answering-a-slot-with-a-program)) |
+| `unit` | rules whose line starts a test or a group: how the editor finds the test at the cursor, and a plan step a test by name ([chapter 19](19-plans.md)). An entry is an expression (its last group the name) or a table `{ pattern, after, name }`: `after` is an expression a line above must match, looking past `above` lines (Rust's `{ pattern = '^[[:space:]]*fn[[:space:]]+([[:alnum:]_]+)', after = '#\[test\]' }`: a `fn` is a test only under `#[test]`, with `#[should_panic]` between allowed); `name` is the group holding the name when it is not the last (hspec's string with escapes: group 3; `\"` in it reads `"`). A unit runs from its line to the line before the next non-blank line at its indentation or less, so a nested unit's path is its parents' names, then its own: pytest's `class TestX` / `def test_y` is `TestX::test_y`. pytest's rules are `pytest.toml`'s (`def test…`, async too, and `class Test…`); hspec's find `describe`/`context`/`it`/`specify`/`prop`. A language with no `unit` has no test at a line: a cursor runs the whole file, and a plan step's test cannot be found. `unit = { provider = [...] }` in place of the rules: a program finds the tests ([providers](#providers-answering-a-slot-with-a-program)); a test's groups are the answers that hold it, so a `describe` answered over lines 1–9 and an `it` over 2–4 make `describe::it` |
 | `assertion` | expressions over a line where a test's assertion starts: Python's `'^[[:space:]]*assert([[:space:]]|\(|$)'`, Rust's `assert!`/`assert_eq!`/`assert_ne!`, hspec's `` `shouldBe` `` and its kin or `expectationFailure`. A key of the language, not of the runner (presets do not fill it); a `[test]` table holding only it is no runner. It says where a new test must fail (red at its assertion, not before), and where a fill of a test's two holes (arrangement, assertion) is split |
 | `name` | a new test's name (a stub's, a plan step's test), a template over `{= words =}`: the step's words, or the unit's name split into words (`CloseTable` is `close table`). pytest's `test_{= words|snake =}`, hspec's `{= words|lower_words =}`, cargo-test's `{= words|snake =}`. Without it, the words joined by `_` |
 | `[test.stub]` | what a new test looks like (`:Durandal stub`, a plan step's test; [chapter 18](18-tdd-in-the-editor.md#stubbing-a-test)). `test`: its text, a template over `{= name =}`, `{= unit =}`, `{= module =}` (the unit's module, by `[imports] module_of`), `{= indent =}` (one level) and `{= note =}` (a survivor's line, its comment the language's, or empty). `file`: a new test file's head, over the same and `{= import =}` (the unit's import, by `[imports] write`); the test follows it directly. `gap` (default 1): blank lines before a test added to a file that has some. `at` (optional): a target phrase (`end of mod tests`) the test goes at instead of the file's end, and `open`: the text appended at the file's end when that target is not there, a template over the same and `{= test =}` (the test, inside it). `elsewhere` (optional): an expression for a line that says the tests live in another file, its last group that file's name (cargo-test's `mod tests;`): the stub refuses, "tests live in another file: tests.rs". pytest's writes `def test_x() -> None:` with `...` and `assert ...`, two blank lines before; hspec's an `it` at one indent, its body `expectationFailure "write this test"`, one blank line before, at `end of do in spec` (Haskell's `do in FUNCTION` target: before any helper after `spec`; a `spec` without a `do`, composed with `>>`, takes the file's end), and a new Spec module's head. A runner without it has no stub: "no `[test] stub` for …" |
@@ -808,6 +808,82 @@ Rust relies on rustfmt's layout; and a signature split over several lines (attri
 (ast-grep, Rust first) may replace them later.
 | `exclusive` | the runner keeps a build cache: each run gets a slot (`{= cache =}` is the slot's), as `[check] exclusive` |
 | `timeout` | seconds a run may take, over the editor's default |
+
+### Providers: answering a slot with a program
+
+A **slot** is one question Olifant asks of a language: where its units are, where its tests
+are, where an anchor phrase lands, which arguments run some tests, what the compiler and the
+runner said. Each has a rule in the language file. In place of the rule you can write
+`{ provider = [...] }`, a program that answers the same question; everything after the answer
+is the same code, so conjure, mutate, stubs, plans and the editor behave the same either way.
+
+| Slot | Key | Without a provider |
+|---|---|---|
+| units | `[unit] kinds = { provider = [...] }` | `[unit] kinds` (ast-grep node kinds) |
+| test units | `[test] unit = { provider = [...] }` | the `[test] unit` rules |
+| anchor | `anchors = { provider = [...] }` (top level) | none: asked only for a phrase no `[targets.*]` shape matches, before "unknown target" |
+| test selection | `[test] select = { provider = [...] }` | `[test.select]` |
+| diagnostics | `[check] convert` | the `[check] format` parser |
+| test results | `[test] convert` | the `[test] format` parser |
+
+`{ provider = [...] }` stands alone: an empty list, or another key beside `provider`, is a load
+error naming the key. It takes the rule's place in the layer merge too: a project's
+`kinds = { provider = [...] }` replaces the shipped `kinds = [...]` whole (and a provider is
+replaced whole by a later rule), and `olifant doctor` names the layer it came from.
+
+```toml
+# .olifant/languages/go.toml
+[unit]
+kinds = { provider = ["./tools/go-units"] }
+
+[test]
+unit = { provider = ["go", "run", "./tools/testunits"] }
+```
+
+**The protocol.**
+
+- **Requests** are a JSON object on stdin, and every one carries `"v": 1`. A units, test-units
+  or anchor request is `{"v": 1, "text": "…", "file": "src/a.go"}`. `file` is the path from
+  the project root, sent whenever Olifant is reading a file. It is missing only when the
+  text is no file: a model's answer that Olifant checks for tests before placing it. An anchor request adds `"phrase"`, the whole `at` text. A
+  selection request is `{"v": 1, "tests": ["path::name", …]}`.
+- **Answers** are JSON on stdout:
+  - units and test units: `[{"name": "add", "line": 3, "end": 5, "kind": "function"}]`
+    (`kind` optional). Olifant works out the rest by containment, as it does for rules: a
+    unit inside another is `Outer.Inner`, and a test unit's groups are the answers around it.
+    The answer is checked whole: a `line` before 1, an `end` before its `line` or past the
+    text, or a span repeated rejects all of it, naming the first bad entry;
+  - an anchor: `{"line": 12, "column": 5}` or `null` (not known here). `line` is where the
+    inserted lines start (one past the last line is the end of the file), `column` their
+    indentation, written as that many spaces (a tab-indented language gets spaces here);
+  - a selection: `["arg", …]`, which takes the place of `{= tests =}`.
+- **Positions:** lines are 1-based and inclusive, as the editor and olifant-json's
+  `broken.line` show them; columns are 1-based and counted in characters.
+- **Where it runs:** from the project root, whether olifant runs from a subfolder or under the
+  language server. `argv[0]` with a `/` in it (`./tools/x`) is a path under the root; a bare
+  name is looked up on `PATH`. A pack's provider runs from the project root too; a pack tried
+  outside any project runs its providers from the current folder.
+- **Time:** a provider is stopped after 10 seconds, counted from its start, whether or not it
+  has read its request.
+- **Failure:** a non-zero exit, a timeout, or an answer that does not decode leaves the slot
+  unavailable. The reason is stderr's first line, or why the answer did not decode; `olifant
+  doctor` shows it. What the slot then does depends on the slot:
+  - units: a command that needs the unit at the cursor (conjure, mutate, stub) fails with the
+    reason; a plan step's unit is not found; a fill that only wanted a file's top-level names
+    falls back to the lines that `[unit] name` names at column 0;
+  - test units: none, as if the file had no tests;
+  - an anchor: the phrase does not resolve, "the anchors provider: REASON";
+  - a selection: the test run fails, "the test selection provider: REASON".
+- **When it keeps failing:** a provider that times out, or whose program is missing or will
+  not start, is not asked again for 60 seconds. Every request in that time gets the same
+  reason at once, so a broken provider costs one timeout, not one per file.
+- **Purity:** a provider must be pure: the same request gives the same answer. Olifant may
+  remember an answer for the rest of the process (test units are read from many places). It
+  asks again when the file's text or path changes. A timeout or a missing program is not
+  remembered: after the 60 seconds, the provider is asked again.
+- **Diagnostics and test results** are the existing `convert` commands
+  ([check formats](#check-formats), [test formats](#test-formats)): stdin
+  `{"v": 1, "exit": N, "stdout": "…", "stderr": "…"}`, stdout olifant-json.
 
 ### Hole kinds: `[holes.KIND]`
 

@@ -50,7 +50,7 @@ waiveAt path reason m s0
       siteAt path (muLine m) s0 >>= \case
         (s, Left why) -> pure (s, Left why)
         (s, Right site) ->
-          unitAt (pSyntax (ssPorts s)) (siteLang site) (siteModuleText site) (muLine m) >>= \case
+          unitAt (pSyntax (ssPorts s)) (siteLang site) (Just (siteModuleRel site)) (siteModuleText site) (muLine m) >>= \case
             Left why -> pure (s, Left (why <> ": a survivor belongs to one"))
             Right unit -> do
               let ports = ssPorts s
