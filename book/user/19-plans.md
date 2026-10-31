@@ -1,8 +1,8 @@
 # 19. Plans
 
 A plan is a markdown file in which you write what you believe about the code and what you mean to
-do, in lines the engine can check. You ask the model about it, and its answers land in the plan as
-ghost blocks you accept or reject. Plans live under `plans/` of the project (`[plans] dir`);
+do, in lines the engine can check. You ask the model about it: an `ask`'s answer goes straight
+into the plan (one `u` takes it out), a `validate`'s lands as ghost blocks you accept or reject. Plans live under `plans/` of the project (`[plans] dir`);
 durandal.nvim treats a markdown file there as a plan, and any other buffer after
 `:Durandal plan`.
 
@@ -213,7 +213,7 @@ main                3           5          0.0  2/3 (0 ?)       0.19         2  
   errand that failed before it reported one).
 - `reconciles` counts the branch's `reconcile` records; `reconcile s` is the seconds they spent
   in model calls, Jev's rung and the words call included (`--json`: `reconciles`, `reconcile_seconds`).
-- `accepted` is ghost blocks accepted / blocks decided, and in parentheses the blocks of answered
+- `accepted` is ghost blocks accepted / blocks decided (an `ask` written straight in counts as accepted), and in parentheses the blocks of answered
   errands no one has decided yet.
 - `sessions` counts Claude Code sessions that are not errands: a session whose id is some errand's
   session is that errand's and is never counted twice, whatever the errand's status. Each message
@@ -244,10 +244,10 @@ The fair comparison is a head-to-head: the same change made both ways.
 
 | key | |
 |---|---|
-| `<leader>mpq` | ask, on a `- ?` line |
+| `<leader>mpq` | ask, on a `- ?` line: the answer is written under it at once (verified claims with their `✓ <fp>`, accepted to the engine), one undo step; while you type in the plan it waits for insert mode to end, and a plan that is not modifiable gets a ghost instead. `plans = { review_answers = true }` keeps the old ghost block for `<leader>mpy` / `<leader>mpn` |
 | `<leader>mpv` | validate, on a claim or a `##` heading |
 | `<leader>mpd` | do, on a step or test child |
-| `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line (an accepted verified claim gains its `✓ <fp>`) |
+| `<leader>mpy` / `<leader>mpn` | accept / reject the ghost block on the line: a validate's, a no-git do's, or an ask's with `review_answers` (an accepted verified claim gains its `✓ <fp>`) |
 | `<leader>mpc` | force a reconcile (and run the touched steps' tests) |
 | `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
 | `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`) |

@@ -121,6 +121,9 @@ starting).
    `errands.jsonl` and a `plan-<verb>` line to the step log. The id (`errandId`,
    `Telemetry.hs:172`) is the runner's session id when it answered, so the editor's later
    `olifant/plans/outcome` notification (accepted or rejected, by block index) can name it.
+   durandal.nvim sends `accepted` for each block of an `ask` as soon as it lands, since it writes
+   the answer straight in (`plans.lua` `M.write_answer`, through `ghosts.lua` `M.accept_id`);
+   `plans.review_answers = true` brings back the ghost and the user's choice.
 
 Nothing is written to the plan. A `do` is different only in what surrounds it, below.
 
@@ -293,7 +296,7 @@ The plans requests, all in `Lsp.hs` (the line numbers are the handlers):
 | `olifant/plans/review/ready` | **notification**: a `do`'s review is saved |
 | `olifant/plans/reconcile` (`:732`) | the reconcile above |
 | `olifant/plans/stub`, `test` | a step's test written / run |
-| `olifant/plans/outcome` (`:791`) | **notification**: a block was accepted or rejected |
+| `olifant/plans/outcome` (`:791`) | **notification**: a block was accepted or rejected (an `ask`'s at once, unless the editor reviews answers) |
 | `textDocument/definition`, `hover`, `completion`, `codeLens`, `foldingRange` | `gd` on an anchor, the unit hover, `@` completion, review and delegation lenses, excerpt folds |
 
 All the slow ones go through `inBackground` and `planProgress` like the other slow requests
