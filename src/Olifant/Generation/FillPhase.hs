@@ -22,6 +22,7 @@ import Olifant.Generation.Steer (RoundHole (..), RoundState (..), Seed (..), Ste
 import Olifant.Generation.Tools (ProgressEvent (..), Tools (..))
 import Olifant.Holes (HoleSite (..), dedented)
 import Olifant.Language.Header (headerEnd)
+import Olifant.Provider (UnitAnswer (..), decodeUnits, lineCount, providerPure, textRequest)
 import Olifant.Language.TestUnits (TestUnit (..), testUnitsIn)
 import Olifant.Language
 import Olifant.Workspace (Workspace (..), pruned)
@@ -50,6 +51,12 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     -- by the language's [unit] query (spans at column 0), else its
     -- [unit] name over the lines at column 0
     topNames l text
+      -- a provider's: the answers no other answer holds
+      | Just p <- langUnitProvider l =
+          -- generic in its monad, so through the pure door ('providerPure')
+          pure $ case providerPure p (textRequest Nothing text []) >>= decodeUnits (lineCount text) of
+            Left _ -> topLevelNames l text
+            Right us -> nub [uaName u | u <- us, not (any (\o -> uaLine o <= uaLine u && uaEnd u <= uaEnd o && (uaLine o, uaEnd o) /= (uaLine u, uaEnd u)) us)]
       | null (langUnitKinds l) = pure (topLevelNames l text)
       | otherwise =
           querySyntax (toolSyntax tools) l (object ["any" .= [object ["kind" .= k] | k <- langUnitKinds l]]) text <&> \case

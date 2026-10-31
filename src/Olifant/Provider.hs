@@ -10,6 +10,10 @@ module Olifant.Provider
   ( Provider (..),
     runProvider,
     providerPure,
+    runProviderMemo,
+    textRequest,
+    providedUnits,
+    lineCount,
     providerTimeout,
     withVersion,
     UnitAnswer (..),
@@ -21,10 +25,11 @@ module Olifant.Provider
 where
 
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Data.Aeson (FromJSON (..), Result (..), ToJSON (..), Value (..), eitherDecodeStrict, encode, fromJSON, object, withObject, (.:), (.:?), (.=))
+import Data.Aeson (FromJSON (..), Key, Result (..), ToJSON (..), Value (..), eitherDecodeStrict, encode, fromJSON, object, withObject, (.:), (.:?), (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BL
+import Data.Functor ((<&>))
 import Data.List (find)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -83,11 +88,10 @@ runProvider (Provider argv root) request = case argv of
           pure (if exists then Just full else Nothing)
       | otherwise = findExecutable (T.unpack prog)
 
--- | 'runProvider' from pure code, memoised for the process by (argv, root,
--- request). The request holds the file's path and text, so an edited file
--- is asked again. Sound because a provider is pure by contract.
-providerPure :: Provider -> Value -> Either Text Value
-providerPure p request = unsafePerformIO $ do
+-- | 'runProvider', memoised for the process by (argv, root, request). The
+-- request holds the file's path and text, so an edited file is asked again.
+runProviderMemo :: Provider -> Value -> IO (Either Text Value)
+runProviderMemo p request = do
   let key = (provArgv p, provRoot p, BL.toStrict (encode request))
   M.lookup key <$> readMVar providerMemo >>= \case
     Just answer -> pure answer
@@ -97,7 +101,27 @@ providerPure p request = unsafePerformIO $ do
       modifyMVar_ providerMemo $ \m ->
         pure (M.insert key answer (if M.size m >= memoCap then M.empty else m))
       pure answer
+
+-- | 'runProviderMemo' from pure code (test units are read in pure code).
+-- Sound because a provider is pure by contract: the same request gives the
+-- same answer.
+providerPure :: Provider -> Value -> Either Text Value
+providerPure p request = unsafePerformIO (runProviderMemo p request)
 {-# NOINLINE providerPure #-}
+
+-- | A units, test-units or anchor request: the text, and its path when the
+-- caller knows it.
+textRequest :: Maybe FilePath -> Text -> [(Key, Value)] -> Value
+textRequest file text extra = object (["text" .= text] <> maybe [] (\f -> ["file" .= f]) file <> extra)
+
+-- | A units provider's answer for a text, checked against its lines.
+providedUnits :: Provider -> Maybe FilePath -> Text -> IO (Either Text [UnitAnswer])
+providedUnits p file text = runProviderMemo p (textRequest file text []) <&> (>>= decodeUnits (lineCount text))
+
+-- | A text's lines as an answer counts them: a last line without a newline
+-- is one.
+lineCount :: Text -> Int
+lineCount = length . T.lines
 
 -- | Past this many answers the memo starts over, so a long-lived server
 -- that sees many edits does not keep every text.

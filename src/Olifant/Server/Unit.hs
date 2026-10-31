@@ -10,6 +10,7 @@ module Olifant.Server.Unit
   , isStubIn
   , Named (..)
   , unitsOf
+  , unitAnswers
   , unitAround
   , unitNamed
   , unitNameIn
@@ -17,7 +18,7 @@ module Olifant.Server.Unit
   ) where
 
 import Control.Applicative ((<|>))
-import Data.Aeson (object, (.=))
+import Data.Aeson (Value, object, (.=))
 import Data.Bits (xor)
 import Data.ByteString qualified as BS
 import Data.Char (isAlphaNum, isSpace)
@@ -31,6 +32,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), TestDef (..), describeSyntaxFailure, regexName)
+import Olifant.Provider (UnitAnswer (..), providedUnits)
 import Olifant.Language.TestUnits (TestUnit (..), testCaseUnitAtIn)
 import Olifant.Server.Site (tshow)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
@@ -51,14 +53,22 @@ data Unit = Unit
 -- the first line that opens a block (`opens_block`, its comment cut).
 -- Left is one sentence on why there is none.
 unitAt :: Syntax IO -> Language -> Text -> Int -> IO (Either Text Unit)
-unitAt syntax lang text line
-  | null (langUnitKinds lang) = pure (Left (langName lang <> " has no [unit] kinds: Olifant cannot find a function or class in it"))
-  | otherwise =
-      querySyntax syntax lang rule text <&> \case
-        Left f -> Left (describeSyntaxFailure f)
-        Right ms -> maybe (Left ("no function or class at line " <> tshow line)) Right (pick [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms])
+unitAt syntax lang text line = case langUnitProvider lang of
+  -- a provider: the innermost answer holding the line, its body as a rule's
+  Just _ ->
+    unitAnswers syntax lang Nothing text <&> \case
+      Left why -> Left why
+      Right us -> case sortOn (\u -> (Down (uaLine u), uaEnd u)) [u | u <- us, uaLine u <= line, line <= uaEnd u] of
+        u : _ -> let d = defLine lang ls u in Right (Unit (uaName u) d (uaLine u, uaEnd u) (bodyOf lang ls d (uaEnd u)))
+        [] -> Left noUnit
+  Nothing
+    | null (langUnitKinds lang) -> pure (Left (noKinds lang))
+    | otherwise ->
+        querySyntax syntax lang (kindsRule lang) text <&> \case
+          Left f -> Left (describeSyntaxFailure f)
+          Right ms -> maybe (Left noUnit) Right (pick [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms])
   where
-    rule = object ["any" .= [object ["kind" .= k] | k <- langUnitKinds lang]]
+    noUnit = "no function or class at line " <> tshow line
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
     -- the innermost around the line: the latest start, then the earliest end
@@ -66,6 +76,40 @@ unitAt syntax lang text line
     unitOf (a, z) = do
       (d, n) <- listToMaybe [(i, n) | i <- [a .. z], Just n <- [unitNameIn lang (lineAt i)]]
       pure (Unit n d (a, z) (bodyOf lang ls d z))
+
+-- | Why a language without `[unit] kinds` (or a provider) has no units.
+noKinds :: Language -> Text
+noKinds lang = langName lang <> " has no [unit] kinds: Olifant cannot find a function or class in it"
+
+-- | The ast-grep rule for the language's `[unit] kinds`.
+kindsRule :: Language -> Value
+kindsRule lang = object ["any" .= [object ["kind" .= k] | k <- langUnitKinds lang]]
+
+-- | The units slot's answer for TEXT (at FILE, when the caller knows it).
+-- By rule: each match of `[unit] kinds` (1-based lines), named by
+-- 'unitNameIn' on the first line of its span that has a name (a match with
+-- none is no unit), in order of start, the longer first. By provider: the
+-- program's answer. 'unitsOf' folds either the same way.
+unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO (Either Text [UnitAnswer])
+unitAnswers syntax lang file text = case langUnitProvider lang of
+  Just p -> providedUnits p file text
+  Nothing
+    | null (langUnitKinds lang) -> pure (Left (noKinds lang))
+    | otherwise ->
+        querySyntax syntax lang (kindsRule lang) text <&> \case
+          Left f -> Left (describeSyntaxFailure f)
+          Right ms -> Right (concatMap named (sortOn (\(a, z) -> (a, Down z)) [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms]))
+  where
+    ls = T.splitOn "\n" text
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
+    named (a, z) = [UnitAnswer n a z Nothing | n <- take 1 [n | i <- [a .. z], Just n <- [unitNameIn lang (lineAt i)]]]
+
+-- | A unit's definition line: the first of its lines with a name by
+-- `[unit] name` (a decorator's unit is the def below it), else its first.
+defLine :: Language -> [Text] -> UnitAnswer -> Int
+defLine lang ls u = fromMaybe (uaLine u) (listToMaybe [i | i <- [uaLine u .. uaEnd u], isJust (unitNameIn lang (lineAt i))])
+  where
+    lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
 
 -- | The test case at LINE (1-based) of a test file in LANG as a unit (by
 -- `[test] unit`: hspec's `it`, which no `[unit]` kind is): named by its
@@ -152,19 +196,12 @@ data Named = Named {namedName :: Text, namedLines :: (Int, Int), namedDef :: Int
 -- one indentation separated only by blank lines (or touching) are one: a
 -- Haskell signature and its equations.
 unitsOf :: Syntax IO -> Language -> Text -> IO (Either Text [Named])
-unitsOf syntax lang text
-  | null (langUnitKinds lang) = pure (Left (langName lang <> " has no [unit] kinds: Olifant cannot find a function or class in it"))
-  | otherwise =
-      querySyntax syntax lang rule text <&> \case
-        Left f -> Left (describeSyntaxFailure f)
-        Right ms -> Right (qualify (joined (dedupe (concatMap named (sortOn (\(a, z) -> (a, Down z)) [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms])))))
+unitsOf syntax lang text =
+  unitAnswers syntax lang Nothing text <&> fmap (\us -> qualify (joined (dedupe [((uaLine u, uaEnd u), defLine lang ls u, uaName u) | u <- sortOn (\u -> (uaLine u, Down (uaEnd u))) us])))
   where
-    rule = object ["any" .= [object ["kind" .= k] | k <- langUnitKinds lang]]
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
-    nameOf = unitNameIn lang
     -- (span, def line, bare name)
-    named (a, z) = [((a, z), d, n) | (d, n) <- take 1 [(i, n) | i <- [a .. z], Just n <- [nameOf (lineAt i)]]]
     dedupe = foldl keep []
     keep acc u@(sp@(_, z), _, n) = case [() | (sp'@(_, z'), _, n') <- acc, sp' == sp || (n' == n && z' == z && contains sp' sp)] of
       [] -> acc ++ [u]

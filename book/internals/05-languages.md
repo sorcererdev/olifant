@@ -114,6 +114,16 @@ The seven tables you will touch most, with the code that reads each field:
 `unitsOf` (`:154`) lists every unit in a file, naming each by the first of `name`'s POSIX
 expressions that matches (its last group), `join` folding a Haskell signature and its equations
 into one. This is what conjure, mutate, stub, plan anchors and the plan fingerprint stand on.
+
+Both paths meet in `unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO
+(Either Text [UnitAnswer])`, the units slot. By rule it gives each `[unit] kinds` match as a
+`UnitAnswer` (its 1-based span, its name by `[unit] name`); with `langUnitProvider` it gives the
+program's answer (`Provider.providedUnits`, memoised by request). `unitsOf` sorts either by
+start (longer first) and folds it the same way: `defLine` (the first line `name` names, else the
+first), `dedupe`, `joined`, `qualify`. `unitAt` keeps its rule path; with a provider it takes the
+innermost answer holding the line, its body from `bodyOf` as before. `FillPhase`'s top-level
+names (the answers no other answer holds) read a provider through `providerPure`, since the fill
+phase is generic in its monad.
 `unit_words` (`langUnitWords`) is a sentence for prompts (`Errand.projectUnitWords`).
 
 ### `[test]`: running tests and finding them

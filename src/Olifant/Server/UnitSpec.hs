@@ -4,8 +4,10 @@ module Olifant.Server.UnitSpec (spec) where
 
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Language (Language (..), Match (..), Syntax (..), parseLanguage, parseOverShipped, querying)
+import Olifant.Language (Language (..), Match (..), Provider (..), Syntax (..), parseLanguage, parseOverShipped, querying)
 import Olifant.Server.Unit
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import Test.Hspec
 
 -- | A pack's real language file.
@@ -29,6 +31,20 @@ spec = do
   it "names a Rust fn; its body after its brace" $ do
     r <- unitAt (spans [(0, 2)]) rust "fn add(a: i32) -> i32 {\n    a\n}\n" 2
     fmap (\u -> (unitName u, unitBody u)) r `shouldBe` Right ("add", Just (2, 3))
+ describe "a units provider (4b m1)" $ do
+  here <- runIO getCurrentDirectory
+  let provided script = python {langUnitProvider = Just (Provider ["sh", T.pack ("testdata/providers" </> script)] (Just (here </> "src/Olifant")))}
+      -- the rule's query must not run when a provider answers
+      noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+      text = "import x\n\ndef add(a, b):\n    return a + b\n\n"
+  it "a units provider names the units" $ do
+    unitsOf noQuery (provided "units.sh") text `shouldReturn` Right [Named "add" (3, 5) 3]
+    r <- unitAt noQuery (provided "units.sh") text 4
+    fmap (\u -> (unitName u, unitDef u, unitLines u, unitBody u)) r `shouldBe` Right ("add", 3, (3, 5), Just (4, 5))
+    fmap unitName <$> unitAt noQuery (provided "units.sh") text 1 `shouldReturn` Left "no function or class at line 1"
+  it "a failing units provider is a Left with its reason" $ do
+    unitsOf noQuery (provided "fails.sh") text `shouldReturn` Left "no grammar"
+    fmap unitName <$> unitAt noQuery (provided "fails.sh") text 4 `shouldReturn` Left "no grammar"
  describe "the test at a line, else the unit (testOrUnitAt)" $ do
   it "a hspec it: the it, its body its own lines (not the spec's)" $ do
     let text = "spec :: Spec\nspec = describe \"M\" $ do\n  it \"a\" $ do\n    1 `shouldBe` 1\n  it \"b\" $ do\n    2 `shouldBe` 2\n"
