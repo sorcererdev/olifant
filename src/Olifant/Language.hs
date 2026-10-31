@@ -21,6 +21,7 @@ module Olifant.Language
   , definedNamesIn
   , signatureHead
   , functionMatches
+  , hasNoFunctionQueries
   , querySet
   , grammarLinked
   , hasUnits
@@ -47,7 +48,7 @@ import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
 import Olifant.Language.Captures (definedNames, genericPhrase, genericPhrases, oneContainer, renamedPhrases)
-import Olifant.Language.TreeSitter (capturesOf, definedName, definedNamesIn, functionMatches, grammarLabel, linkedGrammars, queriesFor, queriesOf, querySet, signatureHead, treeSitterAnchors)
+import Olifant.Language.TreeSitter (capturesOf, definedName, definedNamesIn, functionMatches, hasNoFunctionQueries, grammarLabel, linkedGrammars, queriesFor, queriesOf, querySet, signatureHead, treeSitterAnchors)
 
 -- | Is the language's grammar linked in, so the generic anchor phrases
 -- work on it?

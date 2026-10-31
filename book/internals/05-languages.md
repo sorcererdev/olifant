@@ -400,7 +400,7 @@ anchor phrases from community queries (design 4b §A).
   defined" (`Newness.newSince` takes the base's names from `definedNamesIn`) and callers notes;
   a signature (`signatureHead`: the text up to the definition's `body` field) for
   `finding_head`; `[migrate]`'s count without a `count` key (`App.countedIn` over
-  `functionMatches`: every `functionCaps` definition); and the folders a listing skips (each
+  `functionMatches`: the top-level `functionCaps` definitions: those inside no other function's byte span, so a method counts and a nested def, `let` or `where` binding does not; `MigrationReport.mrCountHint` says so when an unlinked language counted 0 for want of a `count` key, shown in `reportLine` and `count_hint`); and the folders a listing skips (each
   language's `ignore`, `Catalog.catalogIgnores`, `Workspace.ignoring`). `Newness`'
   `definitionKeywords`, `App`'s colon-scanning `signatureHead` and `Workspace.pruned`'s
   language folders are gone. `TestName`'s string prefixes and `self` move in m4.

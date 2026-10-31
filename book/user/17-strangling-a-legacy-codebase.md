@@ -44,7 +44,7 @@ It adds the target pack, the strangler pack (`python-strangler`), and
 legacy = ["legacy/**"]   # the legacy folders, as globs
 # base = "main"          # what "new" is measured from: the merge-base of HEAD and this
 # switches = "src/bistro/switches.py"   # the registry; when not set, the strangler pack's [switches] registry glob finds it
-# count = ["function_definition"]       # what a legacy function is, as node kinds; when not set, the language's functions
+# count = ["function_definition"]       # what a legacy function is, as node kinds; when not set, the language's top-level functions
 ```
 
 and records a baseline, so today's code passes ([chapter 2](02-running-generators.md#an-existing-repo-olifant-init---migrate)).
@@ -167,7 +167,7 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
 - **legacy functions added**: new legacy functions *without* an allowance (a delegate doesn't
   count; it carries `olifant:allow`);
 - **legacy N → M functions**: function definitions in the legacy globs (`[migrate] count`'s node
-  kinds; without it, every function and method the language's queries capture), at the base (over the base's own
+  kinds; without it, the language's top-level functions and methods, as its queries capture them: a method in a class counts, a function nested in another function or method (a Python inner `def`, a Haskell `let` or `where` binding) does not), at the base (over the base's own
   files, so a file deleted since counts there) and now; a file renamed with `git mv` is not new;
 - **switches**: the registry's, on and off (a trailing `# comment` on a line is fine).
 
@@ -259,6 +259,9 @@ An answer outside the options, or none, changes nothing. A `jev` backend ([chapt
   branch has another name.
 - **`rule-failed: … names {legacy}, but the project has no [migrate] legacy`.** A pack's rule
   uses `{legacy}` in a project that isn't migrating: `olifant init --migrate PATH`.
+- **The report counts 0 legacy functions, with `(counted 0: … has no linked grammar, so set \`count\`…)`.**
+  A language whose grammar olifant does not link has no queries to count by, so without
+  `[migrate] count` it counts nothing: list the node kinds of its functions in `count`.
 - **The report counts 0 switches.** The registry is not where it is looked for: set
   `[migrate] switches`. Or no configured pack has a `migrate.toml` with `[switches]`, so no
   registry line reads as a switch.

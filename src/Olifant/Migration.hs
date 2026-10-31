@@ -50,6 +50,8 @@ data MigrationReport = MigrationReport
     mrAddedLegacy :: [Text]
   , -- | switch markers in code that the registry lacks
     mrUnregistered :: [Text]
+  , -- | why the count is 0 when no `count` key and no linked grammar
+    mrCountHint :: Maybe Text
   }
   deriving stock (Eq, Show)
 
@@ -80,7 +82,7 @@ unregistered markers switches = [m | m <- markers, m `notElem` map swName switch
 -- | The PR line: what this branch moved, what legacy it added, the legacy
 -- left, and the switches.
 reportLine :: MigrationReport -> Text
-reportLine r = case (mrLegacyBase r, mrSwitchesBase r) of
+reportLine r = (<> maybe "" (\h -> " (" <> h <> ")") (mrCountHint r)) $ case (mrLegacyBase r, mrSwitchesBase r) of
   (Just before, Just names) ->
     let extracted = [swName s | s <- mrSwitches r, swName s `notElem` names]
         added = mrAddedLegacy r
@@ -104,6 +106,7 @@ migrationJson r =
     , "switches_base" .= mrSwitchesBase r
     , "added_legacy" .= mrAddedLegacy r
     , "unregistered" .= mrUnregistered r
+    , "count_hint" .= mrCountHint r
     , "line" .= reportLine r
     ]
 

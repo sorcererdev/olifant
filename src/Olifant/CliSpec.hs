@@ -187,6 +187,30 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     (_, out, _, _) <- runInBaseFiles (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf (\_ _ -> pure (Right ["legacy/views.py", "legacy/payments.py", "README.md"])) "/w" "" files False ["check"]
     let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
     (lookupKey "migration" v >>= lookupKey "line") `shouldBe` Just (Aeson.String "+0 extracted, 0 legacy functions added, legacy 4 → 2 functions; switches: 0 on, 0 off")
+  it "counts a Haskell function once: a `let` in its `do` and a `where` binding are not top-level" $ do
+    tmp <- getTemporaryDirectory
+    let hs = T.unlines ["close :: Int -> IO Int", "close x = do", "  let y = x", "  pure (helper y)", "  where", "    helper z = z + 1", "", "open :: Int", "open = 1"]
+    n <- legacyCount tmp "haskell" "**/*.hs" "legacy/Views.hs" hs
+    n `shouldBe` Just 2
+  it "counts Python class methods, not a def nested in a function; a plain module is as before" $ do
+    tmp <- getTemporaryDirectory
+    let py = T.unlines ["class Repo:", "    def save(self):", "        return 1", "", "    def load(self):", "        return 2", "", "def close(t):", "    def inner(x):", "        return x", "    return inner(t)"]
+    n <- legacyCount tmp "python" "**/*.py" "legacy/views.py" py
+    n `shouldBe` Just 3
+  it "says why the count is 0 for a language with no linked grammar and no `count` key" $ do
+    tmp <- getTemporaryDirectory
+    let files =
+          [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+          , ("/packs/p/languages/elm.toml", "files = [\"**/*.elm\"]\ncomment = \"--\"\ngrammar = { source = \"grammar/elm\" }\n")
+          , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"elm\"\n")
+          , ("/w/legacy/Main.elm", "main = 1\n")
+          ]
+        baseOf _ _ _ = pure (Right ("c0ffee", Nothing))
+    (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+    let Just v = Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+        line = lookupKey "migration" v >>= lookupKey "line"
+    (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Aeson.Number 0)
+    line `shouldSatisfy` maybe False (\(Aeson.String t) -> "set `count`" `T.isInfixOf` t)
   it "checks the files a {legacy} rule names (its [migrate] legacy globs)" $ do
     tmp <- getTemporaryDirectory
     let base = T.unlines ["def close_table(t):", "    return t"]
@@ -215,6 +239,23 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
     T.count "no-new-defs" out `shouldBe` 1
     out `shouldSatisfy` T.isInfixOf "\"start\":[7,1]"
+
+-- | The `legacy_now` of a one-file legacy project in a language (no `count` key).
+legacyCount :: FilePath -> Text -> Text -> FilePath -> Text -> IO (Maybe Int)
+legacyCount tmp lang glob file text = do
+  let files =
+        [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
+        , ("/packs/p/languages/" <> T.unpack lang <> ".toml", "files = [\"" <> glob <> "\"]\ncomment = \"" <> (if lang == "python" then "#" else "--") <> "\"\ngrammar = \"" <> lang <> "\"\n")
+        , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"" <> lang <> "\"\n")
+        , ("/w/" <> file, text)
+        ]
+      baseOf _ _ _ = pure (Right ("c0ffee", Nothing))
+  (_, out, _, _) <- runInBase (astGrepSyntax (tmp </> "olifant-test-cache")) baseOf "/w" "" files False ["check"]
+  pure $ do
+    v <- Aeson.decodeStrict (TE.encodeUtf8 out) :: Maybe Aeson.Value
+    lookupKey "migration" v >>= lookupKey "legacy_now" >>= \case
+      Aeson.Number n -> Just (round n)
+      _ -> Nothing
 
 runInBase :: Syntax IO -> (FilePath -> Text -> FilePath -> IO (Either Text (Text, Maybe Text))) -> FilePath -> Text -> [(FilePath, Text)] -> Bool -> [String] -> IO (ExitCode, Text, Text, Map FilePath Text)
 runInBase syntax base = runInBaseFiles syntax base (\_ _ -> pure (Left "no listing"))
