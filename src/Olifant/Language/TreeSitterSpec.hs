@@ -140,6 +140,9 @@ captureSpec = describe "tree-sitter captures" $ do
     it "a class's and an instance's declarations are their items" $ do
       let src = "class C a where\n  m :: a -> Int\n  m _ = 1\n\ninstance C Int where\n  m x = x\n"
       containers src ["instance", "C"] `shouldBe` Just (Right [((5, 5), 1)])
+      -- review I3: `class C` is the class, not its instances
+      -- (its signature and default equation are one item: one `m`)
+      containers src ["class", "C"] `shouldBe` Just (Right [((1, 2), 1)])
   it "every shipped query compiles and uses only known predicates" $
     forM_ linkedGrammars $ \g ->
       either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf g (queriesFor g) "") `shouldBe` Nothing

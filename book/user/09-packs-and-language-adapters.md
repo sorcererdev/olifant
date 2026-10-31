@@ -296,7 +296,7 @@ example   = "end of struct BillingService"
 | `[[mutate]]` | mutation operators, for `mutate` ([chapter 18](18-tdd-in-the-editor.md)): each a `name`, a `pattern` or ast-grep `rule`, and a `fix` or `transform = "increment"`. Python ships seventeen |
 | `ignore` | folder names a project's listings never enter (dependencies, build output, caches): Rust's `["target"]`, Python's `[".venv", "__pycache__", ".pytest_cache", "node_modules"]`, Haskell's `["dist-newstyle"]`, Elm's `["elm-stuff", "node_modules"]`. The project's languages' lists are joined; olifant itself keeps out only `.git` and, in a walk outside git, dot-folders |
 | `unit_words` | what a unit is in this language, as the plan prompts say it: "<Unit> is <unit_words> defined in that file". Python's is "a top-level class or function name (Name) or a method (Class.method)"; a project whose languages disagree, or one without the key, gets "a top-level function or type name (Name), or a method (Type.method)" |
-| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Elm lists its own. A language whose grammar olifant links in (Rust, Python, Haskell) needs none: its units are every function and class-like definition the grammar's queries capture, named by its name there, a decorated definition with its decorators, a Haskell signature with its equations. Without `kinds`, a provider or a linked grammar, `conjure` says the language has no unit kinds. A test's span, where its line starts a definition, is that definition's too (a string's outdented line, a Rust test's closing brace and a multi-line signature are the test's). `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
+| `[unit]` | `kinds`: the tree-sitter node kinds of a definition (a function, method or class) in this language, for `:Durandal conjure` ([chapter 18](18-tdd-in-the-editor.md#conjuring)): the innermost node of these kinds around the cursor is the unit conjured. Elm lists its own. A language whose grammar olifant links in (Rust, Python, Haskell) needs none: its units are every function and class-like definition the grammar's queries capture, named by its `@name` there (`[unit] name` then only finds a unit's definition line), a decorated definition with its decorators, a Haskell signature with its equations. A Rust trait impl is a unit named by its type (its methods are `Type.method`, as before), and a Haskell instance by its head (`C Int`, its methods `C Int.m`). A unit name that several units share (a struct and its impl) is reported as ambiguous by a plan anchor, never resolved to the first. Without `kinds`, a provider or a linked grammar, `conjure` says the language has no unit kinds. A test's span, where its line starts a definition, is that definition's too (a string's outdented line, a Rust test's closing brace and a multi-line signature are the test's). `name` (optional): a list of POSIX expressions over a unit's line; the first that matches names the unit by its **last group** (the whole match when it has none). A unit is named by the first line of its span that has a name (Python's decorated def by its `def` line). Without it, a unit is named by its line's first identifier. `join = true` (default false): units of one name, at one indentation, separated only by blank lines (or touching), are one unit — a Haskell signature and its equations. See [the Haskell example](#a-second-example-haskell). `kinds = { provider = [...] }` in place of the list: a program names the units instead ([providers](#providers-answering-a-slot-with-a-program)); its answers are qualified (`Outer.Inner`) by containment, and a unit's definition line is still the first of its lines that `name` names (else its first) |
 | `[holes.KIND]` | the kinds of typed hole this language has: what an unfilled one is written as (`placeholder`) and where a fill must parse (`wrap`). See [hole kinds](#hole-kinds-holeskind), below |
 | `keywords` | the language's reserved words (optional). Recognition keeps them as they are when it reads code by shape; every other name becomes its case shape ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)). The words in the pack's templates count too |
 | `separator`, `line_length` | what follows each item in brackets (`","`), and the longest line (default 88). With a separator an item can join a one-line container: inline when it fits, else the container goes one item per line ([chapter 3](03-anchors.md#rules-worth-knowing)). Python: `,`/88; Rust: `,`/100; Elm has none (its commas lead), so a one-line Elm list still refuses |
@@ -342,8 +342,9 @@ Its anchors are the generic phrases ([chapter 3](03-anchors.md#the-generic-phras
 from olifant's own Haskell queries (tree-sitter-haskell ships no tags), plus one declared
 target, `do in FUNCTION` (a function's outermost `do` block). `end of data SampleError` goes
 after the last constructor; `end of function f` after f's last equation (a function is its
-signature and its equations, so `f` is one place, not three); `end of class C`, `end of
-instance C` after the last declaration in its `where`; `end of imports` after the last
+signature and its equations, so `f` is one place, not three); `end of class C` (the class, never
+its instances) and `end of instance C` (C's instances, named by the class: one instance is
+one place) after the last declaration in its `where`; `end of imports` after the last
 import declaration.
 
 The `cabal-repl` preset runs `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}
@@ -1067,12 +1068,14 @@ The rules are ast-grep's rule language (`kind`, `regex`, `inside`, `has`, `not`,
 ast-grep needs a `kind` on every item rule, which is why `list in FUNCTION` lists every
 expression kind a list element can be.
 
-`call NAME` and `call NAME in FUNCTION` are a call's arguments (`wire` passes a command
-its adapter in `main.py`, a fake in a test); `parameters in FUNCTION` a function's
-parameters (`web-command` gives a router factory its command). All three want one item per
-line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a blank line
-between imports is a group, so a new import joins the last group) and `when_empty = "after
-header"` (in a file with no imports, the first goes under the docstring).
+Python's `call NAME`, `call NAME in FUNCTION` and `parameters in FUNCTION` are generic phrases
+now, not targets: a call's arguments (`wire` passes a command its adapter in `main.py`, a fake
+in a test) and a function's parameters (`web-command` gives a router factory its command).
+All three want one item per line, and an empty `CancelBooking()` opens. Its `imports` is a
+generic phrase too; the two facts its old target carried are the language's `[imports]
+spaced = false` (a blank line between imports is a group, so a new import joins the last
+group) and `[imports] when_empty = "after header"` (in a file with no imports, the first goes
+under the docstring).
 
 ### Overriding a language's queries
 
@@ -1091,8 +1094,8 @@ Python, Haskell) are read through tree-sitter query files shipped inside olifant
 The captures olifant reads are `@definition.*` with `@name` (a definition and its name),
 `@function.inner`, `@class.inner` (a definition's items), `@function.outer`, `@class.outer`
 (a unit's whole span), `@parameter.inner`, `@call.outer` and `@import`. A query set that does
-not compile is a load error naming the file and the byte, and the language is used with its
-shipped queries. `olifant doctor`'s `queries` row names each file's origin:
+not compile is a load error naming the file (and the byte, for a syntax error; an unknown
+predicate is named instead), and the language is used with its shipped queries. `olifant doctor`'s `queries` row names each file's origin:
 
 ```
 ✓ rust: queries — tree-sitter-rust 0.24.2; imports (project), impls, tags, textobjects (shipped)

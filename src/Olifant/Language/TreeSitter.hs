@@ -367,7 +367,7 @@ compileQueries lang g qs = modifyMVar compiled $ \cache -> case M.lookup (g, qs)
             -- each file's predicates were checked alone: these parse
             preds <- fmap (M.fromList . concat) . forM (if n == 0 then [] else [0 .. n - 1]) $ \p ->
               either (const []) (\ps -> [(p, ps) | not (null ps)]) <$> patternPredicates q p
-            let keep c = c `elem` readCaptures || "definition." `T.isPrefixOf` c
+            let keep c = c `elem` readCaptures || "definition." `T.isPrefixOf` c || "unit." `T.isPrefixOf` c
                 -- a capture a predicate reads stays in the match (not returned)
                 tested = concatMap predicateCaptures (concat (M.elems preds))
                 flag b = if b then 1 else 0

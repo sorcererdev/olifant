@@ -2127,7 +2127,7 @@ plansLoopSpec = describe "plans, stage 2" $ do
           p <- openDoc "plans/t.md" "markdown"
           mapM (fmap (titled "Show the code here") . sourceOnly p) [0, 1, 2, 3, 7]
         map reasons acts
-          `shouldBe` [ [Just "not on a step"], [Just "no anchor on this line"], [Just ("the anchor @" <> T.pack table <> ":nope does not resolve")]
+          `shouldBe` [ [Just "not on a step"], [Just "no anchor on this line"], [Just ("the anchor @" <> T.pack table <> ":nope does not resolve: no unit `nope`")]
                      , [Just "the step shows its code already"], [Just "the step's excerpt has no closing line"] ]
         [lookupKey "open" =<< (a ^. L.data_) | a <- acts !! 3] `shouldBe` [Just (Number 4)]
         -- asked for every action (the ⚡ menu), none of them disabled

@@ -123,7 +123,12 @@ kinds`, no provider) and a linked grammar, it gives every function and class-lik
 grammar's queries capture (`TreeSitter.definitionLines`, over `Captures.definitionSpans`): named
 by its `@name`, its span the definition's, widened to the largest `function.outer`/`class.outer`
 capture that ends with it and holds no other definition (a Python decorated def, decorators
-in), a Haskell signature and its equations already one (`adjacent`). Rust, Python and Haskell
+in), a Haskell signature and its equations already one (`adjacent`). Units read
+`Captures.unitDefinitions`: a phrase's definitions plus `@unit.*` captures no phrase reads
+(Rust's `impls.scm` tags a trait impl `@unit.impl`, named by its type, so its methods stay
+`Type.method`), each named by its match's `@name` and `@unit.name` texts in order.
+`Unit.unitLookup` reports a name several units share instead of taking the first, and a plan
+anchor that does not resolve says why (`Resolved.rsWhy`). Rust, Python and Haskell
 ship no `kinds` any more; they keep `name`, which `defLine`, `ownerHeader` and the other line
 readers (`App.definesIn`, `ConjureScan`, `Recognize`, `functionText`, `FillPhase`'s top-level
 names) still use. `hasUnits` (in `Olifant.Language`) is `hasUnitRule` or a linked grammar.
@@ -270,7 +275,9 @@ anchor phrases from community queries (design 4b §A).
   `from __future__ import`). For Haskell all three files are olifant's own, because
   tree-sitter-haskell ships no `tags.scm` and nvim-treesitter-textobjects' Haskell file has no
   class bodies: `tags.scm` tags a `signature`, `function` and `bind` as `@definition.function`,
-  `data_type` and `newtype` as `.type`, `class` and `instance` as `.class`;
+  `data_type` and `newtype` as `.type`, `class` as `.class`, and `instance` as
+  `@definition.instance` (named by its class for a phrase, `@unit.name` adding its type for its
+  unit: `C Int`);
   `textobjects.scm` makes a data type's constructors and a class's or instance's declarations
   `@class.inner`; `imports.scm` captures each `import` in the `imports` block (the block itself
   runs on to the next declaration under the grammar's layout). They carry no upstream
@@ -341,7 +348,8 @@ anchor phrases from community queries (design 4b §A).
   `Nothing` for a phrase that is not generic (`genericPhrase` is its shape), else every
   container the phrase names, in the file's order, each with its items. A definition is a
   `definition.*` capture with the `@name` of its match; `functionCaps` and `classCaps` are the
-  engine's table of which captures `function` and `class` mean, and any other kind word
+  engine's table of which captures `function` and `class` mean (`kindOnlyCaps`,
+  `definition.instance`, only a kind word reaches: `instance C`), and any other kind word
   narrows by node type (`struct` → `struct_item`, `mod` → `mod_item`). A definition's items are
   the `function.inner`/`class.inner` captures whose *nearest strictly enclosing* definition it
   is ("strictly": an impl with one method has the method as both item and definition), named

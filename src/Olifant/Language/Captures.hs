@@ -109,18 +109,39 @@ functionCaps, classCaps :: [Text]
 functionCaps = ["definition.function", "definition.method"]
 classCaps = ["definition.class", "definition.interface", "definition.module", "definition.type", "definition.impl"]
 
-data Def = Def {defCap :: Cap, defName :: Text}
+-- | A definition: its capture, the @name a phrase says, and the name its
+-- unit has (the match's @name and @unit.name, in order: a Haskell
+-- instance's head, `C Int`).
+data Def = Def {defCap :: Cap, defName :: Text, defUnitName :: Text}
 
--- | Definitions: a definition capture with the @name of its match.
+-- | The captures a phrase can name: functions, class-likes, and those only
+-- a kind word reaches (`instance C`: never `class C`).
+phraseCaps :: [Text]
+phraseCaps = functionCaps ++ classCaps ++ kindOnlyCaps
+
+-- | Definitions a kind word reaches but `function`/`class` never do.
+kindOnlyCaps :: [Text]
+kindOnlyCaps = ["definition.instance"]
+
+-- | Definitions: a phrase's definition capture with the @name of its match.
 definitions :: [Cap] -> [Def]
-definitions caps =
-  [ Def c (pText (capNode n))
+definitions = definitionsOver (`elem` phraseCaps)
+
+-- | A unit's definitions: a phrase's, and the captures only units read
+-- (`@unit.*`: a Rust trait impl, named by its type, which no phrase names).
+unitDefinitions :: [Cap] -> [Def]
+unitDefinitions = definitionsOver (\c -> c `elem` phraseCaps || ("unit." `T.isPrefixOf` c && c /= "unit.name"))
+
+definitionsOver :: (Text -> Bool) -> [Cap] -> [Def]
+definitionsOver wanted caps =
+  [ Def c (pText (capNode n)) (T.unwords [pText (capNode x) | x <- sortOn (pBytes . capNode) parts])
   | c <- caps
-  , capName c `elem` functionCaps ++ classCaps
-  , Just n <- [M.lookup (capMatch c) names]
+  , wanted (capName c)
+  , Just parts@(_ : _) <- [M.lookup (capMatch c) names]
+  , n : _ <- [[x | x <- parts, capName x == "name"]]
   ]
   where
-    names = M.fromList [(capMatch n, n) | n <- caps, capName n == "name"]
+    names = M.fromListWith (++) [(capMatch n, [n]) | n <- caps, capName n `elem` ["name", "unit.name"]]
 
 -- | The names of the definitions a phrase word takes (`function`, `class`,
 -- or a kind word), one per definition in the file's order (a struct and its
@@ -156,11 +177,16 @@ anchorFromCaptures root caps = \case
   [kind, name]
     | kind == "function" -> Just (Right (mapMaybe body (defsOf functionCaps name)))
     | kind == "class" -> Just (Right (mapMaybe body (defsOf classCaps name)))
-    | otherwise -> Just (Right (mapMaybe body [d | d <- defsOf (functionCaps ++ classCaps) name, kindOf kind (capNode (defCap d))]))
+    | otherwise -> Just (Right (mapMaybe body [d | d <- defsOf phraseCaps name, kindOf kind (capNode (defCap d))]))
   _ -> Nothing
   where
     defs = adjacent source (definitions caps)
     defNodes = nub (map (capNode . defCap) defs)
+    -- before 'adjacent' joined them, and the joined ones alone
+    rawDefNodes = nub (map (capNode . defCap) (definitions caps))
+    joinedNodes = [n | n <- defNodes, n `notElem` rawDefNodes]
+    -- d's own node, or (a joined definition) one of its parts
+    isOf dn r = r == dn || (dn `elem` joinedNodes && dn `encloses` r)
     -- one definition node may carry several captures (method and function)
     defsOf names n = let is = nameMatcher (map defName defs) n in sortOn (pBytes . capNode . defCap) (dedupe [d | d <- defs, is (defName d), capName (defCap d) `elem` names])
     dedupe ds = [d | (i, d) <- zip [0 :: Int ..] ds, capNode (defCap d) `notElem` [capNode (defCap e) | e <- take i ds]]
@@ -169,8 +195,12 @@ anchorFromCaptures root caps = \case
     -- d, named and not extra; none: the definition's `body`, empty
     body d =
       let dn = capNode (defCap d)
-          inners = [c | c <- caps, capName c `elem` ["function.inner", "class.inner"], dn `encloses` capNode c, nearest (capNode c) == Just dn]
-          items = nub [capNode c | c <- inners, pNamed (capNode c), not (pExtra (capNode c))]
+          inners = [c | c <- caps, capName c `elem` ["function.inner", "class.inner"], dn `encloses` capNode c, maybe False (isOf dn) (nearest (capNode c))]
+          -- an item that is part of a joined definition is that definition
+          joined i = case [j | j <- joinedNodes, j /= dn, j `encloses` i] of
+            j : _ -> j
+            [] -> i
+          items = nub [joined (capNode c) | c <- inners, pNamed (capNode c), not (pExtra (capNode c))]
           -- an inner capture that is the whole body (a Python block): the
           -- body is the container and its named children the items
           wholes = [(b, kids) | c <- inners, Just (b, kids) <- [wholeBody c]]
@@ -212,7 +242,7 @@ anchorFromCaptures root caps = \case
       Just args -> T.strip (TE.decodeUtf8Lenient (BS.take (fst (pBytes args) - fst (pBytes (capNode c))) (TE.encodeUtf8 (pText (capNode c)))))
       Nothing -> ""
     -- nearest strictly enclosing definition node of a node
-    nearest n = case sortOn size [dn | dn <- defNodes, dn /= n, dn `encloses` n] of
+    nearest n = case sortOn size [dn | dn <- rawDefNodes, dn /= n, dn `encloses` n] of
       d : _ -> Just d
       [] -> Nothing
     size p = snd (pBytes p) - fst (pBytes p)
@@ -262,15 +292,15 @@ data DefSpan = DefSpan {dsName :: Text, dsCapture :: Text, dsNode :: PNode, dsUn
 -- | Every function and class-like definition, in order ('definitionSpans').
 definitionsWith :: PNode -> [Cap] -> [DefSpan]
 definitionsWith root caps =
-  [ DefSpan (defName d) (capName (defCap d)) n (unitOf n) (listToMaybe [b | (f, b, _) <- capFields (defCap d), f == "body"])
-  | d <- nubOn (pBytes . capNode . defCap) (adjacent source (definitions caps))
+  [ DefSpan (defUnitName d) (capName (defCap d)) n (unitOf n) (listToMaybe [b | (f, b, _) <- capFields (defCap d), f == "body"])
+  | d <- nubOn (pBytes . capNode . defCap) (adjacent source (unitDefinitions caps))
   , let n = capNode (defCap d)
   ]
   where
     source = TE.encodeUtf8 (pText root)
     nubOn f = foldr (\x acc -> x : filter ((/= f x) . f) acc) []
     outers = [capNode c | c <- caps, capName c `elem` ["function.outer", "class.outer"]]
-    defNodes = [capNode (defCap d) | d <- definitions caps]
+    defNodes = [capNode (defCap d) | d <- unitDefinitions caps]
     within o x = fst (pBytes o) <= fst (pBytes x) && snd (pBytes x) <= snd (pBytes o)
     -- an outer range that holds no other definition than n and what n
     -- holds (a class's range ends with its last method, but is the class's)

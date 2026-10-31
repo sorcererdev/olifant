@@ -1392,7 +1392,7 @@ excerptAction env path only (Position l _) =
     (s', Just (_, project)) | isPlanPath project path -> do
       text <- documentText env path
       case excerptStep text (fromIntegral l) of
-        Right (_, a) -> resolveAnchor s' project a <&> \r -> (s', [if isJust (rsUnit r) then Right () else Left ("the anchor " <> anchorText a <> " does not resolve", Nothing)])
+        Right (_, a) -> resolveAnchor s' project a <&> \r -> (s', [if isJust (rsUnit r) then Right () else Left ("the anchor " <> anchorText a <> " does not resolve" <> maybe "" (": " <>) (rsWhy r), Nothing)])
         Left why -> pure (s', [Left why])
     (s', _) -> pure (s', [])) >>= \found -> do
     version <- fmap fst . M.lookup path . ssDocs <$> readMVar (envState env)

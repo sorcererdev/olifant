@@ -7,7 +7,9 @@
 (data_type name: (name) @name) @definition.type
 (newtype name: (name) @name) @definition.type
 (class name: (name) @name) @definition.class
-(instance name: (name) @name) @definition.class
+; an instance: named by its class for a phrase (`end of instance C`), by
+; its head for a unit (`C Int`); `class C` never reaches it
+(instance name: (name) @name patterns: (_)? @unit.name) @definition.instance
 (signature name: (prefix_id) @name) @definition.function
 (function name: (prefix_id) @name) @definition.function
 ; an infix equation (`a <+> b = …`), named by its operator: it joins its

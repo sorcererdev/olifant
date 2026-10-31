@@ -13,6 +13,7 @@ module Olifant.Server.Unit
   , unitAnswers
   , unitAround
   , unitNamed
+  , unitLookup
   , unitNameIn
   , fingerprint
   ) where
@@ -247,11 +248,18 @@ unitAround syntax lang file text line =
 -- | The unit called NAME: the exact qualified name (the earliest of several),
 -- or a bare name that is the last part of exactly one qualified name.
 unitNamed :: Text -> [Named] -> Maybe Named
-unitNamed name ns = case sortOn namedLines [n | n <- ns, namedName n == name] of
-  n : _ -> Just n
+unitNamed name = either (const Nothing) Just . unitLookup name
+
+-- | 'unitNamed', with why there is none: no such unit, or a name several
+-- units have (never the first of them silently).
+unitLookup :: Text -> [Named] -> Either Text Named
+unitLookup name ns = case sortOn namedLines [n | n <- ns, namedName n == name] of
+  [n] -> Right n
+  dups@(_ : _) -> Left ("`" <> name <> "` names " <> tshow (length dups) <> " units (lines " <> T.intercalate ", " [tshow (fst (namedLines n)) | n <- dups] <> ")")
   [] -> case [n | n <- ns, ("." <> name) `T.isSuffixOf` namedName n] of
-    [n] -> Just n
-    _ -> Nothing
+    [n] -> Right n
+    [] -> Left ("no unit `" <> name <> "`")
+    several -> Left ("`" <> name <> "` names " <> tshow (length several) <> " units (" <> T.intercalate ", " (map namedName several) <> ")")
 
 -- | The name on a unit's line by the language's `[unit] name` expressions:
 -- the first that matches gives its last group (the whole match when it has
