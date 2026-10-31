@@ -6,4 +6,4 @@
 # (queries/tags.scm) would let olifant vendor it like Rust's and Python's.
 tags.scm         olifant: @definition.function (signature, function, bind), .type (data, newtype), .class (class, instance)
 textobjects.scm  olifant: @class.inner (a data type's constructors, a class's or instance's declarations)
-imports.scm      olifant: the imports block, whole
+imports.scm      olifant: each import declaration in the imports block

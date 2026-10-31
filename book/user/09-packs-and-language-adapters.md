@@ -343,8 +343,8 @@ from olifant's own Haskell queries (tree-sitter-haskell ships no tags), plus one
 target, `do in FUNCTION` (a function's outermost `do` block). `end of data SampleError` goes
 after the last constructor; `end of function f` after f's last equation (a function is its
 signature and its equations, so `f` is one place, not three); `end of class C`, `end of
-instance C` after the last declaration in its `where`; `end of imports` after the import
-block.
+instance C` after the last declaration in its `where`; `end of imports` after the last
+import declaration.
 
 The `cabal-repl` preset runs `cabal repl -v0 --builddir={= cache =}/dist-repl-{= context =}
 --repl-options=-fno-code --repl-options=-fdiagnostics-as-json --repl-options=-Wincomplete-patterns

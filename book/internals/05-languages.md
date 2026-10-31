@@ -272,7 +272,8 @@ anchor phrases from community queries (design 4b §A).
   class bodies: `tags.scm` tags a `signature`, `function` and `bind` as `@definition.function`,
   `data_type` and `newtype` as `.type`, `class` and `instance` as `.class`;
   `textobjects.scm` makes a data type's constructors and a class's or instance's declarations
-  `@class.inner`; `imports.scm` captures the `imports` block whole. They carry no upstream
+  `@class.inner`; `imports.scm` captures each `import` in the `imports` block (the block itself
+  runs on to the next declaration under the grammar's layout). They carry no upstream
   licence. The place to upstream them is tree-sitter-haskell's `queries/tags.scm` (and
   nvim-treesitter-textobjects for the inner ranges), after which they would be vendored like
   Rust's. Haskell's `parser.c` is 19.8 MB; it compiles clean at `-O2` in under a second. `SOURCES` pins each vendored file to a commit and lists any line
@@ -359,7 +360,8 @@ anchor phrases from community queries (design 4b §A).
   capture (an empty body), the container is the definition's `body` field, empty, which
   placement opens. `parameters in F` reads the function's `parameters` field (type parameters
   are a direct child too, so a capture alone would not do), a call is named by its text up to
-  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`);
+  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`: a
+  direct child of the file, or of a top-level node that holds no definition, Haskell's block);
   in a file with none, `Resolve.named` puts a first import after the file's header
   (`headerEnd`) when the language's `[imports] when_empty = "after header"` (Python's), and
   spaces `end of imports` unless its `[imports] spaced = false` (Python's: a blank line there

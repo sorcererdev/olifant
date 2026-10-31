@@ -520,7 +520,7 @@ capture :: Ctx -> Ptr Word32 -> Ptr TSNode -> Ptr TSNode -> Text -> Text -> Int 
 capture ctx facts root node name file pIx mi = do
   n <- pnode ctx facts node
   -- the parent only where the rule reads it: an inner node's container
-  parent <- if ".inner" `T.isSuffixOf` name then allocaBytes size (\p -> c_parent node p >> pnodeMaybe ctx facts p) else pure Nothing
+  parent <- if ".inner" `T.isSuffixOf` name || name == "import" then allocaBytes size (\p -> c_parent node p >> pnodeMaybe ctx facts p) else pure Nothing
   top <- if name == "import" then topLevel else pure Nothing
   -- fields only where the rule reads them: definitions and calls
   let wanted

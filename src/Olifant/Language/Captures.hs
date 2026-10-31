@@ -27,7 +27,7 @@ module Olifant.Language.Captures
 import Data.ByteString qualified as BS
 import Data.List (nub, sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -140,8 +140,11 @@ anchorFromCaptures :: PNode -> [Cap] -> [Text] -> Maybe (Either Text [(Match, [M
 anchorFromCaptures root caps = \case
   -- after the last top-level import (imports.scm, olifant's own)
   ["imports"] ->
-    -- top-level import statements only (a `use` inside `mod tests` is not one)
-    let tops = nub [capNode c | c <- caps, capName c == "import", capTop c == Just (capNode c)]
+    -- top-level import statements only (a `use` inside `mod tests` is not
+    -- one): the import is a direct child of the file, or of a top-level
+    -- node that holds no definition (Haskell's `imports` block)
+    let topLevel c = capTop c == Just (capNode c) || (isJust (capTop c) && capParent c == capTop c && maybe False (\t -> not (any (t `encloses`) defNodes)) (capTop c))
+        tops = nub [capNode c | c <- caps, capName c == "import", topLevel c]
      in Just (Right [(toMatch root, map toMatch (sortOn pBytes tops)) | not (null tops)])
   ["parameters", "in", f] -> Just (Right (mapMaybe (\d -> field "parameters" (defCap d) "parameter.inner") (defsOf functionCaps f)))
   ["call", name] -> Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, nameIs name (callName c)]))
