@@ -26,7 +26,9 @@ containers :: Text -> [Text] -> Maybe (Either Text [(Match, [Match])])
 containers file ws = either (error . T.unpack) (\(root, caps) -> anchorFromCaptures root caps ws) (capturesOf "rust" (queriesFor "rust") file)
 
 lineOf :: Text -> Text -> Int
-lineOf file needle = head [i | (i, l) <- zip [0 ..] (T.lines file), needle `T.isInfixOf` l]
+lineOf file needle = case [i | (i, l) <- zip [0 ..] (T.lines file), needle `T.isInfixOf` l] of
+  i : _ -> i
+  [] -> error ("no line holds " <> T.unpack needle)
 
 tests :: Text
 tests = T.unlines ["use std::sync::Arc;", "use crate::a::B;", "", "pub struct Empty {}", "", "pub enum E {", "    One,", "    // Two,", "}", "", "pub fn run(x: i64) -> i64 {", "    let y = x;", "    y", "}", "", "#[cfg(test)]", "mod tests {", "    use super::*;", "", "    #[test]", "    fn it_runs() {", "        assert_eq!(run(1), 1);", "    }", "}"]

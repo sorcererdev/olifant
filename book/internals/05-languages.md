@@ -256,9 +256,33 @@ anchor phrases from community queries (design 4b §A).
   `PNode` has its type, start and end as 0-based (line, column) with columns in characters (as
   ast-grep's `Match` counts them; tree-sitter counts bytes, `pnode` converts), its byte range,
   text, and whether it is named or extra. Each query set is compiled once per process
-  (`compiled`, keyed by grammar and query set) and pruned to the captures the rule reads
-  (`readCaptures` and every `definition.*`), so the others cost nothing at match time. A query
-  that does not compile is a `Left` naming the file, the byte and the kind of error.
+  (`compiled`, keyed by grammar and query set), as **one** query (the files joined), so the
+  tree is walked once for all of them; each file is also compiled alone first, so a query
+  that does not compile is a `Left` naming the file, the byte and the kind of error, and a
+  capture's `capFile`/`capPattern` are recovered from each file's first pattern index. The
+  query is pruned (`ots_prune`) to the captures the rule reads (`readCaptures` and every
+  `definition.*`), and a pattern whose only kept capture is a bare `@name` (tags.scm's
+  references) is disabled, so the others cost nothing at match time.
+- **What is marshalled.** A node's facts come in one C call (`ots_facts`: bytes, rows, byte
+  columns, symbol, flags); its type is the grammar's symbol name from a table read once
+  (`symbolTable`). Its text and character columns are lazy, since most nodes are only compared.
+  A capture's parent is read only for `.inner` captures, and fields only where the rule reads
+  them (a definition's `body` and `parameters`, a call's `arguments`), with the children of a
+  parameter or argument list but not of a body (a body's items are its inner captures).
+- **The cache.** `capturesOf` keeps its last 16 answers (`answers`, `cacheBound`), most
+  recent first, keyed by (grammar, query set, text). The LSP asks about one document again and
+  again, and a generator's edits ask about one file several times: a request on the same text
+  skips the parse and the marshalling. A changed text is another key, so a stale tree never
+  answers; the oldest entry goes when a 17th text arrives (`cacheSize`, for the spec). Two
+  threads that miss at once both compute the same pure answer; the list is updated with
+  `atomicModifyIORef'`, and no lock is held while parsing.
+- **What it costs.** Measured with `OLIFANT_TS_BENCH=<dir>` (the opt-in example in
+  `TreeSitterSpec`, `<dir>` holding lock_api's `rwlock.rs` as `big.rs` and main's
+  `rust.toml` with its declared targets as `rust-main.toml`), medians of 20 in the test build:
+  `end of struct BillingService` on the fixture's `service.rs` 0.11 ms cold, 0.01 ms cached
+  (ast-grep: 4.2 ms); `end of struct RwLock` on the 3,130-line `rwlock.rs` 12 ms cold, 0.9 ms
+  cached (ast-grep: 15 ms). The C floor on that file is about 2.7 ms to parse and 4 ms to run
+  the queries.
 - **The rule.** `Captures.anchorFromCaptures root caps words` is the generic anchor rule, pure:
   `Nothing` for a phrase that is not generic (`genericPhrase` is its shape), else every
   container the phrase names, in the file's order, each with its items. A definition is a

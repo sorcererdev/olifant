@@ -19,18 +19,6 @@ TSTree *ots_parse(const TSLanguage *lang, const char *src, uint32_t len) {
 
 void ots_root(TSTree *t, TSNode *out) { *out = ts_tree_root_node(t); }
 
-uint32_t ots_start_byte(const TSNode *n) { return ts_node_start_byte(*n); }
-uint32_t ots_end_byte(const TSNode *n) { return ts_node_end_byte(*n); }
-/* row and column (bytes) of a node's start and end, into out[4] */
-void ots_points(const TSNode *n, uint32_t *out) {
-  TSPoint s = ts_node_start_point(*n), e = ts_node_end_point(*n);
-  out[0] = s.row; out[1] = s.column; out[2] = e.row; out[3] = e.column;
-}
-int ots_is_null(const TSNode *n) { return ts_node_is_null(*n); }
-int ots_is_named(const TSNode *n) { return ts_node_is_named(*n); }
-int ots_is_extra(const TSNode *n) { return ts_node_is_extra(*n); }
-const char *ots_type(const TSNode *n) { return ts_node_type(*n); }
-int ots_eq(const TSNode *a, const TSNode *b) { return ts_node_eq(*a, *b); }
 void ots_parent(const TSNode *n, TSNode *out) { *out = ts_node_parent(*n); }
 void ots_field(const TSNode *n, const char *name, uint32_t len, TSNode *out) {
   *out = ts_node_child_by_field_name(*n, name, len);
@@ -70,15 +58,29 @@ int ots_next(TSQueryCursor *c, uint32_t max, TSNode *nodes, uint32_t *ids, uint3
 uint32_t ots_capture_count(const TSQuery *q) { return ts_query_capture_count(q); }
 
 /* Keep only the captures flagged in @keep (by capture id), and the patterns
- * that still have one; the rest cost nothing at match time. */
-void ots_prune(TSQuery *q, const uint8_t *keep) {
+ * that hold one flagged in @anchor (a capture worth a match on its own: not
+ * a bare @name, which every reference pattern has); the rest cost nothing at
+ * match time. */
+void ots_prune(TSQuery *q, const uint8_t *keep, const uint8_t *anchor) {
   uint32_t nc = ts_query_capture_count(q), np = ts_query_pattern_count(q);
   for (uint32_t p = 0; p < np; p++) {
     int any = 0;
     for (uint32_t c = 0; c < nc && !any; c++)
-      if (keep[c] && ts_query_capture_quantifier_for_id(q, p, c) != TSQuantifierZero) any = 1;
+      if (anchor[c] && ts_query_capture_quantifier_for_id(q, p, c) != TSQuantifierZero) any = 1;
     if (!any) ts_query_disable_pattern(q, p);
   }
   for (uint32_t c = 0; c < nc; c++)
     if (!keep[c]) { uint32_t len; const char *s = ts_query_capture_name_for_id(q, c, &len); ts_query_disable_capture(q, s, len); }
+}
+
+/* A node's facts in one call: start and end byte, start row and column,
+ * end row and column (bytes), its symbol (aliases resolved, as ts_node_type
+ * names it), and flags (1: named, 2: extra, 4: null). */
+void ots_facts(const TSNode *n, uint32_t *out) {
+  if (ts_node_is_null(*n)) { memset(out, 0, 8 * sizeof(uint32_t)); out[7] = 4; return; }
+  TSPoint s = ts_node_start_point(*n), e = ts_node_end_point(*n);
+  out[0] = ts_node_start_byte(*n); out[1] = ts_node_end_byte(*n);
+  out[2] = s.row; out[3] = s.column; out[4] = e.row; out[5] = e.column;
+  out[6] = ts_node_symbol(*n);
+  out[7] = (ts_node_is_named(*n) ? 1 : 0) | (ts_node_is_extra(*n) ? 2 : 0);
 }
