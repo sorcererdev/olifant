@@ -6,7 +6,7 @@ module Olifant.Server.Errand
   , Denial (..), denialsIn
   , statusName, runnerArgs, runClaude
   , Grounded (..), Ghost (..), Block (..)
-  , errandPrompt, anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
+  , errandPrompt, anchorRule, projectUnitWords, defaultUnitWords, doTestCommand, doTestTools, testWords, parseAnswer, doAnswered, groundingLimit, cutBody
   ) where
 
 import Data.Aeson (Value (..), decodeStrict)
@@ -27,6 +27,7 @@ import Olifant.Plans (Anchor (..), Kind (..), Line (..), Section (..), anchorTex
 import Olifant.Process (Cancel, runBytesCancellable)
 import Olifant.Process qualified as P
 import System.Exit (ExitCode (..))
+import System.FilePath (dropTrailingPathSeparator)
 
 data Verb = Ask | Validate | Do deriving (Eq, Show)
 
@@ -192,6 +193,17 @@ doTestCommand cmd = case testWords cmd of
   [] -> Nothing
   ws -> Just (T.unwords [if w == "{= tests =}" then "<test file, or file::test>" else w | w <- ws])
 
+-- | The `do`'s allowed tools for the project's test command CMD: the
+-- command as the prompt prints it ('doTestCommand'), up to its tests slot,
+-- as a prefix pattern; a program given by an absolute path inside ROOT is
+-- allowed by its project-relative path too. None without a command.
+doTestTools :: FilePath -> [Text] -> [Text]
+doTestTools root cmd = case takeWhile (/= "{= tests =}") (testWords cmd) of
+  [] -> []
+  ws@(prog : rest) -> pat ws : [pat (rel : rest) | Just rel <- [T.stripPrefix (T.pack (dropTrailingPathSeparator root) <> "/") prog], not (T.null rel)]
+  where
+    pat ws = "Bash(" <> T.unwords ws <> "*)"
+
 -- | A plan's TEXT without its excerpts: the model is grounded on the unit
 -- already.
 withoutExcerpts :: Text -> Text
@@ -245,11 +257,12 @@ errandPrompt verb unitWords testCmd plan ls target grounded =
         , "The ✗ and ✓ lines go only after a claim line. At most 6 inserted lines in total."
         , anchorRule unitWords, noProse ]
       Do ->
-        [ "Implement it here: edit the code, keep the change minimal, follow this repository's conventions."
+        [ "Your tools: Read, Grep and Glob to read; Edit and Write to change files. Change files only with Edit and Write, never through the shell: no heredoc, no `cat >`, no `sed -i`, no `python -`."
         , case testCmd of
-            Just c -> "To run tests, the one command you may run is exactly `" <> c <> "`, from the project root: no pipe, no redirect, no `cd` before it, no other command."
+            Just c -> "The one shell command you may run is exactly `" <> c <> "` (to run tests), from the project root, with the path as written here: no pipe, no redirect, no `cd` before it. Any other command is refused, and a refused command only costs you a turn."
             Nothing -> "You may not run commands."
         , "After your change lands, Olifant runs the step's tests itself: tests you could not run are never a reason for BLOCKED."
+        , "Implement it here: edit the code, keep the change minimal, follow this repository's conventions."
         , "When you are finished, your final message is only"
         , "one line per unit you created or changed, exactly"
         , "DONE @<path>:<Unit>"

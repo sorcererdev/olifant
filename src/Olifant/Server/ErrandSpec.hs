@@ -154,6 +154,23 @@ spec = describe "Olifant.Server.Errand (the claude -p runner)" $ do
       d `shouldSatisfy` (not . T.isInfixOf "SECRET")
       d `shouldSatisfy` (not . T.isInfixOf "```python @src/a.py:Foo")
       d `shouldSatisfy` T.isInfixOf "STEP: the step @src/a.py:Foo\n  - test: it works @tests/t.py:test_it"
+    it "a do's test tool is the command as the prompt prints it, up to the tests slot; an absolute program in the project by its relative path too" $ do
+      doTestTools "/p" ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "{= tests =}"]
+        `shouldBe` ["Bash(uv run --quiet --frozen pytest -q*)"]
+      doTestTools "/w/night" ["/w/night/.venv/bin/pytest", "-q", "{= tests =}", "-x"]
+        `shouldBe` ["Bash(/w/night/.venv/bin/pytest -q*)", "Bash(.venv/bin/pytest -q*)"]
+      doTestTools "/w/night" ["/usr/bin/pytest", "{= tests =}"] `shouldBe` ["Bash(/usr/bin/pytest*)"]
+      doTestTools "/p" [] `shouldBe` []
+    it "a do's prompt says its tools up front: files only by Edit and Write, the one command, the engine runs the tests" $ do
+      let d = errandPrompt Do pyWords (Just "pytest -q <test file, or file::test>") plan ls step []
+          before x = T.length (fst (T.breakOn x d))
+      d `shouldSatisfy` T.isInfixOf "Edit and Write"
+      d `shouldSatisfy` T.isInfixOf "heredoc"
+      d `shouldSatisfy` T.isInfixOf "`sed -i`"
+      d `shouldSatisfy` T.isInfixOf "`python -`"
+      d `shouldSatisfy` T.isInfixOf "exactly `pytest -q <test file, or file::test>`"
+      before "Edit and Write" < before "Implement it here" `shouldBe` True
+      errandPrompt Do pyWords Nothing plan ls step [] `shouldSatisfy` T.isInfixOf "You may not run commands"
     it "a do's prompt names the test command exactly, with no pipe or cd, and says the engine runs the tests" $ do
       let cmd = ["env", "UV_PROJECT_ENVIRONMENT={= cache =}/venv-{= context =}", "uv", "run", "--quiet", "--frozen", "pytest", "-q", "{= tests =}"]
       doTestCommand cmd `shouldBe` Just "uv run --quiet --frozen pytest -q <test file, or file::test>"

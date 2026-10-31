@@ -2740,7 +2740,7 @@ doReviewSpec = describe "olifant/plans (the do review)" $ do
         before <- blockMove reviewP (object [docOf p, "id" .= rid])
         (before,) <$> choose p rid "allow"
       b <- either (fail . T.unpack) pure before
-      at ["denied"] b `shouldBe` Just (Array (pure (String "tried `python -m pytest t.py` 2 times; not allowed.") <> pure (String "Allowed: `uv run \8230`.")))
+      at ["denied"] b `shouldBe` Just (Array (pure (String "tried `python -m pytest t.py` 2 times; not allowed.") <> pure (String "Allowed: `uv run --quiet --frozen pytest -q -rA --tb=short -p no:cacheprovider \8230`.")))
       map (lookupKey "key") (arr (at ["offers"] b)) `shouldBe` map (Just . String) ["a", "r", "o", "t", "p"]
       c <- either (fail . T.unpack) pure chosen
       lookupKey "said" c `shouldBe` Just (String "allowed Bash(python -m pytest*) in .olifant/config.toml")

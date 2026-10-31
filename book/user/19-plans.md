@@ -54,7 +54,10 @@ it. A name the file does not have says so: `Nope is not in src/Olifant/PlansSpec
   - **validate** (on a claim, or a `##` heading for the section): checks claims against the
     units' code and answers verdicts and evidence.
   - **do** (on a step or test child): does the step in the repository, with edit rights and the
-    project's test command, which its prompt names exactly (no pipe, no `cd`). It is told Olifant
+    project's test command, which its prompt names exactly (no pipe, no `cd`) as the one shell
+    command it may run, the path as you configured it (an absolute program inside the project
+    is allowed by its relative path too). Its prompt says up front that files change only through
+    its Edit and Write tools, never a shell heredoc, `cat >`, `sed -i` or `python -`. It is told Olifant
     runs the step's tests after it, so tests it could not run are no reason to answer `BLOCKED`. A
     `DONE` of the step's own unit is no `also` line. In a git repository a `do` ends in a review ([below](#reviews-and-the-journal)): its diff, and `revert` to undo it.
   The prompt holds the plan and the bodies of the units it anchors. The answer is read against the

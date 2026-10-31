@@ -107,10 +107,18 @@ starting).
    (`take groundingLimit`), and each found unit's body is cut (`cutBody`) into a `Grounded`.
 3. **Build the prompt** (`errandPrompt`): the plan, the target line, the grounded units, the
    language's `unit_words` (`projectUnitWords`) so the model knows what an anchor may name, and
-   for a `do` the project's exact test command (`doTestCommand`, from `[test] command`).
+   for a `do` its tools first (files only by `Edit` and `Write`, never a shell heredoc, `cat >`,
+   `sed -i` or `python -`), then the project's exact test command as the one shell command it may
+   run (`doTestCommand`, from `[test] command`, the path as configured), and that Olifant runs
+   the tests after the change.
 4. **Run the runner** (`runClaude`, `Errand.hs:74`): `[plans] runner` with `-p
    --output-format json --model <model>` and `--allowedTools Read,Grep,Glob` (a `do` adds
    `Edit`, `Write`, the test tool and `[plans] do_tools`, and `--permission-mode acceptEdits`).
+   The test tool (`doTestTools`, `Errand.hs`; `testTools` in `Server/Plans.hs`) is the command as
+   the prompt prints it, up to its `{= tests =}` slot, as a prefix pattern
+   (`Bash(uv run --frozen pytest -q*)`), and, when its program is an absolute path inside the
+   project, the same by its project-relative path. (`allowPattern`, what `p` adds for a
+   denial, is still a command's first two words.)
    `CLAUDECODE` is unset for it. It never throws: a failure is a `RunFailure` with a `Status`
    (`Error | Timeout | Cancelled`) and one sentence.
 5. **Read the answer** (`parseAnswer`): lines outside the grammar are dropped and counted;

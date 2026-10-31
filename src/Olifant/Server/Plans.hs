@@ -36,7 +36,7 @@ import Data.Text.Encoding qualified as TE
 import Olifant.Language.Adapter (Language (..), TestDef (..))
 import Olifant.Plans (Kind (..), childrenOf)
 import Olifant.Process (Cancel, runBytes)
-import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, errandPrompt, projectUnitWords, testWords, groundingLimit, parseAnswer, runClaude, statusName)
+import Olifant.Server.Errand (Block (..), Ghost (..), Grounded (..), RunFailure (..), RunResult (..), Status (..), Verb (..), cutBody, doAnswered, doTestCommand, doTestTools, errandPrompt, projectUnitWords, groundingLimit, parseAnswer, runClaude, statusName)
 import Olifant.Server.LoopTypes (Fact (..))
 import Data.Time (getCurrentTimeZone)
 import Olifant.Server.Journal (DoEnd (..), doEvent)
@@ -453,11 +453,11 @@ gitText root args =
     Right (ExitSuccess, out, _) -> Just (TE.decodeUtf8Lenient out)
     _ -> Nothing
 
--- | A `do`'s test tool: the first two words of the project's test command
--- (past an `env` and its assignments), e.g. `Bash(uv run*)`; none without
--- a `[test]`.
+-- | A `do`'s test tools: the project's (first) test command as its prompt
+-- prints it, up to the tests slot ('doTestTools'), e.g.
+-- `Bash(uv run --frozen pytest -q*)`; none without a `[test]`.
 testTools :: Project -> [Text]
-testTools p = take 1 ["Bash(" <> T.unwords (take 2 ws) <> "*)" | ws <- map testWords (projectTests p), not (null ws)]
+testTools p = take 1 [ts | ts <- map (doTestTools (prRoot p)) (projectTests p), not (null ts)] >>= id
 
 -- | The project's test commands, the first language's first.
 projectTests :: Project -> [[Text]]
