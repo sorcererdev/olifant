@@ -54,7 +54,7 @@ import Olifant.Glob (matchesGlob)
 import Data.Bifunctor (first)
 import Data.Functor ((<&>))
 import Data.Char (isAlphaNum)
-import Data.List (find, isPrefixOf, sortOn, sort)
+import Data.List (find, isPrefixOf, nub, sortOn, sort)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
@@ -70,7 +70,7 @@ import Olifant.Generation
 import Olifant.Generation.Steer (Steering)
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Checker, Language (..), Match (..), Syntax, functionMatches, languageFor, querySyntax, regexName, runTestsIn, signatureHead)
+import Olifant.Language (Checker, Language (..), Match (..), Syntax, functionMatches, hasNoFunctionQueries, languageFor, querySyntax, regexName, runTestsIn, signatureHead)
 import Olifant.Evidence (EvidencePorts (..), evidenceFor)
 import Olifant.Generation.FillPhase (projectFiles)
 import Data.Set qualified as S
@@ -400,7 +400,12 @@ migrationFor ports project = case catalogMigrate cat of
             Right (_, Just b) -> Just . length <$> defs b p
             Right (_, Nothing) -> pure (Just 0)
             Left _ -> pure Nothing
-    let switches = maybe [] (\t -> maybe [] (`readRegistry'` t) registryPath) registry
+    let unlinked = nub [langName lang | p <- legacy, Just lang <- [languageFor (catalogLanguages cat) p], hasNoFunctionQueries lang]
+        countHint
+          | null (mgCount mig) && sum [n | (n, _, _, _) <- perFile] == 0 && not (null unlinked) =
+              Just ("counted 0: " <> T.intercalate ", " unlinked <> " has no linked grammar, so set `count` under [migrate] (the node kinds to count)")
+          | otherwise = Nothing
+        switches = maybe [] (\t -> maybe [] (`readRegistry'` t) registryPath) registry
         befores = [b | (_, b, _, _) <- perFile]
     pure . Just $
       MigrationReport
@@ -410,6 +415,7 @@ migrationFor ports project = case catalogMigrate cat of
         , mrSwitchesBase = registryBase
         , mrAddedLegacy = concat [a | (_, _, a, _) <- perFile]
         , mrUnregistered = unregistered (concat [m | (_, _, _, m) <- perFile]) switches
+        , mrCountHint = countHint
         }
   where
     cat = prCatalog project

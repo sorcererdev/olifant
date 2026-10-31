@@ -18,6 +18,7 @@ module Olifant.Language.TreeSitter
   , definedNamesIn
   , signatureHead
   , functionMatches
+  , hasNoFunctionQueries
   , linkedGrammars
   , grammarNodeTypes
   , grammarLabel
@@ -219,13 +220,25 @@ signatureHead lang found = case leadingDefinition lang found >>= dsBody of
      in T.strip (T.intercalate "\n" (reverse (dropWhile (not . ownLine) (reverse upTo))))
   Nothing -> maybe "" id (listToMaybe (T.lines found))
 
--- | A text's function definitions (`functionCaps`) as matches, their own
--- spans (a Haskell signature and its equations one); Nothing for an
--- unlinked grammar.
+-- | A text's top-level function definitions (`functionCaps`) as matches,
+-- their own spans (a Haskell signature and its equations one): one inside
+-- another function's span (a nested def, a `let` or `where` binding) is
+-- left out, a class's method is not (a class is no function). Nothing for
+-- an unlinked grammar.
 functionMatches :: Language -> Text -> Maybe [Match]
 functionMatches lang source =
-  (\ds -> [Match (pStart n) (pEnd n) (pText n) (pBytes n) | d <- ds, dsCapture d `elem` functionCaps, let n = dsNode d])
+  (\ds -> [Match (pStart n) (pEnd n) (pText n) (pBytes n) | d <- topLevel ds, let n = dsNode d])
     <$> definitionsOf lang source
+  where
+    topLevel ds =
+      let fns = [d | d <- ds, dsCapture d `elem` functionCaps]
+          inside (a, b) (c, e) = c <= a && b <= e && (a, b) /= (c, e)
+       in [d | d <- fns, not (any (\o -> pBytes (dsNode d) `inside` pBytes (dsNode o)) fns)]
+
+-- | Whether the language counts no functions of its own: its grammar is
+-- not linked (a migration's default count needs a `[migrate] count`).
+hasNoFunctionQueries :: Language -> Bool
+hasNoFunctionQueries lang = functionMatches lang "" == Nothing
 
 -- | The query files shipped inside the binary: (grammar, file name, source).
 shippedQueries :: [(Text, FilePath, Text)]
