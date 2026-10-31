@@ -2406,7 +2406,9 @@ definition, a test, an import or a stub looks like comes from the language file
 - **`Server/Tests`** runs a file's tests whole (`olifant/tests/run`):
   `testsRun` takes a module to its test file and a test file to itself, and runs that file as
   one id with `Server/Site.runOver` over the snapshot's documents, timed; a test file whose
-  module is gone (`testShaped`: named as `tests_for` names test files) runs itself; a runner
+  module is gone (`testShaped`: named as `tests_for` names test files) runs itself; `ScopeAll`
+  runs every mapped and test-shaped file, plus every file of the language that is its own
+  `tests_for` (inline tests) and holds test units (`testUnitsOf`); a runner
   that cannot start is a broken run, and `Lsp` answers a run the editor cancelled
   `RequestCancelled`. `testsJson` is the answer the editor reads. `testsFile`
   (`olifant/tests/file`, answered at once: it reads only config and the file list) answers a

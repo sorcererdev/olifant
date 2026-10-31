@@ -893,6 +893,16 @@ testsSpecs = describe "a file's tests (olifant/tests/run)" $ do
     readIORef seen `shouldReturn` [["src/shop/close_table__test.py", "src/shop/menu__test.py", "src/shop/orphan__test.py"]]
     taFile a `shouldBe` root
     lookupIn "scope" (testsJson a) `shouldBe` Just (String "all")
+  it "run all on inline tests lists the files holding tests" $ do
+    let files = [("Cargo.toml", "[package]\nname = \"a\"\n"), ("src/a.rs", "pub fn one() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn it_is_one() {\n        assert_eq!(one(), 1);\n    }\n}\n"), ("src/b.rs", "pub fn two() -> i32 {\n    2\n}\n"), ("notes/c.rs.txt", "#[test]\nfn not_rust() {}\n")]
+    (disk, _) <- memoryWorkspace ((root </> ".olifant/config.toml", "languages = [\"rust\"]\n") : [(root </> p, t) | (p, t) <- files])
+    seen <- newIORef ([] :: [[Text]])
+    let runner = Runner $ \_ ids _ -> modifyIORef' seen (++ [ids]) >> pure (Right (TestRun ids [] Nothing))
+        ports = Ports disk blockSyntax (const noChecker) (const noVerifier) (const runner) (\_ _ -> runner) (pure (UTCTime (fromGregorian 2026 10 12) 0)) Nothing Nothing (DoctorPorts (\_ -> pure Nothing) (pure "") (\_ -> pure (Right ())) (\_ -> pure False)) (\_ -> pure Nothing) (\_ _ _ -> pure (Left "no base in tests")) (\_ _ -> pure (Left "no base in tests")) gitStateStamp
+    s <- newServerState ports
+    (_, r) <- testsRun ScopeAll (root </> "src/b.rs") s
+    fmap (const ()) r `shouldBe` Right ()
+    readIORef seen `shouldReturn` [["src/a.rs"]]
   it "all with failures in two files: each failure names its own file" $ do
     let other = "src/shop/menu__test.py::test_dish"
     (s, _) <- blocksRun blockSyntax (pure ()) (\_ _ -> Right (TestRun [] [(testId, Failure (Just 6) "a" ""), (other, Failure (Just 2) "b" "")] Nothing)) [("src/shop/menu.py", "def dish() -> int:\n    return 1\n"), ("src/shop/menu__test.py", "def test_dish() -> None:\n    assert False\n")]
