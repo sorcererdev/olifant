@@ -23,3 +23,16 @@ if ! cabal run -v0 olifant -- check --human >&2; then
   echo "pre-merge-commit: conventions do not hold; run \`olifant sync\` for regions, fix or allow (with a reason) any rule errors, commit, then \`git merge --continue\`." >&2
   exit 1
 fi
+
+# The books keep up with the code (book/README.md): a branch that changes the engine, the
+# library or a pack must change book/ too, or say why not with a `Book: <reason>` trailer
+# on one of its commits.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+  changed=$(git diff --name-only HEAD...MERGE_HEAD)
+  if grep -qE '^(src|app|library|packs)/' <<<"$changed" \
+     && ! grep -q '^book/' <<<"$changed" \
+     && ! git log --format=%B HEAD..MERGE_HEAD | grep -qE '^Book: .+'; then
+    echo "pre-merge-commit: this branch changes code but no book chapter. Update book/user and/or book/internals in the branch, or add a 'Book: <why no chapter changes>' trailer to one of its commits." >&2
+    exit 1
+  fi
+fi
