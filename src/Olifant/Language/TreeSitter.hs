@@ -17,6 +17,8 @@ module Olifant.Language.TreeSitter
   , grammarNodeTypes
   , grammarLabel
   , queriesFor
+  , queriesOf
+  , querySet
   , shippedQueries
   , treeSitterAnchors
   ) where
@@ -139,7 +141,7 @@ treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
     | g `elem` linkedGrammars
     , genericPhrase ws
     , maybe True (kindKnown g) (phraseKind ws) ->
-        case capturesOf g (queriesFor g) source of
+        case capturesOf g (querySet lang) source of
           Left why -> Just (Left (SyntaxFailed why))
           Right (root, caps) -> first SyntaxFailed <$> anchorFromCaptures root caps ws
   _ -> Nothing
@@ -155,7 +157,7 @@ definitionLines :: Language -> Text -> Maybe [(Text, (Int, Int), (Int, Int))]
 definitionLines lang source = case langGrammar lang of
   BuiltInGrammar g
     | g `elem` linkedGrammars
-    , Right (root, caps) <- capturesOf g (queriesFor g) source ->
+    , Right (root, caps) <- capturesOf g (querySet lang) source ->
         Just [(n, linesOf own, linesOf unit) | (n, own, unit) <- definitionSpans root caps]
   _ -> Nothing
   where
@@ -173,6 +175,21 @@ shippedQueries =
     , [g, f] <- [splitDirectories path]
     , takeExtension f == ".scm"
     ]
+
+-- | A language's query set with each file's origin, in name order: its
+-- grammar's shipped files ("shipped"), a project file (`langQueries`)
+-- replacing the one of its name, the project's new names added.
+queriesOf :: Language -> [(FilePath, Text, Text)]
+queriesOf lang = sortOn (\(f, _, _) -> f) (own ++ [(f, s, "shipped") | (f, s) <- shipped, f `notElem` [f' | (f', _, _) <- own]])
+  where
+    own = langQueries lang
+    shipped = case langGrammar lang of
+      BuiltInGrammar g -> queriesFor g
+      _ -> []
+
+-- | 'queriesOf' as 'capturesOf' takes it: (file name, source).
+querySet :: Language -> [(FilePath, Text)]
+querySet lang = [(f, s) | (f, s, _) <- queriesOf lang]
 
 -- | A grammar's shipped query set: (file name, source).
 queriesFor :: Text -> [(FilePath, Text)]

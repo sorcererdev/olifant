@@ -70,7 +70,7 @@ import Data.Text qualified as T
 import Olifant.Generator
 import Olifant.Snippet (withHoleSources)
 import Olifant.Anchor (Phrase (..), Target (..), itemsOfTarget, parsePhrase, positionWords)
-import Olifant.Language (Language (..), Layer (..), Match (..), Syntax, languageFor, languageFromLayers, matchShape, shippedLayer, withProviderRoot)
+import Olifant.Language (Grammar (..), Language (..), Layer (..), Match (..), Syntax, capturesOf, languageFor, languageFromLayers, linkedGrammars, matchShape, querySet, shippedLayer, withProviderRoot)
 import Olifant.Language.Presets (Presets, overPresets, presetsFrom, shippedPresets)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.ProjectModel (ModelMap, parseModelMap)
@@ -414,13 +414,34 @@ openAt root loadP olifantDir packs = do
       named = [(n, True) | n <- layerNames] ++ [(genLanguage (entryDefinition e), False) | e <- rights loaded] ++ [(n, True) | n <- configuredNames]
       (assembled, brokenLangs) = assembleLanguages presets (rights layers) [T.pack (takeBaseName p) | Left (p, _) <- layers] named
       -- a provider, from a pack or the project, runs from the project root
-      langs = maybe assembled (\d -> map (withProviderRoot (takeDirectory d)) assembled) olifantDir
-      broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured
+      rooted = maybe assembled (\d -> map (withProviderRoot (takeDirectory d)) assembled) olifantDir
+  -- the project's query files over each linked grammar's shipped ones
+  queried <- traverse (projectQueries root olifantDir) rooted
+  let langs = map fst queried
+      broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured ++ concatMap snd queried
       base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks])
       strangled = base {catalogBrokenRules = catalogBrokenRules base ++ [b | Just (Left b) <- map lpStrangler fromPacks]}
   pure (foldl (flip addRules) (foldl (flip addRegions) strangled (map lpRegions fromPacks)) (map lpRules fromPacks))
   where
     presetsOf = either (error . T.unpack) id . presetsFrom "project"
+
+-- | A language with its project's query files (`.olifant/queries/<grammar>/*.scm`,
+-- origin "project") when its grammar is linked, and the load error of a set
+-- that does not compile (the file named, and the byte).
+projectQueries :: Monad m => Workspace m -> Maybe FilePath -> Language -> m (Language, [(FilePath, Text)])
+projectQueries root olifantDir lang = case (olifantDir, langGrammar lang) of
+  (Just d, BuiltInGrammar g) | g `elem` linkedGrammars -> do
+    let dir = d </> "queries" </> T.unpack g
+    files <- listFiles root dir
+    found <- traverse (\f -> fmap (f,) <$> readText root (dir </> f)) (sort [f | f <- files, takeExtension f == ".scm", length (splitDirectories f) == 1])
+    let own = [(f, t, "project") | Just (f, t) <- found]
+        l = lang {langQueries = own}
+    pure $ case (own, capturesOf g (querySet l) "") of
+      (_ : _, Left why) ->
+        let named = [dir </> f | (f, _, _) <- own, ("`" <> T.pack f <> "`") `T.isPrefixOf` why]
+         in (lang, [(fromMaybe dir (listToMaybe named), why)])
+      _ -> (l, [])
+  _ -> pure (lang, [])
 
 -- | One language per name, in order of first naming: its layers (the shipped
 -- file first), merged; a name nothing provides is skipped (a generator's

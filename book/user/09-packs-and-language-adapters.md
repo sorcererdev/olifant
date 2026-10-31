@@ -1073,6 +1073,30 @@ line, and an empty `CancelBooking()` opens. `imports` sets `spaced = false` (a b
 between imports is a group, so a new import joins the last group) and `when_empty = "after
 header"` (in a file with no imports, the first goes under the docstring).
 
+### Overriding a language's queries
+
+The generic phrases, units and test spans of a language whose grammar olifant links in (Rust,
+Python, Haskell) are read through tree-sitter query files shipped inside olifant
+(`library/queries/<grammar>/`: `tags.scm`, `textobjects.scm`, `imports.scm`, and Rust's
+`impls.scm`). A project can put its own beside them, in `.olifant/queries/<grammar>/`:
+
+- a file with a shipped file's name **replaces** it (`.olifant/queries/rust/imports.scm`
+  holding `(extern_crate_declaration) @import` makes `end of imports` go after the
+  `extern crate` lines only);
+- a file with a new name is **added** to the set;
+- the predicates `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, `#any-of?` and `#not-any-of?`
+  work (`#match?` is a POSIX extended search); any other predicate or directive is an error.
+
+The captures olifant reads are `@definition.*` with `@name` (a definition and its name),
+`@function.inner`, `@class.inner` (a definition's items), `@function.outer`, `@class.outer`
+(a unit's whole span), `@parameter.inner`, `@call.outer` and `@import`. A query set that does
+not compile is a load error naming the file and the byte, and the language is used with its
+shipped queries. `olifant doctor`'s `queries` row names each file's origin:
+
+```
+✓ rust: queries — tree-sitter-rust 0.24.2; imports (project), impls, tags, textobjects (shipped)
+```
+
 ### Conjure's shapes: `[conjure]`
 
 A pack tells conjure how its architecture looks, in its own

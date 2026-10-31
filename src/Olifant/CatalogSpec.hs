@@ -166,6 +166,14 @@ spec = describe "catalog" $ do
       originOf l "unit.kinds" `shouldBe` Just "project"
       langAnchorProvider l `shouldBe` Just (Provider ["./tools/anchor.sh"] (Just "/proj"))
       originOf l "anchors" `shouldBe` Just "pack p"
+    it "a project's .olifant/queries/<grammar>/ file is the language's, over the shipped one (4b m2)" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/imports.scm", "(extern_crate_declaration) @import\n")]
+      map langQueries (catalogLanguages cat) `shouldBe` [[("imports.scm", "(extern_crate_declaration) @import\n", "project")]]
+      catalogBrokenLanguages cat `shouldBe` []
+    it "a project query that does not compile is a load error naming the file and byte" $ do
+      Right cat <- openWith [("/proj/.olifant/config.toml", "languages = [\"rust\"]\n"), ("/proj/.olifant/queries/rust/imports.scm", "(no_such_node) @import\n")]
+      map fst (catalogBrokenLanguages cat) `shouldBe` ["/proj/.olifant/queries/rust/imports.scm"]
+      map snd (catalogBrokenLanguages cat) `shouldSatisfy` all (\e -> "imports.scm" `T.isInfixOf` e && "byte" `T.isInfixOf` e)
     it "a project's selection provider replaces the shipped [test.select] whole" $ do
       Right cat <- openWith [cfg, ("/packs/p/generators/g/generator.toml", gen "python"), ("/proj/.olifant/languages/python.toml", "[test]\nselect = { provider = [\"sh\", \"tools/select.sh\"] }\n")]
       let [l] = catalogLanguages cat

@@ -13,8 +13,11 @@ module Olifant.Language
   , renamedPhrases
   , oneContainer
   , linkedGrammars
+  , capturesOf
   , grammarLabel
   , queriesFor
+  , queriesOf
+  , querySet
   , grammarLinked
   , hasUnits
   , genericNames
@@ -40,7 +43,7 @@ import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
 import Olifant.Language.Captures (definedNames, genericPhrase, genericPhrases, oneContainer, renamedPhrases)
-import Olifant.Language.TreeSitter (capturesOf, grammarLabel, linkedGrammars, queriesFor, treeSitterAnchors)
+import Olifant.Language.TreeSitter (capturesOf, grammarLabel, linkedGrammars, queriesFor, queriesOf, querySet, treeSitterAnchors)
 
 -- | Is the language's grammar linked in, so the generic anchor phrases
 -- work on it?
@@ -57,7 +60,7 @@ hasUnits l = hasUnitRule l || grammarLinked l
 -- grammar is not linked.
 genericNames :: Language -> Text -> Text -> [Text]
 genericNames l kind txt = case linkedGrammarOf l of
-  Just g -> either (const []) (definedNames kind . snd) (capturesOf g (queriesFor g) txt)
+  Just g -> either (const []) (definedNames kind . snd) (capturesOf g (querySet l) txt)
   Nothing -> []
 
 -- | The language's grammar, when it is linked in.

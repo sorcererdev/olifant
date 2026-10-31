@@ -9,7 +9,7 @@ import Data.Maybe (listToMaybe)
 import Data.Time (diffUTCTime, getCurrentTime)
 import GHC.Conc (getNumCapabilities)
 import Olifant.Anchor (RenderedAnchor (..), locLine, resolveLayers)
-import Olifant.Language (Language, parseLanguage)
+import Olifant.Language (Language (..), parseLanguage)
 import Olifant.Language.Adapter (parseOverShipped)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import System.Directory (getTemporaryDirectory)
@@ -114,6 +114,14 @@ captureSpec :: Spec
 captureSpec = describe "tree-sitter captures" $ do
   it "links the haskell, python and rust grammars" $
     linkedGrammars `shouldBe` ["haskell", "python", "rust"]
+  it "a project imports.scm replaces the shipped one" $ do
+    rs <- either (error . T.unpack) id . parseOverShipped "rust" "packs/rust-htmx" <$> TIO.readFile "packs/rust-htmx/languages/rust.toml"
+    let own = rs {langQueries = [("imports.scm", "(extern_crate_declaration) @import\n", "project")]}
+        src = "extern crate a;\nuse b::c;\n\nfn f() {}\n"
+        syn = astGrepSyntax "/nonexistent"
+        line l = fmap (fmap locLine) (resolveLayers syn (Just l) Nothing [PhraseAnchor "end of imports"] src)
+    line rs `shouldReturn` Right 2
+    line own `shouldReturn` Right 1
   describe "Haskell (olifant's own queries)" $ do
     let hs src = either (error . T.unpack) id (capturesOf "haskell" (queriesFor "haskell") src)
         containers src ws = case hs src of

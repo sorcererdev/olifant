@@ -277,6 +277,14 @@ anchor phrases from community queries (design 4b §A).
   nvim-treesitter-textobjects for the inner ranges), after which they would be vendored like
   Rust's. Haskell's `parser.c` is 19.8 MB; it compiles clean at `-O2` in under a second. `SOURCES` pins each vendored file to a commit and lists any line
   olifant removed under "changes".
+- **The project's queries.** `Catalog.openAt` reads `.olifant/queries/<grammar>/*.scm` for
+  each language whose grammar is linked (`projectQueries`) into `langQueries` (file, text,
+  origin "project"). `TreeSitter.queriesOf` is the set every reader uses: the shipped files,
+  a project file replacing the one of its name, new names added, in name order; `querySet`
+  drops the origins for `capturesOf`, whose cache key already holds the whole set. The
+  generic rule (`treeSitterAnchors`), units and test spans (`definitionLines`), doctor's tries
+  (`genericNames`) and the `queries` row all read it. A set that does not compile is a
+  `catalogBrokenLanguages` entry naming the file, and the language keeps its shipped set.
 - **Predicates.** The C cursor returns a match without judging its predicates;
   `TreeSitter.patternPredicates` reads each pattern's (`ts_query_predicates_for_pattern`) when
   the query set compiles, and `passes` drops a match that fails them. Six are known

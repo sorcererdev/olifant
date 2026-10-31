@@ -159,6 +159,11 @@ data Language = Language
   , langOrigins :: M.Map Text Text
   -- ^ each key (`indent`, `check`, `check.format`) and the layer that set it
   -- last, or `toolchain NAME` for a [check] or [test] key its preset filled
+  , langQueries :: [(FilePath, Text, Text)]
+  -- ^ the project's query files for the grammar (`.olifant/queries/<grammar>/`):
+  -- (file, text, origin), each replacing the shipped file of its name or
+  -- added beside them ('Olifant.Language.TreeSitter.queriesOf'); none: the
+  -- shipped set
   }
   deriving stock (Show)
 
@@ -549,7 +554,7 @@ languageFrom presets name grammarDir top = do
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty)
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty [])
   where
     tmpl = first describeTemplateError . parseTemplate
     -- a slot's value: the rule, or `{ provider = [...] }` alone in its place
