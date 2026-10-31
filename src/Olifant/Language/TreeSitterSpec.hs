@@ -135,6 +135,8 @@ captureSpec = describe "tree-sitter captures" $ do
       [n | ("definition.type", n) <- defs (snd (hs src))] `shouldBe` ["E"]
       containers src ["class", "E"] `shouldBe` Just (Right [((1, 2), 2)])
       containers src ["data", "E"] `shouldBe` Just (Right [((1, 2), 2)])
+    it "an operator's name is exact beside another operator (review I2)" $
+      containers "(<+>) :: A\na <+> b = b\n\ninstance S X where\n  a <> b = a\n" ["function", "(<+>)"] `shouldBe` Just (Right [((0, 1), 1)])
     it "a class's and an instance's declarations are their items" $ do
       let src = "class C a where\n  m :: a -> Int\n  m _ = 1\n\ninstance C Int where\n  m x = x\n"
       containers src ["instance", "C"] `shouldBe` Just (Right [((5, 5), 1)])

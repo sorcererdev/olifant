@@ -26,6 +26,7 @@ module Olifant.Language.Captures
 
 import Data.ByteString qualified as BS
 import Data.List (nub, sortOn)
+import Data.IntMap.Strict qualified as IM
 import Data.Map.Strict qualified as M
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -147,10 +148,11 @@ anchorFromCaptures root caps = \case
         tops = nub [capNode c | c <- caps, capName c == "import", topLevel c]
      in Just (Right [(toMatch root, map toMatch (sortOn pBytes tops)) | not (null tops)])
   ["parameters", "in", f] -> Just (Right (mapMaybe (\d -> field "parameters" (defCap d) "parameter.inner") (defsOf functionCaps f)))
-  ["call", name] -> Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, nameIs name (callName c)]))
+  ["call", name] -> let is = nameMatcher (map callName calls) name in Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, is (callName c)]))
   ["call", name, "in", f] ->
     let fs = map (capNode . defCap) (defsOf functionCaps f)
-     in Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, nameIs name (callName c), any (`encloses` capNode c) fs]))
+        is = nameMatcher (map callName calls) name
+     in Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, is (callName c), any (`encloses` capNode c) fs]))
   [kind, name]
     | kind == "function" -> Just (Right (mapMaybe body (defsOf functionCaps name)))
     | kind == "class" -> Just (Right (mapMaybe body (defsOf classCaps name)))
@@ -160,7 +162,7 @@ anchorFromCaptures root caps = \case
     defs = adjacent source (definitions caps)
     defNodes = nub (map (capNode . defCap) defs)
     -- one definition node may carry several captures (method and function)
-    defsOf names n = sortOn (pBytes . capNode . defCap) (dedupe [d | d <- defs, nameIs n (defName d), capName (defCap d) `elem` names])
+    defsOf names n = let is = nameMatcher (map defName defs) n in sortOn (pBytes . capNode . defCap) (dedupe [d | d <- defs, is (defName d), capName (defCap d) `elem` names])
     dedupe ds = [d | (i, d) <- zip [0 :: Int ..] ds, capNode (defCap d) `notElem` [capNode (defCap e) | e <- take i ds]]
     kindOf w n = pType n == w || (w <> "_") `T.isPrefixOf` pType n
     -- the `.inner` captures whose nearest strictly enclosing definition is
@@ -221,15 +223,17 @@ anchorFromCaptures root caps = \case
 -- node from the first's start to the last's end. Class-like ones are not
 -- joined (a Haskell class and its instance after it stay two).
 adjacent :: BS.ByteString -> [Def] -> [Def]
-adjacent source = reverse . foldl step [] . sortOn (pBytes . capNode . defCap)
+adjacent source = IM.elems . fst . foldl step (IM.empty, M.empty) . zip [0 :: Int ..] . sortOn (pBytes . capNode . defCap)
   where
-    step acc d = case break (joins d) acc of
-      (before, prev : after) -> before ++ grow prev d : after
-      _ -> d : acc
+    -- the merged definitions by first index, and the latest index of each
+    -- (capture, name): one lookup per definition
+    step (out, latest) (i, d) =
+      let key = (capName (defCap d), bare (defName d))
+       in case M.lookup key latest >>= \j -> (j,) <$> IM.lookup j out of
+            Just (j, prev) | joins d prev -> (IM.insert j (grow prev d) out, latest)
+            _ -> (IM.insert i d out, M.insert key i latest)
     joins d p =
-      capName (defCap p) == capName (defCap d)
-        && capName (defCap d) `elem` functionCaps
-        && bare (defName p) == bare (defName d)
+      capName (defCap d) `elem` functionCaps
         && let (_, pe) = pBytes (capNode (defCap p))
                (ds, _) = pBytes (capNode (defCap d))
             in pe <= ds && BS.all (`BS.elem` " \t\r\n") (BS.take (ds - pe) (BS.drop pe source))
@@ -274,11 +278,16 @@ definitionsWith root caps =
       o : _ -> o
       [] -> n
 
--- | Does a phrase's NAME name this? The name itself, or (as a declared
--- target's `regex = "^{= NAME =}$"` did) a POSIX expression matching it
--- whole: `parameters in [a-z_]+_routes`.
-nameIs :: Text -> Text -> Bool
-nameIs pat n = pat == n || maybe False (`matchTest` T.unpack n) (makeRegexM ("^(" <> T.unpack pat <> ")$") :: Maybe Regex)
+-- | Which names a phrase's NAME names, among NAMES: exactly itself when
+-- one of them is; else (as a declared target's `regex = "^{= NAME =}$"`
+-- did) those a POSIX expression matches whole, compiled once:
+-- `parameters in [a-z_]+_routes`. So `(<+>)` never means `<>`.
+nameMatcher :: [Text] -> Text -> Text -> Bool
+nameMatcher names pat
+  | pat `elem` names = (== pat)
+  | otherwise = case makeRegexM ("^(" <> T.unpack pat <> ")$") :: Maybe Regex of
+      Just rx -> matchTest rx . T.unpack
+      Nothing -> const False
 
 toMatch :: PNode -> Match
 toMatch p = Match (pStart p) (pEnd p) (pText p) (pBytes p)

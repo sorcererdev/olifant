@@ -366,9 +366,11 @@ anchor phrases from community queries (design 4b §A).
   (`headerEnd`) when the language's `[imports] when_empty = "after header"` (Python's), and
   spaces `end of imports` unless its `[imports] spaced = false` (Python's: a blank line there
   separates import groups).
-  A phrase's name matches a definition's or a call's as itself or as a POSIX expression matching
-  it whole (`nameIs`, as the declared targets' `^{= NAME =}$` did: python-htmx's model reads
-  `parameters in [a-z_]+_routes`).
+  A phrase's name matches exactly when any definition (or call) has that name; only when none
+  does is it read as a POSIX expression matching a name whole, compiled once per phrase
+  (`nameMatcher`, as the declared targets' `^{= NAME =}$` did: python-htmx's model reads
+  `parameters in [a-z_]+_routes`), so `(<+>)` never means `<>`. `adjacent` is one map lookup
+  per definition.
   `oneContainer` turns the list into "one, none, or matches N places".
 - **Where the rule is asked.** It is the `Syntax` port's `anchorSyntax` field (after
   `runSlotProvider`); `AstGrep.astGrepSyntax` sets it to `TreeSitter.treeSitterAnchors`, which
