@@ -3,7 +3,7 @@ name:               olifant
 version:            0.1.0.0
 synopsis:           Olifant: Durandal's generator engine (prototype)
 build-type:         Simple
-extra-source-files: library/**/*.toml, library/**/*.scm, cbits/**/*.h, cbits/**/*.c, cbits/**/SOURCES, cbits/**/LICENSE
+extra-source-files: library/**/*.toml, library/**/*.scm, cbits/**/*.h, cbits/**/*.c, cbits/tree-sitter/SOURCES, cbits/tree-sitter/LICENSE, cbits/tree-sitter-rust/SOURCES, cbits/tree-sitter-rust/LICENSE
 
 common shared
   default-language:   GHC2021
