@@ -1,0 +1,11 @@
+# Tree-sitter queries for the Python grammar, pinned.
+textobjects.scm  nvim-treesitter/nvim-treesitter-textobjects  5c7b0263797dfd1bd6202f2b219f3b53a80b2187  queries/python/textobjects.scm  Apache-2.0 (LICENSE-nvim-treesitter)
+tags.scm         tree-sitter/tree-sitter-python v0.25.0 (crate)  293fdc02038ee2bf0e2e206711b69c90ac0d413f  queries/tags.scm  MIT (LICENSE-tree-sitter-python)
+# The grammar (cbits/tree-sitter-python): tree-sitter-python 0.25.0, the crate ast-grep 0.45.3 locks
+# (crates.io sha256 6bf85fd39652e740bf60f46f4cda9492c3a9ad75880575bf14960f775cb74a1c).
+imports.scm      olifant (written here, not vendored): an import statement, whole
+# changes (Decision 7: olifant evaluates #eq?, #not-eq?, #match?, #not-match?, #any-of?, #not-any-of?
+# and nothing else; a pattern using another predicate or directive is removed):
+#   textobjects.scm: removed the two `(comment) @comment.inner @comment.outer` patterns (they use
+#   #offset! and #lua-match?; they feed nvim's comment textobjects, which olifant does not read).
+#   tags.scm: none (byte-for-byte the pinned upstream file).

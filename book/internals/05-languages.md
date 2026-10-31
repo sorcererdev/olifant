@@ -229,10 +229,12 @@ declared `[targets.*]`), olifant parses in process with tree-sitter, to read the
 anchor phrases from community queries (design 4b §A).
 
 - **The C.** The tree-sitter runtime 0.27.0 (its one-file amalgamation, `cbits/tree-sitter/src/lib.c`)
-  and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`) are `c-sources` in
+  and each linked grammar (`cbits/tree-sitter-rust/parser.c`, `scanner.c`; the same in
+  `cbits/tree-sitter-python/`) are `c-sources` in
   `olifant.cabal`, in both the `library` and the `spec` stanzas. Nothing is installed: no
   Homebrew library, no dylib, no doctor row for it. Both are pinned to the versions ast-grep
-  0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2), so the two parsers
+  0.45.3's `Cargo.lock` locks (runtime 0.27.0, tree-sitter-rust 0.24.2, tree-sitter-python
+  0.25.0), so the two parsers
   read the same trees. Each directory has a `SOURCES` (version, git commit, crate sha256) and
   the upstream `LICENSE`.
 - **The shim.** GHC's FFI cannot pass a `TSNode` (a 32-byte struct) by value, so
@@ -247,8 +249,23 @@ anchor phrases from community queries (design 4b §A).
   Apache-2.0: `@function.inner`, `@class.inner`, `@parameter.inner`, `@call.outer`) and two
   olifant writes: `imports.scm` (an import statement, whole, `@import`) and `impls.scm` (an
   inherent impl named by its type, generics included, as `@definition.impl`; a trait impl is
-  not captured, so no phrase names it). `SOURCES` pins each vendored file to a commit and lists
-  any line olifant removed under "changes".
+  not captured, so no phrase names it). For Python: the grammar's `tags.scm`,
+  nvim-treesitter-textobjects' `textobjects.scm` less its two comment patterns (they use
+  `#offset!` and `#lua-match?`), and olifant's `imports.scm` (`import`, `from … import` and
+  `from __future__ import`). `SOURCES` pins each vendored file to a commit and lists any line
+  olifant removed under "changes".
+- **Predicates.** The C cursor returns a match without judging its predicates;
+  `TreeSitter.patternPredicates` reads each pattern's (`ts_query_predicates_for_pattern`) when
+  the query set compiles, and `passes` drops a match that fails them. Six are known
+  (`knownPredicates`): `#eq?`, `#not-eq?` (against a string or another capture), `#match?`,
+  `#not-match?` (a search, POSIX extended, the engine of the language files' expressions) and
+  `#any-of?`, `#not-any-of?`. Every node a quantified capture holds must pass. Anything else,
+  `#make-range!` (nvim's `@*.outer` ranges, which olifant does not read), `#set!`,
+  `#lua-match?`, fails the file's compile with "unknown predicate", naming the file: a vendored
+  file that uses one has those patterns removed and listed in its `SOURCES`, and the spec
+  "every shipped query compiles and uses only known predicates" holds every linked grammar to
+  it. A capture a predicate reads is kept in the pruned query even when the rule does not read
+  it, and is not returned.
 - **The capture data.** `capturesOf grammar queries text` returns the root node and every
   capture as plain data from `Language/Captures.hs`: a `Cap` (capture name, query file,
   pattern, match number, its `PNode`, the node's parent, its top-level ancestor for `@import`,
@@ -268,7 +285,10 @@ anchor phrases from community queries (design 4b §A).
   (`symbolTable`). Its text and character columns are lazy, since most nodes are only compared.
   A capture's parent is read only for `.inner` captures, and fields only where the rule reads
   them (a definition's `body` and `parameters`, a call's `arguments`), with the children of a
-  parameter or argument list but not of a body (a body's items are its inner captures).
+  parameter or argument list but not of a body (a body's items are its inner captures). One
+  exception: an `.inner` capture that is its parent's whole `body` (Python's textobjects
+  capture the block, where Rust's capture each item) carries its named children as its own
+  `body` field.
 - **The cache.** `capturesOf` keeps the last 16 answers it computed (`answers`, `cacheBound`),
   newest first, keyed by (grammar, query set, text). It is first in, first out: a hit does
   not move its entry, so a text asked about constantly is still dropped after 16 newer ones
@@ -298,11 +318,16 @@ anchor phrases from community queries (design 4b §A).
   Rust attribute, a decorator): the two become one item (`decorated`), so `end of` spacing is
   measured between whole members and `start of` goes before the decoration. A match holds
   every capture of a `_+` however many (`ots_next` returns the count, `ots_captures` copies
-  them), so a body of hundreds of children is read whole. With no inner
+  them), so a body of hundreds of children is read whole. When the inner capture is the whole
+  body (a Python block), the body is the container and its named children are the items
+  (`wholeBody`). With no inner
   capture (an empty body), the container is the definition's `body` field, empty, which
   placement opens. `parameters in F` reads the function's `parameters` field (type parameters
   are a direct child too, so a capture alone would not do), a call is named by its text up to
-  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`).
+  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`);
+  the file is its container even with none, and `Resolve.named` then puts a first import after
+  the file's header (`headerEnd`), and spaces `end of imports` unless the language's
+  `[imports] spaced = false` (Python's: a blank line there separates import groups).
   `oneContainer` turns the list into "one, none, or matches N places".
 - **Where the rule is asked.** It is the `Syntax` port's `anchorSyntax` field (after
   `runSlotProvider`); `AstGrep.astGrepSyntax` sets it to `TreeSitter.treeSitterAnchors`, which

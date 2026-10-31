@@ -36,6 +36,9 @@ module_of = { strip = ["^src/"], drop = ["__init__"], separator = "." }
 paths = ["src/{= path =}.py", "src/{= path =}/__init__.py"]
 # What the model is shown: a fill that needs a name starts with its import.
 example = { needs = "date", fill = "from datetime import date\n\ndate.fromisoformat(text)" }
+# A blank line between imports groups them: `end of imports` joins the last
+# import with none.
+spaced = false
 
 [[imports.resolve]]
 pattern = '^from ([^.].*) import (.*)$'
@@ -98,58 +101,14 @@ example = "end of union CreateBookingFailure"
 # members are joined by `|`, not a separator: a one-line union never grows
 separator = ""
 
-[targets.class]
-phrase = "class NAME"
-container = { kind = "block", inside = { kind = "class_definition", has = { field = "name", regex = "^{= NAME =}$" } } }
-items = { any = [{ kind = "function_definition" }, { kind = "decorated_definition" }, { kind = "expression_statement" }, { kind = "class_definition" }, { kind = "pass_statement" }] }
-example = "end of class BookingService"
-
-[targets.function]
-phrase = "function NAME"
-container = { kind = "block", inside = { kind = "function_definition", has = { field = "name", regex = "^{= NAME =}$" } } }
-items = { any = [{ kind = "expression_statement" }, { kind = "return_statement" }, { kind = "if_statement" }, { kind = "match_statement" }, { kind = "for_statement" }, { kind = "while_statement" }, { kind = "with_statement" }, { kind = "try_statement" }, { kind = "raise_statement" }, { kind = "pass_statement" }, { kind = "function_definition" }, { kind = "decorated_definition" }] }
-example = "end of function create_app"
-
 [targets.match_on]
 phrase = "match on NAME"
 container = { kind = "block", inside = { kind = "match_statement", has = { field = "subject", regex = "^{= NAME =}$" } } }
 items = { kind = "case_clause" }
 example = "end of match on failure"
 
-# A call's arguments, one per line (`CreateBooking(\n    bookings=…,\n)`), in
-# a function: where `wire` passes a command its adapters. An empty `X()`
-# opens.
-[targets.call_in]
-phrase = "call NAME in FUNCTION"
-container = { kind = "argument_list", inside = { kind = "call", has = { field = "function", regex = "^{= NAME =}$" }, inside = { kind = "function_definition", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
-items = { any = [{ kind = "keyword_argument" }, { kind = "identifier" }, { kind = "call" }, { kind = "attribute" }, { kind = "string" }, { kind = "integer" }, { kind = "float" }, { kind = "list" }, { kind = "dictionary" }, { kind = "tuple" }, { kind = "true" }, { kind = "false" }, { kind = "none" }, { kind = "list_splat" }, { kind = "dictionary_splat" }] }
-example = "end of call CreateBooking in create"
-
-# The same, anywhere in the file (it must be the only call to NAME): where
-# `wire` passes a fake in a test.
-[targets.call]
-phrase = "call NAME"
-container = { kind = "argument_list", inside = { kind = "call", has = { field = "function", regex = "^{= NAME =}$" } } }
-items = { any = [{ kind = "keyword_argument" }, { kind = "identifier" }, { kind = "call" }, { kind = "attribute" }, { kind = "string" }, { kind = "integer" }, { kind = "float" }, { kind = "list" }, { kind = "dictionary" }, { kind = "tuple" }, { kind = "true" }, { kind = "false" }, { kind = "none" }, { kind = "list_splat" }, { kind = "dictionary_splat" }] }
-example = "end of call CancelBooking"
-
-# A function's parameters, one per line (`def floor_routes(\n    x: X,\n)`):
-# where `web-command` gives a router factory its command.
-[targets.parameters_in]
-phrase = "parameters in FUNCTION"
-container = { kind = "parameters", inside = { kind = "function_definition", has = { field = "name", regex = "^{= FUNCTION =}$" } } }
-items = { any = [{ kind = "typed_parameter" }, { kind = "identifier" }, { kind = "default_parameter" }, { kind = "typed_default_parameter" }, { kind = "list_splat_pattern" }, { kind = "dictionary_splat_pattern" }] }
-example = "end of parameters in floor_routes"
-
-[targets.imports]
-phrase = "imports"
-container = { kind = "module" }
-items = { any = [{ kind = "import_statement" }, { kind = "import_from_statement" }, { kind = "future_import_statement" }] }
-# a blank line between imports separates groups: a new import joins the last
-spaced = false
-# in a file with none, the first goes under the docstring
-when_empty = "after header"
-example = "end of imports"
+# `class NAME`, `function NAME`, `call NAME [in FUNCTION]`, `parameters in
+# FUNCTION` and `imports` are the generic phrases (library/queries/python).
 
 # Mutation operators (`mutate`): what a test of Python code must notice.
 # Boundaries

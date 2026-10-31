@@ -111,8 +111,29 @@ benchSpec = describe "tree-sitter: timing" $
 
 captureSpec :: Spec
 captureSpec = describe "tree-sitter captures" $ do
-  it "links the rust grammar" $
-    linkedGrammars `shouldBe` ["rust"]
+  it "links the python and rust grammars" $
+    linkedGrammars `shouldBe` ["python", "rust"]
+  it "every shipped query compiles and uses only known predicates" $
+    forM_ linkedGrammars $ \g ->
+      either (Just . ((g <> ": ") <>)) (const Nothing) (capturesOf g (queriesFor g) "") `shouldBe` Nothing
+  it "a Python file's classes and functions are captured" $
+    defs (either (error . T.unpack) snd (capturesOf "python" (queriesFor "python") "class A:\n    def m(self):\n        pass\n\ndef f():\n    pass\n"))
+      `shouldBe` [("definition.class", "A"), ("definition.function", "m"), ("definition.function", "f")]
+  describe "predicates (evaluated in Haskell)" $ do
+    -- @import is a capture the rule reads (others are pruned)
+    let idents q = [pText (capNode c) | c <- either (error . T.unpack) snd (capturesOf "rust" [("p.scm", q)] "fn f() { a; b; a; abc; }\n"), capName c == "import"]
+    it "#eq? filters" $ idents "((identifier) @import (#eq? @import \"a\"))" `shouldBe` ["a", "a"]
+    it "#not-eq? filters" $ idents "((identifier) @import (#not-eq? @import \"a\"))" `shouldBe` ["f", "b", "abc"]
+    it "#match? filters (a search, POSIX extended)" $ idents "((identifier) @import (#match? @import \"^a\"))" `shouldBe` ["a", "a", "abc"]
+    it "#not-match? filters" $ idents "((identifier) @import (#not-match? @import \"^a\"))" `shouldBe` ["f", "b"]
+    it "#any-of? filters" $ idents "((identifier) @import (#any-of? @import \"a\" \"b\"))" `shouldBe` ["a", "b", "a"]
+    it "#not-any-of? filters" $ idents "((identifier) @import (#not-any-of? @import \"a\" \"b\"))" `shouldBe` ["f", "abc"]
+    it "#eq? compares two captures, even one the rule does not read" $
+      idents "((expression_statement (identifier) @other) @import (#eq? @other \"b\"))" `shouldBe` ["b;"]
+    it "an unknown predicate is a Left naming the file and the predicate" $
+      either (\e -> "p.scm" `T.isInfixOf` e && "lua-match?" `T.isInfixOf` e) (const False)
+        (capturesOf "rust" [("p.scm", "((identifier) @import (#lua-match? @import \"^a\"))")] "fn f() {}\n")
+        `shouldBe` True
   it "a Rust file's definitions are captured" $ do
     src <- TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src/service.rs"
     let ds = defs (rust src)

@@ -195,8 +195,10 @@ data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
 -- module, its separator written @/@) for the files a module may be;
 -- 'imExample' (`example`), a fill that starts with an import line, shown to
 -- the model when its fill may begin with imports: @needs@, the name the
--- import binds, and @fill@, the whole fill.
-data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text], imExample :: Maybe (Text, Text)}
+-- import binds, and @fill@, the whole fill; 'imSpaced' (`spaced`, default
+-- true): false when a blank line between imports groups them, so `end of
+-- imports` joins the last import with no blank line.
+data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text], imExample :: Maybe (Text, Text), imSpaced :: Bool}
   deriving stock (Eq, Show)
 
 -- | A pack's `[conjure]`: how conjure reads its architecture. 'cjService'
@@ -585,7 +587,7 @@ languageFrom presets name grammarDir top = do
     importsFrom = \case
       TText re -> (\r -> (Just r, Nothing)) <$> validRegex "imports" re
       TTable t -> do
-        onlyKeys ["line", "write", "module_of", "resolve", "paths", "example"] t
+        onlyKeys ["line", "write", "module_of", "resolve", "paths", "example", "spaced"] t
         line <- optional "line" (text >=> validRegex "[imports] line") t
         write <- optional "write" (text >=> \w -> tmpl w >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["module", "owner"] then Right w else Left "`[imports] write` may use only {= module =} and {= owner =}") t
         mo <- optional "module_of" (table >=> \m -> do
@@ -601,7 +603,8 @@ languageFrom presets name grammarDir top = do
         example <- optional "example" (table >=> \e -> do
           onlyKeys ["needs", "fill"] e
           (,) <$> required "needs" text e <*> required "fill" text e) t
-        pure (line, Just (ImportsDef write mo resolve paths example))
+        spaced <- fromMaybe True <$> optional "spaced" bool t
+        pure (line, Just (ImportsDef write mo resolve paths example spaced))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
     typesFrom t = do
       onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t

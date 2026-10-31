@@ -40,8 +40,9 @@ data PNode = PNode {pType :: Text, pStart :: (Int, Int), pEnd :: (Int, Int), pBy
 -- | A capture: its name, the query file and pattern, the match it is in,
 -- its node, the node's parent and top-level ancestor, and the fields the
 -- rule reads (a definition's `body` and `parameters`, a call's
--- `arguments`) with their named, non-extra children (none for a `body`:
--- its items are the inner captures).
+-- `arguments`) with their named, non-extra children (none for a
+-- definition's `body`: its items are the inner captures; an inner capture
+-- that is its parent's whole body carries it as its own `body`, with them).
 data Cap = Cap
   { capName :: Text
   , capFile :: Text
@@ -137,7 +138,9 @@ anchorFromCaptures root caps = \case
   ["imports"] ->
     -- top-level import statements only (a `use` inside `mod tests` is not one)
     let tops = nub [capNode c | c <- caps, capName c == "import", capTop c == Just (capNode c)]
-     in Just (Right [(toMatch root, map toMatch (sortOn pBytes tops)) | not (null tops)])
+     -- the file is the one container, with no items when it has no import
+     -- (placement puts a first import after the file's header)
+     in Just (Right [(toMatch root, map toMatch (sortOn pBytes tops))])
   ["parameters", "in", f] -> Just (Right (mapMaybe (\d -> field "parameters" (defCap d) "parameter.inner") (defsOf functionCaps f)))
   ["call", name] -> Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, callName c == name]))
   ["call", name, "in", f] ->
@@ -161,9 +164,14 @@ anchorFromCaptures root caps = \case
       let dn = capNode (defCap d)
           inners = [c | c <- caps, capName c `elem` ["function.inner", "class.inner"], dn `encloses` capNode c, nearest (capNode c) == Just dn]
           items = nub [capNode c | c <- inners, pNamed (capNode c), not (pExtra (capNode c))]
-       in case (items, nub [p | c <- inners, Just p <- [capParent c]]) of
-            (_ : _, [p]) -> Just (toMatch p, map groupMatch (decorated (sortOn pBytes items)))
+          -- an inner capture that is the whole body (a Python block): the
+          -- body is the container and its named children the items
+          wholes = [(b, kids) | c <- inners, Just (b, kids) <- [wholeBody c]]
+       in case (wholes, items, nub [p | c <- inners, Just p <- [capParent c]]) of
+            ((b, kids) : _, _, _) -> Just (toMatch b, map groupMatch (decorated (sortOn pBytes kids)))
+            (_, _ : _, [p]) -> Just (toMatch p, map groupMatch (decorated (sortOn pBytes items)))
             _ -> fmap (\b -> (toMatch b, [])) (fieldOf "body" (defCap d))
+    wholeBody c = listToMaybe [(b, kids) | (f, b, kids) <- capFields c, f == "body", b == capNode c]
     -- An item that is no definition, ending on the line before a definition
     -- (or on its line), decorates it (an attribute, a decorator): the two
     -- are one item, from the first's start to the definition's end, so

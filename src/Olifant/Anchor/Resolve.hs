@@ -180,10 +180,17 @@ resolveOne syntax lang file anchor content = case anchor of
               | Nothing <- target, genericPhrase ws, grammarLinked l -> Left (miss ("no `" <> T.unwords ws <> "` in this file"))
               | otherwise -> Left (miss "not found")
             Right (Just (_, []))
-              | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] ->
+              | Just "after header" <- maybe genericWhenEmpty targetWhenEmpty target, pos `elem` [StartOf, EndOf] ->
                   let h = headerEnd ls
                    in Right ((located h "" (regionOf 0 (max 0 (length ls - 1)))) {locSpacing = if h == 0 then NoSpacing else BlankBefore})
-            Right (Just (c, items)) -> (\loc -> if maybe True targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l separator pos c items
+            Right (Just (c, items)) -> (\loc -> if maybe genericSpaced targetSpaced target then loc else loc {locSpacing = NoSpacing}) <$> place l separator pos c items
+        -- the generic `imports` (no declared target): spaced unless the
+        -- language says a blank line between imports groups them (`[imports]
+        -- spaced = false`); a file with none takes its first after its
+        -- header (comments, docstring)
+        genericImports = ws == ["imports"] && grammarLinked l
+        genericSpaced = not genericImports || maybe True imSpaced (langImportsDef l)
+        genericWhenEmpty = if genericImports then Just "after header" else Nothing
         target = case [t | t <- langTargets l, Just _ <- [matchShape t ws]] of
           t : _ -> Just t
           [] -> Nothing

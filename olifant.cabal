@@ -3,7 +3,7 @@ name:               olifant
 version:            0.1.0.0
 synopsis:           Olifant: Durandal's generator engine (prototype)
 build-type:         Simple
-extra-source-files: library/**/*.toml, library/**/*.scm, cbits/**/*.h, cbits/**/*.c, cbits/tree-sitter/SOURCES, cbits/tree-sitter/LICENSE, cbits/tree-sitter-rust/SOURCES, cbits/tree-sitter-rust/LICENSE
+extra-source-files: library/**/*.toml, library/**/*.scm, cbits/**/*.h, cbits/**/*.c, cbits/tree-sitter/SOURCES, cbits/tree-sitter/LICENSE, cbits/tree-sitter-rust/SOURCES, cbits/tree-sitter-rust/LICENSE, cbits/tree-sitter-python/SOURCES, cbits/tree-sitter-python/LICENSE
 
 common shared
   default-language:   GHC2021
@@ -44,7 +44,7 @@ library
   hs-source-dirs:  src
   -- tree-sitter in process: the runtime (its amalgamation) and the grammars
   -- ast-grep 0.45.3 locks, compiled in; no system library (cbits/*/SOURCES)
-  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c
+  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c, cbits/tree-sitter-python/parser.c, cbits/tree-sitter-python/scanner.c
   include-dirs:    cbits/tree-sitter/include cbits/tree-sitter/src cbits/tree-sitter-rust
   cc-options:      -O2 -std=c11
   exposed-modules:
@@ -195,7 +195,7 @@ test-suite spec
   build-tool-depends: hspec-discover:hspec-discover
   -- tree-sitter in process: the runtime (its amalgamation) and the grammars
   -- ast-grep 0.45.3 locks, compiled in; no system library (cbits/*/SOURCES)
-  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c
+  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c, cbits/tree-sitter-python/parser.c, cbits/tree-sitter-python/scanner.c
   include-dirs:    cbits/tree-sitter/include cbits/tree-sitter/src cbits/tree-sitter-rust
   cc-options:      -O2 -std=c11
   build-depends:

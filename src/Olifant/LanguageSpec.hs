@@ -548,9 +548,9 @@ spec = do
           `shouldReturn` T.unlines ["x = foo(", "    a,", "    bar(b, c),", "    " <> long <> ",", ")  # note"]
       it "(e) a separator already at the end is not doubled (Review Focus 3)" $ withPython $ \syn lang _ ->
         fmap fst (grown syn lang "y = f(a,)\n" "end of call f" "b") `shouldReturn` "y = f(a, b)\n"
-      it "(g) review C1: code that is not an item (a lambda, an operator) refuses rather than vanish" $ withPython $ \syn lang _ -> do
-        r <- resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of call foo"] "x = foo(a + b, lambda q: q, c)  # note\n"
-        either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
+      it "(g) review C1: no argument vanishes: every argument is an item on the generic rule (a lambda, an operator)" $ withPython $ \syn lang _ ->
+        fmap fst (grown syn lang "x = foo(a + b, lambda q: q, c)  # note\n" "end of call foo" "d")
+          `shouldReturn` "x = foo(a + b, lambda q: q, c, d)  # note\n"
       it "(h) review C1: a keyword-only marker is not an item: refused, not dropped" $ withPython $ \syn lang _ -> do
         r <- resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of parameters in f"] "def f(self, *, x: int) -> None:\n    pass\n"
         either (any (T.isInfixOf "shares its line" . missReason)) (const False) r `shouldBe` True
@@ -572,6 +572,12 @@ spec = do
       at syn lang file "end of call CreateBooking" `shouldReturn` Right (lineOf "bookings=booking_repository," + 1, "        ")
     it "(c) end of call NAME in FUNCTION opens an empty argument list" $ withPython $ \syn lang file ->
       fmap (fmap locOpen) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of call CancelBooking in create"] file) >>= (`shouldSatisfy` either (const False) isJust)
+    it "Python keeps only `union NAME` and `match on NAME`" $ withPython $ \_ lang _ ->
+      map targetPhrase (langTargets lang) `shouldBe` ["match on NAME", "union NAME"]
+    it "(Review Focus) end of class NAME with a docstring and a decorated method goes after the last method, at its column" $ withPython $ \syn lang _ -> do
+      let src = T.unlines ["class Booking:", "    \"\"\"A booking.\"\"\"", "", "    def a(self) -> int:", "        return 1", "", "    @property", "    def b(self) -> int:", "        return 2", "", "", "x = 1"]
+      at syn lang src "end of class Booking" `shouldReturn` Right (9, "    ")
+      fmap (fmap locSpacing) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of class Booking"] src) `shouldReturn` Right BlankBefore
 
   describe "rewriting (ast-grep, a rule with a fix)" $
     it "gives each match its replacement and its byte range" $ withPython $ \syn lang _ ->
