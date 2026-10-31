@@ -608,6 +608,13 @@ spec = do
       at syn lang file "end of literal in new" `shouldReturn` Right (lineOf file "cancel_invoice: CancelInvoice {}," + 1)
     it "end of crate imports goes after the last imported item" $ withRust $ \syn lang file ->
       at syn lang file "end of crate imports" `shouldReturn` Right (lineOf file "cancel_invoice::{CancelInvoice" + 1)
+    it "Rust keeps only the exotic targets" $ withRust $ \_ lang _ ->
+      map targetPhrase (langTargets lang) `shouldBe` ["crate imports", "literal in FUNCTION", "literal NAME in FUNCTION"]
+    it "`end of uses` suggests imports" $ withRust $ \syn lang file ->
+      fmap (either (map missReason) (const [])) (resolveLayers syn (Just lang) Nothing [PhraseAnchor "end of uses"] file)
+        >>= (`shouldSatisfy` any ("did you mean `end of imports`" `T.isInfixOf`))
+    it "end of imports goes after the last top-level use, a grouped `use crate::{…}` whole" $ withRust $ \syn lang file ->
+      at syn lang file "end of imports" `shouldReturn` Right (lineOf file "};" + 1)
   describe "compiler support" $ do
     it "maps the elm-json format to Elm's support" $
       fmap supportFormat (supportFor "elm-json") `shouldBe` Just "elm-json"

@@ -14,6 +14,7 @@ module Olifant.Language.Captures
   , oneContainer
   , genericPhrase
   , genericPhrases
+  , renamedPhrases
   , phraseKind
   , functionCaps
   , classCaps
@@ -63,6 +64,12 @@ genericPhrases =
   , ("call NAME in FUNCTION", "end of call BillingService::new in main")
   , ("imports", "end of imports")
   ]
+
+-- | Phrases a declared target used to answer that a generic phrase now
+-- does, under another name (4b m2: Rust's `uses`): "did you mean" offers
+-- the new one, however far apart the spellings are.
+renamedPhrases :: [([Text], Text)]
+renamedPhrases = [(["uses"], "end of imports")]
 
 -- | Does a phrase's target take the generic rule's shape? (`KIND NAME` for
 -- any kind word; the rest by their words.) The shape only: whether a kind

@@ -131,14 +131,18 @@ $ olifant anchors rust
 rust: at = "<start of|end of|before|after> <target>"
 
 targets:
-  call NAME in FUNCTION     e.g. end of call BillingService::new in main
   crate imports             e.g. end of crate imports
-  impl NAME                 e.g. end of impl BillingService
   literal in FUNCTION       e.g. end of literal in new
   literal NAME in FUNCTION  e.g. end of literal RefundInvoice in new
+
+from queries (tree-sitter-rust):
+  function NAME             e.g. end of function main
+  class NAME                e.g. end of class BillingService
+  KIND NAME                 e.g. end of struct BillingService
   parameters in FUNCTION    e.g. end of parameters in new
-  struct NAME               e.g. end of struct BillingService
-  uses                      e.g. end of uses
+  call NAME                 e.g. end of call BillingService::new
+  call NAME in FUNCTION     e.g. end of call BillingService::new in main
+  imports                   e.g. end of imports
 
 built in (any file):
   before|after marker TEXT
@@ -147,17 +151,23 @@ built in (any file):
   start of|end of file
 ```
 
-Three of these exist to wire a command's dependencies (spec §7.1, chapter 8): `parameters in
-FUNCTION` is a function's parameter list; `literal NAME in FUNCTION` is the struct literal
-named `NAME` inside `FUNCTION` (`SendEmail` inside `new`, as opposed to `literal in FUNCTION`,
-which is whichever one literal sits there); `call NAME in FUNCTION` is the arguments of a call
-to `NAME` inside `FUNCTION` (`BillingService::new` inside `main`). All three can target an
-empty `()`/`{}` — see "Opening an empty container" in [chapter 3](03-anchors.md).
+Most of Rust's anchors are the generic phrases ([chapter 3](03-anchors.md#the-generic-phrases)),
+read from tree-sitter queries: `end of struct BillingService`, `end of impl BillingService`,
+`end of enum RefundInvoiceFailure`, `end of mod tests`. The three `targets` are what no query
+capture expresses, declared in ast-grep's dialect in `library/languages/rust.toml`.
 
-`uses` is a file's top-level `use` declarations (container `source_file`, items
-`use_declaration`). `end of uses` goes after the last one, whole, so a new import lands after
-a multi-line `use crate::{ … };` block and never inside it. A line pattern cannot see the
-block: `after last line matching ^use ` lands just after `use crate::{`, inside it:
+Four phrases wire a command's dependencies (spec §7.1, chapter 8): `parameters in FUNCTION` is
+a function's parameter list; `literal NAME in FUNCTION` is the struct literal named `NAME`
+inside `FUNCTION` (`SendEmail` inside `new`, as opposed to `literal in FUNCTION`, which is
+whichever one literal sits there); `call NAME in FUNCTION` is the arguments of a call to `NAME`
+inside `FUNCTION` (`BillingService::new` inside `main`). All of them can target an empty
+`()`/`{}` — see "Opening an empty container" in [chapter 3](03-anchors.md).
+
+`imports` is a file's top-level import statements (`use` and `extern crate` in Rust, from
+olifant's own `imports.scm`). `end of imports` goes after the last one, whole, so a new import
+lands after a multi-line `use crate::{ … };` block and never inside it; a `use` inside
+`mod tests` is not top-level and does not count. A line pattern cannot see the block: `after
+last line matching ^use ` lands just after `use crate::{`, inside it:
 
 ```
 $ olifant where billing/billing-service/src/service.rs "after last line matching ^use "
@@ -170,7 +180,7 @@ billing/billing-service/src/service.rs:5
         void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
         cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
 
-$ olifant where billing/billing-service/src/service.rs "end of uses"
+$ olifant where billing/billing-service/src/service.rs "end of imports"
 billing/billing-service/src/service.rs:9
         void_invoice::{VoidInvoice, VoidInvoiceInput, VoidInvoiceOutput},
         cancel_invoice::{CancelInvoice, CancelInvoiceInput, CancelInvoiceOutput},
@@ -181,10 +191,11 @@ billing/billing-service/src/service.rs:9
     pub struct BillingService {
 ```
 
-A file is not a bracketed container, so one with no `use` at all is not opened; the phrase
-misses (`end of uses` in `billing-service/src/lib.rs`, which only has `pub mod`s: "has no
-items to insert beside"). Give `start of file` as the fallback, as
-`command-dependency` does: `at = ["end of uses", "start of file"]`.
+A file with no import at all is not opened; the phrase misses (`end of imports` in
+`billing-service/src/lib.rs`, which only has `pub mod`s: "no `imports` in this file"). Give
+`start of file` as the fallback, as `command-dependency` does: `at = ["end of imports", "start
+of file"]`. The phrase was `end of uses` before the generic phrases; a pack that still says
+`uses` is told "unknown target `uses` … did you mean `end of imports`?".
 
 ### Where a language comes from
 

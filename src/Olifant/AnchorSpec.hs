@@ -92,8 +92,17 @@ withAnchors script = do
 
 -- | Rust with its declared targets, and with none (every phrase generic).
 rustDeclared, rustGeneric :: Language
-rustDeclared = shippedLanguageNow "rust"
-rustGeneric = rustDeclared {langTargets = []}
+rustGeneric = (shippedLanguageNow "rust") {langTargets = []}
+rustDeclared = rustGeneric {langTargets = langTargets structLang}
+  where
+    Right structLang =
+      parseLanguage "rust" "/p" $
+        T.unlines
+          [ "files = [\"**/*.rs\"]", "comment = \"//\"", "grammar = \"rust\""
+          , "[targets.struct]", "phrase = \"struct NAME\""
+          , "container = { kind = \"field_declaration_list\" }", "items = { kind = \"field_declaration\" }"
+          , "example = \"end of struct S\""
+          ]
 
 -- | A pure syntax: no ast-grep, the generic rule in process.
 tsSyntax :: Syntax Identity

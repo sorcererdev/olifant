@@ -71,31 +71,10 @@ wrap = "fn __olifant() {\n{= fill =}\n}"
 placeholder = "() /* olifant: {= hole =} */"
 wrap = "type __Olifant = {= fill =};"
 
-# An inline module's items (`end of mod tests`: where a stub's test goes).
-[targets.mod]
-phrase = "mod NAME"
-container = { kind = "declaration_list", inside = { kind = "mod_item", has = { field = "name", regex = "^{= NAME =}$" } } }
-items = { any = [{ kind = "function_item" }, { kind = "use_declaration" }, { kind = "struct_item" }, { kind = "enum_item" }, { kind = "impl_item" }, { kind = "trait_item" }, { kind = "mod_item" }, { kind = "const_item" }, { kind = "static_item" }, { kind = "type_item" }, { kind = "macro_definition" }] }
-example = "end of mod tests"
-
-[targets.struct]
-phrase = "struct NAME"
-container = { kind = "field_declaration_list", inside = { kind = "struct_item", has = { field = "name", regex = "^{= NAME =}$" } } }
-items = { kind = "field_declaration" }
-example = "end of struct BillingService"
-
-[targets.enum]
-phrase = "enum NAME"
-container = { kind = "enum_variant_list", inside = { kind = "enum_item", has = { field = "name", regex = "^{= NAME =}$" } } }
-items = { kind = "enum_variant" }
-example = "end of enum RefundInvoiceFailure"
-
-[targets.impl]
-phrase = "impl NAME"
-container = { kind = "declaration_list", inside = { kind = "impl_item", has = { field = "type", regex = "^{= NAME =}$" } } }
-items = { kind = "function_item" }
-example = "end of impl BillingService"
-
+# Most anchors come from tree-sitter queries (library/queries/rust/): the
+# generic phrases (`end of struct NAME`, `end of impl NAME`, `end of mod tests`,
+# `end of parameters in new`, `end of call X in main`, `end of imports`, …).
+# These three say what no capture expresses, in ast-grep's dialect.
 [targets.literal_in]
 phrase = "literal in FUNCTION"
 container = { kind = "field_initializer_list", inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" }, not = { inside = { kind = "field_initializer_list", stopBy = "end" } } }
@@ -109,35 +88,11 @@ container = { kind = "use_list", inside = { kind = "use_declaration", regex = "^
 items = { any = [{ kind = "scoped_use_list" }, { kind = "scoped_identifier" }, { kind = "identifier" }, { kind = "use_as_clause" }, { kind = "use_wildcard" }, { kind = "self" }] }
 example = "end of crate imports"
 
-# A file's top-level `use` declarations: `end of uses` goes after the last
-# one, whole (a multi-line `use crate::{ … };` included). A file with none is
-# not opened: give `start of file` as the fallback.
-[targets.uses]
-phrase = "uses"
-container = { kind = "source_file" }
-items = { kind = "use_declaration" }
-example = "end of uses"
-
-# Wiring dependencies (spec §7.1): a function's parameters, a struct literal
-# by name, a call's arguments. Empty ones are opened (`()`, `{}`).
-[targets.parameters_in]
-phrase = "parameters in FUNCTION"
-container = { kind = "parameters", inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" } } }
-items = { any = [{ kind = "parameter" }, { kind = "self_parameter" }] }
-example = "end of parameters in new"
-
 [targets.literal_named_in]
 phrase = "literal NAME in FUNCTION"
 container = { kind = "field_initializer_list", inside = { kind = "struct_expression", has = { field = "name", regex = "^{= NAME =}$" }, inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
 items = { any = [{ kind = "field_initializer" }, { kind = "shorthand_field_initializer" }] }
 example = "end of literal RefundInvoice in new"
-
-[targets.call_in]
-phrase = "call NAME in FUNCTION"
-container = { kind = "arguments", inside = { kind = "call_expression", has = { field = "function", regex = "^{= NAME =}$" }, inside = { kind = "function_item", has = { field = "name", regex = "^{= FUNCTION =}$" }, stopBy = "end" } } }
-# ast-grep needs a kind: the expressions an argument can be.
-items = { any = [{ kind = "call_expression" }, { kind = "identifier" }, { kind = "field_expression" }, { kind = "reference_expression" }, { kind = "macro_invocation" }, { kind = "string_literal" }, { kind = "integer_literal" }, { kind = "struct_expression" }, { kind = "scoped_identifier" }, { kind = "closure_expression" }] }
-example = "end of call BillingService::new in main"
 
 # Tab stops in snippets (spec §4.9): a name, or text inside a string.
 [holes.ident]

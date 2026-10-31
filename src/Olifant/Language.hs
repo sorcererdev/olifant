@@ -10,6 +10,7 @@ module Olifant.Language
   , module Olifant.Language.Test
   , genericPhrase
   , genericPhrases
+  , renamedPhrases
   , oneContainer
   , linkedGrammars
   , grammarLinked
@@ -32,7 +33,7 @@ import Olifant.Language.Support
 import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
-import Olifant.Language.Captures (genericPhrase, genericPhrases, oneContainer)
+import Olifant.Language.Captures (genericPhrase, genericPhrases, oneContainer, renamedPhrases)
 import Olifant.Language.TreeSitter (linkedGrammars, treeSitterAnchors)
 
 -- | Is the language's grammar linked in, so the generic anchor phrases
