@@ -7,8 +7,10 @@ files = ["**/*.py"]
 unit_words = "a top-level class or function name (Name) or a method (Class.method)"
 # Reserved words: recognition keeps them as they are (names become their case shape)
 keywords = ["False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "match", "case", "nonlocal", "not", "or", "pass", "raise", "return", "try", "type", "while", "with", "yield", "self", "cls"]
-# The unit (`conjure`, `stub`): the innermost of these node kinds at the cursor
-unit = { kinds = ["function_definition", "class_definition", "decorated_definition"], name = ['^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]+([^[:space:](:[]+)'] }
+# The unit (`conjure`, `stub`): the innermost function or class at the cursor,
+# from the grammar's queries; `name` finds its def line (a decorator's is the
+# def below it).
+unit = { name = ['^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]+([^[:space:](:[]+)'] }
 comment = "#"
 grammar = "python"
 indent = "    "

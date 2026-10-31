@@ -103,10 +103,9 @@ wrap = "struct {= fill =};"
 placeholder = "{= hole =}"
 wrap = "const _: &str = \"{= fill =}\";"
 
-# The unit: the innermost of these node kinds at the cursor is what `conjure`
-# conjures and `stub` stubs a test for.
+# The unit: the innermost definition at the cursor (from the grammar's
+# queries) is what `conjure` conjures and `stub` stubs a test for.
 [unit]
-kinds = ["function_item", "impl_item", "struct_item", "enum_item", "trait_item"]
 # The name: an impl block's type (after `for` when it implements a trait),
 # else the item's name after its keyword.
 name = [

@@ -16,6 +16,7 @@ module Olifant.Language
   , grammarLabel
   , queriesFor
   , grammarLinked
+  , hasUnits
   , genericNames
   , linkedGrammarOf
   , treeSitterAnchors
@@ -45,6 +46,11 @@ import Olifant.Language.TreeSitter (capturesOf, grammarLabel, linkedGrammars, qu
 -- work on it?
 grammarLinked :: Language -> Bool
 grammarLinked = isJust . linkedGrammarOf
+
+-- | Does the language have units: `[unit] kinds`, a units provider, or a
+-- linked grammar (whose queries' definitions are its units)?
+hasUnits :: Language -> Bool
+hasUnits l = hasUnitRule l || grammarLinked l
 
 -- | The names a generic phrase's word (`function`, `class`, a kind word)
 -- can take in a text: its definitions of that kind, in order. None when the

@@ -118,10 +118,20 @@ into one. This is what conjure, mutate, stub, plan anchors and the plan fingerpr
 Both paths meet in `unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO
 (Either Text [UnitAnswer])`, the units slot. By rule it gives each `[unit] kinds` match as a
 `UnitAnswer` (its 1-based span, its name by `[unit] name`); with `langUnitProvider` it gives the
-program's answer (`Provider.providedUnits`, memoised by request). `unitsOf` sorts either by
+program's answer (`Provider.providedUnits`, memoised by request). With neither (no `[unit]
+kinds`, no provider) and a linked grammar, it gives every function and class-like definition the
+grammar's queries capture (`TreeSitter.definitionLines`, over `Captures.definitionSpans`): named
+by its `@name`, its span the definition's, widened to the largest `function.outer`/`class.outer`
+capture that ends with it and holds no other definition (a Python decorated def, decorators
+in), a Haskell signature and its equations already one (`adjacent`). Rust, Python and Haskell
+ship no `kinds` any more; they keep `name`, which `defLine`, `ownerHeader` and the other line
+readers (`App.definesIn`, `ConjureScan`, `Recognize`, `functionText`, `FillPhase`'s top-level
+names) still use. `hasUnits` (in `Olifant.Language`) is `hasUnitRule` or a linked grammar.
+`unitsOf` sorts either by
 start (longer first) and folds it the same way: `defLine` (the first line `name` names, else the
-first), `dedupe`, `joined`, `qualify`. `unitAt` keeps its rule path; with a provider it takes the
-innermost answer holding the line, its body from `bodyOf` as before. `FillPhase`'s top-level
+first), `dedupe`, `joined`, `qualify`. `unitAt` keeps its rule path; with a provider, or with the
+queries' answers, it takes the innermost answer holding the line, its body from `bodyOf` as
+before. `FillPhase`'s top-level
 names (the answers no other answer holds) read a provider through `providerPure`, since the fill
 phase is generic in its monad.
 `unit_words` (`langUnitWords`) is a sentence for prompts (`Errand.projectUnitWords`).
@@ -150,7 +160,12 @@ Every reader of test units goes through one door, `TestUnits.testUnitsOf :: Lang
 -> [TestUnit]` (with `testUnitsReport`, which keeps a provider's failure for doctor; `testAtIn`
 and `testLineIn` are built on it). By rule it is `testUnitsIn` over `[test] unit` and `above`;
 with `testUnitProvider` it is the program's answer, each unit's path the names of the answers
-that strictly hold it, outermost first. The callers (stubs, the fill phase's assertion span and
+that strictly hold it, outermost first. With a linked grammar, `testUnitsReport` calls
+`testUnitsWith` with a span function (from `TreeSitter.definitionLines`): a unit whose rule's
+line starts a definition ends where that definition ends, so a test with a string's outdented
+line, a Rust test's closing brace and a multi-line signature keep their whole span (m3's known
+limits). A unit on a line that starts no definition (hspec's `it`) keeps the outdent rule, as
+does every unit of an unlinked grammar. The callers (stubs, the fill phase's assertion span and
 whole-file test, the scripted runner, conjure through `testCaseAtIn`/`testSourcesIn`) are pure,
 so a provider runs through `Provider.providerPure`, memoised by request; that rests on a
 provider being pure by contract. `TestUnitsSpec` fails if `testUnitsIn` appears in any other

@@ -120,7 +120,8 @@ spec = do
     it "without providers, none; hasUnits and hasTestUnits follow the rules" $ do
       let Right l = lang runner
       (langUnitProvider l, langAnchorProvider l, langTest l >>= testUnitProvider, langTest l >>= testSelectProvider) `shouldBe` (Nothing, Nothing, Nothing, Nothing)
-      (hasUnits l, hasTestUnits l) `shouldBe` (False, False)
+      -- 4b m2: no unit rule, but python's grammar is linked: its queries give units
+      (hasUnitRule l, hasUnits l, hasTestUnits l) `shouldBe` (False, True, False)
     it "an empty provider, or a provider with another key beside it, is an error naming the key" $ do
       lang ["[unit]", "kinds = { provider = [] }"] `shouldSatisfy` either ("unit.kinds" `T.isInfixOf`) (const False)
       lang ["[unit]", "kinds = { provider = [\"x\"], kinds = [] }"] `shouldSatisfy` either ("unit.kinds" `T.isInfixOf`) (const False)
@@ -488,7 +489,8 @@ spec = do
         lineOf needle = length (takeWhile (not . (needle `T.isInfixOf`)) (T.lines pythonModule))
     it "[unit] kinds: the adapter's definition kinds, none when it has no [unit]" $ do
       py <- either (error . T.unpack) id . parseOverShipped "python" "packs/python-htmx" <$> TIO.readFile "packs/python-htmx/languages/python.toml"
-      langUnitKinds py `shouldBe` ["function_definition", "class_definition", "decorated_definition"]
+      -- 4b m2: none, its units come from the grammar's queries
+      langUnitKinds py `shouldBe` []
       fmap langUnitKinds (parseLanguage "python" "/p" "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n") `shouldBe` Right []
     it "[check] convert: format absent or olifant-json; [check.errorformat] needs a pattern" $ do
       let base = "files = [\"**/*.x\"]\ncomment = \"#\"\ngrammar = \"x\"\n[check]\ncommand = [\"t\"]\n"

@@ -11,6 +11,7 @@ module Olifant.Language.Captures
   ( PNode (..)
   , Cap (..)
   , anchorFromCaptures
+  , definitionSpans
   , definedNames
   , oneContainer
   , genericPhrase
@@ -24,7 +25,7 @@ module Olifant.Language.Captures
 import Data.ByteString qualified as BS
 import Data.List (nub, sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -222,15 +223,41 @@ adjacent source = reverse . foldl step [] . sortOn (pBytes . capNode . defCap)
     joins d p =
       capName (defCap p) == capName (defCap d)
         && capName (defCap d) `elem` functionCaps
-        && defName p == defName d
+        && bare (defName p) == bare (defName d)
         && let (_, pe) = pBytes (capNode (defCap p))
                (ds, _) = pBytes (capNode (defCap d))
             in pe <= ds && BS.all (`BS.elem` " \t\r\n") (BS.take (ds - pe) (BS.drop pe source))
+    -- an operator's name with or without its brackets (`(<+>)`, `<+>`)
+    bare n = fromMaybe n (T.stripPrefix "(" n >>= T.stripSuffix ")")
     grow p d =
       let a = capNode (defCap p)
           z = capNode (defCap d)
           (s, e) = (fst (pBytes a), snd (pBytes z))
        in p {defCap = (defCap p) {capNode = a {pEnd = pEnd z, pBytes = (s, e), pText = TE.decodeUtf8Lenient (BS.take (e - s) (BS.drop s source))}}}
+
+-- | Every function and class-like definition of a text, in order: its
+-- @name, its own node (a Haskell signature and its equations joined, as
+-- 'adjacent' does), and its unit's node: the largest `function.outer` or
+-- `class.outer` capture that holds it, ends where it ends and holds no
+-- other definition (a Python decorated definition, its decorators
+-- included), else its own.
+definitionSpans :: PNode -> [Cap] -> [(Text, PNode, PNode)]
+definitionSpans root caps =
+  [ (defName d, n, unitOf n)
+  | d <- nubOn (pBytes . capNode . defCap) (adjacent source (definitions caps))
+  , let n = capNode (defCap d)
+  ]
+  where
+    source = TE.encodeUtf8 (pText root)
+    nubOn f = foldr (\x acc -> x : filter ((/= f x) . f) acc) []
+    outers = [capNode c | c <- caps, capName c `elem` ["function.outer", "class.outer"]]
+    defNodes = [capNode (defCap d) | d <- definitions caps]
+    within o x = fst (pBytes o) <= fst (pBytes x) && snd (pBytes x) <= snd (pBytes o)
+    -- an outer range that holds no other definition than n and what n
+    -- holds (a class's range ends with its last method, but is the class's)
+    unitOf n = case sortOn (\o -> fst (pBytes o)) [o | o <- outers, within o n, snd (pBytes o) == snd (pBytes n), all (\x -> within n x || not (within o x)) defNodes] of
+      o : _ -> o
+      [] -> n
 
 toMatch :: PNode -> Match
 toMatch p = Match (pStart p) (pEnd p) (pText p) (pBytes p)

@@ -62,6 +62,13 @@ spec = do
     isStubIn python ["    ...", "    pass", "    assert ...", "    # kills: x", "    raise NotImplementedError(\"olifant: h\")"] `shouldBe` True
     isStubIn python ["    assert x == 1"] `shouldBe` False
  describe "Olifant.Server.Unit (units by name)" $ do
+  it "units come from queries when [unit] kinds is absent" $ do
+    let noQuery = querying (\_ _ _ -> error "the [unit] kinds query ran")
+    map langUnitKinds [python, haskell, rust] `shouldBe` [[], [], []]
+    unitsOf noQuery python Nothing "class Foo:\n    def bar(self):\n        pass\n\n\ndef f():\n    pass\n"
+      `shouldReturn` Right [Named "Foo" (1, 3) 1, Named "Foo.bar" (2, 3) 2, Named "f" (6, 7) 6]
+    unitsOf noQuery rust Nothing "struct A;\n\nimpl A {\n    fn new() -> A {\n        A\n    }\n}\n"
+      `shouldReturn` Right [Named "A" (1, 1) 1, Named "A" (3, 7) 3, Named "A.new" (4, 6) 4]
   it "names and qualifies python units" $ do
     r <- unitsOf (spans [(0, 5), (1, 2), (3, 4)]) python Nothing "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        pass\n"
     fmap (map namedName) r `shouldBe` Right ["Foo", "Foo.bar", "Foo.baz"]
@@ -86,7 +93,8 @@ spec = do
     r `shouldBe` Right [Named "go" (1, 3) 1]
   it "names haskell operators and multi-line signatures" $ do
     r <- unitsOf (spans [(0, 0), (1, 1)]) haskell Nothing "(<+>) :: A -> A -> A\na <+> b = b\n"
-    fmap (map namedName) r `shouldBe` Right ["(<+>)", "a"] -- an infix equation is named by its first word, as today; not joined
+    -- 4b m2: from captures, an infix equation is its operator's, joined to its signature
+    r `shouldBe` Right [Named "(<+>)" (1, 2) 1]
     r2 <- unitsOf (spans [(0, 2), (3, 3)]) haskell Nothing "run\n  :: Int\n  -> Int\nrun = id\n"
     r2 `shouldBe` Right [Named "run" (1, 4) 1]
   it "joins across blank lines, not across other code" $ do

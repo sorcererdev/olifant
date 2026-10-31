@@ -12,6 +12,7 @@
 module Olifant.Language.TreeSitter
   ( capturesOf
   , cacheSize
+  , definitionLines
   , linkedGrammars
   , grammarNodeTypes
   , grammarLabel
@@ -45,7 +46,7 @@ import Foreign.Marshal.Utils (copyBytes, with)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff)
 import Olifant.Language.Adapter (Grammar (..), Language (..))
-import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures, genericPhrase, phraseKind)
+import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures, definitionSpans, genericPhrase, phraseKind)
 import Olifant.Language.Syntax (Match, SyntaxFailure (..))
 import System.FilePath (splitDirectories, takeExtension)
 import System.IO.Unsafe (unsafePerformIO)
@@ -145,6 +146,24 @@ treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
   where
     kindKnown g k = any (\t -> t == k || (k <> "_") `T.isPrefixOf` t) (grammarNodeTypes g)
 
+-- | Every function and class-like definition of a text in a language whose
+-- grammar is linked ('Nothing' otherwise, or when its queries fail): its
+-- @name, its own lines and its unit's lines (decorators included), 1-based
+-- and inclusive, in order ('definitionSpans'). Units and test-unit spans
+-- read it.
+definitionLines :: Language -> Text -> Maybe [(Text, (Int, Int), (Int, Int))]
+definitionLines lang source = case langGrammar lang of
+  BuiltInGrammar g
+    | g `elem` linkedGrammars
+    , Right (root, caps) <- capturesOf g (queriesFor g) source ->
+        Just [(n, linesOf own, linesOf unit) | (n, own, unit) <- definitionSpans root caps]
+  _ -> Nothing
+  where
+    -- a node that ends at a line's start ends on the line before
+    linesOf p =
+      let ((sr, _), (er, ec)) = (pStart p, pEnd p)
+       in (sr + 1, if ec == 0 && er > sr then er else er + 1)
+
 -- | The query files shipped inside the binary: (grammar, file name, source).
 shippedQueries :: [(Text, FilePath, Text)]
 shippedQueries =
@@ -164,7 +183,7 @@ queriesFor g = [(f, s) | (g', f, s) <- shippedQueries, g' == g]
 -- @reference.implementation@ is not read: tags.scm names a trait impl by its
 -- trait; impls.scm gives an inherent impl as @definition.impl@.
 readCaptures :: [Text]
-readCaptures = ["name", "function.inner", "class.inner", "parameter.inner", "call.outer", "import"]
+readCaptures = ["name", "function.inner", "class.inner", "function.outer", "class.outer", "parameter.inner", "call.outer", "import"]
 
 -- | A query set compiled as one query (one walk of the tree for all of
 -- them), its kept capture names, each file's first pattern index, and each

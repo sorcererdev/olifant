@@ -45,7 +45,7 @@ module Olifant.Language.Adapter
   , defaultUnitWords
   , Provider (..)
   , withProviderRoot
-  , hasUnits
+  , hasUnitRule
   , hasTestUnits
   , mergeLayerTables
   ) where
@@ -849,8 +849,8 @@ withProviderRoot root lang =
     rooted p = p {provRoot = Just root}
 
 -- | The language can name its units: by `[unit] kinds` or a provider.
-hasUnits :: Language -> Bool
-hasUnits lang = not (null (langUnitKinds lang)) || langUnitProvider lang /= Nothing
+hasUnitRule :: Language -> Bool
+hasUnitRule lang = not (null (langUnitKinds lang)) || langUnitProvider lang /= Nothing
 
 -- | The language can find its tests: by `[test] unit` rules or a provider.
 hasTestUnits :: Language -> Bool

@@ -34,6 +34,7 @@ import Data.Text qualified as T
 import Olifant.Language (ConjureDef (..), CtorShape (..), Language (..), Match (..), Syntax (..), TestDef (..), describeSyntaxFailure, regexName)
 import Olifant.Provider (UnitAnswer (..), providedUnits)
 import Olifant.Language.TestUnits (TestUnit (..), testCaseUnitAtIn)
+import Olifant.Language.TreeSitter (definitionLines)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 -- | A unit (1-based lines): its name, its header line, its node's lines,
@@ -53,20 +54,23 @@ data Unit = Unit
 -- Left is one sentence on why there is none.
 unitAt :: Syntax IO -> Language -> Maybe FilePath -> Text -> Int -> IO (Either Text Unit)
 unitAt syntax lang file text line = case langUnitProvider lang of
-  -- a provider: the innermost answer holding the line, its body as a rule's
-  Just _ ->
+  -- a provider (or, with no [unit] kinds, the definitions a linked
+  -- grammar's queries capture): the innermost answer holding the line, its
+  -- body as a rule's
+  _ | byAnswers ->
     unitAnswers syntax lang file text <&> \case
       Left why -> Left why
       Right us -> case sortOn (\u -> (Down (uaLine u), uaEnd u)) [u | u <- us, uaLine u <= line, line <= uaEnd u] of
         u : _ -> let d = defLine lang ls u in Right (Unit (uaName u) d (uaLine u, uaEnd u) (bodyOf lang ls d (uaEnd u)))
         [] -> Left noUnit
-  Nothing
+  _
     | null (langUnitKinds lang) -> pure (Left (noKinds lang))
     | otherwise ->
         querySyntax syntax lang (kindsRule lang) text <&> \case
           Left f -> Left (describeSyntaxFailure f)
           Right ms -> maybe (Left noUnit) Right (pick [(a + 1, z + 1) | Match (a, _) (z, _) _ _ <- ms])
   where
+    byAnswers = isJust (langUnitProvider lang) || (null (langUnitKinds lang) && isJust (definitionLines lang text))
     noUnit = "no function or class at line " <> tshow line
     ls = T.splitOn "\n" text
     lineAt i = fromMaybe "" (listToMaybe (drop (i - 1) ls))
@@ -96,6 +100,11 @@ unitAnswers :: Syntax IO -> Language -> Maybe FilePath -> Text -> IO (Either Tex
 unitAnswers syntax lang file text = case langUnitProvider lang of
   Just p -> providedUnits p file text
   Nothing
+    -- no [unit] kinds and a linked grammar: every function and class-like
+    -- definition its queries capture, named by its @name, decorators in
+    | null (langUnitKinds lang)
+    , Just ds <- definitionLines lang text ->
+        pure (Right [UnitAnswer n a z Nothing | (n, _, (a, z)) <- sortOn (\(_, _, (a, z)) -> (a, Down z)) ds])
     | null (langUnitKinds lang) -> pure (Left (noKinds lang))
     | otherwise ->
         querySyntax syntax lang (kindsRule lang) text <&> \case

@@ -64,10 +64,9 @@ wrap = "olifantHole = do\n{= fill|indent =}"
 placeholder = "{= hole =}"
 wrap = "olifantHole = \"{= fill =}\""
 
-# The unit: the innermost of these node kinds at the cursor is what `conjure`
-# conjures and `stub` stubs a test for.
+# The unit: the innermost definition at the cursor (from olifant's Haskell
+# queries) is what `conjure` conjures and `stub` stubs a test for.
 [unit]
-kinds = ["signature", "function", "bind", "data_type", "newtype", "class", "instance"]
 # A function is its signature and its equations: units of one name, at one
 # indentation, with only blank lines between, are one.
 join = true
