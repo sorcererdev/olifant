@@ -56,7 +56,7 @@ it. A name the file does not have says so: `Nope is not in src/Olifant/PlansSpec
   - **do** (on a step or test child): does the step in the repository, with edit rights and the
     project's test command, which its prompt names exactly (no pipe, no `cd`). It is told Olifant
     runs the step's tests after it, so tests it could not run are no reason to answer `BLOCKED`. A
-    `DONE` of the step's own unit is no `also` line. Use a clean git tree: `git diff` shows it, `git stash` undoes it.
+    `DONE` of the step's own unit is no `also` line. In a git repository a `do` ends in a review ([below](#reviews-and-the-journal)): its diff, and `revert` to undo it.
   The prompt holds the plan and the bodies of the units it anchors. The answer is read against the
   grammar: lines outside it are dropped, anchors that do not resolve are kept as `? not found`,
   and both are counted in the notification. An answer with nothing in the grammar is an error.
@@ -84,7 +84,7 @@ In `.olifant/config.toml`, all optional:
 | `timeout` | `300` | seconds before an errand is killed |
 | `do_tools` | `[]` | extra `--allowedTools` entries for `do` (beyond Read, Grep, Glob, Edit, Write and the test command) |
 | `ladder` | `[model] ladder` without Jev | the backends a reconcile climbs when Jev is unsure, in order, each with its `escalate` policy |
-| `budget` | `[model] budget` (180) | seconds per reconcile, counted from its start and checked before each question; past it, the rest is one ghost `- ? <n> more changed units not in the plan` (without the "more" when no model is configured at all) |
+| `budget` | `[model] budget` (180) | seconds per reconcile, counted from its start and checked before each question; past it, the units not yet asked about are only counted (`more` in the reconcile's answer and its record) and the next reconcile asks again |
 | `prices` | the current models at list price | `[plans.prices."<model id>"]` rows for `plans cost`, below |
 
 An unknown key under `[plans]` is a configuration error.
@@ -105,23 +105,23 @@ tests of the steps it finds touched. An automatic reconcile runs no tests.
 branch; on the default branch itself, the commit that added the plan) against what the plans under
 `plans/` already carry at their current fingerprints. A changed unit no plan accounts for, and any
 step whose unit changed (done ones too), is looked at. Nothing changed: no model call. The same
-situation again replays from a cache. A ghost you rejected does not return until its unit changes.
+situation again replays from a cache. A reading you left or ignored does not return until its unit changes.
 
-**Facts land, readings are ghosts.** Facts are what the engine can check alone, and they are
+**Facts land, readings wait for review.** Facts are what the engine can check alone, and they are
 written straight into the buffer in one undo step: a tick when the step's tests are green, the
 test states `○ ● ✗` (a run of all a step's tests stamps it `✓ <fp>`, open or done: the fingerprint
 the marks were made at), `○` on the children of a step whose unit changed since that stamp, a
 re-anchor when a unit only moved.
-Readings are a model's judgement, and arrive as ghosts you accept with `<leader>mpy` or drop with
-`<leader>mpn`: an `also` child placing a unit under a step, a step line ticked (only a step with
+Readings are a model's judgement, and wait in the plan's reconcile review ([below](#reviews-and-the-journal))
+for you to apply with `<leader>mpr`: an `also` child placing a unit under a step, a step line ticked (only a step with
 tests: a reading never ticks one without) or unticked, a `✗ changed: <why>` child, a `✗ gone:`
 child, a new step for work nothing covers.
 
 **Who decides.** Jev (`[decide] model`) answers two questions: `plan-step` (which open step is a
 changed file for, or none; one question per changed file) and `plan-state` (done, in progress or
 diverged; for a done step without tests, still done, reopened or diverged). A `done` for an open
-step with no test children is taken as in progress: no tick ghost. A step with tests keeps its
-tick ghost, and its tests tick it. Below the gate (0.6)
+step with no test children is taken as in progress: no tick reading. A step with tests keeps its
+tick reading, and its tests tick it. Below the gate (0.6)
 the same question climbs `[plans] ladder`, else `[model] ladder` without Jev, each backend under
 its `escalate` policy: an automatic reconcile climbs `auto` rungs only, `<leader>mpc` also `ask`
 rungs, and `never` is never. Words (a `<why>`, a new step's line) come from the first allowed chat
@@ -147,10 +147,55 @@ sentence. `<leader>mt` runs the step's tests and ticks it when all are green. A 
 step's tests when it finishes, over the files it wrote as they are on disk (the editor reloads
 them only afterwards).
 
-**The record.** Every reconcile appends a `reconcile` line to `.olifant/state/errands.jsonl`: `id`,
+**The record.** Every reconcile that asks or answers something (one with nothing to say, or the same situation as last time, writes none) appends a `reconcile` line to `.olifant/state/errands.jsonl`: `id`,
 `at`, `plan`, `branch`, `baseline`, `forced`, `changed`, `unaccounted`, `more`, `facts`, `seconds`,
-`climbs` (rung and seconds), `decisions` and `blocks`. A ghost's accept or reject outcome refers to
+`climbs` (rung and seconds), `decisions` and `blocks`. The accept or reject outcome of a reading or of an errand's ghost block refers to
 the reconcile's `blocks` by index.
+
+## Reviews and the journal
+
+**A `do` is reviewed.** Before a `do` the engine takes a reference to the working tree (`git stash
+create`, or HEAD when nothing differs; untracked files too). When the `do` answers, or changes the
+tree however it ended, the change since that reference becomes a **review**, kept under
+`.olifant/state/reviews/<plan>/` until you answer it. The window shows the step, what the model
+said, the tests after it and the commands it was refused, in words, beside the diff file by file
+(`[` `]`); the answers are:
+
+| key | choice | does |
+|---|---|---|
+| `a` | keep | the `do`'s plan lines land under the step; the review goes |
+| `r` | revert | the files are restored from the reference, new ones removed; your edits to those files since the `do` go with it, and the plan, `.olifant/state/` and `.olifant/config.toml` are left alone |
+| `o` | reopen | keep it and ask for more in the same thread: a sentence, and a `do` on the step resumes the model's session in a fork; it comes back as a new review |
+| `t` | test | run the step's tests now |
+| `p` | allow | add the commands it was refused to `[plans] do_tools` in `.olifant/config.toml` for future dos |
+| `d`, `q` | | details (prompt, answer, diffs); later (the review stays, with a lens on its step) |
+
+`<leader>mpr` (or the lens) opens the review at the cursor's step, else the plan's first. A repository
+with no git has no review: the `do` keeps its ghosts as before. Every `do`, however it ended, is
+kept under `.olifant/state/errands/<plan>/`; a step with past dos has a lens `N delegations`.
+
+**Readings are a review too.** The reconcile's readings (a step looks done, open again or wrong,
+a unit is gone, a changed unit is in no step) do not appear as ghosts in the buffer: they wait in
+**one review per plan**, under the title lens `N readings to review`, and a lens on each step with
+a reading. `<leader>mpr` opens it: one line per reading, its plan edit over its unit's diff. `a`
+applies it, `r` leaves it, and for a unit in no step `1`-`9` place it under that open step, `n`
+makes it a new step and `i` ignores it until the unit changes again. A reading you answered is not
+offered again; one you left or ignored comes back only when its unit changes.
+
+**The journal.** The engine writes a dated line under a step when something happens to it, once
+each:
+
+```markdown
+- [ ] a table closes @src/bistro/booking/commands/close_table.py:CloseTable.handle
+  - 25 Oct 21:31 · do (sonnet) · answered: 1 file changed
+  - 25 Oct 21:40 · kept the do's change
+  - 25 Oct 21:41 · tests red: test_closes_a_table
+```
+
+A `do` ending (`answered`, `blocked`, `answered nothing`, `error`, `timed out`, `cancelled`), a review
+answered (kept, reverted, kept and asked for more), a step's tests ticking, unticking or going red or
+green. Delete a line you do not want and it is not written again. The store is
+`.olifant/state/journal/<plan>.jsonl`. A line you write in the same shape reads as a journal line.
 
 ## What errands cost
 
@@ -207,6 +252,8 @@ The fair comparison is a head-to-head: the same change made both ways.
 | `<leader>mpx` | on a step (or a line under it): mark it done (ticked, `✓` its unit now, a live excerpt frozen) or reopen it (code actions "Mark done" / "Reopen step") |
 | `<leader>mpe` | on a step: its unit's code under it as an excerpt ("Show the code here"; frozen at once under a ticked step), or, where there is one, open or close its fold; where it cannot, the reason (LSP `disabled`) |
 | `<leader>ms` / `<leader>mt` | on a step: stub a test under it / run its tests and tick it |
+| `<leader>mpr` | review the `do` or the reading of the step here (else the plan's first) |
+| `<leader>mp<CR>` | start a step under this line (the engine's "New step below") |
 | `<leader>mpf` | the plan's files, in the location list |
 | `gd` | on an anchor: go to its unit |
 

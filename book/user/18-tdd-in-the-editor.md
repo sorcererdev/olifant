@@ -167,13 +167,13 @@ again:
 
 To answer it, ask again with the same `textDocument` and `position` and `resume: {token, choice,
 arg?, land?, hint?}`, as the offer's row says: `choice` is `"continue"`, `"climb"`, `"stop"`,
-`"reconjure"`, `"accept"`, `"reject"` or `"wire"`; `arg` a re-conjure's test id or a wire's
-`"param: Port"` (needed for `wire`) or the round a keep lands (`"2"`; `"0"` the wire alone; the pause's round when
+`"reconjure"`, `"accept"`, `"reject"`, `"wire"` or `"port"`; `arg` a re-conjure's test id, a wire's
+`"param: Port"` (needed for `wire`), a port method's `"Port.method"` or the round a keep lands (`"2"`; `"0"` the wire alone; the pause's round when
 absent); `land` a boolean for `stop`, false when absent; an empty
 `hint` counts as none. The answer is a landed or a paused result again, and a token works once,
 except that `reject` and a refused resume keep it. A resume without a token and a choice, a `land`
 that is not a boolean, or a `wire` without its `arg`, is `InvalidParams` (`olifant/conjure resume
-needs a token and a choice (continue, climb, stop, reconjure, accept, reject or wire)`). These are
+needs a token and a choice (continue, climb, stop, reconjure, accept, reject or wire)`; the text omits `port`, which is accepted). These are
 refused in one sentence and the pause stays: a `wire` the pause does not offer (`this pause offers
 no wire for <arg>`), a `reconjure` of a test it does not offer (`this pause offers no re-conjure of
 <arg>`; with no `arg` the first offered test is re-conjured), a `stop` with `land: true` and no
@@ -231,6 +231,19 @@ queries give that port in their `__init__` (`bookings`), else the fake's name. T
 over the wired files; every file it wrote lands with it, as one edit and one undo step across
 files, and the pause lists what was wired, each file as a diff. One wire per conjure; a wire that
 writes nothing is not tried again.
+
+**A missing method.** When the check says a port the unit takes has no such method (pyright's
+`Cannot access attribute "close" for class "BookingRepository"`, by the pack's `[check]
+missing_member`), the conjure pauses (`a port lacks a method: BookingRepository.close`). If the
+signature follows from the call and the test's fake (written in the language's own words by
+`[types]`), the pause offers `add close to
+BookingRepository`, with the signature in its detail; if not, it says to add the method yourself,
+and the signature is not guessed. Choosing it (`port`, `arg` `Port.method`) has the pack's
+`port-method` generator add the method to the port, then `port-method-adapters` add it to each
+adapter beside the port (the model writes their bodies) and the contract test's stub, and answers
+a **proposal** like a re-conjured test's: the diff of every file, to `accept` (they land with the
+conjure) or `reject`. A pack with ports has to ship generators of those two names. The step log
+has `conjure-proposal Port.method`, or `conjure-port-failed Port.method` when it could not.
 
 **A wrong test.** Every pause offers to re-conjure each involved test, the suspect first (a
 flagged test, else one failing now). **reconjure** has the model write that test again, told why
@@ -387,10 +400,11 @@ when the judge ends; it keeps answering in the background, and the next `mutate`
 orders by the answers that landed. Without one, survivors stay in file order.
 
 The questions are typed (a fixed set of options; "unsure" always allowed; an answer outside the
-options changes nothing) and the decision model never writes code. Today any backend from
+options changes nothing) and the decision model never writes code. Any backend from
 `[model.backends]` can answer them, a local Ollama model included; a key is needed only if that
-backend needs one. A dedicated decision model such as TypeSafe AI's Jev is what the questions
-are shaped for, but no Jev backend exists yet.
+backend needs one. A `kind = "jev"` backend ([chapter 12](12-holes-and-models.md#configuring-a-model)),
+TypeSafe AI's Jev, is the decision model the questions are shaped for: it answers them with
+weights, and cannot write code.
 
 ## The step log
 
@@ -412,8 +426,9 @@ words are never logged). The scan logs `conjure-test flagged <test id> <variable
 for each test it flags (and `conjure-test ok -` for a hand-started test conjure that passes its
 fakes); Jev's pick of a port `conjure-port <choice> <confidence|->`. A wire adds `conjure-wire
 <generator> k=v …` (the inputs it ran with) or `conjure-wire-failed <generator>`; a proposal
-`conjure-proposal <test id>`; a failed re-conjure `conjure-reconjure-failed <test id>`.
-`conjure-resume` takes `reconjure`, `accept`, `reject` and `wire` besides `continue`, `climb`,
+`conjure-proposal <test id>`; a failed re-conjure `conjure-reconjure-failed <test id>`; a port method
+`conjure-proposal Port.method` or `conjure-port-failed Port.method`.
+`conjure-resume` takes `reconjure`, `accept`, `reject`, `wire` and `port` besides `continue`, `climb`,
 `stop` and `keep N` (a stop that keeps round N's body; `keep 0` the wire alone). A bare stop's `conjure` line says `stopped ·
 nothing landed`; a keep's `kept round N · red: …`.
 Its `conjure` line names the rungs and the rounds:

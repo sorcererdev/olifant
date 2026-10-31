@@ -1011,4 +1011,4 @@ so a failed check becomes a `CompleteFailed` conflict in the plan rather than an
 There's no `Either` in the result at all: `completeEdits` can't fail as a function, it can
 only report.
 
-Next: [chapter 3](README.md) (planned), the template engine.
+Next: [chapter 3](03-plans.md), the plans loop, is the first chapter written for a feature built since the tour; the template engine is chapter 6 (planned).

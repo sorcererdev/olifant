@@ -615,7 +615,7 @@ holding one `[check]` or `[test]` table with the keys it fills in:
 
 Any key you write beside `preset` wins over the preset's: `[check] preset = "pyright"` with your
 own `root = ["apps/web/pyproject.toml"]` keeps the rest. An unknown preset is a load error naming
-the known ones (`` `preset`: unknown test preset `jest`; expected one of hspec, pytest ``).
+the known ones (`` `preset`: unknown test preset `jest`; expected one of cargo-test, hspec, pytest ``; for `[check]`: `cabal-repl, cargo, pyright`).
 
 A `[check]` or `[test]` may say how to install its tool, `install = "…"` (a sentence): `olifant
 doctor` gives it as the fix when the tool is not on the PATH. Every shipped preset carries one;
