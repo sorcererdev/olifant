@@ -339,7 +339,10 @@ model holes take `verify` (a tab stop is yours to write).
 **Auto-import, without a model round.** When a fill fails only because names are not
 defined (pyright: `"date" is not defined`), and exactly one import line in the project's
 files of that language binds the name (`from datetime import date, time` in a model binds
-`date`), Olifant adds that import to the fill and checks it again in the same attempt. An
+`date`), Olifant adds that import to the fill and checks it again in the same attempt. The
+lines are those the language's `[imports] line` matches; one importing names from a module is
+rewritten for the one name by `[import_merge] write`, one importing a module whole is read by an
+`[[imports.resolve]]` without `names` ([chapter 9](09-packs-and-language-adapters.md)). An
 alias binds its alias (`from datetime import date as d` binds `d`, not `date`). Two modules
 binding the name, or none, leave it to the model's retry. `--progress` reports it as
 `{"event":"auto_import","hole":…,"import":…}`. It needs the compiler support to read the

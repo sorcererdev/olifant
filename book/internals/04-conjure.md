@@ -246,11 +246,14 @@ Its second check, **the engine holds no pack**, reads every engine source under 
 (specs and `testdata` left out). It fails on a line that names a shipped pack (a hyphenated name
 anywhere, `elm`/`rails`/`redwood` as a string literal or before `/`), a shipped generator id
 with a hyphen (read from `packs/*/generators/` when it runs, so a new pack's generators are
-covered), or `def command(`, `def query(`, `booking_repository`. One-word ids (`port`, `wire`,
-`query`) are not checked: they are the engine's own words too. `packAllowed` lists the lines
-that remain, all in the migrate subsystem (`App.hs`, `Cli.hs`, `Cli/Options.hs`,
-`Server/Actions.hs`, `Server/Preview.hs`: the strangler pack's name and its
-`extract-command`/`extract-query`), pending their own change. The broader rule, that the
+covered), a pack's hyphenated rule id (`[rules.ID]` in its `rules.toml`), a value of a pack's
+`migrate.toml` that is more than one plain word (and a glob's file name: `switches.py`), or
+`def command(`, `def query(`, `booking_repository`. One-word ids (`port`, `wire`, `query`) and
+one-word values (`command`, `file`, `True`) are not checked: they are the engine's own words
+too. There is no allowlist: a line that names one fails. A third check holds the strangling,
+stub, fill-prompt, anticipation, recognition and doctor modules (`neutralModules`) to
+conjure's Python literals and those that moved into python-strangler's `migrate.toml`, the
+python language file and the pytest toolchain (`neutralLiterals`). The broader rule, that the
 engine never branches on a language's name, is `NeutralSpec` ([chapter 5](05-languages.md#the-rule-and-the-specs-that-hold-it)).
 
 ## Testing it
