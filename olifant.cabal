@@ -44,7 +44,7 @@ library
   hs-source-dirs:  src
   -- tree-sitter in process: the runtime (its amalgamation) and the grammars
   -- ast-grep 0.45.3 locks, compiled in; no system library (cbits/*/SOURCES)
-  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c, cbits/tree-sitter-python/parser.c, cbits/tree-sitter-python/scanner.c, cbits/tree-sitter-haskell/parser.c, cbits/tree-sitter-haskell/scanner.c
+  c-sources:       cbits/olifant_ts.c, cbits/olifant_clone.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c, cbits/tree-sitter-python/parser.c, cbits/tree-sitter-python/scanner.c, cbits/tree-sitter-haskell/parser.c, cbits/tree-sitter-haskell/scanner.c
   include-dirs:    cbits/tree-sitter/include cbits/tree-sitter/src cbits/tree-sitter-rust
   cc-options:      -O2 -std=c11
   exposed-modules:
@@ -195,7 +195,7 @@ test-suite spec
   build-tool-depends: hspec-discover:hspec-discover
   -- tree-sitter in process: the runtime (its amalgamation) and the grammars
   -- ast-grep 0.45.3 locks, compiled in; no system library (cbits/*/SOURCES)
-  c-sources:       cbits/olifant_ts.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c, cbits/tree-sitter-python/parser.c, cbits/tree-sitter-python/scanner.c, cbits/tree-sitter-haskell/parser.c, cbits/tree-sitter-haskell/scanner.c
+  c-sources:       cbits/olifant_ts.c, cbits/olifant_clone.c, cbits/tree-sitter/src/lib.c, cbits/tree-sitter-rust/parser.c, cbits/tree-sitter-rust/scanner.c, cbits/tree-sitter-python/parser.c, cbits/tree-sitter-python/scanner.c, cbits/tree-sitter-haskell/parser.c, cbits/tree-sitter-haskell/scanner.c
   include-dirs:    cbits/tree-sitter/include cbits/tree-sitter/src cbits/tree-sitter-rust
   cc-options:      -O2 -std=c11
   build-depends:

@@ -291,8 +291,8 @@ example   = "end of struct BillingService"
 | `placeholder`, `branch` | what `complete` writes when the compiler finds a case no edit covers: `branch` with `pattern` and `body`, where `body` is the `placeholder` with `message` = `olifant: <function> <pattern>`. Without both, such a case is a conflict instead of a todo |
 | `arm_separator`, `lone_arm_spaced` | how `complete` joins a new arm to the others: `arm_separator` (default none) is appended to the last arm first, unless it already ends with it or ends a block (Rust's `","`); `lone_arm_spaced = true` puts a blank line before the new arm when the match has only one (Elm's and Haskell's style; default false). With two or more arms, the existing spacing is copied |
 | `indent` | one level of indentation; default four spaces. Used when `end of`/`start of` opens an empty container ([chapter 3](03-anchors.md)), and when a snippet goes on an empty line after one that opens a block ([chapter 14](14-editors-and-actions.md#the-cursor-edit-cursor--true)). the shipped Haskell file sets two spaces |
-| `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo), and the generic `sarif`, `errorformat` and `olifant-json`; `convert` runs a command that turns any tool's output into olifant-json ([check formats](#check-formats)). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
-| `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids; `{= root =}`, anywhere in an argument or the program, the package folder on disk, the one `root`'s markers find, else the project's: the run itself is in a scratch copy, so a venv of the project is `{= root =}/.venv/bin/pytest`), `format` (`pytest`, `lines`, `tap`, `junit-xml`, `olifant-json`) or `convert`, `context`, `root`; and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). `[test.select]`, `file_group`, `unit`, `exclusive` and `timeout` say how one test is run and found. See [presets](#presets-check-and-test) and [test formats](#test-formats) |
+| `[check]` | `preset` names a check Olifant knows (`pyright`, `cargo`; [below](#presets-check-and-test)), and its keys are filled in from it; a key you write wins. Without a preset: `command` runs in a scratch copy of the project's files (those matching `files`, plus `context`). An argument that is exactly `{= files =}` becomes the list of source files; `{= cache =}`, anywhere in an argument, becomes a cache directory for this language that outlives the scratch copy (`~/.cache/olifant/check/<language>`); `{= root =}`, anywhere in an argument or the program, the package folder on disk, as in `[test]` (a tool in the project's venv is `{= root =}/.venv/bin/ruff`). `command` may be a list of candidates, the first that fits, as a `[test] command` is ([command candidates](#test-command-candidates)). `root` (optional) lists files that mark a package's root: a check, an `uncovered` query and a hole's `verify` then run only in the judged files' package — the nearest folder above them holding one of these files (`root_pick = "outermost"`: the outermost) — with `files` and `context` read from that folder, and the report's paths made the project's again. Files judged in different packages, or no marker, check the whole project. `exclusive = true` is for a tool that keeps a build cache it cannot share between runs at once (cargo's target dir): each check gets a cache no other check uses while it runs (`{= cache =}` is then one of a few slots per workspace, each kept warm), so checks running together — the language server's, two projects' — never read each other's builds. `format` picks a *compiler support* record — the code that reads that compiler's report (from stderr, or stdout for cargo and pyright), decides whether a candidate constructor is visible at a site, writes a reported pattern the way the site should, and names the declaration a line sits in. Known formats: `elm-json` (Elm), `ghc-json` (GHC), `pyright-json` (pyright) and `rustc-json` (cargo), and the generic `sarif`, `errorformat` and `olifant-json`; `convert` runs a command that turns any tool's output into olifant-json ([check formats](#check-formats)). A command that starts with `env NAME=value …` runs the program after the settings, and that program is the one that must be installed (`env UV_PROJECT_ENVIRONMENT=… uv run …` needs `uv`; `olifant doctor` checks it) |
+| `[test]` | how this language's tests run, for the editor's test, conjure and mutate ([chapter 18](18-tdd-in-the-editor.md)) and `verify = "tests"`: `preset` (`pytest`) or `command` (`{= tests =}` becomes the test ids; `{= root =}`, anywhere in an argument or the program, the package folder on disk, the one `root`'s markers find, else the project's: the run itself is in a scratch copy, so a venv of the project is `{= root =}/.venv/bin/pytest`), `format` (`pytest`, `lines`, `tap`, `junit-xml`, `olifant-json`) or `convert`, `context`, `root`, `files` (globs of ignored files a run needs; the rest of the project is copied anyway, [below](#test-formats)); and `tests_for`, a module's test file (`{= dir =}/{= stem =}__test.py`). `[test.select]`, `file_group`, `unit`, `exclusive` and `timeout` say how one test is run and found. See [presets](#presets-check-and-test) and [test formats](#test-formats) |
 | `[[mutate]]` | mutation operators, for `mutate` ([chapter 18](18-tdd-in-the-editor.md)): each a `name`, a `pattern` or ast-grep `rule`, and a `fix` or `transform = "increment"`. Python ships seventeen |
 | `ignore` | folder names a project's listings never enter (dependencies, build output, caches): Rust's `["target"]`, Python's `[".venv", "__pycache__", ".pytest_cache", "node_modules"]`, Haskell's `["dist-newstyle"]`, Elm's `["elm-stuff", "node_modules"]`. The project's languages' lists are joined; olifant itself keeps out only `.git` and, in a walk outside git, dot-folders |
 | `unit_words` | what a unit is in this language, as the plan prompts say it: "<Unit> is <unit_words> defined in that file". Python's is "a top-level class or function name (Name) or a method (Class.method)"; a project whose languages disagree, or one without the key, gets "a top-level function or type name (Name), or a method (Type.method)" |
@@ -642,7 +642,8 @@ holding one `[check]` or `[test]` table with the keys it fills in:
 
 #### Test command candidates
 
-A `[test] command` is a command, or a list of **candidates** to choose from, the first that fits:
+A `[test] command` (and a `[check] command` alike) is a command, or a list of **candidates** to
+choose from, the first that fits:
 
 ```toml
 [test]
@@ -658,11 +659,23 @@ A candidate fits when one of its `when` files exists, a path from the package ro
 `root`'s markers find, else the project's), among the files a run copies or on disk; one without
 `when` always fits. Its `context` replaces the table's for that run (so only the uv run is keyed
 by `uv.lock`). No candidate fitting is a run's error, `no [test] command fits here: no uv.lock or
-…`. `olifant doctor`'s runner row names the chosen one and why, from the project root:
+…` (`no [check] command fits here: …` for a check). `olifant doctor`'s runner row (and its
+check tool row) names the chosen one and why, from the project root:
 
 ```
 ✓ test runner .venv/bin/pytest (python) — /…/nightvote/.venv/bin/pytest; .venv/bin/pytest found; tests_for = {= dir =}/{= stem =}__test.py
 ✓ test runner uv (python) — /opt/homebrew/bin/uv; uv.lock found; tests_for = …
+✓ check tool .venv/bin/ruff (python) — /…/nightvote/.venv/bin/ruff; .venv/bin/ruff found
+```
+
+A project whose check tool lives in its venv names it without an absolute path:
+
+```toml
+[check]
+command = [
+  { when = [".venv/bin/ruff"], command = ["{= root =}/.venv/bin/ruff", "check", "--isolated", "--select", "E9,F", "--output-format=concise", "{= files =}"] },
+  { command = ["ruff", "check", "--isolated", "--select", "E9,F", "--output-format=concise", "{= files =}"] },
+]
 ```
 
 A layer's own `command`, bare or a list, replaces the preset's whole list. A plan's `do` is told
@@ -699,8 +712,14 @@ Undefined names are taken from both tables, in the order the text gives them. Wi
 by it, and a test file's module by it backwards.
 
 Tests run like checks: in a scratch copy of the project's files as the editor has them (nothing
-needs saving), rooted at the package around the tests (`root`). A run that cannot start (a test
-file that does not import, a collection error) is said apart from a red test.
+needs saving), rooted at the package around the tests (`root`). The copy holds the rest of the
+package from disk too, byte for byte: every file git tracks, and new files it does not ignore
+(outside git, every file a walk finds, dot-folders left out), but none under the language's
+`ignore` folders (`.venv`, `node_modules`). So the templates, fixtures and data files a test
+reads are there without being listed; on APFS each is a clone, so no bytes are copied. `files`
+(globs) adds files that listing leaves out, an ignored generated file a test needs, say. A run
+that cannot start (a test file that does not import, a collection error) is said apart from a
+red test.
 
 ### Check formats
 

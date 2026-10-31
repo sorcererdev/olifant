@@ -103,6 +103,18 @@ spec = describe "olifant doctor (spec §4.7)" $ do
         (name, st) `shouldBe` ("test runner pytest (python)", Ok)
         detail `shouldSatisfy` T.isInfixOf "no uv.lock, .venv/bin/pytest or venv/bin/pytest"
       other -> expectationFailure (show other)
+  it "(f3) the check tool row names the [check] command candidate chosen, {= root =}/ dropped" $ do
+    let Right python = parseLanguage "python" "/p" (T.unlines ["files = [\"**/*.py\"]", "comment = \"#\"", "grammar = \"python\"", "[check]", "format = \"sarif\"", "command = [{ when = [\".venv/bin/ruff\"], command = [\"{= root =}/.venv/bin/ruff\", \"check\"] }, { command = [\"ruff\", \"check\"] }]"])
+        withFiles fs = (ports ["ast-grep", "ruff", "/proj/.venv/bin/ruff"] (Right ()) []) {dpExists = \f -> Identity (f `elem` fs)}
+        rows fs = [(checkName c, checkStatus c, checkDetail c) | c <- runIdentity (doctor (withFiles fs) (DoctorInput (Just "/proj") [] [python] [] [] local Nothing defaultPlans [] False)), "check tool" `T.isPrefixOf` checkName c]
+    case rows ["/proj/.venv/bin/ruff"] of
+      [(name, st, detail)] -> do
+        (name, st) `shouldBe` ("check tool .venv/bin/ruff (python)", Ok)
+        detail `shouldSatisfy` T.isInfixOf ".venv/bin/ruff found"
+      other -> expectationFailure (show other)
+    case rows [] of
+      [(name, st, _)] -> (name, st) `shouldBe` ("check tool ruff (python)", Ok)
+      other -> expectationFailure (show other)
   it "(g) a language without [test] gets no test runner line" $
     [checkName c | c <- runIdentity (doctor (ports ["ast-grep", "cargo"] (Right ()) []) (input local)), "test runner" `T.isPrefixOf` checkName c] `shouldBe` []
   it "reports a broken language adapter or generator as an error" $ do

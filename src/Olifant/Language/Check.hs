@@ -40,7 +40,10 @@ import Data.Functor ((<&>))
 import Data.List (isPrefixOf, nub, sort)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as S
-import Olifant.Workspace (pruned)
+import Olifant.Workspace (Workspace (..), diskWorkspace, pruned)
+import Control.Exception (IOException, try)
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt (..))
 import Olifant.Provider (decodeArgs, runProvider)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
@@ -48,13 +51,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), TestCandidate (..), TestDef (..), chooseTestCommand, matchesGlob, moduleOf, regexName, supportOf)
+import Olifant.Language.Adapter (CheckDef (..), ImportsDef (..), Language (..), Select (..), CommandCandidate (..), TestDef (..), chooseCheckCommand, chooseTestCommand, matchesGlob, moduleOf, regexName, supportOf)
 import Olifant.Template (Value (VText), parseTemplate, render)
 import Olifant.Language.TestFormats (Reported (..), attribute, fromReported, parseJunit, parseLines, parseTap, parseTestJson)
 import Data.Containers.ListUtils (nubOrd)
 import Olifant.Language.Test (Runner (..), TestId, TestRun (..), parsePytest)
 import Olifant.Process (Cancel, Outcome (..), neverCancel, runBytesCancellable)
-import System.Directory (XdgDirectory (..), canonicalizePath, createDirectoryIfMissing, doesFileExist, findExecutable, getXdgDirectory, makeAbsolute)
+import System.Directory (XdgDirectory (..), canonicalizePath, copyFile, createDirectoryIfMissing, doesFileExist, findExecutable, getXdgDirectory, makeAbsolute)
 import System.Exit (ExitCode (..))
 import System.FilePath (makeRelative, splitDirectories, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -85,7 +88,7 @@ processVerifierWith = processVerifierCancellable neverCancel
 -- | 'processVerifierWith', killed when the token is tripped ("cancelled").
 processVerifierCancellable :: Cancel -> Int -> Verifier IO
 processVerifierCancellable token secs = Verifier $ \lang argv files ->
-  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) [] Nothing [] (const Nothing) files <&> \case
+  scratchRun token secs lang "olifant-verify" argv (maybe "none" (`contextKey` files) (langCheck lang)) [] Nothing [] (const Nothing) Nothing files <&> \case
     Left ScratchEmpty -> Left (CheckFailed "empty verify command")
     Left ScratchNoProgram -> Left (CheckFailed "the verify command runs no program")
     Left (ScratchMissing program) -> Left (CheckToolMissing ("`" <> program <> "` is not installed (needed to verify)"))
@@ -103,12 +106,13 @@ data ScratchFailure = ScratchEmpty | ScratchNoProgram | ScratchMissing Text | Sc
 -- given @vars@ (a test's @{= root =}@) are expanded in it, the program
 -- too, and @special@ may replace a whole argument by several. Stopped
 -- after @secs@. With a @convert@ command, its stdout is the outcome's
--- stdout (and stderr is empty).
-scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> [(Text, Text)] -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
-scratchRun token secs lang prefix command0 ctx vars slot convert special files = do
-  cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
-  let fill a = foldr (\(k, v) -> T.replace ("{= " <> k <> " =}") v) a (("cache", T.pack cache) : ("context", ctx) : vars)
-      command = [maybe (fill a) (const a) (special (T.strip a)) | a <- command0]
+-- stdout (and stderr is empty). With a folder on disk (a test run's
+-- @{= root =}@), the copy also holds the project's other files under it
+-- ('copyRest'): the files are the run's, the rest is the disk's.
+scratchRun :: Cancel -> Int -> Language -> String -> [Text] -> Text -> [(Text, Text)] -> Maybe Int -> [Text] -> (Text -> Maybe [String]) -> Maybe FilePath -> Map FilePath Text -> IO (Either ScratchFailure Outcome)
+scratchRun token secs lang prefix command0 ctx vars slot convert special rest files = do
+  cache <- slotCache lang slot
+  let command = [maybe (fillVars cache ctx vars a) (const a) (special (T.strip a)) | a <- command0]
   case (command, checkProgram command) of
     ([], _) -> pure (Left ScratchEmpty)
     (_, Nothing) -> pure (Left ScratchNoProgram)
@@ -122,6 +126,7 @@ scratchRun token secs lang prefix command0 ctx vars slot convert special files =
           forM_ (M.toList files) $ \(p, t) -> do
             createDirectoryIfMissing True (takeDirectory (tmp </> p))
             BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
+          mapM_ (\dir -> copyRest (map T.unpack (langIgnore lang)) dir tmp files) rest
           createDirectoryIfMissing True cache
           let expand a = fromMaybe [T.unpack a] (special (T.strip a))
           runBytesCancellable token (Just secs) path (concatMap expand args) (Just tmp) "" >>= \case
@@ -132,6 +137,38 @@ scratchRun token secs lang prefix command0 ctx vars slot convert special files =
                     Left why -> Left (ScratchFailed ("the convert command failed: " <> why))
                     Right report -> Right (Finished code report "")
             Right outcome -> pure (Right outcome)
+
+-- | A slot's cache folder (the language's without a slot): @{= cache =}@.
+slotCache :: Language -> Maybe Int -> IO FilePath
+slotCache lang slot = getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
+
+-- | @{= cache =}@, @{= context =}@ and the given variables (@{= root =}@)
+-- filled in one argument of a command.
+fillVars :: FilePath -> Text -> [(Text, Text)] -> Text -> Text
+fillVars cache ctx vars a = foldr (\(k, v) -> T.replace ("{= " <> k <> " =}") v) a (("cache", T.pack cache) : ("context", ctx) : vars)
+
+-- | Whether a candidate's `when` file is there: among the run's files, or
+-- under its folder on disk.
+existsFor :: Maybe FilePath -> Map FilePath Text -> FilePath -> IO Bool
+existsFor root files f = if M.member f files then pure True else maybe (pure False) (\d -> doesFileExist (d </> f)) root
+
+-- | Into a scratch copy: the project's files under @dir@ on disk (what its
+-- workspace lists: git's tracked and untracked-but-not-ignored files, a walk
+-- outside git; never through the language's `ignore` folders) that the run's
+-- own @files@ do not hold, their bytes as they are (a binary fixture
+-- too). Cloned where the filesystem can (APFS: no bytes copied), else
+-- copied; a file gone meanwhile is skipped.
+copyRest :: [FilePath] -> FilePath -> FilePath -> Map FilePath Text -> IO ()
+copyRest skip dir tmp files = do
+  listed <- listFilesSkipping (diskWorkspace dir) skip ""
+  let rest = [p | p <- listed, not (M.member p files)]
+  -- each folder once (most of the time on a large tree goes to making them)
+  mapM_ (createDirectoryIfMissing True . (tmp </>)) (S.toList (S.fromList (map takeDirectory rest)))
+  forM_ rest $ \p -> do
+    cloned <- withCString (dir </> p) $ \src -> withCString (tmp </> p) (c_clone src)
+    if cloned == 0 then pure () else () <$ (try (copyFile (dir </> p) (tmp </> p)) :: IO (Either IOException ()))
+
+foreign import ccall unsafe "olifant_clone" c_clone :: CString -> CString -> IO CInt
 
 -- | The language's test command over a scratch copy of the files (as a
 -- verify runs, with @{= cache =}@ and @{= context =}@; the one argument
@@ -145,8 +182,7 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
   Just td0 -> do
     -- {= root =}: the package folder on disk (left as written when unknown)
     root <- traverse makeAbsolute (testDir td0)
-    let exists f = if M.member f files then pure True else maybe (pure False) (\d -> doesFileExist (d </> f)) root
-    chooseTestCommand exists td0 >>= \case
+    chooseTestCommand (existsFor root files) td0 >>= \case
       Left why -> pure (Left why)
       Right (td, _) -> runChosen lang ids files root td
   where
@@ -162,7 +198,7 @@ processRunner token secs = Runner $ \lang ids files -> case langTest lang of
         byRule = maybe (map T.unpack ids) (\sel -> map T.unpack (nub (concatMap (selected lang td files sel) ids))) (testSelect td)
         run args =
           around $ \slot ->
-            scratchRun token limit lang "olifant-test" (testCommand td) ctx [("root", T.pack r) | Just r <- [root]] slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) files <&> \case
+            scratchRun token limit lang "olifant-test" (testCommand td) ctx [("root", T.pack r) | Just r <- [root]] slot (testConvert td) (\a -> if a == "{= tests =}" then Just args else Nothing) root files <&> \case
               Left ScratchEmpty -> Left "empty test command"
               Left ScratchNoProgram -> Left "the test command runs no program"
               Left (ScratchMissing program) -> Left ("`" <> program <> "` is not installed (needed to run the tests)")
@@ -341,9 +377,23 @@ compileClean lang files = case langCheck lang of
 
 -- | The argument @{= files =}@ expands to the sources the adapter's globs
 -- select; @{= cache =}@ (anywhere in an argument) to a per-language cache
--- directory that outlives the scratch copy (cargo's `--target-dir`).
+-- directory that outlives the scratch copy (cargo's `--target-dir`);
+-- @{= root =}@ (the program too) to the package folder on disk. The
+-- command is the first candidate whose `when` file is among the files or
+-- in that folder ('chooseCheckCommand').
 runIn :: Cancel -> Language -> CheckDef -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
-runIn token lang check files = around $ \slot -> case (checkCommand check, checkProgram (checkCommand check)) of
+runIn token lang check0 files = do
+  root <- traverse makeAbsolute (checkDir check0)
+  chooseCheckCommand (existsFor root files) check0 >>= \case
+    Left why -> pure (Left (CheckFailed why))
+    Right (check, _) -> runChosenCheck token lang check [("root", T.pack r) | Just r <- [root]] files
+
+runChosenCheck :: Cancel -> Language -> CheckDef -> [(Text, Text)] -> Map FilePath Text -> IO (Either CheckFailure (ExitCode, ByteString, ByteString, FilePath))
+runChosenCheck token lang check vars files = around $ \slot -> do
+ -- an exclusive check's cache is its slot's: no other check uses it meanwhile
+ cache <- slotCache lang slot
+ let command = [if T.strip a == "{= files =}" then a else fillVars cache (contextKey check files) vars a | a <- checkCommand check]
+ case (command, checkProgram command) of
   ([], _) -> pure (Left (CheckFailed "empty check command"))
   (_, Nothing) -> pure (Left (CheckFailed "the check command runs no program"))
   (exe : args, Just program) ->
@@ -357,13 +407,11 @@ runIn token lang check files = around $ \slot -> case (checkCommand check, check
         forM_ (M.toList files) $ \(p, t) -> do
           createDirectoryIfMissing True (takeDirectory (tmp </> p))
           BS.writeFile (tmp </> p) (TE.encodeUtf8 t)
-        -- an exclusive check's cache is its slot's: no other check uses it meanwhile
-        cache <- getXdgDirectory XdgCache ("olifant" </> "check" </> T.unpack (langName lang) </> maybe "" (\n -> "slot-" <> show n) slot)
         createDirectoryIfMissing True cache
         let sources = sort [p | p <- M.keys files, any (`matchesGlob` p) (langFiles lang)]
             expand a
               | T.strip a == "{= files =}" = sources
-              | otherwise = [T.unpack (T.replace "{= context =}" (contextKey check files) (T.replace "{= cache =}" (T.pack cache) a))]
+              | otherwise = [T.unpack a]
         ran <- runBytesCancellable token Nothing path (concatMap expand args) (Just tmp) ""
         case ran of
           Left why -> pure (Left (CheckFailed why))
@@ -427,7 +475,8 @@ checkScope :: Language -> [FilePath] -> [FilePath] -> (FilePath, [FilePath])
 checkScope lang paths judged = (scope, [p | p <- paths, Just rel <- [inside scope p], not (any (`elem` pruned) (splitDirectories p)), any (`matchesGlob` rel) globs])
   where
     check = langCheck lang
-    globs = langFiles lang ++ maybe [] checkContext check ++ maybe [] (\t -> testContext t ++ concat [c | Just c <- map tcContext (testCandidates t)] ++ testFiles t) (langTest lang)
+    globs = langFiles lang ++ maybe [] (\c -> checkContext c ++ candidateContexts (checkCandidates c)) check ++ maybe [] (\t -> testContext t ++ candidateContexts (testCandidates t) ++ testFiles t) (langTest lang)
+    candidateContexts cs = concat [c | Just c <- map ccContext cs]
     scope = packageScope (maybe [] checkRoot check) (maybe False checkRootOutermost check) paths judged
 
 -- | The package of the judged files: the nearest folder (or the outermost)
@@ -456,9 +505,13 @@ inside scope p
   | otherwise = Nothing
 
 -- | The check run inside @scope@ over files keyed by project path: the
--- checker sees paths relative to the scope; its report says project paths.
+-- checker sees paths relative to the scope, and its 'checkDir' is that
+-- folder on disk; its report says project paths.
 runCheckIn :: Monad m => Checker m -> Language -> FilePath -> Map FilePath Text -> m (Either CheckFailure CheckReport)
-runCheckIn checker lang scope files = fmap (outOf scope) <$> runCheck checker lang (into scope files)
+runCheckIn checker lang scope files = fmap (outOf scope) <$> runCheck checker lang {langCheck = narrowed <$> langCheck lang} (into scope files)
+  where
+    -- the check's folder on disk is the package's ({= root =})
+    narrowed c = if null scope then c else c {checkDir = (</> scope) <$> checkDir c}
 
 -- | A verify command run inside @scope@: its arguments that name project
 -- files under the scope name them from the scope.

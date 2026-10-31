@@ -45,8 +45,10 @@ module Olifant.Language.Adapter
   , defaultUnitWords
   , Provider (..)
   , withProviderRoot
-  , TestCandidate (..)
+  , CommandCandidate (..)
+  , chooseCommand
   , chooseTestCommand
+  , chooseCheckCommand
   , hasUnitRule
   , hasTestUnits
   , mergeLayerTables
@@ -347,8 +349,12 @@ data TargetDef = TargetDef {targetShape :: [Text], targetContainer :: Rule, targ
 -- @checkInstall@ (key `install`): how to install the tool, doctor's fix.
 -- @checkUndefined@ (`undefined`): expressions for a name the check says is
 -- undefined ('UndefinedRule'). @checkMissingMember@ (`missing_member`): the
--- check's words for a member a type lacks.
-data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text], checkInstall :: Maybe Text, checkUndefined :: [UndefinedRule], checkMissingMember :: Maybe MissingMember}
+-- check's words for a member a type lacks. @checkCandidates@: a `command`
+-- list of @{ when, command, context }@ ('chooseCheckCommand'), as in
+-- `[test]`. @checkDir@: the folder on disk a check's files are relative to,
+-- @{= root =}@ (as 'testDir': set at load, narrowed to the package by
+-- 'Olifant.Language.Check.runCheckIn').
+data CheckDef = CheckDef {checkCommand :: [Text], checkContext :: [Text], checkFormat :: Text, checkRoot :: [Text], checkRootOutermost :: Bool, checkExclusive :: Bool, checkConcurrent :: Bool, checkErrorFormat :: Maybe ErrorFormat, checkConvert :: [Text], checkInstall :: Maybe Text, checkUndefined :: [UndefinedRule], checkMissingMember :: Maybe MissingMember, checkCandidates :: [CommandCandidate], checkDir :: Maybe FilePath}
   deriving stock (Eq, Show)
 
 -- | The compiler support that reads a check's report.
@@ -393,7 +399,7 @@ data TestDef = TestDef
   -- ^ `unit = { provider = [...] }`: a program answers the test-units slot
   , testSelectProvider :: Maybe Provider
   -- ^ `select = { provider = [...] }`: a program turns ids into arguments
-  , testCandidates :: [TestCandidate]
+  , testCandidates :: [CommandCandidate]
   -- ^ `command = [{ when, command, context }, …]`: the commands to choose
   -- from ('chooseTestCommand'); none for a bare `command`
   , testDir :: Maybe FilePath
@@ -403,35 +409,47 @@ data TestDef = TestDef
   }
   deriving stock (Eq, Show)
 
--- | One candidate of a `[test] command` list: its command, used when one
--- of its @when@ files exists under the package (always, without @when@),
--- with its own @context@ globs (the table's, without).
-data TestCandidate = TestCandidate {tcWhen :: [Text], tcCommand :: [Text], tcContext :: Maybe [Text]}
+-- | One candidate of a `[test]` or `[check]` `command` list: its command,
+-- used when one of its @when@ files exists under the package (always,
+-- without @when@), with its own @context@ globs (the table's, without).
+data CommandCandidate = CommandCandidate {ccWhen :: [Text], ccCommand :: [Text], ccContext :: Maybe [Text]}
   deriving stock (Eq, Show)
 
--- | The test definition a run uses: its first candidate whose `when` names
--- a file that EXISTS (a path from the package's root) as its command and
--- context, and why it was chosen (`uv.lock found`; with no `when`, the
--- earlier candidates' files missing). A bare command is its own choice,
--- with no reason. Left when no candidate fits.
-chooseTestCommand :: Monad m => (FilePath -> m Bool) -> TestDef -> m (Either Text (TestDef, Maybe Text))
-chooseTestCommand exists td = go [] (testCandidates td)
+-- | The first candidate whose `when` names a file that EXISTS (a path from
+-- the package's root), and why it was chosen (`uv.lock found`; with no
+-- `when`, the earlier candidates' files missing). Right Nothing for no
+-- candidates (a bare command, its own choice); Left when none fits, naming
+-- the table (`[test]`).
+chooseCommand :: Monad m => Text -> (FilePath -> m Bool) -> [CommandCandidate] -> m (Either Text (Maybe CommandCandidate, Maybe Text))
+chooseCommand table exists candidates = go [] candidates
   where
-    go _ [] | null (testCandidates td) = pure (Right (td, Nothing))
-    go missed [] = pure (Left ("no [test] command fits here: no " <> orList (reverse missed)))
-    go missed (c : rest) = case tcWhen c of
-      [] -> pure (Right (use c, if null missed then Nothing else Just ("no " <> orList (reverse missed))))
+    go _ [] | null candidates = pure (Right (Nothing, Nothing))
+    go missed [] = pure (Left ("no " <> table <> " command fits here: no " <> orList (reverse missed)))
+    go missed (c : rest) = case ccWhen c of
+      [] -> pure (Right (Just c, if null missed then Nothing else Just ("no " <> orList (reverse missed))))
       ws -> firstM ws >>= \case
-        Just w -> pure (Right (use c, Just (w <> " found")))
+        Just w -> pure (Right (Just c, Just (w <> " found")))
         Nothing -> go (reverse ws ++ missed) rest
     firstM = \case
       [] -> pure Nothing
       w : ws -> exists (T.unpack w) >>= \b -> if b then pure (Just w) else firstM ws
-    use c = td {testCommand = tcCommand c, testContext = fromMaybe (testContext td) (tcContext c)}
     orList = \case
       [] -> ""
       [a] -> a
       xs -> T.intercalate ", " (init xs) <> " or " <> last xs
+
+-- | The test definition a run uses: its chosen candidate's ('chooseCommand')
+-- command and context, and why.
+chooseTestCommand :: Monad m => (FilePath -> m Bool) -> TestDef -> m (Either Text (TestDef, Maybe Text))
+chooseTestCommand exists td =
+  fmap (\(c, why) -> (maybe td (\cc -> td {testCommand = ccCommand cc, testContext = fromMaybe (testContext td) (ccContext cc)}) c, why))
+    <$> chooseCommand "[test]" exists (testCandidates td)
+
+-- | The check definition a run uses, as 'chooseTestCommand'.
+chooseCheckCommand :: Monad m => (FilePath -> m Bool) -> CheckDef -> m (Either Text (CheckDef, Maybe Text))
+chooseCheckCommand exists cd =
+  fmap (\(c, why) -> (maybe cd (\cc -> cd {checkCommand = ccCommand cc, checkContext = fromMaybe (checkContext cd) (ccContext cc)}) c, why))
+    <$> chooseCommand "[check]" exists (checkCandidates cd)
 
 -- | `[test.stub]`: a new test. 'sdTest' (`test`), its text, a template
 -- over @{= name =}@, @{= unit =}@, @{= module =}@, @{= indent =}@ and
@@ -740,7 +758,7 @@ languageFrom presets name grammarDir top = do
       case select of
         Just (Select a b _) | any ("{= group =}" `T.isInfixOf`) (a ++ b), Nothing <- fileGroup, not hasModuleOf -> Left "[test.select] uses {= group =}, which needs `file_group` (or [imports] module_of)"
         _ -> Right ()
-      (command, candidates) <- required "command" commandFrom t
+      (command, candidates) <- required "command" (commandFrom "[test]") t
       TestDef command <$> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t) <*> required "tests_for" text t
         <*> pure linesFormat <*> pure convert
@@ -761,14 +779,14 @@ languageFrom presets name grammarDir top = do
         <*> pure Nothing
     -- a bare command, or candidates: the unconditional one's command until
     -- one is chosen ('chooseTestCommand')
-    commandFrom v = case list text v of
+    commandFrom tbl v = case list text v of
       Right argv -> Right (argv, [])
       Left _ -> do
-        cs <- first ("`[test] command`: expected a command or a list of { when, command, context }: " <>) (list (table >=> candidateFrom) v)
-        Right (maybe [] tcCommand (find (null . tcWhen) cs), cs)
+        cs <- first (\e -> "`" <> tbl <> " command`: expected a command or a list of { when, command, context }: " <> e) (list (table >=> candidateFrom) v)
+        Right (maybe [] ccCommand (find (null . ccWhen) cs), cs)
     candidateFrom c = do
       onlyKeys ["when", "command", "context"] c
-      TestCandidate <$> (fromMaybe [] <$> optional "when" (list text) c) <*> required "command" (list text) c <*> optional "context" (list text) c
+      CommandCandidate <$> (fromMaybe [] <$> optional "when" (list text) c) <*> required "command" (list text) c <*> optional "context" (list text) c
     templateOver key vars src = do
       tp <- first (\e -> "`" <> key <> "`: " <> describeTemplateError e) (parseTemplate src)
       if freeVariables tp `S.isSubsetOf` S.fromList vars then Right src else Left ("`" <> key <> "` may use only " <> T.intercalate ", " ["{= " <> v <> " =}" | v <- vars])
@@ -846,7 +864,8 @@ languageFrom presets name grammarDir top = do
         ("errorformat", _) -> Right ()
         (_, Just _) -> Left "[check.errorformat] is read only with `format = \"errorformat\"`"
         _ -> Right ()
-      CheckDef <$> required "command" (list text) t <*> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
+      (command, candidates) <- required "command" (commandFrom "[check]") t
+      CheckDef command <$> (fromMaybe [] <$> optional "context" (list text) t) <*> pure format
         <*> (fromMaybe [] <$> optional "root" (list text) t)
         <*> (optional "root_pick" text t >>= \case
               Nothing -> Right False
@@ -860,6 +879,8 @@ languageFrom presets name grammarDir top = do
         <*> optional "install" text t
         <*> (fromMaybe [] <$> optional "undefined" (list (undefinedFrom "[check] undefined")) t)
         <*> optional "missing_member" (table >=> missingMemberFrom) t
+        <*> pure candidates
+        <*> pure Nothing
     errorFormatFrom t = do
       onlyKeys ["pattern", "file", "line", "message", "severity", "error"] t
       ErrorFormat
@@ -900,13 +921,14 @@ mergeLayerTables = M.unionWith (flip merge)
     merge new _ = new
 
 -- | Every provider of the language runs from the project root, and its
--- test runs know it ('testDir', @{= root =}@).
+-- test runs and checks know it ('testDir', 'checkDir': @{= root =}@).
 withProviderRoot :: FilePath -> Language -> Language
 withProviderRoot root lang =
   lang
     { langUnitProvider = rooted <$> langUnitProvider lang
     , langAnchorProvider = rooted <$> langAnchorProvider lang
     , langTest = (\td -> td {testUnitProvider = rooted <$> testUnitProvider td, testSelectProvider = rooted <$> testSelectProvider td, testDir = Just root}) <$> langTest lang
+    , langCheck = (\cd -> cd {checkDir = Just root}) <$> langCheck lang
     }
   where
     rooted p = p {provRoot = Just root}

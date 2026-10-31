@@ -468,7 +468,9 @@ tests_for = "{= dir =}/{= stem =}__test.py"
   without the extension. `close_table.py`'s tests are `close_table__test.py`.
 
 When no preset fits, `command` (with `{= tests =}` for the test ids and `{= root =}` for the
-package folder on disk, since tests run in a scratch copy), `format` (`pytest`), `context` and
+package folder on disk, since tests run in a scratch copy; the copy holds the project's
+templates, fixtures and other files from disk as well, so a Django view test finds its templates
+with nothing listed), `format` (`pytest`), `context` and
 `root` are the overrides, as for `[check]`; `command` may be a list of candidates, each used when
 its `when` file exists ([chapter 9](09-packs-and-language-adapters.md#test-command-candidates)). A generator's hole may
 say `verify = "tests"` to be verified by the module's tests ([chapter 12](12-holes-and-models.md)).
