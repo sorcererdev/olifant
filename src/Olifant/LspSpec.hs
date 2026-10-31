@@ -909,6 +909,12 @@ scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
           [] -> pure Nothing
         pure (ds, [a | InR a <- fixes, a ^. L.kind == Just CodeActionKind_QuickFix], fmap (^. L.edit) resolved, completions)
       (null ds, null fixes, refactors, null completions) `shouldSatisfy` (\(a, b, c, d) -> not a && not b && maybe False (/= Nothing) c && not d)
+  -- Two guards that hold on a loaded machine (the full suite's): an edit
+  -- reads under a quarter of the project's files (counted at the workspace
+  -- port; with the index dropped after each edit, every edit read all of
+  -- them, checked), and the edits' median costs under half the first answer,
+  -- which loads, plans and indexes, timed in the same session so load slows
+  -- both alike. Was: median under 50 ms, which a loaded run passed at 53.
   it "(f) recognises fast after a pause: the whole answer, planned, in the fixture (median of 20 edits)" $
     withPython [] $ \ports dir -> do
       let ownWay = "class CloseTable:\n    def __init__(self, repo):\n        self.repo = repo\n\n    def run(self, table_id):\n        table = self.repo.table(table_id)\n        self.repo.save(table)\n"
@@ -918,22 +924,31 @@ scaleSpec = sequential . describe "a plain client; latency at 5,000 files" $ do
             _ <- act
             t1 <- liftIO getCurrentTime
             pure (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
-      ((first, times), _) <- inProcessWith ports dir $ do
+      reads <- newIORef (0 :: Int)
+      editing <- newIORef False
+      let disk = pFiles ports
+          counted = disk {readText = \p -> (readIORef editing >>= \on -> when on (atomicModifyIORef' reads (\n -> (n + 1, ())))) >> readText disk p}
+      ((first, times), _) <- inProcessWith ports {pFiles = counted} dir $ do
         uri <- getDocUri "src/bistro/booking/commands/close_table.py"
         sendNotification SMethod_TextDocumentDidOpen (DidOpenTextDocumentParams (TextDocumentItem uri "python" 0 ownWay))
         let doc = TextDocumentIdentifier uri
         first <- timed (ask doc)
+        liftIO (writeIORef editing True)
         times <- forM [1 .. 20 :: Int] $ \v -> do
           sendNotification SMethod_TextDocumentDidChange (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier uri (fromIntegral v)) [TextDocumentContentChangeEvent (InR (TextDocumentContentChangeWholeDocument (ownWay <> "\n# " <> T.pack (show v) <> "\n")))])
           timed (ask doc)
+        liftIO (writeIORef editing False)
         pure (first, times)
+      perEdit <- (`div` 20) <$> readIORef reads
+      projectFiles <- length . filter (not . (".olifant/" `isInfixOf`)) <$> listFiles disk dir
       let median = sort times !! 10
-      liftIO (putStrLn ("      recognition, planned: first " <> show (round first :: Int) <> " ms, then median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms"))
-      median `shouldSatisfy` (< 50)
+      liftIO (putStrLn ("      recognition, planned: first " <> show (round first :: Int) <> " ms, then median " <> show (round median :: Int) <> " ms, max " <> show (round (maximum times) :: Int) <> " ms; " <> show perEdit <> " reads an edit, of " <> show projectFiles <> " files"))
+      perEdit `shouldSatisfy` (< projectFiles `div` 4)
+      (median, first) `shouldSatisfy` (\(m, f) -> m < f / 2)
   -- The first request loads the project, so it grows with the files. Two
   -- guards that hold on a loaded machine (the full suite's): it reads none
   -- of the 5,000 files (counted at the workspace port), and they cost at
-  -- most 3 times the load of the project without them, both timed here
+  -- most 4 times the load of the project without them, both timed here
   -- (each the fastest of two fresh sessions, after one to warm the
   -- process), so load slows both alike. Was: under 500 ms, which a loaded
   -- run passed 520.
