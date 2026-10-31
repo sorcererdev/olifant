@@ -37,16 +37,22 @@ migrating legacy: legacy is bug-fix-only; new work goes to the new architecture
 next: olifant check, and open the project in your editor
 ```
 
-It adds the target pack, `python-strangler`, and
+It adds the target pack, the strangler pack (`python-strangler`), and
 
 ```toml
 [migrate]
 legacy = ["legacy/**"]   # the legacy folders, as globs
 # base = "main"          # what "new" is measured from: the merge-base of HEAD and this
-# switches = "src/bistro/switches.py"   # the registry; found by name when not set
+# switches = "src/bistro/switches.py"   # the registry; when not set, the strangler pack's [switches] registry glob finds it
 ```
 
 and records a baseline, so today's code passes ([chapter 2](02-running-generators.md#an-existing-repo-olifant-init---migrate)).
+
+Which packs: `--pack` is the target architecture; without it, the project's one configured pack
+that is not a strangler. A **strangler pack** is a pack with a `migrate.toml` (below):
+`--strangler PACK` names it; without it, the one the project configures, else the one under
+your `[packs]`, else the one in the folder beside the target pack. None, or two, is a usage
+error that names them and the flag to give.
 
 ## Day to day
 
@@ -91,9 +97,10 @@ Callers in the monolith keep calling `add_to_waitlist`; its behaviour lives in t
 
 On any legacy function, the ⚡ menu offers **Extract … to a command** and **… to a query**, the
 likelier first: a function whose SQL writes (`INSERT`, `UPDATE`, `DELETE`), or that commits,
-saves or assigns a global, is a command; one that only selects is a query. The picker opens on
+saves or assigns a global, is a command; one that only selects is a query (the `signs` of
+python-strangler's `[[extract.into]]`, below). The picker opens on
 it, the service suggested from the tables its SQL names (`UPDATE tables` → the service with a
-`table` model; said `suggested`, yours to change). Enter writes:
+`table` model; said `suggested`, yours to change; python-strangler's `[extract.owner]`). Enter writes:
 
 - the command or query (python-htmx's, its body yours to port, or a model's);
 - a **parity test** beside it, `close_table_parity__test.py`, calling the legacy function and the
@@ -179,6 +186,51 @@ migration: +1 extracted (close-table), 0 legacy functions added, legacy 121 → 
 
 `only = "new"` and `{legacy}` are general: any rule can use them ([chapter 15](15-conventions-that-hold.md#rules-on-new-code-only--new)).
 
+## The strangler pack's `migrate.toml`
+
+Olifant's strangling knows no pack: the names, files and conventions it needs come from the
+strangler pack's `migrate.toml` (the first configured pack that has one). A pack for another
+language or architecture writes its own. python-strangler's, in short:
+
+```toml
+bug_fix_only = "legacy-bug-fix-only"   # the rule; its allow comment marks a delegate
+
+[switches]
+registry = "**/switches.py"            # the registry when [migrate] switches names none
+on = "True"                            # the value that means on
+line = ['^SWITCHES\["([^"]*)"\][[:space:]]*=[[:space:]]*(.*)$']   # group 1 the name, group 2 the value
+block = { open = '^SWITCHES.*\{$', close = '^\}$', line = ['^"([^":]*)"[[:space:]]*:[[:space:]]*([^:,]*),?[[:space:]]*$'] }
+guard = '^if switches\.on\('           # the line that opens a switched function's new path
+
+[extract]
+function = "function"                  # the input every extract generator takes for the legacy function
+file = "file"                          # … and for its file
+owner = { input = "service", models = "src/{= app =}/{= service =}/models/*.py", tables = ["…"] }
+
+[[extract.into]]
+generator = "extract-command"          # a generator of this pack
+name = "command"
+means = "changes state"
+signs = ['(?i)INSERT ', '(?i)UPDATE ', '(?i)DELETE ', '\.commit\(', '\.save\(', 'global ']
+
+[[extract.into]]
+generator = "extract-query"
+name = "query"
+means = "reads state"
+signs = ['(?i)SELECT ', '\.fetch', 'db\.rows\(', 'db\.row\(']
+```
+
+| key | what reads it |
+|---|---|
+| `bug_fix_only` | the report (a function whose line above has `olifant:allow RULE` is a delegate, not legacy added) and the "bug or new?" decision (its answer "new behaviour" turns the hint into this rule's finding, its message plus ": this change adds behaviour"). Absent: the hint stays a hint |
+| `[switches] registry`, `on`, `line`, `block` | the report's switches. Each registry line is stripped and its comment cut (the registry's language's `comment`); `line` expressions match anywhere, `block`'s `line` only between a line `open` matches and the next `close` matches. Absent: no registry unless `[migrate] switches` names one, and no switches read |
+| `[switches] guard` | a rule fix's `{= finding_switch_path =}`: the block this line opens, a level less indented (python-strangler's retire) |
+| `[extract] function`, `file` | the inputs the hint's fixes set and the ⚡ order and decision 3 read |
+| `[[extract.into]]` | the hint's fixes (**Extract this as a NAME**, in order) and the ⚡ order: the first whose `signs` the function's code matches (comments cut; a leading `(?i)` matches any case) leads; none, the decider is asked; else the first |
+| `[extract.owner]` | decision 3: `input` is the generator's input whose choices are the owners; `models` a glob template over its inputs (the owner among them) whose files' stems are an owner's models; `tables` expressions over the code whose last group is a table. The owner one of whose models a table names (singular or plural) is suggested |
+
+A function's text is found by the language's `[unit] name` ([chapter 9](09-packs-and-language-adapters.md)), its block by indentation.
+
 ## With a model: decisions, progressively
 
 Everything above works with no model. With one (`[decide] model`; `[recognize] model` is its
@@ -188,9 +240,10 @@ background while the deterministic answer stands:
 - **bug or new?** A big change in a legacy function: answered "new behaviour", its hint becomes
   the bug-fix-only warning; "bug fix", the hint goes.
 - **command or query?** When the code doesn't say (no SQL, no commit), the answer orders the
-  extract actions.
+  extract actions. The question (`command-or-query`) is built from `[[extract.into]]`: the names
+  joined by `-or-`, each with what it `means`.
 - **which service?** When the tables name no single service's model, the answer is the
-  suggestion.
+  suggestion. The question's id is `[extract.owner] input`.
 - **which convention?** When recognition is unsure (a hint, a choice, a rival shape), the
   `recognize` choice asks which of the candidate generators the code is, with the inputs it
   could not read; the convention chosen upgrades the hint to an offer.
@@ -205,4 +258,7 @@ An answer outside the options, or none, changes nothing. A `jev` backend ([chapt
 - **`rule-failed: … names {legacy}, but the project has no [migrate] legacy`.** A pack's rule
   uses `{legacy}` in a project that isn't migrating: `olifant init --migrate PATH`.
 - **The report counts 0 switches.** The registry is not where it is looked for: set
-  `[migrate] switches`.
+  `[migrate] switches`. Or no configured pack has a `migrate.toml` with `[switches]`, so no
+  registry line reads as a switch.
+- **`no strangler pack: give --strangler`**, or **`several strangler packs (…)`.** `init --migrate`
+  found no pack with a `migrate.toml`, or more than one: name it with `--strangler`.

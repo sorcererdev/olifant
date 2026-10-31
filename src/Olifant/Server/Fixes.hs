@@ -19,6 +19,7 @@ import Data.IORef (readIORef)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
+import Olifant.Migration (Strangler (..))
 import Olifant.Decide (Answer (..), choice)
 import Olifant.Server.State (decision, deciderFor, cachedBase, ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
@@ -42,8 +43,9 @@ rawFindings path = memo "findings" path "" $ \s ->
     (s', Just (root, project)) -> (s',) . fst <$> findingsWith (newnessWith (cachedBase s') project) (ssPorts s') project [makeRelative root path]
 
 -- | New work in disguise, sharpened (decision 1): a decider's answer for a
--- hint — new behaviour makes it the bug-fix-only warning, a bug fix drops
--- it, unsure keeps the hint. Unanswered, it is asked once in the background
+-- hint — new behaviour makes it the strangler pack's `bug_fix_only` rule's
+-- finding (none declared: the hint stays), a bug fix drops it, unsure keeps
+-- the hint. Unanswered, it is asked once in the background
 -- (the deterministic hint stands meanwhile); when it is, the editor is told.
 decided :: ServerState -> Project -> FilePath -> [Finding] -> IO [Finding]
 decided s project path fs = case deciderFor s project of
@@ -54,7 +56,9 @@ decided s project path fs = case deciderFor s project of
         then pure [f]
         else
           decision s decider (path, "bug-or-new:" <> definedName (fText f)) (fFingerprint f) (choice "bug-or-new" "Does this change fix a bug in the function, or add new behaviour" [("bug fix", ""), ("new behaviour", "")] [("function", fText f)]) (join (readIORef (ssOnDecided s))) <&> \case
-            Just (Chosen "new behaviour" _ _) -> [f {fRule = "legacy-bug-fix-only", fSeverity = severityOf "legacy-bug-fix-only", fMessage = "New work goes in the new architecture (legacy is bug-fix-only): this change adds behaviour"}]
+            Just (Chosen "new behaviour" _ _) -> case stBugFixOnly =<< catalogStrangler cat of
+              Just r -> [f {fRule = r, fSeverity = severityOf r, fMessage = maybe "New work goes in the new architecture" ruleMessage (find ((== r) . ruleId) (catalogRules cat)) <> ": this change adds behaviour"}]
+              Nothing -> [f]
             Just (Chosen "bug fix" _ _) -> []
             _ -> [f]
   where

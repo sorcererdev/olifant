@@ -17,7 +17,9 @@ import Olifant.Generation.FillPhase (cutSentence, wholeFileReason)
 import Olifant.Workspace (Workspace (..))
 import Olifant.Snippet (Snippet)
 import Olifant.Server.Edits (FileEdit, editsOfPlan)
-import Olifant.Migration (functionText, readsOrWrites)
+import Olifant.Migration (Extract (..), Strangler (..), extractDecision, extractKind, functionText)
+import Olifant.Catalog (Catalog (..))
+import Olifant.Language (Language (..), languageFor)
 import Olifant.Rules (fingerprint)
 import Olifant.Decide (Answer (..), choice)
 import Data.List (partition)
@@ -45,31 +47,37 @@ actionsWith key offered path pos = memo key path (T.pack (show pos)) $ \s ->
       let snippets = M.fromList [(k, isSnippet g) | (k, g) <- generatorsOf project]
       pure (s', [(a, M.findWithDefault False (actGenerator a) snippets) | a <- acts])
 
--- | Extract as a command or a query (decision 2): the one the function's
--- code reads as first (it writes: command; it only reads: query); unsure,
--- a decider's answer (asked once, in the background) decides it.
+-- | Which extract leads (decision 2): of the strangler pack's extract
+-- generators offered here, the one the function's code reads as (its
+-- `signs`); unsure, a decider's answer (asked once, in the background)
+-- decides it; else the first.
 extractOrder :: ServerState -> Project -> FilePath -> [Action] -> IO [Action]
-extractOrder s project path acts = case [a | a <- acts, isExtract a] of
-  [] -> pure acts
-  extracts -> do
-    content <- fromMaybe "" <$> readText (prWorkspace project) (makeRelative (prRoot project) path)
-    let text = fromMaybe "" (listToMaybe [t | a <- extracts, Just f <- [lookup "function" (actSets a)], Just t <- [functionText content f]])
-        function = fromMaybe "" (listToMaybe [f | a <- extracts, Just f <- [lookup "function" (actSets a)]])
-    preferred <- case readsOrWrites text of
+extractOrder s project path acts = case (catalogStrangler (prCatalog project), [a | a <- acts, isExtract a]) of
+  (_, []) -> pure acts
+  (Nothing, _) -> pure acts
+  (Just st, extracts) -> do
+    let rel = makeRelative (prRoot project) path
+        lang = languageFor (catalogLanguages (prCatalog project)) rel
+        functionOf a = lookup (stExtractFunction st) (actSets a)
+    content <- fromMaybe "" <$> readText (prWorkspace project) rel
+    let text = fromMaybe "" (listToMaybe [t | a <- extracts, Just f <- [functionOf a], Just t <- [functionText (maybe [] langUnitNames lang) content f]])
+        function = fromMaybe "" (listToMaybe [f | a <- extracts, Just f <- [functionOf a]])
+        (decisionId, question, options) = extractDecision (stExtract st)
+    preferred <- case extractKind (maybe "" langComment lang) (stExtract st) text of
       Just k -> pure (Just k)
       Nothing -> case deciderFor s project of
         Nothing -> pure Nothing
         Just decider ->
-          decision s decider (path, "command-or-query:" <> function) (fingerprint [text]) (choice "command-or-query" "Is this function a command (changes state) or a query (reads state)" [("command", "changes state"), ("query", "reads state")] [("function", text)]) (pure ()) <&> \case
+          decision s decider (path, decisionId <> ":" <> function) (fingerprint [text]) (choice decisionId question options [(stExtractFunction st, text)]) (pure ()) <&> \case
             Just (Chosen k _ _) -> Just k
             _ -> Nothing
-    let first = case preferred of
-          Just "query" -> "/extract-query"
-          _ -> "/extract-command"
-        (lead, rest) = partition (\a -> first `T.isSuffixOf` actGenerator a) extracts
+    let first = case [exGenerator e | Just k <- [preferred], e <- stExtract st, exName e == k] ++ map exGenerator (stExtract st) of
+          g : _ -> g
+          [] -> ""
+        (lead, rest) = partition (\a -> actGenerator a == first) extracts
     pure ([a | a <- acts, not (isExtract a)] ++ lead ++ rest)
   where
-    isExtract a = any (`T.isSuffixOf` actGenerator a) ["/extract-command", "/extract-query"]
+    isExtract a = maybe False (\st -> actGenerator a `elem` map exGenerator (stExtract st)) (catalogStrangler (prCatalog project))
 
 -- | A generator planned at a cursor (1-based line) with its inputs set: the
 -- edits, and the snippet it placed at the cursor, if it is one. With

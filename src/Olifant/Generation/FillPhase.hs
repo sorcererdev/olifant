@@ -314,9 +314,13 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
           binding entry = case T.words entry of
             [x, "as", y] -> (x, y)
             ws' -> (T.unwords ws', T.unwords ws')
-          froms = [ "from " <> m <> " import " <> e
-                  | Just mg <- [langImportMerge lang], l <- ls, Just (m, es) <- [merging mg l], e <- es, snd (binding e) == n ]
-          plains = [ l | l <- ls, Just rest <- [T.stripPrefix "import " l], let (x, y) = binding rest, (if x == y then T.takeWhile (/= '.') x else y) == n ]
+          -- a line importing names from a module, rewritten for the one name (`[import_merge] write`)
+          froms = [ line
+                  | Just mg <- [langImportMerge lang], l <- ls, Just (m, es) <- [merging mg l], e <- es, snd (binding e) == n
+                  , Right line <- [render (M.fromList [("module", VText m), ("names", VText e)]) (mergeWrite mg)] ]
+          -- a line importing a module whole (an `[[imports.resolve]]` without names): its first segment, or its alias
+          plains = [ l | l <- ls, Just rest <- [wholeModule l], let (x, y) = binding rest, (if x == y then T.takeWhile (/= '.') x else y) == n ]
+          wholeModule l = listToMaybe [m | Resolve pat g Nothing <- maybe [] imResolve (langImportsDef lang), Just m <- [regexGroup pat g l]]
       pure $ case nub (froms ++ plains) of
         [one] -> Just one
         _ -> Nothing
@@ -324,7 +328,7 @@ fillPhase ws tools verifyFor inputs base holes = case toolFiller tools of
     fillHole t =
       let s = site t
           instruction = if linesKind s then markerOnly <> "; " <> holeInstruction s else holeInstruction s
-       in FillHole (holeName s) (holeKind s) instruction (holeFile s) (context s) (tryPrevious t) (isJust (importsOf (holeFile s)))
+       in FillHole (holeName s) (holeKind s) instruction (holeFile s) (context s) (tryPrevious t) (isJust (importsOf (holeFile s))) (langOf (holeFile s) >>= langImportsDef >>= imExample)
 
     -- A hole of lines (a block or statements): what a whole-file answer is cut to.
     linesKind s = T.takeWhile (/= '@') (holeKind s) `elem` ["block", "stmt"]
@@ -683,3 +687,10 @@ assertionSpan lang name text = do
   let (a0, z) = tuLines u
   a <- listToMaybe [i | i <- [a0 + 1 .. z], Just l <- [listToMaybe (drop (i - 1) ls)], any (`matches` l) (langAssertion lang)]
   pure (a, z)
+
+-- | Group G of expression RE matched on L (none: no match, or no such group).
+regexGroup :: Text -> Int -> Text -> Maybe Text
+regexGroup re g l = do
+  rx <- makeRegexM (T.unpack re) :: Maybe Regex
+  groups <- getAllTextSubmatches <$> (matchM rx (T.unpack l) :: Maybe (AllTextSubmatches [] String))
+  T.strip . T.pack <$> listToMaybe (drop g groups)

@@ -24,11 +24,14 @@ import Olifant.Server.Actions (actionsFor, fillerFor)
 import Olifant.Server.State (decision, deciderFor, ServerState (..), projectFor)
 import Olifant.Decide (Answer (..), choice)
 import Data.Functor ((<&>))
-import Olifant.Migration (functionText, tablesTouched)
+import Olifant.Migration (Extract (..), Owner (..), Strangler (..), functionText, tablesTouched)
+import Olifant.Catalog (Catalog (..))
+import Olifant.Glob (matchesGlob)
+import Olifant.Language (Language (..), languageFor)
 import Olifant.Rules (fingerprint)
 import Olifant.Workspace (Workspace (..))
 import Control.Monad (forM)
-import Olifant.Template (render)
+import Olifant.Template (Value (..), parseTemplate, render)
 import System.FilePath (makeRelative, splitDirectories, takeBaseName, takeDirectory, takeExtension)
 
 -- | One step of a picker's plan: a generator, the values the user set, and
@@ -140,7 +143,9 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
                   fromPath = folderValues (entryDefinition entry) rel
                   fromCursor = [(n, v) | (a, _) <- acts, actGenerator a == generatorIdText (genId g), (n, v) <- actSets a]
               (d, fields0) <- settle entry user newValues fromPath fromCursor
-              fields <- if isExtract (psGenerator st) then suggestService fields0 else pure fields0
+              fields <- case catalogStrangler (prCatalog project) of
+                Just strangler | Just owner <- stOwner strangler, psGenerator st `elem` map exGenerator (stExtract strangler) -> suggestOwner strangler owner fields0
+                _ -> pure fields0
               -- the plan takes the values you set as you set them (the form may
               -- show one cleared, the plan's own checks decide), then the rest
               let known = map inputName (genInputs g) ++ map fst (genDerived g)
@@ -157,31 +162,34 @@ workSteps s project rel acts marks steps = fmap (reverse . snd) <$> foldM one (R
                     Right env -> case render env t of
                       Left _ -> Right (made, w : done)
                       Right v -> Right (M.insertWith (++) into [(input, v)] made, w : done)
-    isExtract g = any (`T.isSuffixOf` g) ["/extract-command", "/extract-query"]
-    -- decision 3: the service whose models the legacy function's SQL names
-    -- (the tables it touches); unsure, a decider's answer (asked once, in
-    -- the background); a suggestion, always yours to change
-    suggestService fields = case (lookupField "service", lookupField "function", lookupField "file") of
+    -- decision 3: the owner (a service) whose models the legacy function's
+    -- code names (the tables it touches, by the strangler's `[extract.owner]`);
+    -- unsure, a decider's answer (asked once, in the background); a
+    -- suggestion, always yours to change
+    suggestOwner strangler owner fields = case (lookupField (owInput owner), lookupField (stExtractFunction strangler), lookupField (stExtractFile strangler)) of
       (Just svc, Just (Field {fValue = Just fn}), Just (Field {fValue = Just file}))
         | fValue svc == Nothing || fSource svc `notElem` [Just FromYou, Just FromPath, Just FromNew] -> do
             content <- fromMaybe "" <$> readText (prWorkspace project) (T.unpack file)
-            let text = fromMaybe "" (functionText content fn)
-                tables = tablesTouched text
+            let lang = languageFor (catalogLanguages (prCatalog project)) (T.unpack file)
+                text = fromMaybe "" (functionText (maybe [] langUnitNames lang) content fn)
+                tables = tablesTouched (owTables owner) text
                 services = fromMaybe [] (fChoices svc)
+                known = [(fName f, v) | f <- fields, Just v <- [fValue f]]
+            paths <- listFiles (prWorkspace project) "."
             owned <- forM services $ \service -> do
-              models <- listFiles (prWorkspace project) ("src/" <> T.unpack (maybe "" id (fValue =<< lookupField "app")) <> "/" <> T.unpack service <> "/models")
-              let stems = [T.pack (takeBaseName m) | m <- models, takeExtension m == ".py", takeBaseName m /= "__init__"]
+              let glob = either (const "") id (parseTemplate (owModels owner) >>= render (M.fromList [(k, VText v) | (k, v) <- (owInput owner, service) : known]))
+                  stems = [T.pack (takeBaseName m) | not (T.null glob), m <- paths, matchesGlob glob m]
               pure (service, any (\t -> any (\m -> singular t == singular m) stems) tables)
             pick <- case [svc' | (svc', True) <- owned] of
-              [owner] -> pure (Just owner)
+              [one] -> pure (Just one)
               _ -> case deciderFor s project of
                 Nothing -> pure Nothing
                 Just decider ->
-                  decision s decider (rel, "service:" <> fn) (fingerprint [text]) (choice "service" "Which service does this function belong to, or is it a new one" [(o, "") | o <- services ++ ["new service"]] [("function", text), ("services", T.unwords services)]) (pure ()) <&> \case
+                  decision s decider (rel, owInput owner <> ":" <> fn) (fingerprint [text]) (choice (owInput owner) ("Which " <> owInput owner <> " does this function belong to, or is it a new one") [(o, "") | o <- services ++ ["new " <> owInput owner]] [(stExtractFunction strangler, text), (owInput owner <> "s", T.unwords services)]) (pure ()) <&> \case
                     Just (Chosen c _ _) | c `elem` services -> Just c
                     _ -> Nothing
             pure $ case pick of
-              Just suggested | length services > 1 || fValue svc == Nothing -> [if fName f == "service" then f {fValue = Just suggested, fSource = Just FromSuggested, fValid = True, fWhy = Nothing} else f | f <- fields]
+              Just suggested | length services > 1 || fValue svc == Nothing -> [if fName f == owInput owner then f {fValue = Just suggested, fSource = Just FromSuggested, fValid = True, fWhy = Nothing} else f | f <- fields]
               _ -> fields
       _ -> pure fields
       where

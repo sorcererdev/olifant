@@ -20,7 +20,7 @@ olifant doctor
 ✓ python: units — [unit] kinds (ast-grep), named by [unit] name · from shipped
 ✓ python: diagnostics — [check] format pyright-json · from toolchain pyright
 ✓ python: tests — [test] format pytest, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
-✓ python: test selection — pytest ids · from pack python-htmx
+✓ python: test selection — [test] select · from toolchain pytest
 ✓ python: mutation — [[mutate]] (17 operators) · from shipped
 ✓ python: conjure shapes — [conjure] port, port.add, fake, constructor, advice · from pack python-htmx
 …
@@ -144,10 +144,16 @@ is a *parser*; a language is never a branch.
 
 `langImports` (the `line` regexp) and `langImportMerge` are read by the fill phase
 (`Generation/FillPhase.hs`, `Generation.hs`): a fill may begin with import lines, which join the
-file's imports. `langImportsDef` (`ImportsDef`: `write`, `module_of`, `[[imports.resolve]]`,
-`paths`) is read by `Server/Site.hs` (`importOf`, `importedContext`: which project files an
-import names, a conjure's context), `Server/Stub.hs` (a stub's import line) and
-`Language/Check.hs` (`moduleOf` for a test file's group when `file_group` is absent).
+file's imports. Its auto-import (`importFor`) finds the one project line binding a name: one
+importing names is rewritten for that name by `[import_merge] write`, one importing a module
+whole is read by an `[[imports.resolve]]` without `names` (`regexGroup`). `Server/Anticipate.prefixAt`
+takes `[imports] line` for the file's import lines it shows the decider. `langImportsDef`
+(`ImportsDef`: `write`, `module_of`, `[[imports.resolve]]`, `paths`, `example`) is read by
+`Server/Site.hs` (`importOf`, `importedContext`: which project files an import names, a
+conjure's context), `Server/Stub.hs` (a stub's import line), `Language/Check.hs` (`moduleOf` for
+a test file's group when `file_group` is absent) and the fill phase: `example` (`imExample`, a
+name and a fill) becomes `FillHole`'s `fhImportExample`, the example `Model.userPrompt` shows
+under its imports rule (none: the rule alone).
 `moduleOf` (`Adapter.hs`) is the pure path-to-module function.
 
 ### `[check]`: the compiler's report
@@ -192,6 +198,8 @@ of its own. The `conjure shapes` row lists `port.add` and `advice` when present,
 | `[holes.KIND]` | `Holes.hs`, `Generation/FillPhase.hs`: a hole's placeholder and the code a fill must parse in |
 | `indent`, `separator`, `line_length` | opening empty containers and joining items |
 | `keywords` | `Server/Recognize.hs` (recognition keeps them), `Server/Stub.hs` |
+| `[unit] name` | besides conjure's units: `App.isDefinition` and `callersOf` (a fix that rewrites a definition names its callers, not lines that define it), `Migration.functionText` (a legacy function's text, for extracting), `Server/Recognize`'s declaration line (with `[test] above`) |
+| `[test] name` | `Server/Stub.testAffixesIn`: the text before and after the words, which a survivor's stub name (`TestName.stubNameFor`) is put between; uniqueness is against the file's tests by `[test] unit` |
 | `opens_block`, `empty_statement`, `stub_lines` | `Server/Unit.hs` (`bodyOf`, `isStubIn`), `FillPhase` (cutting a whole-file answer back to a hole) |
 
 ## Doctor's capability table
@@ -268,17 +276,19 @@ the capability rows are the checklist. No Haskell is needed unless its report fo
   pack's, while one that only the *preset* holds (pytest's `[test.stub]` and `[test.failure]`,
   in `pytest.toml`) is replaced whole by a layer that writes any of its keys.
 - **Formats are named in code in three lists.** `knownFormats` (check), `knownTestFormats` (test)
-  and `supportsMissing` are separate lists in `Language/Support.hs`; `Capabilities.hs` has
-  `pytest = fmap testFormat test == Just "pytest"` for the `test selection` row and
-  `readTestReport` dispatches on the format string again. A new format touches all of them, and
-  none is checked against the others.
+  and `missingFormats` (behind `supportsMissing`, which doctor's `missing cases` row lists) are
+  separate lists in `Language/Support.hs`, and `readTestReport` dispatches on the format string
+  again. A new format touches all of them, and none is checked against the others. (The `test
+  selection` row no longer special-cases pytest: the pytest toolchain sets `[test.select]` to
+  `{= id =}`, the whole id, which `Check.selected` renders.)
 - **`NeutralSpec` is a text match.** `langName lang == "python"` is caught, `testFormat t ==
-  "pytest"` is not (and exists, in `Capabilities.hs`), nor is a branch on a file extension.
+  "pytest"` is not, nor is a branch on a file extension. `ConjureNeutralSpec` adds literal
+  checks over named modules (conjure's; and strangling's, stubs', the fill prompt's,
+  anticipation's, recognition's and doctor's) and bans every shipped pack's name, hyphenated
+  generator and rule ids and `migrate.toml` values across `src/` and `app/`, with no allowlist.
 - **A capability's origin falls back to its parent table.** `originOf` tries the dotted key
-  (`test.select`), then its parent (`test`). Python's "test selection — pytest ids · from pack
-  python-htmx" is the parent's: the pack last wrote *something* under `[test]`; the selection is
-  built into the pytest format and no layer wrote it. The same fallback gives "messages · from
-  shipped" for `[check] undefined`, which the pyright preset actually supplied.
+  (`test.select`), then its parent (`test`). The fallback gives "messages · from shipped" for
+  `[check] undefined`, which the pyright preset actually supplied.
 - **Keys exist in the language file that are about a pack, not a language.** `[conjure]` and
   `[types]` are the pack's convention but live in the language table so they layer with it.
   Doctor shows `conjure shapes` for every language, including Elm.

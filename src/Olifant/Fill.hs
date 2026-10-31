@@ -30,6 +30,9 @@ data FillHole = FillHole
   -- ^ every earlier attempt (fill, why it failed), oldest first
   , fhImports :: Bool
   -- ^ the fill may begin with import lines (the language says how they look)
+  , fhImportExample :: Maybe (Text, Text)
+  -- ^ the language's `[imports] example`: the name a fill needs, and the
+  -- fill that starts with its import line
   }
   deriving stock (Eq, Show)
 

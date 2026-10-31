@@ -178,9 +178,9 @@ From the bottom up:
 | **Region** | Owned regions: parse `regions.toml`, render a region body, splice it between fences. All pure | `Region.hs`: `RegionDefWith`, `parseRegions`, `renderRegion`, `applyRegion`, `fenceLines` | Query, Template, Toml |
 | **Rules** | Rules (spec §5.9): parse `rules.toml` and the project's `[rules]`, check files against them, honour and report the exceptions, fingerprint findings for the baseline | `Rules.hs`: `RuleDef`, `RuleCheck`, `Severity`, `RulesConfig`, `Finding`, `Exception`, `parseRules`, `parseRulesConfig`, `parseSeverity`, `checkFiles`, `fingerprint` | Actions (`matchPathSlots`), Glob, Language, Template, Toml |
 | **Newness** | Which lines of a file are new since a base text (spec strangler §2.1): Myers' O(ND) diff over lines (cost follows the edits, not the file; past 1,000 edits lines pair by text), common prefix and suffix trimmed, a moved line not new | `Newness.hs`: `NewLines` (`AllNew`, `NewIn`, `NoBase`), `newLinesOf`, `lcsPairs`, `wholeNew`, `newCount` | none |
-| **Migration** | The strangler's report and its pure parts: the switch registry, `olifant:switch` markers, what a PR extracted and added, big changes, whether a function reads or writes, the tables its SQL names, a switched function's text | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `readsOrWrites`, `tablesTouched`, `functionText` | Newness |
+| **Migration** | The strangler's report and its pure parts: the switch registry (read by the strangler pack's `[switches]`), `olifant:switch` markers, what a PR extracted and added, big changes; and the strangler pack's `migrate.toml` (`Strangler`, `parseStrangler`): which extract a function reads as by its `signs`, decision 2's id and question, the tables its code names, a function's text by `[unit] name`, a switched function's new path by `[switches] guard` | `Migration.hs`: `Switch`, `MigrationReport`, `readRegistry`, `switchMarkers`, `unregistered`, `reportLine`, `migrationJson`, `bigChanges`, `Strangler`, `Extract`, `Owner`, `parseStrangler`, `extractKind`, `extractDecision`, `tablesTouched`, `functionText`, `switchPath`, `codeOf` | Newness, Toml |
 | **Mutate** | Mutation testing's makings: operators (an ast-grep rule and its fix, or a transform of the matched text), the sites they fire on in the lines in scope, and the judge that runs each mutant in its own shadow, N at a time. the operators themselves are `[[mutate]]` entries in the language's TOML (Python's are in `library/languages/python.toml`) | `Mutate.hs`: `Operator`, `Mutant`, `mutantsOf`, `capMutants`, `judge`, `Verdict`; `operatorsOf`, which turns a language's `[[mutate]]` entries into operators. Internal: `Mutate/Run`, `Mutate/Types` | Language |
-| **TestName** | The names a new test gets: a survivor's stub named from its mutant (a string's words, else the operator and the mutated line's names), a name unique in its test file; and the sentence an instruction gains in a test file with the pack's helper | `TestName.hs`: `stubNameFor`, `uniqueTestName`, `helpedIn`, `helperSentenceFor` | Mutate |
+| **TestName** | The name a survivor's stub gets from its mutant (a string's words, else the operator and the mutated line's names), between the language's `[test] name` affixes, unique among the file's tests | `TestName.hs`: `stubNameFor` | Mutate |
 | **Decide** | Typed decisions, progressively (Jev-shaped; today `curlDecider` asks any chat backend named by `[decide] model`, no Jev backend exists): a `Question` of a kind with its options, a `Decider` that answers one or is `Unsure`; validated, so an answer outside the options is `Unsure`. Nothing depends on an answer arriving | `Decide.hs`: `Question`, `Answer`, `Decider`, `noDecider`, `validated`, `decisionPrompt`, `decodeAnswer`, `curlDecider`, `recordedDecider` | Model, Process |
 | **Generation** | Running generators: expand `[[uses]]`, bind `[query.NAME]` queries, render edits, plan them, check, refresh regions, fill holes, write | `Generation.hs`: `generate`, `Step`, `Mode`, `Resolve`, `describeGenerationError`, `refreshRegions`, `regionInstances`; re-exports `Generation/Plan` (the `Plan` type) and `Generation/Tools`. Internals: `Compose`, `Render`, `Planner`, `Complete`, `Regions`, `FillPhase` | Anchor, Fill, Generator, Glob, Holes, Language, Query, Region, Snippet, Template, Workspace |
 | **Actions** | Code actions (spec §4.6): which generators' `[applies_at]` match a cursor or a whole file, with the inputs the path and the code there give, and the near misses; snippets for a completion menu (spec §4.9) | `Actions.hs`: `Action`, `Range`, `FileAction`, `Nearby`, `Completion`, `actionsAt`, `actionsInFile`, `completionsAt`, `describeRule`, `matchPathSlots` | Cursor, Generator, Language, Query, Template |
@@ -2305,7 +2305,11 @@ Enter will write while they type:
 ### Strangling (`Newness`, `Migration`, `Decide`)
 
 The strangler ([user book chapter 17](../user/17-strangling-a-legacy-codebase.md)) is general
-engine features plus a pack (`python-strangler`):
+engine features plus a pack (`python-strangler`). The engine names no pack: what it needs of
+one (the bug-fix-only rule, the switch registry's file and lines, the extract generators and
+their signs, decision 3's owner) is the strangler pack's `migrate.toml`, read by
+`Catalog.loadPack` (`lpStrangler`) into `catalogStrangler` (the first pack that has one; one that
+does not parse joins `catalogBrokenRules`) and parsed by `Migration.parseStrangler`:
 
 - **`only = "new"`** (`Rules.checkFiles`): each file's `NewLines` against the base, through the
   `newIn` function the caller gives (`App.newnessWith`: the base port, cached in the server). A
@@ -2317,14 +2321,20 @@ engine features plus a pack (`python-strangler`):
 - **The report** (`App.migrationFor`): every legacy file's definitions now and at the base,
   the wholly new ones without an allowance (added), the registry now and at the base
   (extracted: switches the base lacks), markers it lacks. The registry is `[migrate] switches`,
-  or a `switches.py` outside the legacy code. `check` prints its line; `olifant/model` carries it.
+  or the first file the strangler's `[switches] registry` glob matches outside the legacy code,
+  read by `readRegistry` with its `line` and `block` expressions. A delegate is a definition
+  whose line above allows `bug_fix_only`. `check` prints its line; `olifant/model` carries it.
+- **The hint's fixes** (`App.newWorkHints`): one per `[[extract.into]]`, labelled "Extract this
+  as NAME", setting `[extract] file`.
 - **Decisions** (`Decide`; `Server/State.deciderFor`, from `[decide] model` or its alias
   `[recognize] model`; in tests one answers file, `decide_answers`, with `recognize_answers` its
   alias): asked once per question in the background, the answer cached in `ssDecisions`; the
   deterministic answer stands meanwhile. Three kinds: `bug-or-new` (a big change in a legacy
-  function, `Server/Fixes.decided`), `command-or-query` (when `readsOrWrites` is unsure,
-  `Server/Actions.extractOrder`) and `service` (when the SQL's tables name no single service's
-  model, `Server/Preview`'s `suggestService`; the value's source is `suggested`). Each goes
+  function, `Server/Fixes.decided`; "new behaviour" makes it the `bug_fix_only` rule's finding),
+  decision 2 (when `extractKind` finds no `signs`, `Server/Actions.extractOrder`; its id and
+  question are `extractDecision`'s, `command-or-query` for python-strangler) and decision 3 (when
+  the tables name no single owner's model, `Server/Preview`'s `suggestOwner`; its id is
+  `[extract.owner] input`, `service`; the value's source is `suggested`). Each goes
   through `Server/State.decision`: one decision per (file, kind, function name), at most one ask
   in flight (the answers and the asks in flight share `ssDecisions`, so knowing and claiming
   are one atomic step), asked again once it lands if the function's text changed since.
@@ -2368,10 +2378,10 @@ definition, a test, an import or a stub looks like comes from the language file
   Rust's `#[test] fn`); `unitsOf` every unit in a file (what plan anchors resolve against);
   `isStubIn` whether a body is still a stub (`stub_lines`).
 - **`Server/Stub`**'s `stubAt` appends a test for the unit to its test file, as the language's
-  `[test.stub]` writes it, named by `[test] name` (`testNameIn`, `uniqueTestName` in
-  `TestName.hs` for the `_2`), with its import (`addImports`, the fill phase's), as one edit;
-  given a survivor, the test is named from the mutant (`stubNameFor`) and carries it as a
-  comment. A test goes where `at` says (hspec's `end of do in spec`, Rust's `end of mod
+  `[test.stub]` writes it, named by `[test] name` (`testNameIn`, `uniqueAmong` for the `_2`),
+  with its import (`addImports`, the fill phase's), as one edit;
+  given a survivor, the test is named from the mutant (`stubNameFor`, between
+  `testAffixesIn`'s text) and carries it as a comment. A test goes where `at` says (hspec's `end of do in spec`, Rust's `end of mod
   tests`).
 - **`Server/Conjure`**'s `conjureAt` runs the test file (the before-run), makes the unit's body
   (or the selection, or a test's body) a `block` hole and plans it with `planWith` under

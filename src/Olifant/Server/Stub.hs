@@ -82,7 +82,7 @@ stubWith given path line0 survivor s0 =
           defined = [n | u <- testUnitsIn rules above base, Just n <- [listToMaybe (reverse (tuPath u))]]
           name = case given of
             Just n -> uniqueAmong n defined
-            Nothing -> maybe (uniqueAmong (testNameIn lang (unitWordsOf unit)) defined) (\m -> stubNameFor m base (langKeywords lang)) survivor
+            Nothing -> maybe (uniqueAmong (testNameIn lang (unitWordsOf unit)) defined) (\m -> stubNameFor m (testAffixesIn lang) (langComment lang) defined (langKeywords lang)) survivor
           flat = T.replace "\n" "\9166"
           ind = langIndent lang
           note = case survivor of
@@ -149,21 +149,24 @@ testNameIn lang ws0 = fromMaybe (render' "{= words|snake =}") (render' <$> (lang
 testWordsIn :: Language -> Text -> Text
 testWordsIn lang name = T.replace "_" " " (fromMaybe core (T.stripSuffix after core))
   where
-    marker = "olifantwords"
-    (before, after) = case T.breakOn marker (testNameIn lang [marker]) of
-      (b, a) | not (T.null a) -> (b, T.drop (T.length marker) a)
-      _ -> ("", "")
+    (before, after) = testAffixesIn lang
     core = fromMaybe name (T.stripPrefix before name)
+
+-- | The literal text LANG's `[test] name` puts before and after a test's
+-- words (pytest's @test_@ and nothing).
+testAffixesIn :: Language -> (Text, Text)
+testAffixesIn lang = case T.breakOn marker (testNameIn lang [marker]) of
+  (b, a) | not (T.null a) -> (b, T.drop (T.length marker) a)
+  _ -> ("", "")
+  where
+    marker = "olifantwords"
 
 -- | What a test's name in LANG drops to be short beside the module STEM:
 -- the name its `[test] name` template gives the stem's words (pytest's
 -- @test_cancel_booking@), then the template's text before the words
 -- (@test_@); 'Olifant.Server.ConjureNext.shortName' takes them.
 namePrefixesIn :: Language -> Text -> [Text]
-namePrefixesIn lang stem = [testNameIn lang (unitWordsOf stem), before]
-  where
-    marker = "olifantwords"
-    before = fst (T.breakOn marker (testNameIn lang [marker]))
+namePrefixesIn lang stem = [testNameIn lang (unitWordsOf stem), fst (testAffixesIn lang)]
 
 -- | A unit's name as words: the underscores at its ends dropped, split at
 -- each underscore and before a capital after a lowercase letter or a digit,

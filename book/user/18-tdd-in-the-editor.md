@@ -340,8 +340,9 @@ footer `s stub · w waive · q close`; `j`/`k` move. `s` (or `<CR>`) on a surviv
 a test for it, in the unit's test file. The name comes from the mutant, so you know what the test
 is for: a string's first four words (`f"there is no table {input.table_id}"` →
 `test_there_is_no_table`), else the operator and the names on the mutated line
-(`if input.party > table.seats:` → `test_boundary_party_seats`), with `_2` when the test file has
-that name already. The mutant is a comment above the `...` in its body, which `conjure` reads as a
+(`if input.party > table.seats:` → `test_boundary_party_seats`), between the text the language's
+`[test] name` puts before and after the words (pytest's `test_`), with `_2` when the test file has
+a test of that name already (by its `[test] unit` rules). The mutant is a comment above the `...` in its body, which `conjure` reads as a
 note:
 
 ```python

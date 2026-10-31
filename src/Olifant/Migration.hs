@@ -10,18 +10,30 @@ module Olifant.Migration
   , reportLine
   , migrationJson
   , bigChanges
-  , readsOrWrites
+  , Strangler (..)
+  , Extract (..)
+  , Owner (..)
+  , parseStrangler
+  , extractKind
+  , extractDecision
   , tablesTouched
   , functionText
+  , switchPath
+  , codeOf
   ) where
 
 import Olifant.Newness (NewLines (..), newCount, wholeNew)
 
 import Data.Aeson (Value, object, (.=))
 
-import Data.Maybe (mapMaybe)
+import Control.Monad ((>=>))
+import Data.Array (elems)
+import Data.List (find)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Olifant.Toml qualified as Toml
+import Text.Regex.TDFA (AllTextSubmatches (..), CompOption (..), ExecOption (..), Regex, defaultCompOpt, defaultExecOpt, makeRegexOptsM, matchAllText, matchM, matchTest)
 
 -- | A switch in the registry, and whether it is on.
 data Switch = Switch {swName :: Text, swOn :: Bool}
@@ -41,24 +53,21 @@ data MigrationReport = MigrationReport
   }
   deriving stock (Eq, Show)
 
--- | The registry's entries: `SWITCHES["name"] = True|False` lines, or
--- `"name": True|False,` lines inside `SWITCHES = {…}`.
-readRegistry :: Text -> [Switch]
-readRegistry text = mapMaybe line ls ++ mapMaybe entry (takeWhile (not . closes) (drop 1 (dropWhile (not . opens) ls)))
+-- | The registry's entries, as the strangler pack's `[switches]` reads
+-- them: lines its `line` expressions match anywhere (group 1 the name,
+-- group 2 the value), and lines its `block` `line` expressions match
+-- between the first line `open` matches and the next `close` matches; on
+-- when the value is `on`. COMMENT: the registry's language's comment marker
+-- (a trailing comment is not part of a value). Each line is stripped first.
+readRegistry :: Strangler -> Text -> Text -> [Switch]
+readRegistry st comment text = mapMaybe (entry (stSwitchLine st)) ls ++ inBlock
   where
-    -- a line's code: a trailing comment is not part of a value
-    ls = map (fst . T.breakOn "#") (T.lines text)
-    line l = do
-      rest <- T.stripPrefix "SWITCHES[\"" (T.strip l)
-      let (name, after) = T.breakOn "\"]" rest
-      value <- T.stripPrefix "\"]" after >>= T.stripPrefix "=" . T.strip
-      pure (Switch name (T.strip value == "True"))
-    opens l = "SWITCHES" `T.isPrefixOf` T.stripStart l && "{" `T.isSuffixOf` T.stripEnd l
-    closes l = T.strip l == "}"
-    entry l = case T.splitOn ":" (T.strip l) of
-      [k, v] | Just name <- quoted (T.strip k) -> Just (Switch name (T.strip (T.dropWhileEnd (== ',') (T.strip v)) == "True"))
-      _ -> Nothing
-    quoted k = T.stripPrefix "\"" k >>= T.stripSuffix "\""
+    ls = map (T.strip . cut) (T.lines text)
+    cut l = if T.null comment then l else fst (T.breakOn comment l)
+    inBlock = case stSwitchBlock st of
+      Nothing -> []
+      Just (open, close, lineRes) -> mapMaybe (entry lineRes) (takeWhile (not . matches close) (drop 1 (dropWhile (not . matches open) ls)))
+    entry res l = listToMaybe [Switch name (T.strip value == stSwitchOn st) | re <- res, Just (name : value : _) <- [groupsOf re l]]
 
 -- | The names in `olifant:switch NAME` comments.
 switchMarkers :: Text -> [Text]
@@ -104,44 +113,183 @@ migrationJson r =
 bigChanges :: Int -> NewLines -> [((Int, Int), (Int, Int))] -> [(((Int, Int), (Int, Int)), Int)]
 bigChanges threshold newness fns = [(fn, n) | fn <- fns, not (wholeNew newness fn), let n = newCount newness fn, n >= threshold]
 
--- | Whether a legacy function is a command (it writes: SQL that writes, a
--- commit, a save, a module global assigned) or a query (it only reads: SQL
--- that selects, a fetch), or unsure — decision 2's deterministic answer.
-readsOrWrites :: Text -> Maybe Text
-readsOrWrites text0
-  | any (`T.isInfixOf` upper) ["INSERT ", "UPDATE ", "DELETE "] || any (`T.isInfixOf` text) [".commit(", ".save(", "global "] = Just "command"
-  | "SELECT " `T.isInfixOf` upper || any (`T.isInfixOf` text) [".fetch", "db.rows(", "db.row("] = Just "query"
-  | otherwise = Nothing
+-- | Which extract a legacy function reads as (decision 2's deterministic
+-- answer): the first of EXTRACTS (the strangler's `[[extract.into]]`, in
+-- order) one of whose `signs` its code matches, its comments cut (COMMENT,
+-- the language's marker: `# update the cache` is prose); none: unsure.
+extractKind :: Text -> [Extract] -> Text -> Maybe Text
+extractKind comment extracts text0 = exName <$> find (\e -> any (`signIn` text) (exSigns e)) extracts
   where
-    -- the code, not its comments (`# update the cache` is prose)
-    text = T.unlines (map codeOf (T.lines text0))
-    upper = T.toUpper text
-    codeOf l = T.pack (go Nothing (T.unpack l))
-      where
-        go _ [] = []
-        go Nothing ('#' : _) = []
-        go Nothing (c : cs) | c `elem` ("\"'" :: String) = c : go (Just c) cs
-        go (Just q) ('\\' : c : cs) = '\\' : c : go (Just q) cs
-        go (Just q) (c : cs) | c == q = c : go Nothing cs
-        go st (c : cs) = c : go st cs
+    text = T.unlines (map (codeOf comment) (T.lines text0))
 
--- | The tables a function's SQL names (FROM, INTO, UPDATE, JOIN …).
-tablesTouched :: Text -> [Text]
-tablesTouched text = go (T.words (T.map (\c -> if c `elem` ("\"'(),;" :: String) then ' ' else c) text))
+-- | Decision 2 as the decider is asked it: its id (the extracts' names,
+-- joined by @-or-@), its question and its options (each name and what it
+-- means).
+extractDecision :: [Extract] -> (Text, Text, [(Text, Text)])
+extractDecision extracts =
+  ( T.intercalate "-or-" (map exName extracts)
+  , "Is this function a " <> T.intercalate " or a " [exName e <> " (" <> exMeans e <> ")" | e <- extracts]
+  , [(exName e, exMeans e) | e <- extracts]
+  )
+
+-- | A line less its comment (COMMENT outside a string); none: the line.
+codeOf :: Text -> Text -> Text
+codeOf comment l
+  | T.null comment = l
+  | otherwise = T.pack (go Nothing (T.unpack l))
   where
-    go (w : t : rest) | T.toUpper w `elem` ["FROM", "INTO", "UPDATE", "JOIN"] = T.toLower t : go rest
-    go (_ : rest) = go rest
-    go [] = []
+    marker = T.unpack comment
+    go _ [] = []
+    go Nothing cs@(c : rest)
+      | take (length marker) cs == marker = []
+      | c `elem` ("\"'" :: String) = c : go (Just c) rest
+      | otherwise = c : go Nothing rest
+    go (Just q) ('\\' : c : cs) = '\\' : c : go (Just q) cs
+    go (Just q) (c : cs) | c == q = c : go Nothing cs
+    go st (c : cs) = c : go st cs
 
--- | A function's text by its name (`def NAME(` and its indented body).
-functionText :: Text -> Text -> Maybe Text
-functionText content name =
+-- | The tables a function's code names, by the strangler's `[extract.owner]
+-- tables` expressions (each match's last group, lowercased).
+tablesTouched :: [Text] -> Text -> [Text]
+tablesTouched res text = [T.toLower (T.pack (fst (last (elems m)))) | re <- res, Just rx <- [compiled re], m <- matchAllText rx (T.unpack text)]
+
+-- | A unit's text by its name: the first line one of the language's
+-- `[unit] name` expressions (NAMERS) names NAME, and the lines after it that
+-- are blank or deeper.
+functionText :: [Text] -> Text -> Text -> Maybe Text
+functionText namers content name =
   case break isDef (T.lines content) of
     (_, def : rest) ->
       let level = indentOf def
        in Just (T.unlines (def : takeWhile (\l -> T.null (T.strip l) || indentOf l > level) rest))
     _ -> Nothing
   where
-    isDef l = any (\kw -> (kw <> name <> "(") `T.isPrefixOf` T.stripStart l) ["def ", "async def "]
+    isDef l = any (\re -> lastGroup re l == Just name) namers
     indentOf = T.length . T.takeWhile (== ' ')
 
+-- | A switched function's new path (the strangler's retire): the lines of
+-- the block that opens at the first line the strangler's `[switches] guard`
+-- matches (stripped), a level less indented; none without a guard.
+switchPath :: Maybe Text -> Text -> Text
+switchPath guard found = case guard of
+  Nothing -> ""
+  Just re ->
+    let ls = T.lines found
+        indentOf = T.length . T.takeWhile (== ' ')
+     in case break (matches re . T.stripStart) ls of
+          (_, opener : rest) ->
+            let level = indentOf opener
+                body = takeWhile (\l -> T.null (T.strip l) || indentOf l > level) rest
+                inner = case filter (not . T.null . T.strip) body of
+                  l : _ -> indentOf l - level
+                  [] -> 0
+             in T.intercalate "\n" [T.drop inner l | l <- body, not (T.null (T.strip l))]
+          _ -> ""
+
+-- | A strangler pack's `migrate.toml` (book chapter 17), what strangling
+-- reads from the pack rather than the engine. 'stPack' names the pack (its
+-- generator ids are qualified by it).
+data Strangler = Strangler
+  { stPack :: Text
+  , stBugFixOnly :: Maybe Text
+  -- ^ `bug_fix_only`: the rule that keeps legacy bug-fix-only. Its allow
+  -- comment marks a delegate (not counted as legacy added), and a decider's
+  -- "new behaviour" turns a new-work hint into its finding
+  , stSwitches :: Maybe Text
+  -- ^ `[switches] registry`: a glob; the registry, when `[migrate] switches`
+  -- names none, is the first file it matches outside the legacy code
+  , stSwitchOn :: Text
+  -- ^ `[switches] on`: the value that means on
+  , stSwitchLine :: [Text]
+  -- ^ `[switches] line`: expressions over a registry line, group 1 the name, group 2 the value
+  , stSwitchBlock :: Maybe (Text, Text, [Text])
+  -- ^ `[switches.block]`: `open`, `close` and `line`, for entries only inside a block
+  , stSwitchGuard :: Maybe Text
+  -- ^ `[switches] guard`: the line opening a switched function's new path
+  , stExtract :: [Extract]
+  -- ^ `[[extract.into]]`: the extract generators new work in disguise offers, in order
+  , stExtractFunction :: Text
+  -- ^ `[extract] function`: the input every extract generator takes for the legacy function's name
+  , stExtractFile :: Text
+  -- ^ `[extract] file`: the input for its file
+  , stOwner :: Maybe Owner
+  -- ^ `[extract.owner]`: decision 3, which owner the work belongs to
+  }
+  deriving stock (Eq, Show)
+
+-- | `[extract.owner]`: 'owInput' (`input`), the extract generators' input
+-- whose choices are the owners; 'owModels' (`models`), a glob template over
+-- the generator's inputs (the owner among them) whose files' stems are an
+-- owner's models; 'owTables' (`tables`), expressions over the function's
+-- code whose last group is a table it touches. The owner one of whose
+-- models a touched table names (singular or plural) is suggested.
+data Owner = Owner {owInput :: Text, owModels :: Text, owTables :: [Text]}
+  deriving stock (Eq, Show)
+
+-- | One `[[extract.into]]`: 'exGenerator' (`generator`, qualified by the
+-- pack), 'exName' (`name`) and 'exMeans' (`means`), how decision 2 names it,
+-- and 'exSigns' (`signs`), expressions over the function's code that make
+-- it this one (a leading @(?i)@: any case).
+data Extract = Extract {exGenerator :: Text, exName :: Text, exMeans :: Text, exSigns :: [Text]}
+  deriving stock (Eq, Show)
+
+-- | PACK's `migrate.toml`, parsed.
+parseStrangler :: Text -> Text -> Either Text Strangler
+parseStrangler pack src = do
+  top <- Toml.parseToml src
+  Toml.onlyKeys ["bug_fix_only", "switches", "extract"] top
+  bug <- Toml.optional "bug_fix_only" Toml.text top
+  sw <- fromMaybe mempty <$> Toml.optional "switches" Toml.table top
+  (registry, on, line, block, guard) <- Toml.inKey "switches" $ do
+    Toml.onlyKeys ["registry", "on", "line", "block", "guard"] sw
+    (,,,,)
+      <$> Toml.optional "registry" Toml.text sw
+      <*> (fromMaybe "true" <$> Toml.optional "on" Toml.text sw)
+      <*> (fromMaybe [] <$> Toml.optional "line" (Toml.list expression) sw)
+      <*> Toml.optional "block" (Toml.table >=> \b -> Toml.inKey "block" (Toml.onlyKeys ["open", "close", "line"] b >> ((,,) <$> Toml.required "open" expression b <*> Toml.required "close" expression b <*> Toml.required "line" (Toml.list expression) b))) sw
+      <*> Toml.optional "guard" expression sw
+  ex <- fromMaybe mempty <$> Toml.optional "extract" Toml.table top
+  (into, function, file, owner) <- Toml.inKey "extract" $ do
+    Toml.onlyKeys ["into", "function", "file", "owner"] ex
+    (,,,)
+      <$> (fromMaybe [] <$> Toml.optional "into" (Toml.list (Toml.table >=> extractIn)) ex)
+      <*> (fromMaybe "function" <$> Toml.optional "function" Toml.text ex)
+      <*> (fromMaybe "file" <$> Toml.optional "file" Toml.text ex)
+      <*> Toml.optional "owner" (Toml.table >=> \o -> Toml.inKey "owner" (Toml.onlyKeys ["input", "models", "tables"] o >> (Owner <$> Toml.required "input" Toml.text o <*> Toml.required "models" Toml.text o <*> (fromMaybe [] <$> Toml.optional "tables" (Toml.list expression) o)))) ex
+  pure (Strangler pack bug registry on line block guard into function file owner)
+  where
+    expression = Toml.text >=> \re -> if isJust (compiled re) then Right re else Left ("not a valid expression: " <> re)
+    extractIn t = Toml.inKey "into" $ do
+      Toml.onlyKeys ["generator", "name", "means", "signs"] t
+      Extract
+        <$> ((\g -> pack <> "/" <> g) <$> Toml.required "generator" Toml.text t)
+        <*> Toml.required "name" Toml.text t
+        <*> (fromMaybe "" <$> Toml.optional "means" Toml.text t)
+        <*> (fromMaybe [] <$> Toml.optional "signs" (Toml.list expression) t)
+
+-- | An expression, compiled; a leading @(?i)@ makes it match any case.
+compiled :: Text -> Maybe Regex
+compiled re = case T.stripPrefix "(?i)" re of
+  Just rest -> makeRegexOptsM defaultCompOpt {caseSensitive = False} defaultExecOpt (T.unpack rest)
+  Nothing -> makeRegexOptsM defaultCompOpt defaultExecOpt (T.unpack re)
+
+matches :: Text -> Text -> Bool
+matches re l = maybe False (`matchTest` T.unpack l) (compiled re)
+
+signIn :: Text -> Text -> Bool
+signIn = matches
+
+-- | An expression's groups in a line (none: no match).
+groupsOf :: Text -> Text -> Maybe [Text]
+groupsOf re l = drop 1 <$> allGroups re l
+
+-- | What an expression names in a line: its last group (the whole match
+-- when it has none), stripped.
+lastGroup :: Text -> Text -> Maybe Text
+lastGroup re l = T.strip . last <$> allGroups re l
+
+allGroups :: Text -> Text -> Maybe [Text]
+allGroups re l = do
+  rx <- compiled re
+  AllTextSubmatches gs <- matchM rx (T.unpack l) :: Maybe (AllTextSubmatches [] String)
+  if null gs then Nothing else pure (map T.pack gs)

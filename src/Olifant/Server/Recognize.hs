@@ -22,14 +22,14 @@ import Data.Set qualified as S
 import Data.Text.Encoding qualified as TE
 import Data.Char (isSpace)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Olifant.App (PlanOptions (..), Ports (..), Project (..), planOptions, planWith)
 import Olifant.Catalog (Catalog (..), CatalogEntry (..), RecognizeConfig (..), describeCatalogError, findEntry, loadGenerator)
 import Olifant.Generation (Plan (..), ProgressEvent, Step (..), describeConflict, describeGenerationError)
 import Olifant.Generator (EditWith (..), Generator, GeneratorId (..), GeneratorWith (..), InputSpec (..))
-import Olifant.Language (Language (..), languageFor)
+import Olifant.Language (Language (..), TestDef (..), defaultUnitNames, languageFor, regexName)
 import Olifant.Naming (Case (Title), parseName, render)
 import Olifant.Recognize
 import Olifant.Server.Actions (fillerFor)
@@ -85,7 +85,7 @@ recognitionFor path line = memo "recognize" path (T.pack (show line)) $ \s ->
 -- is unsure, or an input it could not read is missing); nothing for a file
 -- that already is the convention.
 recognitionSuggestion :: FilePath -> Int -> ServerState -> FilePath -> Project -> [Generator] -> Recognition -> Text -> IO (Maybe Suggestion)
-recognitionSuggestion path line s root _ gens r text = suggestion
+recognitionSuggestion path line s root project gens r text = suggestion
   where
     suggestion = do
         let rel = makeRelative root path
@@ -116,9 +116,14 @@ recognitionSuggestion path line s root _ gens r text = suggestion
           -- the user's stays, and they are told so (it is theirs to remove)
           kept = not converts && rcPlace r < 0.25
        in T.intercalate "; " (["converts " <> T.pack (takeFileName rel) | converts] <> ["adds " <> T.intercalate ", " others | not (null others)] <> ["your " <> T.pack (takeFileName rel) <> " here stays: remove it once its logic has moved" | kept])
-    -- the first line declaring something (where the construct starts)
-    declarationLine src fallback =
-      fromMaybe fallback (listToMaybe [n | (n, l) <- zip [1 ..] (T.lines src), any (`T.isPrefixOf` T.dropWhile isSpace l) ["class ", "def ", "struct ", "pub struct ", "fn ", "pub fn ", "trait ", "pub trait ", "enum ", "pub enum ", "@"]])
+    -- the first line declaring something (where the construct starts): a
+    -- line the language's `[unit] name` names, or one its `[test] above`
+    -- says belongs to the unit below (a decorator)
+    declarationLine src fallback = case languageFor (catalogLanguages (prCatalog project)) (makeRelative root path) of
+      Just lang | langUnitNames lang /= defaultUnitNames ->
+        let named l = any (\re -> isJust (regexName re l)) (langUnitNames lang ++ maybe [] (maybe [] pure . testAbove) (langTest lang))
+         in fromMaybe fallback (listToMaybe [n | (n, l) <- zip [1 ..] (T.lines src), named l])
+      _ -> fallback
     -- the convention's own name: the last ident input it read (a command's
     -- name, not its service)
     mainInput gen inputs =

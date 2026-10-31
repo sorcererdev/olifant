@@ -32,7 +32,8 @@ import Olifant.Cursor (isSnippet)
 import Olifant.Decide (Answer (..), Confidence (..), Decider (..), Question, choice, confident)
 import Olifant.Generator (AppliesAt (..), Generator, GeneratorWith (..), InputSpec (..), generatorIdText, generatorName)
 import Olifant.App (Project (..), actionsAt', menuOnly)
-import Olifant.Language (languageFor)
+import Olifant.Language (Language (..), languageFor)
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 import Olifant.Recognize
 import Olifant.Rules (fingerprint)
 import Olifant.Server.Hints (fileActionsFor)
@@ -77,16 +78,19 @@ longEnough n unit = unitLines unit >= n
 
 -- | The prefix at a line (1-based): the unit so far (from the nearest
 -- non-blank line at column 0, at most 120 lines up to the cursor's), the
--- cursor's line and the file's import lines.
-prefixAt :: Text -> Int -> (Text, Text, [Text])
-prefixAt text line = (T.intercalate "\n" (drop (start - 1) upTo), cursor, imports)
+-- cursor's line and the file's import lines (those the language's
+-- `[imports] line` matches; none without it).
+prefixAt :: Maybe Text -> Text -> Int -> (Text, Text, [Text])
+prefixAt importLine text line = (T.intercalate "\n" (drop (start - 1) upTo), cursor, imports)
   where
     ls = T.lines text
     upTo = take line ls
     cursor = fromMaybe "" (listToMaybe (drop (line - 1) ls))
     top l = maybe False (not . isSpace . fst) (T.uncons l)
     start = max (line - 119) (fromMaybe 1 (listToMaybe [n | (n, l) <- reverse (zip [1 ..] upTo), top l]))
-    imports = [l | l <- ls, any (`T.isPrefixOf` l) ["import ", "from "]]
+    imports = case importLine >>= \re -> makeRegexM (T.unpack re) :: Maybe Regex of
+      Nothing -> []
+      Just rx -> [l | l <- ls, matchTest rx (T.unpack l)]
 
 -- | The `anticipate` choice: the candidates (generator id, what it makes)
 -- (the backend adds unsure), from the path, the cursor's line, the unit
@@ -211,7 +215,8 @@ anticipationAsk path line s =
   anticipateCandidates path line s >>= \case
     (s', Nothing) -> pure (s', Nothing)
     (s', Just (moment, cands)) -> do
-      prefix@(unit, cursor, _) <- prefixAt <$> textOf s' <*> pure line
+      (importLine, text) <- textOf s'
+      let prefix@(unit, cursor, _) = prefixAt importLine text line
       pure $
         if moment == Silence && not (longEnough minPrefixLines unit)
           then (s', Nothing)
@@ -219,8 +224,8 @@ anticipationAsk path line s =
   where
     textOf st =
       projectFor path st >>= \case
-        (_, Just (root, project)) -> fromMaybe "" <$> readText (prWorkspace project) (makeRelative root path)
-        _ -> pure ""
+        (_, Just (root, project)) -> (langImports =<< languageFor (catalogLanguages (prCatalog project)) (makeRelative root path),) . fromMaybe "" <$> readText (prWorkspace project) (makeRelative root path)
+        _ -> pure (Nothing, "")
 
 -- | Candidates, the question from the prefix, one ask, its anticipation.
 anticipateAt :: FilePath -> Int -> ServerState -> Decider IO -> IO (ServerState, Maybe Anticipation)

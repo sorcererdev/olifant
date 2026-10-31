@@ -13,7 +13,7 @@ import Olifant.Toml (parseToml)
 import Test.Hspec
 
 request :: FillRequest
-request = FillRequest [FillHole "status" "expr" "the HTTP status" "a.rs" "x => \10214status\10215," [("BAD", "a.rs: BAD is not defined")] False] [("failure", "too_late")] [] FillStance
+request = FillRequest [FillHole "status" "expr" "the HTTP status" "a.rs" "x => \10214status\10215," [("BAD", "a.rs: BAD is not defined")] False Nothing] [("failure", "too_late")] [] FillStance
 
 spec :: Spec
 spec = describe "Olifant.Model (spec §6.4)" $ do
@@ -37,7 +37,7 @@ spec = describe "Olifant.Model (spec §6.4)" $ do
     let body = TE.decodeUtf8 (BL.toStrict (encode (requestBody (OpenAICompatible "u" "m") request)))
     mapM_ (\k -> body `shouldSatisfy` T.isInfixOf k) ["\"model\":\"m\"", "\"role\":\"system\"", "<fill name=\\\"NAME\\\">", "status", "the HTTP status", "a.rs: BAD is not defined", "failure = too_late"]
   it "(c) a conjure request uses the conjures stance and lists every previous attempt" $ do
-    let req = FillRequest [FillHole "body" "block" "i" "a.py" "ctx" [("return 1", "rejected by the person"), ("return 2", "the tests failed: x")] False] [] [] ConjureStance
+    let req = FillRequest [FillHole "body" "block" "i" "a.py" "ctx" [("return 1", "rejected by the person"), ("return 2", "the tests failed: x")] False Nothing] [] [] ConjureStance
         asText = TE.decodeUtf8 . BL.toStrict . encode
     mapM_ (\k -> requestBody (OpenAICompatible "u" "m") req `shouldSatisfy` \v -> k `T.isInfixOf` asText v)
       ["least code that makes this test pass", "return 1", "rejected by the person", "return 2", "attempt 2:", "Previous attempts (do not repeat them):"]

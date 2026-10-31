@@ -3,8 +3,12 @@
 Strangle a legacy Python codebase into the python-htmx architecture, a little
 in every PR, without dedicated migration time.
 
-- `olifant init --migrate legacy/` in an existing repo: this pack and python-htmx,
-  `[migrate]` in `.olifant/config.toml`, and today's findings baselined.
+- `olifant init --migrate legacy/ --pack python-htmx` in an existing repo: this pack
+  and python-htmx, `[migrate]` in `.olifant/config.toml`, and today's findings baselined.
+- **`migrate.toml`** makes this a strangler pack: everything olifant's strangling
+  needs from it (the bug-fix-only rule, the registry's file and lines, the extract
+  generators and their signs, which service a function belongs to). The engine
+  names none of it.
 - **Rules:** `legacy-bug-fix-only` (no new definitions in legacy code; edits are
   fine), `new-code-not-legacy` (src/ never imports legacy).
 - **Generators:** `extract-command` and `extract-query` (a legacy function becomes

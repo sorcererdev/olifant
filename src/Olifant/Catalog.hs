@@ -10,6 +10,7 @@ module Olifant.Catalog
   , RecognizeConfig (..)
   , catalogMigrate
   , MigrateConfig (..)
+  , catalogStrangler
   , catalogDecideModel
   , catalogConjureWire
   , catalogPlans
@@ -61,6 +62,7 @@ import Data.Either (lefts, rights)
 import Data.List (sort, sortOn)
 import Data.Map.Strict qualified as M
 import Olifant.Model (ModelConfig (..), defaultModelConfig, parseModelConfig)
+import Olifant.Migration (Strangler, parseStrangler)
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -130,6 +132,10 @@ data Catalog = Catalog
     catalogConjureWire :: Maybe Text
   , -- | `[plans]`: where plans live, and the runner that drafts and does them
     catalogPlans :: PlansConfig
+  , -- | the strangler pack's `migrate.toml` (the first pack that has one):
+    -- what strangling reads from the pack (book chapter 17); one that does
+    -- not parse is in 'catalogBrokenRules'
+    catalogStrangler :: Maybe Strangler
   }
 
 -- | `[plans]`: the plans directory, the runner command, its model, a timeout
@@ -408,8 +414,9 @@ openAt root loadP olifantDir packs = do
       named = [(n, True) | n <- layerNames] ++ [(genLanguage (entryDefinition e), False) | e <- rights loaded] ++ [(n, True) | n <- configuredNames]
       (langs, brokenLangs) = assembleLanguages presets (rights layers) [T.pack (takeBaseName p) | Left (p, _) <- layers] named
       broken = lefts layers ++ lefts toolchains ++ either pure (const []) configured
-      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans
-  pure (foldl (flip addRules) (foldl (flip addRegions) base (map lpRegions fromPacks)) (map lpRules fromPacks))
+      base = Catalog Nothing (sortOn entryId (rights loaded)) (sortOn (\(gid, _, _) -> gid) (lefts loaded)) (map fst packs) langs (broken ++ brokenLangs) [] [] defaultModelConfig [] [] (RulesConfig [] []) [m | Just (Right m) <- map lpModel fromPacks] [b | Just (Left b) <- map lpModel fromPacks] (map snd packs) Nothing (RecognizeConfig True Nothing) Nothing Nothing Nothing defaultPlans (listToMaybe [st | Just (Right st) <- map lpStrangler fromPacks])
+      strangled = base {catalogBrokenRules = catalogBrokenRules base ++ [b | Just (Left b) <- map lpStrangler fromPacks]}
+  pure (foldl (flip addRules) (foldl (flip addRegions) strangled (map lpRegions fromPacks)) (map lpRules fromPacks))
   where
     presetsOf = either (error . T.unpack) id . presetsFrom "project"
 
@@ -471,13 +478,15 @@ data LoadedPack = LoadedPack
   , lpRegions :: Either (FilePath, Text) [RegionDef]
   , lpRules :: Either (FilePath, Text) [RuleDef]
   , lpModel :: Maybe (Either (FilePath, Text) ModelMap)
+  , lpStrangler :: Maybe (Either (FilePath, Text) Strangler)
   }
 
 loadPack :: Monad m => Workspace m -> (Text, FilePath) -> m LoadedPack
 loadPack root (name, r) =
-  LoadedPack <$> discover root (Just name) (Just r) (r </> "generators") <*> layersIn root ("pack " <> name) r <*> toolchainsIn root ("pack " <> name) r <*> regionsIn root r <*> rulesIn root r <*> modelIn
+  LoadedPack <$> discover root (Just name) (Just r) (r </> "generators") <*> layersIn root ("pack " <> name) r <*> toolchainsIn root ("pack " <> name) r <*> regionsIn root r <*> rulesIn root r <*> modelIn <*> stranglerIn
   where
     modelIn = readText root (r </> "model.toml") <&> fmap (first (r </> "model.toml",) . parseModelMap)
+    stranglerIn = readText root (r </> "migrate.toml") <&> fmap (first (r </> "migrate.toml",) . parseStrangler name)
 
 -- | The generators in a folder (each `NAME/generator.toml`), as a pack's or
 -- the project's own.

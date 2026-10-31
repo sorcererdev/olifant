@@ -179,7 +179,7 @@ selected lang td files sel i = map fill (if T.null rest then selFile sel else se
     (_, rest) = T.breakOn "::" i
     name = T.intercalate (selJoin sel) (T.splitOn "::" (T.drop 2 rest))
     grp = fromMaybe "" (lookup (fileOfId i) (requestedFiles lang td [i] files) >>= id)
-    fill a = either (const (T.replace "{= name =}" name (T.replace "{= group =}" grp a))) id (parseTemplate a >>= render (M.fromList [("group", VText grp), ("name", VText name)]))
+    fill a = either (const (T.replace "{= id =}" i (T.replace "{= name =}" name (T.replace "{= group =}" grp a)))) id (parseTemplate a >>= render (M.fromList [("group", VText grp), ("name", VText name), ("id", VText i)]))
 
 -- | A run's report read by the `[test] format`, from stdout then stderr
 -- (olifant-json, and a converted report, from stdout); a report a parser

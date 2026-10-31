@@ -1,5 +1,5 @@
 -- | Which compiler support a `[check] format` selects (spec §5.6).
-module Olifant.Language.Support (supportFor, formatSupport, knownFormats, knownTestFormats, supportsMissing) where
+module Olifant.Language.Support (supportFor, formatSupport, knownFormats, knownTestFormats, supportsMissing, missingFormats) where
 
 import Data.Text (Text)
 import Olifant.Language.Diagnostics (CompilerSupport (..))
@@ -29,7 +29,11 @@ knownFormats = map supportFormat supports ++ ["errorformat"]
 -- | Whether a format can say which cases a `case` lacks (what `complete` and
 -- `uncovered` read).
 supportsMissing :: Text -> Bool
-supportsMissing = (`elem` ["ghc-json", "pyright-json", "rustc-json", "elm-json", "olifant-json"])
+supportsMissing = (`elem` missingFormats)
+
+-- | The formats that can say which cases a `case` lacks.
+missingFormats :: [Text]
+missingFormats = ["ghc-json", "pyright-json", "rustc-json", "elm-json", "olifant-json"]
 
 -- | The @[test] format@s a test runner can read.
 knownTestFormats :: [Text]
