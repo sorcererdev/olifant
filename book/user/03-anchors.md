@@ -93,6 +93,8 @@ community queries for the grammar, shipped inside olifant:
 | `call NAME` / `call NAME in FUNCTION` | the call's argument list, the call named by its text up to the arguments (`BillingService::new`) | its arguments |
 | `imports` | the file | its top-level import statements, whole (`end of imports`: after the last one; in a file with none, after its leading comments and docstring where the language's `[imports] when_empty` says so, as Python's does) |
 
+A name (`NAME`, `FUNCTION`) is the name itself or, as in a declared target, a POSIX expression that matches it whole: `parameters in [a-z_]+_routes` is the parameter list of the one function whose name ends in `_routes`.
+
 `class` alone is often ambiguous: in Rust a struct and its `impl` share a name, so
 `end of class BillingService` matches two places and is refused. Say `struct` or `impl`.
 `impl NAME` is the type's inherent impl (`impl<T> Store<T>` is `impl Store`); an

@@ -32,6 +32,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Syntax (Match (..))
+import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 -- | A node, as the rule needs it: its type, the (line, column) of its start
 -- and end (0-based, columns in characters, as 'Olifant.Language.Syntax.Match'
@@ -143,10 +144,10 @@ anchorFromCaptures root caps = \case
     let tops = nub [capNode c | c <- caps, capName c == "import", capTop c == Just (capNode c)]
      in Just (Right [(toMatch root, map toMatch (sortOn pBytes tops)) | not (null tops)])
   ["parameters", "in", f] -> Just (Right (mapMaybe (\d -> field "parameters" (defCap d) "parameter.inner") (defsOf functionCaps f)))
-  ["call", name] -> Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, callName c == name]))
+  ["call", name] -> Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, nameIs name (callName c)]))
   ["call", name, "in", f] ->
     let fs = map (capNode . defCap) (defsOf functionCaps f)
-     in Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, callName c == name, any (`encloses` capNode c) fs]))
+     in Just (Right (mapMaybe (\c -> field "arguments" c "parameter.inner") [c | c <- calls, nameIs name (callName c), any (`encloses` capNode c) fs]))
   [kind, name]
     | kind == "function" -> Just (Right (mapMaybe body (defsOf functionCaps name)))
     | kind == "class" -> Just (Right (mapMaybe body (defsOf classCaps name)))
@@ -156,7 +157,7 @@ anchorFromCaptures root caps = \case
     defs = adjacent source (definitions caps)
     defNodes = nub (map (capNode . defCap) defs)
     -- one definition node may carry several captures (method and function)
-    defsOf names n = sortOn (pBytes . capNode . defCap) (dedupe [d | d <- defs, defName d == n, capName (defCap d) `elem` names])
+    defsOf names n = sortOn (pBytes . capNode . defCap) (dedupe [d | d <- defs, nameIs n (defName d), capName (defCap d) `elem` names])
     dedupe ds = [d | (i, d) <- zip [0 :: Int ..] ds, capNode (defCap d) `notElem` [capNode (defCap e) | e <- take i ds]]
     kindOf w n = pType n == w || (w <> "_") `T.isPrefixOf` pType n
     -- the `.inner` captures whose nearest strictly enclosing definition is
@@ -269,6 +270,12 @@ definitionsWith root caps =
     unitOf n = case sortOn (\o -> fst (pBytes o)) [o | o <- outers, within o n, snd (pBytes o) == snd (pBytes n), all (\x -> within n x || not (within o x)) defNodes] of
       o : _ -> o
       [] -> n
+
+-- | Does a phrase's NAME name this? The name itself, or (as a declared
+-- target's `regex = "^{= NAME =}$"` did) a POSIX expression matching it
+-- whole: `parameters in [a-z_]+_routes`.
+nameIs :: Text -> Text -> Bool
+nameIs pat n = pat == n || maybe False (`matchTest` T.unpack n) (makeRegexM ("^(" <> T.unpack pat <> ")$") :: Maybe Regex)
 
 toMatch :: PNode -> Match
 toMatch p = Match (pStart p) (pEnd p) (pText p) (pBytes p)

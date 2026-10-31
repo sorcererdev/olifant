@@ -38,6 +38,10 @@ service = TIO.readFile "packs/rust-htmx/fixtures/app/billing/billing-service/src
 
 spec :: Spec
 spec = describe "the generic anchor rule (captures)" $ do
+  it "a name given as an expression matches whole, as a declared target's `^NAME$` did (python-htmx's `parameters in [a-z_]+_routes`)" $ do
+    let file = T.unlines ["fn bookings_routes(", "    a: u8,", ")", "{", "}", "", "fn other(b: u8) {}"]
+    fmap (fmap length) (containers file ["parameters", "in", "[a-z_]+_routes"]) `shouldBe` Just (Right 1)
+    fmap (fmap length) (containers file ["parameters", "in", "[a-z]+"]) `shouldBe` Just (Right 1)
   it "end of mod tests goes after the test function, at its column" $
     site tests "end of mod tests" `shouldBe` Right (23, "    ")
   it "end of enum ignores a trailing comment" $
