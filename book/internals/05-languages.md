@@ -16,8 +16,11 @@ olifant doctor
 
 ```
 ✓ language python — loaded (shipped, pack python-htmx)
+✓ test runner uv (python) — /opt/homebrew/bin/uv; tests_for = {= dir =}/{= stem =}__test.py
 ✓ python: units — [unit] kinds (ast-grep), named by [unit] name · from shipped
+✓ python: diagnostics — [check] format pyright-json · from toolchain pyright
 ✓ python: tests — [test] format pytest, tests_for {= dir =}/{= stem =}__test.py · from toolchain pytest
+✓ python: test selection — pytest ids · from pack python-htmx
 ✓ python: mutation — [[mutate]] (17 operators) · from shipped
 ✓ python: conjure shapes — [conjure] port, fake, constructor · from pack python-htmx
 …
@@ -26,7 +29,7 @@ olifant doctor
 Each row is one `Capability` (`Capabilities.hs:24`) and its origin: the layer that last set the
 key (`toolchain pytest` when only the preset supplied it). In a project with Rust, a row the
 language lacks reads `! rust: mutation — absent` with `fix: add [[mutate]] to
-.olifant/languages/rust.toml`. Everything below explains where those words come from.
+.olifant/languages/rust.toml` (that is a warning, never an error). Everything below explains where those words come from.
 
 ## Three kinds of file, three layers
 
@@ -265,6 +268,11 @@ the capability rows are the checklist. No Haskell is needed unless its report fo
   none is checked against the others.
 - **`NeutralSpec` is a text match.** `langName lang == "python"` is caught, `testFormat t ==
   "pytest"` is not (and exists, in `Capabilities.hs`), nor is a branch on a file extension.
+- **A capability's origin falls back to its parent table.** `originOf` tries the dotted key
+  (`test.select`), then its parent (`test`). Python's "test selection — pytest ids · from pack
+  python-htmx" is the parent's: the pack last wrote *something* under `[test]`; the selection is
+  built into the pytest format and no layer wrote it. The same fallback gives "messages · from
+  shipped" for `[check] undefined`, which the pyright preset actually supplied.
 - **Keys exist in the language file that are about a pack, not a language.** `[conjure]` and
   `[types]` are the pack's convention but live in the language table so they layer with it.
   Doctor shows `conjure shapes` for every language, including Elm.

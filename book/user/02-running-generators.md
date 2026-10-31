@@ -482,20 +482,25 @@ $ olifant doctor
 ✓ ast-grep — /opt/homebrew/bin/ast-grep
 ✗ check tool cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
   fix: install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)
+✗ test runner cargo (rust) — `cargo` is not on this PATH: /Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin
+  fix: install Rust with rustup; cargo lives in ~/.cargo/bin, or /opt/homebrew/opt/rustup/bin with Homebrew's rustup (keg-only: add it to PATH, then restart your editor from a new shell)
 ✓ model — qwen3-coder:30b answers at http://localhost:11434/v1
 ✓ rust: units — [unit] kinds (ast-grep), named by [unit] name · from shipped
 ✓ rust: diagnostics — [check] format rustc-json · from toolchain cargo
 ✓ rust: missing cases — [check] format rustc-json · from toolchain cargo
-! rust: tests — absent
-  fix: add [test] to .olifant/languages/rust.toml
-! rust: test units — absent
-  fix: add [test] unit to .olifant/languages/rust.toml
-! rust: test selection — absent
-  fix: add [test] select to .olifant/languages/rust.toml (whole files run)
+✓ rust: tests — [test] format lines, tests_for {= dir =}/{= stem =}.rs · from toolchain cargo-test
+✓ rust: test units — [test] unit, above · from shipped
+✓ rust: test selection — [test] select · from toolchain cargo-test
 ! rust: mutation — absent
   fix: add [[mutate]] to .olifant/languages/rust.toml
-! rust: stub — absent
-  fix: stubs for other test formats come with [test] stub
+✓ rust: stub — [test] stub at end of mod tests · from toolchain cargo-test
+! rust: conjure shapes — absent
+  fix: add [conjure] to .olifant/languages/rust.toml (conjure works at the floor: the test and its fill, no ports)
+✓ rust: messages — [check] undefined · from shipped
+! rust: test messages — absent
+  fix: add [test] undefined, [test.failure] to .olifant/languages/rust.toml (the panel shows the test's last assertion)
+✓ rust: stub bodies — stub_lines (2) · from shipped
+✓ rust: signature facts — [types] string, integer, nothing, optional, param, annotation, returns, assigned, record, method, checks_none · from shipped
 ✓ plans runner claude — /opt/homebrew/bin/claude; timeout 300 s
 $ echo $?
 1
@@ -510,7 +515,9 @@ and each capability the layer that set its key (`toolchain cargo`: the preset fi
 | `pack NAME`, `language NAME` | each pack and language adapter that loaded; an adapter or generator that failed to load is an `error`, with why |
 | `ast-grep` | `ast-grep` on this process's `PATH` |
 | `check tool EXE (LANGUAGE)` | the first word of each adapter's `[check] command` (`cargo`, `elm`, `cabal`) on this process's `PATH`, which is printed when it is missing |
-| `LANGUAGE: CAPABILITY` | what each language can do, and the key that would enable what it cannot (a `warn`, never an error): **units** (`[unit] kinds`, and `name`, `join`), **diagnostics** (`[check]`, its format, and `convert`), **missing cases** (a `[check] format` that reads them: `ghc-json`, `pyright-json`, `rustc-json`, `elm-json`, `olifant-json`), **tests** (`[test]`, its format and `tests_for`), **test units** (`[test] unit`; built in for `pytest`), **test selection** (`[test] select`; pytest ids for `pytest`; without it a run is whole files). [Chapter 9](09-packs-and-language-adapters.md) has the keys |
+| `test runner EXE (LANGUAGE)` | the first word of each adapter's `[test] command`, as for the check tool; its detail ends with the language's `tests_for` |
+| `LANGUAGE: CAPABILITY` | what each language can do, and the key that would enable what it cannot (a `warn`, never an error), thirteen rows in this order: **units** (`[unit] kinds`, and `name`, `join`), **diagnostics** (`[check]`, its format, and `convert`), **missing cases** (a `[check] format` that reads them: `ghc-json`, `pyright-json`, `rustc-json`, `elm-json`, `olifant-json`), **tests** (`[test]`, its format and `tests_for`), **test units** (`[test] unit`; pytest's rules come with the `pytest` preset), **test selection** (`[test] select`; pytest ids for `pytest`; without it a run is whole files), **mutation** (`[[mutate]]`, with the number of operators), **stub** (`[test] stub`), **conjure shapes** (the parts of a pack's `[conjure]`; absent means conjure works at the floor), **messages** (`[check] undefined`, `missing_member`), **test messages** (`[test] undefined`, `[test.failure]`), **stub bodies** (`stub_lines`) and **signature facts** (`[types]`). Each row ends with the layer that set its key. [Chapter 9](09-packs-and-language-adapters.md) has the keys |
+| `recognize model` | only with `[recognize] model` set ([chapter 16](16-the-language-server.md#recognition-this-looks-like-a-command)): ok when it names a backend under `[model.backends]`, an `error` when it does not |
 | `plans runner RUNNER` | `[plans] runner` ([chapter 19](19-plans.md#plans)), `claude` by default, on this process's `PATH`, with the errand timeout and `do_tools` when set; missing is an `error`: install Claude Code, or set `[plans] runner` |
 | `model` | `[model]` ([chapter 12](12-holes-and-models.md#configuring-a-model)): none is a `warn`, with the snippet to add; a `default` with no such backend is an `error`. An `openai-compatible` default must list its model at `URL/models` within 3 seconds (else `warn`: `curl: (7) Failed to connect …`, or `` the server answers but has no model `NAME` ``); for `anthropic`, only that the key's environment variable is set, never its value and never a request |
 
