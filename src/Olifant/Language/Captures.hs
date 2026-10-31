@@ -162,8 +162,22 @@ anchorFromCaptures root caps = \case
           inners = [c | c <- caps, capName c `elem` ["function.inner", "class.inner"], dn `encloses` capNode c, nearest (capNode c) == Just dn]
           items = nub [capNode c | c <- inners, pNamed (capNode c), not (pExtra (capNode c))]
        in case (items, nub [p | c <- inners, Just p <- [capParent c]]) of
-            (_ : _, [p]) -> Just (toMatch p, map toMatch (sortOn pBytes items))
+            (_ : _, [p]) -> Just (toMatch p, map groupMatch (decorated (sortOn pBytes items)))
             _ -> fmap (\b -> (toMatch b, [])) (fieldOf "body" (defCap d))
+    -- An item that is no definition, ending on the line before a definition
+    -- (or on its line), decorates it (an attribute, a decorator): the two
+    -- are one item, from the first's start to the definition's end, so
+    -- spacing is measured between whole members and `start of` goes before
+    -- the decoration.
+    decorated = foldr glue []
+      where
+        glue x ((f, l) : rest)
+          | x `notElem` defNodes, l `elem` defNodes, fst (pStart f) <= fst (pEnd x) + 1 = (x, l) : rest
+        glue x rest = (x, x) : rest
+    groupMatch (f, l)
+      | f == l = toMatch f
+      | otherwise = let (a, z) = (fst (pBytes f), snd (pBytes l)) in Match (pStart f) (pEnd l) (TE.decodeUtf8Lenient (BS.take (z - a) (BS.drop a source))) (a, z)
+    source = TE.encodeUtf8 (pText root)
     -- a node's field (a parameter or argument list) and, as items, the
     -- captures of @name whose parent it is
     field fname c name = case fieldOf fname c of

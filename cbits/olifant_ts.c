@@ -44,15 +44,21 @@ TSQueryCursor *ots_exec(const TSQuery *q, const TSNode *n) {
   return c;
 }
 
-/* The next match: its pattern and captures, at most @max of them (nodes into
- * @nodes, capture ids into @ids). Returns the capture count, or -1 at the end. */
-int ots_next(TSQueryCursor *c, uint32_t max, TSNode *nodes, uint32_t *ids, uint32_t *pattern) {
-  TSQueryMatch m;
-  if (!ts_query_cursor_next_match(c, &m)) return -1;
-  *pattern = m.pattern_index;
-  uint32_t n = m.capture_count < max ? m.capture_count : max;
-  for (uint32_t i = 0; i < n; i++) { nodes[i] = m.captures[i].node; ids[i] = m.captures[i].index; }
-  return (int)n;
+size_t ots_match_size(void) { return sizeof(TSQueryMatch); }
+
+/* The next match, into @m (valid until the cursor moves again): its pattern
+ * into @pattern; returns its capture count (a `_+` capture can hold every
+ * child of a body, so there is no fixed bound), or -1 at the end. */
+int ots_next(TSQueryCursor *c, TSQueryMatch *m, uint32_t *pattern) {
+  if (!ts_query_cursor_next_match(c, m)) return -1;
+  *pattern = m->pattern_index;
+  return (int)m->capture_count;
+}
+
+/* Every capture of @m: nodes into @nodes, capture ids into @ids (both
+ * sized by ots_next's count). */
+void ots_captures(const TSQueryMatch *m, TSNode *nodes, uint32_t *ids) {
+  for (uint32_t i = 0; i < m->capture_count; i++) { nodes[i] = m->captures[i].node; ids[i] = m->captures[i].index; }
 }
 
 uint32_t ots_capture_count(const TSQuery *q) { return ts_query_capture_count(q); }

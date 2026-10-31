@@ -55,6 +55,7 @@ data TSTree
 data TSNode
 data TSQuery
 data TSQueryCursor
+data TSQueryMatch
 
 -- the grammars compiled in (cbits/tree-sitter-<grammar>/)
 foreign import ccall "&tree_sitter_rust" p_rust :: FunPtr (IO (Ptr TSLanguage))
@@ -80,7 +81,9 @@ foreign import ccall unsafe "ots_prune" c_prune :: Ptr TSQuery -> Ptr Word8 -> P
 foreign import ccall unsafe "ots_facts" c_facts :: Ptr TSNode -> Ptr Word32 -> IO ()
 foreign import ccall unsafe "ots_exec" c_exec :: Ptr TSQuery -> Ptr TSNode -> IO (Ptr TSQueryCursor)
 foreign import ccall unsafe "ts_query_cursor_delete" c_cursorDelete :: Ptr TSQueryCursor -> IO ()
-foreign import ccall unsafe "ots_next" c_next :: Ptr TSQueryCursor -> Word32 -> Ptr TSNode -> Ptr Word32 -> Ptr Word32 -> IO CInt
+foreign import ccall unsafe "ots_match_size" c_matchSize :: IO CSize
+foreign import ccall unsafe "ots_next" c_next :: Ptr TSQueryCursor -> Ptr TSQueryMatch -> Ptr Word32 -> IO CInt
+foreign import ccall unsafe "ots_captures" c_captures :: Ptr TSQueryMatch -> Ptr TSNode -> Ptr Word32 -> IO ()
 
 -- | The grammar table: a language file's `grammar` to its compiled-in
 -- parser. Data, keyed by grammar, never by a language's name.
@@ -215,7 +218,8 @@ compileQueries lang g qs = modifyMVar compiled $ \cache -> case M.lookup (g, qs)
       6 -> "language"
       k -> "error " <> T.pack (show k)
 
--- | The last 'cacheBound' answers, most recent first, keyed by (grammar,
+-- | The last 'cacheBound' answers computed, newest first (first in, first
+-- out: a hit does not move its entry), keyed by (grammar,
 -- query set, text): the LSP asks again and again about one document, and a
 -- request on the same text skips the parse and the marshalling. A changed
 -- text is another key, so a stale tree never answers.
@@ -280,17 +284,20 @@ capturesIO g qs content = case lookup g grammarTable of
             r : _ -> r
             [] -> ("", ix)
        in bracket (c_exec q root) c_cursorDelete $ \cur ->
-            allocaBytes (ctxSize ctx * 64) $ \nodes -> allocaArray 64 $ \ids -> with 0 $ \pat ->
+            c_matchSize >>= \msize -> allocaBytes (fromIntegral msize) $ \m -> with 0 $ \pat ->
               let loop = do
-                    k <- c_next cur 64 nodes ids pat
+                    k <- fromIntegral <$> c_next cur m pat
                     when (k >= 0) $ do
                       pIx <- peek pat
                       mi <- readIORef matchNo
                       modifyIORef' matchNo (+ 1)
-                      is <- peekArray (fromIntegral k) ids
-                      let (file, local) = fileOf (fromIntegral pIx)
-                      caps <- forM (zip [0 ..] is) $ \(j, cid) ->
-                        capture ctx facts root (nodes `plusPtr` (j * ctxSize ctx)) (M.findWithDefault "" cid names) file local mi
+                      -- every capture of the match, however many (a body's `_+`)
+                      caps <- allocaBytes (ctxSize ctx * max 1 k) $ \nodes -> allocaArray (max 1 k) $ \ids -> do
+                        c_captures m nodes ids
+                        is <- peekArray k ids
+                        let (file, local) = fileOf (fromIntegral pIx)
+                        forM (zip [0 ..] is) $ \(j, cid) ->
+                          capture ctx facts root (nodes `plusPtr` (j * ctxSize ctx)) (M.findWithDefault "" cid names) file local mi
                       modifyIORef' out (reverse caps ++)
                       loop
                in loop

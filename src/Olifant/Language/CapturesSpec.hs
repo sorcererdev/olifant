@@ -5,7 +5,7 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Olifant.Anchor (Miss (..), RenderedAnchor (..), locLine, locIndent, locOpen, locateContainers, resolveLayers)
+import Olifant.Anchor (Miss (..), RenderedAnchor (..), Spacing (..), locLine, locIndent, locOpen, locSpacing, locateContainers, resolveLayers)
 import Olifant.Language
 import Olifant.Language.Captures (anchorFromCaptures)
 import Olifant.Language.TreeSitter (capturesOf, queriesFor)
@@ -68,5 +68,23 @@ spec = describe "the generic anchor rule (captures)" $ do
     let file = T.unlines ["struct tests {", "    a: u8,", "}", "", "mod tests {", "    fn f() {}", "}"]
     site file "end of mod tests" `shouldBe` Right (6, "    ")
     site file "end of struct tests" `shouldBe` Right (2, "    ")
+  describe "bodies of more than 64 children (final review, Critical 1)" $ do
+    it "an impl of 20 documented methods: end of impl goes after the last one" $ do
+      let method i = ["    /// Method " <> T.pack (show i) <> ".", "    ///", "    /// It does nothing.", "    pub fn m" <> T.pack (show i) <> "(&self) {}", ""]
+          file = T.unlines (["struct D;", "", "impl D {"] ++ concatMap method [1 .. 20 :: Int] ++ ["}"])
+      site file "end of impl D" `shouldBe` Right (lineOf file "pub fn m20(" + 1, "    ")
+    it "a fn with 80 statements: end of function goes after the last one" $ do
+      let file = T.unlines (["fn big() {"] ++ ["    let x" <> T.pack (show i) <> " = " <> T.pack (show i) <> ";" | i <- [1 .. 80 :: Int]] ++ ["}"])
+      site file "end of function big" `shouldBe` Right (81, "    ")
+    it "a struct with 40 fields: end of struct goes after the last one" $ do
+      let file = T.unlines (["struct Big {"] ++ ["    f" <> T.pack (show i) <> ": u8," | i <- [1 .. 40 :: Int]] ++ ["}"])
+      site file "end of struct Big" `shouldBe` Right (41, "    ")
+  it "attributed methods keep their blank line: an attribute goes with the item it decorates (final review, Important 2)" $ do
+    let file = T.unlines ["struct S;", "", "impl S {", "    #[must_use]", "    fn a(&self) -> u8 {", "        1", "    }", "", "    #[must_use]", "    fn b(&self) -> u8 {", "        2", "    }", "}"]
+        spacing p = fmap locSpacing (runIdentity (resolveLayers syn (Just rust) Nothing [PhraseAnchor p] file))
+    spacing "end of impl S" `shouldBe` Right BlankBefore
+    site file "end of impl S" `shouldBe` Right (12, "    ")
+    -- start of goes before the first item's attribute, not between it and its fn
+    site file "start of impl S" `shouldBe` Right (3, "    ")
   it "a phrase that is not generic is not the rule's" $
     containers tests ["literal", "in", "new"] `shouldBe` Nothing

@@ -237,7 +237,7 @@ anchor phrases from community queries (design 4b §A).
   the upstream `LICENSE`.
 - **The shim.** GHC's FFI cannot pass a `TSNode` (a 32-byte struct) by value, so
   `cbits/olifant_ts.c` wraps the calls olifant needs and holds nodes by pointer
-  (`ots_parse`, `ots_points`, `ots_field`, `ots_next`, `ots_prune`, …). The grammar is passed
+  (`ots_parse`, `ots_facts`, `ots_field`, `ots_next` and `ots_captures`, `ots_prune`, …). The grammar is passed
   in: `TreeSitter.hs`'s `grammarTable` maps a language file's `grammar` to the compiled-in
   `tree_sitter_<grammar>` function. That table is data keyed by grammar, never by a language's
   name; `linkedGrammars` lists it.
@@ -269,11 +269,13 @@ anchor phrases from community queries (design 4b §A).
   A capture's parent is read only for `.inner` captures, and fields only where the rule reads
   them (a definition's `body` and `parameters`, a call's `arguments`), with the children of a
   parameter or argument list but not of a body (a body's items are its inner captures).
-- **The cache.** `capturesOf` keeps its last 16 answers (`answers`, `cacheBound`), most
-  recent first, keyed by (grammar, query set, text). The LSP asks about one document again and
+- **The cache.** `capturesOf` keeps the last 16 answers it computed (`answers`, `cacheBound`),
+  newest first, keyed by (grammar, query set, text). It is first in, first out: a hit does
+  not move its entry, so a text asked about constantly is still dropped after 16 newer ones
+  (and parsed again on its next request). The LSP asks about one document again and
   again, and a generator's edits ask about one file several times: a request on the same text
   skips the parse and the marshalling. A changed text is another key, so a stale tree never
-  answers; the oldest entry goes when a 17th text arrives (`cacheSize`, for the spec). Two
+  answers; the oldest computed entry goes when a 17th text arrives (`cacheSize`, for the spec). Two
   threads that miss at once both compute the same pure answer; the list is updated with
   `atomicModifyIORef'`, and no lock is held while parsing.
 - **What it costs.** Measured with `OLIFANT_TS_BENCH=<dir>` (the opt-in example in
@@ -291,7 +293,12 @@ anchor phrases from community queries (design 4b §A).
   narrows by node type (`struct` → `struct_item`, `mod` → `mod_item`). A definition's items are
   the `function.inner`/`class.inner` captures whose *nearest strictly enclosing* definition it
   is ("strictly": an impl with one method has the method as both item and definition), named
-  and not extra (no punctuation, no comments); their parent is the container. With no inner
+  and not extra (no punctuation, no comments); their parent is the container. An item that is
+  no definition and ends on the line before a definition (or on its line) decorates it (a
+  Rust attribute, a decorator): the two become one item (`decorated`), so `end of` spacing is
+  measured between whole members and `start of` goes before the decoration. A match holds
+  every capture of a `_+` however many (`ots_next` returns the count, `ots_captures` copies
+  them), so a body of hundreds of children is read whole. With no inner
   capture (an empty body), the container is the definition's `body` field, empty, which
   placement opens. `parameters in F` reads the function's `parameters` field (type parameters
   are a direct child too, so a capture alone would not do), a call is named by its text up to
