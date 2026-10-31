@@ -143,7 +143,8 @@ escalate = "ask"      # only <leader>mpc climbs here
 A backend with no `escalate` key defaults to `ask`, so only `<leader>mpc` climbs to it. (The backends' other keys are as in chapter 12.) The demo's config sets `escalate = "auto"` on its local backend for that reason.
 
 **Tests on a step.** `<leader>ms` on a step stubs a test under it (any language with a `[test.stub]`: Python, Haskell, Rust; the step needs an anchor), the step's text as the
-sentence. `<leader>mt` runs the step's tests and ticks it when all are green. A `do` runs the
+sentence. `<leader>mt` runs the step's tests and ticks it when all are green; a step with no
+tests is ticked by keeping its `do` (below) or by `<leader>mpx`. A `do` runs the
 step's tests when it finishes, over the files it wrote as they are on disk (the editor reloads
 them only afterwards).
 
@@ -163,7 +164,7 @@ said, the tests after it and the commands it was refused, in words, beside the d
 
 | key | choice | does |
 |---|---|---|
-| `a` | keep | the `do`'s plan lines land under the step; the review goes |
+| `a` | keep | the `do`'s plan lines land under the step; the review goes. A step with no test children (none in the plan, none the `do` adds) is ticked by the same edit, as `<leader>mpx` would (`✓` its unit now, a live excerpt frozen; one undo step), and the journal says `kept the do's change · ticked: the step has no tests`. A step with tests is left to its tests |
 | `r` | revert | the files are restored from the reference, new ones removed; your edits to those files since the `do` go with it, and the plan, `.olifant/state/` and `.olifant/config.toml` are left alone |
 | `o` | reopen | keep it and ask for more in the same thread: a sentence, and a `do` on the step resumes the model's session in a fork; it comes back as a new review |
 | `t` | test | run the step's tests now |
@@ -193,7 +194,7 @@ each:
 ```
 
 A `do` ending (`answered`, `blocked`, `answered nothing`, `error`, `timed out`, `cancelled`), a review
-answered (kept, reverted, kept and asked for more), a step's tests ticking, unticking or going red or
+answered (kept, kept and ticked, reverted, kept and asked for more), a step's tests ticking, unticking or going red or
 green. Delete a line you do not want and it is not written again. The store is
 `.olifant/state/journal/<plan>.jsonl`. A line you write in the same shape reads as a journal line.
 

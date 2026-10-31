@@ -152,7 +152,11 @@ from their blobs. The index is never touched.
 `olifant/plans/review/choose`: `keep`, `revert`, `reopen`, `test` or `allow` (`chooseReview`,
 `Lsp.hs:2004`). `allow` takes the tool permissions the runner refused (`deniedWords`,
 `allowPattern`) and writes them into `[plans] do_tools` (`allowInConfig`, a text edit of
-`config.toml`). `keep` and `revert` append an `AnOutcome` record, the label that Jev's
+`config.toml`). `keep` writes `keepTicked` (`Review.hs`): the `do`'s lines, and on an open step with
+no test children (in the plan or among those lines) the step ticked, stamped and its excerpts
+frozen by `doneFacts` (`Lsp.hs`, shared with "Mark done"'s `toggleEdit`), one edit through
+`planFactsEdit`; its journal choice is `kept-ticked` (`keepEvent`). A `reopen` never ticks.
+`keep` and `revert` append an `AnOutcome` record, the label that Jev's
 telemetry is graded by. `Lsp` adds a code lens on each open review's step (`textDocument/codeLens`,
 refreshed with `workspace/codeLens/refresh` by `lensesChanged`).
 
@@ -228,7 +232,8 @@ rungs.
    and parses `N: <line>` back (`parseWords`). With no chat rung, a new step is the unit's header
    (`headerWords`) and a why is "names changed".
 7. **Blocks.** The pieces are assembled into `ReconcileBlock`s: `stateGhosts` (a tick or untick
-   line; a `done` for a step **without tests** is dropped, because only tests tick a step),
+   line; a `done` for a step **without tests** is dropped, because only tests, keeping its `do`
+   or the user tick a step),
    `also` children, `goneGhosts`, `whyGhosts` (`✗ changed:`), and `newSteps` for unplaced units
    placed by `newStepPlace` (the end of the section for the current branch).
 8. **Record.** An `AReconcile` record (id, plan, branch, baseline, counts, seconds, every

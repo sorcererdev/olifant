@@ -33,6 +33,7 @@ module Olifant.Server.Review
   , sameStep
   , locateStep
   , keepLines
+  , keepTicked
   , reviewPayload
   , archiveErrand
   , loadArchive
@@ -63,7 +64,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime)
 import Olifant.App (Ports (..))
-import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), parsePlan, testState)
+import Olifant.Plans (Anchor (..), Kind (..), Line (..), TestState (..), childrenOf, parsePlan, testState)
 import Olifant.Process (runBytes)
 import Olifant.Server.Edits (unifiedDiff)
 import Olifant.Server.Errand (Denial (..), denialsIn)
@@ -537,6 +538,22 @@ keepLines :: [Line] -> Review -> Maybe (Line, Maybe Text, [Text])
 keepLines ls r = locateStep ls r <&> \step -> case rvLines r of
   first : rest | "- [" `T.isPrefixOf` T.strip first -> (step, Just first, rest)
   xs -> (step, Nothing, xs)
+  where
+    m <&> f = fmap f m
+
+-- | 'keepLines' for `keep`: the step is also ticked (its replace, the do's
+-- line when it proposed one) when it is open and has no test children, now
+-- or among the lines the do adds; a step with tests is ticked by them. The
+-- Bool: it was ticked.
+keepTicked :: [Line] -> Review -> Maybe (Line, Maybe Text, [Text], Bool)
+keepTicked ls r = keepLines ls r <&> \(step, rep, more) ->
+  let tests = [c | c <- childrenOf ls (lnRow step), lnIndent c == lnIndent step + 2, lnKind c == TestChild]
+      added = [() | l <- parsePlan (T.intercalate "\n" more), lnKind l == TestChild]
+      open = lnKind step == Step False && maybe True (\t -> "- [ ]" `T.isPrefixOf` T.strip t) rep
+      tick t = let (ind, rest) = T.span (== ' ') t in maybe t ((ind <> "- [x]") <>) (T.stripPrefix "- [ ]" rest)
+   in if open && null tests && null added
+        then (step, Just (tick (fromMaybe (lnText step) rep)), more, True)
+        else (step, rep, more, False)
   where
     m <&> f = fmap f m
 
