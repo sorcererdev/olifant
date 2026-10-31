@@ -236,13 +236,14 @@ writes nothing is not tried again.
 `Cannot access attribute "close" for class "BookingRepository"`, by the pack's `[check]
 missing_member`), the conjure pauses (`a port lacks a method: BookingRepository.close`). If the
 signature follows from the call and the test's fake (written in the language's own words by
-`[types]`), the pause offers `add close to
+`[types]`) and the pack names a generator for it (`[conjure.port] add`,
+[chapter 9](09-packs-and-language-adapters.md#conjures-shapes-conjure)), the pause offers `add close to
 BookingRepository`, with the signature in its detail; if not, it says to add the method yourself,
-and the signature is not guessed. Choosing it (`port`, `arg` `Port.method`) has the pack's
-`port-method` generator add the method to the port, then `port-method-adapters` add it to each
-adapter beside the port (the model writes their bodies) and the contract test's stub, and answers
-a **proposal** like a re-conjured test's: the diff of every file, to `accept` (they land with the
-conjure) or `reject`. A pack with ports has to ship generators of those two names. The step log
+and the signature is not guessed. Choosing it (`port`, `arg` `Port.method`) has that generator
+(python-htmx's `port-method`) add the method to the port, then the one `[conjure.port] adapters`
+names (python-htmx's `port-method-adapters`) add it to each adapter beside the port (the model
+writes their bodies) and the contract test's stub, and answers a **proposal** like a re-conjured
+test's: the diff of every file, to `accept` (they land with the conjure) or `reject`. The step log
 has `conjure-proposal Port.method`, or `conjure-port-failed Port.method` when it could not.
 
 **A wrong test.** Every pause offers to re-conjure each involved test, the suspect first (a
