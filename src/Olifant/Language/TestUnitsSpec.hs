@@ -136,6 +136,42 @@ spec = do
       py <- shippedLanguage "python" []
       let t = T.unlines ["def test_wide(", "    n: int,", ") -> None:", "    assert n"]
       map (\u -> (tuPath u, tuLines u)) (testUnitsOf py Nothing t) `shouldBe` [(["test_wide"], (1, 4))]
+  describe "a test's classes come from the grammar's definitions (tests for everyone, task 1)" $ do
+    let units lang t = map (\u -> (tuPath u, tuLines u)) (testUnitsOf lang Nothing t)
+    it "a method of a Django-style TestCase subclass is Class::test" $ do
+      py <- shippedLanguage "python" []
+      let t = T.unlines ["from django.test import TestCase", "", "", "class ElectionTests(TestCase):", "    def test_counts(self) -> None:", "        assert 1 == 1"]
+      units py t `shouldBe` [(["ElectionTests"], (4, 6)), (["ElectionTests", "test_counts"], (5, 6))]
+      testCaseAtIn py Nothing t 6 `shouldBe` Just "ElectionTests::test_counts"
+      testCaseLineIn py Nothing t "ElectionTests::test_counts" `shouldBe` Just 5
+    it "a plain Test class, a nested class and a module-level test" $ do
+      py <- shippedLanguage "python" []
+      let t =
+            T.unlines
+              [ "class TestSeats:"                    -- 1
+              , "    def test_two(self) -> None:"     -- 2
+              , "        assert True"                 -- 3
+              , ""                                    -- 4
+              , "    class TestInner:"                -- 5
+              , "        def test_deep(self) -> None:" -- 6
+              , "            assert True"             -- 7
+              , ""                                    -- 8
+              , ""                                    -- 9
+              , "def test_top() -> None:"             -- 10
+              , "    assert True"                     -- 11
+              ]
+      map (testCaseAtIn py Nothing t) [3, 7, 11] `shouldBe` [Just "TestSeats::test_two", Just "TestSeats::TestInner::test_deep", Just "test_top"]
+    it "a class with no test in it is no group" $ do
+      py <- shippedLanguage "python" []
+      let t = T.unlines ["class Helper:", "    def make(self) -> int:", "        return 1", "", "", "def test_top() -> None:", "    assert Helper().make() == 1"]
+      units py t `shouldBe` [(["test_top"], (6, 7))]
+    it "Rust and Haskell ids are unchanged: a struct, a fn or a spec function is no group" $ do
+      rs <- shippedLanguage "rust" []
+      hs <- shippedLanguage "haskell" []
+      let rt = T.unlines ["struct Seat;", "", "#[cfg(test)]", "mod tests {", "    #[test]", "    fn adds() {", "        assert!(true);", "    }", "}"]
+      map fst (units rs rt) `shouldBe` [["tests"], ["tests", "adds"]]
+      let ht = T.unlines ["spec :: Spec", "spec = describe \"M\" $ do", "  it \"x\" $ pure ()"]
+      map fst (units hs ht) `shouldBe` [["M"], ["M", "x"]]
   describe "anchor names" $ do
     it "squashes each run outside [A-Za-z0-9_.] to one _" $ do
       anchorName ["Olifant.Plans", "parses \"x\" twice"] `shouldBe` "Olifant.Plans.parses_x_twice"

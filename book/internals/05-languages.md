@@ -172,7 +172,12 @@ that strictly hold it, outermost first. With a linked grammar, `testUnitsReport`
 line starts a definition ends where that definition ends, so a test with a string's outdented
 line, a Rust test's closing brace and a multi-line signature keep their whole span (m3's known
 limits). A unit on a line that starts no definition (hspec's `it`) keeps the outdent rule, as
-does every unit of an unlinked grammar. The callers (stubs, the fill phase's assertion span and
+does every unit of an unlinked grammar. It also passes the grammar's class definitions (capture
+`definition.class`, from `TreeSitter.definitionKinds`): a class holding a unit is a group of it,
+whatever its name, unless a rule matched its line; a class holding none is no unit. So a pytest
+method's id is `ElectionTests::test_x` for a Django `TestCase` subclass, as for `class TestX`,
+with no class rule; Rust's structs and Haskell's type classes hold no tests, so their ids are
+unchanged. The callers (stubs, the fill phase's assertion span and
 whole-file test, the scripted runner, conjure through `testCaseAtIn`/`testSourcesIn`) are pure,
 so a provider runs through `Provider.providerPure`, memoised by request; that rests on a
 provider being pure by contract. `TestUnitsSpec` fails if `testUnitsIn` appears in any other

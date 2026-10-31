@@ -9,11 +9,11 @@ tests_for = "{= dir =}/test_{= stem =}.py"
 install = "brew install uv (pytest comes with the project: `uv sync`)"
 # Its words for a name not defined (a summary says NameError).
 undefined = [{ pattern = "name '([^']+)' is not defined", label = "NameError" }]
-# Tests by rule: a `test…` function (async too) and a `Test…` class, whose
-# methods it names `TestX::test_y`; decorators belong to the def below.
+# Tests by rule: a `test…` function (async too); decorators belong to the
+# def below. A method's class comes from the grammar (any class holding a
+# test, `ElectionTests(TestCase)` as `TestX`): its id is `Class::test_y`.
 unit = [
   '^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+(test[[:alnum:]_]*)[[:space:]]*\(',
-  '^[[:space:]]*class[[:space:]]+(Test[[:alnum:]_]*)',
 ]
 above = '^[[:space:]]*@'
 # A test's id is pytest's own (`path::Class::test_name`): passed as it is.
