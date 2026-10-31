@@ -11,7 +11,7 @@ import Olifant.App (FixFailure (..), PlanOptions (..), findingsWith, fixSteps, n
 import Olifant.Catalog (describeCatalogError)
 import Olifant.Generation (Plan (..), ProgressEvent, describeConflict, describeGenerationError)
 import Olifant.Server.Actions (fillerFor)
-import Olifant.Rules (Finding (..), RuleDef (..), RulesConfig (..), Severity (..), definedName)
+import Olifant.Rules (Finding (..), RuleDef (..), RulesConfig (..), Severity (..), definedNameIn)
 import Olifant.App (Project (..))
 import Olifant.Catalog (Catalog (..))
 import Control.Monad (forM, join)
@@ -23,6 +23,7 @@ import Olifant.Migration (Strangler (..))
 import Olifant.Decide (Answer (..), choice)
 import Olifant.Server.State (decision, deciderFor, cachedBase, ServerState (..), memo, projectFor)
 import System.FilePath (makeRelative)
+import Olifant.Language (languageFor)
 
 -- | The rules' findings in a file (project-relative paths in them); none
 -- for a file in no project.
@@ -55,7 +56,7 @@ decided s project path fs = case deciderFor s project of
       if fRule f /= "migrate-new-work"
         then pure [f]
         else
-          decision s decider (path, "bug-or-new:" <> definedName (fText f)) (fFingerprint f) (choice "bug-or-new" "Does this change fix a bug in the function, or add new behaviour" [("bug fix", ""), ("new behaviour", "")] [("function", fText f)]) (join (readIORef (ssOnDecided s))) <&> \case
+          decision s decider (path, "bug-or-new:" <> definedNameIn (languageFor (catalogLanguages cat) (makeRelative (prRoot project) path)) (fText f)) (fFingerprint f) (choice "bug-or-new" "Does this change fix a bug in the function, or add new behaviour" [("bug fix", ""), ("new behaviour", "")] [("function", fText f)]) (join (readIORef (ssOnDecided s))) <&> \case
             Just (Chosen "new behaviour" _ _) -> case stBugFixOnly =<< catalogStrangler cat of
               Just r -> [f {fRule = r, fSeverity = severityOf r, fMessage = maybe "New work goes in the new architecture" ruleMessage (find ((== r) . ruleId) (catalogRules cat)) <> ": this change adds behaviour"}]
               Nothing -> [f]

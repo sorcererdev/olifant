@@ -13,6 +13,8 @@ keywords = ["False", "None", "True", "and", "as", "assert", "async", "await", "b
 unit = { name = ['^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]+([^[:space:](:[]+)'] }
 comment = "#"
 grammar = "python"
+# Folders a project listing never enters: the venv, caches, a front end's packages.
+ignore = [".venv", "__pycache__", ".pytest_cache", "node_modules"]
 indent = "    "
 # A block opens at a line ending in `:`; `pass` is the statement that does nothing.
 opens_block = ':[[:space:]]*(#.*)?$'

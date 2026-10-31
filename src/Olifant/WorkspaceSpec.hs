@@ -89,11 +89,12 @@ spec = do
         BS.writeFile (dir </> "latin1.txt") "caf\xe9 precious\n"
         inspectPath (diskWorkspace dir) "latin1.txt" `shouldReturn` Unreadable
   describe "disk adapter (listing a project)" $ do
-    it "never descends into dependency and build directories" $
+    it "never descends into .git or a dot-folder; a language's folders are its `ignore` (4b m2)" $
       withSystemTempDirectory "olifant" $ \dir -> do
         let ws = diskWorkspace dir
-        mapM_ (\p -> writeText ws p "x") ["src/a.hs", "node_modules/pkg/index.js", "target/debug/x", "elm-stuff/0.19/y", "dist-newstyle/z", ".git/HEAD", ".venv/lib/x.py", "src/__pycache__/a.pyc", ".pytest_cache/v"]
-        listFiles ws "." `shouldReturn` ["src/a.hs"]
+        mapM_ (\p -> writeText ws p "x") ["src/a.hs", "node_modules/pkg/index.js", "target/debug/x", ".git/HEAD", ".venv/lib/x.py", ".pytest_cache/v", ".gitignore"]
+        listFiles ws "." `shouldReturn` [".gitignore", "node_modules/pkg/index.js", "src/a.hs", "target/debug/x"]
+        listFiles (ignoring ["target", "node_modules"] ws) "." `shouldReturn` [".gitignore", "src/a.hs"]
     it "lists what git considers part of the project, honouring .gitignore" $
       findExecutable "git" >>= \case
         Nothing -> pendingWith "git is not installed"

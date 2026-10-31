@@ -12,6 +12,8 @@ module Olifant.Language.Captures
   , Cap (..)
   , anchorFromCaptures
   , definitionSpans
+  , DefSpan (..)
+  , definitionsWith
   , definedNames
   , oneContainer
   , genericPhrase
@@ -242,8 +244,17 @@ adjacent source = reverse . foldl step [] . sortOn (pBytes . capNode . defCap)
 -- other definition (a Python decorated definition, its decorators
 -- included), else its own.
 definitionSpans :: PNode -> [Cap] -> [(Text, PNode, PNode)]
-definitionSpans root caps =
-  [ (defName d, n, unitOf n)
+definitionSpans root caps = [(dsName d, dsNode d, dsUnit d) | d <- definitionsWith root caps]
+
+-- | A definition as 'definitionsWith' gives it: its @name, its capture
+-- (`definition.function`, …), its own node, its unit's node, and its
+-- `body` field.
+data DefSpan = DefSpan {dsName :: Text, dsCapture :: Text, dsNode :: PNode, dsUnit :: PNode, dsBody :: Maybe PNode}
+
+-- | Every function and class-like definition, in order ('definitionSpans').
+definitionsWith :: PNode -> [Cap] -> [DefSpan]
+definitionsWith root caps =
+  [ DefSpan (defName d) (capName (defCap d)) n (unitOf n) (listToMaybe [b | (f, b, _) <- capFields (defCap d), f == "body"])
   | d <- nubOn (pBytes . capNode . defCap) (adjacent source (definitions caps))
   , let n = capNode (defCap d)
   ]

@@ -13,6 +13,10 @@ module Olifant.Language.TreeSitter
   ( capturesOf
   , cacheSize
   , definitionLines
+  , definedName
+  , definedNamesIn
+  , signatureHead
+  , functionMatches
   , linkedGrammars
   , grammarNodeTypes
   , grammarLabel
@@ -48,8 +52,8 @@ import Foreign.Marshal.Utils (copyBytes, with)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff)
 import Olifant.Language.Adapter (Grammar (..), Language (..))
-import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures, definitionSpans, genericPhrase, phraseKind)
-import Olifant.Language.Syntax (Match, SyntaxFailure (..))
+import Olifant.Language.Captures (Cap (..), DefSpan (..), PNode (..), anchorFromCaptures, definitionSpans, definitionsWith, functionCaps, genericPhrase, phraseKind)
+import Olifant.Language.Syntax (Match (..), SyntaxFailure (..))
 import System.FilePath (splitDirectories, takeExtension)
 import System.IO.Unsafe (unsafePerformIO)
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
@@ -165,6 +169,58 @@ definitionLines lang source = case langGrammar lang of
     linesOf p =
       let ((sr, _), (er, ec)) = (pStart p, pEnd p)
        in (sr + 1, if ec == 0 && er > sr then er else er + 1)
+
+-- | A text's definitions by its language's queries: Nothing when the
+-- grammar is not linked or its queries fail.
+definitionsOf :: Language -> Text -> Maybe [DefSpan]
+definitionsOf lang source = case langGrammar lang of
+  BuiltInGrammar g
+    | g `elem` linkedGrammars
+    , Right (root, caps) <- capturesOf g (querySet lang) source -> Just (definitionsWith root caps)
+  _ -> Nothing
+
+-- | The definition a text starts with: the outermost whose unit starts on
+-- its first line (decorators in).
+leadingDefinition :: Language -> Text -> Maybe DefSpan
+leadingDefinition lang source = definitionsOf lang source >>= \ds ->
+  listToMaybe (sortOn (\d -> (fst (pBytes (dsUnit d)), negate (snd (pBytes (dsUnit d))))) [d | d <- ds, fst (pStart (dsUnit d)) == 0])
+
+-- | The name a definition's text defines: the @name of the definition it
+-- starts with, by the language's queries; else (an unlinked grammar, or no
+-- definition there) its first word.
+definedName :: Language -> Text -> Text
+definedName lang what = maybe firstWord dsName (leadingDefinition lang what)
+  where
+    firstWord = case T.words what of
+      w : _ -> w
+      [] -> ""
+
+-- | The names a text defines (every function and class-like definition),
+-- none for an unlinked grammar.
+definedNamesIn :: Language -> Text -> [Text]
+definedNamesIn lang source = maybe [] (map dsName) (definitionsOf lang source)
+
+-- | A definition's signature: its text up to its `body` field (comment
+-- lines just over the body left out), trimmed
+-- (`def f(\n    a,\n) -> dict:`); the first line when it has no body or
+-- the text starts with no definition.
+signatureHead :: Language -> Text -> Text
+signatureHead lang found = case leadingDefinition lang found >>= dsBody of
+  -- a comment over the body's first line (the grammar may leave it outside
+  -- the body) is not the signature's
+  Just b ->
+    let upTo = T.lines (TE.decodeUtf8Lenient (BS.take (fst (pBytes b)) (TE.encodeUtf8 found)))
+        ownLine l = not (T.null (T.strip l)) && not (langComment lang `T.isPrefixOf` T.strip l)
+     in T.strip (T.intercalate "\n" (reverse (dropWhile (not . ownLine) (reverse upTo))))
+  Nothing -> maybe "" id (listToMaybe (T.lines found))
+
+-- | A text's function definitions (`functionCaps`) as matches, their own
+-- spans (a Haskell signature and its equations one); Nothing for an
+-- unlinked grammar.
+functionMatches :: Language -> Text -> Maybe [Match]
+functionMatches lang source =
+  (\ds -> [Match (pStart n) (pEnd n) (pText n) (pBytes n) | d <- ds, dsCapture d `elem` functionCaps, let n = dsNode d])
+    <$> definitionsOf lang source
 
 -- | The query files shipped inside the binary: (grammar, file name, source).
 shippedQueries :: [(Text, FilePath, Text)]

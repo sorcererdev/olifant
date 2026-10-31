@@ -5,6 +5,7 @@ import Data.Text qualified as T
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Olifant.Newness
+import Olifant.Language (definedName, shippedLanguageNow, signatureHead)
 import Test.Hspec
 import System.Timeout (timeout)
 import Control.Exception (evaluate)
@@ -12,6 +13,16 @@ import Test.Hspec.Hedgehog (forAll, hedgehog, (===))
 
 spec :: Spec
 spec = describe "Olifant.Newness" $ do
+  describe "names and heads from captures (4b m2)" $ do
+    it "`definedName` from captures" $ do
+      definedName (shippedLanguageNow "rust") "pub async fn go(x: u8) {}" `shouldBe` "go"
+      definedName (shippedLanguageNow "python") "class A(B):\n    pass" `shouldBe` "A"
+      definedName (shippedLanguageNow "python") "@cache\ndef f():\n    pass" `shouldBe` "f"
+    it "`signatureHead` stops at the body" $ do
+      signatureHead (shippedLanguageNow "python") "def f(\n  a,\n) -> int:\n  return a" `shouldBe` "def f(\n  a,\n) -> int:"
+      signatureHead (shippedLanguageNow "python") "x = 1\ny = 2" `shouldBe` "x = 1"
+    it "`newSince` knows the names the base defines, by its language" $
+      wasDefined (newSince (Just (shippedLanguageNow "python")) "class A:\n    def m(self):\n        pass\n" "") "m" `shouldBe` True
   let base = T.unlines ["def a():", "    return 1", "", "def b(x):", "    return x"]
   it "(a) nothing changed: no line is new" $
     newLinesOf base base `shouldBe` S.empty

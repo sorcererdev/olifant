@@ -159,6 +159,10 @@ data Language = Language
   , langOrigins :: M.Map Text Text
   -- ^ each key (`indent`, `check`, `check.format`) and the layer that set it
   -- last, or `toolchain NAME` for a [check] or [test] key its preset filled
+  , langIgnore :: [Text]
+  -- ^ `ignore`: folder names a project listing never enters (its
+  -- dependencies, build output, caches: Rust's `target`); the catalog's
+  -- languages' together ('Olifant.Catalog.catalogIgnores')
   , langQueries :: [(FilePath, Text, Text)]
   -- ^ the project's query files for the grammar (`.olifant/queries/<grammar>/`):
   -- (file, text, origin), each replacing the shipped file of its name or
@@ -516,7 +520,7 @@ originOf lang key = case M.lookup key (langOrigins lang) of
 
 languageFrom :: Presets -> Text -> Maybe FilePath -> Table -> Either Text Language
 languageFrom presets name grammarDir top = do
-  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types", "anchors"] top
+  onlyKeysWith [("qualify", "`qualify` is retired: the [check] format decides how patterns are written")] ["files", "comment", "grammar", "targets", "placeholder", "branch", "check", "indent", "holes", "imports", "import_merge", "separator", "line_length", "keywords", "test", "unit", "mutate", "arm_separator", "lone_arm_spaced", "unit_words", "opens_block", "empty_statement", "stub_lines", "conjure", "types", "anchors", "ignore"] top
   files <- required "files" (list text) top
   comment <- required "comment" text top
   grammar <- required "grammar" grammarFrom top
@@ -552,9 +556,10 @@ languageFrom presets name grammarDir top = do
   unitJoin <- fromMaybe False <$> optional "join" bool unit
   mutate <- fromMaybe [] <$> optional "mutate" (list (table >=> mutateFrom)) top
   unitWords <- fromMaybe defaultUnitWords <$> optional "unit_words" text top
+  ignore <- fromMaybe [] <$> optional "ignore" (list text) top
   armSeparator <- fromMaybe "" <$> optional "arm_separator" text top
   loneArmSpaced <- fromMaybe False <$> optional "lone_arm_spaced" bool top
-  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty [])
+  pure (Language name files comment grammar targets placeholder branch check indent holes imports importsDef separator lineLength importMerge keywords test unitKinds unitNames unitJoin unitWords armSeparator loneArmSpaced opensBlock emptyStatement assertion stubLines conjure types unitProvider anchorProvider mutate [] M.empty ignore [])
   where
     tmpl = first describeTemplateError . parseTemplate
     -- a slot's value: the rule, or `{ provider = [...] }` alone in its place

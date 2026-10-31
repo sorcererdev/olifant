@@ -10,6 +10,7 @@ module Olifant.Catalog
   , RecognizeConfig (..)
   , catalogMigrate
   , MigrateConfig (..)
+  , catalogIgnores
   , catalogStrangler
   , catalogDecideModel
   , catalogConjureWire
@@ -359,7 +360,8 @@ openProjectCatalogWith loadP root paths = do
               <*> (fromMaybe "main" <$> Toml.optional "base" Toml.text t)
               <*> (fmap T.unpack <$> Toml.optional "switches" Toml.text t)
               <*> (maybe 15 fromInteger <$> Toml.optional "new_work_lines" Toml.int t)
-              <*> (fromMaybe ["function_definition"] <$> Toml.optional "count" (Toml.list Toml.text) t)
+              -- none: the language's functions, by its queries
+              <*> (fromMaybe [] <$> Toml.optional "count" (Toml.list Toml.text) t)
     -- A config's `[model]`, if it has one.
     modelIn configPath =
       readText root configPath <&> \case
@@ -424,6 +426,11 @@ openAt root loadP olifantDir packs = do
   pure (foldl (flip addRules) (foldl (flip addRegions) strangled (map lpRegions fromPacks)) (map lpRules fromPacks))
   where
     presetsOf = either (error . T.unpack) id . presetsFrom "project"
+
+-- | The folder names no project listing enters: every language's `ignore`
+-- (Rust's `target`, Python's `.venv`), together.
+catalogIgnores :: Catalog -> [FilePath]
+catalogIgnores cat = S.toList (S.fromList [T.unpack i | l <- catalogLanguages cat, i <- langIgnore l])
 
 -- | A language with its project's query files (`.olifant/queries/<grammar>/*.scm`,
 -- origin "project") when its grammar is linked, and the load error of a set

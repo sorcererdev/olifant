@@ -377,6 +377,16 @@ anchor phrases from community queries (design 4b §A).
   catalog's target check) and `locateContainers` (every container; a name two definitions
   share gives both) ask the same field. `Anchor/Items.hs`'s up-front "unknown target in any
   language adapter" check lets a generic phrase through when any language's grammar is linked.
+- **What else reads them.** The engine's language words went with m2 (the leftovers): a
+  definition's name (`TreeSitter.definedName`: the `@name` of the definition a text starts
+  with, decorators in; else its first word) for `finding_name`, `Rules`' "a name the base
+  defined" (`Newness.newSince` takes the base's names from `definedNamesIn`) and callers notes;
+  a signature (`signatureHead`: the text up to the definition's `body` field) for
+  `finding_head`; `[migrate]`'s count without a `count` key (`App.countedIn` over
+  `functionMatches`: every `functionCaps` definition); and the folders a listing skips (each
+  language's `ignore`, `Catalog.catalogIgnores`, `Workspace.ignoring`). `Newness`'
+  `definitionKeywords`, `App`'s colon-scanning `signatureHead` and `Workspace.pruned`'s
+  language folders are gone. `TestName`'s string prefixes and `self` move in m4.
 - **Pure.** A parse and a query run are functions of (grammar, queries, text), so
   `capturesOf` is pure and wraps its IO in `unsafePerformIO` (Decision 6 of the m2 plan). Pure
   callers (the anchor rule; later, units and test units) read captures without threading IO.

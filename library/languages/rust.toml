@@ -6,6 +6,8 @@ unit_words = "a top-level function, struct, enum or trait name (Name), or a meth
 keywords = ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "Arc", "String", "Result", "Option", "Vec", "Box"]
 comment = "//"
 grammar = "rust"
+# Folders a project listing never enters: cargo's build output.
+ignore = ["target"]
 # Items in brackets are followed by a comma; rustfmt's width is 100.
 separator = ","
 # A match arm ends with a comma before a new one.

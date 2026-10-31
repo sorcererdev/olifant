@@ -12,9 +12,11 @@ query = { glob = "src/**/*.hs", exclude = ["**/*Spec.hs"] }
 
 `**` spans directories, `*` stays within one path segment. Globs see **the project's
 files**: in a git repository, exactly what git considers part of it (tracked and new files,
-minus anything `.gitignore` excludes, and anything under the directories below); elsewhere,
-every file except those under `node_modules`, `.git`, `elm-stuff`, `dist-newstyle`, `target`,
-`.venv`, `__pycache__` and `.pytest_cache`, which are never even walked. Either way, dependencies never slow Olifant down or show up in a query. A glob can match
+minus anything `.gitignore` excludes, and anything under the folders below); elsewhere,
+every file except those under `.git` and any dot-folder (`.venv`, `.pytest_cache`), which are
+never even walked. In a project, the folders its languages' `ignore` names are left out too:
+Rust's `target`, Python's `.venv`, `__pycache__`, `.pytest_cache` and `node_modules`,
+Haskell's `dist-newstyle`, Elm's `elm-stuff` and `node_modules`. Either way, dependencies never slow Olifant down or show up in a query. A glob can match
 directories as well as files (`*/*-service`). Each match is a **record**:
 
 | field | for `src/Olifant/Anchor/Phrase.hs`, glob `src/**/*.hs` |

@@ -4,6 +4,7 @@ module Olifant.Workspace
   ( Workspace (..)
   , PathState (..)
   , pruned
+  , ignoring
   , memoryWorkspace
   , diskWorkspace
   , within
@@ -127,7 +128,7 @@ diskWorkspace root =
           ( \e -> do
               let relE = if null rel then e else rel </> e
               isDir <- doesDirectoryExist (base </> relE)
-              if isDir then walk base relE else pure [relE]
+              if isDir then (if "." `isPrefixOf` e then pure [] else walk base relE) else pure [relE]
           )
 
 -- | View a workspace from a subdirectory.
@@ -206,7 +207,16 @@ isSafeRelative p = not (isAbsolute p) && n /= "." && ".." `notElem` splitDirecto
   where
     n = normalisePath p
 
--- | Directories that hold dependencies, build output or VCS data: never part
--- of what generators and queries see, and never walked.
+-- | The engine's own: VCS data, never part of what generators and queries
+-- see. A walk (outside git) also skips every dot-folder (`.venv`,
+-- `.pytest_cache`) but the folder it starts in. A language's dependency
+-- and build folders (`target`, `node_modules`) are its `ignore`, applied
+-- with 'ignoring' where a project's workspace is built from its catalog.
 pruned :: [FilePath]
-pruned = [".git", "node_modules", "elm-stuff", "dist-newstyle", "target", ".venv", "__pycache__", ".pytest_cache"]
+pruned = [".git"]
+
+-- | A workspace whose listings leave out every path through one of these
+-- folder names (the catalog's languages' `ignore`).
+ignoring :: Functor m => [FilePath] -> Workspace m -> Workspace m
+ignoring [] ws = ws
+ignoring names ws = ws {listFiles = \dir -> filter (not . any (`elem` names) . splitDirectories) <$> listFiles ws dir}
