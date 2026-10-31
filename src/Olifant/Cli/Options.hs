@@ -32,7 +32,7 @@ data Options = Options {optFormat :: Maybe Format, optCommand :: Command}
   deriving stock (Eq, Show)
 
 -- | 'ListCmd': --detail. 'AnchorsCmd': a language's `at` targets. 'WhereCmd': file, phrase.
-data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] Text | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
+data Command = ListCmd Bool | ShowCmd Text [(Text, Text)] | GenCmd GenOptions | AnchorsCmd Text | WhereCmd FilePath Text | SyncCmd SyncMode | SchemaCmd | NewCmd Text (Maybe Text) | ActionsCmd FilePath (Maybe (Int, Int)) Bool | DoctorCmd | CheckCmd Bool (Maybe FilePath) Bool Bool Bool (Maybe Text) | FixCmd Text FilePath (Int, Int) Int [(Text, Text)] GenOptions | CompleteCmd FilePath (Int, Int) Bool | InitCmd Text Text (Maybe FilePath) Bool | InitMigrateCmd [FilePath] (Maybe Text) (Maybe Text) | LspCmd | AnticipateCmd FilePath Int (Maybe FilePath) (Maybe FilePath)
   | -- | `plans cost`: errands against Claude Code sessions, per branch.
     -- 'pcoTranscripts' overrides @~/.claude/projects/<slug>@.
     PlansCostCmd {pcoBranch :: Maybe Text, pcoSince :: Maybe Day, pcoJson :: Bool, pcoTranscripts :: Maybe FilePath}
@@ -163,12 +163,13 @@ parseOptions args = case execParserPure defaultPrefs parserInfo args of
     -- strangles legacy code in an existing repo; else --pack PACK NAME
     -- starts a project (missing pieces are a usage error at run time)
     initP =
-      ( \migrate pack name dir plan -> case migrate of
+      ( \migrate pack strangler name dir plan -> case migrate of
           [] -> InitCmd (maybe "" T.pack pack) (maybe "" T.pack name) dir plan
-          paths -> InitMigrateCmd paths (maybe "python-htmx" T.pack pack)
+          paths -> InitMigrateCmd paths (T.pack <$> pack) (T.pack <$> strangler)
       )
         <$> many (strOption (long "migrate" <> metavar "PATH" <> help "In an existing repo: legacy code to strangle (repeat for more)"))
-        <*> optional (strOption (long "pack" <> metavar "PACK" <> help "A pack's directory, or a name under [packs] in ~/.config/olifant/config.toml (with --migrate: the target architecture, default python-htmx)"))
+        <*> optional (strOption (long "pack" <> metavar "PACK" <> help "A pack's directory, or a name under [packs] in ~/.config/olifant/config.toml (with --migrate: the target architecture; default: the project's one configured pack)"))
+        <*> optional (strOption (long "strangler" <> metavar "PACK" <> help "With --migrate: the strangler pack (one with a migrate.toml); default: the one the project, your [packs] or the target pack's folder holds"))
         <*> optional (strArgument (metavar "NAME" <> help "The project's name (and its folder, unless --dir)"))
         <*> optional (strOption (long "dir" <> metavar "DIR" <> help "Where to make it (default: ./NAME)"))
         <*> switch (long "plan" <> help "Show what it would make; write nothing")

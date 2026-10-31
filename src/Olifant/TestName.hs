@@ -1,8 +1,6 @@
--- | The names a new test gets: a survivor's stub named from its mutant,
--- a name its test file does not define yet.
+-- | The name a survivor's new test gets, from its mutant.
 module Olifant.TestName
   ( stubNameFor,
-    uniqueTestName,
   )
 where
 
@@ -17,13 +15,15 @@ import Olifant.Mutate (Mutant (..))
 -- words (`string`), else the operator and the names on the mutated line
 -- (or, with none there, in what it changed from), four at most, leaving
 -- out KEYWORDS, `self` and the heads of attributes (`seats` of
--- `table.seats`); with no name at all, the line. A name TESTTEXT defines
--- already gets `_2`, `_3`, … ('uniqueTestName').
-stubNameFor :: Mutant -> Text -> [Text] -> Text
-stubNameFor m testText keywords = uniqueTestName base testText
+-- `table.seats`); with no name at all, the line. AFFIXES: the text the
+-- language's `[test] name` puts before and after the words (pytest's
+-- @test_@). COMMENT: the language's comment marker (no name after it). A
+-- name in DEFINED (the test file's tests) gets `_2`, `_3`, ….
+stubNameFor :: Mutant -> (Text, Text) -> Text -> [Text] -> [Text] -> Text
+stubNameFor m (before, after) comment defined keywords = unique (capped (before <> fromMaybe (operator <> "_line" <> T.pack (show (muLine m))) described) <> after)
   where
     operator = snakeOf (muOperator m)
-    base = capped ("test_" <> fromMaybe (operator <> "_line" <> T.pack (show (muLine m))) described)
+    unique base = fromMaybe base (find (`notElem` defined) (base : [base <> "_" <> T.pack (show i) | i <- [2 :: Int ..]]))
     -- 60 characters at most, cut between words
     capped t = case T.splitOn "_" t of
       first : rest -> T.intercalate "_" (first : takeFitting first rest)
@@ -34,15 +34,8 @@ stubNameFor m testText keywords = uniqueTestName base testText
       | muOperator m == "string" = nonEmpty (snakeOf (T.unwords (take 4 (T.words (literalBody (muFrom m))))))
       | otherwise = ((operator <> "_") <>) <$> nonEmpty (T.intercalate "_" (take 4 (nub (namesOf mutatedLine <> namesOf (muFrom m)))))
     mutatedLine = fromMaybe "" (listToMaybe (drop (muLine m - 1) (T.splitOn "\n" (muText m))))
-    namesOf = filter (`notElem` ("self" : keywords)) . identifiers
+    namesOf = filter (`notElem` ("self" : keywords)) . identifiers comment
     nonEmpty t = if T.null t then Nothing else Just t
-
--- | NAME, or, TESTTEXT defining it already, the first of NAME_2, NAME_3, …
--- it does not define.
-uniqueTestName :: Text -> Text -> Text
-uniqueTestName base testText = fromMaybe base (find (`notElem` defined) (base : [base <> "_" <> T.pack (show i) | i <- [2 :: Int ..]]))
-  where
-    defined = [n | l <- T.lines testText, let st = T.strip l, Just rest <- [T.stripPrefix "def " (fromMaybe st (T.stripPrefix "async " st))], let n = T.takeWhile isIdent rest, "(" `T.isPrefixOf` T.drop (T.length n) rest]
 
 -- | A literal's text without its prefix (`f`, `rb`, …) and quotes.
 literalBody :: Text -> Text
@@ -51,7 +44,7 @@ literalBody lit = T.dropAround (`elem` ['"', '\'']) (if T.any isQuote (T.take 1 
     rest = T.dropWhile (`elem` ("rRbBfFuU" :: String)) lit
     isQuote c = c == '"' || c == '\''
 
--- | Lowercase ASCII letters and digits (a Python name's), every run of
+-- | Lowercase ASCII letters and digits, every run of
 -- other characters one `_`, none at the ends.
 snakeOf :: Text -> Text
 snakeOf = T.intercalate "_" . filter (not . T.null) . T.split (== '_') . T.map (\c -> if isAsciiLower c || isAsciiUpper c || isDigit c then toLower c else '_')
@@ -59,18 +52,18 @@ snakeOf = T.intercalate "_" . filter (not . T.null) . T.split (== '_') . T.map (
 -- | The names on a line of code, in order: none in a string or a comment,
 -- an attribute's head left out (`seats` of `table.seats`), a string's
 -- prefix (`f"…"`) no name.
-identifiers :: Text -> [Text]
-identifiers t = case T.uncons t of
+identifiers :: Text -> Text -> [Text]
+identifiers comment t = case T.uncons t of
   Nothing -> []
   Just (c, rest)
-    | c == '#' -> []
-    | c == '"' || c == '\'' -> identifiers (afterString c rest)
+    | not (T.null comment), comment `T.isPrefixOf` t -> []
+    | c == '"' || c == '\'' -> identifiers comment (afterString c rest)
     | isIdentStart c ->
         let (name, after) = T.span isIdent t
             next = T.take 1 after
-         in if next == "." || next == "\"" || next == "'" then identifiers after else name : identifiers after
-    | isDigit c -> identifiers (T.dropWhile isIdent t)
-    | otherwise -> identifiers rest
+         in if next == "." || next == "\"" || next == "'" then identifiers comment after else name : identifiers comment after
+    | isDigit c -> identifiers comment (T.dropWhile isIdent t)
+    | otherwise -> identifiers comment rest
   where
     afterString q s = case T.uncons s of
       Nothing -> ""

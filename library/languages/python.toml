@@ -34,6 +34,8 @@ line = "^(from [A-Za-z0-9_.]+ import \\(?[A-Za-z0-9_., ]+\\)?|import [A-Za-z0-9_
 write = "from {= module =} import {= owner =}"
 module_of = { strip = ["^src/"], drop = ["__init__"], separator = "." }
 paths = ["src/{= path =}.py", "src/{= path =}/__init__.py"]
+# What the model is shown: a fill that needs a name starts with its import.
+example = { needs = "date", fill = "from datetime import date\n\ndate.fromisoformat(text)" }
 
 [[imports.resolve]]
 pattern = '^from ([^.].*) import (.*)$'

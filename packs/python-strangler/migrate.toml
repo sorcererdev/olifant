@@ -1,0 +1,50 @@
+# What strangling reads from this pack (book chapter 17, "The strangler
+# pack's migrate.toml"). A pack with a migrate.toml is a strangler pack:
+# `olifant init --migrate` adds it beside the target pack, and the engine
+# reads its names, files and conventions from here, not from its own code.
+
+# The rule that keeps legacy bug-fix-only: a delegate carries its allowance
+# (`# olifant:allow legacy-bug-fix-only`, not counted as legacy added), and
+# a decider answering "new behaviour" for a new-work hint turns the hint into
+# this rule's finding.
+bug_fix_only = "legacy-bug-fix-only"
+
+# The switch registry the switch generator writes, and how its lines read.
+[switches]
+# where it is when [migrate] switches names none: the first file matching
+# this glob outside the legacy code
+registry = "**/switches.py"
+# a switch's value that means on
+on = "True"
+# `SWITCHES["close-table"] = True` (group 1 the name, group 2 the value),
+# anywhere in the registry (each line stripped, its comment cut)
+line = ['^SWITCHES\["([^"]*)"\][[:space:]]*=[[:space:]]*(.*)$']
+# `"close-table": True,` only inside `SWITCHES = {` … `}`
+block = { open = '^SWITCHES.*\{$', close = '^\}$', line = ['^"([^":]*)"[[:space:]]*:[[:space:]]*([^:,]*),?[[:space:]]*$'] }
+# a switched function's new path: the block this line opens (the retire
+# fix's `finding_switch_path`)
+guard = '^if switches\.on\('
+
+# New work in disguise: the fixes its hint offers, and how the extract that
+# leads is chosen (decision 2).
+[extract]
+# the inputs every extract generator takes: the legacy function's name and its file
+function = "function"
+file = "file"
+# decision 3: the service whose models the function's SQL tables name
+owner = { input = "service", models = "src/{= app =}/{= service =}/models/*.py", tables = ["(?i)(^|[^[:alnum:]_])(FROM|INTO|UPDATE|JOIN)[[:space:]\"'(]+([^[:space:]\"'(),;]+)"] }
+
+# In order: the first whose signs the function's code (comments cut) matches
+# leads; none matching, a decider is asked (`command-or-query`: the names
+# joined by "-or-"), else the first leads.
+[[extract.into]]
+generator = "extract-command"
+name = "command"
+means = "changes state"
+signs = ['(?i)INSERT ', '(?i)UPDATE ', '(?i)DELETE ', '\.commit\(', '\.save\(', 'global ']
+
+[[extract.into]]
+generator = "extract-query"
+name = "query"
+means = "reads state"
+signs = ['(?i)SELECT ', '\.fetch', 'db\.rows\(', 'db\.row\(']

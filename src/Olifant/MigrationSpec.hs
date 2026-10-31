@@ -1,6 +1,8 @@
 module Olifant.MigrationSpec (spec) where
 
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
+import Olifant.Language (Language (..), shippedLanguageNow)
 import Olifant.Migration
 import Olifant.Newness (NewLines (..))
 import Data.Set qualified as S
@@ -8,11 +10,16 @@ import Test.Hspec
 
 spec :: Spec
 spec = describe "Olifant.Migration" $ do
+  -- python-strangler's migrate.toml and the python language: the data these read
+  st <- runIO (either (error . T.unpack) id . parseStrangler "python-strangler" <$> TIO.readFile "packs/python-strangler/migrate.toml")
+  let py = shippedLanguageNow "python"
+      readRegistry' = readRegistry st (langComment py)
+      readsOrWrites = extractKind (langComment py) (stExtract st)
   let registry = T.unlines ["SWITCHES: dict[str, bool] = {", "    \"close-table\": True,", "    \"seat-party\": False,", "}", "", "def on(name: str) -> bool:", "    return SWITCHES.get(name, False)"]
   it "(a) reads the registry: each switch and whether it is on" $
-    readRegistry registry `shouldBe` [Switch "close-table" True, Switch "seat-party" False]
+    readRegistry' registry `shouldBe` [Switch "close-table" True, Switch "seat-party" False]
   it "(a2) reads a registry of lines too (SWITCHES[\"name\"] = True)" $
-    readRegistry "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\nSWITCHES[\"seat-party\"] = False\n" `shouldBe` [Switch "close-table" True, Switch "seat-party" False]
+    readRegistry' "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\nSWITCHES[\"seat-party\"] = False\n" `shouldBe` [Switch "close-table" True, Switch "seat-party" False]
   it "(b) finds switch markers in code" $
     switchMarkers "def f():\n    # olifant:switch close-table → booking/commands/close_table\n    pass\n" `shouldBe` ["close-table"]
   it "(c) the PR line: extracted since the base, legacy added, functions, switches" $ do
@@ -33,13 +40,13 @@ spec = describe "Olifant.Migration" $ do
     readsOrWrites "def f(x):\n    return x + 1\n" `shouldBe` Nothing
     readsOrWrites "def f(x):\n    global CURRENT\n    CURRENT = x\n" `shouldBe` Just "command"
   it "(a3) a trailing comment on a registry line is not part of its value (review minor #12)" $
-    readRegistry "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True  # trusted since 10-07\n\"seat-party\": True,  # inline\n" `shouldBe` [Switch "close-table" True]
+    readRegistry' "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True  # trusted since 10-07\n\"seat-party\": True,  # inline\n" `shouldBe` [Switch "close-table" True]
   it "(g2) reads or writes: comments are not code; a set's add is not a write (review minor #13)" $ do
     readsOrWrites "def f(x):\n    # update the cache later\n    return x + 1\n" `shouldBe` Nothing
     readsOrWrites "def f(xs):\n    seen = set()\n    seen.add(xs)\n    return seen\n" `shouldBe` Nothing
     readsOrWrites "def f(d):\n    # select the rows\n    db.execute(\"DELETE FROM t WHERE d = ?\", d)\n" `shouldBe` Just "command"
   it "(g3) a function's text is found for an async def too (review minor #13)" $
-    functionText "async def fetch(x):\n    return x\n\ndef other():\n    pass\n" "fetch" `shouldBe` Just "async def fetch(x):\n    return x\n\n"
+    functionText (langUnitNames py) "async def fetch(x):\n    return x\n\ndef other():\n    pass\n" "fetch" `shouldBe` Just "async def fetch(x):\n    return x\n\n"
   it "(e) legacy added is named; a marker the registry lacks is listed" $ do
     let r = MigrationReport 213 (Just 212) [] (Just []) ["waitlist"] ["close-table"]
     reportLine r `shouldBe` "+0 extracted, 1 legacy function added (waitlist), legacy 212 → 213 functions; switches: 0 on, 0 off"

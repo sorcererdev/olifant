@@ -8,7 +8,7 @@ module Olifant.Capabilities
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, supportsMissing)
+import Olifant.Language (ConjureDef (..), CheckDef (..), Language (..), StubDef (..), TestDef (..), TypesDef (..), defaultUnitNames, missingFormats, supportsMissing)
 
 -- | A capability, how it is provided (Right) or the key that would enable
 -- it (Left), and the dotted key its presence depends on (whose layer
@@ -40,7 +40,6 @@ capabilities lang =
   where
     check = langCheck lang
     test = langTest lang
-    pytest = fmap testFormat test == Just "pytest"
     units
       | null (langUnitKinds lang) = Left "[unit] kinds"
       | otherwise = Right ("[unit] kinds (ast-grep)" <> (if hasNames then ", named by [unit] name" else "") <> (if langUnitJoin lang then ", joined" else ""))
@@ -50,7 +49,7 @@ capabilities lang =
       Just c -> Right ("[check] format " <> checkFormat c <> (if null (checkConvert c) then "" else " via convert"))
     missingCases = case check of
       Just c | supportsMissing (checkFormat c) -> Right ("[check] format " <> checkFormat c)
-      _ -> Left "a [check] format that reads missing cases (ghc-json, pyright-json, rustc-json, elm-json, olifant-json)"
+      _ -> Left ("a [check] format that reads missing cases (" <> T.intercalate ", " missingFormats <> ")")
     tests = case test of
       Nothing -> Left "[test]"
       Just td -> Right ("[test] format " <> testFormat td <> ", tests_for " <> testsFor td)
@@ -84,5 +83,4 @@ capabilities lang =
       ops -> Right ("[[mutate]] (" <> T.pack (show (length ops)) <> " operators)")
     selection
       | maybe False (isJust . testSelect) test = Right "[test] select"
-      | pytest = Right "pytest ids"
       | otherwise = Left "[test] select (whole files run)"

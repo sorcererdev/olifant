@@ -38,7 +38,7 @@ import Data.Foldable (toList)
 import Data.Scientific (floatingOrInteger)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -164,13 +164,10 @@ userPrompt req =
              then
                [ ""
                , "Imports: if your code uses a name its file does not import or define, start the fill with the import line;"
-               , "it is moved to the file's imports. For example, a fill that needs `date`:"
-               , "<fill name=\"x\">"
-               , "from datetime import date"
-               , ""
-               , "date.fromisoformat(text)"
-               , "</fill>"
                ]
+                 ++ case listToMaybe [e | h <- frHoles req, fhImports h, Just e <- [fhImportExample h]] of
+                   Nothing -> ["it is moved to the file's imports."]
+                   Just (needs, fill) -> ["it is moved to the file's imports. For example, a fill that needs `" <> needs <> "`:", "<fill name=\"x\">"] ++ T.lines fill ++ ["</fill>"]
              else []
          )
       ++ concatMap hole (frHoles req)

@@ -5,7 +5,7 @@ module Olifant.Cli (Runtime (..), DoctorPorts (..), runCli, parseDiffHunks) wher
 import Data.Set (Set)
 import Data.Set qualified as S
 import Data.Ord (Down (..))
-import Data.List (nub, sortOn)
+import Data.List (nub, sort, sortOn)
 import Numeric (showFFloat)
 import Olifant.Server.Errand (Tokens (..))
 import Olifant.Server.Errand qualified as Errand
@@ -19,7 +19,7 @@ import Olifant.Rules qualified as R
 import Olifant.Toml qualified as Toml
 import Olifant.Doctor (Check (..), DoctorPorts (..), Status (..))
 import Olifant.Actions (Action (..), Completion (..), FileAction (..), Nearby (..), Range (..))
-import Control.Monad (forM_, join, unless, when)
+import Control.Monad (filterM, forM_, join, unless, when)
 import Data.Aeson (Value (..), decodeStrict, eitherDecodeStrict, encode, object, toJSON)
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
@@ -103,8 +103,8 @@ runCli rt args = case parseOptions args of
   -- `init` makes a project: there is none to open yet
   -- the language server finds its projects itself, file by file
   Right opts | LspCmd <- optCommand opts -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
-  Right opts | InitMigrateCmd paths pack <- optCommand opts ->
-    runInitMigrate rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) paths pack
+  Right opts | InitMigrateCmd paths pack strangler <- optCommand opts ->
+    runInitMigrate rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) paths pack strangler
   Right opts | InitCmd pack name _ _ <- optCommand opts, T.null pack || T.null name ->
     failWith rt (fromMaybe (if rtStdoutIsTty rt then Human else Json) (optFormat opts)) 2 "usage" "init needs --pack PACK NAME (a new project), or --migrate PATH (an existing repo)" Nothing []
   Right opts | InitCmd pack name dir plan <- optCommand opts ->
@@ -126,34 +126,56 @@ runCli rt args = case parseOptions args of
 -- first commit is made; the starter's `next` lines say what to run.
 -- | `init --migrate PATH…` in an existing repo: the target pack and the
 -- strangler pack, `[migrate] legacy`, `.olifant/state/` ignored, and today's
--- findings baselined (nothing fails on day one).
-runInitMigrate :: Runtime -> Format -> [FilePath] -> Text -> IO ExitCode
-runInitMigrate rt fmt paths pack = do
+-- findings baselined (nothing fails on day one). A strangler pack is one
+-- with a `migrate.toml`. The target is `--pack`, else the project's one
+-- configured pack that is not a strangler; the strangler is `--strangler`,
+-- else the one strangler pack the project configures, else the one under
+-- the user's [packs], else the one beside the target pack's folder. Two
+-- candidates (or none) are a usage error that names them.
+runInitMigrate :: Runtime -> Format -> [FilePath] -> Maybe Text -> Maybe Text -> IO ExitCode
+runInitMigrate rt fmt paths packArg stranglerArg = do
   let cwd = rtProjectDir rt
       ws = rtRoot rt
       configPath = cwd </> ".olifant" </> "config.toml"
   existing <- readText ws configPath
   userConfig <- maybe (pure Nothing) (\u -> readText ws (u </> "config.toml")) (rtUserConfigDir rt)
   let userPacks = [(n, normalise (fromMaybe "." (rtUserConfigDir rt) </> p)) | Just src <- [userConfig], Right ps <- [packsFromConfig src], (n, p) <- ps]
+      projectPacks = [(n, normalise (cwd </> p)) | Just src <- [existing], Right ps <- [packsFromConfig src], (n, p) <- ps]
       resolve p = do
         let asPath = normalise (cwd </> T.unpack p)
         isDir <- (== Directory) <$> inspectPath ws asPath
-        pure (if isDir then Just (T.pack (takeFileName asPath), asPath) else (p,) <$> lookup p userPacks)
-  target <- resolve pack
-  -- the strangler pack: configured, else beside the --pack directory
-  strangler <- resolve "python-strangler" >>= \case
-    Just found -> pure (Just found)
-    Nothing -> case target of
-      Just (_, dir) -> do
-        let next = takeDirectory (dropTrailingPathSeparator dir) </> "python-strangler"
-        there <- (== Directory) <$> inspectPath ws next
-        pure (if there then Just ("python-strangler", next) else Nothing)
-      Nothing -> pure Nothing
+        pure (if isDir then Just (T.pack (takeFileName asPath), asPath) else (p,) <$> lookup p (projectPacks ++ userPacks))
+      isStrangler (_, dir) = (/= Nothing) <$> readText ws (dir </> "migrate.toml")
+      names = T.intercalate ", " . map fst
+      one what flag found = case found of
+        [x] -> Right x
+        [] -> Left ("no " <> what <> ": give " <> flag)
+        several -> Left ("several " <> what <> "s (" <> names several <> "): give " <> flag)
+  projectStranglers <- filterM isStrangler projectPacks
+  target <- case packArg of
+    Just p -> maybe (Left ("no pack `" <> p <> "`")) Right <$> resolve p
+    Nothing -> pure (one "target pack (one that is not a strangler) in the project's [packs]" "--pack" [p | p <- projectPacks, p `notElem` projectStranglers])
+  strangler <- case (stranglerArg, target) of
+    (Just p, _) ->
+      resolve p >>= \case
+        Nothing -> pure (Left ("no pack `" <> p <> "`"))
+        Just found -> isStrangler found <&> \yes -> if yes then Right found else Left ("pack `" <> p <> "` is no strangler pack (it has no migrate.toml)")
+    (Nothing, _) | not (null projectStranglers) -> pure (one "strangler pack" "--strangler" projectStranglers)
+    (Nothing, t) -> do
+      users <- filterM isStrangler userPacks
+      case (users, t) of
+        (_ : _, _) -> pure (one "strangler pack" "--strangler" users)
+        ([], Right (_, dir)) -> do
+          let parent = takeDirectory (dropTrailingPathSeparator dir)
+          beside <- listFiles ws parent
+          pure (one "strangler pack" "--strangler" [(T.pack d, parent </> d) | f <- sort beside, [d, "migrate.toml"] <- [splitDirectories f]])
+        ([], Left _) -> pure (Left "no strangler pack: give --strangler")
+  let hint = Just "give a pack's directory, or add it under [packs] in ~/.config/olifant/config.toml"
   case (existing, target, strangler) of
     (Just c, _, _) | "[migrate]" `T.isInfixOf` c -> failWith rt fmt 2 "usage" "already migrating: edit [migrate] in .olifant/config.toml" Nothing []
-    (_, Nothing, _) -> failWith rt fmt 2 "usage" ("no pack `" <> pack <> "`") (Just "give a pack's directory, or add it under [packs] in ~/.config/olifant/config.toml") []
-    (_, _, Nothing) -> failWith rt fmt 2 "usage" "no pack `python-strangler`" (Just "add it under [packs] in ~/.config/olifant/config.toml") []
-    (_, Just t, Just s) -> do
+    (_, Left why, _) -> failWith rt fmt 2 "usage" why hint []
+    (_, _, Left why) -> failWith rt fmt 2 "usage" why hint []
+    (_, Right t, Right s) -> do
       let packLine (n, p) = n <> " = { path = \"" <> T.pack p <> "\" }\n"
           migrate = "[migrate]\nlegacy = [" <> T.intercalate ", " ["\"" <> T.pack (dropTrailingPathSeparator p) <> "/**\"" | p <- paths] <> "]\n"
           withPack c (n, p)
@@ -314,7 +336,7 @@ runCommand :: Runtime -> FilePath -> Format -> Catalog -> Command -> IO ExitCode
 runCommand rt cwd fmt cat = \case
   -- handled before a project is opened (runCli); here for completeness
   InitCmd pack name dir plan -> runInit rt fmt pack name dir plan
-  InitMigrateCmd paths pack -> runInitMigrate rt fmt paths pack
+  InitMigrateCmd paths pack strangler -> runInitMigrate rt fmt paths pack strangler
   LspCmd -> (\code -> if code == 0 then ExitSuccess else ExitFailure code) <$> runLsp (portsOf rt)
   AnticipateCmd file line overlayFile answers -> runAnticipate rt (normalise (cwd </> file)) line ((cwd </>) <$> overlayFile) ((cwd </>) <$> answers)
   ListCmd detail -> do
@@ -932,7 +954,7 @@ runAnticipate rt path line overlayFile answers = do
       let s1 = s0 {ssConfig = (ssConfig s0) {scDecideAnswers = answers}}
           s2 = maybe s1 (\t -> openDoc path 1 t s1) (join buffer)
       text <- maybe (fromMaybe "" <$> readText (rtRoot rt) path) pure (join buffer)
-      let (unit, _, _) = prefixAt text line
+      let (unit, _, _) = prefixAt Nothing text line
       projectFor path s2 >>= \case
         (_, Nothing) -> none 1 "not in a project"
         (s3, Just (_, project)) -> case deciderFor s3 project of

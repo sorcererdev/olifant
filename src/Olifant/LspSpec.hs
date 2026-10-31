@@ -3190,9 +3190,12 @@ newCodeSpec = describe "new code (only = \"new\", against the base)" $ do
           TResponseMessage _ _ (Left e) -> fail (show e)
       (lookupKey "migration" v >>= lookupKey "legacy_now") `shouldBe` Just (Number 2)
   let bigEdit = T.replace "    return t" (T.unlines (replicate 20 "    t = t + 1") <> "    return t") base
+      -- the strangler pack beside python-htmx: its migrate.toml names the
+      -- bug-fix-only rule a "new behaviour" answer turns a hint into
       migrating dir extra = do
+        strangler <- canonicalizePath "packs/python-strangler"
         config <- TIO.readFile (dir </> ".olifant/config.toml")
-        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "\n[migrate]\nlegacy = [\"legacy/**\"]\n" <> extra)
+        TIO.writeFile (dir </> ".olifant/config.toml") (config <> "python-strangler = { path = \"" <> T.pack strangler <> "\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n" <> extra)
       untilRule ids doc = do
         let loop n = do
               ds <- pullDiagnostics doc

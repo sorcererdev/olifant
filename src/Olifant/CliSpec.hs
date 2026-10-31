@@ -30,6 +30,7 @@ import System.Exit (ExitCode (..))
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Control.Monad (forM)
 import Data.Text.IO qualified as TIO
+import Data.List (isPrefixOf)
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, findExecutable, getTemporaryDirectory, listDirectory)
 import System.FilePath (makeRelative)
 import System.IO.Temp (withSystemTempDirectory)
@@ -88,15 +89,18 @@ lookupKey k = \case
 -- | `olifant init --migrate` in an existing repo.
 initMigrateSpec :: Spec
 initMigrateSpec = describe "init --migrate (an existing repo)" $ do
+  -- a strangler pack is one with a migrate.toml (python-strangler's)
+  migrate <- runIO (TIO.readFile "packs/python-strangler/migrate.toml")
   let packs =
         [ ("/u/config.toml", "[packs]\npython-htmx = { path = \"/packs/py\" }\npython-strangler = { path = \"/packs/ps\" }\n")
         , ("/packs/py/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
         , ("/packs/py/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
         , ("/packs/ps/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+        , ("/packs/ps/migrate.toml", migrate)
         , ("/w/legacy/app.py", "def a():\n    return 1\n")
         ]
   it "writes the config (both packs, [migrate]) and a baseline, ignoring .olifant/state/" $ do
-    (code, _, _, files, _) <- runInit packs ["init", "--migrate", "legacy", "--human"]
+    (code, _, _, files, _) <- runInit packs ["init", "--migrate", "legacy", "--pack", "python-htmx", "--human"]
     code `shouldBe` ExitSuccess
     let config = M.findWithDefault "" "/w/.olifant/config.toml" files
     config `shouldSatisfy` T.isInfixOf "python-htmx = { path = \"/packs/py\" }"
@@ -105,7 +109,7 @@ initMigrateSpec = describe "init --migrate (an existing repo)" $ do
     M.member "/w/.olifant/baseline.toml" files `shouldBe` True
     M.findWithDefault "" "/w/.gitignore" files `shouldSatisfy` T.isInfixOf ".olifant/state/"
   it "finds python-strangler beside a --pack directory, with no user config" $ do
-    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml"] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")]
+    let beside = [(f, t) | (f, t) <- packs, f /= "/u/config.toml", not ("/packs/ps/" `isPrefixOf` f)] ++ [("/packs/python-htmx/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n"), ("/packs/python-strangler/generators/s/generator.toml", "description = \"d\"\nlanguage = \"python\"\n"), ("/packs/python-strangler/migrate.toml", migrate)]
     (code, out, err, files, _) <- runInit beside ["init", "--migrate", "legacy", "--pack", "/packs/python-htmx", "--human"]
     (code, out <> err) `shouldBe` (ExitSuccess, out <> err)
     M.findWithDefault "" "/w/.olifant/config.toml" files `shouldSatisfy` T.isInfixOf "python-strangler = { path = \"/packs/python-strangler\" }"
@@ -127,6 +131,7 @@ newCodeCheckSpec :: Spec
 newCodeCheckSpec = describe "check: rules on new code" $ do
   it "reports the migration: legacy functions now and at the base, extracted, added, switches" $ do
     tmp <- getTemporaryDirectory
+    migrate <- TIO.readFile "packs/python-strangler/migrate.toml"
     let base = T.unlines ["def close_table(t):", "    return t", "", "def seat(p):", "    return p", "", "def gone(x):", "    return x"]
         now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t", "", "def seat(p):", "    return p", "", "def waitlist(r):", "    return r", "", "# olifant:allow legacy-bug-fix-only — delegates to booking/commands/notify", "def notify(n):", "    return n"]
         registryNow = "SWITCHES: dict[str, bool] = {\n    \"close-table\": True,\n}\n"
@@ -134,6 +139,7 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\nswitches = \"src/app/switches.py\"\n")
           , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/packs/p/migrate.toml", migrate)
           , ("/w/legacy/views.py", now)
           , ("/w/src/app/switches.py", registryNow)
           ]
@@ -147,12 +153,14 @@ newCodeCheckSpec = describe "check: rules on new code" $ do
     (m >>= lookupKey "line") `shouldBe` Just (Aeson.String "+1 extracted (close-table), 1 legacy function added (waitlist), legacy 3 → 4 functions; switches: 1 on, 0 off")
   it "finds the switch registry where the switch generator writes it (src/<app>/switches.py) when [migrate] names none" $ do
     tmp <- getTemporaryDirectory
+    migrate <- TIO.readFile "packs/python-strangler/migrate.toml"
     let base = T.unlines ["def close_table(t):", "    return t"]
         now = T.unlines ["def close_table(t):", "    # olifant:switch close-table → booking/commands/close_table", "    return t"]
         files =
           [ ("/w/.olifant/config.toml", "[packs]\np = { path = \"/packs/p\" }\n\n[migrate]\nlegacy = [\"legacy/**\"]\n")
           , ("/packs/p/languages/python.toml", "files = [\"**/*.py\"]\ncomment = \"#\"\ngrammar = \"python\"\n")
           , ("/packs/p/generators/g/generator.toml", "description = \"d\"\nlanguage = \"python\"\n")
+          , ("/packs/p/migrate.toml", migrate)
           , ("/w/legacy/views.py", now)
           , ("/w/src/app/switches.py", "SWITCHES: dict[str, bool] = {}\nSWITCHES[\"close-table\"] = True\n")
           ]

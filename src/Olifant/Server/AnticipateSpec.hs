@@ -10,7 +10,7 @@ import Olifant.App (Ports (..))
 import Olifant.Decide (Question (..), Shape (..), recordedDecider)
 import Olifant.Doctor (DoctorPorts (..))
 import Olifant.Generation (Plan (..))
-import Olifant.Language (noChecker, noRunner)
+import Olifant.Language (Language (..), noChecker, noRunner, shippedLanguageNow)
 import Olifant.Language.AstGrep (astGrepSyntax)
 import Olifant.Language.Check (CheckReport (..), Checker (..), MissingPatterns (..), noVerifier)
 import Olifant.Process (gitStateStamp, neverCancel)
@@ -29,10 +29,10 @@ spec = describe "Olifant.Server.Anticipate (the one Jev question at the cursor)"
   describe "prefixAt" $ do
     it "(a) the unit from the nearest column-0 line to the cursor, and the file's imports" $ do
       let text = T.unlines ["from bistro.booking.models.table import Table", "", "class CloseTable:", "    def __init__(self) -> None:", "        "]
-      prefixAt text 5 `shouldBe` (T.intercalate "\n" ["class CloseTable:", "    def __init__(self) -> None:", "        "], "        ", ["from bistro.booking.models.table import Table"])
+      prefixAt (langImports (shippedLanguageNow "python")) text 5 `shouldBe` (T.intercalate "\n" ["class CloseTable:", "    def __init__(self) -> None:", "        "], "        ", ["from bistro.booking.models.table import Table"])
     it "(b) a unit of 200 lines is its last 120, to the cursor" $ do
       let text = T.unlines ("class Big:" : ["    x_" <> T.pack (show i) <> " = " <> T.pack (show i) | i <- [2 .. 200 :: Int]])
-          (unit, cursor, imports) = prefixAt text 200
+          (unit, cursor, imports) = prefixAt (langImports (shippedLanguageNow "python")) text 200
       length (T.lines unit) `shouldBe` 120
       take 1 (T.lines unit) `shouldBe` ["    x_81 = 81"]
       (cursor, imports) `shouldBe` ("    x_200 = 200", [])

@@ -182,8 +182,11 @@ data ImportMerge = ImportMerge {mergePattern :: Text, mergeWrite :: Template}
 -- writing the line that imports a unit; 'imModuleOf' (`module_of`), how a
 -- path becomes a module; 'imResolve' (`[[imports.resolve]]`), how an import
 -- line names modules; 'imPaths' (`paths`), templates over @{= path =}@ (a
--- module, its separator written @/@) for the files a module may be.
-data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text]}
+-- module, its separator written @/@) for the files a module may be;
+-- 'imExample' (`example`), a fill that starts with an import line, shown to
+-- the model when its fill may begin with imports: @needs@, the name the
+-- import binds, and @fill@, the whole fill.
+data ImportsDef = ImportsDef {imWrite :: Maybe Text, imModuleOf :: Maybe ModuleOf, imResolve :: [Resolve], imPaths :: [Text], imExample :: Maybe (Text, Text)}
   deriving stock (Eq, Show)
 
 -- | A pack's `[conjure]`: how conjure reads its architecture. 'cjService'
@@ -415,9 +418,10 @@ data GotExpected = GotExpected {gePattern :: Text, geGot :: Int, geExpected :: I
   deriving stock (Eq, Show)
 
 -- | `[test.select]`: argument templates over @{= group =}@ (the file's
--- `file_group`, else its module by `[imports] module_of`) and @{= name =}@
+-- `file_group`, else its module by `[imports] module_of`), @{= name =}@
 -- (the test's segments below its file, joined by 'selJoin', key `join`,
--- default @/@): 'selTest' for a test id, 'selFile' for a file's. Each is
+-- default @/@) and @{= id =}@ (the whole id, @file::name@, for a runner
+-- that reads it as it is): 'selTest' for a test id, 'selFile' for a file's. Each is
 -- one argument (a string) or several (a list: `["--exact", "…"]`).
 data Select = Select {selTest :: [Text], selFile :: [Text], selJoin :: Text}
   deriving stock (Eq, Show)
@@ -554,7 +558,7 @@ languageFrom presets name grammarDir top = do
     importsFrom = \case
       TText re -> (\r -> (Just r, Nothing)) <$> validRegex "imports" re
       TTable t -> do
-        onlyKeys ["line", "write", "module_of", "resolve", "paths"] t
+        onlyKeys ["line", "write", "module_of", "resolve", "paths", "example"] t
         line <- optional "line" (text >=> validRegex "[imports] line") t
         write <- optional "write" (text >=> \w -> tmpl w >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["module", "owner"] then Right w else Left "`[imports] write` may use only {= module =} and {= owner =}") t
         mo <- optional "module_of" (table >=> \m -> do
@@ -567,7 +571,10 @@ languageFrom presets name grammarDir top = do
           let group k = int >=> \n -> if n > 0 then Right (fromIntegral n) else Left ("`[[imports.resolve]] " <> k <> "`: expected a group number above 0")
           Resolve <$> required "pattern" (text >=> validRegex "[[imports.resolve]] pattern") r <*> required "module" (group "module") r <*> optional "names" (group "names") r)) t
         paths <- fromMaybe [] <$> optional "paths" (list (text >=> \p -> tmpl p >>= \tp -> if freeVariables tp `S.isSubsetOf` S.fromList ["path"] then Right p else Left "`[imports] paths` may use only {= path =}")) t
-        pure (line, Just (ImportsDef write mo resolve paths))
+        example <- optional "example" (table >=> \e -> do
+          onlyKeys ["needs", "fill"] e
+          (,) <$> required "needs" text e <*> required "fill" text e) t
+        pure (line, Just (ImportsDef write mo resolve paths example))
       other -> Left ("`imports`: expected an expression or an [imports] table, got " <> describeTree other)
     typesFrom t = do
       onlyKeys ["string", "integer", "nothing", "optional", "param", "annotation", "returns", "assigned", "checks_none", "record", "method"] t

@@ -56,7 +56,7 @@ import Data.Functor ((<&>))
 import Data.Char (isAlphaNum)
 import Data.List (find, sortOn, sort)
 import Data.Map.Strict qualified as M
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
@@ -70,12 +70,12 @@ import Olifant.Generation
 import Olifant.Generation.Steer (Steering)
 import Olifant.Generator (AppliesAt (..), ChoiceView (..), Choices (..), Generator, GeneratorDef, GeneratorId (..), GeneratorWith (..), InputSpec (..), InputType (..), Scalar (..), UseStep (..), choiceViews, generatorIdText, generatorName, needsChoices, replaceGenerator, withChoices)
 import Olifant.Holes (HoleSite (..))
-import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax)
+import Olifant.Language (Checker, Language (..), Match (..), Syntax, languageFor, querySyntax, regexName)
 import Olifant.Process (Cancel, cancelled, neverCancel)
 import Olifant.Model (ModelConfig (..), backendModel, curlFillerWith)
 import Olifant.Query (Queries (..), QueryFailure (..), processCommand)
 import Olifant.Newness (NewLines (..), newSince, wholeNew)
-import Olifant.Migration (MigrationReport (..), Switch (..), bigChanges, readRegistry, switchMarkers, unregistered)
+import Olifant.Migration (Extract (..), MigrationReport (..), Strangler (..), Switch (..), bigChanges, readRegistry, switchMarkers, switchPath, unregistered)
 import Olifant.Rules (Exception, FixDef (..), FixOffer (..), Finding (..), Replacement (..), RuleDef (..), Severity (..), checkFiles, definedName, fingerprint, suggestChoice)
 import Olifant.Snippet (Snippet, snippetOf)
 import Olifant.Template (describeTemplateError, render)
@@ -339,14 +339,19 @@ migrationFor ports project = case catalogMigrate cat of
             Right (_, Nothing) -> AllNew
             Right (_, Just b) -> newSince b text
           ls = T.lines text
-          allowed m = let l = fst (matchStart m) in l > 0 && "olifant:allow legacy-bug-fix-only" `T.isInfixOf` (ls !! (l - 1))
+          -- a delegate carries the bug-fix-only rule's allowance on the line above
+          allowed m = let l = fst (matchStart m) in l > 0 && maybe False (\r -> ("olifant:allow " <> r) `T.isInfixOf` (ls !! (l - 1))) (stBugFixOnly =<< catalogStrangler cat)
           added = [nameOf m | m <- now, wholeNew newness (lineRange m), not (allowed m)]
       pure (length now, before, added, switchMarkers text)
-    -- the registry: [migrate] switches, else where the switch generator
-    -- writes it (a switches.py outside the legacy code)
+    -- the registry: [migrate] switches, else the strangler pack's
+    -- `[switches] registry` glob (where its switch generator writes it),
+    -- outside the legacy code
     let registryPath = case mgSwitches mig of
           Just r -> Just r
-          Nothing -> listToMaybe [p | p <- paths, takeFileName p == "switches.py", p `notElem` legacy]
+          Nothing -> listToMaybe [p | Just g <- [stSwitches =<< catalogStrangler cat], p <- paths, matchesGlob g p, p `notElem` legacy]
+        readRegistry' r = case catalogStrangler cat of
+          Nothing -> const []
+          Just st -> readRegistry st (maybe "" langComment (languageFor (catalogLanguages cat) r))
     registry <- maybe (pure Nothing) (readText ws) registryPath
     registryBase <- case registryPath of
       Nothing -> pure (Just [])
@@ -354,7 +359,7 @@ migrationFor ports project = case catalogMigrate cat of
         pBaseText ports (prRoot project) (mgBase mig) r <&> \case
           Left _ -> Nothing
           Right (_, Nothing) -> Just []
-          Right (_, Just b) -> Just (map swName (readRegistry b))
+          Right (_, Just b) -> Just (map swName (readRegistry' r b))
     -- the base counted over the base's own legacy files: a file deleted
     -- (migrated away) or renamed since still counts there
     baseCount <-
@@ -365,7 +370,7 @@ migrationFor ports project = case catalogMigrate cat of
             Right (_, Just b) -> Just . length <$> defs b p
             Right (_, Nothing) -> pure (Just 0)
             Left _ -> pure Nothing
-    let switches = maybe [] readRegistry registry
+    let switches = maybe [] (\t -> maybe [] (`readRegistry'` t) registryPath) registry
         befores = [b | (_, b, _, _) <- perFile]
     pure . Just $
       MigrationReport
@@ -387,7 +392,8 @@ migrationFor ports project = case catalogMigrate cat of
 
 -- | New work in disguise ([migrate]): a legacy function changed by at least
 -- `new_work_lines` new lines, not wholly new — a quiet hint, with the
--- extract fixes (a configured decider may sharpen it: the server's job).
+-- strangler pack's extract fixes (a configured decider may sharpen it: the
+-- server's job).
 newWorkHints :: Ports -> Project -> (FilePath -> Text -> IO NewLines) -> [FilePath] -> IO [Finding]
 newWorkHints ports project newness files = case catalogMigrate cat of
   Nothing -> pure []
@@ -409,21 +415,28 @@ newWorkHints ports project newness files = case catalogMigrate cat of
     cat = prCatalog project
     ws = prWorkspace project
     extractFixes f =
-      [ FixOffer ("python-strangler/extract-" <> kind) (Just ("Extract this as a " <> kind)) [("file", T.pack f)] Nothing []
-      | kind <- ["command", "query"]
+      [ FixOffer (exGenerator e) (Just ("Extract this as a " <> exName e)) [(stExtractFile st, T.pack f)] Nothing []
+      | Just st <- [catalogStrangler cat]
+      , e <- stExtract st
       ]
 
--- | Whether a node's text is a definition (def, class, fn, …).
-isDefinition :: Text -> Bool
-isDefinition t = case T.words (T.stripStart t) of
-  kw : _ -> kw `elem` ["def", "async", "class", "fn", "pub", "struct", "enum", "trait"]
-  [] -> False
+-- | Whether a node's text is a definition: its first line one of the
+-- language's `[unit] name` expressions names.
+isDefinition :: Maybe Language -> Text -> Bool
+isDefinition lang t = case (lang, T.lines t) of
+  (Just l, first : _) -> definesIn l first
+  _ -> False
+
+-- | Whether LINE is a definition in LANG (its `[unit] name` names it).
+definesIn :: Language -> Text -> Bool
+definesIn lang line = any (\re -> isJust (regexName re line)) (langUnitNames lang)
 
 -- | Where NAME is called (`NAME(`, not part of a longer name), in files
--- with REL's extension, its own definition (LINES of REL) left out:
+-- with REL's extension, its own definition (LINES of REL) left out, and
+-- lines that define it (LANG's `[unit] name` names it there):
 -- `path:line`, in path order.
-callersOf :: Workspace IO -> FilePath -> (Int, Int) -> Text -> IO [Text]
-callersOf ws rel (l1, l2) name
+callersOf :: Workspace IO -> Maybe Language -> FilePath -> (Int, Int) -> Text -> IO [Text]
+callersOf ws lang rel (l1, l2) name
   | T.null name = pure []
   | otherwise = do
       paths <- listFiles ws "."
@@ -434,12 +447,14 @@ callersOf ws rel (l1, l2) name
           | (i, l) <- zip [1 :: Int ..] (T.lines text)
           , not (p == rel && i >= l1 && i <= l2)
           , calls l
+          , not (defines l)
           ]
   where
     calls l = any starts (T.breakOnAll (name <> "(") l)
     starts (before, _) = case T.unsnoc before of
-      Just (_, c) -> not (isAlphaNum c || c == '_') && not ("def " `T.isSuffixOf` before)
+      Just (_, c) -> not (isAlphaNum c || c == '_')
       Nothing -> True
+    defines l = maybe False (\lg -> any (\re -> regexName re l == Just name) (langUnitNames lg)) lang
 
 -- | The plan's note about a definition's callers.
 callersNote :: Text -> [Text] -> [Text]
@@ -477,23 +492,6 @@ signatureHead found = case go (0 :: Int) Nothing (T.unpack found) 0 of
       | c `elem` (")]}" :: String) = go (max 0 (depth - 1)) Nothing cs line
       | c == ':' && depth == 0 = Just line
       | otherwise = go depth Nothing cs line
-
--- | A switched function's new path (the strangler's retire): the lines
--- inside its `if switches.on(…):` block, a level less indented — what the
--- function becomes once its legacy body goes.
-switchPath :: Text -> Text
-switchPath found =
-  let ls = T.lines found
-      indentOf = T.length . T.takeWhile (== ' ')
-   in case break (T.isPrefixOf "if switches.on(" . T.stripStart) ls of
-        (_, guard : rest) ->
-          let level = indentOf guard
-              body = takeWhile (\l -> T.null (T.strip l) || indentOf l > level) rest
-              inner = case filter (not . T.null . T.strip) body of
-                l : _ -> indentOf l - level
-                [] -> 0
-           in T.intercalate "\n" [T.drop inner l | l <- body, not (T.null (T.strip l))]
-        _ -> ""
 
 -- | What "new" is measured from: the base ref ([migrate] base; main).
 baseRefOf :: Project -> Text
@@ -711,6 +709,7 @@ fixSteps :: Ports -> Project -> Text -> FilePath -> Int -> Int -> [(Text, Text)]
 fixSteps ports project rule rel line n given = do
   let cat = prCatalog project
       ws = prWorkspace project
+      fileLang = languageFor (catalogLanguages cat) rel
   (fs, _) <- findings ports project [rel]
   let here = [f | f <- fs, fRule f == rule, Just ((l1, _), (l2, _)) <- [fRange f], l1 <= line, line <= l2]
   case here of
@@ -728,7 +727,7 @@ fixSteps ports project rule rel line n given = do
                   -- first line has none; the replacement adds it back to every line);
                   -- `finding_head`: a definition's whole signature, to its colon
                   found = maybe "" (\rp -> relativeTo (rpIndent rp) (rpFinding rp)) (foReplace o)
-                  env = M.map Tm.VText (M.insert "finding_name" (definedName found) (M.insert "finding_switch_path" (switchPath found) (M.insert "finding_head" (signatureHead found) (M.insert "finding" found sets))))
+                  env = M.map Tm.VText (M.insert "finding_name" (definedName found) (M.insert "finding_switch_path" (switchPath (stSwitchGuard =<< catalogStrangler cat) found) (M.insert "finding_head" (signatureHead found) (M.insert "finding" found sets))))
                   defs = [d | r <- catalogRules cat, ruleId r == rule, d <- drop (n - 1) (ruleFixes r)]
                   replacement = case foReplace o of
                     Nothing -> Right []
@@ -739,7 +738,7 @@ fixSteps ports project rule rel line n given = do
               context <- fmap catMaybes . traverse (\t -> either (const (pure Nothing)) (\p -> fmap (T.unpack p,) <$> readText ws (T.unpack p)) (render env t)) $ concatMap fdContext (take 1 defs)
               -- a definition rewritten in place keeps its callers: say who they are
               warnings <- case foReplace o of
-                Just rp | isDefinition found -> callersNote (definedName found) <$> callersOf ws rel (rpLines rp) (definedName found)
+                Just rp | isDefinition fileLang found -> callersNote (definedName found) <$> callersOf ws fileLang rel (rpLines rp) (definedName found)
                 _ -> pure []
               pure $ case replacement of
                 Left why -> Left (FixFailed why)

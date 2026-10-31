@@ -16,6 +16,8 @@ unit = [
   '^[[:space:]]*class[[:space:]]+(Test[[:alnum:]_]*)',
 ]
 above = '^[[:space:]]*@'
+# A test's id is pytest's own (`path::Class::test_name`): passed as it is.
+select = { test = "{= id =}", file = "{= id =}" }
 # A new test: `test_` and its words in snake case; its body `...` and
 # `assert ...`, two blank lines before it; a new file starts with the unit's
 # import.
