@@ -17,6 +17,7 @@ import Olifant.Provider (runProvider)
 import Olifant.Language.Adapter
 import Olifant.Process (runBytes)
 import Olifant.Language.Syntax
+import Olifant.Language.TreeSitter (treeSitterAnchors)
 import Control.Concurrent (myThreadId)
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, getFileSize, getModificationTime, makeAbsolute, renameFile)
 import System.Posix.Process (getProcessID)
@@ -45,7 +46,9 @@ astGrepSyntax cache =
     { querySyntax = \lang rule source -> fmap (map (\(Found m _) -> m)) <$> scan cache lang rule Nothing source,
       rewriteSyntax = \lang rule fixed source ->
         fmap (map (\(Found (Match s e t b) r) -> Rewrite s e t (fromMaybe t r) b)) <$> scan cache lang rule (Just fixed) source,
-      runSlotProvider = runProvider
+      runSlotProvider = runProvider,
+      -- the generic anchor phrases: tree-sitter in process, not ast-grep
+      anchorSyntax = treeSitterAnchors
     }
 
 -- | `sg scan` one inline rule (with its `fix`, if any) over a text.

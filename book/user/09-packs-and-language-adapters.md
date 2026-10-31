@@ -821,7 +821,7 @@ is the same code, so conjure, mutate, stubs, plans and the editor behave the sam
 |---|---|---|
 | units | `[unit] kinds = { provider = [...] }` | `[unit] kinds` (ast-grep node kinds) |
 | test units | `[test] unit = { provider = [...] }` | the `[test] unit` rules |
-| anchor | `anchors = { provider = [...] }` (top level) | none: asked only for a phrase no `[targets.*]` shape matches, before "unknown target" |
+| anchor | `anchors = { provider = [...] }` (top level) | none: asked only for a phrase no `[targets.*]` shape matches and the generic phrases do not know (a linked grammar's `function NAME`, `struct NAME`, …: [chapter 3](03-anchors.md#the-generic-phrases)), before "unknown target" |
 | test selection | `[test] select = { provider = [...] }` | `[test.select]` |
 | diagnostics | `[check] convert` | the `[check] format` parser |
 | test results | `[test] convert` | the `[test] format` parser |

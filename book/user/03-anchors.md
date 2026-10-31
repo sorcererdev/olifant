@@ -73,9 +73,37 @@ $ olifant where src/Main.elm "end of cases in update"
 error: `end of cases in update`: unknown target `cases in update` for elm; did you mean `end of case in update`? (targets: case in FUNCTION, imports, list in FUNCTION, record NAME, type NAME)
 ```
 
+### The generic phrases
+
+A language whose grammar olifant links in (today Rust; `olifant doctor`'s `queries` row says
+which) knows these phrases with no `[targets.*]` table. They are read from tree-sitter's
+community queries for the grammar, shipped inside olifant:
+
+| phrase | the container | its items |
+|---|---|---|
+| `function NAME` | the function's body | its statements (the last one may be a tail expression) |
+| `class NAME` | the body of a class-like definition: anything the grammar's queries tag as a class, interface, module or type, and (in Rust) an inherent `impl` | its members |
+| `KIND NAME` | the same, narrowed to definitions whose node type is `KIND` or starts with `KIND_`: `struct BillingService` (a `struct_item`), `enum`, `mod tests`, `impl BillingService`, `trait` | its fields, variants, items or methods |
+| `parameters in FUNCTION` | the function's parameter list | its parameters (an empty `()` is opened) |
+| `call NAME` / `call NAME in FUNCTION` | the call's argument list, the call named by its text up to the arguments (`BillingService::new`) | its arguments |
+| `imports` | the file | its top-level import statements, whole (`end of imports`: after the last one) |
+
+`class` alone is often ambiguous: in Rust a struct and its `impl` share a name, so
+`end of class BillingService` matches two places and is refused. Say `struct` or `impl`.
+`impl NAME` is the type's inherent impl (`impl<T> Store<T>` is `impl Store`); an
+`impl Trait for Type` cannot be named by a phrase. Comments are never items: `end of enum E`
+goes after the last variant even when a commented-out variant follows it.
+
+A phrase is looked up in this order: a declared `[targets.*]` whose shape matches (so a pack
+can still override a generic phrase); the generic phrases; the language's anchors provider;
+then "unknown target", whose suggestion also offers the generic phrases. The generic answer
+is final: `end of struct Nope` in a file with no `struct Nope` misses with "no `struct Nope`
+in this file", and is not sent to a provider. A two-word phrase whose first word is no node
+type of the grammar (`end of the imports`) is not a generic phrase.
+
 A language can also hand phrases its targets do not know to a program: `anchors = { provider
 = [...] }` in its language file ([chapter 9](09-packs-and-language-adapters.md#providers-answering-a-slot-with-a-program)).
-Such a phrase (the whole `at` text) goes to the provider before "unknown target"; it answers
+Such a phrase (the whole `at` text) goes to the provider after the generic phrases and before "unknown target"; it answers
 the line the new lines start at and their indentation, or `null` ("the anchors provider does
 not know `…`"), and the text is inserted as at any target, with no blank line added. A phrase a
 declared target matches never goes to the provider.
@@ -104,7 +132,9 @@ Use this when a structural target needs a tool (below) that might not be install
   doubled. A separator such as
   `,` or `|` may share the line, so Elm's leading-comma lists work.
 - **Exactly one.** A target must match once. If `update` had two top-level `case`s,
-  `case in update` would be ambiguous and the edit a conflict.
+  `case in update` would be ambiguous and the edit a conflict. The same holds for a generic
+  phrase: `end of class X` where a struct and an impl are both named `X` "matches 2 places;
+  it must match once".
 - **Already there.** If the text is already at that spot (or just beside it), the edit is
   skipped, so re-runs are no-ops. Only the target and a few lines around the spot are
   checked: for text that may already be elsewhere in the file, or spelled differently, add
@@ -112,8 +142,8 @@ Use this when a structural target needs a tool (below) that might not be install
   lines (using the adapter's `comment`) are left out on both sides, so a template's hint
   such as `// pub worksite_repository: Arc<dyn WorksiteRepository>,` does not count as the
   field being there.
-- **Tools.** Language targets need `ast-grep` (and a C compiler, the first time, to build
-  the Elm grammar). Without them the edit misses with "ast-grep is not installed (brew
+- **Tools.** Declared language targets need `ast-grep` (and a C compiler, the first time, to build
+  the Elm grammar); the generic phrases need nothing, the parser is inside olifant. Without them the edit misses with "ast-grep is not installed (brew
   install ast-grep)" and the next fallback is tried. Line and marker targets need nothing.
 
 ## Opening an empty container

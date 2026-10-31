@@ -12,13 +12,16 @@
 module Olifant.Language.TreeSitter
   ( capturesOf
   , linkedGrammars
+  , grammarNodeTypes
   , queriesFor
   , shippedQueries
+  , treeSitterAnchors
   ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
 import Control.Exception (bracket)
 import Control.Monad (forM, when)
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Unsafe qualified as BU
@@ -29,7 +32,7 @@ import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Word (Word32, Word8)
+import Data.Word (Word16, Word32, Word8)
 import Foreign.C.String (CString, peekCString, peekCStringLen, withCStringLen)
 import Foreign.C.Types (CInt (..), CSize (..))
 import Foreign.Marshal.Alloc (allocaBytes)
@@ -37,7 +40,9 @@ import Foreign.Marshal.Array (allocaArray, peekArray, withArray)
 import Foreign.Marshal.Utils (copyBytes, with)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek)
-import Olifant.Language.Captures (Cap (..), PNode (..))
+import Olifant.Language.Adapter (Grammar (..), Language (..))
+import Olifant.Language.Captures (Cap (..), PNode (..), anchorFromCaptures, genericPhrase, phraseKind)
+import Olifant.Language.Syntax (Match, SyntaxFailure (..))
 import System.FilePath (splitDirectories, takeExtension)
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -51,6 +56,9 @@ data TSQueryCursor
 foreign import ccall "&tree_sitter_rust" p_rust :: FunPtr (IO (Ptr TSLanguage))
 foreign import ccall "dynamic" callLanguage :: FunPtr (IO (Ptr TSLanguage)) -> IO (Ptr TSLanguage)
 
+foreign import ccall unsafe "ts_language_symbol_count" c_symbolCount :: Ptr TSLanguage -> IO Word32
+foreign import ccall unsafe "ts_language_symbol_name" c_symbolName :: Ptr TSLanguage -> Word16 -> IO CString
+foreign import ccall unsafe "ts_language_symbol_type" c_symbolType :: Ptr TSLanguage -> Word16 -> IO CInt
 foreign import ccall unsafe "ots_node_size" c_nodeSize :: IO CSize
 foreign import ccall safe "ots_parse" c_parse :: Ptr TSLanguage -> CString -> Word32 -> IO (Ptr TSTree)
 foreign import ccall unsafe "ts_tree_delete" c_treeDelete :: Ptr TSTree -> IO ()
@@ -82,6 +90,42 @@ grammarTable = [("rust", p_rust)]
 -- | The grammars linked into this binary.
 linkedGrammars :: [Text]
 linkedGrammars = map fst grammarTable
+
+-- | A linked grammar's named node types (none for a grammar not linked).
+grammarNodeTypes :: Text -> [Text]
+grammarNodeTypes g = M.findWithDefault [] g nodeTypesTable
+
+-- | Read once per process.
+nodeTypesTable :: M.Map Text [Text]
+{-# NOINLINE nodeTypesTable #-}
+nodeTypesTable = M.fromList [(g, unsafePerformIO (nodeTypes fp)) | (g, fp) <- grammarTable]
+  where
+    nodeTypes fp = do
+      lang <- callLanguage fp
+      count <- c_symbolCount lang
+      fmap (nubOrd . concat) . forM (if count == 0 then [] else [0 .. fromIntegral count - 1]) $ \i -> do
+        ty <- c_symbolType lang i
+        -- 0: a regular (named) node type
+        if ty /= 0 then pure [] else (\n -> [T.pack n]) <$> (c_symbolName lang i >>= peekCString)
+    nubOrd = M.keys . M.fromList . map (,())
+
+-- | The generic anchor rule for a language whose grammar is linked in (the
+-- 'Olifant.Language.Syntax.anchorSyntax' of the real syntax): 'Nothing' when
+-- the grammar is not linked, the phrase is not a generic one, or its kind
+-- word names no node type of the grammar (`end of the imports`), so a
+-- provider or "unknown target" answers instead.
+treeSitterAnchors :: Applicative m => Language -> Maybe FilePath -> [Text] -> Text -> m (Maybe (Either SyntaxFailure [(Match, [Match])]))
+treeSitterAnchors lang _ ws source = pure $ case langGrammar lang of
+  BuiltInGrammar g
+    | g `elem` linkedGrammars
+    , genericPhrase ws
+    , maybe True (kindKnown g) (phraseKind ws) ->
+        case capturesOf g (queriesFor g) source of
+          Left why -> Just (Left (SyntaxFailed why))
+          Right (root, caps) -> first SyntaxFailed <$> anchorFromCaptures root caps ws
+  _ -> Nothing
+  where
+    kindKnown g k = any (\t -> t == k || (k <> "_") `T.isPrefixOf` t) (grammarNodeTypes g)
 
 -- | The query files shipped inside the binary: (grammar, file name, source).
 shippedQueries :: [(Text, FilePath, Text)]

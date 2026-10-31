@@ -8,6 +8,12 @@ module Olifant.Language
   , module Olifant.Language.Diagnostics
   , module Olifant.Language.Support
   , module Olifant.Language.Test
+  , genericPhrase
+  , genericPhrases
+  , oneContainer
+  , linkedGrammars
+  , grammarLinked
+  , treeSitterAnchors
   , shippedLanguage
   , shippedLanguageNow
   ) where
@@ -26,6 +32,15 @@ import Olifant.Language.Support
 import Olifant.Language.Rule
 import Olifant.Language.Syntax
 import Olifant.Language.Test
+import Olifant.Language.Captures (genericPhrase, genericPhrases, oneContainer)
+import Olifant.Language.TreeSitter (linkedGrammars, treeSitterAnchors)
+
+-- | Is the language's grammar linked in, so the generic anchor phrases
+-- work on it?
+grammarLinked :: Language -> Bool
+grammarLinked l = case langGrammar l of
+  BuiltInGrammar g -> g `elem` linkedGrammars
+  GrammarSource _ -> False
 
 -- | The shipped language of that name alone, for specs (fails on a file
 -- that does not parse).

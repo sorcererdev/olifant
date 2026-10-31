@@ -261,6 +261,7 @@ test-suite spec
     Olifant.Language.Adapter
     Olifant.Language.AstGrep
     Olifant.Language.Captures
+    Olifant.Language.CapturesSpec
     Olifant.Language.Check
     Olifant.Language.Diagnostics
     Olifant.Language.Elm

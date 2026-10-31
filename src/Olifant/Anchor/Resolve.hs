@@ -158,10 +158,14 @@ resolveOne syntax lang file anchor content = case anchor of
               (h : _) ->
                 let i = if which == FirstLine then h else last hits
                  in (\line -> located line (indentAt i) (runAround i)) <$> beforeAfter pos i "line"
+    -- Decision 2 (4b m2): a declared target; else the generic rule, whose
+    -- answer is final; else the anchors provider; else "unknown target".
     named l pos ws = case (target, langAnchorProvider l) of
-      -- a phrase no declared target knows: the anchors provider, if any
-      (Nothing, Just p) -> provided p
-      _ -> declared
+      (Nothing, Just p) ->
+        anchorSyntax syntax l file ws content >>= \case
+          Just r -> pure (fromItems (genericOne r))
+          Nothing -> provided p
+      _ -> fromItems <$> itemsOfTarget syntax l (positionWords pos) ws content
       where
         provided p =
           runSlotProvider syntax p (textRequest file content [("phrase", Aeson.String used)]) <&> \case
@@ -170,9 +174,11 @@ resolveOne syntax lang file anchor content = case anchor of
               Left why -> Left (miss ("the anchors provider: " <> why))
               Right Nothing -> Left (miss ("the anchors provider does not know `" <> used <> "`"))
               Right (Just a) -> Right (located (aaLine a - 1) (T.replicate (aaColumn a - 1) " ") content)
-        declared = itemsOfTarget syntax l (positionWords pos) ws content <&> \case
+        fromItems = \case
             Left (why, tool) -> Left (Miss used why tool)
-            Right Nothing -> Left (miss "not found")
+            Right Nothing
+              | Nothing <- target, genericPhrase ws, grammarLinked l -> Left (miss ("no `" <> T.unwords ws <> "` in this file"))
+              | otherwise -> Left (miss "not found")
             Right (Just (_, []))
               | Just "after header" <- targetWhenEmpty =<< target, pos `elem` [StartOf, EndOf] ->
                   let h = headerEnd ls
@@ -241,9 +247,15 @@ resolveOne syntax lang file anchor content = case anchor of
 -- syntax tool fails. @prefix@ ("end of", "items of") only shapes suggestions.
 itemsOfTarget :: Monad m => Syntax m -> Language -> Text -> [Text] -> Text -> m (Either (Text, Bool) (Maybe (Match, [Match])))
 itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
+  -- no declared target: the generic rule over the captures, if it knows
+  -- the phrase; else unknown
   [] ->
-    let suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (closest (prefix <> " " <> T.unwords ws) (map targetExample (langTargets l)))
-     in pure (Left ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l)) <> ")", False))
+    anchorSyntax syntax l Nothing ws content <&> \case
+      Just r -> genericOne r
+      Nothing ->
+        let generic = if grammarLinked l then genericPhrases else []
+            suggestion = maybe "" (\s -> "; did you mean `" <> s <> "`?") (closest (prefix <> " " <> T.unwords ws) (map targetExample (langTargets l) ++ map snd generic))
+         in Left ("unknown target `" <> T.unwords ws <> "` for " <> langName l <> suggestion <> " (targets: " <> T.intercalate ", " (map targetPhrase (langTargets l) ++ map fst generic) <> ")", False)
   ((t, binds) : _) -> do
     let env = M.fromList [(k, VText v) | (k, v) <- binds]
     case (,) <$> renderRule env (targetContainer t) <*> renderRule env (targetItems t) of
@@ -263,11 +275,20 @@ itemsOfTarget syntax l prefix ws content = case [(t, bs) | t <- langTargets l, J
               Right found -> Right (Just (c, topLevel (filter (inside c) found)))
           Right cs -> pure (Left ("matches " <> T.pack (show (length cs)) <> " places; it must match once", False))
   where
-    failure f = (describeSyntaxFailure f, case f of SyntaxToolMissing _ -> True; SyntaxFailed _ -> False)
+    failure = syntaxFailure
     -- the items query already asks for a strict ancestor; an item may span its
     -- container exactly (a Python function whose body is one `match`)
     inside c m = matchStart m >= matchStart c && matchEnd m <= matchEnd c
     topLevel ms = [m | m <- ms, not (any (\o -> o /= m && matchStart o <= matchStart m && matchEnd m <= matchEnd o) ms)]
+
+-- | The generic rule's answer where one container is needed.
+genericOne :: Either SyntaxFailure [(Match, [Match])] -> Either (Text, Bool) (Maybe (Match, [Match]))
+genericOne = \case
+  Left f -> Left (syntaxFailure f)
+  Right cs -> either (Left . (,False)) Right (oneContainer cs)
+
+syntaxFailure :: SyntaxFailure -> (Text, Bool)
+syntaxFailure f = (describeSyntaxFailure f, case f of SyntaxToolMissing _ -> True; SyntaxFailed _ -> False)
 
 -- | The container of a named target, as 0-based (start, end) lines (used by
 -- `complete` edits' `where`, spec §5.6).
@@ -282,7 +303,11 @@ locateContainer syntax l ws content =
 -- the file's order (a name two classes define: both).
 locateContainers :: Monad m => Syntax m -> Language -> [Text] -> Text -> m (Either Miss [(Int, Int)])
 locateContainers syntax l ws content = case [(t, bs) | t <- langTargets l, Just bs <- [matchShape t ws]] of
-  [] -> pure (Left (Miss (T.unwords ws) "unknown target" False))
+  [] ->
+    anchorSyntax syntax l Nothing ws content <&> \case
+      Just (Right cs) -> Right [(fst (matchStart c), fst (matchEnd c)) | (c, _) <- cs]
+      Just (Left f) -> Left (Miss (T.unwords ws) (describeSyntaxFailure f) False)
+      Nothing -> Left (Miss (T.unwords ws) "unknown target" False)
   ((t, binds) : _) -> case renderRule (M.fromList [(k, VText v) | (k, v) <- binds]) (targetContainer t) of
     Left err -> pure (Left (Miss (T.unwords ws) (describeTemplateError err) False))
     Right rule ->

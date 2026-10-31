@@ -39,7 +39,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Olifant.App (Ports (..), Project (..))
 import Olifant.Catalog (catalogRulesConfig)
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Language (ImportsDef (..), Language (..), noChecker, noRunner, noSyntax, parseLanguage, shippedLanguage, shippedLanguageNow)
+import Olifant.Language (ImportsDef (..), Language (..), noAnchors, noChecker, noRunner, noSyntax, parseLanguage, shippedLanguage, shippedLanguageNow)
 import Olifant.Language.TestUnits (testCaseAtIn)
 import Olifant.Language.Check (noVerifier)
 import Olifant.Process (cancelled, gitStateStamp, newCancel)
@@ -1129,7 +1129,7 @@ blocksRun syntax hook verdict extra = do
 -- | `function handle`'s body (the lines under its def, deeper than it), and
 -- a boundary rewrite (`a > b` to `a >= b`) at every `>`; nothing else.
 blockSyntax :: Syntax IO
-blockSyntax = Syntax query rewrite (\_ _ -> pure (Left "no provider runner"))
+blockSyntax = Syntax query rewrite (\_ _ -> pure (Left "no provider runner")) noAnchors
   where
     query _ rule src = case T.breakOn "\"^" (TE.decodeUtf8 (BL.toStrict (J.encode rule))) of
       (_, r) | not (T.null r), "$\"" `T.isInfixOf` r -> pure (Right (body (T.takeWhile (/= '$') (T.drop 2 r)) src))

@@ -90,8 +90,73 @@ withAnchors script = do
   here <- getCurrentDirectory
   pure caseTarget {langAnchorProvider = Just (Provider ["sh", T.pack ("testdata/providers" </> script)] (Just (here </> "src/Olifant")))}
 
+-- | Rust with its declared targets, and with none (every phrase generic).
+rustDeclared, rustGeneric :: Language
+rustDeclared = shippedLanguageNow "rust"
+rustGeneric = rustDeclared {langTargets = []}
+
+-- | A pure syntax: no ast-grep, the generic rule in process.
+tsSyntax :: Syntax Identity
+tsSyntax = (querying (\_ _ _ -> Identity (Right []))) {anchorSyntax = treeSitterAnchors}
+
+-- | Elm through a pack's vendored grammar (not linked in), with a declared
+-- `type NAME`.
+elmSource :: Language
+elmSource = caseTarget {langGrammar = GrammarSource "/p/languages/grammar/elm", langTargets = langTargets caseTarget ++ langTargets typeLang}
+  where
+    Right typeLang =
+      parseLanguage "elm" "/p" $
+        T.unlines
+          [ "files = [\"**/*.elm\"]", "comment = \"--\"", "grammar = \"elm\""
+          , "[targets.type]", "phrase = \"type NAME\""
+          , "container = { kind = \"type_declaration\" }", "items = { kind = \"union_variant\" }"
+          , "example = \"end of type Msg\""
+          ]
+
+genericSpec :: Spec
+genericSpec = describe "the generic rule (4b m2)" $ do
+  let at lang p file = runIdentity (resolveLayers tsSyntax (Just lang) Nothing [PhraseAnchor p] file)
+  it "a half-typed file: a definition that still parses resolves; the rest is a miss naming the phrase" $ do
+    let file = T.unlines ["struct A {", "    a: u8,", "}", "", "fn f( {", "    let x = "]
+    fmap locLine (at rustGeneric "end of struct A" file) `shouldBe` Right 2
+    either (map missAnchor) (const []) (at rustGeneric "end of function g" file) `shouldBe` ["end of function g"]
+  it "non-ASCII before the anchor: placed at the field's column" $ do
+    let file = T.unlines ["// café", "struct größe {", "    a: u8,", "}"]
+    fmap (\l -> (locLine l, locIndent l)) (at rustGeneric "end of struct größe" file) `shouldBe` Right (3, "    ")
+    -- a one-line struct grows at the same (character) columns as an ASCII one
+    let grown name = let one = T.unlines ["// cafe", "struct " <> name <> " { a: u8 }"]
+                         Right loc = at rustGeneric ("end of struct " <> name) (if name == "grosse" then one else T.replace "cafe" "café" one)
+                      in T.lines (snd (insertLines loc "b: u8" (if name == "grosse" then one else T.replace "cafe" "café" one))) !! 1
+    grown "größe" `shouldBe` T.replace "grosse" "größe" (grown "grosse")
+    grown "größe" `shouldSatisfy` ("a: u8, b: u8" `T.isInfixOf`)
+  it "CRLF text places as LF does" $ do
+    let file = T.unlines ["// café", "struct größe {", "    a: u8,", "}"]
+    fmap locLine (at rustGeneric "end of struct größe" (T.replace "\n" "\r\n" file)) `shouldBe` Right 3
+  it "a grammar not linked in: declared targets as today; a generic phrase is an unknown target" $ do
+    fmap locLine (runIdentity (resolveLayers fakeSyntax (Just elmSource) Nothing [PhraseAnchor "end of case in update"] source)) `shouldBe` Right 9
+    let Left [m] = runIdentity (resolveLayers fakeSyntax {anchorSyntax = treeSitterAnchors} (Just elmSource) Nothing [PhraseAnchor "end of function f"] source)
+    missReason m `shouldSatisfy` ("unknown target `function f`" `T.isInfixOf`)
+    missReason m `shouldNotSatisfy` ("class NAME" `T.isInfixOf`)
+    let Left [typo] = runIdentity (resolveLayers fakeSyntax {anchorSyntax = treeSitterAnchors} (Just elmSource) Nothing [PhraseAnchor "end of typ Msg"] source)
+    missReason typo `shouldSatisfy` ("did you mean `end of type Msg`" `T.isInfixOf`)
+  it "a declared target wins over the generic rule" $ do
+    -- fakeSyntax's container is lines 2-8 and its last item ends on line 8
+    let file = T.unlines ["struct S {", "    a: u8,", "}", "", "", "", "", "", "", ""]
+    fmap locLine (runIdentity (resolveLayers fakeSyntax {anchorSyntax = treeSitterAnchors} (Just rustDeclared) Nothing [PhraseAnchor "end of struct S"] file)) `shouldBe` Right 9
+    fmap locLine (at rustGeneric "end of struct S" file) `shouldBe` Right 2
+  it "a generic phrase with no definition is a miss, and the provider is not asked" $ do
+    here <- getCurrentDirectory
+    let lang = rustGeneric {langAnchorProvider = Just (Provider ["sh", T.pack ("testdata/providers" </> "anchor.sh")] (Just (here </> "src/Olifant")))}
+        syntax = providingSyntax {anchorSyntax = treeSitterAnchors}
+        file = T.unlines ["struct A {", "    a: u8,", "}", "", ""]
+    resolveLayers syntax (Just lang) Nothing [PhraseAnchor "end of struct Nope"] file
+      `shouldReturn` Left [Miss "end of struct Nope" "no `struct Nope` in this file" False]
+    -- a kind word that is no node type is not the engine's: the provider answers
+    fmap locLine <$> resolveLayers syntax (Just lang) Nothing [PhraseAnchor "end of the imports"] file `shouldReturn` Right 2
+
 resolveSpec :: Spec
 resolveSpec = do
+  genericSpec
   describe "an anchors provider (4b m1)" $ do
     it "a phrase no target knows goes to the anchors provider" $ do
       lang <- withAnchors "anchor.sh"

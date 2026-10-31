@@ -259,6 +259,32 @@ anchor phrases from community queries (design 4b §A).
   (`compiled`, keyed by grammar and query set) and pruned to the captures the rule reads
   (`readCaptures` and every `definition.*`), so the others cost nothing at match time. A query
   that does not compile is a `Left` naming the file, the byte and the kind of error.
+- **The rule.** `Captures.anchorFromCaptures root caps words` is the generic anchor rule, pure:
+  `Nothing` for a phrase that is not generic (`genericPhrase` is its shape), else every
+  container the phrase names, in the file's order, each with its items. A definition is a
+  `definition.*` capture with the `@name` of its match; `functionCaps` and `classCaps` are the
+  engine's table of which captures `function` and `class` mean, and any other kind word
+  narrows by node type (`struct` → `struct_item`, `mod` → `mod_item`). A definition's items are
+  the `function.inner`/`class.inner` captures whose *nearest strictly enclosing* definition it
+  is ("strictly": an impl with one method has the method as both item and definition), named
+  and not extra (no punctuation, no comments); their parent is the container. With no inner
+  capture (an empty body), the container is the definition's `body` field, empty, which
+  placement opens. `parameters in F` reads the function's `parameters` field (type parameters
+  are a direct child too, so a capture alone would not do), a call is named by its text up to
+  its `arguments` field, and `imports` takes the top-level `@import` statements (`capTop`).
+  `oneContainer` turns the list into "one, none, or matches N places".
+- **Where the rule is asked.** It is the `Syntax` port's `anchorSyntax` field (after
+  `runSlotProvider`); `AstGrep.astGrepSyntax` sets it to `TreeSitter.treeSitterAnchors`, which
+  answers `Nothing` unless the language's `grammar` is linked, the phrase is generic, and its
+  kind word names a node type of the grammar (`grammarNodeTypes`; so `end of the imports` is
+  not the engine's). Fakes use `noAnchors`. In `Anchor/Resolve.hs`, `named` follows Decision 2:
+  a declared target (`itemsOfTarget`'s declared branch), else the generic rule, whose answer
+  is final ("no `struct Nope` in this file"), else the anchors provider, else
+  `itemsOfTarget`'s "unknown target", whose "did you mean" and target list add
+  `genericPhrases` when `grammarLinked`. `itemsOfTarget` (an `items of` query, a fragment, the
+  catalog's target check) and `locateContainers` (every container; a name two definitions
+  share gives both) ask the same field. `Anchor/Items.hs`'s up-front "unknown target in any
+  language adapter" check lets a generic phrase through when any language's grammar is linked.
 - **Pure.** A parse and a query run are functions of (grammar, queries, text), so
   `capturesOf` is pure and wraps its IO in `unsafePerformIO` (Decision 6 of the m2 plan). Pure
   callers (the anchor rule; later, units and test units) read captures without threading IO.
