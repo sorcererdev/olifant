@@ -155,7 +155,12 @@ the parser (`parsePytest`, or `TestFormats.parseLines | parseTap | parseJunit | 
 catalog sets it to the project root as it roots the providers (`Adapter.withProviderRoot`), and
 `runTestsIn` narrows it to the package its `root` markers find; `processRunner` passes it to
 `scratchRun` as `{= root =}` (made absolute), expanded in the program too, so a command can
-name a venv in the project although it runs in a scratch copy. A `command` that is a list of
+name a venv in the project although it runs in a scratch copy. `processRunner` also hands
+`scratchRun` that folder as the rest to copy: `copyRest` lists it with the workspace's own
+listing (`Workspace.diskWorkspace` `listFilesSkipping`, the language's `ignore` skipped), and
+clones (`cbits/olifant_clone.c`, APFS `clonefile`) or copies each file the run's map lacks, so
+templates and binary fixtures come byte for byte while the map's (edited, mutated) texts win. A
+check or a `verify` passes no folder and sees only its map. A `command` that is a list of
 `{ when, command, context }` tables parses into `testCandidates` (`TestCandidate`), with
 `testCommand` the unconditional one's until a choice; `Adapter.chooseTestCommand` takes an
 existence test and returns the `TestDef` with the first fitting candidate's command and context,

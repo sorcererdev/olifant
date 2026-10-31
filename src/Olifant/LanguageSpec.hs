@@ -24,7 +24,8 @@ import System.Environment (lookupEnv)
 import System.FilePath (takeExtension, (</>))
 import Olifant.Template (Value (..))
 import Control.Concurrent.Async (mapConcurrently)
-import Control.Monad (filterM, forM, forM_)
+import Control.Monad (filterM, forM, forM_, when)
+import System.Process (callProcess)
 import System.IO.Temp (withSystemTempDirectory)
 import Data.Text.Encoding qualified as TE
 import Olifant.Language.Ghc (parseGhcReport, typeOf)
@@ -383,6 +384,26 @@ spec = do
               ])
         _ <- runTestsIn (processRunner neverCancel 60) (withProviderRoot proj bare) ["a_t.x"] (M.fromList [("a_t.x", "")])
         readFile (proj </> "said") `shouldReturn` proj
+    it "a run's scratch copy holds the project's other files from disk, bytes as they are; the run's own files win" $
+      forM_ [True, False] $ \inGit -> withSystemTempDirectory "olifant-rest" $ \proj -> do
+        forM_ ["templates", "fixtures", "deps"] (createDirectoryIfMissing True . (proj </>))
+        writeFile (proj </> "templates/page.html") "<p>hi</p>\n"
+        BS.writeFile (proj </> "fixtures/data.bin") (BS.pack [0x1f, 0x8b, 0xff, 0x00, 0xc3])
+        writeFile (proj </> "a.x") "on disk\n"
+        writeFile (proj </> "deps/lib.x") "a dependency\n"
+        writeFile (proj </> "secret.log") "ignored by git\n"
+        when inGit $ do
+          writeFile (proj </> ".gitignore") "*.log\n"
+          callProcess "git" ["-C", proj, "init", "-q"]
+          -- fixtures/ is untracked, not ignored: still the project's
+          callProcess "git" ["-C", proj, "add", "templates", "a.x"]
+        let Right lang0 = parseLanguage "x" "/x" (T.unlines
+              [ "files = [\"**/*.x\"]", "comment = \"#\"", "grammar = \"x\"", "ignore = [\"deps\"]"
+              , "[test]", "tests_for = \"{= stem =}_t.x\"", "format = \"olifant-json\""
+              , "command = [\"sh\", \"-c\", \"cat templates/page.html a.x > \\\"$0/seen\\\"; cmp -s fixtures/data.bin \\\"$0/fixtures/data.bin\\\" && echo same >> \\\"$0/seen\\\"; ls deps secret.log 2>/dev/null >> \\\"$0/seen\\\"; echo '{}'\", \"{= root =}\"]"
+              ])
+        _ <- runTestsIn (processRunner neverCancel 60) (withProviderRoot proj lang0) ["a_t.x"] (M.fromList [("a_t.x", ""), ("a.x", "in the run\n")])
+        readFile (proj </> "seen") `shouldReturn` ("<p>hi</p>\nin the run\nsame\n" <> (if inGit then "" else "secret.log\n"))
     it "a run uses the first command candidate whose `when` file is in the files or on disk" $
       withSystemTempDirectory "olifant-pick" $ \proj -> do
         let Right lang0 = parseLanguage "x" "/x" (T.unlines
