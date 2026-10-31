@@ -58,7 +58,7 @@ import Olifant.Language.Check (CheckFailure (..), noVerifier)
 import Olifant.Process (cancelled, newCancel)
 import Olifant.Lsp
 import Olifant.Doctor (DoctorPorts (..))
-import Olifant.Workspace (Workspace (listFiles, readText), diskWorkspace)
+import Olifant.Workspace (Workspace (listFiles, listFilesSkipping, readText), diskWorkspace)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Directory (findExecutable, canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectory, removeFile, renameFile)
 import System.FilePath (makeRelative, normalise, takeDirectory, (</>), splitDirectories)
@@ -196,10 +196,10 @@ fixesSpec = describe "rule findings and their fixes" $ do
     withPython [] $ \ports dir -> do
       let disk = pFiles ports
           -- held after the load, as it lists the project's files
-          held = disk {listFiles = \p -> do
-                         stop <- if normalise p `elem` [normalise dir, normalise (dir </> ".")] then atomicModifyIORef' armed (False,) else pure False
-                         when stop (putMVar entered () >> takeMVar gate)
-                         listFiles disk p}
+          holding p = do
+            stop <- if normalise p `elem` [normalise dir, normalise (dir </> ".")] then atomicModifyIORef' armed (False,) else pure False
+            when stop (putMVar entered () >> takeMVar gate)
+          held = disk {listFiles = \p -> holding p >> listFiles disk p, listFilesSkipping = \ns p -> holding p >> listFilesSkipping disk ns p}
           command = "src/bistro/booking/commands/create_booking.py"
       _ <- forkIO (threadDelay 10000000 >> void (tryPutMVar gate ()))
       (ds, _) <- inProcessWith ports {pFiles = held} dir $ do
@@ -720,10 +720,10 @@ holesSpec = describe "progress, holes and verify" $ do
     gate <- newEmptyMVar
     withPython [] $ \ports dir -> do
       let disk = pFiles ports
-          gated = disk {listFiles = \p -> do
-                          held <- atomicModifyIORef' armed (False,)
-                          when held (putMVar entered () >> takeMVar gate)
-                          listFiles disk p}
+          gating = do
+            held <- atomicModifyIORef' armed (False,)
+            when held (putMVar entered () >> takeMVar gate)
+          gated = disk {listFiles = \p -> gating >> listFiles disk p, listFilesSkipping = \ns p -> gating >> listFilesSkipping disk ns p}
       _ <- forkIO (threadDelay 5000000 >> void (tryPutMVar gate ()))
       (first, _) <- inProcessWith ports {pFiles = gated} dir $ do
         _ <- openDoc "src/bistro/booking/commands/create_booking.py" "python"

@@ -1049,7 +1049,9 @@ only `.git` (`Workspace.pruned`) and, in a walk outside git, dot-folders; each l
 `ignore` (Python's `.venv`, `__pycache__`, `.pytest_cache`, `node_modules`; Rust's `target`;
 Haskell's `dist-newstyle`; Elm's `elm-stuff`) is joined in `Catalog.catalogIgnores` and applied
 with `Workspace.ignoring` where a project's workspace is built from its catalog
-(`App.openProject`, `openProjectWith`, `Cli.projectOf`, `Server.State`'s project lookup). Then `loop` (`:63`) runs, carrying that
+(`App.openProject`, `openProjectWith`, `Cli.projectOf`, `Server.State`'s project lookup).
+`ignoring` makes `listFiles` the workspace's `listFilesSkipping`, so the disk walk never
+descends into those folders (a git listing is filtered). Then `loop` (`:63`) runs, carrying that
 `support` record alongside the language:
 
 ```haskell

@@ -53,7 +53,7 @@ import Olifant.Server.LoopTypes (ReconcileAnswer)
 import Olifant.Generator (Generator)
 import Olifant.Recognize (Index, Shingle)
 import Olifant.Workspace (Workspace (..), ignoring, normalisePath, overlayMany, within)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (splitDirectories, takeDirectory, (</>))
 
 -- | The client's settings (`initializationOptions`): how long slow work
 -- waits after typing stops, a model to use instead of the projects', and
@@ -199,7 +199,7 @@ workspaceOf s root =
     disk = within root (pFiles (ssPorts s))
     -- the project's listing, kept while no file may have come or gone
     listed = case M.lookup root (ssListings s) of
-      Just (stamp, paths) | stamp == ssFilesStamp s -> disk {listFiles = \dir -> pure (inside dir paths)}
+      Just (stamp, paths) | stamp == ssFilesStamp s -> disk {listFiles = \dir -> pure (inside dir paths), listFilesSkipping = \names dir -> pure (filter (not . any (`elem` names) . splitDirectories) (inside dir paths))}
       _ -> disk
     inside dir paths = case normalisePath dir of
       "." -> paths

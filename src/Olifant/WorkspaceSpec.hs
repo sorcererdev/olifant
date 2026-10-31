@@ -10,7 +10,8 @@ import Test.Hspec.Hedgehog (hedgehog)
 import Olifant.Workspace
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Directory (findExecutable)
+import System.Directory (emptyPermissions, findExecutable, setOwnerExecutable, setOwnerReadable, setOwnerWritable, setPermissions)
+import Control.Exception (SomeException, try)
 import System.Process (readProcess)
 import Test.Hspec
 
@@ -95,6 +96,15 @@ spec = do
         mapM_ (\p -> writeText ws p "x") ["src/a.hs", "node_modules/pkg/index.js", "target/debug/x", ".git/HEAD", ".venv/lib/x.py", ".pytest_cache/v", ".gitignore"]
         listFiles ws "." `shouldReturn` [".gitignore", "node_modules/pkg/index.js", "src/a.hs", "target/debug/x"]
         listFiles (ignoring ["target", "node_modules"] ws) "." `shouldReturn` [".gitignore", "src/a.hs"]
+    it "never walks into an ignored folder (an unreadable one inside it does not fail the listing; review I4)" $
+      withSystemTempDirectory "olifant" $ \dir -> do
+        let ws = diskWorkspace dir
+        mapM_ (\p -> writeText ws p "x") ["src/a.rs", "target/debug/locked/x"]
+        let locked = dir </> "target/debug/locked"
+        setPermissions locked emptyPermissions
+        r <- try (listFiles (ignoring ["target"] ws) ".") :: IO (Either SomeException [FilePath])
+        setPermissions locked (setOwnerExecutable True (setOwnerReadable True (setOwnerWritable True emptyPermissions)))
+        either (Left . show) Right r `shouldBe` Right ["src/a.rs"]
     it "lists what git considers part of the project, honouring .gitignore" $
       findExecutable "git" >>= \case
         Nothing -> pendingWith "git is not installed"
